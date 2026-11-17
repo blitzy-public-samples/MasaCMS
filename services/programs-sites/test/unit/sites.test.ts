@@ -9,6 +9,9 @@ const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
 const CSRF_CONSUME = '/internal/v1/csrf/consume';
 const WRITTEN_TABLES = ['programs_sites.site', 'programs_sites.changelog', 'programs_sites.outbox'];
 const ORDER_SQL = /^ORDER BY (?:orderno|lower\((?:domain|site)\)) (?:ASC NULLS FIRST|DESC NULLS LAST)$/;
+/** The tenant read of the Sites screen: its six columns only. */
+const LIST_SITES_SQL =
+  'SELECT siteid, site, domain, orderno, deploy, lastdeployment FROM "programs_sites"."site" WHERE tenant_id = $1 ORDER BY orderno ASC NULLS FIRST, siteid';
 
 /** A stored `programs_sites.site` row of `fixture`, its other columns NULL, so its pools read as its own. */
 function siteRow(fixture: TenantFixture, site: string, orderno: number): Record<string, unknown> {
@@ -33,13 +36,21 @@ const STORED_SITES = [siteRow(TENANT_A, 'Zeta Site', 1), siteRow(TENANT_B, 'Alph
 /** Answers the registry and `programs_sites.site` reads from STORED_SITES. */
 function seedSites(db: RecordingDb): void {
   const registry = STORED_SITES.map((row) => ({ tenant_id: row.tenant_id, site_id: row.siteid }));
-  db.respond('SELECT tenant_id, site_id FROM programs_sites.tenant_registry ORDER BY site_id', registry);
+  db.respond('SELECT tenant_id, site_id FROM programs_sites.tenant_registry WHERE NOT deleted ORDER BY site_id', registry);
   db.respond('FROM programs_sites.tenant_registry WHERE lower(site_id) = lower($1)', (params) =>
     registry.filter((entry) => String(entry.site_id).toLowerCase() === String(params[0]).toLowerCase()),
   );
-  db.respond(/^SELECT \* FROM "programs_sites"\."site" WHERE /i, (params) =>
-    STORED_SITES.filter((row) => row.tenant_id === params[0] && (params[1] === undefined || row.siteid === params[1])),
+  db.respond(/^SELECT (.+?) FROM "programs_sites"\."site" WHERE /i, (params, sql) =>
+    STORED_SITES.filter((row) => row.tenant_id === params[0] && (params[1] === undefined || row.siteid === params[1])).map((row) =>
+      selected(row, sql),
+    ),
   );
+}
+
+/** `row` narrowed to the columns `sql` selects, whole for `SELECT *`. */
+function selected(row: Record<string, unknown>, sql: string): Record<string, unknown> {
+  const list = /^SELECT (.+?) FROM /i.exec(sql)?.[1] ?? '*';
+  return list === '*' ? row : Object.fromEntries(list.split(', ').map((column) => [column, row[column]]));
 }
 
 describe('listOrderSql', () => {
@@ -226,7 +237,7 @@ function listStep(sql: string): string {
   if (sql === 'SAVEPOINT opt2_read_fence' || sql === 'RELEASE SAVEPOINT opt2_read_fence') return sql;
   if (/^SELECT unit, phase FROM .*unit_gate.* FOR SHARE NOWAIT$/.test(sql)) return 'gate fence';
   if (sql.startsWith('SELECT tenant_id, site_id FROM programs_sites.tenant_registry')) return 'registry';
-  if (/^SELECT \* FROM "programs_sites"\."site" WHERE /.test(sql)) return 'sites';
+  if (sql === LIST_SITES_SQL) return 'sites';
   return sql;
 }
 

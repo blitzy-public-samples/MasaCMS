@@ -451,6 +451,12 @@ describe.skipIf(schema === null)(schema === null ? `${pgSuiteTitle} (skipped: ${
 
     const snapshotDb = 'masa_test_opt2_snap_0';
     const backupPath = backupOf(0);
+    // One batched tfiles lookup per site with stored objects, in SiteID order.
+    const listedIds = new Map(Object.entries(FILE_LISTINGS).map(([siteId, listing]) => [siteId, new Set(listing.files.map((file) => file.fileId))]));
+    const lookupIds = liveSites(tc.legacy).flatMap((siteId) => {
+      const ids = listedIds.get(String(siteId));
+      return ids === undefined || ids.size === 0 ? [] : [[...ids].sort()];
+    });
     expect(issued(tc.legacy, from)).toEqual([
       'master:data-file',
       'master:dir-visible',
@@ -462,8 +468,21 @@ describe.skipIf(schema === null)(schema === null ? `${pgSuiteTitle} (skipped: ${
       'master:read-only',
       'master:lsn',
       `${snapshotDb}:sites`,
-      `${snapshotDb}:file-owners`,
+      ...lookupIds.map(() => `${snapshotDb}:file-owners`),
     ]);
+    expect(
+      tc.legacy.statements
+        .slice(from)
+        .filter((statement) => statement.sql.includes('[dbo].[tfiles]'))
+        .map((statement) => ({ sql: statement.sql, ids: Object.values(statement.params).map(String).sort() })),
+    ).toEqual(
+      lookupIds.map((ids) => ({
+        sql:
+          'SELECT [fileID], [siteID], [contentType], [contentSubType], [fileExt] FROM [dbo].[tfiles] WHERE [fileID] IN ' +
+          `(${ids.map((_id, index) => `@p${String(index)}`).join(', ')});`,
+        ids,
+      })),
+    );
     expect(issuedSql(tc.legacy, from, 'backup')).toBe(
       `BACKUP DATABASE [masa_test] TO DISK = N'${backupPath}' WITH COPY_ONLY, CHECKSUM, INIT;`,
     );

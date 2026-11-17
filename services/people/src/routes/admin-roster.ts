@@ -25,7 +25,7 @@ import {
 } from '@opt2/platform/service-kit';
 import { tenantForRegisteredSite } from '@opt2/platform/tenancy';
 import { createAddress, updateAddress, type AddressActor, type AddressDeps } from '../domain/addresses.js';
-import { expirePasswordsSetting, passwordExpired } from '../domain/password-expiry.js';
+import { passwordExpired } from '../domain/password-expiry.js';
 import { applyUserInput, newUserValues, normaliseParams, resolveUserSite, restrictAdminInput, type UserValues } from '../domain/person.js';
 import { PhotoBranchError, personFence, runRosterOperation, type RosterDeps, type RosterKind } from '../domain/roster-protocol.js';
 import type { LegacyErrors } from '../domain/validation.js';
@@ -44,8 +44,8 @@ type PersonRecord = Schemas['PersonRecord'];
 /** Dependencies of {@link registerAdminRosterRoutes}: the roster write protocol's collaborators, which the address saves share. */
 export interface AdminRosterRouteDeps {
   roster: RosterDeps;
-  /** configBean `expirePasswords`; defaults to `MURA_EXPIREPASSWORDS` of `process.env`. */
-  expirePasswords?: number;
+  /** configBean `expirePasswords` from the parsed `MURA_EXPIREPASSWORDS`, in days; 0 never expires. */
+  expirePasswords: number;
 }
 
 const CUSERS_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: CUSERS_ROUTE_REQUIRES });
@@ -332,9 +332,8 @@ async function saveAddress(addresses: AddressDeps, roster: RosterDeps, request: 
 
 /** Registers `POST /v1/users:update` (`updateUser`) and `POST /v1/users/addresses:update` (`updateAddress`). */
 export async function registerAdminRosterRoutes(app: FastifyInstance, deps: AdminRosterRouteDeps): Promise<void> {
-  const { roster } = deps;
+  const { roster, expirePasswords } = deps;
   const addresses: AddressDeps = { db: roster.db, repo: roster.repo, clock: roster.clock, fence: personFence };
-  const expirePasswords = deps.expirePasswords ?? expirePasswordsSetting(process.env);
 
   app.post<{ Reply: UpdateResult }>(
     '/v1/users::update',

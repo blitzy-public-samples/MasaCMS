@@ -66,6 +66,17 @@ export function secretsDir(env: EnvLike = process.env): string {
   return path.join(stateDir(env), 'secrets');
 }
 
+/** Cut-over directory the gateway reads: `OPT2_CUTOVER_DIR`, resolved as the gateway resolves it, else `gateway/cutover`. */
+export function cutoverDir(env: EnvLike = process.env): string {
+  const override = envValue(env, 'OPT2_CUTOVER_DIR');
+  return override === undefined ? repoPath('gateway', 'cutover') : path.resolve(override);
+}
+
+/** `<cutoverDir(env)>/versions/<version>.json`. */
+export function cutoverVersionPath(version: string, env: EnvLike = process.env): string {
+  return path.join(cutoverDir(env), 'versions', `${version}.json`);
+}
+
 /**
  * Report output directory: `OPT2_REPORTS_DIR`, a relative value resolving against the repository root,
  * else `opt2/reports`. It may lie inside the checkout, because reports are committed deliverables.

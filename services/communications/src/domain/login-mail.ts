@@ -15,7 +15,7 @@ import {
   type WriteContext,
 } from '@opt2/platform/migration-kit';
 import type { RecoveryHook } from '@opt2/platform/outbox';
-import { registeredTenants, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { knownTenants, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { IdentityLoginMailRequestedV1Payload } from '../generated/events/identity.login-mail.requested.v1.js';
 import { RECOVERY_BATCH_SIZE, findMessage, messageCursor, queuedLoginMailOlderThan, type BatchCursor } from '../repo/queries.js';
 import { OWNER } from '../repo/repository.js';
@@ -206,7 +206,7 @@ export function loginMailRecovery(deps: MailDeps): RecoveryHook {
     async run(ctx) {
       const cutoff = new Date(ctx.clock.now().getTime() - LOGIN_MAIL_RECOVERY_AGE_MS);
       // Case-folded as withTenant folds them, so one tenant is never recovered twice in a sweep.
-      const tenantIds = new Set((await registeredTenants(deps.db)).map(({ tenantId }) => tenantId.toLowerCase()));
+      const tenantIds = new Set((await knownTenants(deps.db)).map(({ tenantId }) => tenantId.toLowerCase()));
       for (const tenantId of tenantIds) {
         try {
           await recoverTenant(deps, ctx.logger, tenantId, cutoff);

@@ -25,6 +25,7 @@ export const MIGRATION_ENVIRONMENT_HELP = `Environment:
   OPT2_TASKS_ADAPTER            must equal OPT2_ENV (default: OPT2_ENV)
   OPT2_STORAGE_ADAPTER          must equal OPT2_ENV (default: OPT2_ENV)
   OTEL_EXPORTER_OTLP_ENDPOINT   OTLP/HTTP collector URL (default: http://localhost:4318)
+  OTEL_LOG_LEVEL                OTel SDK diagnostic level ALL, VERBOSE, DEBUG, INFO, WARN, ERROR or NONE; other text is INFO (optional)
   LOG_LEVEL                     fatal, error, warn, info, debug or trace (optional)
   MURA_DBHOST                   legacy SQL Server host (required)
   MURA_DBPORT                   legacy SQL Server port (default: 1433)
@@ -39,4 +40,5 @@ export const MIGRATION_ENVIRONMENT_HELP = `Environment:
   OPT2_LEGACY_RESTART_CMD       controlled ColdFusion restart command (optional)
   OPT2_REPORTS_DIR              absolute reports directory (default: <repo>/opt2/reports)
   OPT2_PRISTINE_DIR             absolute pristine-baseline directory (default: ~/.opt2/pristine)
+  OPT2_CUTOVER_DIR              absolute cut-over directory the gateway reads (default: cutoverDir of config/migration.config.json)
 `;

@@ -20,7 +20,16 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
-import { TEST_CLOCK, buildContentApp, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import {
+  SEEDED_SITE_FLAGS,
+  SITE_CONFIG_FLAGS_PATH,
+  TEST_CLOCK,
+  buildContentApp,
+  siteConfigFlagsAnswer,
+  userHeaders,
+  type ContentTestApp,
+  type SiteConfigFlagValues,
+} from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 type Method = 'GET' | 'POST';
@@ -101,11 +110,16 @@ const consumed: CsrfConsumeRequest[] = [];
 /** The errors the routes raised, as the error handler receives them. */
 const routeErrors: Error[] = [];
 const identity = { state: {} as Json | undefined, status: 200, saveStatus: 200, csrfValid: true, user: { userID: USER_ID } as Json };
+/** programs-sites' answer to the site flags lookup. */
+const sites = { flags: SEEDED_SITE_FLAGS as SiteConfigFlagValues, status: 200 };
 
-/** identity's admin session store, CSRF consume and session struct; any other service call fails the test. */
+/** identity's admin session store, CSRF consume and session struct, and programs-sites' site flags; any other service call fails the test. */
 function identityDouble<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
   calls.push(req);
   const answer = (status: number, body: unknown): Promise<ServiceResponse<T>> => Promise.resolve({ status, headers: {}, body: body as T });
+  if (req.service === 'programs-sites' && req.path === SITE_CONFIG_FLAGS_PATH && req.method === 'POST') {
+    return sites.status === 200 ? Promise.resolve(siteConfigFlagsAnswer(sites.flags)(req) as ServiceResponse<T>) : answer(sites.status, {});
+  }
   if (req.service === IDENTITY_SERVICE && req.path === '/v1/sessions/current/admin-state' && req.method === 'GET') return answer(identity.status, identity.state);
   if (req.service === IDENTITY_SERVICE && req.path === '/v1/sessions/current/admin-state' && req.method === 'POST') {
     saved.push(req.json as Json);
@@ -256,6 +270,7 @@ beforeEach(() => {
   consumed.length = 0;
   routeErrors.length = 0;
   Object.assign(identity, { state: {}, status: 200, saveStatus: 200, csrfValid: true, user: { userID: USER_ID } });
+  Object.assign(sites, { flags: SEEDED_SITE_FLAGS, status: 200 });
 });
 
 /** Every carch page and write route with a request its handler accepts. */
@@ -464,7 +479,7 @@ describe('carch.list', () => {
     expect(rc.rsTop).toEqual([expect.objectContaining({ contentid: NODE, lastupdate: UPDATED_AT_TEXT })]);
     expect(paramsOfFirst(TOP)).toEqual([SITE, [NODE, NODE.toLowerCase()]]);
     expect(rc).toMatchObject({
-      siteConfig: { customTagGroups: '', scaffolding: false, dataCollection: true, hasLockableNodes: false },
+      siteConfig: { customTagGroups: '', scaffolding: true, dataCollection: true, hasLockableNodes: false },
       crumbdata: [expect.objectContaining({ contentid: NODE })],
       sortBy: 'orderno',
       sortDirection: 'asc',
@@ -553,6 +568,25 @@ describe('carch.list', () => {
   it('fails closed when identity refuses a session write', async () => {
     t.db.respond(TOP, [topRow()]);
     identity.saveStatus = 409;
+    expect((await call('GET', `${TREE_URL}?topid=${NODE}`)).statusCode).toBe(503);
+  });
+
+  it.each([
+    ['scaffolding on, as tenant-a stores it', SEEDED_SITE_FLAGS, { scaffolding: true, dataCollection: true, hasLockableNodes: false }],
+    ['every flag turned the other way', { ...SEEDED_SITE_FLAGS, scaffolding: 0, dataCollection: 0, hasLockableNodes: 1 }, { scaffolding: false, dataCollection: false, hasLockableNodes: true }],
+    ['a NULL DataCollection column, left for the view to test', { ...SEEDED_SITE_FLAGS, dataCollection: null }, { scaffolding: true, dataCollection: '', hasLockableNodes: false }],
+  ] as const)('takes siteConfig from the flags programs-sites answers for the site: %s', async (_name, flags, siteConfig) => {
+    t.db.respond(TOP, [topRow()]);
+    sites.flags = flags;
+    const rc = await rcOf(`${TREE_URL}?topid=${NODE}&scaffolding=0&dataCollection=1`);
+    expect(rc.siteConfig).toEqual({ customTagGroups: '', ...siteConfig });
+    const lookups = calls.filter((req) => req.service === 'programs-sites');
+    expect(lookups).toEqual([expect.objectContaining({ method: 'POST', path: SITE_CONFIG_FLAGS_PATH, json: { siteIds: [SITE] }, userToken: null })]);
+  });
+
+  it('fails closed with the legacy 503 when programs-sites cannot answer for the site flags', async () => {
+    t.db.respond(TOP, [topRow()]);
+    sites.status = 500;
     expect((await call('GET', `${TREE_URL}?topid=${NODE}`)).statusCode).toBe(503);
   });
 });
@@ -873,6 +907,12 @@ describe('carch.hist and carch.audit', () => {
         ctx.domain = domain;
       }
     });
+
+    it("follows the site's programs-sites flags with lockable nodes on and change sets off", async () => {
+      sites.flags = { ...SEEDED_SITE_FLAGS, hasLockableNodes: 1, hasChangesets: 0 };
+      const rc = await rcOf(`${urlOf(NODE)}?hasLockableNodes=0&hasChangesets=1`);
+      expect(rc).toMatchObject({ hasLockableNodes: true, hasChangesets: false });
+    });
   });
 
   it.each(['UTC', 'America/New_York', 'Asia/Kolkata'])('prints each stored date as its wall clock under TZ=%s', async (zone) => {
@@ -1077,6 +1117,12 @@ describe('carch.datamanager', () => {
       context: '',
     });
     expect(rc.contentBean).toMatchObject({ Contentid: NODE, type: 'Form', stats: { views: 1 } });
+  });
+
+  it("prints hasLockableNodes from the site's programs-sites flags", async () => {
+    t.db.respond(ACTIVE, [formRow()]);
+    sites.flags = { ...SEEDED_SITE_FLAGS, hasLockableNodes: 1 };
+    expect((await rcOf(RESPONSES_URL)).hasLockableNodes).toBe(true);
   });
 
   it.each([

@@ -73,7 +73,7 @@ import {
 } from '../domain/groups.js';
 import { lockdownLogin, login, logout, type LoginDeps } from '../domain/login.js';
 import { snapshotIsS2 } from '../domain/roles.js';
-import { locateSession, sessionSnapshot, type SessionDeps } from '../domain/sessions.js';
+import { locateSession, sessionSnapshot, sessionTimeoutMinutes, type SessionDeps } from '../domain/sessions.js';
 import {
   isSqlExpressible,
   type FeedComparison,
@@ -116,6 +116,8 @@ export interface LegacyApiSettings {
   readonly strictHtml?: boolean;
   /** configBean `sessionBasedLockdown`; undefined is its default, true (configBean.cfc:238). */
   readonly sessionBasedLockdown?: boolean;
+  /** Application `sessionTimeout` in minutes (applicationSettings.cfm:310-312). */
+  readonly sessionTimeout: number;
 }
 
 /** The identity domain, CSRF, REST credential, service-call and registry dependencies of the JSON API routes. */
@@ -254,6 +256,7 @@ const LEGACY_SETTINGS = z
     MURA_ADMINDOMAIN: literalSetting((v) => /^(?:\s*|[^\s:/\\?#@]+)$/.test(v), 'must be a comma list of host names'),
     MURA_STRICTHTML: literalSetting((v) => BLANK.test(v) || cfIsBoolean(v), 'must be a CFML boolean'),
     MURA_SESSIONBASEDLOCKDOWN: literalSetting((v) => BLANK.test(v) || cfIsBoolean(v), 'must be a CFML boolean'),
+    MURA_SESSIONTIMEOUT: literalSetting((v) => BLANK.test(v) || Number.isFinite(Number(v)), 'must be blank or a number of minutes'),
     MURA_APPRELOADKEY: z
       .string()
       .regex(/^[^\s\p{Cc}]*$/u, 'must not contain whitespace or control characters')
@@ -270,6 +273,7 @@ const LEGACY_SETTINGS = z
     ...(env.MURA_SESSIONBASEDLOCKDOWN === undefined || BLANK.test(env.MURA_SESSIONBASEDLOCKDOWN)
       ? {}
       : { sessionBasedLockdown: cfToBoolean(env.MURA_SESSIONBASEDLOCKDOWN) }),
+    sessionTimeout: sessionTimeoutMinutes(env.MURA_SESSIONTIMEOUT),
   }));
 
 /** The settings from `MURA_<KEY>` variables, else the settings template values; throws EnvValidationError naming each malformed variable. */

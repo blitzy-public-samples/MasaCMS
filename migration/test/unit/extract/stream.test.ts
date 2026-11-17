@@ -2,12 +2,12 @@
 import { EventEmitter } from 'node:events';
 import { mkdtemp, open, readdir, rm, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import type { ConnectionPool } from 'mssql';
 import { compareEncodings, decodeRow, encodeKey, encodeRow } from '@opt2/platform/migration-kit';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TableNotFoundError, clearCatalogCache } from '../../../src/extract/catalog.js';
 import {
@@ -15,16 +15,70 @@ import {
   DEFAULT_SORT_RUN_BYTES,
   ExtractError,
   ExtractOrderError,
+  MAX_MERGE_FAN_IN,
   RunReader,
   compareCanonicalRows,
   compareKeyValues,
   describeStream,
+  mergeFanIn,
+  mergeRuns,
+  reduceRuns,
   streamCanonicalRows,
   writeRecords,
   type CanonicalRow,
   type KeyValue,
   type StreamOptions,
 } from '../../../src/extract/stream.js';
+
+/** Live and peak file handles, those opened for reading apart, and every open; `failOpen` fails the opens it selects. */
+const handles = vi.hoisted(() => ({
+  open: 0,
+  reading: 0,
+  peakOpen: 0,
+  peakReading: 0,
+  opened: [] as { path: string; flags: string }[],
+  failOpen: undefined as ((path: string, flags: string) => boolean) | undefined,
+}));
+
+// Pass-through open that counts live handles, so merges can be held to their fan-in.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const open: typeof actual.open = async (path, flags, mode) => {
+    const name = String(path);
+    const flag = String(flags ?? 'r');
+    if (handles.failOpen?.(name, flag) === true) throw Object.assign(new Error(`EMFILE: too many open files, open '${name}'`), { code: 'EMFILE' });
+    const handle = await actual.open(path, flags, mode);
+    const reading = flag === 'r';
+    handles.opened.push({ path: name, flags: flag });
+    handles.open += 1;
+    handles.peakOpen = Math.max(handles.peakOpen, handles.open);
+    if (reading) {
+      handles.reading += 1;
+      handles.peakReading = Math.max(handles.peakReading, handles.reading);
+    }
+    const close = handle.close.bind(handle);
+    let closed = false;
+    handle.close = () => {
+      if (!closed) {
+        closed = true;
+        handles.open -= 1;
+        if (reading) handles.reading -= 1;
+      }
+      return close();
+    };
+    return handle;
+  };
+  return { ...actual, open };
+});
+
+function resetHandles(): void {
+  Object.assign(handles, { open: 0, reading: 0, peakOpen: 0, peakReading: 0, opened: [], failOpen: undefined });
+}
+
+/** Spill files written whose name starts with `prefix`. */
+function written(prefix: string): number {
+  return handles.opened.filter((file) => file.flags === 'wx' && basename(file.path).startsWith(prefix)).length;
+}
 
 type Row = Record<string, unknown>;
 
@@ -238,6 +292,7 @@ let spillParent: string;
 
 beforeEach(async () => {
   clearCatalogCache();
+  resetHandles();
   spillParent = await mkdtemp(join(tmpdir(), 'stream-test-'));
 });
 
@@ -534,6 +589,117 @@ describe('streamCanonicalRows on keyless tables', () => {
     await expect(failure).rejects.toMatchObject({ code: 'ENOENT' });
     expect(fake.streams[0]?.cancels).toBe(1);
     expect(await readdir(spillParent)).toEqual([]);
+  });
+});
+
+describe('streamCanonicalRows on keyless tables with more spill runs than one merge reads', () => {
+  /** `count` settings rows, their sorted encodings and the byte length of the largest, which bounds the fan-in. */
+  async function settings(count: number) {
+    const fake = fakeLegacy({ 'dbo.tsettings': TSETTINGS }, { rows: settingsRows(count), burst: 5 });
+    const shape = await describeStream({ legacy: fake.legacy, table: 'tsettings' });
+    const expected = settingsRows(count)
+      .map((row) => encodeRow(shape.columns, { ...row, isOn: row.isOn === true ? 1 : 0 }))
+      .sort(compareEncodings);
+    const largest = Math.max(...expected.map((encoding) => Buffer.byteLength(encoding, 'utf8')));
+    return { fake, expected, largest };
+  }
+
+  it.each<[string, number, number, number]>([
+    ['2 runs', 200, 2, 2],
+    ['5 runs', 400, 5, 5],
+    ['16 runs, the clamped maximum,', 2400, 32, MAX_MERGE_FAN_IN],
+  ])('reduces 40+ runs reading at most %s at once, yielding every duplicate in encoding order', async (_label, count, perRun, fanIn) => {
+    const { fake, expected, largest } = await settings(count);
+    const sortRunBytes = perRun * largest;
+    const out = await collect(streamCanonicalRows({ legacy: fake.legacy, table: 'tsettings', spillDir: spillParent, sortRunBytes }));
+
+    expect(mergeFanIn(sortRunBytes, largest)).toBe(fanIn);
+    expect(written('run-')).toBeGreaterThanOrEqual(40);
+    expect(written('merge-')).toBeGreaterThan(0);
+    expect(handles.peakReading).toBe(fanIn);
+    expect(handles.peakOpen).toBeLessThanOrEqual(fanIn + 1);
+    expect(out.map((row) => row.encoding)).toEqual(expected);
+    expect(new Set(expected).size).toBeLessThan(expected.length);
+    expect(handles.open).toBe(0);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it('closes every run and removes its spill directory when the consumer breaks after the reduction', async () => {
+    const { fake, expected, largest } = await settings(200);
+    const seen: string[] = [];
+    for await (const row of streamCanonicalRows({ legacy: fake.legacy, table: 'tsettings', spillDir: spillParent, sortRunBytes: 2 * largest })) {
+      seen.push(row.encoding);
+      break;
+    }
+
+    expect(seen).toEqual(expected.slice(0, 1));
+    expect(written('merge-')).toBeGreaterThan(0);
+    expect(handles.open).toBe(0);
+    expect(fake.streams[0]?.cancels).toBe(0);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it.each<[string, string]>([
+    ['a first-pass merge', 'run-1'],
+    ['a second-pass merge', 'merge-1'],
+  ])('propagates a run that cannot be opened for %s, closing every run and removing its spill directory', async (_label, failing) => {
+    const { fake, largest } = await settings(200);
+    handles.failOpen = (path, flags) => flags === 'r' && basename(path) === failing;
+    const failure = collect(streamCanonicalRows({ legacy: fake.legacy, table: 'tsettings', spillDir: spillParent, sortRunBytes: 2 * largest }));
+
+    await expect(failure).rejects.toMatchObject({ code: 'EMFILE' });
+    expect(handles.open).toBe(0);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+});
+
+describe('bounded run merges', () => {
+  it.each<[number, number, number]>([
+    [DEFAULT_SORT_RUN_BYTES, 100, MAX_MERGE_FAN_IN],
+    [250, 50, 5],
+    [100, 50, 2],
+    [10, 1000, 2],
+    [1, 0, 2],
+  ])('mergeFanIn(%i, %i) is %i', (runBytes, largest, expected) => {
+    expect(mergeFanIn(runBytes, largest)).toBe(expected);
+  });
+
+  it('merges consecutive groups in order, carrying a lone leftover run and removing merged runs', async () => {
+    const runs = await Promise.all(
+      ['s1:e', 's1:a', 's1:d', 's1:b', 's1:c'].map(async (record, index) => {
+        const file = join(spillParent, `run-${String(index)}`);
+        await writeRecords(file, ['s1:a', record]);
+        return file;
+      }),
+    );
+    const groups: string[][] = [];
+    const reduced = await reduceRuns(spillParent, runs, 2, (group, file) => {
+      groups.push(group.map((run) => basename(run)));
+      return writeRecords(file, mergeRuns(group));
+    });
+
+    expect(groups).toEqual([
+      ['run-0', 'run-1'],
+      ['run-2', 'run-3'],
+      ['merge-0', 'merge-1'],
+    ]);
+    expect(reduced.map((run) => basename(run))).toEqual(['merge-2', 'run-4']);
+    expect((await readdir(spillParent)).sort()).toEqual(['merge-2', 'run-4']);
+    const merged: string[] = [];
+    for await (const record of mergeRuns(reduced)) merged.push(record);
+    expect(merged).toEqual(['s1:a', 's1:a', 's1:a', 's1:a', 's1:a', 's1:a', 's1:b', 's1:c', 's1:d', 's1:e']);
+    expect(handles.open).toBe(0);
+  });
+
+  it.each([1, 0, 2.5, Number.NaN])('rejects a fan-in of %s before merging', async (fanIn) => {
+    let merges = 0;
+    const failure = reduceRuns(spillParent, ['a', 'b', 'c'], fanIn, () => {
+      merges += 1;
+      return Promise.resolve();
+    });
+
+    await expect(failure).rejects.toThrow(new RangeError(`fanIn must be an integer of at least 2, got ${String(fanIn)}`));
+    expect(merges).toBe(0);
   });
 });
 

@@ -482,7 +482,7 @@ function installFakes(): void {
   vi.mocked(reportTargetFor).mockReturnValue(REPORT_TARGET);
   vi.mocked(writeReconciliationReport).mockImplementation((_ctx, report) => Promise.resolve(`/reports/reconciliation/${report.point}.json`));
   vi.mocked(transferFiles).mockImplementation((_ctx, snapshotSeq) =>
-    Promise.resolve({ snapshotSeq, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [] }),
+    Promise.resolve({ snapshotSeq, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [], rejected: [] }),
   );
 }
 
@@ -795,7 +795,7 @@ describe('runBackfill run', () => {
   });
 
   it.each([
-    { name: 'a transferred store', snapshot: {}, thrown: null, files: { snapshotSeq: 0, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [] } },
+    { name: 'a transferred store', snapshot: {}, thrown: null, files: { snapshotSeq: 0, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [], rejected: [] } },
     {
       name: 'a store the snapshot recorded unsupported',
       snapshot: { fileStore: { status: 'unsupported', fileStore: 's3', siteId: 'tenant-a' } } satisfies Partial<SnapshotRecord>,

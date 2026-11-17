@@ -2,6 +2,7 @@
 // Liveness and stored timestamps come from the database clock; the injected clock only bounds in-process waits.
 import { join } from 'node:path';
 import { LegacyServiceUnavailableError, normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import type { Clock } from '@opt2/platform/service-kit';
 import {
   withMetadata,
@@ -11,15 +12,20 @@ import {
   type QueryResultRow,
   type TenantDb,
 } from '@opt2/platform/tenancy';
+import { withUnsampledTrace } from '@opt2/platform/tracing';
 import type { components, operations } from '../generated/openapi.js';
-import { INSTANCE_LIVENESS_SECONDS, createInflightStore } from './inflight.js';
+import { INSTANCE_LIVENESS_SECONDS, STATUS_PAGE_SIZE, createInflightStore } from './inflight.js';
 import { CutoverSchemaError, buildRoutingIndex, loadGroups, loadVersion } from './loader.js';
 import type { GatewayPaths } from './paths.js';
+import { collectStatus, type CutoverStatusPages } from './status-pages.js';
 import type { CutoverTable, GroupsFile, RoutingIndex, VariantsFile } from './types.js';
 import { loadValidationContext, validateVersion } from './validate.js';
 
 /** `CutoverStatus` of the gateway contract. */
 export type CutoverStatus = components['schemas']['CutoverStatus'];
+
+/** `CutoverStatusV2` of the gateway contract: `CutoverStatus` with each in-flight group's `orphaned` state. */
+export type CutoverStatusV2 = components['schemas']['CutoverStatusV2'];
 
 /** One `ValidationFindings` item: a validator rule, or `unknown-version`, `previous-mismatch` or `unknown-route`. */
 export type CutoverFinding = components['schemas']['ValidationFindings']['findings'][number];
@@ -87,7 +93,7 @@ export interface CutoverStateOptions {
 
 /** The active cut-over version of one gateway instance, and the operations that change it. */
 export interface CutoverState {
-  /** Applies the stored state once and prunes long-dead instances, then refreshes and heartbeats every second until `stop`. */
+  /** Applies the stored state once and prunes long-dead instances, then refreshes and heartbeats, untraced, every second until `stop`. */
   start(): Promise<void>;
   /** Stops the background refresh. */
   stop(): void;
@@ -105,12 +111,20 @@ export interface CutoverState {
   activate(input: { tableVersion: string; actor: string }): Promise<ActivationResult>;
   /** Freezes entries of the active version and commits a new epoch; returns the status after it. */
   freeze(routes: readonly string[], actor: string): Promise<CutoverStatus>;
+  /** `freeze`, returning the status after it as `statusPages` does. */
+  freezePages(routes: readonly string[], actor: string): Promise<CutoverStatusPages>;
   /** Unfreezes routes and commits a new epoch; returns the status after it. */
   unfreeze(routes: readonly string[], actor: string): Promise<CutoverStatus>;
+  /** `unfreeze`, returning the status after it as `statusPages` does. */
+  unfreezePages(routes: readonly string[], actor: string): Promise<CutoverStatusPages>;
   /** Resolves true once no live instance reports an epoch below `epoch`, false after `timeoutMs`. */
   awaitVisible(epoch: number, timeoutMs: number): Promise<boolean>;
   /** Stored state, freezes, instance acknowledgements, in-flight writes and session mode, as `CutoverStatus`. */
   status(): Promise<CutoverStatus>;
+  /** `status` with instances and in-flight groups read in keyset pages as they are iterated; the rest is read before it resolves. */
+  statusPages(): Promise<CutoverStatusPages>;
+  /** `statusPages` as `CutoverStatusV2`: in-flight groups split and marked by orphan state. */
+  statusV2Pages(): Promise<CutoverStatusPages<CutoverStatusV2['inflight'][number]>>;
 }
 
 interface Snapshot {
@@ -316,9 +330,9 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
   const scheduleRefresh = (delay: number, loop: number): void => {
     timer = setTimeout(() => {
       const startedAt = clock.now().getTime();
-      void refresh()
+      void withUnsampledTrace(() => refresh())
         .catch((error: unknown) => {
-          logger.error({ err: error }, `cut-over state refresh failed: instance=${instanceId}`);
+          logger.error({ error: serializeError(error) }, `cut-over state refresh failed: instance=${instanceId}`);
         })
         .finally(() => {
           const elapsed = clock.now().getTime() - startedAt;
@@ -390,41 +404,69 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
     }
   };
 
-  const status = async (): Promise<CutoverStatus> => {
-    const { row, frozen, instances } = await withMetadata(db, async (tx) => ({
+  /** Instance rows after `after` in id order, at most `STATUS_PAGE_SIZE` of them. */
+  const instancePage = async (after: string | null): Promise<InstanceRow[]> =>
+    (
+      await withMetadata(db, (tx) =>
+        tx.query<InstanceRow>(
+          `SELECT instance_id, seen_epoch, to_char(heartbeat_at::timestamptz, ${ISO_FORMAT}) AS heartbeat_at, (${LIVE}) AS live ` +
+            `FROM ${instanceTable} WHERE $1::text IS NULL OR instance_id > $1 ORDER BY instance_id LIMIT $2`,
+          [after, STATUS_PAGE_SIZE],
+        ),
+      )
+    ).rows;
+
+  async function* instancePages(): AsyncGenerator<CutoverStatus['instances']> {
+    let after: string | null = null;
+    for (;;) {
+      const rows = await instancePage(after);
+      if (rows.length > 0) {
+        yield rows.map((instance) => ({
+          instanceId: instance.instance_id,
+          seenEpoch: Number(instance.seen_epoch),
+          heartbeatAt: instance.heartbeat_at,
+          live: instance.live,
+        }));
+      }
+      const last = rows.at(-1);
+      if (last === undefined || rows.length < STATUS_PAGE_SIZE) return;
+      after = last.instance_id;
+    }
+  }
+
+  /** Reads the status head; instances and the in-flight groups `inflightPages` yields are read as they are iterated. */
+  const pagesWith = async <I extends CutoverStatus['inflight'][number]>(
+    inflightPages: () => AsyncIterable<I[]>,
+  ): Promise<CutoverStatusPages<I>> => {
+    const { row, frozen, acknowledged } = await withMetadata(db, async (tx) => ({
       row: await readStateRow(tx),
       frozen: (await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable} ORDER BY route`)).rows.map((r) => r.route),
-      instances: (
-        await tx.query<InstanceRow>(
-          `SELECT instance_id, seen_epoch, to_char(heartbeat_at::timestamptz, ${ISO_FORMAT}) AS heartbeat_at, (${LIVE}) AS live ` +
-            `FROM ${instanceTable} ORDER BY instance_id`,
-        )
-      ).rows,
+      acknowledged:
+        (
+          await tx.query<{ acknowledged_epoch: string | null }>(
+            `SELECT min(seen_epoch) AS acknowledged_epoch FROM ${instanceTable} WHERE ${LIVE}`,
+          )
+        ).rows[0]?.acknowledged_epoch ?? null,
     }));
-    const [index, inflightRows] = await Promise.all([
-      row.table_version === null ? undefined : indexFor(row.table_version),
-      inflight.summary(),
-    ]);
-    const liveEpochs = instances.filter((instance) => instance.live).map((instance) => Number(instance.seen_epoch));
+    const index = row.table_version === null ? undefined : await indexFor(row.table_version);
     return {
-      tableVersion: row.table_version,
-      previous: row.previous_version,
-      epoch: Number(row.epoch),
-      groupAuthority: { ...(index?.table.groupAuthority ?? {}) },
-      frozen,
-      instances: instances.map((instance) => ({
-        instanceId: instance.instance_id,
-        seenEpoch: Number(instance.seen_epoch),
-        heartbeatAt: instance.heartbeat_at,
-        live: instance.live,
-      })),
-      acknowledgedEpoch: liveEpochs.length === 0 ? null : Math.min(...liveEpochs),
-      inflight: inflightRows,
-      sessionMode: index?.loginGroupAuthority() === 'target' ? 'target-primary' : 'legacy-primary',
+      head: {
+        tableVersion: row.table_version,
+        previous: row.previous_version,
+        epoch: Number(row.epoch),
+        groupAuthority: { ...(index?.table.groupAuthority ?? {}) },
+        frozen,
+        acknowledgedEpoch: acknowledged === null ? null : Number(acknowledged),
+        sessionMode: index?.loginGroupAuthority() === 'target' ? 'target-primary' : 'legacy-primary',
+      },
+      instances: instancePages(),
+      inflight: inflightPages(),
     };
   };
 
-  const changeFreezes = async (op: 'freeze' | 'unfreeze', routes: readonly string[], actor: string): Promise<CutoverStatus> => {
+  const statusPages = (): Promise<CutoverStatusPages> => pagesWith(() => inflight.summaryPages());
+
+  const changeFreezes = async (op: 'freeze' | 'unfreeze', routes: readonly string[], actor: string): Promise<CutoverStatusPages> => {
     const keys = [...new Set(routes.map(normaliseRouteKey))].sort();
     const epoch = await withMetadata(db, async (tx) => {
       // Incrementing under the row lock serialises cut-over operations, so routes are checked against the version this epoch follows.
@@ -471,7 +513,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
         `instance=${instanceId} routes=${JSON.stringify(keys)}`,
     );
     await refresh();
-    return status();
+    return statusPages();
   };
 
   return {
@@ -487,7 +529,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
         throw error;
       }
       await pruneInstances().catch((error: unknown) => {
-        logger.error({ err: error }, `cut-over instance pruning failed: instance=${instanceId}`);
+        logger.error({ error: serializeError(error) }, `cut-over instance pruning failed: instance=${instanceId}`);
       });
       if (running && loop === loops) scheduleRefresh(REFRESH_INTERVAL_MS, loop);
     },
@@ -560,12 +602,20 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       return { tableVersion, epoch };
     },
 
-    freeze: (routes, actor) => changeFreezes('freeze', routes, actor),
+    freeze: async (routes, actor) => collectStatus(await changeFreezes('freeze', routes, actor)),
 
-    unfreeze: (routes, actor) => changeFreezes('unfreeze', routes, actor),
+    freezePages: (routes, actor) => changeFreezes('freeze', routes, actor),
+
+    unfreeze: async (routes, actor) => collectStatus(await changeFreezes('unfreeze', routes, actor)),
+
+    unfreezePages: (routes, actor) => changeFreezes('unfreeze', routes, actor),
 
     awaitVisible: (epoch, timeoutMs) => poll(timeoutMs, (until, signal) => allInstancesSeen(epoch, until, signal)),
 
-    status,
+    status: async () => collectStatus(await statusPages()),
+
+    statusPages,
+
+    statusV2Pages: () => pagesWith(() => inflight.orphanSummaryPages()),
   };
 }

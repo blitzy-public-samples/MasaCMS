@@ -245,7 +245,8 @@ export const COMPONENT_VARIABLES: readonly string[] = Object.freeze([
   'backportdir',
 ]);
 
-// Probed on the legacy oracle: `thread` is undefined outside a thread; `super` resolves in any component.
+// Probed on the legacy oracle: `file` aliases `cffile`; `thread` is undefined outside a thread; `super` resolves in any
+// component; `attributes`, `caller`, `thistag`, `flash` and tag results such as `cfhttp` and `cfcatch` are undefined.
 /** Scope names that `isDefined` reports as defined inside a component method on ACF 2023. */
 export const CFML_SCOPE_NAMES: readonly string[] = Object.freeze([
   'application',
@@ -255,6 +256,7 @@ export const CFML_SCOPE_NAMES: readonly string[] = Object.freeze([
   'cgi',
   'client',
   'cookie',
+  'file',
   'form',
   'local',
   'request',

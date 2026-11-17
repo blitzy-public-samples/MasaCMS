@@ -9,6 +9,7 @@ import { importUsedTokens } from '../../src/domain/csrf.js';
 import { ANONYMOUS_USER_STRUCT, snapshotOfUserStruct, userStructOf } from '../../src/domain/roles.js';
 import {
   ANONYMOUS_LOGIN_SNAPSHOT,
+  SESSION_ACTIVITY_INTERVAL_MS,
   adoptLegacySession,
   applyLogin,
   applyRelogin,
@@ -823,6 +824,96 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       expect(await endSession(deps(), sessionId)).toEqual({ epoch: 2 });
       expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(ended);
       expect(await endSession(deps(), 'S-unknown')).toEqual({ epoch: 0 });
+    });
+  });
+
+  describe('session expiry', () => {
+    const TIMEOUT_MINUTES = 30;
+    const IDLE_LIMIT_MS = TIMEOUT_MINUTES * 60_000 + SESSION_ACTIVITY_INTERVAL_MS;
+
+    function expiring(): SessionDeps {
+      return { ...deps(), sessionTimeoutMinutes: TIMEOUT_MINUTES };
+    }
+
+    /** Inserts an active session of `tenantId` last active `idleMs` before now, holding one used CSRF token. */
+    async function seedIdle(idleMs: number, tenantId = SYSTEM_TENANT_ID): Promise<string> {
+      const sessionId = nextSessionId();
+      const at = new Date(now.getTime() - idleMs);
+      await inTenant(tenantId, (tx) =>
+        repo.insertSession(tx, { session_id: sessionId, csrf_secret: LEGACY_SECRET, mode: 'target-primary', state: 'active', epoch: 1, last_active_at: at }),
+      );
+      await markUsed(sessionId, tenantId, [{ token: `token-${sessionId}`, usedAt: now }]);
+      return sessionId;
+    }
+
+    /** Holds the session row FOR UPDATE in another transaction; the returned call commits it. */
+    async function holdRow(sessionId: string): Promise<() => Promise<void>> {
+      let release: () => void = () => undefined;
+      let held: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const locked = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = inTenant(SYSTEM_TENANT_ID, async (tx) => {
+        await repo.lockSession(tx, sessionId, 'update');
+        held();
+        await released;
+      });
+      await locked;
+      return async () => {
+        release();
+        await holder;
+      };
+    }
+
+    it('records a state read as activity once an interval passed, leaving a row another transaction holds for a later read', async () => {
+      const sessionId = await seedIdle(SESSION_ACTIVITY_INTERVAL_MS);
+      const release = await holdRow(sessionId);
+
+      await expect(sessionState(expiring(), sessionId)).resolves.toMatchObject({ state: 'active', epoch: 1 });
+      expect((await stored(sessionId, SYSTEM_TENANT_ID))?.last_active_at).toEqual(new Date(now.getTime() - SESSION_ACTIVITY_INTERVAL_MS));
+      await release();
+
+      await sessionState(expiring(), sessionId);
+      expect((await stored(sessionId, SYSTEM_TENANT_ID))?.last_active_at).toEqual(now);
+    });
+
+    it('ends a session idle past the timeout and one interval on its state read, keeping its idle time', async () => {
+      const sessionId = await seedIdle(IDLE_LIMIT_MS + 1);
+
+      await expect(sessionState(expiring(), sessionId)).resolves.toEqual({ epoch: 2, state: 'ended', mode: 'target-primary', userId: '', siteId: '' });
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ state: 'ended', epoch: '2', ended_at: now, last_active_at: new Date(now.getTime() - IDLE_LIMIT_MS - 1) });
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual([]);
+    });
+
+    it("purges the system tenant's idle sessions and their claims with changelog rows when a session is created, skipping a held row", async () => {
+      const oldest = await seedIdle(IDLE_LIMIT_MS * 3);
+      const held = await seedIdle(IDLE_LIMIT_MS * 2);
+      const idle = await seedIdle(IDLE_LIMIT_MS + 1);
+      const live = await seedIdle(IDLE_LIMIT_MS - 1);
+      const site = await seedIdle(IDLE_LIMIT_MS * 3, TENANT_A);
+      const release = await holdRow(held);
+
+      const created = await ensureSession(expiring(), { mode: 'target-primary' });
+      await release();
+
+      for (const gone of [oldest, idle]) {
+        expect(await stored(gone, SYSTEM_TENANT_ID)).toBeNull();
+        expect(await claimKeys(gone, SYSTEM_TENANT_ID)).toEqual([]);
+      }
+      for (const kept of [held, live, created.sessionId]) expect(await stored(kept, SYSTEM_TENANT_ID)).not.toBeNull();
+      expect(await claimKeys(live, SYSTEM_TENANT_ID)).toHaveLength(1);
+      expect(await stored(site, TENANT_A)).not.toBeNull();
+      expect(await claimKeys(site, TENANT_A)).toHaveLength(1);
+      const { rows } = await inTenant(SYSTEM_TENANT_ID, (tx) =>
+        tx.query<{ table: string; key: string }>(`SELECT "table", key FROM ${handle.schema}.changelog WHERE op = 'delete' AND key LIKE $1`, ['%S-%']),
+      );
+      // The canonical key encoding starts with the session id as `s<byte length>:<text>`.
+      const deleted = (id: string, table: string): boolean => rows.some((row) => row.table === table && row.key.startsWith(`s${Buffer.byteLength(id)}:${id}`));
+      expect([oldest, idle].every((id) => deleted(id, 'session') && deleted(id, 'csrf_claim'))).toBe(true);
+      expect([held, live].some((id) => deleted(id, 'session'))).toBe(false);
     });
   });
 });

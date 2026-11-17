@@ -33,7 +33,7 @@ vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenu
 
 type Ctx = ReturnType<typeof makeScreenContext>;
 
-const GROUPS_PATH = '/v1/users/groups';
+const GROUPS_PATH = '/v2/users/groups';
 const GROUPS_ROUTE = routeKey('GET', 'people', GROUPS_PATH);
 const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const USERS_MODULE_ID = '00000000000000000000000000000000008';
@@ -139,6 +139,22 @@ describe('loadGroupList', () => {
     const data = await loadGroupList(ctx);
     expect(peopleCalls(ctx)).toEqual([['GET', GROUPS_PATH, { ...expected, startrow: '1', recordsperpage: '25' }]]);
     expect(data.rc.ispublic).toBe(expected.ispublic);
+  });
+
+  // People answers only the page's groups; the iterator's page index reads the start row as a page number.
+  it.each<[string, string, number]>([
+    ['a later page', '1', 2],
+    ['a start row past the end, shown as page 1', '3', 1],
+  ])("shows people's groups of %s as answered, with the iterator's page index", async (_label, recordsperpage, pageIndex) => {
+    const editor = rowOf(defaultPrivateGroupsPage, GROUP_IDS.defaultEditor);
+    const page: UserGroupsPage = { items: [editor], nextn: { ...defaultPrivateGroupsPage.nextn, recordsperpage: Number(recordsperpage), startrow: 2 } };
+    const ctx = contextFor(adminList({ ispublic: '0', startrow: '2', recordsperpage }), page);
+    const data = await loadGroupList(ctx);
+    expect(peopleCalls(ctx)).toEqual([['GET', GROUPS_PATH, { siteid: 'default', ispublic: '0', startrow: '2', recordsperpage }]]);
+    expect(data.rows).toEqual([editor]);
+    expect(data.pageIndex).toBe(pageIndex);
+    const $ = await render(contextFor(adminList({ ispublic: '0', startrow: '2', recordsperpage }), page));
+    expect(modelOf($, 'table#temp').tables[0]?.rows.map((row) => row[1])).toEqual(['Editor (3)']);
   });
 
   it('forwards the scrubbed paging', async () => {

@@ -21,6 +21,7 @@ import {
 import { SERVICE_CALL_TIMEOUT_MS, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { callQueueControl, type QueueControlOp, type QueueControlResult } from '@opt2/platform/tasks';
 import type { paths as financePaths } from '../generated/clients/finance.js';
+import type { paths as reportingPaths } from '../generated/clients/reporting.js';
 import type { components, paths } from '../generated/clients/strategies-content.js';
 import type { DataOwner, UnitCatalog } from './units.js';
 
@@ -30,13 +31,14 @@ const CHANGES_PATH = `${MIGRATION_PATH_PREFIX}/changes`;
 const POSITION_PATH = `${MIGRATION_PATH_PREFIX}/position`;
 const WATERMARK_PATH = `${MIGRATION_PATH_PREFIX}/watermark`;
 const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
-const OBJECTS_PATH = '/internal/v1/migration/objects' satisfies keyof paths & keyof financePaths;
+const OBJECTS_PATH = '/internal/v1/migration/objects' satisfies keyof paths & keyof financePaths & keyof reportingPaths;
 const SITEMONITOR_STATE_PATH = '/internal/v1/sitemonitor/state';
 const ADOPT_TASKS_PATH = '/internal/v1/migration/adopt-scheduled-tasks';
 const CANCEL_ADOPTED_TASKS_PATH = '/internal/v1/migration/cancel-adopted-scheduled-tasks';
 
 const CONTENT: DataOwner = 'strategies-content';
 const FINANCE: DataOwner = 'finance';
+const REPORTING: DataOwner = 'reporting';
 const PROGRAMS_SITES: DataOwner = 'programs-sites';
 const COMMUNICATIONS: DataOwner = 'communications';
 
@@ -61,11 +63,17 @@ export type DeletedFileObject = components['schemas']['DeletedFileObject'];
 /** Query of finance's attachment object read: the attachment row's tenant and CF UUID. */
 export type GetAttachmentObjectParams = financePaths[typeof OBJECTS_PATH]['get']['parameters']['query'];
 
+/** Query of reporting's export output read: the export job row's tenant and CF UUID. */
+export type GetExportObjectParams = reportingPaths[typeof OBJECTS_PATH]['get']['parameters']['query'];
+
 /** An apply answer with the write positions its response header reported. */
 export type ApplyResult = ApplyResponse & { writePositions: WritePositions };
 
 /** A stored object with the write positions its response header reported. */
 export type PutObjectResult = FileObject & { writePositions: WritePositions };
+
+/** Body of an object upload: its bytes, or a stream of exactly `size` bytes, sent with that `Content-Length`. */
+export type ObjectBody = Uint8Array | { stream: Readable; size: number };
 
 /** An object deletion with the write positions its response header reported; none when nothing was recorded under the key. */
 export type DeleteObjectResult = DeletedFileObject & { writePositions: WritePositions };
@@ -169,14 +177,16 @@ export interface OwnersClient {
    * plus the call bound. @throws GateConflict when the owner refuses the holder compare-and-set.
    */
   gate(owner: DataOwner, req: GateRequest, options?: { timeoutMs?: number }): Promise<GateResponse>;
-  /** Stores one legacy file-store object in strategies-content's `content-files`. */
-  putObject(params: PutObjectParams, bytes: Uint8Array): Promise<PutObjectResult>;
+  /** Stores one legacy file-store object in strategies-content's `content-files`; a streamed body is sent once, as it is read. */
+  putObject(params: PutObjectParams, body: ObjectBody): Promise<PutObjectResult>;
   /** Streams the bytes of one stored `content-files` object by its key. */
   getObject(key: string): Promise<Readable>;
   /** Deletes one stored `content-files` object and its manifest row by key; a repeat answers `deleted: false`. */
   deleteObject(key: string): Promise<DeleteObjectResult>;
   /** Streams the stored `finance-attachments` bytes of one finance attachment. */
   getAttachmentObject(params: GetAttachmentObjectParams): Promise<Readable>;
+  /** Streams the stored `reporting-exports` output of one reporting export job. */
+  getExportObject(params: GetExportObjectParams): Promise<Readable>;
   /** Reads programs-sites' site-monitor cursor. */
   siteMonitorState(): Promise<SiteMonitorState>;
   /** Seeds programs-sites' site-monitor cursor. */
@@ -237,7 +247,7 @@ export class GateConflict extends OwnerCallError {
 interface CallOptions {
   query?: ServiceRequest['query'];
   json?: unknown;
-  body?: Buffer;
+  body?: Buffer | Readable;
   headers?: Record<string, string>;
   timeoutMs?: ServiceRequest['timeoutMs'];
   stream?: ServiceRequest['stream'];
@@ -346,11 +356,13 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       return (await call<GateResponse>(owner, 'POST', GATE_PATH, { json: req, timeoutMs })).body;
     },
 
-    async putObject(params, bytes) {
+    async putObject(params, body) {
+      const headers: Record<string, string> = { 'content-type': 'application/octet-stream' };
+      if (!(body instanceof Uint8Array)) headers['content-length'] = String(body.size);
       const response = await call<FileObject>(CONTENT, 'POST', OBJECTS_PATH, {
         query: params,
-        body: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-        headers: { 'content-type': 'application/octet-stream' },
+        body: body instanceof Uint8Array ? Buffer.from(body.buffer, body.byteOffset, body.byteLength) : body.stream,
+        headers,
       });
       return { ...response.body, writePositions: writePositionsOf(response.headers) };
     },
@@ -370,6 +382,11 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
     async getAttachmentObject(params) {
       const query: GetAttachmentObjectParams = { tenantId: params.tenantId, attachmentId: params.attachmentId };
       return (await call<Readable>(FINANCE, 'GET', OBJECTS_PATH, { query, stream: true })).body;
+    },
+
+    async getExportObject(params) {
+      const query: GetExportObjectParams = { tenantId: params.tenantId, jobId: params.jobId };
+      return (await call<Readable>(REPORTING, 'GET', OBJECTS_PATH, { query, stream: true })).body;
     },
 
     async siteMonitorState() {

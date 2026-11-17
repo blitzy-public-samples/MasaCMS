@@ -27,7 +27,7 @@ import {
   type LegacyTableShape,
   type MigratableTable,
 } from '../extract/index.js';
-import { FileStoreUnsupportedError, SUPPORTED_FILE_STORE, diffSnapshotManifests, removeDroppedObjects, transferFiles, type RemovalResult, type TransferResult } from '../files/index.js';
+import { FileStoreUnsupportedError, SUPPORTED_FILE_STORE, removeDroppedObjects, streamChangedEntries, transferFiles, type RemovalResult, type TransferResult } from '../files/index.js';
 import { compareTableNames, computeDependencyOrder } from '../order/index.js';
 import type { DataOwner, LegacyTableTarget } from '../owners/index.js';
 import {
@@ -562,15 +562,14 @@ async function feedFiles(ctx: FeedContext, input: FilesInput): Promise<FeedFiles
     }),
   );
   if (from >= to.seq) return { status: 'up-to-date', from, to: to.seq };
-  const diff = await diffSnapshotManifests(ctx, from, to.seq);
   let transfer: TransferResult;
   try {
-    transfer = await transferFiles(ctx, to.seq, { only: diff.toTransfer });
+    transfer = await transferFiles(ctx, to.seq, { entries: streamChangedEntries(ctx, from, to.seq) });
   } catch (error) {
     if (error instanceof FileStoreUnsupportedError) return { status: 'halted', reason: error.message };
     throw error;
   }
-  const removal = await removeDroppedObjects(ctx, diff);
+  const removal = await removeDroppedObjects(ctx, { from, to: to.seq });
   return { status: 'transferred', from, to: to.seq, transfer, removal };
 }
 

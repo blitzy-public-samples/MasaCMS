@@ -36,11 +36,13 @@ export type RouteDeps = {
   identity: IdentityClient;
   env: BaseEnv;
   faults: FaultHooks;
+  /** configBean `expirePasswords` from the parsed `MURA_EXPIREPASSWORDS`, in days; 0 never expires. */
+  expirePasswords: number;
 };
 
 /** Builds people's domain dependencies once and registers every people route module on `app`. */
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
-  const { repository: repo, events, db, clock, identity, faults } = deps;
+  const { repository: repo, events, db, clock, identity, faults, expirePasswords } = deps;
   // userDAO.read joins the photo's tfiles row and saveFavorite.cfm reads a content link; strategies-content owns both, so the lookups are its API.
   const content = createContentClient(deps.client);
   const photoFileExts = content.photoFileExts.bind(content);
@@ -53,9 +55,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // getAdvancedSearch(session, …) reads the criteria the cUsers advanced search stored in the forwarded token's session.
   const searchCriteria: SearchCriteriaReader = { read: async () => storedCriteria(await identity.adminSessionState()) };
 
-  await registerAdminUserRoutes(app, { db, repository: repo, identity, clock, photoFileExts });
+  await registerAdminUserRoutes(app, { db, repository: repo, identity, clock, photoFileExts, expirePasswords });
   await registerAdminDownloadRoutes(app, { search, searchCriteria });
-  await registerAdminRosterRoutes(app, { roster });
+  await registerAdminRosterRoutes(app, { roster, expirePasswords });
   await registerAdminProfileRoutes(app, { roster });
   await registerLegacyApiRoutes(app, { db, repository: repo, identity, clock, roster, search, addresses });
   await registerFixtureArchiveRoutes(app, { archive, identity });

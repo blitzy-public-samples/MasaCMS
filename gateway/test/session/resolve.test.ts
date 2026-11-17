@@ -1,7 +1,7 @@
 // Session resolution: REST credentials, target- and legacy-primary mapping, adoption, switch back and jar absorption.
 import { describe, expect, it } from 'vitest';
 import { parseCookieHeader, parseSetCookie, setCookieLegacy } from '@opt2/platform/legacy-compat';
-import { IDENTITY_SERVICE, ServiceUnavailableError } from '@opt2/platform/service-kit';
+import { IDENTITY_SERVICE, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import type { BridgeClient, BridgeResult, LegacyCookies } from '../../src/session/bridge-client.js';
 import type {
   AdoptInput,
@@ -51,6 +51,10 @@ interface Fakes {
   stateFailure?: Error;
   /** Runs as a lock is granted, as the section that held it first would have changed the jar. */
   onLock?: (key: string, rows: Map<string, JarRow>) => void;
+  /** Sessions whose next state check reports an epoch change, one entry per check. */
+  epochChanges?: string[];
+  clock?: Clock;
+  attachmentIdleMs?: number;
 }
 
 function describeBody(sessionId: string): LegacyDescribe {
@@ -193,6 +197,8 @@ function setup(fakes: Fakes = {}) {
     withSessionLock: (sessionId, fn) => serialized(`lock.session:${sessionId}`, fn),
     withNativeLock: (legacySessionId, fn) => serialized(`lock.native:${legacySessionId}`, fn),
     markIdentityEndPending: () => Promise.reject(new Error('resolution never marks a pending identity end')),
+    clearIdentityEndPending: () => Promise.reject(new Error('resolution never clears a pending identity end')),
+    markActive: () => Promise.reject(new Error('resolution never marks jar activity')),
   };
 
   const state: SessionStateChecker = {
@@ -200,13 +206,15 @@ function setup(fakes: Fakes = {}) {
       calls.push(`check:${sessionId}`);
       if (fakes.stateFailure !== undefined) return Promise.reject(fakes.stateFailure);
       const known = fakes.states?.[sessionId] ?? { state: 'ended', epoch: 0 };
-      return Promise.resolve({ ...known, userId: 'U1', siteId: 'default', epochChanged: false });
+      const changed = fakes.epochChanges?.indexOf(sessionId) ?? -1;
+      if (changed >= 0) fakes.epochChanges?.splice(changed, 1);
+      return Promise.resolve({ ...known, userId: 'U1', siteId: 'default', epochChanged: changed >= 0 });
     },
     forget() {},
   };
 
   return {
-    resolver: createSessionResolver({ identity, bridge, jar, state }),
+    resolver: createSessionResolver({ identity, bridge, jar, state, clock: fakes.clock, attachmentIdleMs: fakes.attachmentIdleMs }),
     calls,
     described,
     adopted,
@@ -474,6 +482,42 @@ describe('legacy-primary target-bound requests', () => {
     expect(s.rows.get(ADOPTED_ID)?.cookies.CFID?.value).toBe('N-CFID');
   });
 
+  /** Cookies Masa's request start sets when the browser lacks them (onRequestStart_include.cfm:244-295). */
+  const TRACKING = 'MXP_TRACKINGID=TRACK-1; path=/; HttpOnly; Max-Age=946080000';
+  const MOBILE = 'mobileFormat=false; path=/; HttpOnly; Max-Age=946080000';
+  const NEW_CFID = setCookieLegacy({ name: 'CFID', value: 'N-CFID' });
+  const NEW_CFTOKEN = setCookieLegacy({ name: 'CFTOKEN', value: 'N-CFTOKEN' });
+
+  it.each<[string, string | undefined, string[], string[]]>([
+    ['an established session', 'CFID=C1; CFTOKEN=T1; MXP_TRACKINGID=TRACK-0; mobileFormat=false', [TRACKING, MOBILE], []],
+    ['a first contact', undefined, [NEW_CFID, NEW_CFTOKEN, TRACKING, MOBILE], [NEW_CFID, NEW_CFTOKEN, TRACKING, MOBILE]],
+    ['a browser lacking only its tracking cookie', 'CFID=C1; CFTOKEN=T1; mobileformat=true', [TRACKING, MOBILE], [TRACKING]],
+    [
+      'a browser whose session cookies attach no session',
+      'CFID=S1; CFTOKEN=S2; MXP_TRACKINGID=TRACK-0; mobileFormat=false',
+      [NEW_CFID, NEW_CFTOKEN, TRACKING, MOBILE],
+      [NEW_CFID, NEW_CFTOKEN],
+    ],
+    ['a browser holding the session cookies ColdFusion re-set', 'CFID=N-CFID; CFTOKEN=N-CFTOKEN', [NEW_CFID, NEW_CFTOKEN], []],
+  ])('hands %s only the describe Set-Cookie values legacy would send it', async (_label, header, set, expected) => {
+    const s = setup({ describe: () => ({ body: describeBody('LEG-N'), setCookies: set }) });
+    const resolution = asSession(await s.resolver.resolveSession(request(header), { family: 'api', mode: 'legacy-primary' }));
+    expect(resolution.setCookies).toEqual(expected);
+  });
+
+  it('switching back hands the browser only the other describe cookies it lacks', async () => {
+    const s = setup({
+      adopt: () => ({ sessionId: 'T1', epoch: 9, setCookie: [] }),
+      describe: () => ({ body: describeBody('LEG-1'), setCookies: [TRACKING, MOBILE] }),
+      states: T1_ACTIVE,
+      rows: [jarRow('T1', { cookies: cookie('JSESSIONID', 'L-J'), hydratedEpoch: 4 })],
+    });
+    const resolution = asSession(
+      await s.resolver.resolveSession(request('JSESSIONID=T1; MXP_TRACKINGID=TRACK-0'), { family: 'admin', mode: 'legacy-primary' }),
+    );
+    expect(resolution.setCookies).toEqual(['JSESSIONID=L-J;path=/;HttpOnly;', MOBILE]);
+  });
+
   it('switching back re-emits the jar legacy cookies and records the mode', async () => {
     const legacyCookies = {
       ...cookie('CFID', 'L-CFID', 'domain=example.com;path=/;HttpOnly;'),
@@ -596,6 +640,154 @@ describe('resolveLegacyBound', () => {
       expect(s.rows.get(ADOPTED_ID)).toMatchObject({ mode: 'legacy-primary', hydratedEpoch: null });
       expect(resolution).toMatchObject({ legacyCookies: {}, setCookies: [] });
     }
+  });
+});
+
+describe('legacy-primary legacy-bound requests whose cookies a describe attached', () => {
+  const COOKIES = 'CFID=C1; CFTOKEN=T1';
+  const LEGACY_PRIMARY = { mode: 'legacy-primary', adopt: false } as const;
+  /** The idle bound the retention cases pass, and Masa's 180-minute session timeout the resolver applies without one. */
+  const IDLE_MS = 60_000;
+  const MASA_SESSION_TIMEOUT_MS = 180 * 60_000;
+
+  /** A clock the test moves, starting at NOW. */
+  function manualClock() {
+    let at = NOW.getTime();
+    const clock: Clock = { now: () => new Date(at) };
+    return { clock, advance: (ms: number) => (at += ms) };
+  }
+
+  /** A resolver whose jar maps LEG-1, the session every describe attaches, to the active M1. */
+  const mapped = (fakes: Fakes = {}) =>
+    setup({ states: { M1: { state: 'active', epoch: 6 } }, rows: [jarRow('M1', { mode: 'legacy-primary' })], ...fakes });
+
+  const describeCount = (s: ReturnType<typeof setup>) => s.calls.filter((call) => call === 'describe').length;
+
+  it.each<[string, number, string]>([
+    ['the same cookies', 1, COOKIES],
+    ['the same cookies in another order and case, beside other cookies', 1, 'cftoken=T1; MXP_TRACKINGID=X; CFID=C1'],
+    ['another CFTOKEN', 2, 'CFID=C1; CFTOKEN=T2'],
+    ['one more session cookie', 2, `${COOKIES}; JSESSIONID=J1`],
+  ])('maps a later request carrying %s after %i describe(s) in all', async (_label, count, later) => {
+    const s = mapped();
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    const resolution = await s.resolver.resolveLegacyBound(request(later), LEGACY_PRIMARY);
+
+    expect(resolution).toMatchObject({ kind: 'session', sessionId: 'M1', epoch: 6, legacyCookies: {}, setCookies: [] });
+    expect(describeCount(s)).toBe(count);
+    if (count === 1) expect(s.calls).toEqual(['describe', 'jar.find', 'check:M1', 'jar.find', 'check:M1']);
+  });
+
+  it('knows the cookies a target-bound describe attached', async () => {
+    const s = setup({ states: { [ADOPTED_ID]: { state: 'active', epoch: ADOPTED_EPOCH } } });
+    await s.resolver.resolveSession(request(COOKIES), { family: 'admin', mode: 'legacy-primary' });
+    s.calls.length = 0;
+
+    expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: ADOPTED_ID });
+    expect(s.calls).toEqual(['jar.find', `check:${ADOPTED_ID}`]);
+  });
+
+  it('shares one describe among the resolutions of a request whose cookies ColdFusion replaced, and memoises none', async () => {
+    const replaced = [setCookieLegacy({ name: 'CFID', value: 'N-CFID' })];
+    const s = mapped({ describe: () => ({ body: describeBody('NEW'), setCookies: replaced }) });
+    const first = request(COOKIES);
+    expect(await s.resolver.resolveLegacyBound(first, LEGACY_PRIMARY)).toEqual({ kind: 'none', setCookies: [] });
+    expect(await s.resolver.resolveLegacyBound(first, { mode: 'legacy-primary', adopt: true })).toEqual({ kind: 'none', setCookies: [] });
+    expect(describeCount(s)).toBe(1);
+
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    expect(describeCount(s)).toBe(2);
+    expect(s.adopted).toEqual([]);
+  });
+
+  it('describes a request again once its earlier describe failed', async () => {
+    let failures = 1;
+    const s = mapped({
+      describe: () => {
+        if (failures-- > 0) throw new ServiceUnavailableError('legacy-bridge', new Error('refused'));
+        return { body: describeBody('LEG-1'), setCookies: [] };
+      },
+    });
+    const req = request(COOKIES);
+    await expect(s.resolver.resolveLegacyBound(req, LEGACY_PRIMARY)).rejects.toBeInstanceOf(ServiceUnavailableError);
+    await expect(s.resolver.resolveLegacyBound(req, LEGACY_PRIMARY)).resolves.toMatchObject({ kind: 'session', sessionId: 'M1' });
+    expect(describeCount(s)).toBe(2);
+  });
+
+  it.each<[string, number, number[], number | undefined]>([
+    ['used again just inside the idle bound, twice', 1, [IDLE_MS - 1, IDLE_MS - 1], IDLE_MS],
+    ['idle for the bound', 2, [IDLE_MS], IDLE_MS],
+    ['read under a clock stepped back', 2, [-1], IDLE_MS],
+    ['used again just inside the default bound', 1, [MASA_SESSION_TIMEOUT_MS - 1], undefined],
+    ['idle for the default bound', 2, [MASA_SESSION_TIMEOUT_MS], undefined],
+  ])('describes cookies %s %i time(s) in all', async (_label, count, steps, attachmentIdleMs) => {
+    const time = manualClock();
+    const s = mapped({ clock: time.clock, attachmentIdleMs });
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    for (const ms of steps) {
+      time.advance(ms);
+      expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: 'M1' });
+    }
+    expect(describeCount(s)).toBe(count);
+  });
+
+  it('forgets known cookies once a describe finds ColdFusion replaced them, mapping the session it created instead', async () => {
+    let restarted = false;
+    const s = mapped({
+      describe: () =>
+        restarted
+          ? { body: describeBody('NEW'), setCookies: [setCookieLegacy({ name: 'CFID', value: 'N-CFID' })] }
+          : { body: describeBody('LEG-1'), setCookies: [] },
+      states: { M1: { state: 'active', epoch: 6 }, [ADOPTED_ID]: { state: 'active', epoch: ADOPTED_EPOCH } },
+    });
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    restarted = true;
+    // Until a describe, the known cookies still map the session ColdFusion dropped.
+    expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: 'M1' });
+    await s.resolver.resolveSession(request(COOKIES), { family: 'admin', mode: 'legacy-primary' });
+    s.calls.length = 0;
+
+    expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: ADOPTED_ID });
+    expect(s.calls).toEqual(['describe', 'jar.find', `check:${ADOPTED_ID}`]);
+  });
+
+  it('describes known cookies again after the mapped session epoch changed', async () => {
+    const epochChanges: string[] = [];
+    const s = mapped({ epochChanges });
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    epochChanges.push('M1');
+    expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: 'M1' });
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+
+    expect(s.calls).toEqual(['describe', 'jar.find', 'check:M1', 'jar.find', 'check:M1', 'describe', 'jar.find', 'check:M1']);
+  });
+
+  it.each<[boolean, string, string[]]>([
+    [false, 'none', ['jar.find']],
+    [true, 'session', ['jar.find', 'describe', 'jar.find', 'adopt', 'jar.rebind']],
+  ])('with adopt %s answers %s for known cookies whose session no jar maps', async (adopt, kind, calls) => {
+    const s = setup();
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    s.calls.length = 0;
+
+    expect((await s.resolver.resolveLegacyBound(request(COOKIES), { mode: 'legacy-primary', adopt })).kind).toBe(kind);
+    expect(s.calls).toEqual(calls);
+  });
+
+  it('maps the session a describe for adoption names when it differs from the known one', async () => {
+    const answers = ['LEG-1', 'LEG-2'];
+    const s = setup({
+      describe: () => ({ body: describeBody(answers.shift() ?? 'LEG-9'), setCookies: [] }),
+      states: { M2: { state: 'active', epoch: 2 } },
+      rows: [jarRow('M2', { legacySessionId: 'LEG-2', mode: 'legacy-primary' })],
+    });
+    await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
+    s.calls.length = 0;
+
+    const resolution = await s.resolver.resolveLegacyBound(request(COOKIES), { mode: 'legacy-primary', adopt: true });
+    expect(resolution).toMatchObject({ kind: 'session', sessionId: 'M2', epoch: 2 });
+    expect(s.calls).toEqual(['jar.find', 'describe', 'jar.find', 'check:M2']);
+    expect(s.adopted).toEqual([]);
   });
 });
 

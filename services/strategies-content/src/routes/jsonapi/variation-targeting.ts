@@ -42,13 +42,19 @@ import {
   entityAccessAllowed,
   entityActionAllowed,
   findPropertiesFor,
+  firstScannedRow,
+  isBlankFeedRow,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
+  type BlankFeedRow,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
+  type RelationSourceKey,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Struct = Record<string, unknown>;
@@ -75,57 +81,6 @@ const FEED_OPTIONS: BeanFeedOptions = Object.freeze({
   columns: COLUMNS,
   table: TABLE,
 });
-
-// applyPropertyFormat of each persistent or related property of contentVariationTargetingBean, in getProperties order,
-// exactly as the oracle answers findProperties (jsonApiUtility.cfc:1517-1618).
-const PROPERTY_FORMATS: ReadonlyMap<string, Readonly<Struct>> = new Map([
-  [
-    'targetingid',
-    { fieldtype: 'id', length: '35', required: true, nullable: false, html: 'false', name: 'targetingid', datatype: 'char', default: '' },
-  ],
-  [
-    'site',
-    {
-      fieldtype: 'many-to-one',
-      loadkey: 'siteid',
-      length: '25',
-      required: false,
-      cascade: 'none',
-      nullable: true,
-      html: 'false',
-      fkcolumn: 'siteid',
-      name: 'site',
-      datatype: 'varchar',
-      relatesto: 'site',
-      default: '',
-    },
-  ],
-  ['initjs', { fieldtype: '', required: false, html: 'false', nullable: true, name: 'initjs', datatype: 'text', default: 'null' }],
-  [
-    'targetingjs',
-    { fieldtype: '', required: false, html: 'false', nullable: true, name: 'targetingjs', datatype: 'text', default: 'null' },
-  ],
-  [
-    'content',
-    {
-      fieldtype: 'one-to-one',
-      loadkey: 'contentid',
-      length: '35',
-      required: false,
-      cascade: 'none',
-      nullable: true,
-      html: 'false',
-      fkcolumn: 'contentid',
-      name: 'content',
-      datatype: 'char',
-      relatesto: 'content',
-      default: '',
-    },
-  ],
-]);
-
-// Non-persistent base properties findProperties skips without error (bean.cfc:79-82, beanORM.cfc:79).
-const NON_PERSISTENT_PROPERTIES: ReadonlySet<string> = new Set(['errors', 'isnew', 'frommuracache', 'instanceid', 'saveerrors']);
 
 // Legacy registers the entity at start-up only while `variations` is on (jsonApiUtility.cfc:103-105); otherwise
 // findProperties registers it through getEntityConfig (124-129, 1559) on the site's API instance, which settingsBean
@@ -202,7 +157,7 @@ function beanValues(bean: VariationTargeting): Struct {
  * getAllValues of an iterator bean over a feed row: beanFeed.setFields selects only the table columns `fields` names
  * (setFeedProps has appended the primary key), every column when it names none.
  */
-function listedValues(row: VariationTargetingColumns, ctx: JsonApiRequestContext): Struct {
+function listedValues(row: VariationTargetingColumns | BlankFeedRow, ctx: JsonApiRequestContext): Struct {
   const selected = cfListToArray(urlText(ctx, 'fields'))
     .map((field) => javaTrim(field).toLowerCase())
     .filter((field) => COLUMNS.includes(field));
@@ -210,6 +165,8 @@ function listedValues(row: VariationTargetingColumns, ctx: JsonApiRequestContext
   for (const [column, value] of Object.entries(row)) {
     if (selected.length === 0 || selected.includes(column)) values[column] = loadedText(value);
   }
+  // beanORM.init gives the id column a createUUID() (beanORM.cfc:101-102), which set() keeps for an empty key.
+  if (isBlankFeedRow(row)) values[PRIMARY_KEY] = cfUuid();
   values['isnew'] = 0;
   return values;
 }
@@ -231,7 +188,7 @@ async function feedResult(
   const expandLinks = expandOf(call);
   const items: Struct[] = [];
   for (const row of result.items) {
-    items.push(await serializeContentEntity(viewOf(listedValues(row, ctx)), ctx, undefined, { expandLinks, pk: PRIMARY_KEY }));
+    items.push(await serializeContentEntity(viewOf(listedValues(row, ctx)), ctx, relatedResolver(call), { expandLinks, pk: PRIMARY_KEY }));
   }
   const options = result.baseUrl === undefined ? {} : { baseUrl: result.baseUrl };
   return jsonApiResultOf(serializeCollection(order(items), result.page, ctx, options), ENTITY);
@@ -243,7 +200,7 @@ const findOne: JsonApiHandlerFn = guarded(async (ctx, call) => {
   paramUrl(call.apiContext, 'entityname', call.entityName);
   if (!entityAccessAllowed(actor, CONFIG)) return authorizationDenied();
   const bean = await findVariationTargeting(ctx.domain, actor, { targetingId: call.id ?? '', siteId: call.siteId });
-  const data = await serializeContentEntity(viewOf(beanValues(bean)), call.apiContext, undefined, {
+  const data = await serializeContentEntity(viewOf(beanValues(bean)), call.apiContext, relatedResolver(call), {
     expandLinks: expandOf(call),
     pk: PRIMARY_KEY,
     editableCheck: true,
@@ -255,7 +212,7 @@ const findOne: JsonApiHandlerFn = guarded(async (ctx, call) => {
 const findNew: JsonApiHandlerFn = guarded(async (_ctx, call) => {
   if (!entityAccessAllowed(actorOf(call), CONFIG)) return authorizationDenied();
   const bean: VariationTargeting = { targetingid: cfUuid(), contentid: '', siteid: call.siteId, initjs: '', targetingjs: '', isNew: 1 };
-  const data = await serializeContentEntity(viewOf(beanValues(bean)), call.apiContext, undefined, {
+  const data = await serializeContentEntity(viewOf(beanValues(bean)), call.apiContext, relatedResolver(call), {
     expanded: true,
     expandLinks: expandOf(call),
     pk: PRIMARY_KEY,
@@ -285,30 +242,11 @@ const findMany: JsonApiHandlerFn = guarded(async (ctx, call) => {
   );
 });
 
-/** findProperties' result: the bean's ORM property metadata; an unknown requested name raises server_error. */
-function propertiesResult(call: JsonApiCall): JsonApiResult {
-  const requested = cfListToArray(call.params.string('properties')).map((name) => name.toLowerCase());
-  const names = requested.length > 0 ? requested : [...PROPERTY_FORMATS.keys()];
-  const properties = names.flatMap((name) => {
-    if (NON_PERSISTENT_PROPERTIES.has(name)) return [];
-    const format = PROPERTY_FORMATS.get(name);
-    // `props[p]` of an unknown name raises an undefined-element error (1568).
-    if (format === undefined) throw new LegacyApiError('server_error');
-    return [{ ...format }];
-  });
-  const result = findPropertiesFor(CONFIG, call);
-  result['properties'] = properties;
-  // The component declares bundleable=true, which getBundleable reports as metadata text.
-  result['bundleable'] = 'true';
-  if (Object.hasOwn(result, 'table')) result['table'] = TABLE;
-  return jsonApiResultOf(result, ENTITY);
-}
-
 /** findProperties (1548-1618); no access check, as legacy. It registers the entity before any property is read. */
 const findProperties: JsonApiHandlerFn = (ctx, call) =>
   new Promise((resolve) => {
     register(ctx, call.apiContext.siteId);
-    resolve(propertiesResult(call));
+    resolve(jsonApiResultOf(findPropertiesFor(CONFIG, call), ENTITY));
   });
 
 /** findPermissions (2240-2266): bean.getPermissions of the addressed bean; no access check, as legacy. */
@@ -400,7 +338,7 @@ const save: JsonApiHandlerFn = async (ctx, call) => {
     if (isUnstorableTextError(err)) return { error: 'invalidParameters' };
     throw err;
   }
-  const data = await serializeContentEntity(viewOf(saved.values), call.apiContext, undefined, {
+  const data = await serializeContentEntity(viewOf(saved.values), call.apiContext, relatedResolver(call), {
     expanded: true,
     expandLinks: expandOf(call),
     pk: PRIMARY_KEY,
@@ -423,6 +361,34 @@ const remove: JsonApiHandlerFn = async (ctx, call) => {
   return { data: '' };
 };
 
+/** SQL Server's key equality: case-insensitive, trailing spaces ignored. */
+function sqlKey(value: string | null): string {
+  return (value ?? '').trimEnd().toLowerCase();
+}
+
+/**
+ * beanORM.loadBy of a relation path's source, whatever the `variations` setting: by `targetingid`, or by `contentid`
+ * the site's first row of the item, else loadBy's arguments on a new bean.
+ */
+async function loadBy(ctx: ContentRouteContext, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+  const actor = actorOf(call);
+  let values: Struct;
+  if ('primaryKey' in key) {
+    values = beanValues(await findVariationTargeting(ctx.domain, actor, { targetingId: key.primaryKey, siteId: call.siteId }));
+  } else {
+    const row = await withVariationTargetingFeed(ctx.domain, actor, {}, (source) =>
+      firstScannedRow(source, (candidate) => sqlKey(candidate.siteid) === sqlKey(call.siteId) && sqlKey(candidate.contentid) === sqlKey(key.contentid)),
+    );
+    if (row === undefined) {
+      values = beanValues({ targetingid: '', contentid: key.contentid, siteid: call.siteId, initjs: '', targetingjs: '', isNew: 1 });
+    } else {
+      values = { isnew: 0 };
+      for (const [column, value] of Object.entries(row)) values[column] = loadedText(value);
+    }
+  }
+  return (name) => values[(cfEq(name, 'primaryKey') ? PRIMARY_KEY : name).toLowerCase()];
+}
+
 /** The `variationTargeting` entity's handlers. */
 export const variationTargetingHandler: EntityHandler = Object.freeze({
   entity: ENTITY,
@@ -436,4 +402,5 @@ export const variationTargetingHandler: EntityHandler = Object.freeze({
   findPermissions,
   save,
   delete: remove,
+  loadBy,
 });

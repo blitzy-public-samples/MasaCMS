@@ -13,12 +13,12 @@ const DEFAULT_SITE_ID = 'default';
 /** Reads the sanitizeHref domains; `siteId` is the session site legacy passes to `getSite`. */
 export type HrefDomainsReader = (db: TenantDb, siteId: string) => Promise<HrefDomains>;
 
-/** Every registered site as its bean, one transaction per tenant, in registry (site id) order. */
+/** Every registered site as the bean of its origin-domain columns, one transaction per tenant, in registry (site id) order. */
 async function siteBeans(db: TenantDb, repo: ProgramsSitesRepository): Promise<SiteBean[]> {
   const tenants = [...new Set((await registeredTenants(db)).map(({ tenantId }) => tenantId))];
   const beans: SiteBean[] = [];
   for (const tenantId of tenants) {
-    const rows = await withTenant(db, tenantId, (tx) => repo.listSites(tx));
+    const rows = await withTenant(db, tenantId, (tx) => repo.listSiteDomains(tx));
     beans.push(...rows.map((row) => readBean(row)));
   }
   return beans;

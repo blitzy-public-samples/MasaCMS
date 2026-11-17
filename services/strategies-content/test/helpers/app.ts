@@ -80,11 +80,13 @@ import { buildApp, contentEnvSchema, type ContentEnv } from '../../src/app.js';
 import { CONTENT_CONFIG_DEFAULTS } from '../../src/domain/context.js';
 import { contentConsumers } from '../../src/events/consumers.js';
 import { registerJobRoutes } from '../../src/jobs/index.js';
+import type { SiteConfigFlags } from '../../src/legacy/sites-client.js';
 import { mappings, units } from '../../src/migration/mappings/index.js';
 import { CONTENT_FILES_BUCKET, createExportObjects } from '../../src/migration/objects.js';
 import { OWNER, SCHEMA, createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, type ContentUnit } from '../../src/repo/tables.js';
 import { registerCommentsProxyRoutes } from '../../src/routes/comments-proxy.js';
+import { registerRaterRoutes } from '../../src/routes/rater.js';
 import { registerFileRoutes } from '../../src/routes/files.js';
 import { registerContentLinksRoutes } from '../../src/routes/internal-content-links.js';
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
@@ -292,13 +294,22 @@ function registryRow(payload: ReturnType<typeof registryPayloads>[number]): Row 
     domains: [...(payload.domains ?? [])],
     aggregate_version: '1',
     updated_at: TEST_CLOCK.now(),
+    deleted: false,
   };
 }
 
-/** The registry rows a WHERE clause of `col = $n`, `lower(col) = lower($n)` terms joined by AND, alternatives by OR, selects. */
+const NOT_DELETED = /(?:^| AND )NOT deleted$/i;
+
+/**
+ * The registry rows a WHERE clause of `col = $n`, `lower(col) = lower($n)` terms joined by AND, alternatives by OR, selects; a
+ * trailing `NOT deleted` term keeps only the rows not marked deleted.
+ */
 function registryMatches(sql: string, params: readonly unknown[], rows: readonly Row[]): Row[] {
-  const where = / WHERE (.+?)(?: ORDER BY | LIMIT | FOR |$)/i.exec(sql)?.[1];
-  if (where === undefined) return [...rows].sort((a, b) => String(a.site_id).localeCompare(String(b.site_id)));
+  const clause = / WHERE (.+?)(?: ORDER BY | LIMIT | FOR |$)/i.exec(sql)?.[1];
+  const live = clause !== undefined && NOT_DELETED.test(clause);
+  const where = live ? clause.replace(NOT_DELETED, '') : clause;
+  const candidates = live ? rows.filter((row) => row.deleted === false) : rows;
+  if (where === undefined || where === '') return [...candidates].sort((a, b) => String(a.site_id).localeCompare(String(b.site_id)));
   const alternatives = where.split(/ OR /i).map((clause) =>
     [...clause.matchAll(/(lower\()?"?(\w+)"?\)? = (lower\()?\$(\d+)/gi)].map(([, lower, column = '', , index]) => {
       const wanted = String(params[Number(index) - 1]);
@@ -306,7 +317,7 @@ function registryMatches(sql: string, params: readonly unknown[], rows: readonly
         lower === undefined ? String(row[column]) === wanted : String(row[column]).toLowerCase() === wanted.toLowerCase();
     }),
   );
-  return rows.filter((row) => alternatives.some((terms) => terms.length > 0 && terms.every((term) => term(row))));
+  return candidates.filter((row) => alternatives.some((terms) => terms.length > 0 && terms.every((term) => term(row))));
 }
 
 /** Whether a responder `pattern` matches the collapsed `sql`. */
@@ -732,7 +743,8 @@ export interface SessionUserNames {
 
 /**
  * Fake service client: records each call, then answers from handlers, else from identity's CSRF consume and current
- * session defaults and programs-sites' empty custom image size list; an unmatched call throws after it is recorded.
+ * session defaults, programs-sites' empty custom image size list and its seeded site flags; an unmatched call throws
+ * after it is recorded.
  */
 export interface ClientRecorder extends ServiceClient {
   readonly requests: ServiceRequest[];
@@ -761,6 +773,30 @@ interface ClientRoute {
 
 const CLIENT_ROUTE_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/;
 const CURRENT_SESSION_PATH = '/v1/sessions/current';
+
+/** programs-sites' `lookupSiteConfigFlags` path. */
+export const SITE_CONFIG_FLAGS_PATH = '/internal/v1/sites/config-flags:lookup';
+
+/** A site's `$.siteConfig` flags as programs-sites answers them, without the site id. */
+export type SiteConfigFlagValues = Omit<SiteConfigFlags, 'siteID'>;
+
+/** The flags of a tenant-a site row as the seed stores it: scaffolding on, lockable nodes off. */
+export const SEEDED_SITE_FLAGS: Readonly<SiteConfigFlagValues> = Object.freeze({
+  hasLockableNodes: 0,
+  hasChangesets: 1,
+  dataCollection: 1,
+  hasComments: 1,
+  scaffolding: 1,
+});
+
+/** programs-sites' answer to the config-flags lookup: `flags` for every listed site, under its id. */
+export function siteConfigFlagsAnswer(flags: Readonly<SiteConfigFlagValues> = SEEDED_SITE_FLAGS): ClientHandler {
+  return (req) => ({
+    status: 200,
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+    body: { items: (req.json as { siteIds: string[] }).siteIds.map((siteID) => ({ siteID, ...flags })) },
+  });
+}
 
 function clientRoute(service: string, method: ServiceRequest['method'], routePath: string, handler: ClientHandler): ClientRoute {
   const source = routePath
@@ -822,6 +858,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
     }),
     clientRoute(IDENTITY_SERVICE, 'GET', CURRENT_SESSION_PATH, () => ({ status: 200, headers: {}, body: { user: { ...recorder.sessionUser } } })),
     clientRoute('programs-sites', 'GET', '/internal/v1/sites/{siteId}/image-sizes', () => ({ status: 200, headers: {}, body: [] })),
+    clientRoute('programs-sites', 'POST', SITE_CONFIG_FLAGS_PATH, siteConfigFlagsAnswer()),
   ];
   return recorder;
 }
@@ -901,7 +938,8 @@ export function testEnv(stateDir: string, overrides: Readonly<Record<string, str
 /**
  * Builds strategies-content with every route its source registers: the header prompts, the Edit Profile interest groups, the
  * people file and content-link lookups, the migration object transfer, the signed file downloads, the comments proxy, the
- * platform migration handlers over the content mappings, the four push consumers, the site-monitor job routes and queue control.
+ * rater save, the platform migration handlers over the content mappings, the four push consumers, the site-monitor job
+ * routes and queue control.
  */
 export async function buildContentApp(options: ContentTestAppOptions = {}): Promise<ContentTestApp> {
   const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-gates-'));
@@ -931,6 +969,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerFileRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerCommentsProxyRoutes(app, { domain: { db, repository, clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS } });
+    registerRaterRoutes(app, { domain: { db, repository, clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS } });
     registerMigrationHandlers(app, { owner: OWNER, repository: repository.platform, mappings, units, db, exportObjects: createExportObjects({ storage }) });
     registerConsumers(app, { service: SERVICE, consumers: contentConsumers(repository), publisher, db });
     registerJobRoutes(app, { repository, clock: TEST_CLOCK, storage });

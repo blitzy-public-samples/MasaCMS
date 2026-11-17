@@ -508,7 +508,7 @@ paths:
     get:
       operationId: listExportSheetStatus
       summary: One page of the sheet status rows of a running reporting export job's tenant, as of `asOf`.
-      description: Reporting's export runs act as System and send no user token. The tenant is the one this service's registry gives `siteId`, served only once reporting's `getExportSourceScope` answers that its job `exportId` is stored under that tenant and site, reads `timesheets.sheets` and is `running` under `claim`. Rows are shaped and ordered as `listSheetStatus` pages them.
+      description: Reporting's export runs act as System and send no user token. The tenant is the one this service's registry gives `siteId`, served only once reporting's `getExportSourceScope` answers that its job `exportId` is stored under that tenant and site, reads `timesheets.sheets` and is `running` under `claim`. Rows are shaped as `listSheetStatus` rows and ordered by period start, then sheet id.
       tags:
         - internal
       x-opt2-transport: service
@@ -2606,7 +2606,7 @@ components:
           minimum: 0
     InboxCounts:
       type: object
-      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      description: Inbox receipts over every tenant the registry has known, deleted sites included; `receipts` maps each asked event id to the tenants that applied it.
       required:
         - total
         - bySubscription
@@ -2651,7 +2651,7 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
         publishedNext:
@@ -2664,7 +2664,7 @@ components:
         publishedFrontier:
           type: string
           pattern: '^[0-9]+$'
-          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
         publishedUpTo:
           type: integer
           minimum: 0

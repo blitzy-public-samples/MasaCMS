@@ -7,10 +7,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
+import { CATALOGUE_PATH, loadCatalogue, scenarioById } from '../../src/golden/catalogue.js';
 import type { FetchLike } from '../../src/lib/http.js';
 import { opt2Path, type EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 import {
+  CATALOGUE_SCENARIO,
   CLOUD_MEASUREMENT,
   EXPECTED_MIN_INSTANCES,
   GATEWAY_PROBES,
@@ -19,6 +21,7 @@ import {
   RESTART_SERVICES,
   WINDOW_THRESHOLD_MS,
   checkMinInstanceCounts,
+  expandCatalogueReads,
   main,
   parseMinInstanceCounts,
   terraformPlanReportSchema,
@@ -65,9 +68,19 @@ const LEGACY = `http://127.0.0.1:${LEGACY_PORT}`;
 const GATEWAY = 'http://127.0.0.1:8100';
 const LOGIN_PAGE = '/admin/?muraAction=clogin.main';
 const LOGIN_POST = '/admin/?muraAction=cLogin.login';
-const CONTENT_LIST = '/_api/json/v1/tenant-a/content/?type=Page';
-const FEED_LIST = '/_api/json/v1/tenant-a/feed/?method=findQuery&entityname=feed';
+const CUTOVER_STATUS = '/internal/v1/cutover/status';
 const CSRF_TOKEN = 'FIXTURE-CSRF-REPORT';
+const FEED_ID = 'F0000000-0000-0000-0000000000000001';
+/** Cut-over version the fake gateway reports active, written to OPT2_CUTOVER_DIR. */
+const ACTIVE_VERSION = 'v9101';
+/** The fixture reads ACTIVE_VERSION routes to target, by path; every other route key is legacy. */
+const TARGET_READS: readonly { path: string; route: string; owningService: RestartService }[] = [
+  { path: '/legacy-fixtures/cfml/api.cfm/surveys/surveys', route: 'fixture:surveys/surveys@get', owningService: 'surveys' },
+  { path: '/legacy-fixtures/cfml/api.cfm/finance/records', route: 'fixture:finance/records@get', owningService: 'finance' },
+  { path: '/legacy-fixtures/cfml/api.cfm/esignature/requests', route: 'fixture:esignature/requests@get', owningService: 'e-signature' },
+];
+/** Services whose gateway probe ACTIVE_VERSION routes to target; identity's is a fresh-session surveys read. */
+const TARGET_PROBED: readonly RestartService[] = ['identity', 'surveys', 'finance', 'e-signature'];
 const LEGACY_MS = 4;
 const TARGET_MS = 5;
 const COLD_START_MS = 100;
@@ -198,21 +211,47 @@ describe('main over the samples', () => {
     return Object.assign(new Error(`${code}: fixture`), { code });
   }
 
-  /** Service a gateway request reaches, as the cut-over table routes it. */
-  function ownerOf(url: URL): RestartService | undefined {
-    if (url.pathname === '/admin/') {
-      const action = url.searchParams.get('muraAction')?.toLowerCase();
-      return action === 'cusers.listusers' ? 'people' : action === 'csettings.list' ? 'programs-sites' : 'identity';
+  /** Owner of a GET ACTIVE_VERSION routes to target; the gateway proxies every other request to legacy. */
+  function targetOwnerOf(method: string, url: URL): RestartService | undefined {
+    return method === 'GET' ? TARGET_READS.find((read) => read.path === url.pathname)?.owningService : undefined;
+  }
+
+  /**
+   * Legacy's collection admin as the run drives it: list, a Local edit form with its unfilled advanced-filter row
+   * (edit.cfm:512-533), save and delete, and the feed read. An edit without type (edit.cfm:78), or a save whose
+   * `param` lists a row without its paramField (admin/Application.cfc:474-488), answers 500.
+   */
+  function feedAnswer(feeds: Map<string, string>, method: string, url: URL, body: string): Response | undefined {
+    if (url.pathname === '/_api/feed/v1/') {
+      return feeds.has(url.searchParams.get('feedid') ?? '') ? new Response('<rss/>') : new Response(null, { status: 404 });
     }
-    if (url.pathname.startsWith('/_api/')) return 'strategies-content';
-    const fixtureModule = /^\/legacy-fixtures\/cfml\/api\.cfm\/([^/]+)\//.exec(url.pathname)?.[1];
-    return RESTART_SERVICES.find((service) => service.replace('-', '') === fixtureModule);
+    const action = url.pathname === '/admin/' ? url.searchParams.get('muraAction')?.toLowerCase() : undefined;
+    if (method === 'GET' && action === 'cfeed.list') {
+      const links = [...feeds].map(([id, name]) => `<a href="./?muraAction=cFeed.edit&amp;feedID=${id}&amp;type=Local">${name}</a>`);
+      return html(links.join(''));
+    }
+    if (method === 'GET' && action === 'cfeed.edit') {
+      if (!url.searchParams.has('type')) return new Response(null, { status: 500 });
+      const id = url.searchParams.get('feedID') ?? '';
+      return html(`<form action="./?muraAction=cFeed.update&amp;siteid=tenant-a" method="post"><input type="hidden" name="feedID" value="${id}">
+        <select name="paramRelationship1" style="display:none;"><option value="and">And</option><option value="or">Or</option></select>
+        <input type="hidden" name="param" value="1"><select name="paramField1"><option value="">Select Field</option></select>
+        <select name="paramCondition1"><option value="Equals">Equals</option></select><input type="text" name="paramCriteria1">
+        <input type="hidden" name="csrf_token" value="${CSRF_TOKEN}"><input type="hidden" name="csrf_token_expires" value="260630120000000"></form>`);
+    }
+    if (method !== 'POST' || action !== 'cfeed.update') return undefined;
+    const form = new URLSearchParams(body);
+    const rows = form.getAll('param').flatMap((list) => list.split(',')).filter((n) => n !== '');
+    if (rows.some((n) => !form.has(`paramField${n}`))) return new Response(null, { status: 500 });
+    if (form.get('action') === 'add') feeds.set(FEED_ID, form.get('name') ?? '');
+    if (form.get('action') === 'delete') feeds.delete(form.get('feedID') ?? '');
+    return new Response(null, { status: 302, headers: { location: './?muraAction=cFeed.list&siteid=tenant-a' } });
   }
 
   /**
    * Legacy origin, gateway and the ten service processes on one fake clock: each legacy request takes LEGACY_MS,
    * each gateway request TARGET_MS, a started service answers /healthz 200 after COLD_START_MS, and the gateway
-   * answers 502 for a stopped owner.
+   * answers 502 for a target-routed read while its owner or identity is stopped.
    */
   function fakeStack(stateDir: string) {
     let t = 0;
@@ -233,6 +272,7 @@ describe('main over the samples', () => {
     const entries: Record<string, UpProcessEntry> = {};
     let nextPid = PID_BASE;
     let loginPages = 0;
+    const feeds = new Map<string, string>();
     for (const service of RESTART_SERVICES) {
       nextPid += 1;
       const cwd = path.join(stateDir, 'processes', service);
@@ -276,24 +316,38 @@ describe('main over the samples', () => {
         return new Response(null, { status: 302, headers: { location: accepted ? './' : './?muraAction=clogin.main' } });
       }
       if (method === 'GET' && target === '/admin/') return html('<h1>Masa CMS - Site Content</h1>');
-      if (side === 'legacy' && target === CONTENT_LIST) return json({ data: { items: [{ contentid: 'C1' }, { contentid: 'C2' }] } });
-      if (side === 'legacy' && target === FEED_LIST) return json({ data: { items: [{ feedid: 'F1' }] } });
-      return json({ data: {} });
+      return feedAnswer(feeds, method, new URL(target, LEGACY), body) ?? json({ data: {} });
     }
 
     const fetch = vi.fn<FetchLike>(async (input, init) => {
       const url = new URL(input);
       const method = init.method ?? 'GET';
       if (url.pathname === '/healthz') return health(url);
+      if (url.origin === GATEWAY && url.pathname === CUTOVER_STATUS) return json({ tableVersion: ACTIVE_VERSION });
       const side = url.origin === LEGACY ? 'legacy' : url.origin === GATEWAY ? 'gateway' : undefined;
       if (side === undefined) throw new Error(`unscripted request ${method} ${input}`);
       t += side === 'legacy' ? LEGACY_MS : TARGET_MS;
-      const owner = side === 'gateway' ? ownerOf(url) : undefined;
-      if (owner !== undefined && !running.has(owner)) return new Response('Bad Gateway', { status: 502 });
+      const owner = side === 'gateway' ? targetOwnerOf(method, url) : undefined;
+      if (owner !== undefined && !(running.has(owner) && running.has('identity'))) return new Response('Bad Gateway', { status: 502 });
       return answer(side, method, `${url.pathname}${url.search}`, typeof init.body === 'string' ? init.body : '');
     });
 
-    return { entries, clock, kill, spawn, fetch };
+    return { entries, clock, kill, spawn, fetch, feeds };
+  }
+
+  /** GS-CO-05's seed rows (tenant-a Pages, the umbrella png, the tenant-a Folder) as the seed generator writes them. */
+  function seedDataset(): unknown {
+    const id = (tag: string, n: number) => `${tag}-0000-0000-${String(n).padStart(16, '0')}`;
+    return {
+      businessDate: '2026-06-30',
+      masa: {
+        content: [
+          ...[1, 2, 3, 4, 5].map((n) => ({ contentID: id('0000PAGE', n), siteID: 'tenant-a', type: 'Page' })),
+          { contentID: id('00FOLDER', 1), siteID: 'tenant-a', type: 'Folder' },
+        ],
+        files: [{ fileID: id('000IMAGE', 1), siteID: 'umbrella', fileExt: 'png' }],
+      },
+    };
   }
 
   /** mtime of `file`, or null when it does not exist. */
@@ -309,19 +363,26 @@ describe('main over the samples', () => {
   it('writes performance.json and performance.md from the sample plan and windows to the reports directory only', async () => {
     const stateDir = path.join(tmp, 'state');
     const reportsDir = path.join(tmp, 'reports');
+    const cutoverDir = path.join(tmp, 'cutover');
     const env: EnvLike = {
       OPT2_STATE_DIR: stateDir,
       OPT2_REPORTS_DIR: reportsDir,
+      OPT2_CUTOVER_DIR: cutoverDir,
       PORT: LEGACY_PORT,
       MURA_ADMIN_PASSWORD: credential('admin'),
     };
     const stack = fakeStack(stateDir);
     writeUpState({ processes: stack.entries }, { env });
+    await writeJson(path.join(cutoverDir, 'versions', `${ACTIVE_VERSION}.json`), {
+      tableVersion: ACTIVE_VERSION,
+      entries: TARGET_READS.map(({ route, owningService }) => ({ route, owningService, state: 'target', kind: 'read' })),
+    });
     await writeJson(path.join(stateDir, 'fixtures.json'), { available: true, reason: null, checkedAt: '2026-06-30T09:00:00.000Z' });
     await writeJson(path.join(stateDir, 'secrets', 'seed-credentials.json'), {
       roles: { 'tenant-a': Object.fromEntries(SEED_ROLES.map((role) => [role, seedUsername(role)])) },
       users: { 'tenant-a': Object.fromEntries(SEED_ROLES.map((role) => [seedUsername(role), credential(role)])) },
     });
+    await writeJson(path.join(stateDir, 'seed', 'dataset.json'), seedDataset());
     await fs.mkdir(reportsDir, { recursive: true });
     await fs.copyFile(fixturePath('terraform-plan.sample.json'), path.join(reportsDir, 'terraform-plan.json'));
     await fs.copyFile(fixturePath('windows.sample.json'), path.join(reportsDir, 'windows.json'));
@@ -335,27 +396,41 @@ describe('main over the samples', () => {
       spawn: stack.spawn,
       now: stack.clock.now,
       sleep: stack.clock.sleep,
+      invoker: { headersFor: async () => ({}) },
     });
 
-    expect(outcome).toStrictEqual({
-      code: 0,
-      summary: { report: path.join(reportsDir, 'performance.json'), latencySets: READ_SET.length, findings: 1, unhealthy: false },
-    });
+    const sets = [
+      ...expandCatalogueReads(scenarioById(await loadCatalogue(CATALOGUE_PATH), CATALOGUE_SCENARIO)).map((read) => read.set),
+      ...READ_SET.map((entry) => entry.set),
+    ];
     const report = JSON.parse(await fs.readFile(path.join(reportsDir, 'performance.json'), 'utf8')) as PerformanceReport & {
       sourceSha: string;
     };
+    expect(outcome).toStrictEqual({
+      code: 0,
+      summary: { report: path.join(reportsDir, 'performance.json'), latencySets: sets.length, findings: report.findings.length, unhealthy: false },
+    });
     expect(report.sourceSha).toBe(pinnedSha());
     expect(report.minInstanceCount).toStrictEqual({ source: 'minInstanceCounts', values: PLAN_SAMPLE.minInstanceCounts, label: 'measured' });
     expect(report.windowsOverThreshold).toStrictEqual([SITE_DELETE_WINDOW]);
-    expect(report.findings).toStrictEqual([
+    // ACTIVE_VERSION leaves every latency route on legacy and routes no gateway read to six of the services.
+    expect(report.findings.filter((finding) => finding.kind === 'legacy-served')).toHaveLength(sets.length);
+    expect(report.findings.filter((finding) => finding.kind === 'probe-not-target').map((finding) => finding.subject).sort()).toStrictEqual(
+      RESTART_SERVICES.filter((service) => !TARGET_PROBED.includes(service)).sort(),
+    );
+    expect(report.findings.filter((finding) => finding.kind !== 'legacy-served' && finding.kind !== 'probe-not-target')).toStrictEqual([
       { kind: 'window-over-threshold', subject: SITE_DELETE_WINDOW.windowId, detail: `${SITE_DELETE_WINDOW.routeKey} 7500 ms` },
     ]);
     expect(report.cloudMeasurement).toBe(CLOUD_MEASUREMENT);
-    expect(report.latency.map((row) => [row.set, row.requests])).toStrictEqual(READ_SET.map((entry) => [entry.set, REQUESTS_PER_SET]));
+    expect(report.latency.map((row) => [row.set, row.requests, row.servedBy])).toStrictEqual(sets.map((set) => [set, REQUESTS_PER_SET, 'legacy']));
+    // The run deleted the collection it created for the feed set.
+    expect(stack.feeds.size).toBe(0);
     expect(report.coldStart.map((row) => [row.service, row.startToFirst200Ms])).toStrictEqual(
       RESTART_SERVICES.map((service) => [service, COLD_START_MS]),
     );
-    expect(report.scaleToZero.every((row) => row.stopToFirstSuccessMs !== null)).toBe(true);
+    expect(report.scaleToZero.map((row) => [row.service, row.stopToFirstSuccessMs !== null])).toStrictEqual(
+      RESTART_SERVICES.map((service) => [service, TARGET_PROBED.includes(service)]),
+    );
 
     const markdown = await fs.readFile(path.join(reportsDir, 'performance.md'), 'utf8');
     expect(markdown.split('\n').slice(0, 2)).toStrictEqual(['# Performance report', `Source SHA: ${pinnedSha()}`]);

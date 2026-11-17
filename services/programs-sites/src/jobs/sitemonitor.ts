@@ -28,7 +28,7 @@ export interface MonitoredSite {
 
 /** The persisted `application.lastMonitored` behind the run lease that serialises passes across instances. */
 export interface CursorStore {
-  /** Takes the lease for `leaseId` until `until` unless another pass holds a live one. */
+  /** Takes the lease for `leaseId` until `until` unless another pass holds a live one; either answer carries the stored cursor. */
   acquire(leaseId: string, until: Date): Promise<LeaseGrant>;
   /** Moves the cursor forward to `at` while `leaseId` holds the lease; false once it no longer does. */
   advance(leaseId: string, at: Date): Promise<boolean>;
@@ -52,9 +52,11 @@ export interface SiteMonitorDeps {
   sleep?: (ms: number) => Promise<unknown>;
   /** Interval between lease attempts while another pass holds the lease; default 1000 ms. */
   pollIntervalMs?: number;
+  /** Deadline of the pass after its start; defaults to the site-monitor queue deadline. */
+  deadlineMs?: number;
 }
 
-/** A completed run: its `theTime`, the cursor it ran from and one outcome per dispatched step, in dispatch order. */
+/** A completed run: its `theTime`, the cursor it ran from and one outcome per dispatched step, in dispatch order; no steps when other holders' passes covered it. */
 export interface SiteMonitorResult {
   theTime: Date;
   lastMonitored: Date;
@@ -177,7 +179,14 @@ function byOrderNo(a: MonitoredSite, b: MonitoredSite): number {
   return compareText(a.siteId, b.siteId);
 }
 
-/** Polls for the run lease; the stored cursor once granted, SiteMonitorUnavailableError once `deadlineAt` passes first. */
+/** End of the wait for the run lease: granted with the stored cursor, or covered by other holders' passes that moved it from `from` to `to`. */
+type LeaseWait = { readonly covered: false; readonly stored: Date | null } | { readonly covered: true; readonly from: Date; readonly to: Date };
+
+/**
+ * Polls for the run lease until `deadlineAt`, then rejects with SiteMonitorUnavailableError. The first non-null cursor a
+ * busy answer shows is the baseline: a first pass stores its default before any step, so only a later move past it means
+ * another holder completed a pass meanwhile, and the wait ends covered, releasing a lease it was just granted.
+ */
 async function acquireRunLease(
   cursor: CursorStore,
   leaseId: string,
@@ -185,23 +194,33 @@ async function acquireRunLease(
   clock: Clock,
   sleep: (ms: number) => Promise<unknown>,
   pollIntervalMs: number,
-): Promise<Date | null> {
+): Promise<LeaseWait> {
+  let baseline: Date | null = null;
   for (;;) {
     const grant = await cursor.acquire(leaseId, deadlineAt);
-    if (grant.status === 'granted') return grant.lastMonitored;
+    const stored = grant.lastMonitored;
+    if (baseline !== null && stored !== null && stored.getTime() > baseline.getTime()) {
+      if (grant.status === 'granted') await cursor.release(leaseId);
+      return { covered: true, from: baseline, to: stored };
+    }
+    if (grant.status === 'granted') return { covered: false, stored };
+    baseline ??= stored;
     const remainingMs = deadlineAt.getTime() - clock.now().getTime();
     if (remainingMs <= 0) throw new SiteMonitorUnavailableError('deadline', undefined, undefined, []);
     await sleep(Math.min(pollIntervalMs, remainingMs));
   }
 }
 
-/** Runs one site-monitor pass under the run lease; rejects with `siteMonitorStop`'s error at the first failed step, at the queue deadline or when the lease is lost. */
+/**
+ * Runs one site-monitor pass under the run lease, or resolves without steps once other holders' passes covered the wait;
+ * rejects with `siteMonitorStop`'s error at the first failed step, at the deadline or when the lease is lost.
+ */
 export async function runSiteMonitor(deps: SiteMonitorDeps): Promise<SiteMonitorResult> {
   const cursor = deps.cursor ?? defaultCursorStore(deps.db, deps.clock);
   const startedAt = deps.clock.now();
-  const deadlineAt = new Date(startedAt.getTime() + queueDefinition(SITEMONITOR_QUEUE).deadlineS * 1000);
+  const deadlineAt = new Date(startedAt.getTime() + (deps.deadlineMs ?? queueDefinition(SITEMONITOR_QUEUE).deadlineS * 1000));
   const leaseId = randomUUID();
-  const stored = await acquireRunLease(
+  const lease = await acquireRunLease(
     cursor,
     leaseId,
     deadlineAt,
@@ -209,9 +228,10 @@ export async function runSiteMonitor(deps: SiteMonitorDeps): Promise<SiteMonitor
     deps.sleep ?? delay,
     deps.pollIntervalMs ?? DEFAULT_LEASE_POLL_MS,
   );
+  if (lease.covered) return { theTime: lease.to, lastMonitored: lease.from, steps: [] };
   let result: SiteMonitorResult;
   try {
-    result = await runPass(deps, cursor, leaseId, stored, deadlineAt);
+    result = await runPass(deps, cursor, leaseId, lease.stored, deadlineAt);
   } catch (err) {
     // A failed release must not replace the pass's error; the lease then lapses at deadlineAt.
     await cursor.release(leaseId).catch(() => false);
@@ -291,4 +311,59 @@ async function runPass(
   await advance(theTime, 'setCursor');
 
   return { theTime, lastMonitored, steps };
+}
+
+/** Starts one pass ending `deadlineMs` after its start, or at the queue deadline when undefined. */
+export type SiteMonitorPassStarter = (deadlineMs: number | undefined) => Promise<SiteMonitorResult>;
+
+/** Dependencies of `createSiteMonitorRunner`. */
+export interface SiteMonitorRunnerDeps {
+  start: SiteMonitorPassStarter;
+  /** Resolves after `ms` unless `signal` aborts first; defaults to a timer. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<unknown>;
+}
+
+/** Single flight over the passes of one process. */
+export interface SiteMonitorRunner {
+  /**
+   * Joins the pass in flight, else starts one that `budgetMs` bounds (the queue deadline without it), and settles with
+   * its outcome; with `budgetMs`, rejects with the legacy 503 once the budget passes first, leaving the pass running.
+   */
+  run(budgetMs?: number): Promise<SiteMonitorResult>;
+}
+
+/** The caller's budget passed while the pass it waits on still ran. */
+function budgetPassed(budgetMs: number): LegacyServiceUnavailableError {
+  return new LegacyServiceUnavailableError(
+    `Site monitor pass still running after the caller's ${String(budgetMs)} ms budget`,
+    'auto',
+    'sitemonitor-budget',
+  );
+}
+
+/** Runner whose concurrent callers share one pass instead of each queuing its own behind the run lease. */
+export function createSiteMonitorRunner(deps: SiteMonitorRunnerDeps): SiteMonitorRunner {
+  const sleep = deps.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal }));
+  let inFlight: Promise<SiteMonitorResult> | undefined;
+
+  return {
+    async run(budgetMs) {
+      // Cleared as the pass settles, so a caller arriving after it ends starts the next one.
+      inFlight ??= deps.start(budgetMs).finally(() => {
+        inFlight = undefined;
+      });
+      const pass = inFlight;
+      if (budgetMs === undefined) return pass;
+      const timer = new AbortController();
+      const budget = sleep(budgetMs, timer.signal).then(() => {
+        throw budgetPassed(budgetMs);
+      });
+      try {
+        return await Promise.race([pass, budget]);
+      } finally {
+        // The aborted timer rejects into the settled race, which already handles it.
+        timer.abort();
+      }
+    },
+  };
 }

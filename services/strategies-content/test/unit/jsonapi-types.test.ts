@@ -4,10 +4,10 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import type { Actor } from '../../src/domain/context.js';
 import { CONTENT_ENTITIES } from '../../src/legacy/jsonapi-entities.js';
-import type { JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
+import { ITERATOR_BLANK_ROW_LIMIT, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
 import {
   authorizationDenied,
   beanFeedQuery,
@@ -15,6 +15,8 @@ import {
   entityAccessAllowed,
   entityActionAllowed,
   findPropertiesFor,
+  isBlankFeedRow,
+  isInLegacyOrder,
   jsonApiResultOf,
   mergedSource,
   permissionsOf,
@@ -162,7 +164,7 @@ const OPTIONS: BeanFeedOptions = {
   table: 'tcontentcomments',
 };
 
-function page<R>(result: BeanFeedResult<R>): Extract<BeanFeedResult<R>, { items: R[] }> {
+function page<R>(result: BeanFeedResult<R>): Extract<BeanFeedResult<R>, { items: unknown[] }> {
   if (!('items' in result)) throw new Error('expected a page');
   return result;
 }
@@ -268,25 +270,22 @@ describe('entity access and action verdicts', () => {
 });
 
 describe('findPropertiesFor', () => {
-  it('answers the registration metadata in legacy key order, without table for anonymous users', () => {
-    const result = findPropertiesFor(COMMENT, callFor({ method: 'findProperties' }));
-    expect(Object.keys(result)).toEqual([
-      'displayname',
-      'properties',
-      'historical',
-      'links',
-      'dynamic',
-      'primarykey',
-      'public',
-      'bundleable',
-      'orderby',
-      'entityname',
-      'scaffold',
-    ]);
+  const KEYS = ['displayname', 'properties', 'historical', 'links', 'dynamic', 'primarykey', 'public', 'bundleable', 'orderby', 'entityname', 'scaffold'];
+
+  it.each<[string, Actor, string | undefined]>([
+    ['anonymous users, without table', ANONYMOUS, undefined],
+    ['admins, with the bean table', ADMIN, 'tcontentcomments'],
+  ])('answers the entity metadata in legacy key order to %s', (_label, who, table) => {
+    const result = findPropertiesFor(COMMENT, callFor({ method: 'findProperties', actor: who }));
+    expect(Object.keys(result)).toEqual(table === undefined ? KEYS : [...KEYS.slice(0, 5), 'table', ...KEYS.slice(5)]);
+    expect(result['table']).toBe(table);
+    expect(isInLegacyOrder(result)).toBe(true);
     expect(result).toMatchObject({
       displayname: 'comment',
       primarykey: 'commentid',
       public: true,
+      bundleable: false,
+      orderby: 'entered asc',
       entityname: 'comment',
       links: {
         swagger_json: `${ENDPOINT}/swagger?mode=json&entities=comment`,
@@ -296,50 +295,34 @@ describe('findPropertiesFor', () => {
         entities: ENDPOINT,
       },
     });
-    const properties = result['properties'] as Row[];
-    const names = properties.map((p) => p['name']);
-    expect(names).toContain('kids');
-    expect(names).toContain('entered');
-    expect(names).not.toContain('isnew');
-    expect(names).not.toContain('commentid');
-    expect(properties.find((p) => p['name'] === 'kids')).toEqual({
-      fieldtype: 'one-to-many',
-      loadkey: 'parentid',
-      fkcolumn: 'primaryKey',
-      name: 'kids',
-      datatype: 'varchar',
-      relatesto: 'comment',
-    });
-    expect(properties.find((p) => p['name'] === 'entered')).toEqual({
-      fieldtype: '',
-      name: 'entered',
-      datatype: 'datetime',
-    });
+  });
+
+  it('answers each property in legacy key order, as a copy of the recorded format', () => {
+    const properties = findPropertiesFor(COMMENT, callFor({ method: 'findProperties' }))['properties'] as Row[];
+    const kids = properties.find((p) => p['name'] === 'kids') as Row;
+    expect(Object.entries(kids)).toEqual([
+      ['fieldtype', 'one-to-many'],
+      ['loadkey', 'parentid'],
+      ['length', '50'],
+      ['required', false],
+      ['cascade', 'delete'],
+      ['nullable', true],
+      ['html', 'false'],
+      ['fkcolumn', 'primaryKey'],
+      ['name', 'kids'],
+      ['datatype', 'varchar'],
+      ['relatesto', 'comment'],
+      ['orderby', 'created asc'],
+      ['default', 'null'],
+    ]);
+    expect(isInLegacyOrder(kids)).toBe(true);
+    expect(Object.isFrozen(kids)).toBe(false);
   });
 
   it('lists requested properties in request order, filtered by the registered fields', () => {
     const call = callFor({ method: 'findProperties', params: { properties: 'Entered,name,kids,foo,flagcount' } });
     const names = (findPropertiesFor(COMMENT, call)['properties'] as Row[]).map((p) => p['name']);
-    expect(names).toEqual(['entered', 'kids', 'flagcount']);
-  });
-
-  it('lists the primary key and many-to-one relations of an entity without a field list, and table for admins', () => {
-    const result = findPropertiesFor(CONTENT_ENTITIES.category, callFor({ method: 'findProperties', actor: ADMIN }));
-    expect(result).toHaveProperty('table');
-    const properties = result['properties'] as Row[];
-    expect(properties[0]).toEqual({ fieldtype: 'id', name: 'categoryid' });
-    expect(properties.find((p) => p['name'] === 'parent')).toEqual({
-      fieldtype: 'many-to-one',
-      loadkey: 'categoryid',
-      fkcolumn: 'parentid',
-      name: 'parent',
-      relatesto: 'category',
-    });
-    expect(properties.find((p) => p['name'] === 'isactive')).toEqual({
-      fieldtype: '',
-      name: 'isactive',
-      datatype: 'int',
-    });
+    expect(names).toEqual(['entered', 'name', 'kids', 'flagcount']);
   });
 
   // The oracle answers each of these with a 500 server_error.
@@ -360,44 +343,20 @@ describe('findPropertiesFor', () => {
     );
   });
 
-  // Non-persistent and undescribed declared properties are skipped; the oracle also lists `filename` and `title`.
+  // Non-persistent declared properties and names outside the entity's fields are skipped, as the oracle answers.
   it.each<[keyof typeof CONTENT_ENTITIES, string, string[]]>([
     ['content', 'foo', []],
+    ['content', 'body', []],
     ['content', 'active,nonexistentprop', ['active']],
+    ['content', 'title,siteid', ['title', 'siteid']],
+    ['content', 'Title,title,isnew', ['title', 'title']],
     ['file', 'fileField,isnew,saveErrors,errors,fromMuraCache,instanceID', []],
-    ['file', 'filename', []],
-    ['file', 'site', ['site']],
+    ['file', 'filename,site', ['filename', 'site']],
     ['fileMetaData', 'filesize,created,remotepubdate', ['remotepubdate']],
     ['feed', 'pageindex', ['pageindex']],
+    ['contentCategoryAssign', 'parent,categoryname', ['parent']],
   ])('%s properties=%s lists %j', (entity, properties, expected) => {
     const call = callFor({ method: 'findProperties', entityName: entity, params: { properties } });
-    const names = (findPropertiesFor(CONTENT_ENTITIES[entity], call)['properties'] as Row[]).map((p) => p['name']);
-    expect(names).toEqual(expected);
-  });
-
-  // Each name is in the oracle's default listing, which has no file `filemetadata`, stats `contentid` or
-  // fileMetaData `filesize` and `created`.
-  it.each<[keyof typeof CONTENT_ENTITIES, string[]]>([
-    ['file', ['fileid', 'filesize', 'created', 'deleted', 'remotepubdate', 'content', 'site']],
-    ['fileMetaData', ['metaid', 'remotepubdate', 'file', 'activecontent', 'content', 'site']],
-    [
-      'stats',
-      [
-        'views',
-        'rating',
-        'totalvotes',
-        'upvotes',
-        'downvotes',
-        'comments',
-        'disablecomments',
-        'majorversion',
-        'minorversion',
-        'content',
-        'site',
-      ],
-    ],
-  ])('the %s default listing names only declared persistent or related properties', (entity, expected) => {
-    const call = callFor({ method: 'findProperties', entityName: entity });
     const names = (findPropertiesFor(CONTENT_ENTITIES[entity], call)['properties'] as Row[]).map((p) => p['name']);
     expect(names).toEqual(expected);
   });
@@ -596,7 +555,6 @@ describe('beanFeedQuery', () => {
     ['leftJoin=comment', 'server_error'],
     ['maxitems=-1', 'server_error'],
     ['maxitems=2.5', 'server_error'],
-    ['pageIndex=0', 'server_error'],
     ['groupBy=name', 'server_error'],
     ['count=*', 'server_error'],
   ])('findQuery %s throws %s', async (raw, type) => {
@@ -664,16 +622,49 @@ describe('beanFeedQuery', () => {
     ['itemsPerPage=1&startIndex=3', ['C2'], { pageIndex: 3 }],
     ['startIndex=0', [], { pageIndex: 0 }],
     ['nextn=1', ['C3'], { nextN: 1, pageCount: 3 }],
+    ['itemsPerPage=-1', [], { pageCount: -3, pageIndex: 1, firstOnPage: 1, lastOnPage: -1, nextN: -1 }],
+    ['itemsPerPage=-2&pageIndex=-1', [], { pageCount: -1, pageIndex: 1, firstOnPage: 1, lastOnPage: -2, nextN: -2 }],
+    ['itemsPerPage=2&pageIndex=1.5', ['C1', 'C2'], { pageCount: 2, pageIndex: 1.5, firstOnPage: 2, lastOnPage: 3 }],
   ])('pages %s', async (raw, expected, pageValues) => {
     const result = page(await query(raw));
     expect(result.items.map((r) => r['commentid'])).toEqual(expected);
     expect(result.page).toMatchObject({ recordCount: 3, ...pageValues });
   });
 
-  it('pages an empty feed from its first page', async () => {
-    const result = page(await beanFeedQuery([], callFor({ raw: 'startIndex=4&isnew=1' }), OPTIONS));
+  it.each([
+    ['startIndex=4&isnew=1', 1],
+    ['pageIndex=-3', -3],
+    ['pageIndex=0', 0],
+  ])('pages an empty feed for %s without reading a row', async (raw, pageIndex) => {
+    const result = page(await beanFeedQuery([], callFor({ raw }), OPTIONS));
     expect(result.items).toEqual([]);
-    expect(result.page).toMatchObject({ recordCount: 0, pageIndex: 1 });
+    expect(result.page).toMatchObject({ recordCount: 0, pageIndex });
+  });
+
+  it.each([
+    ['itemsPerPage=2&pageIndex=0', 2, [], { pageIndex: 0, nextN: 2 }],
+    ['itemsPerPage=1&pageIndex=-1', 1, [], { pageIndex: -1, nextN: 1 }],
+    ['startIndex=-1', 2, [], { nextN: 1000 }],
+    ['pageIndex=0.5&itemsPerPage=3', 2, ['C3'], { pageIndex: 0.5, nextN: 3 }],
+  ] satisfies Array<[string, number, string[], Row]>)('pages the blank rows %s reads before the first record, then its rows', async (raw, blank, rows, pageValues) => {
+    const result = page(await query(raw));
+    const blankRow = { commentid: '', name: '', entered: '', flagcount: '', isapproved: '', siteid: '', parentid: '' };
+    expect(result.items).toEqual([...Array.from({ length: blank }, () => blankRow), ...rows.map((id) => expect.objectContaining({ commentid: id }))]);
+    expect(result.items.map((row) => isBlankFeedRow(row))).toEqual([...Array.from({ length: blank }, () => true), ...rows.map(() => false)]);
+    expect(result.page).toMatchObject({ recordCount: 3, ...pageValues });
+  });
+
+  it('reads the records the double page index steps to, past one it rounds over', async () => {
+    const ids = page(await query('itemsPerPage=3')).items.map((row) => row['commentid']);
+    // (1.2 - 1) * 5 = 0.9999999999999998, whose second step rounds to 3.
+    expect(page(await query('pageIndex=1.2&itemsPerPage=5')).items.map((row) => row['commentid'])).toEqual([ids[0], ids[2]]);
+  });
+
+  it('fails closed on more blank rows than the limit, whose legacy answer turns on its request timeout', async () => {
+    expect(page(await query(`itemsPerPage=${ITERATOR_BLANK_ROW_LIMIT}&pageIndex=0`)).items).toHaveLength(ITERATOR_BLANK_ROW_LIMIT);
+    await expect(query(`itemsPerPage=${ITERATOR_BLANK_ROW_LIMIT + 1}&pageIndex=0`)).rejects.toThrow(
+      expect.objectContaining({ name: 'LegacyServiceUnavailableError', reason: 'iterator-blank-rows-timeout' }) as LegacyServiceUnavailableError,
+    );
   });
 
   it.each([

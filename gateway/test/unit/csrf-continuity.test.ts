@@ -497,6 +497,27 @@ describe('createCsrfContinuity beforeLegacy', () => {
     expect(handle?.userAgent).toBeUndefined();
   });
 
+  it.each<[SessionMode, string]>([
+    ['legacy-primary', 'returns no handle, so legacy rejects the token in the session it starts'],
+    ['target-primary', 'rejects with the mismatch'],
+  ])('%s %s when the cookies no longer attach the session a used token goes to', async (mode) => {
+    const mismatch = new ServiceUnavailableError(
+      'legacy-bridge',
+      Object.assign(new Error('legacy bridge session.markUsed answered HTTP 409 sessionMismatch'), {
+        code: 'HTTP_409',
+        status: 409,
+        error: 'sessionMismatch',
+      }),
+    );
+    const h = harness(true, { bridge: { markUsed: () => Promise.reject(mismatch), usedSince: () => Promise.reject(mismatch) } });
+    h.claimState = 'used';
+    const handle = h.continuity.beforeLegacy(request(), ROUTE, mode);
+
+    if (mode === 'legacy-primary') await expect(handle).resolves.toBeUndefined();
+    else await expect(handle).rejects.toBe(mismatch);
+    expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get', 'identity.claim']);
+  });
+
   it('judges a computed key by its normalised key, family and site', async () => {
     const h = harness();
     const handle = await h.continuity.beforeLegacy(

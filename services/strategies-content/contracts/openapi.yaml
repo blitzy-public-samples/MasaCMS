@@ -2036,7 +2036,7 @@ paths:
           description: The ColdFusion error page for a known file whose stored object is absent, as legacy's streamFile fails on a missing file.
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including an image rendition of a custom size that was never stored, which only ColdFusion's image engine generates.
+          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including a sized image rendition that was never stored, the `file` size of `/_api/render/file/` among them, which only ColdFusion's image engine generates (EX-FILE-RENDITION).
   /tasks/render/{size}:
     parameters:
       - $ref: '#/components/parameters/RenderSize'
@@ -2065,7 +2065,7 @@ paths:
           description: The ColdFusion error page for a known file whose stored object is absent, as legacy's streamFile fails on a missing file.
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including an image rendition of a custom size that was never stored, which only ColdFusion's image engine generates.
+          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including a sized image rendition that was never stored, the `file` size of `/tasks/render/file/` among them, which only ColdFusion's image engine generates (EX-FILE-RENDITION).
   /_api/resource/variation:
     get:
       operationId: resourceVariationGet
@@ -2192,14 +2192,28 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
   /core/modules/v1/rater/ajax/saveRate.cfm:
+    get:
+      operationId: raterSaveRateGet
+      summary: Answers the error page legacy gives a call that posts no form fields, saving nothing.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: &raterSaveRateKeys
+        - 'cfm:/core/modules/v1/rater/ajax/saverate.cfm'
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses:
+        '500':
+          $ref: '#/components/responses/ErrorPage'
+          description: The template reads the `contentID`, `siteID`, `userID` and `rate` form fields, which a GET does not post.
+        '503':
+          $ref: '#/components/responses/Unavailable'
     post:
       operationId: raterSaveRatePost
       summary: Saves the posted rating for a content node and returns its average rating as JSON text.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-route-keys:
-        - 'cfm:/core/modules/v1/rater/ajax/saverate.cfm'
+      x-opt2-route-keys: *raterSaveRateKeys
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         $ref: '#/components/requestBodies/RateForm'
@@ -2234,7 +2248,7 @@ paths:
     get:
       operationId: getSiteManagerTree
       summary: Reads the Site Manager tree level under a node.
-      description: 'Runs carch `list()` and the `list.cfm` view''s own logic over the request `rc` (the declared parameters plus `params`). `params.keywords` is present only when the request URL carries `keywords` (`url.keywords`). For the content modules (`…000`, `…003`, `…004`, `…099`) the view''s in-view sort write runs when `rc.orderperm` allows it (`orderperm`, `sorted`, `orderid`, `saveSort`, `startrow`), and its `session.flatViewArgs` updates are kept by this service. `rc` holds `topid` (after the empty-result fallback), `rsTop` (the `getList` rows) and `siteConfig` (`customTagGroups`, `scaffolding`, `dataCollection`, `hasLockableNodes`). For the content modules it also holds `sortBy` and `sortDirection` (as the view leaves them), `crumbdata` (`getCrumbList(topid)` rows with `siteid`), `copyContentID`, `copySiteID`, `copyAll` and, once copy info was saved, `copyModuleID`, `flatViewArgs` (the session site''s struct), `modulePerms` (`getPerm(<module id>)` verdicts keyed by the components and forms module ids) and `variations` (configBean `variations`). For `LEGACY` it holds `perm` (`getPerm(moduleid)`), `nextN` (`getNextN` struct), a `perm` verdict (`getPerm(contentid)`) on each `rsTop` row, `categoryCount`, `categories` (the category tree: `categoryID`, `name`, `isOpen`, `hasKids`, `children`) and, for compact display, `useLayoutManager`.'
+      description: 'Runs carch `list()` and the `list.cfm` view''s own logic over the request `rc` (the declared parameters plus `params`). `params.keywords` is present only when the request URL carries `keywords` (`url.keywords`). For the content modules (`…000`, `…003`, `…004`, `…099`) the view''s in-view sort write runs when `rc.orderperm` allows it (`orderperm`, `sorted`, `orderid`, `saveSort`, `startrow`), and its `session.flatViewArgs` updates are kept by this service. `rc` holds `topid` (after the empty-result fallback), `rsTop` (the `getList` rows) and `siteConfig` (`customTagGroups`, and `scaffolding`, `dataCollection` and `hasLockableNodes` as CFML tests the flags programs-sites `lookupSiteConfigFlags` answers for the site, a null `dataCollection` as the empty string the view fails on where it tests it; its unavailability answers the legacy-shaped 503). For the content modules it also holds `sortBy` and `sortDirection` (as the view leaves them), `crumbdata` (`getCrumbList(topid)` rows with `siteid`), `copyContentID`, `copySiteID`, `copyAll` and, once copy info was saved, `copyModuleID`, `flatViewArgs` (the session site''s struct), `modulePerms` (`getPerm(<module id>)` verdicts keyed by the components and forms module ids) and `variations` (configBean `variations`). For `LEGACY` it holds `perm` (`getPerm(moduleid)`), `nextN` (`getNextN` struct), a `perm` verdict (`getPerm(contentid)`) on each `rsTop` row, `categoryCount`, `categories` (the category tree: `categoryID`, `name`, `isOpen`, `hasKids`, `children`) and, for compact display, `useLayoutManager`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -8594,7 +8608,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     ServerError:
-      description: Legacy 500 `server_error`.
+      description: Legacy 500 `server_error`; a `comment` remote function (`delete`, `undelete`, `flag`, `markAsSpam`, `unMarkAsSpam`) answers it after it has run, as its void result fails the envelope.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -8717,7 +8731,7 @@ components:
           schema:
             $ref: '#/components/schemas/EmptyBody'
     VariationUnavailable:
-      description: Legacy-shaped 503, always once the branch is taken, as the script embeds mura.min.js and theme, renderer, resource-bundle and tracking values only the CFML runtime holds.
+      description: Legacy-shaped 503, always once the branch is taken, as the script embeds mura.min.js and theme, renderer, resource-bundle and tracking values only the CFML runtime holds (EX-VARIATION-SCRIPT).
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -10081,7 +10095,7 @@ components:
           minimum: 0
     InboxCounts:
       type: object
-      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      description: Inbox receipts over every tenant the registry has known, deleted sites included; `receipts` maps each asked event id to the tenants that applied it.
       required: [total, bySubscription]
       additionalProperties: false
       properties:
@@ -10120,7 +10134,7 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
         publishedNext:
@@ -10133,7 +10147,7 @@ components:
         publishedFrontier:
           type: string
           pattern: '^[0-9]+$'
-          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
         publishedUpTo:
           type: integer
           minimum: 0

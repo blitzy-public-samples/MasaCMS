@@ -218,8 +218,12 @@ describe('main', () => {
       details: { timeoutMs: 5000, queues: [{ service: 'reporting', queue: 'reporting-export-run', running: 1 }] },
     },
     {
-      error: new OrphanedWritesError([{ instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO }]),
-      details: { rows: [{ instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO }] },
+      error: new OrphanedWritesError([
+        { instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO, orphaned: true },
+      ]),
+      details: {
+        rows: [{ instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO, orphaned: true }],
+      },
     },
     { error: new MissingSubscriptionError(['timesheets.people.person.archived.v1']), details: { subscriptions: ['timesheets.people.person.archived.v1'] } },
     {

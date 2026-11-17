@@ -524,6 +524,27 @@ describe('comments proxy', () => {
   });
 });
 
+describe('rater save', () => {
+  const url = '/core/modules/v1/rater/ajax/saveRate.cfm';
+  const FORM_TYPE = { 'content-type': 'application/x-www-form-urlencoded' } as const;
+  const visitor = (site = SITE_A) => userHeaders({ sub: '', site, roles: [] });
+  const fields = (overrides: Record<string, string> = {}, omit?: string): string => {
+    const form = new URLSearchParams({ contentID: contentId(1), siteID: SITE_A, userID: USER_ID, rate: '5', ...overrides });
+    if (omit !== undefined) form.delete(omit);
+    return form.toString();
+  };
+
+  // The saved rating, the other site's 403 and a non-numeric rate are cases of the operation table below.
+  it.each<[string, number, Request['method'], string, string | undefined, () => Promise<Record<string, string>>]>([
+    ['a call without a user token', 401, 'POST', '', fields(), () => serviceHeaders('gateway')],
+    ['a missing rate field', 500, 'POST', '', fields({}, 'rate'), () => visitor()],
+    ['a GET, which posts no form fields', 500, 'GET', `?${fields()}`, undefined, () => visitor()],
+  ])('answers %s with the contract %i, writing nothing', async (_label, status, method, query, form, headers) => {
+    const res = await call({ method, url: `${url}${query}`, headers: { ...(await headers()), ...(form === undefined ? {} : FORM_TYPE) }, ...(form === undefined ? {} : { payload: form }) });
+    expect({ status: res.statusCode, writes: t.db.writes().length }).toEqual({ status, writes: 0 });
+  });
+});
+
 describe('migration objects', () => {
   const url = '/internal/v1/migration/objects';
   const key = `${TENANT_A.tenantId}/${FILE_A}.png`;
@@ -955,6 +976,24 @@ describe('full app responses', () => {
   const pdf = Object.entries(FILE_BYTES).find(([key]) => key.endsWith(`/${IDS.files.pdf}.pdf`))?.[1];
   const errorOf = (res: InjectResponse): unknown => (res.json() as { error: unknown }).error;
   const hasItems = (res: InjectResponse): boolean => Array.isArray((res.json() as { data: { items?: unknown } }).data.items);
+  /** programs-sites answering the feed settings lookup with tenant-a's settings, which every stored feed reads before its query. */
+  const tenantAFeedSettings = (): void =>
+    full.client.on('programs-sites', 'POST', '/internal/v1/sites/feed-settings:lookup', (req) => ({
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: {
+        items: (req.json as { siteIds: string[] }).siteIds.map(() => ({
+          siteID: SITE_A,
+          contact: 'webmaster@tenant-a.example',
+          javaLocale: 'en_US',
+          domain: 'tenant-a.example',
+          domainAliases: [],
+          enforcePrimaryDomain: false,
+          useSSL: false,
+          remote: null,
+        })),
+      },
+    }));
 
   /** One request to the composition root and what its answer must hold beyond the contract. */
   interface FullCase {
@@ -1068,7 +1107,10 @@ describe('full app responses', () => {
       method: 'GET',
       url: `/_api/feed/v1/${SITE_A}?feedid=${IDS.feeds.local}`,
       headers: visitor,
-      setup: () => full.db.respond(/"content"\."feed"/, [feedRow({ feedid: IDS.feeds.local, restricted: 1, restrictgroups: 'Editor' })]),
+      setup: () => {
+        full.db.respond(/"content"\."feed"/, [feedRow({ feedid: IDS.feeds.local, restricted: 1, restrictgroups: 'Editor' })]);
+        tenantAFeedSettings();
+      },
       status: 401,
       verify: (res) => {
         expect(res.headers['content-type']).toBe('application/rss+xml; charset=UTF-8');
@@ -1076,12 +1118,16 @@ describe('full app responses', () => {
       },
     },
     {
-      name: 'fails a rendered feed closed with the legacy 503, as its site settings live in programs-sites',
+      name: 'renders a stored feed as legacy RSS 2.0 with the site settings programs-sites resolves',
       method: 'GET',
       url: `/_api/feed/v1/${SITE_A}?feedid=${IDS.feeds.local}`,
       headers: visitor,
-      status: 503,
-      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Unhandled Exception', code: 'server_error' }),
+      setup: tenantAFeedSettings,
+      status: 200,
+      verify: (res) => {
+        expect({ type: res.headers['content-type'], language: res.headers['content-language'] }).toEqual({ type: 'text/xml;charset=UTF-8', language: 'en-US' });
+        expect(res.body).toContain('<webMaster>webmaster@tenant-a.example</webMaster>');
+      },
     },
     {
       name: 'answers the Site Manager tree as the legacy JSON of carch.loadsitemanager',

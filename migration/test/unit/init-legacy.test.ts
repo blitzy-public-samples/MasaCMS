@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { REDACTED, serializeError } from '@opt2/platform/logging';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -29,6 +30,7 @@ const sqlText = readFileSync(OPT2_SYNC_SQL_PATH, 'utf8');
 const LIVE = 'muradb';
 const CHECKPOINT_TABLE = 'opt2_sync.projector_checkpoint';
 const RESULT: InitLegacyResult = { schema: 'opt2_sync', table: CHECKPOINT_TABLE };
+const UNAVAILABLE = 'Schema opt2_sync could not be created in the legacy database, so no unit may become target-authoritative';
 const SCHEMA_GUARD = /IF\s+SCHEMA_ID\(N'opt2_sync'\)\s+IS\s+NULL\s+EXEC\(N'CREATE\s+SCHEMA\s+opt2_sync'\)/i;
 const TABLE_GUARD =
   /IF\s+OBJECT_ID\(N'opt2_sync\.projector_checkpoint',\s*N'U'\)\s+IS\s+NULL\s+CREATE\s+TABLE\s+opt2_sync\.projector_checkpoint\s*\(/i;
@@ -321,6 +323,19 @@ describe('initLegacy', () => {
     },
   );
 
+  it.each(refusals)('serializes the refusal for %s as its SQL Server error number and stack frames only', async (_label, refusal, sqlErrorNumber) => {
+    const fake = masaLegacy();
+    fake.failNext((statement) => statement.sql === sqlText, refusal);
+
+    const { stack, ...fields } = serializeError(await refusalOf(initLegacy({ legacy: fake, logger: fakeLogger() })));
+    const [header, ...frames] = (stack ?? '').split('\n');
+
+    expect(fields).toStrictEqual({ type: 'Opt2SyncUnavailableError', message: `${UNAVAILABLE}: SQL Server error ${String(sqlErrorNumber)}` });
+    expect(header).toBe(`Opt2SyncUnavailableError: ${fields.message}`);
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(frame).toMatch(/^\s+at \S/);
+  });
+
   it.each([
     ['an unlisted SQL Server error number', sqlError(2714)],
     ['a lost connection', connectionLost()],
@@ -335,6 +350,23 @@ describe('initLegacy', () => {
     await expect(initLegacy({ legacy: fake, logger })).rejects.toBe(thrown);
     expect(logger.info).not.toHaveBeenCalled();
     await expect(opt2SyncReady(fake)).resolves.toBe(false);
+  });
+});
+
+describe('Opt2SyncUnavailableError safe text', () => {
+  const missing = 'opt2_sync.projector_checkpoint does not exist in the live legacy database';
+  const denied = "CREATE SCHEMA permission denied in database 'muradb'.";
+
+  it.each<[string, Opt2SyncUnavailableError, string]>([
+    ["the projector's missing checkpoint table", new Opt2SyncUnavailableError(missing, undefined), `${UNAVAILABLE}: ${missing}`],
+    ['an unnumbered SQL Server text', new Opt2SyncUnavailableError(denied, undefined), REDACTED],
+    ['an unnumbered SQL Server text caused by its driver error', new Opt2SyncUnavailableError(denied, undefined, { cause: sqlError(262, denied) }), 'SQL Server error 262'],
+  ])('serializes an error for %s with only its fixed text', (_label, error, message) => {
+    const record = serializeError(error);
+
+    expect(record).toMatchObject({ type: 'Opt2SyncUnavailableError', message });
+    expect(JSON.stringify(record)).not.toContain(denied);
+    expect(error.message).toBe(`${UNAVAILABLE}: ${error.reason}`);
   });
 });
 

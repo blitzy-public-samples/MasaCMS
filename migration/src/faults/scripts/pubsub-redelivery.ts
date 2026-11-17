@@ -78,6 +78,8 @@ const paramsSchema = z
     producers: z.array(z.enum(STATE_EVENT_PRODUCERS)).min(1).default([...STATE_EVENT_PRODUCERS]),
     since: z.iso.datetime({ offset: true }).optional(),
     drainTimeoutMs: z.number().int().positive().default(120_000),
+    // Bounds each producer's replay child, whose run grows with its outbox; 30 min covers the seed's ~15.7k state events on a loaded host.
+    replayTimeoutMs: z.number().int().positive().default(1_800_000),
   })
   .strict();
 
@@ -302,7 +304,7 @@ interface HeldRun {
 /** Replays while `held` pulls and witnesses watch the producers' topics, pushes each witnessed copy to its consumers, restores push delivery, then drains and compares. */
 async function redeliver(env: FaultEnv, params: PubsubRedeliveryParams, state: HeldRun): Promise<FaultRunOutput> {
   const { ctx } = env;
-  const { producers, drainTimeoutMs } = params;
+  const { producers, drainTimeoutMs, replayTimeoutMs } = params;
   const { since, plan, before, pubsub, held } = state;
   const participants = drainParticipants(ctx);
   const consumers = new Set(held.map((entry) => entry.consumer));
@@ -329,7 +331,7 @@ async function redeliver(env: FaultEnv, params: PubsubRedeliveryParams, state: H
         // Runs as the producer, with its own role and Pub/Sub project, never with migration's credentials.
         const outcome = await spawnChild(process.execPath, [outboxCliPath(), 'replay', '--since', since], {
           env: env.processControl.envOf(producer),
-          timeoutMs: drainTimeoutMs,
+          timeoutMs: replayTimeoutMs,
         });
         const count = replayedCount(outcome.stdoutTail);
         republished[producer] = count ?? null;
@@ -353,6 +355,7 @@ async function redeliver(env: FaultEnv, params: PubsubRedeliveryParams, state: H
   const details = {
     since,
     producers,
+    replayTimeoutMs,
     republished,
     subscriptions: held.map((entry) => entry.name),
     checksumKeys: before.size,

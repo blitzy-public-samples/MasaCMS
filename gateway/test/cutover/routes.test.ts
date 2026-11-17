@@ -1,4 +1,4 @@
-// Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings and orphan clearing.
+// Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings, both status versions and orphan clearing.
 import { readFile } from 'node:fs/promises';
 import { INVOCATION_HEADER, Roles, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
@@ -8,7 +8,8 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import type { InflightClearInput, InflightStore } from '../../src/cutover/inflight.js';
 import { registerCutoverRoutes } from '../../src/cutover/routes.js';
-import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus } from '../../src/cutover/state.js';
+import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
+import { pagesOf } from '../helpers/versions.js';
 
 const ROUTE = 'admin:cusers.update{type=1}';
 const AT = '2026-06-30T12:00:00.000+00:00';
@@ -25,6 +26,8 @@ const STATUS: CutoverStatus = {
   sessionMode: 'legacy-primary',
 };
 
+const STATUS_V2: CutoverStatusV2 = { ...STATUS, inflight: STATUS.inflight.map((group) => ({ ...group, orphaned: true })) };
+
 const LEGACY_RESTART = { kind: 'legacy-restart', holderId: 'window-1', at: AT } as const;
 const GATES_CLOSED = { kind: 'gates-closed', holderId: 'transition-1', at: AT, units: ['identity.group_account'] } as const;
 
@@ -32,7 +35,9 @@ type Call = [op: string, ...args: unknown[]];
 
 interface Behaviour {
   activate?: CutoverState['activate'];
-  freeze?: CutoverState['freeze'];
+  freeze?: CutoverState['freezePages'];
+  status?: CutoverState['statusPages'];
+  statusV2?: CutoverState['statusV2Pages'];
   clearOrphans?: InflightStore['clearOrphans'];
 }
 
@@ -67,24 +72,34 @@ async function cutoverApp(behaviour: Behaviour = {}): Promise<{ app: FastifyInst
       calls.push(['activate', input]);
       return (behaviour.activate ?? (() => Promise.resolve({ tableVersion: input.tableVersion, epoch: 4 })))(input);
     },
-    freeze(routes, actor) {
+    freeze: unexpected('freeze'),
+    freezePages(routes, actor) {
       calls.push(['freeze', routes, actor]);
-      return (behaviour.freeze ?? (() => Promise.resolve(STATUS)))(routes, actor);
+      return (behaviour.freeze ?? (() => Promise.resolve(pagesOf(STATUS))))(routes, actor);
     },
-    unfreeze(routes, actor) {
+    unfreeze: unexpected('unfreeze'),
+    unfreezePages(routes, actor) {
       calls.push(['unfreeze', routes, actor]);
-      return Promise.resolve({ ...STATUS, frozen: [] });
+      return Promise.resolve(pagesOf({ ...STATUS, frozen: [] }));
     },
-    status() {
+    status: unexpected('status'),
+    statusPages() {
       calls.push(['status']);
-      return Promise.resolve(STATUS);
+      return (behaviour.status ?? (() => Promise.resolve(pagesOf(STATUS))))();
+    },
+    statusV2Pages() {
+      calls.push(['statusV2']);
+      return (behaviour.statusV2 ?? (() => Promise.resolve(pagesOf(STATUS_V2))))();
     },
   };
   const inflight: InflightStore = {
     register: unexpected('register'),
     remove: unexpected('remove'),
+    abandon: unexpected('abandon'),
     list: unexpected('list'),
     summary: unexpected('summary'),
+    summaryPages: unexpected('summaryPages'),
+    orphanSummaryPages: unexpected('orphanSummaryPages'),
     clearOrphans(input: InflightClearInput) {
       calls.push(['clearOrphans', input]);
       return (behaviour.clearOrphans ?? (() => Promise.resolve({ cleared: 0, rows: [] })))(input);
@@ -135,6 +150,7 @@ const PROBES: Record<string, Probe> = {
   cutoverFreeze: { method: 'POST', url: '/internal/v1/cutover/freeze', path: '/internal/v1/cutover/freeze', payload: { routes: [ROUTE] } },
   cutoverUnfreeze: { method: 'POST', url: '/internal/v1/cutover/unfreeze', path: '/internal/v1/cutover/unfreeze', payload: { routes: [ROUTE] } },
   cutoverStatus: { method: 'GET', url: '/internal/v1/cutover/status', path: '/internal/v1/cutover/status' },
+  cutoverStatusV2: { method: 'GET', url: '/internal/v2/cutover/status', path: '/internal/v2/cutover/status' },
   inflightClearOrphans: {
     method: 'POST',
     url: '/internal/v1/inflight::clear-orphans',
@@ -177,7 +193,7 @@ async function call(
 }
 
 describe('registerCutoverRoutes', () => {
-  it('registers exactly the five contract operations with their declared roles and transport', async () => {
+  it('registers exactly the six contract operations with their declared roles and transport', async () => {
     const { app } = await cutoverApp();
     const paths = (contract as { paths: Record<string, Record<string, Record<string, unknown>>> }).paths;
     const declared = Object.entries(PROBES).map(([operationId, probe]) => {
@@ -280,15 +296,48 @@ describe('registerCutoverRoutes', () => {
     });
   });
 
-  it.each(['operator', 'migration'])('reports the status to %s', async (caller) => {
+  it.each<[string, string, string, CutoverStatus]>([
+    ['cutoverStatus', 'operator', 'status', STATUS],
+    ['cutoverStatus', 'migration', 'status', STATUS],
+    ['cutoverStatusV2', 'operator', 'statusV2', STATUS_V2],
+    ['cutoverStatusV2', 'migration', 'statusV2', STATUS_V2],
+  ])('answers %s to %s from the matching status read', async (operationId, caller, read, body) => {
     const { app, calls } = await cutoverApp();
-    expect(await call(app, PROBES.cutoverStatus!, { headers: await credentialOf(caller) })).toEqual({ status: 200, body: STATUS });
-    expect(calls).toEqual([['status']]);
+    expect(await call(app, PROBES[operationId]!, { headers: await credentialOf(caller) })).toEqual({ status: 200, body });
+    expect(calls).toEqual([[read]]);
   });
 
-  it('registers no HEAD sibling of the status route', async () => {
+  it.each(['cutoverStatus', 'cutoverStatusV2'])('streams %s read in several pages as one contract-valid JSON body, complete and in order', async (operationId) => {
+    const ids = Array.from({ length: 7 }, (_, i) => `gw-${String(i).padStart(2, '0')}`);
+    const instances = ids.map((instanceId, i) => ({ instanceId, seenEpoch: 3, heartbeatAt: AT, live: i === 0 }));
+    const groups = ids.slice(0, 5).map((instanceId, i) => ({ instanceId, route: ROUTE, side: 'target' as const, count: i + 1, oldestStartedAt: AT }));
+    const status: CutoverStatus = { ...STATUS, instances, inflight: groups };
+    const statusV2: CutoverStatusV2 = { ...STATUS, instances, inflight: groups.map((group, i) => ({ ...group, orphaned: i > 0 })) };
+    const sizes = { instances: 3, inflight: 2 };
+    const { app } = await cutoverApp({
+      status: () => Promise.resolve(pagesOf(status, sizes)),
+      statusV2: () => Promise.resolve(pagesOf(statusV2, sizes)),
+    });
+    const expected = operationId === 'cutoverStatus' ? status : statusV2;
+
+    expect(await call(app, PROBES[operationId]!)).toEqual({ status: 200, body: expected });
+    const res = await app.inject({ method: 'GET', url: PROBES[operationId]!.path, headers: await credentialOf('operator') });
+    expect(res.headers['content-type']).toBe('application/json; charset=utf-8');
+    expect(res.headers['content-length']).toBeUndefined();
+    expect(res.body).toBe(JSON.stringify(expected));
+  });
+
+  it.each(['cutoverStatus', 'cutoverStatusV2'])('answers %s with the legacy 500 before any status byte when the status head cannot be read', async (operationId) => {
+    const lost = (): Promise<never> => Promise.reject(new Error('database lost'));
+    const { app } = await cutoverApp({ status: lost, statusV2: lost });
+    const res = await app.inject({ method: 'GET', url: PROBES[operationId]!.path, headers: await credentialOf('operator') });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
+  });
+
+  it.each(['/internal/v1/cutover/status', '/internal/v2/cutover/status'])('registers no HEAD sibling of %s', async (url) => {
     const { app } = await cutoverApp();
-    const res = await app.inject({ method: 'HEAD', url: '/internal/v1/cutover/status', headers: await credentialOf('operator') });
+    const res = await app.inject({ method: 'HEAD', url, headers: await credentialOf('operator') });
     expect(res.statusCode).toBe(404);
   });
 
@@ -319,7 +368,7 @@ describe('registerCutoverRoutes', () => {
   });
 
   describe.each(Object.entries(PROBES))('access to %s', (operationId, probe) => {
-    const migrationAllowed = operationId === 'cutoverStatus' || operationId === 'inflightClearOrphans';
+    const migrationAllowed = ['cutoverStatus', 'cutoverStatusV2', 'inflightClearOrphans'].includes(operationId);
 
     it.each<[string, () => Promise<Record<string, string>>, number]>([
       ['no credential', () => Promise.resolve({}), 401],

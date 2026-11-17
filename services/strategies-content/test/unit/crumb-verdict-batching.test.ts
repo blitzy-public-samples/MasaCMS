@@ -13,7 +13,16 @@ import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
 import { registerChangesetRoutes } from '../../src/routes/v1/cchangesets.js';
-import { TEST_CLOCK, buildContentApp, openContentGates, userHeaders, withPgSchema, type ContentTestApp } from '../helpers/app.js';
+import {
+  SITE_CONFIG_FLAGS_PATH,
+  TEST_CLOCK,
+  buildContentApp,
+  openContentGates,
+  siteConfigFlagsAnswer,
+  userHeaders,
+  withPgSchema,
+  type ContentTestApp,
+} from '../helpers/app.js';
 import { roundTripCounter, type RoundTripCounter } from '../helpers/round-trips.js';
 import { changesetRow, contentRow, fileRow, seedRows, seedTenantRegistry, type SeedRow } from '../helpers/seed.js';
 
@@ -94,8 +103,9 @@ function treeRows(): SeedRow[] {
   ];
 }
 
-/** The identity calls the panels make: the admin session state, the session user and the CSRF tokens of the printed contexts. */
-function answerIdentity(req: ServiceRequest): ServiceResponse {
+/** The service calls the panels make: identity's admin session state, session user and CSRF tokens of the printed contexts, and programs-sites' site flags. */
+function answerIdentity(req: ServiceRequest): ServiceResponse | Promise<ServiceResponse> {
+  if (req.service === 'programs-sites' && req.method === 'POST' && req.path === SITE_CONFIG_FLAGS_PATH) return siteConfigFlagsAnswer()(req);
   if (req.service === 'identity' && req.method === 'GET' && req.path === '/v1/sessions/current/admin-state') return { status: 200, headers: {}, body: {} };
   if (req.service === 'identity' && req.method === 'GET' && req.path === '/v1/sessions/current') return { status: 200, headers: {}, body: { user: { userID: USER, fname: 'Edit', lname: 'Or' } } };
   if (req.service === 'identity' && req.method === 'POST' && req.path === '/v1/csrf/tokens') {

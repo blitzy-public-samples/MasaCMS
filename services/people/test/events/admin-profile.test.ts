@@ -105,7 +105,7 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     userMemberships: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
     membershipGroupIds: () => Promise.reject(new Error('unexpected membershipGroupIds')),
     siteGroups: () => Promise.reject(new Error('unexpected siteGroups')),
-    userGroups: () => Promise.reject(new Error('unexpected userGroups')),
+    userGroupsPage: () => Promise.reject(new Error('unexpected userGroupsPage')),
     loginBlock: () => Promise.reject(new Error('unexpected loginBlock')),
     groupFavoriteIds: () => Promise.reject(new Error('unexpected groupFavoriteIds')),
     async actingUser() {

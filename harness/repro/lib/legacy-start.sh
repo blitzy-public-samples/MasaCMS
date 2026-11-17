@@ -118,6 +118,19 @@ load_legacy_env() {
   [[ -n $LEGACY_PORT ]] || die "legacy port unknown: set PORT (or OPT2_LEGACY_PORT)"
 }
 
+# Dies, ColdFusion untouched, when application start-up would restore a deploy bundle or create the project site.
+refuse_startup_writers() {
+  local bundle="$REPO/config/setup/deploy/bundle.zip"
+  # Masa reads /tmp/MuraBundle.zip whenever MURA_DATASOURCE is set [core/appcfc/applicationSettings.cfm:146].
+  if [[ -n ${MURA_DATASOURCE:-} ]]; then bundle=/tmp/MuraBundle.zip; fi
+  [[ ! -f $bundle ]] ||
+    die "start-up guard (deploy bundle): $bundle exists and Masa start-up would restore it; ColdFusion was not started"
+  # Set, even empty, and not `default` (compared case-insensitively), Masa start-up creates the site it names.
+  if [[ -n ${MURA_PROJECTSITEID+set} && ${MURA_PROJECTSITEID,,} != default ]]; then
+    die "start-up guard (project site): MURA_PROJECTSITEID is '$MURA_PROJECTSITEID', not default; ColdFusion was not started"
+  fi
+}
+
 # Renders server.json.template by value into $SERVER_JSON; OPT2_CF_* overrides win over server-capture.json.
 render_server_json() {
   local home engine jvm
@@ -303,9 +316,10 @@ start_server() {
   local key
   key="$(secret bridge-hmac-key)" || exit 1
   # setsid keeps the JVM out of the caller's process group, which the migration service may signal on a timeout.
+  # Plugin discovery and DB updates stay off, so application start-up runs neither writer.
   # MURA_BROADCASTCLUSTERCOMMANDS=false: no cluster reload commands, as the start-up guard on content units requires.
-  PORT="$LEGACY_PORT" MURA_PING=false MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" \
-    OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
+  PORT="$LEGACY_PORT" MURA_PING=false MURA_AUTODISCOVERPLUGINS=false MURA_APPLYDBUPDATES=false \
+    MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
     setsid --wait box server start serverConfigFile="$SERVER_JSON" --noSaveSettings </dev/null >&2 ||
     die "box server start serverConfigFile=$SERVER_JSON failed"
 }
@@ -376,7 +390,8 @@ run_original() {
     print_summary original "" "$name" "$port" "" "[]" "[]" "$SECONDS"
     return 0
   fi
-  unset MURA_PING MURA_BROADCASTCLUSTERCOMMANDS OPT2_BRIDGE_HMAC_KEY OPT2_GATEWAY_ORIGIN
+  unset MURA_PING MURA_AUTODISCOVERPLUGINS MURA_APPLYDBUPDATES MURA_BROADCASTCLUSTERCOMMANDS OPT2_BRIDGE_HMAC_KEY \
+    OPT2_GATEWAY_ORIGIN
   log_step b "start the original server $name"
   PORT="$LEGACY_PORT" setsid --wait box server start name="$name" --noSaveSettings </dev/null >&2 ||
     die "box server start name=$name failed"
@@ -397,6 +412,7 @@ if [[ $MODE == original ]]; then
   exit 0
 fi
 if [[ $MODE == tasks-file && ! -f $TASKS_FILE ]]; then die "tasks file $TASKS_FILE does not exist"; fi
+refuse_startup_writers
 
 log_step a "render $SERVER_JSON and check the $LEGACY_SERVER_NAME registration"
 render_server_json

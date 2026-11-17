@@ -51,7 +51,15 @@ import {
   type LocalTaskPort,
   type TaskPort,
 } from '../../src/tasks/index.js';
-import { rlsSql, tenantDbFromPool, tenantRegistrySql, withTenant } from '../../src/tenancy/index.js';
+import {
+  registeredTenants,
+  rlsSql,
+  tenantDbFromPool,
+  tenantIdForSite,
+  tenantRegistryConsumer,
+  tenantRegistrySql,
+  withTenant,
+} from '../../src/tenancy/index.js';
 import {
   TENANT_A,
   TENANT_B,
@@ -680,6 +688,29 @@ describe('outbox sweep, drain counts and replay', () => {
     expect(received).not.toContain((older[0] as EventEnvelope).eventId);
     expect(received).not.toContain((held[0] as EventEnvelope).eventId);
     expect(await stamps()).toEqual(stampedBefore);
+  });
+
+  it('counts, sweeps and replays the rows of a tenant whose site the registry marks deleted', async () => {
+    const siteId = 'tenant-deleted';
+    const tenantId = tenantIdForSite(siteId);
+    for (const [aggregateVersion, deleted] of [[1, false], [2, true]] as const) {
+      await withTenant(fx.handle.app, tenantId, (tx) =>
+        tenantRegistryConsumer.apply(tx, { tenantId, aggregateType: 'site', aggregateId: siteId, aggregateVersion, payload: { siteId, deleted } }),
+      );
+    }
+    expect((await registeredTenants(fx.handle.app)).map((entry) => entry.tenantId)).not.toContain(tenantId);
+    const seeded = await seedUnpublished(fx, tenantId, 1);
+    expect((await outboxDrainCounts(fx.handle.app)).tenants).toContainEqual({ tenantId, unpublished: 1, held: 0 });
+
+    const capture = createCapturingPublisher();
+    const result = await sweepOutbox(runtimeOf(fx, capture), { service: SERVICE, clock: CLOCK });
+
+    expect(result).toMatchObject({ failed: 0, tenants: TENANT_LIST.length + 1 });
+    expect(capture.published.map(({ envelope }) => envelope.eventId)).toEqual(expect.arrayContaining(seeded));
+    expect(Object.values(await publishedAt(fx, tenantId, seeded))).not.toContain(null);
+    const replay = createCapturingPublisher();
+    expect(await runReplay({ runtime: runtimeOf(fx, replay), since: new Date(0) })).toMatchObject({ failed: 0, tenants: TENANT_LIST.length + 1 });
+    expect(replay.published.map(({ envelope }) => envelope.eventId)).toEqual(expect.arrayContaining(seeded));
   });
 
   it('fails only an oversized row and goes on publishing its tenant and later tenants without ending early', async () => {

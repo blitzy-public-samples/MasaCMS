@@ -1,5 +1,6 @@
 /** Legacy wire contract of the JSON API front controller: site resolution, route keys, envelope, headers, registration and error map. */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { inspect } from 'node:util';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   LEGACY_ERROR_MAP,
   LEGACY_JSON_CONTENT_TYPE,
@@ -10,6 +11,7 @@ import {
   type RouteKeyOptions,
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { contentEntities, isContentEntity } from '../../src/legacy/jsonapi-entities.js';
 import {
@@ -358,8 +360,6 @@ describe('entity registration and the legacy error map', () => {
   interface ErrorCase {
     name: string;
     type: LegacyApiErrorType;
-    /** When legacy's request.mura404 overrides the map's status. */
-    status?: number;
     wwwAuthenticate?: string;
     request: ApiCall;
   }
@@ -385,7 +385,6 @@ describe('entity registration and the legacy error map', () => {
       wwwAuthenticate: WWW_AUTHENTICATE.basic,
       request: { url: `/_api/rest/v1/${SITE}${PAGE_ONE_PATH}` },
     },
-    { name: 'an unknown _path, under request.mura404', type: 'invalidMethodCall', status: 404, request: { url: `${API}/content/_path/no/such/page` } },
     // Only a path pair that sanitises to `method` makes the entity route invoke it; `?method=submitForm` keys to `entity.findall`.
     {
       name: 'the entity route invoking submitForm, which publicMethods lists but no function declares',
@@ -394,14 +393,53 @@ describe('entity registration and the legacy error map', () => {
     },
   ];
 
-  it.each(ERROR_CASES)('answers $name with the $type row, writing nothing', async ({ type, status, wwwAuthenticate, request }) => {
+  it.each(ERROR_CASES)('answers $name with the $type row, writing nothing', async ({ type, wwwAuthenticate, request }) => {
     api.db.clear();
     const res = await send(api, request);
-    expect(res.statusCode).toBe(status ?? LEGACY_ERROR_MAP[type].status);
+    expect(res.statusCode).toBe(LEGACY_ERROR_MAP[type].status);
     const body = bodyOf(res);
     expect(body.apiversion).toBe('v1');
     expect(body.error).toEqual(errorBody(type));
     expect(res.headers['www-authenticate']).toBe(wwwAuthenticate);
+    expect(api.db.writes()).toEqual([]);
+  });
+
+  // ACF's `file` scope makes `file` a defined, non-public method. A path names it only after a site id that is a
+  // variable name (`umbrella`, `default`), or as the first segment.
+  const POOL_API = `/_api/json/v1/${TENANT_UMBRELLA.siteId}`;
+  it.each(
+    (
+      [
+        ['GET', `${POOL_API}/file`, TENANT_UMBRELLA.siteId, 'file'],
+        ['GET', `${POOL_API}/file/properties`, TENANT_UMBRELLA.siteId, 'file'],
+        ['GET', `${POOL_API}/file/abc`, TENANT_UMBRELLA.siteId, 'file'],
+        ['GET', `${POOL_API}/File/properties`, TENANT_UMBRELLA.siteId, 'File'],
+        ['POST', `${POOL_API}/file`, TENANT_UMBRELLA.siteId, 'file'],
+        ['GET', `${API}/?method=file`, SITE, 'file'],
+        ['GET', '/_api/json/v1/file', 'default', 'file'],
+      ] as const
+    ).flatMap(([method, url, site, reported]) => (['anonymous', 's2'] as const).map((subject) => [method, url, subject, site, reported] as const)),
+  )('answers %s %s as %s with the legacy invalid method call body, writing nothing', async (method, url, subject, site, reported) => {
+    api.db.clear();
+    const res = await send(api, { method, url, headers: await contentHeaders(subject, { site }) });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe(JSON.stringify({ apiversion: 'v1', method: reported, error: errorBody('invalidMethodCall') }));
+    expect(api.db.writes()).toEqual([]);
+  });
+
+  it('serves the file entity at file/properties after a site id that is no variable name, skipping the direct method', async () => {
+    const res = await send(api, { url: `${API}/file/properties` });
+    expect(res.statusCode).toBe(200);
+    expect(bodyOf(res)).toMatchObject({ method: 'findProperties', data: { displayname: 'file' } });
+  });
+
+  it('answers an unknown _path, whose 404 page data only the CFML theme renderer prints, with the legacy-shaped 503, writing nothing', async () => {
+    api.db.clear();
+    const res = await send(api, { url: `${API}/content/_path/no/such/page` });
+    expect(res.statusCode).toBe(503);
+    const body = bodyOf(res);
+    expect(body.apiversion).toBe('v1');
+    expect(body.error).toEqual(errorBody('server_error'));
     expect(api.db.writes()).toEqual([]);
   });
 
@@ -426,6 +464,135 @@ describe('entity registration and the legacy error map', () => {
     expect(body.method).toBe('save');
     expect((body.data as Struct).errors).toEqual({ template: 'invalid template' });
     expect(api.db.writes()).toEqual([]);
+  });
+});
+
+describe('the catch (Any e) exception log', () => {
+  /** The `log.error` arguments of the request loggers created while `fn` runs. */
+  async function errorLogsOf(fn: () => Promise<unknown>): Promise<unknown[][]> {
+    const log = api.app.log;
+    const child = log.child.bind(log);
+    const calls: unknown[][] = [];
+    const factory = vi.spyOn(log, 'child').mockImplementation((...args: Parameters<typeof log.child>) => {
+      const logger = child(...args);
+      vi.spyOn(logger, 'error').mockImplementation((...logged: unknown[]) => void calls.push(logged));
+      return logger;
+    });
+    try {
+      await fn();
+    } finally {
+      factory.mockRestore();
+    }
+    return calls;
+  }
+
+  it.each([
+    ['a handler raising server_error', { url: `${API}/?method=findCrumbArray&entityname=content` }, 500, true],
+    ['an entity delete without an id', { method: 'DELETE', url: `${API}/content` }, 500, true],
+    ['a route key resolving to server_error', { url: `${API}/login/m!ethod/submitForm?method=zz` }, 500, true],
+    ['a denial', { url: '/_api/json/v1' }, 400, false],
+  ] satisfies Array<[string, ApiCall, number, boolean]>)('logs %s at error severity only for a server_error', async (_label, request, status, logged) => {
+    let statusCode = 0;
+    const calls = await errorLogsOf(async () => {
+      statusCode = (await send(api, request)).statusCode;
+    });
+    expect(statusCode).toBe(status);
+    expect(calls).toEqual(logged ? [[{ error: expect.objectContaining({ type: expect.any(String), message: expect.any(String), stack: expect.any(String) }) }, 'unhandled JSON API error']] : []);
+  });
+});
+
+describe('the default site URLs of blank rows', () => {
+  const BLANK_PAGE = `${API}/content?pageIndex=0&itemsPerPage=1&fields=url,assocurl`;
+  let withDefault: TestApp;
+
+  beforeAll(async () => {
+    // A `default` site beside the fixture tenants, whose settings settingsManager.getSite('') answers.
+    withDefault = await contentApi({}, async (db) => {
+      const { rows } = await db.withMetadata((tx) => tx.query<Struct>(`SELECT * FROM ${db.schema}.tenant_registry WHERE NOT deleted ORDER BY site_id`));
+      const tenantB = rows.find((row) => row['site_id'] === TENANT_B.siteId);
+      const defaultRow = { ...tenantB, site_id: 'default', tenant_id: '6f0c3d2e-5b1a-5c4d-9e8f-7a6b5c4d3e2f', domains: ['default.opt2.test'] };
+      db.respond(/ FROM \S*tenant_registry WHERE NOT deleted ORDER BY site_id$/, () => [defaultRow, ...rows]);
+    });
+  });
+
+  afterAll(async () => {
+    await withDefault?.close();
+  });
+
+  it('builds them from the registered default site in the request\'s registry snapshot', async () => {
+    const res = await send(withDefault, { url: BLANK_PAGE });
+    expect(res.statusCode).toBe(200);
+    expect(dataOf(res).items).toEqual([expect.objectContaining({ url: 'http://default.opt2.test/', assocurl: 'http://default.opt2.test/', siteid: '' })]);
+  });
+
+  it('fails closed when no default site is registered', async () => {
+    expect((await send(api, { url: BLANK_PAGE })).statusCode).toBe(503);
+  });
+});
+
+describe('JSON API unhandled-exception log', () => {
+  const PROBE = 'connection to 10.0.0.7 refused for jane.doe@example.test with password=Hunter2-probe';
+  const MESSAGE = 'unhandled JSON API error';
+  let failure: Error = new Error(PROBE);
+  let failing: TestApp;
+
+  beforeAll(async () => {
+    failing = await contentApi({}, async (db) => {
+      db.respond(ACTIVE_READ, () => {
+        throw failure;
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await failing?.close();
+  });
+
+  /** Makes every later request logger of the app a child of a logger built as createService builds the app's own; returns its lines and `error` calls. */
+  function captureRequestLogs(): { lines: string[]; errorCalls: () => unknown[][] } {
+    const lines: string[] = [];
+    const errorSpies: Array<{ mock: { calls: unknown[][] } }> = [];
+    const { name, version, env } = failing.app.opt2;
+    const root = createLogger({
+      service: name,
+      version,
+      env: env.OPT2_ENV,
+      level: env.LOG_LEVEL,
+      googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
+      destination: { write: (line: string) => void lines.push(line) },
+    }) as unknown as TestApp['app']['log'];
+    // Fastify derives each request logger from app.log, which a ready app no longer lets a caller replace.
+    vi.spyOn(failing.app.log, 'child').mockImplementation((bindings, options) => {
+      const logger = root.child(bindings, options);
+      errorSpies.push(vi.spyOn(logger, 'error'));
+      return logger;
+    });
+    return { lines, errorCalls: () => errorSpies.flatMap((spy) => spy.mock.calls) };
+  }
+
+  it.each<[string, Error, string]>([
+    ['an error whose message carries credentials', new Error(PROBE), REDACTED],
+    ['a PostgreSQL error, kept as its SQLSTATE', Object.assign(new Error(PROBE), { code: '42P01', severity: 'ERROR' }), 'PostgreSQL error 42P01'],
+  ])('answers server_error for %s, logging only its serialized record', async (_label, thrown, safeMessage) => {
+    failure = thrown;
+    const logs = captureRequestLogs();
+    failing.db.clear();
+
+    const res = await send(failing, { url: `${API}${PAGE_ONE_PATH}`, headers: { 'x-request-id': 'jsonapi-log-probe' } });
+
+    expect(res.statusCode).toBe(LEGACY_ERROR_MAP.server_error.status);
+    expect(bodyOf(res)).toStrictEqual({ apiversion: 'v1', method: 'findOne', error: errorBody('server_error') });
+    expect(failing.db.writes()).toEqual([]);
+    const record = { type: 'Error', message: safeMessage, stack: expect.stringMatching(/^Error: .+(?:\n {4}at \S.*)+$/) };
+    expect(logs.errorCalls().filter(([, text]) => text === MESSAGE)).toStrictEqual([[{ error: record }, MESSAGE]]);
+    const lines = logs.lines.map((text) => JSON.parse(text) as Struct).filter((line) => line.message === MESSAGE);
+    expect(lines).toStrictEqual([expect.objectContaining({ severity: 'ERROR', requestId: 'jsonapi-log-probe', error: record })]);
+    expect((lines[0]?.error as { stack: string }).stack.split('\n')[0]).toBe(`Error: ${safeMessage}`);
+    expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
+    for (const text of [PROBE, '10.0.0.7', 'jane.doe@example.test', 'password=', 'Hunter2-probe']) {
+      expect(inspect(logs.errorCalls(), { depth: null })).not.toContain(text);
+      expect(logs.lines.join('\n')).not.toContain(text);
+    }
   });
 });
 
@@ -545,7 +712,7 @@ describe('the ignored JSONApi site flag', () => {
     // is added to the registry rows to show the route serves the site without reading it.
     flagged = await contentApi({}, async (db) => {
       const { rows } = await db.withMetadata((tx) => tx.query(`SELECT * FROM ${db.schema}.tenant_registry ORDER BY site_id`));
-      db.respond(/ FROM \S*tenant_registry ORDER BY site_id$/, () => rows.map((row) => ({ ...row, jsonapi: 0 })));
+      db.respond(/ FROM \S*tenant_registry WHERE NOT deleted ORDER BY site_id$/, () => rows.map((row) => ({ ...row, jsonapi: 0 })));
     });
   });
 

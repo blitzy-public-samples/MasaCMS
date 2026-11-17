@@ -149,6 +149,7 @@ describe('image sizes domain without a database', () => {
     const db = untouchedDb();
 
     await expect(domain.listImageSizes(db, claims, 'beta')).rejects.toMatchObject({ statusCode: 403 });
+    await expect(domain.pageImageSizes(db, claims, 'beta', { limit: 1 })).rejects.toMatchObject({ statusCode: 403 });
     await expect(domain.saveImageSize(db, claims, { sizeid: SIZE_1, siteid: 'beta', name: 'x' })).rejects.toMatchObject({ statusCode: 403 });
     expect(db.withTenant).not.toHaveBeenCalled();
   });
@@ -302,6 +303,21 @@ describe.skipIf(!available)('image sizes domain against PostgreSQL', () => {
       [SIZE_3, 'c'],
     ]);
     expect(await changelog()).toHaveLength(3);
+  });
+
+  it('pages the site sizes by sizeid, each page naming the next one until the last', async () => {
+    for (const sizeid of [SIZE_3, SIZE_1, SIZE_2]) {
+      await domain.saveImageSize(handle.app, claims, { sizeid, siteid: 'alpha', name: sizeid.slice(0, 1), height: 'AUTO', width: '10' });
+    }
+    const ids = (page: { items: ImageSizeBean[] }) => page.items.map((size) => size.sizeId);
+
+    const first = await domain.pageImageSizes(handle.app, claims, 'alpha', { limit: 2 });
+    const last = await domain.pageImageSizes(handle.app, claims, 'alpha', { limit: 2, after: first.next ?? '' });
+
+    expect([ids(first), first.next]).toEqual([[SIZE_1, SIZE_2], SIZE_2]);
+    expect([ids(last), last.next]).toEqual([[SIZE_3], null]);
+    expect(await domain.pageImageSizes(handle.app, claims, 'alpha', { limit: 3 })).toEqual({ items: await domain.listImageSizes(handle.app, claims, 'alpha'), next: null });
+    expect(await domain.pageImageSizes(handle.app, otherClaims, 'alpha', { limit: 3 })).toEqual({ items: [], next: null });
   });
 
   it('deletes a stored size once, and an unknown one not at all', async () => {

@@ -102,15 +102,15 @@ export interface ContentObjectRow {
 }
 
 /**
- * Masa content node (`tcontent`) whose title and summary are those of its active version: a site-tree Folder or Page,
- * or a form-builder Form of the Forms module, whose version bodies hold the form definition JSON.
+ * Masa content node (`tcontent`) whose title and summary are those of its active version: a site-tree Folder, Page or
+ * File, or a form-builder Form of the Forms module, whose version bodies hold the form definition JSON.
  */
 export interface ContentRow {
   contentID: string;
   siteID: SiteKey;
   moduleID: string;
   parentID: string;
-  type: 'Folder' | 'Page' | 'Form';
+  type: 'Folder' | 'Page' | 'File' | 'Form';
   subType: 'Default';
   title: string;
   menuTitle: string;
@@ -125,6 +125,8 @@ export interface ContentRow {
   responseMessage?: string;
   /** Form only: the ids of its definition's fields, in page order. */
   fieldIDs?: string[];
+  /** File only: the pooled file it serves; each version's body is that file's filename, as Masa's upload sets it. */
+  fileID?: string;
   versions: ContentVersion[];
 }
 
@@ -214,6 +216,7 @@ const MAX_CATEGORIES_PER_NODE = 3;
 const FORM_TITLE = 'OPT-2 Seed Contact Form';
 const FORM_HOST_TITLE = 'OPT-2 Seed Contact Page';
 const FORM_RESPONSE_MESSAGE = '<p>Thank you, your message has been received.</p>';
+const FILE_TITLE = 'OPT-2 Seed Document';
 // Every template of the installed default theme except blank.cfm renders region 2 below the body.
 const FORM_COLUMN_ID = 2;
 const FORM_SECTION_ID = '00000000-0000-0000-0000000000000000';
@@ -646,11 +649,40 @@ function buildForm(b: Build, site: SiteRow): [form: ContentRow, host: ContentRow
   return [form, host];
 }
 
+/** The site's File node under home, serving a PDF of its file pool; null when that pool holds no seeded PDF. */
+function buildFileContent(b: Build, site: SiteRow, files: readonly FileRow[]): ContentRow | null {
+  const pooled = files.filter((row) => row.siteID === site.filePoolID && row.fileExt === 'pdf');
+  if (pooled.length === 0) return null;
+  const rng = fork(b, site.siteID, 'file-content');
+  const file = rng.pick(pooled);
+  const contentID = newId(b, rng);
+  const [lastUpdate] = instants(b, rng, 1) as [string];
+  const summary = `<p>${rng.faker.lorem.sentence()}</p>`;
+  return {
+    contentID,
+    siteID: site.siteID,
+    moduleID: MASA_DEFAULT_MODULE_ID,
+    parentID: MASA_HOME_CONTENT_ID,
+    type: 'File',
+    subType: 'Default',
+    title: FILE_TITLE,
+    menuTitle: FILE_TITLE,
+    summary,
+    isNav: 1,
+    display: 1,
+    categoryIDs: [],
+    objects: [],
+    fileID: file.fileID,
+    versions: [{ contentHistID: newId(b, rng), title: FILE_TITLE, summary, body: file.filename, lastUpdate, approved: 1, active: 1 }],
+  };
+}
+
 /**
- * Content nodes counted for a site: folders under the home node first, then pages under home or a folder, then the page
- * hosting the site's form; the Form itself, a Forms-module item, precedes its host page and is not counted.
+ * Content nodes counted for a site: folders under the home node first, then pages under home or a folder, then one File
+ * node when the site's file pool holds a seeded PDF (tenant-b's own pool holds none), then the page hosting the site's
+ * form; the Form itself, a Forms-module item, precedes its host page and is not counted.
  */
-function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[]): ContentRow[] {
+function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[], files: readonly FileRow[]): ContentRow[] {
   const counts = b.config.sites[site.siteID].counts;
   if (counts.contentNodes === 0) return [];
   const slots = b.config.historyDays * MINUTES_PER_DAY;
@@ -661,6 +693,8 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
       ),
     );
   }
+  // The host page is always counted, so a File node takes the place of the last ordinary page only when there is one.
+  const file = counts.contentNodes > 1 ? buildFileContent(b, site, files) : null;
   const rng = fork(b, site.siteID, 'content');
   const { faker } = rng;
   const pooled = categories.filter((row) => row.siteID === site.categoryPoolID).map((row) => row.categoryID);
@@ -674,7 +708,7 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
       MAX.title,
     );
 
-  const nodes = Array.from({ length: counts.contentNodes - 1 }, (_, i): ContentRow => {
+  const nodes = Array.from({ length: counts.contentNodes - 1 - (file === null ? 0 : 1) }, (_, i): ContentRow => {
     const type: ContentRow['type'] = i < folderCount ? 'Folder' : 'Page';
     const contentID = newId(b, rng);
     const parentID =
@@ -712,7 +746,7 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
       versions,
     };
   });
-  return [...nodes, ...buildForm(b, site)];
+  return [...nodes, ...(file === null ? [] : [file]), ...buildForm(b, site)];
 }
 
 /** Pooled umbrella files: PNG images first, then PDF documents. */
@@ -787,8 +821,8 @@ export function buildMasa(config: SeedConfig, random: SeedRandom, calendar: Cale
   }
   const categories: CategoryRow[] = [];
   for (const site of sites) categories.push(...buildCategories(b, site, categories));
-  const content = sites.flatMap((site) => buildContent(b, site, categories));
   const files = buildFiles(b);
+  const content = sites.flatMap((site) => buildContent(b, site, categories, files));
   return { sites, groups, users, memberships, categories, content, files, oauthClients };
 }
 

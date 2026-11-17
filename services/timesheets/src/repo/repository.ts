@@ -20,10 +20,17 @@ export interface DayStateUpdate {
 /** The largest `itemsPerPage` of a sheet page, as envelope.cfc `page()` bounds it. */
 export const MAX_SHEETS_PER_PAGE = 1000;
 
-/** Filters and page of `listSheets`; an absent filter matches every sheet; `pageIndex` is from 1, `itemsPerPage` 1 to `MAX_SHEETS_PER_PAGE`. */
+/** Sheet order of `listSheets`: `list` by period start, person, then sheet id; `export` by period start, then sheet id. */
+export type SheetOrder = 'list' | 'export';
+
+/**
+ * Filters, order and page of `listSheets`; an absent filter matches every sheet; `order` defaults to `list`; `pageIndex` is from 1,
+ * `itemsPerPage` 1 to `MAX_SHEETS_PER_PAGE`.
+ */
 export interface SheetFilter {
   siteid?: string;
   personId?: string;
+  order?: SheetOrder;
   pageIndex: number;
   itemsPerPage: number;
 }
@@ -76,7 +83,10 @@ export type TimesheetsRepository = Repository & {
    * @returns the number of blackouts inserted.
    */
   insertBlackoutsIfAbsent(tx: TenantTx, rows: readonly NewRow<BlackoutRow>[], ctx?: WriteContext): Promise<number>;
-  /** One page of the tenant's sheets matching `filter`, as `usp_timesheet_status_list` pages them, and their count; RangeError for paging out of bounds. */
+  /**
+   * One page of the tenant's sheets matching `filter`, in `usp_timesheet_status_list` order or, for `export`, in the reporting export
+   * fixture's, and their count; RangeError for paging out of bounds.
+   */
   listSheets(tx: TenantTx, filter: SheetFilter): Promise<SheetPage>;
   /** The `listSheets` page with the states of its sheets' days, read in one more query; RangeError for paging out of bounds. */
   listSheetsWithDayStates(tx: TenantTx, filter: SheetFilter): Promise<SheetDayStatePage>;
@@ -123,6 +133,9 @@ function statementsFor(schema: string) {
     sheets:
       `SELECT ${sheetColumns} FROM ${sheets} t${sheetFilter}` +
       ' ORDER BY t."period_start", t."person_id" COLLATE "C", t."timesheet_id" COLLATE "C" LIMIT $3 OFFSET $4',
+    // The same index presorts by period start, so the database sorts only the sheets of each period by id.
+    exportSheets:
+      `SELECT ${sheetColumns} FROM ${sheets} t${sheetFilter}` + ' ORDER BY t."period_start", t."timesheet_id" COLLATE "C" LIMIT $3 OFFSET $4',
     sheet: `SELECT ${sheetColumns} FROM ${sheets} t WHERE t."timesheet_id" = $1::bpchar`,
     daysOfSheet: `SELECT ${dayColumns} FROM ${days} d WHERE d."timesheet_id" = $1::bpchar ORDER BY d."work_date", d."day_id" COLLATE "C"`,
     daysOfSheets:
@@ -170,7 +183,11 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
   }
 
   /** The `listSheets` page after fencing `units`; RangeError for paging out of bounds, before any query. */
-  async function readSheetPage(tx: TenantTx, { siteid, personId, pageIndex, itemsPerPage }: SheetFilter, units: readonly string[]): Promise<SheetPage> {
+  async function readSheetPage(
+    tx: TenantTx,
+    { siteid, personId, order = 'list', pageIndex, itemsPerPage }: SheetFilter,
+    units: readonly string[],
+  ): Promise<SheetPage> {
     if (!Number.isSafeInteger(pageIndex) || pageIndex < 1 || !Number.isInteger(itemsPerPage) || itemsPerPage < 1 || itemsPerPage > MAX_SHEETS_PER_PAGE) {
       throw new RangeError(`Sheet page out of range: pageIndex ${pageIndex}, itemsPerPage ${itemsPerPage}`);
     }
@@ -179,7 +196,8 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     const [{ total }] = (await tx.query<{ total: number }>(sql.countSheets, filter)).rows as [{ total: number }];
     const offset = (pageIndex - 1) * itemsPerPage;
     if (offset >= total) return { rows: [], total };
-    return { rows: (await tx.query<TimesheetRow>(sql.sheets, [...filter, itemsPerPage, offset])).rows, total };
+    const page = order === 'export' ? sql.exportSheets : sql.sheets;
+    return { rows: (await tx.query<TimesheetRow>(page, [...filter, itemsPerPage, offset])).rows, total };
   }
 
   function listSheets(tx: TenantTx, filter: SheetFilter): Promise<SheetPage> {

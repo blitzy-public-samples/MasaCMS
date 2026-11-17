@@ -3,20 +3,25 @@ export {
   buildFileManifest,
   readManifest,
   readManifestPage,
+  readManifestNames,
   streamManifest,
   snapshotDatabase,
   readSnapshotSites,
-  readSnapshotFileOwners,
+  readSnapshotFiles,
   SUPPORTED_FILE_STORE,
   MANIFEST_PAGE_ROWS,
+  FILE_LOOKUP_IDS,
   FileStoreUnsupportedError,
 } from './manifest.js';
-export type { FilesContext, ManifestKey, ManifestEntry, ManifestBuildResult } from './manifest.js';
+export type { FilesContext, FileRow, ManifestKey, ManifestEntry, ManifestBuildResult, SkipReason } from './manifest.js';
 
 export { transferFiles, planObjects, removeDroppedObjects, FileHashMismatchError } from './transfer.js';
-export type { PlannedObject, PlanOptions, TransferResult, RemovalResult } from './transfer.js';
+export type { PlannedObject, PlanOptions, RejectedObject, TransferResult, RemovalResult } from './transfer.js';
 
-export { diffSnapshotManifests, streamManifestDiff, compareManifestKeys } from './feed.js';
+export { withSpool } from './spool.js';
+export type { Spool } from './spool.js';
+
+export { diffSnapshotManifests, streamChangedEntries, streamDroppedEntries, streamManifestDiff, compareManifestKeys } from './feed.js';
 export type { ManifestDiff, ManifestDifference, DiffManifestOptions } from './feed.js';
 
 export {

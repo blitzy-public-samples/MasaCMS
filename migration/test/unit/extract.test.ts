@@ -296,7 +296,7 @@ describe('streamCanonicalRows on keyless tables', () => {
   it.each<[string, boolean]>([
     ['drained', false],
     ['abandoned after the first row', true],
-  ])('spills one-row runs under a 1-byte sortRunBytes, keeps the in-memory order and removes the runs when %s', async (_label, abandon) => {
+  ])('spills one-row runs under a 1-byte sortRunBytes, merges them down to two, keeps the in-memory order and removes the runs when %s', async (_label, abandon) => {
     seedFakeLegacy(db, { duplicates: 3 });
     const inMemory = await collect(streamCanonicalRows({ legacy: db, table: 'tmailinglistmembers' }));
     const spillDir = await scratchDir();
@@ -313,7 +313,8 @@ describe('streamCanonicalRows on keyless tables', () => {
     }
 
     expect(runDirs).toEqual([expect.stringMatching(/^opt2-extract-/)]);
-    expect(runFiles).toHaveLength(inMemory.length);
+    expect(inMemory.length).toBeGreaterThan(2);
+    expect(runFiles).toHaveLength(2);
     expect(spilled).toEqual(abandon ? inMemory.slice(0, 1) : inMemory);
     expect(await readdir(spillDir)).toEqual([]);
   });

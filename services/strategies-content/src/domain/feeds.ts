@@ -37,6 +37,7 @@ import {
 } from '../legacy/remote-feed.js';
 import type { BeanFeedSource } from '../repo/bean-feed-sql.js';
 import {
+  FEED_SELECT,
   FEED_SORT_OPTIONS,
   type FeedAdvancedParamFields,
   type FeedContentItemRow,
@@ -44,6 +45,7 @@ import {
   type FeedCount,
   type FeedFields,
   type FeedParamInput,
+  type FeedProjectionRow,
   type FeedQuery,
 } from '../repo/feed-queries.js';
 import type { ContentRepository, FeedAdvancedParamInput, FeedInput as FeedRowInput } from '../repo/repository.js';
@@ -1142,8 +1144,19 @@ export interface FeedContentOptions {
   applyPermFilter?: boolean;
   /** contentIntervalManager.apply of live feeds; legacy default true. */
   applyIntervals?: boolean;
+  /** The caller re-sorts every row it reads (FeedCriteria.resorted). */
+  resorted?: boolean;
   countOnly?: boolean;
 }
+
+/** A beanFeed `fields` row: the selected tcontent columns with transformFields' additions (feedBean.cfc:806-830). */
+export type FeedProjectedRow = FeedProjectionRow & Pick<FeedContentRow, 'siteid' | 'displayinterval' | 'displaystart' | 'displaystop' | 'display' | 'parenttype'>;
+
+/** A row of feedListContent: the default select, or a beanFeed `fields` projection. */
+export type FeedListRow = FeedContentRow | FeedProjectedRow;
+
+/** The columns transformFields adds to every `fields` select; `contentid` joins them when neither id is selected. */
+const PROJECTION_ADDITIONS: readonly string[] = ['displayinterval', 'displaystart', 'displaystop', 'display', 'siteid', 'parenttype'];
 
 /** The getFeed sort keys that order by one content column (feedGateway's cfcase list). */
 const COLUMN_SORTS: ReadonlySet<string> = new Set([
@@ -1159,16 +1172,16 @@ const FEED_ROW_COLUMNS: ReadonlySet<string> = new Set([
   'rating', 'totalvotes', 'downvotes', 'upvotes', 'comments', 'lockid', 'locktype', 'parenttype', 'assocfilename', 'filealttext',
 ]);
 
-/** Aliases whose `alias.column` references name a default feed row column of the same name. */
-const ROW_ALIASES: ReadonlySet<string> = new Set(['tcontent', 'tcontentstats', 'tfiles']);
+/** The default feed row column holding each `alias.column` of getFeed's select (feedGateway.cfc:317-327). */
+const ROW_REFERENCES: ReadonlyMap<string, string> = new Map(FEED_SELECT.map(([alias, column, name]) => [`${alias}.${column}`, name ?? column]));
 
 type MergeKey = { column: string; direction: 'asc' | 'desc' } | 'random';
 
 /** The column a merged sort reads for an ORDER BY reference, or undefined when the row does not hold it. */
 function rowColumn(reference: string): string | undefined {
-  const parts = reference.toLowerCase().split('.');
-  const column = parts.length === 2 && ROW_ALIASES.has(parts[0] ?? '') ? parts[1] : parts.length === 1 ? parts[0] : undefined;
-  return column !== undefined && FEED_ROW_COLUMNS.has(column) ? column : undefined;
+  const key = reference.toLowerCase();
+  if (key.includes('.')) return ROW_REFERENCES.get(key);
+  return FEED_ROW_COLUMNS.has(key) ? key : undefined;
 }
 
 /** getFeed's ORDER BY as merge keys over the returned rows; undefined where the rows lack a sort key (extended-attribute sorts). */
@@ -1213,9 +1226,9 @@ function compareValues(a: unknown, b: unknown): number {
 }
 
 /** The comparator of `keys` over feed rows; `random` draws one key per row. */
-function rowComparator(keys: readonly MergeKey[]): (a: FeedContentRow, b: FeedContentRow) => number {
-  const draws = new WeakMap<FeedContentRow, number>();
-  const draw = (row: FeedContentRow): number => {
+function rowComparator(keys: readonly MergeKey[]): (a: FeedListRow, b: FeedListRow) => number {
+  const draws = new WeakMap<FeedListRow, number>();
+  const draw = (row: FeedListRow): number => {
     const held = draws.get(row);
     if (held !== undefined) return held;
     const value = Math.random();
@@ -1288,6 +1301,7 @@ function feedCriteria(deps: FeedDeps, actor: Actor, bean: FeedBean, sites: reado
     sortDirection: bean.text('sortdirection'),
     orderBy: bean.text('orderby'),
     maxItems: numericLiteral(bean, 'maxitems'),
+    resorted: opts.resorted ?? false,
     distinct: cfBool(bean.get('distinct')),
     altTable: bean.text('alttable'),
     categoryPool,
@@ -1332,15 +1346,26 @@ function intervalRepeats(raw: string | null): boolean {
 }
 
 /** Whether contentIntervalManager.apply (contentIntervalManager.cfc:313-320) would expand or drop `row`. */
-function intervalApplies(row: FeedContentRow): boolean {
+function intervalApplies(row: FeedListRow): boolean {
   return row.display === 2 && (cfEq(row.parenttype ?? '', 'calendar') || intervalRepeats(row.displayinterval));
 }
 
-/** feedManager.getFeed of a local feed: one query per content-pool tenant, merged in the feed's sort, then `maxItems`, the permission filter and the calendar order. */
+/** feedListContent of a feed without beanFeed `fields`, whose rows are the default select. */
 export async function feedContent(deps: FeedDeps, actor: Actor, feed: FeedBean, opts: FeedContentOptions & { countOnly: true }): Promise<FeedCount>;
 export async function feedContent(deps: FeedDeps, actor: Actor, feed: FeedBean, opts?: FeedContentOptions & { countOnly?: false }): Promise<FeedContentRow[]>;
 export async function feedContent(deps: FeedDeps, actor: Actor, feed: FeedBean, opts: FeedContentOptions = {}): Promise<FeedContentRow[] | FeedCount> {
   if (feed.text('fields') !== '') throw new FeedContentUnsupportedError('Feeds with beanFeed fields are not served by feedContent');
+  if (opts.countOnly === true) return feedListContent(deps, actor, feed, { ...opts, countOnly: true });
+  return (await feedListContent(deps, actor, feed, { ...opts, countOnly: false })) as FeedContentRow[];
+}
+
+/**
+ * feedManager.getFeed of a local feed: one query per content-pool tenant, merged in the feed's sort, then `maxItems`,
+ * the permission filter and the calendar order. A feed with beanFeed `fields` selects only those (feedGateway.cfc:270-275).
+ */
+export async function feedListContent(deps: FeedDeps, actor: Actor, feed: FeedBean, opts: FeedContentOptions & { countOnly: true }): Promise<FeedCount>;
+export async function feedListContent(deps: FeedDeps, actor: Actor, feed: FeedBean, opts?: FeedContentOptions & { countOnly?: false }): Promise<FeedListRow[]>;
+export async function feedListContent(deps: FeedDeps, actor: Actor, feed: FeedBean, opts: FeedContentOptions = {}): Promise<FeedListRow[] | FeedCount> {
   const sites = await feedPoolSites(deps.db, actor.tenantId, await resolveContentPoolId(deps.db, feed));
   const criteria = feedCriteria(deps, actor, feed, sites, await feedCategoryIds(deps, actor, feed), opts);
   const calendarSort = cfEq(feed.text('sortby'), 'displayStart');
@@ -1355,16 +1380,23 @@ export async function feedContent(deps: FeedDeps, actor: Actor, feed: FeedBean, 
   }
   const keys = sites.length > 1 ? mergeKeys(feed) : [];
   if (keys === undefined) throw new FeedContentUnsupportedError(`The sort "${feed.text('sortby')}" of a multi-site feed reads columns its rows do not hold`);
-  const rowCriteria = { ...criteria, countOnly: false as const, fields: undefined, aggregates: undefined };
-  let rows = await readAcrossContentPool(
-    deps.db,
-    sites,
-    (tx) => deps.repository.feeds.feedContent(tx, rowCriteria),
-    keys.length > 0 ? rowComparator(keys) : undefined,
-  );
   const maxItems = criteria.maxItems ?? 0;
-  if (maxItems > 0 && rows.length > maxItems) rows = rows.slice(0, maxItems);
-  rows = await withPooledFiles(deps, sites, rows);
+  // beanFeed.setFields holds `tcontent.<column>` items.
+  const fields = cfListToArray(feed.text('fields')).map((field) => cfListToArray(field, '.').at(-1) ?? '');
+  let rows: FeedListRow[];
+  if (fields.length > 0) {
+    rows = await projectedRows(deps, sites, criteria, { fields, keys, maxItems });
+  } else {
+    const rowCriteria = { ...criteria, countOnly: false as const, fields: undefined, aggregates: undefined };
+    let listed = await readAcrossContentPool(
+      deps.db,
+      sites,
+      (tx) => deps.repository.feeds.feedContent(tx, rowCriteria),
+      keys.length > 0 ? rowComparator(keys) : undefined,
+    );
+    if (maxItems > 0 && listed.length > maxItems) listed = listed.slice(0, maxItems);
+    rows = await withPooledFiles(deps, sites, listed);
+  }
   if (opts.applyPermFilter === true) rows = await permitted(deps, actor, feed, rows);
   if ((criteria.liveOnly ?? true) && (opts.applyIntervals ?? true) && rows.some(intervalApplies)) {
     throw new FeedContentUnsupportedError('contentIntervalManager.apply');
@@ -1374,12 +1406,43 @@ export async function feedContent(deps: FeedDeps, actor: Actor, feed: FeedBean, 
   return rows;
 }
 
+/**
+ * The `fields` rows across the pool sites, merged in `keys` and cut to `maxItems`. Legacy sorts its one query in SQL, so
+ * a merge key the select lacks is selected too and dropped after the merge; DISTINCT keeps its select as legacy does.
+ */
+async function projectedRows(
+  deps: FeedDeps,
+  sites: readonly PoolSite[],
+  criteria: FeedQuery,
+  projection: { fields: readonly string[]; keys: readonly MergeKey[]; maxItems: number },
+): Promise<FeedProjectedRow[]> {
+  const { fields, keys, maxItems } = projection;
+  const selected = new Set([...fields.map((field) => field.toLowerCase()), ...PROJECTION_ADDITIONS]);
+  if (!selected.has('contenthistid')) selected.add('contentid');
+  const missing = keys.flatMap((key) => (key === 'random' || selected.has(key.column) ? [] : [key.column]));
+  const hidden = criteria.distinct === true ? [] : [...new Set(missing)];
+  const foreign = hidden.find((column) => !CONTENT_COLUMNS.has(column));
+  if (foreign !== undefined) throw new FeedContentUnsupportedError(`The ${foreign} sort of a multi-site fields feed reads a column outside tcontent`);
+  const rowCriteria = { ...criteria, countOnly: false as const, fields: [...fields, ...hidden], aggregates: undefined };
+  let rows = await readAcrossContentPool<FeedProjectedRow>(
+    deps.db,
+    sites,
+    // A `fields` select always holds transformFields' additions.
+    (tx) => deps.repository.feeds.feedContent(tx, rowCriteria) as Promise<FeedProjectedRow[]>,
+    keys.length > 0 ? rowComparator(keys) : undefined,
+  );
+  if (maxItems > 0 && rows.length > maxItems) rows = rows.slice(0, maxItems);
+  if (hidden.length === 0) return rows;
+  return rows.map((row) => Object.fromEntries(Object.entries(row).filter(([column]) => !hidden.includes(column))) as FeedProjectedRow);
+}
+
 /** permUtility.queryPermFilter (permission.cfc:710-754): the rows whose crumbs are unrestricted or allowed for the actor. */
-async function permitted(deps: FeedDeps, actor: Actor, feed: FeedBean, rows: readonly FeedContentRow[]): Promise<FeedContentRow[]> {
+async function permitted<R extends FeedListRow>(deps: FeedDeps, actor: Actor, feed: FeedBean, rows: readonly R[]): Promise<R[]> {
   if (rows.length === 0) return [];
   const siteId = feed.text('siteid');
+  // A `fields` row without `path` has its crumbs walked, as getCrumblist does without one.
   const crumbLists = await withTenant(deps.db, actor.tenantId, (tx) =>
-    deps.repository.content.crumbPaths(tx, { siteId, items: rows.map((row) => ({ contentId: row.contentid ?? '', path: row.path ?? '' })) }),
+    deps.repository.content.crumbPaths(tx, { siteId, items: rows.map((row) => ({ contentId: cfText(row.contentid), path: cfText(row.path) })) }),
   );
   const restrictions = await setRestrictions(deps, actor, crumbLists);
   return rows.filter((_row, at) => {

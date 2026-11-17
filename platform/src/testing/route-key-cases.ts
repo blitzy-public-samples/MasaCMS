@@ -585,6 +585,12 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
     'opt2:/opt2/stub/notes',
   ),
   conflict(
+    'synthetic-v1-namespace-form-siteid-overwrites-query',
+    'services/finance/contracts/openapi.yaml (synthetic /v1/ namespace; no legacy route)',
+    request('POST', `/v1/finance/records/${ID}/transitions/edit`, { query: { siteid: 'tenant-b' }, form: { siteid: 'tenant-a' } }),
+    `opt2:/v1/finance/records/${ID.toLowerCase()}/transitions/edit`,
+  ),
+  conflict(
     'cfc-proxy-remote-method',
     'core/modules/v1/comments/ajax/commentsProxy.cfc:88-114',
     request('POST', '/core/modules/v1/comments/ajax/commentsProxy.cfc', { query: { method: 'get' } }),

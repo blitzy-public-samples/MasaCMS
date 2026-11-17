@@ -43,6 +43,7 @@ export type InflightRowRecord = {
   side: 'legacy' | 'target';
   window_id: string | null;
   started_at: Date;
+  abandoned_at: Date | null;
 };
 
 /** `gateway.legacy_jar` row; `cookies` is the parsed jsonb. */
@@ -54,6 +55,7 @@ export type LegacyJarRow = {
   hydrated_epoch: string | null;
   updated_at: Date;
   identity_end_pending_at: Date | null;
+  last_active_at: Date;
 };
 
 /** `gateway.session_barrier` row; `xid` is numeric(20,0) as decimal text. */
@@ -153,7 +155,7 @@ interface TableDef {
 
 const primaryKey = (table: TableName, columns: readonly string[]): UniqueIndex => ({ name: `${table}_pkey`, columns });
 
-/** Constraints of migrations 0001–0004, under PostgreSQL's default constraint names. */
+/** Constraints of migrations 0001–0005, under PostgreSQL's default constraint names. */
 const TABLE_DEFS: Readonly<Record<TableName, TableDef>> = {
   cutover_state: {
     notNull: ['id', 'epoch'],
@@ -176,7 +178,7 @@ const TABLE_DEFS: Readonly<Record<TableName, TableDef>> = {
     checks: [{ name: 'inflight_side_check', test: (row) => row.side === 'legacy' || row.side === 'target' }],
   },
   legacy_jar: {
-    notNull: ['session_id', 'cookies', 'mode', 'updated_at'],
+    notNull: ['session_id', 'cookies', 'mode', 'updated_at', 'last_active_at'],
     unique: [
       primaryKey('legacy_jar', ['session_id']),
       { name: 'legacy_jar_legacy_session_uidx', columns: ['legacy_session_id'], where: (row) => row.legacy_session_id != null },
@@ -250,6 +252,12 @@ function bigintText(value: unknown): string | null {
   const parsed = BigInt(text.trim());
   if (parsed < INT8_MIN || parsed > INT8_MAX) throw pgError('22003', `value "${text}" is out of range for type bigint`);
   return parsed.toString();
+}
+
+/** A LIMIT parameter as a row count; NULL means no limit. */
+function limitValue(value: unknown): number | undefined {
+  const text = bigintText(value);
+  return text === null ? undefined : Number(text);
 }
 
 /** A numeric(20,0) parameter, rounded half away from zero, as decimal text. */
@@ -468,8 +476,13 @@ function orphans({ params, captures, tables, now }: Exec): InflightRowRecord[] {
       row.started_at.getTime() < before.getTime() &&
       (routes === null || routes.includes(row.route)) &&
       (instanceIds === null || instanceIds.includes(row.instance_id)) &&
-      !tables.instance.some((g) => g.instance_id === row.instance_id && isLive(g, now, seconds)),
+      isOrphaned(row, tables, now, seconds),
   );
+}
+
+/** `inflight.ts`'s orphan test: the row is abandoned or no live instance row holds it. */
+function isOrphaned(row: InflightRowRecord, tables: GatewayTables, now: Date, seconds: number): boolean {
+  return row.abandoned_at !== null || !tables.instance.some((g) => g.instance_id === row.instance_id && isLive(g, now, seconds));
 }
 
 function findJar(tables: GatewayTables, sessionId: string | null): LegacyJarRow | undefined {
@@ -497,10 +510,10 @@ const ISO_FORMAT = `'YYYY-MM-DD"T"HH24:MI:SS.MSTZH:TZM'`;
 const LIVE = `heartbeat_at >= now() - interval '{n} seconds'`;
 const INFLIGHT_COLUMNS =
   `i.instance_id, i.request_id, i.route, i.side, i.window_id, to_char(i.started_at::timestamptz, ${ISO_FORMAT}) AS started_at`;
+const ORPHANED = `(i.abandoned_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM instance AS g WHERE g.instance_id = i.instance_id AND g.${LIVE}))`;
 const ORPHAN_WHERE =
   `i.side = $1 AND i.started_at < $2::timestamptz AND ($3::text[] IS NULL OR i.route = ANY($3::text[])) ` +
-  `AND ($4::text[] IS NULL OR i.instance_id = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM instance AS g ` +
-  `WHERE g.instance_id = i.instance_id AND g.${LIVE})`;
+  `AND ($4::text[] IS NULL OR i.instance_id = ANY($4::text[])) AND ${ORPHANED}`;
 const JAR_UPSERT_COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
 const JAR_COLUMNS = `${JAR_UPSERT_COLUMNS}, identity_end_pending_at`;
 
@@ -563,14 +576,17 @@ on(
 
 on(
   `SELECT instance_id, seen_epoch, to_char(heartbeat_at::timestamptz, ${ISO_FORMAT}) AS heartbeat_at, (${LIVE}) AS live ` +
-    'FROM instance ORDER BY instance_id',
+    'FROM instance WHERE $1::text IS NULL OR instance_id > $1 ORDER BY instance_id LIMIT $2',
   'SELECT',
   [],
-  ({ captures, tables, now }) => {
+  ({ params, captures, tables, now }) => {
     const seconds = Number(captures[0]);
+    const after = pgText(params[0]);
     return selected(
       [...tables.instance]
+        .filter((row) => after === null || compareText(row.instance_id, after) > 0)
         .sort((a, b) => compareText(a.instance_id, b.instance_id))
+        .slice(0, limitValue(params[1]))
         .map((row) => ({
           instance_id: row.instance_id,
           seen_epoch: row.seen_epoch,
@@ -580,6 +596,13 @@ on(
     );
   },
 );
+
+on(`SELECT min(seen_epoch) AS acknowledged_epoch FROM instance WHERE ${LIVE}`, 'SELECT', [], ({ captures, tables, now }) => {
+  const seconds = Number(captures[0]);
+  const live = tables.instance.filter((row) => isLive(row, now, seconds)).map((row) => BigInt(row.seen_epoch));
+  const lowest = live.reduce<bigint | null>((min, epoch) => (min === null || epoch < min ? epoch : min), null);
+  return selected([{ acknowledged_epoch: lowest === null ? null : lowest.toString() }]);
+});
 
 on(
   'UPDATE cutover_state SET epoch = epoch + 1 WHERE id = 1 RETURNING table_version, previous_version, epoch',
@@ -652,6 +675,7 @@ on(
       side: pgText(params[3]),
       window_id: pgText(params[4]),
       started_at: stamp(now),
+      abandoned_at: null,
     } as InflightRowRecord;
     checkRow('inflight', proposed);
     tables.inflight.push(proposed);
@@ -664,6 +688,19 @@ on('DELETE FROM inflight WHERE instance_id = $1 AND request_id = $2', 'DELETE', 
   const requestId = pgText(params[1]);
   return changed(removeWhere(tables.inflight, (row) => row.instance_id === instanceId && row.request_id === requestId).length);
 });
+
+on(
+  'UPDATE inflight SET abandoned_at = now() WHERE instance_id = $1 AND request_id = $2 AND abandoned_at IS NULL',
+  'UPDATE',
+  ['inflight'],
+  ({ params, tables, now }) => {
+    const instanceId = pgText(params[0]);
+    const requestId = pgText(params[1]);
+    const rows = tables.inflight.filter((row) => row.instance_id === instanceId && row.request_id === requestId && row.abandoned_at === null);
+    for (const row of rows) row.abandoned_at = stamp(now);
+    return changed(rows.length);
+  },
+);
 
 on(
   `SELECT ${INFLIGHT_COLUMNS} FROM inflight AS i WHERE ($1::text IS NULL OR i.side = $1) ` +
@@ -689,33 +726,74 @@ on(
   },
 );
 
+/** Group key of an in-flight summary row; `orphaned` only in the `CutoverStatusV2` summary, where false sorts first. */
+type SummaryKey = { instance_id: string; route: string; side: string; orphaned?: boolean };
+
+const compareSummaryKeys = (a: SummaryKey, b: SummaryKey): number =>
+  compareText(a.instance_id, b.instance_id) ||
+  compareText(a.route, b.route) ||
+  compareText(a.side, b.side) ||
+  Number(a.orphaned ?? false) - Number(b.orphaned ?? false);
+
+/** One keyset page of `inflight.ts`'s summaries: rows grouped by `keyOf`, the groups after `after` in key order, at most `limit`. */
+function summaryPage(
+  tables: GatewayTables,
+  keyOf: (row: InflightRowRecord) => SummaryKey,
+  after: SummaryKey | null,
+  limit: number | undefined,
+): Outcome {
+  const groups = new Map<string, { key: SummaryKey; count: number; oldest: Date }>();
+  for (const row of tables.inflight) {
+    const key = keyOf(row);
+    if (after !== null && compareSummaryKeys(key, after) <= 0) continue;
+    const id = JSON.stringify(key);
+    const group = groups.get(id);
+    if (group === undefined) groups.set(id, { key, count: 1, oldest: row.started_at });
+    else groups.set(id, { key, count: group.count + 1, oldest: row.started_at < group.oldest ? row.started_at : group.oldest });
+  }
+  return selected(
+    [...groups.values()]
+      .sort((a, b) => compareSummaryKeys(a.key, b.key))
+      .slice(0, limit)
+      .map(({ key, count, oldest }) => ({ ...key, count, oldest_started_at: isoLocal(oldest) })),
+  );
+}
+
 on(
   `SELECT i.instance_id, i.route, i.side, count(*)::int AS count, to_char(min(i.started_at)::timestamptz, ${ISO_FORMAT}) ` +
-    'AS oldest_started_at FROM inflight AS i GROUP BY i.instance_id, i.route, i.side ORDER BY i.instance_id, i.route, i.side',
+    'AS oldest_started_at FROM inflight AS i WHERE $1::text IS NULL OR (i.instance_id, i.route, i.side) > ($1::text, $2::text, $3::text) ' +
+    'GROUP BY i.instance_id, i.route, i.side ORDER BY i.instance_id, i.route, i.side LIMIT $4',
   'SELECT',
   [],
-  ({ tables }) => {
-    const groups = new Map<string, { row: InflightRowRecord; count: number; oldest: Date }>();
-    for (const row of tables.inflight) {
-      const key = JSON.stringify([row.instance_id, row.route, row.side]);
-      const group = groups.get(key);
-      if (group === undefined) groups.set(key, { row, count: 1, oldest: row.started_at });
-      else groups.set(key, { row: group.row, count: group.count + 1, oldest: row.started_at < group.oldest ? row.started_at : group.oldest });
-    }
-    return selected(
-      [...groups.values()]
-        .sort(
-          (a, b) =>
-            compareText(a.row.instance_id, b.row.instance_id) || compareText(a.row.route, b.row.route) || compareText(a.row.side, b.row.side),
-        )
-        .map(({ row, count, oldest }) => ({
-          instance_id: row.instance_id,
-          route: row.route,
-          side: row.side,
-          count,
-          oldest_started_at: isoLocal(oldest),
-        })),
-    );
+  ({ params, tables }) => {
+    const afterInstance = pgText(params[0]);
+    const after: SummaryKey | null =
+      afterInstance === null ? null : { instance_id: afterInstance, route: pgText(params[1]) ?? '', side: pgText(params[2]) ?? '' };
+    return summaryPage(tables, (row) => ({ instance_id: row.instance_id, route: row.route, side: row.side }), after, limitValue(params[3]));
+  },
+);
+
+on(
+  `SELECT o.instance_id, o.route, o.side, o.orphaned, count(*)::int AS count, to_char(min(o.started_at)::timestamptz, ${ISO_FORMAT}) ` +
+    `AS oldest_started_at FROM (SELECT i.instance_id, i.route, i.side, i.started_at, ${ORPHANED} AS orphaned FROM inflight AS i) AS o ` +
+    'WHERE $1::text IS NULL OR (o.instance_id, o.route, o.side, o.orphaned) > ($1::text, $2::text, $3::text, $4::boolean) ' +
+    'GROUP BY o.instance_id, o.route, o.side, o.orphaned ORDER BY o.instance_id, o.route, o.side, o.orphaned LIMIT $5',
+  'SELECT',
+  [],
+  ({ params, captures, tables, now }) => {
+    const seconds = Number(captures[0]);
+    const afterInstance = pgText(params[0]);
+    const after: SummaryKey | null =
+      afterInstance === null
+        ? null
+        : { instance_id: afterInstance, route: pgText(params[1]) ?? '', side: pgText(params[2]) ?? '', orphaned: pgText(params[3]) === 'true' };
+    const keyOf = (row: InflightRowRecord): SummaryKey => ({
+      instance_id: row.instance_id,
+      route: row.route,
+      side: row.side,
+      orphaned: isOrphaned(row, tables, now, seconds),
+    });
+    return summaryPage(tables, keyOf, after, limitValue(params[4]));
   },
 );
 
@@ -743,9 +821,10 @@ on(`SELECT ${JAR_COLUMNS} FROM legacy_jar WHERE legacy_session_id = $1`, 'SELECT
 });
 
 on(
-  `INSERT INTO legacy_jar AS jar (${JAR_UPSERT_COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now()) ON CONFLICT (session_id) ` +
-    'DO UPDATE SET legacy_session_id = EXCLUDED.legacy_session_id, cookies = jar.cookies || EXCLUDED.cookies, ' +
-    `mode = EXCLUDED.mode, hydrated_epoch = EXCLUDED.hydrated_epoch, updated_at = EXCLUDED.updated_at RETURNING ${JAR_COLUMNS}`,
+  `INSERT INTO legacy_jar AS jar (${JAR_UPSERT_COLUMNS}, last_active_at) VALUES ($1, $2, $3::jsonb, $4, $5, now(), now()) ` +
+    'ON CONFLICT (session_id) DO UPDATE SET legacy_session_id = EXCLUDED.legacy_session_id, cookies = jar.cookies || EXCLUDED.cookies, ' +
+    'mode = EXCLUDED.mode, hydrated_epoch = EXCLUDED.hydrated_epoch, updated_at = EXCLUDED.updated_at, ' +
+    `last_active_at = EXCLUDED.last_active_at RETURNING ${JAR_COLUMNS}, (xmax = 0) AS inserted`,
   'INSERT',
   ['legacy_jar'],
   ({ params, tables, now }) => {
@@ -757,12 +836,13 @@ on(
       hydrated_epoch: bigintText(params[4]),
       updated_at: stamp(now),
       identity_end_pending_at: null,
+      last_active_at: stamp(now),
     } as LegacyJarRow;
     checkRow('legacy_jar', proposed);
     const existing = findJar(tables, proposed.session_id);
     if (existing === undefined) {
       tables.legacy_jar.push(proposed);
-      return changed(1, [copyRow(proposed)]);
+      return changed(1, [{ ...copyRow(proposed), inserted: true }]);
     }
     Object.assign(existing, {
       legacy_session_id: proposed.legacy_session_id,
@@ -770,8 +850,9 @@ on(
       mode: proposed.mode,
       hydrated_epoch: proposed.hydrated_epoch,
       updated_at: proposed.updated_at,
+      last_active_at: proposed.last_active_at,
     });
-    return changed(1, [copyRow(existing)]);
+    return changed(1, [{ ...copyRow(existing), inserted: false }]);
   },
 );
 
@@ -788,6 +869,42 @@ on('DELETE FROM legacy_jar WHERE session_id = $1', 'DELETE', ['legacy_jar'], ({ 
   return changed(removeWhere(tables.legacy_jar, (row) => row.session_id === sessionId).length);
 });
 
+on('UPDATE legacy_jar SET last_active_at = now() WHERE session_id = $1', 'UPDATE', ['legacy_jar'], ({ params, tables, now }) => {
+  const sessionId = pgText(params[0]);
+  const rows = tables.legacy_jar.filter((row) => row.session_id === sessionId);
+  for (const row of rows) row.last_active_at = stamp(now);
+  return changed(rows.length);
+});
+
+// The idle-jar purge; transactions run one at a time, so SKIP LOCKED skips nothing.
+on(
+  'WITH idle AS (SELECT session_id FROM legacy_jar WHERE ' +
+    'last_active_at < now() - make_interval(secs => $1) ORDER BY last_active_at, session_id LIMIT $2 FOR UPDATE SKIP LOCKED), ' +
+    'purged AS (DELETE FROM legacy_jar AS jar USING idle WHERE jar.session_id = idle.session_id), ' +
+    'positions AS (SELECT session_id, owner FROM session_barrier WHERE session_id IN (SELECT session_id FROM idle) AND pending = 0 ' +
+    'AND recorded_at < now() - make_interval(secs => $1) FOR UPDATE SKIP LOCKED) ' +
+    'DELETE FROM session_barrier AS b USING positions AS p WHERE b.session_id = p.session_id AND b.owner = p.owner',
+  'DELETE',
+  ['legacy_jar', 'session_barrier'],
+  ({ params, tables, now }) => {
+    const seconds = doubleValue(params[0]);
+    const limit = bigintText(params[1]);
+    if (seconds === null) return changed(0);
+    const cutoff = now.getTime() - seconds * 1000;
+    const idle = tables.legacy_jar
+      .filter((row) => row.last_active_at.getTime() < cutoff)
+      .sort((a, b) => a.last_active_at.getTime() - b.last_active_at.getTime() || compareText(a.session_id, b.session_id))
+      .slice(0, limit === null ? undefined : Number(limit));
+    const purged = new Set(idle.map((row) => row.session_id));
+    removeWhere(tables.legacy_jar, (row) => purged.has(row.session_id));
+    const released = removeWhere(
+      tables.session_barrier,
+      (row) => purged.has(row.session_id) && row.pending === 0 && row.recorded_at.getTime() < cutoff,
+    );
+    return changed(released.length);
+  },
+);
+
 on(
   `INSERT INTO legacy_jar AS jar (${JAR_COLUMNS}) VALUES ($1, NULL, '{}'::jsonb, $2, NULL, now(), now()) ON CONFLICT (session_id) ` +
     'DO UPDATE SET identity_end_pending_at = COALESCE(jar.identity_end_pending_at, EXCLUDED.identity_end_pending_at), ' +
@@ -803,6 +920,7 @@ on(
       hydrated_epoch: null,
       updated_at: stamp(now),
       identity_end_pending_at: stamp(now),
+      last_active_at: stamp(now),
     } as LegacyJarRow;
     checkRow('legacy_jar', proposed);
     const existing = findJar(tables, proposed.session_id);
@@ -1068,7 +1186,7 @@ function seedTables(seed: MemoryGatewaySeed): GatewayTables {
     (partials ?? []).map((partial) => ({ ...defaults(), ...structuredClone(partial) }) as T);
   tables.cutover_freeze.push(...rows<CutoverFreezeRow>(seed.freezes, () => ({ epoch, frozen_at: stamp(now), frozen_by: 'test' })));
   tables.instance.push(...rows<InstanceRow>(seed.instances, () => ({ seen_epoch: epoch, started_at: stamp(now), heartbeat_at: stamp(now) })));
-  tables.inflight.push(...rows<InflightRowRecord>(seed.inflight, () => ({ window_id: null, started_at: stamp(now) })));
+  tables.inflight.push(...rows<InflightRowRecord>(seed.inflight, () => ({ window_id: null, started_at: stamp(now), abandoned_at: null })));
   tables.legacy_jar.push(
     ...rows<LegacyJarRow>(seed.jars, () => ({
       legacy_session_id: null,
@@ -1076,6 +1194,7 @@ function seedTables(seed: MemoryGatewaySeed): GatewayTables {
       hydrated_epoch: null,
       updated_at: stamp(now),
       identity_end_pending_at: null,
+      last_active_at: stamp(now),
     })).map((row) => ({ ...row, cookies: jsonbCanonical(row.cookies) as Record<string, unknown> })),
   );
   tables.session_barrier.push(...rows<SessionBarrierRow>(seed.barriers, () => ({ xid: null, pending: 0, recorded_at: stamp(now) })));

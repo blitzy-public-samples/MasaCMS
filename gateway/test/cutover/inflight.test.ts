@@ -30,6 +30,12 @@ const UNITS: Readonly<Record<string, readonly string[]>> = {
 
 const available = await pgAvailable();
 
+async function collected<T>(pages: AsyncIterable<T[]>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const page of pages) items.push(...page);
+  return items;
+}
+
 describe.skipIf(!available)('inflight store against PostgreSQL', () => {
   let handle: ThrowawaySchema;
   const stores = new Map<string, InflightStore>();
@@ -100,11 +106,15 @@ describe.skipIf(!available)('inflight store against PostgreSQL', () => {
     expect((await a.list({ routes: [ROUTE_GATED], instanceIds: ['gw-b'] })).map((row) => row.instanceId)).toEqual(['gw-b']);
     expect(await a.list({ routes: [] })).toEqual([]);
 
-    expect(await a.summary()).toEqual([
-      { instanceId: 'gw-a', route: ROUTE_LEGACY, side: 'legacy', count: 1, oldestStartedAt: expect.stringMatching(ISO_WITH_OFFSET) },
-      { instanceId: 'gw-a', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt: expect.stringMatching(ISO_WITH_OFFSET) },
-      { instanceId: 'gw-b', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt: expect.stringMatching(ISO_WITH_OFFSET) },
-    ]);
+    const oldestStartedAt = expect.stringMatching(ISO_WITH_OFFSET);
+    const groups = [
+      { instanceId: 'gw-a', route: ROUTE_LEGACY, side: 'legacy', count: 1, oldestStartedAt },
+      { instanceId: 'gw-a', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt },
+      { instanceId: 'gw-b', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt },
+    ];
+    expect(await a.summary()).toEqual(groups);
+    // Neither instance heartbeats here, so both count as dead and their rows as orphans.
+    expect(await collected(a.orphanSummaryPages())).toEqual(groups.map((group) => ({ ...group, orphaned: true })));
 
     expect(await a.remove('req-1')).toBe(true);
     expect(await a.remove('req-1')).toBe(false);
@@ -203,5 +213,46 @@ describe.skipIf(!available)('inflight store against PostgreSQL', () => {
 
     const none = await store('gw-live').clearOrphans({ ...request, routes: [ROUTE_PARTLY_GATED] });
     expect(none).toEqual({ cleared: 0, rows: [] });
+  });
+
+  it("marks only its own instance's row abandoned, reports it orphaned while the instance lives, and clears it only with evidence", async () => {
+    await heartbeat('gw-live', 0);
+    const live = store('gw-live');
+    await live.register({ requestId: 'live-abandoned', route: ROUTE_GATED, side: 'target' });
+    await live.register({ requestId: 'live-running', route: ROUTE_GATED, side: 'target' });
+    await store('gw-other').register({ requestId: 'live-abandoned', route: ROUTE_GATED, side: 'target' });
+
+    expect(await live.abandon('live-abandoned')).toBe(true);
+    expect(await live.abandon('live-abandoned')).toBe(false);
+    expect(await live.abandon('absent')).toBe(false);
+    const marked = await withMetadata(handle.app, async (tx) =>
+      (
+        await tx.query<{ instance_id: string; request_id: string }>(
+          `SELECT instance_id, request_id FROM ${handle.schema}.inflight WHERE abandoned_at IS NOT NULL`,
+        )
+      ).rows,
+    );
+    expect(marked).toEqual([{ instance_id: 'gw-live', request_id: 'live-abandoned' }]);
+    const oldestStartedAt = expect.stringMatching(ISO_WITH_OFFSET);
+    // v1 keeps one group per instance, route and side; v2 splits the live instance's by orphan state.
+    expect(await live.summary()).toEqual([
+      { instanceId: 'gw-live', route: ROUTE_GATED, side: 'target', count: 2, oldestStartedAt },
+      { instanceId: 'gw-other', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt },
+    ]);
+    await heartbeat('gw-live', 0);
+    expect(await collected(live.orphanSummaryPages())).toEqual([
+      { instanceId: 'gw-live', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt, orphaned: false },
+      { instanceId: 'gw-live', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt, orphaned: true },
+      { instanceId: 'gw-other', route: ROUTE_GATED, side: 'target', count: 1, oldestStartedAt, orphaned: true },
+    ]);
+
+    const evidence = { kind: 'gates-closed', holderId: 'trn-3', at: evidenceAt(), units: UNITS[ROUTE_GATED] } as const;
+    await heartbeat('gw-live', 0);
+    const result = await live.clearOrphans({ side: 'target', evidence, instanceIds: ['gw-live'] });
+    expect(result.rows.map((row) => [row.instanceId, row.requestId])).toEqual([['gw-live', 'live-abandoned']]);
+    expect((await live.list()).map((row) => [row.instanceId, row.requestId])).toEqual([
+      ['gw-live', 'live-running'],
+      ['gw-other', 'live-abandoned'],
+    ]);
   });
 });

@@ -47,6 +47,9 @@ const FIELDS = [
   'domains',
 ] as const satisfies readonly (keyof SiteChangedPayload)[];
 
+/** The optional marker of a deleted site's last state. */
+const DELETION_MARKER = 'deleted' satisfies keyof SiteChangedPayload;
+
 /** The element type the tenant registry consumer reads from each list field. */
 const ITEM_TYPES = {
   contentPoolIds: 'string',
@@ -131,11 +134,12 @@ describe('programs-sites.site.changed.v1 payload schema', () => {
     expect(validator.meta.kind).toBe('state');
   });
 
-  it('declares and requires exactly the SiteChangedPayload fields, and no others', () => {
-    expectTypeOf<Exclude<keyof SiteChangedPayload, (typeof FIELDS)[number]>>().toBeNever();
+  it('declares exactly the SiteChangedPayload fields and requires all but the boolean deletion marker', () => {
+    expectTypeOf<Exclude<keyof SiteChangedPayload, (typeof FIELDS)[number] | typeof DELETION_MARKER>>().toBeNever();
 
-    expect(Object.keys(schema.properties).sort()).toStrictEqual([...FIELDS].sort());
+    expect(Object.keys(schema.properties).sort()).toStrictEqual([...FIELDS, DELETION_MARKER].sort());
     expect([...schema.required].sort()).toStrictEqual([...FIELDS].sort());
+    expect(schema.properties[DELETION_MARKER]).toMatchObject({ type: 'boolean' });
     expect(schema.additionalProperties).toBe(false);
   });
 
@@ -180,9 +184,11 @@ describe('programs-sites.site.changed.v1 producer payloads', () => {
     { site: TENANT_B.siteId, row: unpooledRow },
   ])('builds a conforming event for the $site site row', ({ site, row }) => {
     const payload = siteChangedPayload(row);
+    const deletion = { ...payload, [DELETION_MARKER]: true };
 
     expect(Object.keys(payload).sort()).toStrictEqual([...FIELDS].sort());
     expect(assertEventMatches(undefined, schema, envelopeOf(site, payload)).payload).toStrictEqual(payload);
+    expect(assertEventMatches(undefined, schema, envelopeOf(site, deletion)).payload).toStrictEqual(deletion);
   });
 
   it('carries pooled sites as legacy site ids, with the content pool list in stored order', () => {
@@ -228,6 +234,7 @@ describe('programs-sites.site.changed.v1 contract violations', () => {
     ['with an empty pool id', { ...pooled, filePoolId: '' }, 'payload/filePoolId', 'fewer than 1'],
     ['with a numeric content pool id', { ...pooled, contentPoolIds: [7] }, 'payload/contentPoolIds/0', 'must be string'],
     ['with a null domain', { ...pooled, domains: [null] }, 'payload/domains/0', 'must be string'],
+    ['with a textual deletion marker', { ...pooled, deleted: 'true' }, 'payload/deleted', 'must be boolean'],
   ])('rejects a payload %s', (_case, payload, instancePath, message) => {
     const error = contractErrorOf(() => assertEventMatches(undefined, schema, envelopeOf(TENANT_A.siteId, payload)));
 

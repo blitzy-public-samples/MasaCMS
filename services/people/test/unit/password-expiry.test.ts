@@ -41,6 +41,6 @@ describe('expirePasswordsSetting', () => {
     ['${expirePasswords}', 0],
     ['{{expirePasswords}}', 0],
   ])('reads MURA_EXPIREPASSWORDS %j as %j', (value, expected) => {
-    expect(expirePasswordsSetting(value === undefined ? {} : { MURA_EXPIREPASSWORDS: value })).toBe(expected);
+    expect(expirePasswordsSetting(value)).toBe(expected);
   });
 });

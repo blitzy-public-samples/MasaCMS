@@ -152,7 +152,7 @@ describe('boolean-word ispublic on cUsers.list and cUsers.search', () => {
   // People answers the getUserGroups or getSearch argument error as the legacy 500; the failed page then fails closed.
   it.each(
     BOOLEAN_WORDS.flatMap(([ispublic]) => [
-      ['list', ispublic, '/v1/users/groups', 'listUserGroups', {}] as const,
+      ['list', ispublic, '/v2/users/groups', 'listUserGroupsV2', {}] as const,
       ['search', ispublic, '/v2/users/search', 'searchUsersV2', { search: 'doe' }] as const,
     ]),
   )('cUsers.%s relays ispublic %j to %s unchanged and rejects its 500 as %s', async (item, ispublic, path, operation, terms) => {

@@ -46,12 +46,18 @@ type RenderRoute = { Params: { size: string }; Querystring: RenderQuery };
 /** handleAPIRequest's file endpoints, compared without case as CFML `eq` compares (contentServer.cfc:599, 606). */
 export const RENDER_PREFIXES = ['/_api/render/', '/tasks/render/'] as const;
 
+/** The exceptions-list entry of a sized image rendition only ColdFusion's image engine generates. */
+export const FILE_RENDITION_EXCEPTION = 'EX-FILE-RENDITION';
+/** LegacyServiceUnavailableError reason of a sized image rendition that was never stored. */
+export const MISSING_RENDITION_REASON = 'missing-rendition';
+
 const ROUTE: { opt2: Opt2RouteConfig } = Object.freeze({ opt2: Object.freeze({ public: true, transport: 'service' }) });
 
 /** handleAPIRequest falling through every endpoint: an empty page. */
 const UNMATCHED = Object.freeze({ status: 200, headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE }, body: '' });
 
-// The body of render404 is the site theme's 404 page, which only the CFML runtime renders; status, reason and type are legacy's.
+// The body of render404 is the site theme's 404 page, which only the CFML runtime renders (EX-RENDER-404-PAGE); status,
+// reason and type are legacy's.
 /** contentServer.render404 (contentServer.cfc:505-510). */
 const NOT_FOUND = Object.freeze({ status: 404, statusText: 'Content Not Found', headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE }, body: '' });
 
@@ -106,9 +112,13 @@ async function render(deps: RenderDeps, prefix: string, request: FastifyRequest<
   const found = await resolveRenderObject(deps, { tenantId: claims.tid, fileId: req.fileId, size: req.size });
   if (found.kind === 'not-found') return sendLegacyResponse(reply, NOT_FOUND);
   // Legacy generates a missing sized rendition with ColdFusion's image engine (cropAndScale), whose bytes no other encoder
-  // reproduces (EX-FILE-RENDITION); the route fails closed rather than serve different bytes or a 404 legacy never sends.
+  // reproduces; the route fails closed rather than serve different bytes, the original or a 404 legacy never sends.
   if (found.kind === 'missing-rendition') {
-    throw new LegacyServiceUnavailableError(`Rendition ${found.objectKey} was never stored`, 'auto', 'missing-rendition');
+    throw new LegacyServiceUnavailableError(
+      `Rendition ${found.objectKey} was never stored; ColdFusion's image engine generates it (${FILE_RENDITION_EXCEPTION})`,
+      'auto',
+      MISSING_RENDITION_REASON,
+    );
   }
 
   try {

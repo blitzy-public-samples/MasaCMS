@@ -34,12 +34,13 @@ import {
   type TableCatalog,
 } from '../extract/index.js';
 import {
+  FILE_LOOKUP_IDS,
   FileStoreUnsupportedError,
   SUPPORTED_FILE_STORE,
   objectKey,
   parseStoredName,
   planObjects,
-  readSnapshotFileOwners,
+  readSnapshotFiles,
   readSnapshotSites,
 } from '../files/index.js';
 import { UnsupportedFileStoreError } from '../legacy/index.js';
@@ -915,24 +916,29 @@ async function snapshotObjects(
 /** Objects of the live store listed site by site through the bridge, placed by `planObjects`' rule. */
 async function liveObjects(deps: Pick<ReconcileLegacyDeps, 'legacy' | 'config' | 'bridge'>, database: string): Promise<LegacyObjects> {
   const sites = await readSnapshotSites(deps, database);
-  const owners = await readSnapshotFileOwners(deps, database);
   const lookups: TenantLookups = { umbrellaSiteId: deps.config.umbrellaSiteId };
   const byTenant = new Map<string, ObjectEntry[]>();
   for (const siteId of sites) {
     const listing = await deps.bridge.filesList(siteId);
     if (listing.fileStore !== SUPPORTED_FILE_STORE) throw new FileStoreUnsupportedError(listing.fileStore, siteId);
-    for (const file of listing.files) {
+    const stored = listing.files.flatMap((file) => {
       const parsed = parseStoredName(file.name);
-      if (parsed === null) continue;
-      // A file without a `tfiles` row, or with a null site, resolves to the umbrella tenant as an orphan.
-      const resolved = resolveTenant(TFILES_TENANT_SOURCE, { siteID: owners.get(parsed.fileId.toUpperCase()) ?? null }, lookups);
-      if (!resolved.orphan && resolved.siteId.toLowerCase() !== siteId.toLowerCase()) continue;
-      push(byTenant, resolved.tenantId, {
-        key: objectKey(resolved.tenantId, parsed.fileId, parsed.variant, parsed.ext),
-        size: Number(file.size),
-        sha256: file.sha256.toLowerCase(),
-        orphan: resolved.orphan,
-      });
+      return parsed === null ? [] : [{ file, parsed }];
+    });
+    for (let start = 0; start < stored.length; start += FILE_LOOKUP_IDS) {
+      const chunk = stored.slice(start, start + FILE_LOOKUP_IDS);
+      const owners = await readSnapshotFiles(deps, database, chunk.map(({ parsed }) => parsed.fileId));
+      for (const { file, parsed } of chunk) {
+        // A file without a `tfiles` row, or with a null site, resolves to the umbrella tenant as an orphan.
+        const resolved = resolveTenant(TFILES_TENANT_SOURCE, { siteID: owners.get(parsed.fileId.toUpperCase())?.siteID ?? null }, lookups);
+        if (!resolved.orphan && resolved.siteId.toLowerCase() !== siteId.toLowerCase()) continue;
+        push(byTenant, resolved.tenantId, {
+          key: objectKey(resolved.tenantId, parsed.fileId, parsed.variant, parsed.ext),
+          size: Number(file.size),
+          sha256: file.sha256.toLowerCase(),
+          orphan: resolved.orphan,
+        });
+      }
     }
   }
   return { status: 'compared', byTenant };

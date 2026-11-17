@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // `opt2-tasks` CLI of @opt2/platform/tasks: `reconcile` asks each creating service to ensure its recurring task chains.
-import { readFile, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { reconcileRecurringQueues, type ReconcileResult } from './handlers.js';
+import { SITEMONITOR_QUEUE } from './queues.js';
 import { EnvValidationError, baseEnvSchema, createServiceClient } from '../service-kit/index.js';
 import {
   createCloudInvocationMinter,
@@ -11,7 +12,7 @@ import {
   loadLocalSigningKeys,
   type InvocationMinter,
 } from '../auth/index.js';
-import { createLogger, emitDiagnostic, serializeError, setDiagnosticLogger } from '../logging/index.js';
+import { createCliDiagnostics, emitDiagnostic, parseArgsProblem, type CliDiagnostics } from '../logging/index.js';
 import { safeErrorMessage } from '../logging/safe-error.js';
 
 const USAGE =
@@ -40,7 +41,10 @@ const CALLERS = ['operator', 'migration'] as const;
 
 type Caller = (typeof CALLERS)[number];
 
-/** Invalid command-line usage; answered on stderr with the usage line and exit code 2. */
+/** Fixed problem of a --queue selection reconcileRecurringQueues refuses: a non-recurring name, or the site monitor without its flag. */
+const QUEUE_SELECTION_PROBLEM = `--queue must name recurring queues, and ${SITEMONITOR_QUEUE} only with --with-sitemonitor`;
+
+/** Invalid command-line usage, its message a fixed problem text; answered on stderr with the usage line and exit code 2. */
 class UsageError extends Error {}
 
 /** Arguments of `opt2-tasks reconcile`; `includeLocalOnly` is undefined when the flag is absent. */
@@ -72,46 +76,34 @@ type CliEnv = ReturnType<typeof cliEnvSchema.parse>;
 
 /** Runs `opt2-tasks` with the arguments after the script path; returns 0 when every chain is ensured or help was printed, 1 on a failure, 2 on a usage or environment error. */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
-  let args: ReconcileArgs;
-  let env: CliEnv;
+  // On stderr from the start, so parse and environment failures are logged too and stdout carries only the help or result lines.
+  const diagnostics = createCliDiagnostics({ cli: 'opt2-tasks', usage: USAGE });
   try {
     const command = parseCommand(argv);
     if (command === 'help') {
       await writeStdout(HELP);
       return 0;
     }
-    args = command;
-    env = loadCliEnv(process.env);
+    return await reconcile(command, loadCliEnv(process.env), diagnostics);
   } catch (err) {
     if (err instanceof UsageError) {
-      return usageFailure(err.message);
-    }
-    if (err instanceof EnvValidationError) {
-      process.stderr.write(`${err.message}\n`);
+      diagnostics.usage(err.message);
       return 2;
     }
-    throw err;
-  }
-
-  // stderr, so stdout carries only the result lines.
-  const logger = createLogger({
-    service: 'opt2-tasks',
-    version: await platformVersion(),
-    env: env.OPT2_ENV,
-    googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
-    destination: process.stderr,
-  });
-  setDiagnosticLogger(logger);
-  try {
-    return await reconcile(args, env);
-  } catch (err) {
-    logger.fatal({ error: serializeError(err) }, 'opt2-tasks failed');
+    if (err instanceof EnvValidationError) {
+      // Its safe record names the invalid variables, never their values or issue texts.
+      diagnostics.error('invalid environment', err);
+      return 2;
+    }
+    diagnostics.fatal('reconcile failed', err);
     return 1;
+  } finally {
+    await diagnostics.flush();
   }
 }
 
 /** Reconciles the selected queues and writes one result line each; returns the exit code `main` describes. */
-async function reconcile(args: ReconcileArgs, env: CliEnv): Promise<number> {
+async function reconcile(args: ReconcileArgs, env: CliEnv, diagnostics: CliDiagnostics): Promise<number> {
   const credentials = invocationMinter(env, args.as);
   const client = createServiceClient({ serviceUrls: env.OPT2_SERVICE_URLS, self: args.as, credentials });
   let results: ReconcileResult[];
@@ -123,9 +115,9 @@ async function reconcile(args: ReconcileArgs, env: CliEnv): Promise<number> {
       includeLocalOnly: args.includeLocalOnly ?? env.OPT2_ENV === 'local',
     });
   } catch (err) {
-    // Raised only for the queue selection, before any service is called.
+    // Raised only for the queue selection, before any service is called; its text quotes the --queue value.
     if (err instanceof TypeError) {
-      return usageFailure(err.message);
+      throw new UsageError(QUEUE_SELECTION_PROBLEM);
     }
     throw err;
   } finally {
@@ -134,7 +126,7 @@ async function reconcile(args: ReconcileArgs, env: CliEnv): Promise<number> {
 
   await writeStdout(results.map(resultLine).join(''));
   if (results.every((result) => result.skipped !== undefined)) {
-    process.stderr.write('opt2-tasks: OPT2_SERVICE_URLS names no creator of the selected queues\n');
+    diagnostics.error('OPT2_SERVICE_URLS names no creator of the selected queues');
     return 2;
   }
   return results.every((result) => result.skipped !== undefined || result.ok) ? 0 : 1;
@@ -157,7 +149,7 @@ function parseCommand(argv: string[]): ReconcileArgs | 'help' {
       },
     });
   } catch (err) {
-    throw new UsageError(messageOf(err));
+    throw new UsageError(parseArgsProblem(err));
   }
   const { values, positionals } = parsed;
   if (values.help) {
@@ -167,11 +159,11 @@ function parseCommand(argv: string[]): ReconcileArgs | 'help' {
     throw new UsageError('missing subcommand');
   }
   if (positionals.length !== 1 || positionals[0] !== 'reconcile') {
-    throw new UsageError(`unknown subcommand ${JSON.stringify(positionals.join(' '))}`);
+    throw new UsageError('unknown subcommand');
   }
   const as = values.as;
   if (!isCaller(as)) {
-    throw new UsageError(`--as must be one of ${CALLERS.join(', ')}, got ${JSON.stringify(as)}`);
+    throw new UsageError(`--as must be one of ${CALLERS.join(', ')}`);
   }
   return {
     queues: values.queue,
@@ -201,12 +193,6 @@ function loadCliEnv(source: NodeJS.ProcessEnv): CliEnv {
   return result.data;
 }
 
-/** Version of @opt2/platform, read from its package.json beside `src` and `dist`. */
-async function platformVersion(): Promise<string> {
-  const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
-  return manifest.version;
-}
-
 /** Google-signed ID tokens in the cloud; locally, service tokens for `caller` signed with the state directory's key pair. */
 function invocationMinter(env: CliEnv, caller: Caller): InvocationMinter {
   if (env.OPT2_ENV === 'cloud') {
@@ -229,15 +215,6 @@ function invocationMinter(env: CliEnv, caller: Caller): InvocationMinter {
 function resultLine({ queue, service, ok, ensured, skipped, error }: ReconcileResult): string {
   const line = { queue, service, ok, created: ensured?.created, name: ensured?.name, reason: ensured?.reason, skipped, error };
   return `${JSON.stringify(line)}\n`;
-}
-
-function usageFailure(message: string): number {
-  process.stderr.write(`opt2-tasks: ${message}; ${USAGE}\n`);
-  return 2;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Writes to stdout and resolves once the chunk is flushed; a failed write rejects instead of raising an uncaught `error` event. */
@@ -263,7 +240,7 @@ if (entry !== undefined && import.meta.url === pathToFileURL(await realpath(entr
   main().then(
     (code) => process.exit(code),
     (err: unknown) => {
-      // Only failures before main's logger exists reach here.
+      // Only failures before main's diagnostics open reach here.
       emitDiagnostic('OPT2_TASKS', `opt2-tasks failed: ${safeErrorMessage(err)}`, err);
       // A native warning prints on the next tick, so exiting now would drop it.
       setImmediate(() => process.exit(1));

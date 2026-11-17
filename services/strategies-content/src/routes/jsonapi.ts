@@ -19,6 +19,7 @@ import {
   cfListToArray,
   cfToBoolean,
   corsHeaders,
+  errorSpec,
   fallbackSiteId,
   isDefinedApiName,
   isGenericMethod,
@@ -40,6 +41,7 @@ import {
   type StructOp,
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import {
   EnvValidationError,
   RequestAbortedError,
@@ -53,16 +55,19 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { registryEntries, type TenantRegistryEntry } from '@opt2/platform/tenancy';
-import { ContentNotFoundError, type Actor, type SiteContentSettings } from '../domain/context.js';
+import type { Actor, SiteContentSettings } from '../domain/context.js';
 import type { LegacySiteUrlConfig } from '../legacy/content-urls.js';
 import { contentEntities, getContentEntityConfig, isContentEntity } from '../legacy/jsonapi-entities.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../legacy/jsonapi-serializers.js';
 import { createSitesClient, type SitesClient } from '../legacy/sites-client.js';
 import type { ContentRouteContext } from './index.js';
+import { createRelatedEntityReader, relationPathOf } from './jsonapi-relations.js';
 import {
   CONTENT_METHOD_HANDLERS,
+  CONTENT_REMOTE_FUNCTIONS,
   createJsonApiParams,
   entityActionAllowed,
+  isInLegacyOrder,
   lookupEntityHandler,
   type EntityHandler,
   type JsonApiCall,
@@ -70,6 +75,8 @@ import {
   type JsonApiMode,
   type JsonApiParams,
   type JsonApiResult,
+  type RelatedEntityReader,
+  type RemoteFunctionFn,
 } from './jsonapi/index.js';
 
 type Struct = Record<string, unknown>;
@@ -86,10 +93,10 @@ const ROUTE_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
 // Public: legacy authorises inside the API, after the `default` site fallback, which the automatic site check would precede.
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ public: true, transport: 'service', siteCheck: false });
 
-/** Remote functions of contentCommentBean (contentCommentBean.cfc:317-430), the only remote functions of a content entity. */
-const ENTITY_REMOTE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  comment: Object.freeze(['delete', 'undelete', 'flag', 'markAsSpam', 'unMarkAsSpam']),
-});
+/** Remote function names of each content entity (contentCommentBean.cfc:317-430), as the route key resolves them. */
+const ENTITY_REMOTE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = Object.freeze(
+  Object.fromEntries(Object.entries(CONTENT_REMOTE_FUNCTIONS).map(([entity, functions]) => [entity, Object.freeze(Object.keys(functions))])),
+);
 
 /** The `{upload=image}` variant of a JSON API `file` save, which stays legacy-written under EX-FILE-RENDITION. */
 const IMAGE_UPLOAD_VARIANT = 'upload=image';
@@ -114,7 +121,7 @@ const PATH_METHODS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /** Entity-generic operations an entity handler may serve. */
-type GenericOperation = Exclude<keyof EntityHandler, 'entity' | 'config'>;
+type GenericOperation = Exclude<keyof EntityHandler, 'entity' | 'config' | 'loadBy'>;
 
 /** Entity operations that write nothing, whose calls stop between reads once the client disconnects. */
 const READ_OPERATIONS: ReadonlySet<GenericOperation> = new Set(['findOne', 'findMany', 'findAll', 'findNew', 'findQuery', 'findProperties', 'findPermissions']);
@@ -161,7 +168,7 @@ function flagSetting(template: boolean, bean: boolean) {
 }
 
 /** configBean `setServerPort`: `:<port>`, or '' for 80, 443 and a blank port. */
-function serverPortSetting(port: string): string {
+export function serverPortSetting(port: string): string {
   return port === '80' || port === '443' || BLANK.test(port) ? '' : `:${port}`;
 }
 
@@ -301,6 +308,8 @@ export type JsonApiTarget =
   | { kind: 'error'; type: LegacyApiErrorType }
   | { kind: 'entity'; operation: GenericOperation; fn: JsonApiHandlerFn }
   | { kind: 'method'; name: string; fn: JsonApiHandlerFn }
+  /** An entity bean's remote function, by its legacy name. */
+  | { kind: 'remote'; name: string; fn: RemoteFunctionFn }
   /** A key this service owns but answers fail-closed: the legacy 503. */
   | { kind: 'refused'; reason: string }
   /** A key of another owner, or of no carried route: the legacy 404. */
@@ -326,6 +335,8 @@ export interface ResolvedJsonApiCall {
   entityConfigName?: string;
   id?: string;
   ids?: string[];
+  /** The id a remote function's bean `loadBy` loads (jsonApiUtility.cfc:1063-1080); absent where it runs on a new bean (1165-1170, 1444-1456). */
+  beanId?: string;
   relatedContentSetId?: string;
   render?: { variation: boolean };
   /** Path segments after the API family, as the entity route rewrote them. */
@@ -442,6 +453,13 @@ function methodTarget(name: string): JsonApiTarget {
   return fn === undefined ? { kind: 'foreign' } : { kind: 'method', name: canonical, fn };
 }
 
+/** The remote function `name` of `entity`, both matched ignoring case as `isDefined` matches them; undefined when it has none so named. */
+function remoteTarget(entity: string, name: string): JsonApiTarget | undefined {
+  const functions = Object.entries(CONTENT_REMOTE_FUNCTIONS).find(([candidate]) => cfEq(candidate, entity))?.[1] ?? {};
+  const found = Object.entries(functions).find(([candidate]) => cfEq(candidate, name));
+  return found === undefined ? undefined : { kind: 'remote', name: found[0], fn: found[1] };
+}
+
 /** The target of the key's body, its variant aside. */
 function bodyTarget(body: string): JsonApiTarget {
   const failure = RESOLUTION_ERRORS.get(body);
@@ -451,8 +469,14 @@ function bodyTarget(body: string): JsonApiTarget {
   const entity = body.slice(0, dot);
   const op = body.slice(dot + 1);
   if (!isContentEntity(entity)) return { kind: 'foreign' };
-  // An entity remote function or relationship read (1050-1137) invokes bean code no handler of this folder ports.
-  if (op.startsWith('~')) return { kind: 'refused', reason: `jsonapi-${entity}-${op.slice(1)}-not-ported` };
+  if (op.startsWith('~')) {
+    // processRequest tries the entity's remote function before its relation (1063-1153).
+    const remote = remoteTarget(entity, op.slice(1));
+    if (remote !== undefined) return remote;
+    const relation = relationPathOf(entity, op.slice(1));
+    if (relation !== undefined) return { kind: 'method', name: relation.method, fn: relation.fn };
+    return { kind: 'refused', reason: `jsonapi-${entity}-${op.slice(1)}-not-ported` };
+  }
   const pathMethod = PATH_METHODS.get(op);
   if (pathMethod !== undefined) return methodTarget(pathMethod);
   return isGenericMethod(op) ? entityTarget(entity, op) : { kind: 'foreign' };
@@ -509,6 +533,18 @@ function isTrue(value: unknown): boolean {
   return cfIsBoolean(value) && cfToBoolean(value);
 }
 
+/**
+ * How processRequest reaches remote function `name`, and the name as requested: on the bean `<id>/<function>` loads
+ * (jsonApiUtility.cfc:1063-1080), else on a new bean as the segment after the entity (1165-1170) or as the `id`
+ * doubleCheckEntityMethod invokes (1444-1456).
+ */
+function remoteCallOf(pathInfo: readonly string[], key: RouteKeyResult, name: string): { requested: string; beanId?: string } {
+  const [, , third = '', fourth = ''] = pathInfo;
+  if (pathInfo.length === 4 && third.length === 35 && cfEq(fourth, name)) return { requested: fourth, beanId: third };
+  if (pathInfo.length > 2 && third.length !== 35 && cfEq(third, name)) return { requested: third };
+  return { requested: key.params.id ?? name };
+}
+
 /** processRequest's resolution of `facts` (jsonApiUtility.cfc:368-1306) through the shared route key, with the params, ids and path it leaves. */
 export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiResolveOptions): ResolvedJsonApiCall {
   const segments = pathSegmentsOf(facts.url);
@@ -562,10 +598,11 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
     if (isValidVariableName(second) && isDefinedApiName(second, methodCtx)) pathInfo.splice(1, 1);
   }
   // A dotted method rewrites the path to `<site>/<entity>/<method>` (953-960).
-  if (dotted !== undefined && resolvedName !== undefined) {
+  if (dotted !== undefined && (resolvedName !== undefined || target.kind === 'remote')) {
     const parts = cfListToArray(dotted, '.');
     pathInfo = [pathInfo[0] ?? '', parts[0] ?? '', parts.at(-1) ?? ''];
   }
+  const remote = target.kind === 'remote' ? remoteCallOf(pathInfo, key, target.name) : undefined;
 
   const form = structOf(scopes.form.entries);
   // The entity route copies the resolved params into the form scope again before its switch (1239).
@@ -590,6 +627,8 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
     if (pathRelated || method === 'findCrumbArray') structSet(params, 'siteid', apiSiteId);
     if (relatedContentSetId !== undefined) structSet(params, 'relatedcontentsetid', relatedContentSetId);
   }
+  // Each remote dispatch sets `params.method` to the function name as requested (1064, 1166, 1451).
+  if (remote !== undefined) structSet(params, 'method', remote.requested);
   const ids = !direct && method === 'findMany' ? cfListToArray(id ?? '') : undefined;
   const render =
     target.kind === 'entity' && target.operation === 'findOne' && isTrue(structGet(params, 'render'))
@@ -602,13 +641,14 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
     family: `/_api/${mode}/v1`,
     apiSiteId,
     target,
-    method,
+    method: remote?.requested ?? method,
     direct,
     withParams: !(pathPermissions || pathRelated),
     entityName,
     ...(entityConfigName === undefined ? {} : { entityConfigName }),
     ...(id === undefined ? {} : { id }),
     ...(ids === undefined ? {} : { ids }),
+    ...(remote?.beanId === undefined ? {} : { beanId: remote.beanId }),
     ...(relatedContentSetId === undefined ? {} : { relatedContentSetId }),
     ...(render === undefined ? {} : { render }),
     pathInfo,
@@ -650,14 +690,14 @@ function lowerHeaders(headers: FastifyRequest['headers']): Record<string, string
 }
 
 /** `utility.getRequestProtocol()` (utility.cfc:481-500). */
-function requestProtocolOf(request: FastifyRequest): 'http' | 'https' {
+export function requestProtocolOf(request: FastifyRequest): 'http' | 'https' {
   if (headerValue(request, 'x-forwarded-proto')?.toLowerCase() === 'https') return 'https';
   if (isTrue(headerValue(request, 'front-end-https'))) return 'https';
   return request.protocol === 'https' ? 'https' : 'http';
 }
 
 /** The client's host as the gateway forwards it: `X-Forwarded-Host` before the hop's own `Host`. */
-function clientHostOf(request: FastifyRequest): { name: string; port: string } {
+export function clientHostOf(request: FastifyRequest): { name: string; port: string } {
   const host = (headerValue(request, 'x-forwarded-host') || headerValue(request, 'host') || '').split(',')[0]?.trim() ?? '';
   const match = /^(\[[^\]]*\]|[^:]*)(?::(.*))?$/.exec(host);
   return { name: match?.[1] ?? host, port: match?.[2] ?? '' };
@@ -769,14 +809,18 @@ interface CallScope {
   tenantId: string;
   site: TenantRegistryEntry;
   apiSite: string;
+  /** The registry's `default` site, from the same snapshot; undefined when it is not registered. */
+  defaultSite: TenantRegistryEntry | undefined;
+  related: RelatedEntityReader;
   sites: SitesClient;
 }
 
 /** The handler call of a served resolution. */
 async function callOf(resolved: ResolvedJsonApiCall, scope: CallScope): Promise<JsonApiCall> {
-  const { request, reply, ctx, settings, site } = scope;
+  const { request, reply, ctx, settings, site, defaultSite } = scope;
   const actor = await ctx.actorFor(request);
   const urls = siteUrlsOf(site, request, settings);
+  const defaultSiteUrls = defaultSite === undefined ? undefined : defaultSite === site ? urls : siteUrlsOf(defaultSite, request, settings);
   const host = clientHostOf(request);
   const restMode = resolved.mode === 'rest';
   const signedIn = actor.isLoggedIn && actor.userId !== '';
@@ -825,12 +869,14 @@ async function callOf(resolved: ResolvedJsonApiCall, scope: CallScope): Promise<
     tenantId: scope.tenantId,
     actor,
     site: siteSettingsOf(site, urls),
+    ...(defaultSiteUrls === undefined ? {} : { defaultSiteUrls }),
     apiContext,
     httpMethod: resolved.key.httpMethod,
     headers: lowerHeaders(clientHeadersOf(request)),
     ...(files === undefined ? {} : { files }),
     // `!request.muraSessionManagement || $.validateCSRFTokens(...)`: the REST family runs without sessions (applicationSettings.cfm:179).
     validateCsrf: () => (restMode ? Promise.resolve(true) : consumeCsrf(request, reply, csrfContext)),
+    related: scope.related,
   };
 }
 
@@ -846,17 +892,28 @@ function errorAnswer(resolved: ResolvedJsonApiCall, type: string, opts: { method
   });
 }
 
+/** Whether processRequest answers `type` from `catch (Any e)`, the one catch block that logs (jsonApiUtility.cfc:1388-1389). */
+function isUnhandled(type: string): boolean {
+  return errorSpec(type).code === 'server_error';
+}
+
+/** `catch (Any e)`'s writeLog of the exception: an error record carrying its type, message and stack. */
+function logUnhandled(request: FastifyRequest, err: unknown): void {
+  request.log.error({ error: serializeError(err) }, 'unhandled JSON API error');
+}
+
 /** `$.event('useDataNamespace')`: the url value, else the form value. */
 function useDataNamespaceOf(resolved: ResolvedJsonApiCall): string | undefined {
   return scopeString(resolved.url, 'usedatanamespace') ?? scopeString(resolved.form, 'usedatanamespace');
 }
 
-/** `value` with each struct in ACF's iteration order: Masa builds every response struct unordered (`{}`). */
+/** `value` with each struct in ACF's iteration order: Masa builds every response struct unordered (`{}`); a struct marked inLegacyOrder keeps its own. */
 function inAcfOrder(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(inAcfOrder);
   if (!isPlainObject(value)) return value;
   const ordered: Struct = {};
-  for (const key of acfKeyOrder(Object.keys(value).map((name): StructOp => ['set', name]))) {
+  const keys = isInLegacyOrder(value) ? Object.keys(value) : acfKeyOrder(Object.keys(value).map((name): StructOp => ['set', name]));
+  for (const key of keys) {
     Object.defineProperty(ordered, key, { value: inAcfOrder(value[key]), writable: true, enumerable: true, configurable: true });
   }
   return ordered;
@@ -880,17 +937,30 @@ function resultAnswer(resolved: ResolvedJsonApiCall, result: JsonApiResult): Ser
   });
 }
 
+/**
+ * `invoke(entity, name, params)` of a remote function: it returns nothing, so building the envelope from its result
+ * throws once it has run, and the call answers 500 `server_error` (jsonApiUtility.cfc:1083-1084; oracle: "Variable RESULT is undefined").
+ */
+function remoteHandler(fn: RemoteFunctionFn, beanId: string | undefined): JsonApiHandlerFn {
+  return async (ctx, call) => {
+    await fn(ctx, call, beanId);
+    return { error: 'server_error' };
+  };
+}
+
 /** The handler's answer, or the response processRequest's catch blocks give its exception. */
 async function dispatch(resolved: ResolvedJsonApiCall, fn: JsonApiHandlerFn, scope: CallScope): Promise<SerializedLegacyResponse> {
   const call = await callOf(resolved, scope);
   // delete's `var csrfcontext=arguments.id` reads an undefined argument (jsonApiUtility.cfc:3262).
   if (resolved.target.kind === 'entity' && resolved.target.operation === 'delete' && resolved.id === undefined) {
+    logUnhandled(scope.request, new LegacyApiError('server_error', { method: resolved.method }));
     return errorAnswer(resolved, 'server_error');
   }
   try {
     return resultAnswer(resolved, await fn(scope.ctx, call));
   } catch (err) {
     if (err instanceof LegacyApiError) {
+      if (isUnhandled(err.type)) logUnhandled(scope.request, err);
       return legacyErrorResponse(err.type, {
         method: err.method ?? resolved.method,
         params: err.params ?? resolved.params.toRecord(),
@@ -898,8 +968,6 @@ async function dispatch(resolved: ResolvedJsonApiCall, fn: JsonApiHandlerFn, sco
         ...(err.wwwAuthenticate === undefined ? {} : { wwwAuthenticate: err.wwwAuthenticate }),
       });
     }
-    // renderFilename's render404 for an unknown `_path` (contentServer.cfc:461-494) sets request.mura404.
-    if (err instanceof ContentNotFoundError) return errorAnswer(resolved, 'invalidMethodCall', { mura404: true });
     // The domain refuses an image upload, whose renditions stay legacy-written (EX-FILE-RENDITION); domain/files.ts is not
     // a dependency of this module, so the refusal is recognised by its error name.
     if (err instanceof Error && err.name === 'ImageUploadHaltedError') {
@@ -907,7 +975,7 @@ async function dispatch(resolved: ResolvedJsonApiCall, fn: JsonApiHandlerFn, sco
     }
     if (err instanceof LegacyServiceUnavailableError || err instanceof AuthDenial || err instanceof RequestAbortedError) throw err;
     // catch (Any e) logs the exception and reports params.method as the failing call had set it (1390-1400).
-    scope.request.log.error({ err }, 'unhandled JSON API error');
+    logUnhandled(scope.request, err);
     return errorAnswer(resolved, 'server_error');
   }
 }
@@ -987,6 +1055,7 @@ export function registerJsonApiRoutes(
     const { target } = resolved;
     switch (target.kind) {
       case 'error':
+        if (isUnhandled(target.type)) logUnhandled(request, new LegacyApiError(target.type, { method: resolved.method }));
         return sendLegacyResponse(reply, errorAnswer(resolved, target.type));
       case 'foreign':
         // A key of another owner is no route of this service: the gateway routes it elsewhere.
@@ -995,6 +1064,7 @@ export function registerJsonApiRoutes(
         throw new LegacyServiceUnavailableError(`JSON API ${resolved.key.key} is not served by strategies-content`, 'auto', target.reason);
       case 'entity':
       case 'method':
+      case 'remote':
         break;
     }
     const site = lookup(resolved.params.string('siteid'));
@@ -1003,9 +1073,10 @@ export function registerJsonApiRoutes(
     const apiSite = lookup(resolved.apiSiteId)?.siteId ?? resolved.apiSiteId;
     // The token's tenant; a browser call without a session token is anonymous in the verified registry's tenant of its site.
     const tenantId = user?.tid ?? site.tenantId;
-    const scope: CallScope = { request, reply, ctx, settings, tenantId, site, apiSite, sites };
+    const scope: CallScope = { request, reply, ctx, settings, tenantId, site, apiSite, defaultSite: lookup('default'), related: createRelatedEntityReader(ctx, sites), sites };
     if (target.kind === 'entity' ? READ_OPERATIONS.has(target.operation) : READ_METHODS.has(target.name)) abandonOnDisconnect(request);
-    return sendLegacyResponse(reply, await dispatch(resolved, target.fn, scope));
+    const fn = target.kind === 'remote' ? remoteHandler(target.fn, resolved.beanId) : target.fn;
+    return sendLegacyResponse(reply, await dispatch(resolved, fn, scope));
   }
 
   for (const prefix of JSON_API_PREFIXES) {

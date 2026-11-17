@@ -39,8 +39,8 @@ type Produced =
   | { error?: undefined; fileName: string; contentType: string; objectKey: string; outputSha256: string };
 
 /**
- * Opens, renders and streams the job's export into storage at `objectKey`, hashing it on the way; an unreadable or refusing source
- * or any other failure becomes the job's error, a legacy 503 propagates.
+ * Opens, renders and streams the job's export into storage at `objectKey`, hashing it on the way; a `broken` source or any other
+ * failure becomes the job's error, and a legacy 503, an unavailable producer's included, propagates.
  */
 async function produce(
   deps: RunExportDeps,
@@ -79,7 +79,6 @@ async function produce(
     }
     return { fileName: rendering.fileName, contentType: rendering.contentType, objectKey, outputSha256: put.value.sha256 };
   } catch (err) {
-    // SourceUnavailableError first: sources.ts wraps the client's ServiceUnavailableError, itself a LegacyServiceUnavailableError.
     if (err instanceof SourceUnavailableError) return { error: 'source-unavailable' };
     if (err instanceof LegacyServiceUnavailableError) throw err;
     return { error: 'export-failed' };
@@ -125,7 +124,7 @@ async function finishRun(tx: TenantTx, deps: RunExportDeps, jobId: string, claim
 /**
  * Runs export job `input.jobId` under a claim: resolves with its recorded outcome, or `skipped` for a finished or missing job and
  * for a claim a later delivery took over, which deletes the object it stored; rejects with a LegacyServiceUnavailableError when a
- * unit gate refuses it, so a retried delivery reclaims the run.
+ * unit gate refuses it or its source's producer is unavailable, so a retried delivery reclaims the run.
  */
 export async function runExport(deps: RunExportDeps, input: RunExportInput): Promise<RunExportResult> {
   const started = await withGatedTenant(deps.db, input.tenantId, (tx) => claimRun(tx, deps, input.jobId));

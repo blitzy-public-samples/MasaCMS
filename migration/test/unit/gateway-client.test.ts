@@ -13,11 +13,14 @@ import {
   GatewayWaitTimeoutError,
   createGatewayClient,
   type CutoverStatus,
+  type CutoverStatusV2,
   type InflightClearRequest,
 } from '../../src/cutover/gateway-client.js';
 
 const CONTRACT = parse(readFileSync(new URL('../../../gateway/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
+const STATUS_V1_PATH = '/internal/v1/cutover/status';
+const STATUS_V2_PATH = '/internal/v2/cutover/status';
 const ROUTE_A = 'admin:cusers.update{type=2,action=add}';
 const ROUTE_B = 'fixture:people/persons/{id}/archive@post';
 const OTHER_ROUTE = 'api:json.content.save';
@@ -34,19 +37,22 @@ function json(status: number, body: unknown): ServiceResponse {
   return { status, headers: { 'content-type': 'application/json' }, body };
 }
 
-function fakeClient(caller: string, calls: Recorded[], respond: Responder): ServiceClient {
+/** A recording service client; `undeclared` names the paths it answers outside the contract, as an older gateway or a failing one does. */
+function fakeClient(caller: string, calls: Recorded[], respond: Responder, undeclared: ReadonlySet<string>): ServiceClient {
   return {
     async request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
       calls.push({ caller, req });
       const response = await respond(req);
-      // Every fake answer must itself be a contract-valid gateway response.
-      assertResponseMatchesOpenApi(CONTRACT, {
-        method: req.method,
-        path: req.path,
-        status: response.status,
-        contentType: 'application/json',
-        body: response.body,
-      });
+      // Every other fake answer must itself be a contract-valid gateway response.
+      if (!undeclared.has(req.path)) {
+        assertResponseMatchesOpenApi(CONTRACT, {
+          method: req.method,
+          path: req.path,
+          status: response.status,
+          contentType: 'application/json',
+          body: response.body,
+        });
+      }
       return response as ServiceResponse<T>;
     },
     close: async () => undefined,
@@ -71,6 +77,10 @@ function statusBody(overrides: Partial<CutoverStatus> = {}): CutoverStatus {
   };
 }
 
+function statusV2Body(overrides: Partial<CutoverStatusV2> = {}): CutoverStatusV2 {
+  return { ...statusBody(), inflight: [], ...overrides };
+}
+
 /** Clock advanced only by the fake sleep. */
 function steppingClock(): { clock: Clock; sleep: (ms: number) => Promise<void>; slept: number[] } {
   let now = Date.parse(TS);
@@ -85,11 +95,17 @@ function steppingClock(): { clock: Clock; sleep: (ms: number) => Promise<void>; 
   };
 }
 
-function setup(respond: Responder, clockAndSleep: { clock?: Clock; sleep?: (ms: number) => Promise<void> } = {}) {
+interface SetupOptions {
+  clock?: Clock;
+  sleep?: (ms: number) => Promise<void>;
+  undeclared?: ReadonlySet<string>;
+}
+
+function setup(respond: Responder, { undeclared = new Set<string>(), ...clockAndSleep }: SetupOptions = {}) {
   const calls: Recorded[] = [];
   const gateway = createGatewayClient({
-    migrationClient: fakeClient('migration', calls, respond),
-    operatorClient: fakeClient('operator', calls, respond),
+    migrationClient: fakeClient('migration', calls, respond, undeclared),
+    operatorClient: fakeClient('operator', calls, respond, undeclared),
     ...clockAndSleep,
   });
   return { gateway, calls };
@@ -235,15 +251,22 @@ describe('awaitInflightDrained', () => {
     { instanceId: 'gw-1', seenEpoch: 3, heartbeatAt: TS, live: true },
     { instanceId: 'gw-dead', seenEpoch: 3, heartbeatAt: TS, live: false },
   ];
-  const orphanRow = { instanceId: 'gw-dead', route: ROUTE_A, side: 'legacy', count: 1, oldestStartedAt: TS } as const;
-  const vanishedRow = { instanceId: 'gw-gone', route: ROUTE_B, side: 'target', count: 2, oldestStartedAt: TS } as const;
-  const liveRow = { instanceId: 'gw-1', route: ROUTE_B, side: 'target', count: 1, oldestStartedAt: TS } as const;
-  const unrelatedLiveRow = { instanceId: 'gw-1', route: OTHER_ROUTE, side: 'legacy', count: 3, oldestStartedAt: TS } as const;
+  const orphanRow = { instanceId: 'gw-dead', route: ROUTE_A, side: 'legacy', count: 1, oldestStartedAt: TS, orphaned: true } as const;
+  const vanishedRow = { instanceId: 'gw-gone', route: ROUTE_B, side: 'target', count: 2, oldestStartedAt: TS, orphaned: true } as const;
+  const liveRow = { instanceId: 'gw-1', route: ROUTE_B, side: 'target', count: 1, oldestStartedAt: TS, orphaned: false } as const;
+  const abandonedRow = { ...liveRow, orphaned: true } as const;
+  const unrelatedLiveRow = { instanceId: 'gw-1', route: OTHER_ROUTE, side: 'legacy', count: 3, oldestStartedAt: TS, orphaned: false } as const;
+
+  it("returns a live instance's abandoned rows as orphans at once, without waiting for them", async () => {
+    const { gateway, calls } = setup(() => json(200, statusV2Body({ instances, inflight: [abandonedRow, unrelatedLiveRow] })), steppingClock());
+    expect(await gateway.awaitInflightDrained([ROUTE_B], { timeoutMs: 1000, intervalMs: 200 })).toEqual({ orphans: [abandonedRow] });
+    expectContractCalls(calls, [{ caller: 'migration', operationId: 'cutoverStatusV2' }]);
+  });
 
   it('returns rows of dead or unlisted instances as orphans once live rows on the routes have drained', async () => {
     const statuses = [
-      statusBody({ instances, inflight: [orphanRow, liveRow, unrelatedLiveRow] }),
-      statusBody({ instances, inflight: [orphanRow, vanishedRow, unrelatedLiveRow] }),
+      statusV2Body({ instances, inflight: [orphanRow, liveRow, unrelatedLiveRow] }),
+      statusV2Body({ instances, inflight: [orphanRow, vanishedRow, unrelatedLiveRow] }),
     ];
     const timing = steppingClock();
     const { gateway, calls } = setup(() => json(200, statuses.shift()), timing);
@@ -254,15 +277,101 @@ describe('awaitInflightDrained', () => {
   });
 
   it('resolves with no orphans when nothing is in flight on the routes', async () => {
-    const { gateway } = setup(() => json(200, statusBody({ instances, inflight: [unrelatedLiveRow] })), steppingClock());
+    const { gateway } = setup(() => json(200, statusV2Body({ instances, inflight: [unrelatedLiveRow] })), steppingClock());
     expect(await gateway.awaitInflightDrained([ROUTE_A], { timeoutMs: 0, intervalMs: 10 })).toEqual({ orphans: [] });
   });
 
   it('times out naming the live rows still present', async () => {
-    const { gateway } = setup(() => json(200, statusBody({ instances, inflight: [orphanRow, liveRow] })), steppingClock());
+    const { gateway } = setup(() => json(200, statusV2Body({ instances, inflight: [orphanRow, liveRow] })), steppingClock());
     const error = await gateway.awaitInflightDrained([ROUTE_A, ROUTE_B], { timeoutMs: 300, intervalMs: 100 }).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(GatewayWaitTimeoutError);
     expect(error).toMatchObject({ kind: 'inflight', pending: [liveRow] });
     expect((error as Error).message).toContain(ROUTE_B);
+  });
+
+  it("drains against a gateway without cutoverStatusV2, the rows of instances not live its orphans and a live instance's rows awaited", async () => {
+    const v1Rows = (rows: readonly (typeof orphanRow | typeof liveRow)[]): CutoverStatus['inflight'] =>
+      rows.map(({ orphaned: _orphaned, ...row }) => row);
+    const statuses = [statusBody({ instances, inflight: v1Rows([orphanRow, liveRow]) }), statusBody({ instances, inflight: v1Rows([orphanRow]) })];
+    const timing = steppingClock();
+    const redirect: ServiceResponse = { status: 301, headers: { location: `${STATUS_V2_PATH}/` }, body: '' };
+    const { gateway, calls } = setup((req) => (req.path === STATUS_V2_PATH ? redirect : json(200, statuses.shift())), {
+      ...timing,
+      undeclared: new Set([STATUS_V2_PATH]),
+    });
+
+    const result = await gateway.awaitInflightDrained([ROUTE_A, ROUTE_B], { timeoutMs: 30_000, intervalMs: 1000 });
+
+    expect(result).toEqual({ orphans: [orphanRow] });
+    expect(timing.slept).toEqual([1000]);
+    expect(calls.map((c) => c.req.path)).toEqual([STATUS_V2_PATH, STATUS_V1_PATH, STATUS_V2_PATH, STATUS_V1_PATH]);
+  });
+});
+
+describe('inflightStatus', () => {
+  const instances: CutoverStatus['instances'] = [
+    { instanceId: 'gw-live', seenEpoch: 3, heartbeatAt: TS, live: true },
+    { instanceId: 'gw-dead', seenEpoch: 3, heartbeatAt: TS, live: false },
+  ];
+  const group = { route: ROUTE_B, side: 'target', count: 1, oldestStartedAt: TS } as const;
+
+  it("reads cutoverStatusV2, which reports a live instance's abandoned rows orphaned", async () => {
+    const inflight = [
+      { ...group, instanceId: 'gw-live', orphaned: false },
+      { ...group, instanceId: 'gw-live', orphaned: true },
+    ];
+    const { gateway, calls } = setup(() => json(200, statusV2Body({ instances, inflight })));
+
+    expect(await gateway.inflightStatus()).toEqual({ instances, inflight });
+    expectContractCalls(calls, [{ caller: 'migration', operationId: 'cutoverStatusV2' }]);
+  });
+
+  // An older gateway forwards the unknown path to legacy, which redirects it to a trailing slash or answers 404.
+  it.each([
+    { label: '404', answer: json(404, '<html>Not Found</html>') },
+    { label: "legacy's 301", answer: { status: 301, headers: { location: `${STATUS_V2_PATH}/` }, body: '' } },
+  ])('reads cutoverStatus from a gateway that answers cutoverStatusV2 with $label, orphaning exactly the rows of instances not live', async ({ answer }) => {
+    const inflight = [
+      { ...group, instanceId: 'gw-dead' },
+      { ...group, instanceId: 'gw-gone' },
+      { ...group, instanceId: 'gw-live' },
+    ];
+    const { gateway, calls } = setup((req) => (req.path === STATUS_V2_PATH ? answer : json(200, statusBody({ instances, inflight }))), {
+      undeclared: new Set([STATUS_V2_PATH]),
+    });
+
+    expect(await gateway.inflightStatus()).toEqual({
+      instances,
+      inflight: inflight.map((row) => ({ ...row, orphaned: row.instanceId !== 'gw-live' })),
+    });
+    expect(calls.map((c) => [c.caller, c.req.method, c.req.path])).toEqual([
+      ['migration', 'GET', STATUS_V2_PATH],
+      ['migration', 'GET', STATUS_V1_PATH],
+    ]);
+  });
+
+  it.each([
+    {
+      label: 'a refusal other than 404',
+      respond: (): ServiceResponse => json(403, { apiversion: 'v1', method: 'cutoverStatusV2', error: { code: 'forbidden', message: 'Forbidden' } }),
+      expected: (error: unknown) => expect(error).toMatchObject({ name: 'GatewayCallError', operation: 'cutoverStatusV2', status: 403 }),
+    },
+    {
+      label: 'a server error',
+      respond: (): ServiceResponse => json(500, { apiversion: 'v1', method: 'cutoverStatusV2', error: { code: 'server_error', message: 'Unhandled Exception' } }),
+      expected: (error: unknown) => expect(error).toMatchObject({ name: 'GatewayCallError', operation: 'cutoverStatusV2', status: 500 }),
+    },
+    {
+      label: 'a transport failure',
+      respond: (): ServiceResponse => {
+        throw new ServiceUnavailableError('gateway', Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
+      },
+      expected: (error: unknown) => expect(error).toBeInstanceOf(ServiceUnavailableError),
+    },
+  ])('propagates $label of cutoverStatusV2 without reading cutoverStatus', async ({ respond, expected }) => {
+    const { gateway, calls } = setup(respond, { undeclared: new Set([STATUS_V2_PATH]) });
+
+    expected(await gateway.inflightStatus().catch((error: unknown) => error));
+    expect(calls.map((c) => c.req.path)).toEqual([STATUS_V2_PATH]);
   });
 });

@@ -15,7 +15,7 @@ export interface StartupFailureOptions {
 }
 
 /** Logger at the default level: `cloud` when the source selects it with a usable project, otherwise `local`. */
-function startupLogger(options: StartupFailureOptions): Logger {
+export function startupLogger(options: StartupFailureOptions): Logger {
   const { service, version, source = process.env, destination } = options;
   if (source.OPT2_ENV === 'cloud') {
     try {

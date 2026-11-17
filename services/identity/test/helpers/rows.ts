@@ -165,6 +165,7 @@ export function sessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     updated_at: businessNoon(),
     ended_at: null,
     admin_state: null,
+    last_active_at: businessNoon(),
     ...overrides,
   };
 }

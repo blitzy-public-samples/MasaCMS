@@ -17,6 +17,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { withTenant } from '@opt2/platform/tenancy';
 import {
+  categoryCrumbs,
   deleteCategory,
   listPoolCategories,
   newCategoryBean,
@@ -30,12 +31,14 @@ import { getSiteModulePerm } from '../../domain/permissions.js';
 import { feedPoolSites, type PoolSite } from '../../domain/pools.js';
 import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
 import {
+  iteratorPage,
   paramUrl,
   serializeCollection,
   serializeContentEntity,
   serializeEntityList,
   urlParam,
   type ApiEntityView,
+  type EntityCollectionSource,
 } from '../../legacy/jsonapi-serializers.js';
 import type { FeedTableSpec } from '../../repo/bean-feed-sql.js';
 import type { AssignmentCategory, ContentRepository } from '../../repo/repository.js';
@@ -46,16 +49,24 @@ import {
   beanFeedQuery,
   entityAccessAllowed,
   entityActionAllowed,
+  finderOf,
+  finderParamsOf,
   findPropertiesFor,
+  firstScannedRow,
+  isBlankFeedRow,
   jsonApiResultOf,
   mergedSource,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
   type BeanFeedResult,
   type BeanFeedSource,
+  type BlankFeedRow,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiResult,
+  type RelationSourceKey,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Struct = Record<string, unknown>;
@@ -169,11 +180,6 @@ function readerOf(call: JsonApiCall): Actor {
   return { ...call.actor, tenantId: call.tenantId, siteId: call.siteId };
 }
 
-/** The `expand` argument the finders receive. */
-function expandOf(call: JsonApiCall): string {
-  return call.params.string('expand');
-}
-
 /** A truthy CFML boolean, as `isBoolean(x) && x` reads it. */
 function isTrue(value: unknown): boolean {
   return cfIsBoolean(value) && cfToBoolean(value);
@@ -206,18 +212,18 @@ async function feedData<R extends Readonly<Struct>>(
   call: JsonApiCall,
   entityName: string,
   result: BeanFeedResult<R>,
-  views: (row: R) => ApiEntityView,
+  views: (row: R | BlankFeedRow) => ApiEntityView,
   reorder?: (items: Struct[]) => Struct[],
 ): Promise<unknown> {
   if ('count' in result) return { count: result.count };
-  const items = await serializeEntityList(result.items.map(views), call.apiContext, { entityName, expand: expandOf(call) });
+  const items = await serializeEntityList(result.items.map(views), call.apiContext, { entityName, ...finderOf(call) }, relatedResolver(call));
   const opts = result.baseUrl === undefined ? {} : { baseUrl: result.baseUrl };
   return serializeCollection(reorder === undefined ? items : reorder(items), result.page, call.apiContext, opts);
 }
 
-/** The row a `fields` SELECT returns (beanFeed.cfc:884-886): listed columns only; a name that is no column fails. */
+/** The row a `fields` SELECT returns (beanFeed.cfc:884-886): the feed params' listed columns only; a name that is no column fails. */
 function selectedRow(row: Readonly<Struct>, call: JsonApiCall, columns: readonly string[]): Readonly<Struct> {
-  const fields = cfListToArray(cfText(urlParam(call.apiContext, 'fields'))).map((field) =>
+  const fields = cfListToArray(cfText(getNoCase(finderParamsOf(call), 'fields'))).map((field) =>
     (field.trim().split('.').at(-1) ?? '').toLowerCase(),
   );
   if (fields.length === 0 || fields.includes('*')) return row;
@@ -257,17 +263,22 @@ function beanValues(bean: CategoryBean, call: JsonApiCall): Struct {
   return isStored(bean) ? { ...bean } : { ...bean, siteid: bean.siteid === '' ? call.siteId : bean.siteid };
 }
 
-/** The category bean an iterator builds from a feed row (`set(row)` over the init values, isNew 0), NULL as ''. */
-function rowValues(row: Readonly<Struct>, ctx: ContentRouteContext): Struct {
+/**
+ * The category bean an iterator builds from a feed row (`set(row)` over the init values, isNew 0), NULL as ''; a blank
+ * row keeps init's isFeatureable, which setIsFeatureable sets from numeric values only (categoryBean.cfc:233-238).
+ */
+function rowValues(row: Readonly<Struct>, ctx: ContentRouteContext, blank: boolean): Struct {
   const values: Struct = { ...newCategoryBean(ctx.domain.clock) };
-  for (const [column, value] of Object.entries(row)) values[column] = value ?? '';
+  for (const [column, value] of Object.entries(row)) {
+    if (!(blank && column === 'isfeatureable')) values[column] = value ?? '';
+  }
   values['isnew'] = 0;
   return values;
 }
 
 /** The view of a selected category feed row. */
 function categoryRowView(row: Readonly<Struct>, ctx: ContentRouteContext, call: JsonApiCall): ApiEntityView {
-  return categoryView(rowValues(selectedRow(row, call, CATEGORY_COLUMNS), ctx), call);
+  return categoryView(rowValues(selectedRow(row, call, CATEGORY_COLUMNS), ctx, isBlankFeedRow(row)), call);
 }
 
 /** An instance value as the serializer's isDate reads it: init's `now()` text as a date. */
@@ -314,11 +325,18 @@ function serializeCategory(
   call: JsonApiCall,
   opts: { expanded: number | boolean; editableCheck: boolean },
 ): Promise<Struct> {
-  return serializeContentEntity(categoryView(values, call), call.apiContext, undefined, {
+  return serializeContentEntity(categoryView(values, call), call.apiContext, relatedResolver(call), {
     ...opts,
-    expandLinks: expandOf(call),
+    expandLinks: finderOf(call).expand,
     pk: CATEGORY_BEAN_PK,
   });
+}
+
+/** categoryBean.getCrumbIterator (categoryBean.cfc:244-253) of a view: the pool categories its path names, as a `categoryBean` iterator. */
+export async function categoryCrumbSource(ctx: ContentRouteContext, call: JsonApiCall, view: ApiEntityView): Promise<EntityCollectionSource> {
+  const rows = await categoryCrumbs(ctx.domain, readerOf(call), { path: cfText(getNoCase(view.allValues, 'path')), sort: 'asc' });
+  const items = rows.map((row) => categoryView(rowValues(row, ctx, false), call));
+  return { items, page: iteratorPage({ recordCount: items.length, maxRecordsPerPage: items.length, entityName: 'categoryBean' }) };
 }
 
 // categoryBean holds a `notes` value but declares the property `note`, so findQuery rejects a `notes` filter as a value
@@ -347,7 +365,7 @@ export const categoryHandler: EntityHandler = Object.freeze({
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, CATEGORY)) return authorizationDenied();
     const bean = await readCategory(ctx.domain, readerOf(call), call.id ?? '', categoryOptions(call));
-    const data = await serializeCategory(beanValues(bean, call), call, { expanded: 0, editableCheck: true });
+    const data = await serializeCategory(beanValues(bean, call), call, { expanded: finderOf(call).expanded, editableCheck: true });
     return jsonApiResultOf(data, CATEGORY.name);
   },
 
@@ -444,6 +462,13 @@ export const categoryHandler: EntityHandler = Object.freeze({
     await deleteCategory(ctx.domain, actor, bean.categoryid, opts);
     return jsonApiResultOf('');
   },
+
+  /** loadBy (categoryBean.cfc:200-206) through categoryManager.read, whose keys include no `contentid`. */
+  async loadBy(ctx: ContentRouteContext, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+    const bean = await readCategory(ctx.domain, readerOf(call), 'primaryKey' in key ? key.primaryKey : '', categoryOptions(call));
+    const values = beanValues(bean, call);
+    return (name) => getNoCase(values, cfEq(name, 'primaryKey') ? CATEGORY_BEAN_PK : name);
+  },
 });
 
 // ---- contentCategoryAssign ----
@@ -494,24 +519,28 @@ function joinedCategories(index: ReadonlyMap<string, CategoryRow>): AssignmentCa
 /** The contenthistid a findQuery filters by plain equality with no `or` or grouping, which then bounds every row it selects. */
 function boundHistId(call: JsonApiCall): string | undefined {
   if (!cfEq(call.method, 'findQuery')) return undefined;
-  if (call.query.params.entries().some(([key]) => UNBOUNDING_KEYS.has(key.toLowerCase()))) return undefined;
-  const value = cfText(urlParam(call.apiContext, 'contenthistid'));
+  const { finder } = call;
+  const expanded = finder !== undefined && finder.expanded > 0;
+  if (!expanded && call.query.params.entries().some(([key]) => UNBOUNDING_KEYS.has(key.toLowerCase()))) return undefined;
+  // findQuery's expanded branch filters by its params alone, the query string branch by the URL scope's values.
+  const value = cfText(expanded ? getNoCase(finderParamsOf(call), 'contenthistid') : urlParam(call.apiContext, 'contenthistid'));
   return value === '' || value.includes('^') || value.includes('*') ? undefined : value;
 }
 
 /** Whether the feed SELECT keeps its joins: neither countOnly (`count(*) from` the table) nor a `fields` list (beanFeed.cfc:883-931). */
 function joinsCategories(call: JsonApiCall): boolean {
-  return !isTrue(urlParam(call.apiContext, 'countOnly')) && cfText(urlParam(call.apiContext, 'fields')) === '';
+  const params = finderParamsOf(call);
+  return !isTrue(getNoCase(params, 'countOnly')) && cfText(getNoCase(params, 'fields')) === '';
 }
 
-/** The assignment feed of `sites` (`siteID IN (…)`, one version's for a bounded findQuery), joined when `join` and rows exist. */
+/** The assignment feed of `sites` (`siteID IN (…)`, only version `histId`'s when given), joined when `join` and rows exist. */
 async function assignmentFeed(
   ctx: ContentRouteContext,
   call: JsonApiCall,
   sites: readonly PoolSite[],
   join: boolean,
+  histId: string | undefined,
 ): Promise<BeanFeedSource<Struct>> {
-  const histId = boundHistId(call);
   const { content } = ctx.domain.repository;
   const scope = (site: PoolSite): { siteId: string; contentHistId?: string } =>
     histId === undefined ? { siteId: site.siteId } : { siteId: site.siteId, contentHistId: histId };
@@ -521,10 +550,14 @@ async function assignmentFeed(
   return poolFeed(ctx, sites, (site) => content.categoryAssignmentsFeed({ ...scope(site), categories }));
 }
 
+/** The request site's joined assignment feed, as loadBy (beanORM.cfc:766-845) selects from it. */
+function siteAssignments(ctx: ContentRouteContext, call: JsonApiCall): Promise<BeanFeedSource<Struct>> {
+  return assignmentFeed(ctx, call, [{ siteId: call.siteId, tenantId: call.tenantId }], true, undefined);
+}
+
 /** The row a key-less loadBy reads (beanORM.cfc:766-845): the request site's first joined assignment, in clustered-key order. */
 async function firstAssignment(ctx: ContentRouteContext, call: JsonApiCall): Promise<Struct | undefined> {
-  const feed = await assignmentFeed(ctx, call, [{ siteId: call.siteId, tenantId: call.tenantId }], true);
-  const [first] = await feed.rows({ order: [] }, 0, 1);
+  const [first] = await (await siteAssignments(ctx, call)).rows({ order: [] }, 0, 1);
   return first;
 }
 
@@ -560,9 +593,9 @@ function serializeAssignment(
   call: JsonApiCall,
   opts: { expanded: number | boolean; editableCheck: boolean },
 ): Promise<Struct> {
-  return serializeContentEntity(assignmentView(values), call.apiContext, undefined, {
+  return serializeContentEntity(assignmentView(values), call.apiContext, relatedResolver(call), {
     ...opts,
-    expandLinks: expandOf(call),
+    expandLinks: finderOf(call).expand,
     pk: ASSIGNMENT.primaryKey,
   });
 }
@@ -570,7 +603,7 @@ function serializeAssignment(
 /** findAll and findQuery over the assignment feed. */
 async function findAssignments(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
   if (!entityAccessAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
-  const feed = await assignmentFeed(ctx, call, await feedSites(ctx, call), joinsCategories(call));
+  const feed = await assignmentFeed(ctx, call, await feedSites(ctx, call), joinsCategories(call), boundHistId(call));
   const result = await beanFeedQuery(feed, call, ASSIGNMENT_FEED);
   return jsonApiResultOf(await feedData(call, ASSIGNMENT.name, result, (row) => assignmentRowView(row, call)), ASSIGNMENT.name);
 }
@@ -592,7 +625,7 @@ export const contentCategoryAssignHandler: EntityHandler = Object.freeze({
   async findMany(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
-    const feed = await assignmentFeed(ctx, call, await feedSites(ctx, call), joinsCategories(call));
+    const feed = await assignmentFeed(ctx, call, await feedSites(ctx, call), joinsCategories(call), boundHistId(call));
     const result = await beanFeedQuery(feed, call, ASSIGNMENT_FEED);
     const ids = idsOf(call);
     const inIdOrder = (items: Struct[]): Struct[] => {
@@ -642,5 +675,19 @@ export const contentCategoryAssignHandler: EntityHandler = Object.freeze({
     if (!entityActionAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
     if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
     throw complexObjectId();
+  },
+
+  /**
+   * loadBy as a relation path's source: by `contentid` the site's first assignment of the item, else loadBy's arguments
+   * on a new bean; by the empty primary key, key-less, the site's first assignment.
+   */
+  async loadBy(ctx: ContentRouteContext, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+    if (!('contentid' in key)) {
+      const values = assignmentValues(await firstAssignment(ctx, call), call);
+      return (name) => getNoCase(values, name);
+    }
+    const row = await firstScannedRow(await siteAssignments(ctx, call), (candidate) => sqlKey(candidate['contentid']) === sqlKey(key.contentid));
+    const values = row === undefined ? { ...assignmentValues(undefined, call), contentid: key.contentid } : assignmentValues(row, call);
+    return (name) => getNoCase(values, name);
   },
 });

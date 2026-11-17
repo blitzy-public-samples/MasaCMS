@@ -700,6 +700,31 @@ describe('user closure', () => {
   });
 });
 
+describe('an operation whose site was deleted after it was recorded', () => {
+  /** Marks tenant-a's site deleted, so registry reads of registered sites leave it out. */
+  function deleteSite(): void {
+    t.db.respond(/FROM identity\.tenant_registry\b/, (sql, values) =>
+      registryAnswer(sql, values).filter((row) => !/\bNOT deleted\b/.test(sql) || row.tenant_id !== TENANT),
+    );
+  }
+
+  it.each([
+    { terminal: 'abort', from: 'prepared', state: 'aborted', status: 'rolled-back' },
+    { terminal: 'revert', from: 'committed', state: 'reverted', status: 'rolled-back' },
+    { terminal: 'finish', from: 'committed', state: 'finished', status: 'done' },
+  ] as const)('is still read and resolved by $terminal, and its migration status follows', async ({ terminal, from, state, status }) => {
+    const input = createInput();
+    await driveTo(deps, input, from);
+    deleteSite();
+
+    expect(await accountOperationStatus(deps, input.operationId, { userId: input.userId })).toMatchObject({ operationId: input.operationId, state: from });
+    expect(await operationStatus(t.db, [input.operationId])).toEqual({ [input.operationId]: 'open' });
+    expect(await runStep(deps, input, terminal)).toMatchObject({ outcome: 'stepped' });
+    expect(operationOf(t, input.operationId)?.state).toBe(state);
+    expect(await operationStatus(t.db, [input.operationId])).toEqual({ [input.operationId]: status });
+  });
+});
+
 
 describe('session effects', () => {
   const person = { fname: 'Renamed', lname: 'Admin', email: `site_admin_renamed@${TENANT_A.siteId}.opt2.test`, company: null, subtype: 'Default' };

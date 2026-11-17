@@ -1,18 +1,27 @@
-/** GET /v1/user-sites against legacy getUserSites and bindToDomain(isAdmin=true), over a stub identity and registry fakes. */
+/** GET /v1/user-sites and its keyset page GET /v2/user-sites against legacy getUserSites and bindToDomain(isAdmin=true), over a stub identity and registry fakes. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
+import { untilAborted } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { registeredTenants, tenantForRegisteredSite, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import {
+  registeredTenants,
+  tenantForRegisteredSite,
+  tenantIdForSite,
+  type MetadataTx,
+  type TenantDb,
+  type TenantTx,
+  type TransactionCallOptions,
+} from '@opt2/platform/tenancy';
 import { ROLE_SET, assertResponseMatchesOpenApi, authHeadersFor, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import { bindToAdminDomain } from '../../src/domain/user-sites.js';
-import type { ProgramsSitesRepository } from '../../src/repo/repository.js';
+import type { KeysetPage, ProgramsSitesRepository, SiteSelectorRow } from '../../src/repo/repository.js';
 import type { SiteRow } from '../../src/repo/tables.js';
 import { registerUserSiteRoutes } from '../../src/routes/user-sites.js';
 
@@ -26,7 +35,7 @@ const SESSION_SITES_PATH = '/v1/sessions/current/sites';
 const UNREACHABLE = 'http://127.0.0.1:9';
 
 /** A stored site; `domainalias` and `showdashboard` default to NULL. */
-function siteRow(siteid: string, site: string | null, orderno: number | null, domain: string | null, extra: Partial<SiteRow> = {}): SiteRow {
+function siteRow(siteid: string, site: string | null, orderno: number | null, domain: string | null, extra: Partial<SiteRow> = {}): SiteRow & SiteSelectorRow {
   return {
     tenant_id: tenantIdForSite(siteid),
     siteid,
@@ -79,20 +88,71 @@ let stateDir: string;
 let identity: StubIdentity;
 let rows: readonly SiteRow[];
 const tenants: string[] = [];
+/** Statements of each metadata transaction opened, one list per transaction. */
+const metadata: string[][] = [];
+/** Call options of each transaction opened, tenant and metadata alike. */
+const calls: Array<TransactionCallOptions | undefined> = [];
 const apps: FastifyInstance[] = [];
+let logLines: Array<Record<string, unknown>> = [];
+/** When set, every tenant read signals `entered`, then waits for `release`. */
+let held: { entered: () => void; release: Promise<void> } | undefined;
 
+/** The read fence `awaitReadable` takes on the site unit: savepoint, share lock, release. */
+const SITE_UNIT_FENCE = [
+  'SAVEPOINT opt2_read_fence',
+  expect.stringMatching(/^SELECT unit, phase FROM \S*unit_gate\S* WHERE unit = ANY\(\$1::text\[\]\) ORDER BY unit FOR SHARE NOWAIT$/),
+  'RELEASE SAVEPOINT opt2_read_fence',
+];
+
+/** A metadata transaction answering every statement with no rows, recording its text in `seen`. */
+function metadataTx(seen: string[]): MetadataTx {
+  const query = (text: string | { text: string }) => {
+    seen.push(typeof text === 'string' ? text : text.text);
+    return Promise.resolve({ command: 'SELECT', rowCount: 0, oid: 0, fields: [], rows: [] });
+  };
+  return { kind: 'metadata', schema: 'programs_sites', query, onCommit: () => undefined } as unknown as MetadataTx;
+}
+
+// Each transaction ends at its signal's abort, as a pooled one does.
 const db: TenantDb = {
   schema: 'programs_sites',
-  withTenant: (tenantId, fn) => {
+  withTenant: (tenantId, fn, call) => {
     tenants.push(tenantId);
-    return fn({ tenantId } as unknown as TenantTx);
+    calls.push(call);
+    return untilAborted(fn({ tenantId } as unknown as TenantTx), call?.signal);
   },
-  withMetadata: () => Promise.reject(new Error('the registry is faked')),
+  withMetadata: (fn, call) => {
+    const seen: string[] = [];
+    metadata.push(seen);
+    calls.push(call);
+    return untilAborted(fn(metadataTx(seen)), call?.signal);
+  },
   end: () => Promise.resolve(),
 };
 
+/** The columns the repository's `listSiteSelectorRows` selects. */
+const SELECTOR_COLUMNS = ['siteid', 'site', 'orderno', 'domain', 'domainalias', 'showdashboard'] as const;
+
+/** `tenant_registry` of `rows` by site id in the C collation's code-point order. */
+const listRegisteredSitePage = vi.fn(async (_tx: MetadataTx, { after, limit }: KeysetPage) =>
+  rows
+    .map((row) => ({ siteId: row.siteid, tenantId: row.tenant_id }))
+    .sort((a, b) => (a.siteId < b.siteId ? -1 : 1))
+    .filter(({ siteId }) => after === null || siteId > after)
+    .slice(0, limit),
+);
+
 const repository = {
-  listSites: (tx: TenantTx) => Promise.resolve(rows.filter((row) => row.tenant_id === tx.tenantId)),
+  listSiteSelectorRows: async (tx: TenantTx) => {
+    if (held !== undefined) {
+      held.entered();
+      await held.release;
+    }
+    return rows
+      .filter((row) => row.tenant_id === tx.tenantId)
+      .map((row) => Object.fromEntries(SELECTOR_COLUMNS.map((column) => [column, row[column]])));
+  },
+  listRegisteredSitePage,
 } as unknown as ProgramsSitesRepository;
 
 async function startIdentity(): Promise<StubIdentity> {
@@ -131,7 +191,12 @@ async function appWith({ identityUrl = identity.url, adminDomain = '' } = {}): P
     }),
     verifierOverride: testVerifier('programs-sites'),
     pool: db,
-    logger: createLogger({ service: 'programs-sites', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    logger: createLogger({
+      service: 'programs-sites',
+      version: '1.0.0',
+      env: 'local',
+      destination: { write: (line: string) => logLines.push(JSON.parse(line) as Record<string, unknown>) },
+    }),
   });
   apps.push(app);
   registerUserSiteRoutes(app, { db, repository, adminDomain });
@@ -174,6 +239,11 @@ afterAll(async () => {
 beforeEach(() => {
   rows = ROWS;
   tenants.length = 0;
+  metadata.length = 0;
+  calls.length = 0;
+  logLines = [];
+  held = undefined;
+  listRegisteredSitePage.mockClear();
   Object.assign(identity, { status: 200, body: { sites: [] }, calls: [] });
   vi.mocked(registeredTenants).mockImplementation(() =>
     Promise.resolve(
@@ -190,7 +260,7 @@ afterEach(async () => {
 });
 
 describe('bindToAdminDomain', () => {
-  it.each<[string, SiteRow[], string, string, string | null]>([
+  it.each<[string, SiteSelectorRow[], string, string, string | null]>([
     [
       'a complete match beats an earlier partial match',
       [siteRow('www', 'www', 1, 'www.example.com'), siteRow('apex', 'apex', 2, 'example.com')],
@@ -283,12 +353,161 @@ describe('GET /v1/user-sites', () => {
     const { res } = await send('/v1/user-sites?host=a&host=b', 's2');
     expect(res.statusCode).toBe(400);
   });
+});
 
+describe('GET /v2/user-sites', () => {
+  type Item = { siteid: string };
+
+  it.each<{ name: string; query: string; items: Item[]; next: string | null; requested: KeysetPage }>([
+    { name: 'a default-size page', query: '', items: [SITE_DEFAULT, SITE_A, SITE_B], next: null, requested: { after: null, limit: 51 } },
+    { name: 'a first page', query: '?limit=2', items: [SITE_DEFAULT, SITE_A], next: 'tenant-a', requested: { after: null, limit: 3 } },
+    { name: 'the last page after a cursor', query: '?limit=2&after=tenant-a', items: [SITE_B], next: null, requested: { after: 'tenant-a', limit: 3 } },
+    { name: 'a page holding exactly every site', query: '?limit=3', items: [SITE_DEFAULT, SITE_A, SITE_B], next: null, requested: { after: null, limit: 4 } },
+  ])('pages the registry for an S2 token: $name, reading only its tenants behind one fence', async ({ query, items, next, requested }) => {
+    const { res } = await send(`/v2/user-sites${query}`, 's2');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items, next });
+    expect(listRegisteredSitePage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'metadata' }), requested);
+    expect(tenants).toEqual(items.map(({ siteid }) => tenantIdForSite(siteid)));
+    expect(metadata).toEqual([SITE_UNIT_FENCE]);
+    expect(calls).toEqual(calls.map(() => ({ signal: expect.objectContaining({ aborted: false }) })));
+    expect(identity.calls).toEqual([]);
+  });
+
+  it('answers an empty last page when no site is registered', async () => {
+    rows = [];
+    const { res } = await send('/v2/user-sites', 's2');
+    expect(res.json()).toEqual({ items: [], next: null });
+    expect(tenants).toEqual([]);
+  });
+
+  it.each<{ name: string; as: SubjectName; siteArray: string[]; query: string; items: Item[]; next: string | null; read: string[] }>([
+    {
+      name: 'a first page of a site admin',
+      as: 'site-admin',
+      siteArray: ['tenant-b', 'default', 'tenant-a'],
+      query: '?limit=2',
+      items: [SITE_DEFAULT, SITE_A],
+      next: 'tenant-a',
+      read: ['default', 'tenant-a'],
+    },
+    {
+      name: 'the last page after a cursor',
+      as: 'site-admin',
+      siteArray: ['tenant-b', 'default', 'tenant-a'],
+      query: '?limit=2&after=tenant-a',
+      items: [SITE_B],
+      next: null,
+      read: ['tenant-b'],
+    },
+    {
+      name: 'an unregistered id paged but not read',
+      as: 'editor',
+      siteArray: ['tenant-a', 'gone', 'tenant-a'],
+      query: '?limit=1',
+      items: [],
+      next: 'gone',
+      read: [],
+    },
+    {
+      name: 'a repeated id listed once',
+      as: 'editor',
+      siteArray: ['tenant-a', 'gone', 'tenant-a'],
+      query: '?after=gone',
+      items: [SITE_A],
+      next: null,
+      read: ['tenant-a'],
+    },
+    {
+      name: 'an upper-case id first by code point, read but not exact',
+      as: 'editor',
+      siteArray: ['default', 'TENANT-A'],
+      query: '?limit=1',
+      items: [],
+      next: 'TENANT-A',
+      read: ['tenant-a'],
+    },
+    {
+      name: 'only exact-case ids',
+      as: 'editor',
+      siteArray: ['TENANT-A', 'default'],
+      query: '',
+      items: [SITE_DEFAULT],
+      next: null,
+      read: ['tenant-a', 'default'],
+    },
+    { name: 'no site for an empty siteArray', as: 'site-admin', siteArray: [], query: '', items: [], next: null, read: [] },
+  ])('pages the session sites: $name', async ({ as, siteArray, query, items, next, read }) => {
+    identity.body = sessionSites(...siteArray);
+    const { res, headers } = await send(`/v2/user-sites${query}`, as);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items, next });
+    expect(tenants).toEqual(read.map((siteId) => tenantIdForSite(siteId)));
+    expect(metadata).toEqual([SITE_UNIT_FENCE]);
+    expect(listRegisteredSitePage).not.toHaveBeenCalled();
+    expect(identity.calls).toEqual([{ path: SESSION_SITES_PATH, authorization: headers.authorization }]);
+  });
+
+  it.each<[SubjectName, string[]]>([
+    ['s2', []],
+    ['editor', ['tenant-b', 'gone', 'TENANT-A', 'default', 'tenant-a']],
+  ])('pages %s one site at a time through exactly the /v1 rows, in site-id order', async (as, siteArray) => {
+    identity.body = sessionSites(...siteArray);
+    const app = await appWith();
+    const full = (await send('/v1/user-sites', as, app)).res.json<{ sites: Item[] }>().sites;
+    const paged: Item[] = [];
+    let after: string | null = null;
+    do {
+      const url = `/v2/user-sites?limit=1${after === null ? '' : `&after=${encodeURIComponent(after)}`}`;
+      const page: { items: Item[]; next: string | null } = (await send(url, as, app)).res.json();
+      paged.push(...page.items);
+      after = page.next;
+    } while (after !== null);
+    expect(paged).toEqual([...full].sort((a, b) => (a.siteid < b.siteid ? -1 : 1)));
+  });
+
+  it.each(['?limit=0', '?limit=1001', '?limit=ten', '?after=', `?after=${'x'.repeat(26)}`, '?limit=1&limit=2'])(
+    'answers invalidParameters for %s before any read',
+    async (query) => {
+      const { res } = await send(`/v2/user-sites${query}`, 'site-admin');
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: { code: 'invalid_request' } });
+      expect([identity.calls, tenants, metadata]).toEqual([[], [], []]);
+    },
+  );
+
+  it('abandons the page once its client disconnects, starting no further tenant read', async () => {
+    rows = ['s1', 's2', 's3', 's4', 's5', 's6'].map((siteId) => siteRow(siteId, siteId, null, null));
+    let entered = 0;
+    let release!: () => void;
+    held = { entered: () => (entered += 1), release: new Promise((resolve) => (release = resolve)) };
+    const app = await appWith();
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const subject = ROLE_SET.find((candidate) => candidate.name === 's2');
+    if (subject === undefined) throw new Error('No role subject s2');
+    const headers = await authHeadersFor(subject, { audience: 'programs-sites', site: 'tenant-a' });
+    const req = request({ host: '127.0.0.1', port: (app.server.address() as AddressInfo).port, path: '/v2/user-sites', headers });
+    req.on('error', () => undefined);
+    req.end();
+    try {
+      await vi.waitFor(() => expect(entered).toBe(4));
+      req.destroy();
+      await vi.waitFor(() => expect(logLines.map((line) => line.message)).toContain('request abandoned'));
+    } finally {
+      release();
+    }
+    expect(logLines.find((line) => line.message === 'request abandoned')).toMatchObject({ severity: 'INFO', route: '/v2/user-sites' });
+    expect(tenants).toHaveLength(4);
+    expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
+  });
+});
+
+describe.each(['/v1/user-sites', '/v2/user-sites'])('GET %s and identity', (url) => {
   it.each<[SubjectName, number]>([
     ['anonymous', 401],
     ['member', 403],
   ])('refuses %s with %i before asking identity', async (as, status) => {
-    const { res } = await send('/v1/user-sites', as);
+    const { res } = await send(url, as);
     expect(res.statusCode).toBe(status);
     expect(identity.calls).toEqual([]);
   });
@@ -301,12 +520,12 @@ describe('GET /v1/user-sites', () => {
     ['answers a body off its contract', 200, { sites: [{ site: 'Default' }] }, 503],
   ])('maps identity that %s (HTTP %i) to its legacy status', async (_name, status, body, expected) => {
     Object.assign(identity, { status, body });
-    const { res } = await send('/v1/user-sites', 'site-admin');
+    const { res } = await send(url, 'site-admin');
     expect(res.statusCode).toBe(expected);
   });
 
   it('answers the legacy 503 when identity is unreachable', async () => {
-    const { res } = await send('/v1/user-sites', 'editor', await appWith({ identityUrl: UNREACHABLE }));
+    const { res } = await send(url, 'editor', await appWith({ identityUrl: UNREACHABLE }));
     expect(res.statusCode).toBe(503);
   });
 });

@@ -112,6 +112,46 @@ function isoNow() {
 	cluster["clusterIPList"] = javaCast("string", application.configBean.getClusterIPList());
 	cluster["peerCount"] = javaCast("int", application.clusterManager.getPeers().recordcount);
 
+	// Inputs of the application-start writers, read as start-up reads them [core/appcfc/onApplicationStart_include.cfm].
+	projectSiteID = configValue("ProjectSiteID", "default");
+	deployBundlePath = request.muraInDocker ? "/tmp/MuraBundle.zip" : expandPath("/muraWRM/config/setup/deploy/bundle.zip");
+	themeStandardImageSizes = [];
+	for (siteRow in application.settingsManager.getList()) {
+		themeSite = application.settingsManager.getSite(siteRow.siteid);
+		themeDir = expandPath(themeSite.getThemeIncludePath());
+		themeXml = "";
+		if (fileExists(themeDir & "/config.xml.cfm")) {
+			savecontent variable = "themeXml" {
+				include "#themeSite.getThemeIncludePath()#/config.xml.cfm";
+			}
+		} else if (fileExists(themeDir & "/config.xml")) {
+			themeXml = fileRead(themeDir & "/config.xml");
+		}
+		if (len(themeXml) && isValid("xml", themeXml)) {
+			// Masa's parseXML [core/mura/backport/acf.cfm:6-8].
+			themeRoot = xmlParse(themeXml, false, {allowExternalEntities: false}).xmlRoot;
+			// A small, medium or large size makes start-up save the site [core/mura/extend/extendManager.cfc:1976-2017].
+			if (listFindNoCase("plugin,theme,mura,displayobject,contenttype", themeRoot.xmlName) && structKeyExists(themeRoot, "imagesizes")) {
+				for (sizeNode in themeRoot.imagesizes.xmlChildren) {
+					if (compareNoCase(sizeNode.xmlName, "imagesize") == 0 && structKeyExists(sizeNode.xmlAttributes, "name")
+						&& listFindNoCase("small,medium,large", sizeNode.xmlAttributes.name)) {
+						arrayAppend(themeStandardImageSizes, javaCast("string", siteRow.siteid));
+						break;
+					}
+				}
+			}
+		}
+	}
+	startup = structNew("ordered");
+	startup["projectSiteID"] = javaCast("string", projectSiteID);
+	startup["projectSiteExists"] = javaCast("boolean", application.settingsManager.siteExists(projectSiteID));
+	startup["deployBundlePath"] = javaCast("string", deployBundlePath);
+	startup["deployBundlePresent"] = javaCast("boolean", fileExists(deployBundlePath));
+	startup["autoDiscoverPlugins"] = javaCast("boolean", configFlag("autoDiscoverPlugins", false));
+	startup["applyDbUpdates"] = javaCast("boolean", configFlag("applyDbUpdates", true));
+	startup["appAutoUpdated"] = javaCast("boolean", structKeyExists(application, "appAutoUpdated") && application.appAutoUpdated);
+	startup["themeStandardImageSizes"] = themeStandardImageSizes;
+
 	environment = structNew("ordered");
 	environment["productName"] = javaCast("string", server.coldfusion.productname);
 	environment["productVersion"] = javaCast("string", server.coldfusion.productversion);
@@ -145,6 +185,7 @@ function isoNow() {
 	environment["siteMonitorTask"] = javaCast("string", siteMonitorTask);
 	environment["siteMonitorTaskRegistered"] = javaCast("boolean", siteMonitorTaskRegistered);
 	environment["cluster"] = cluster;
+	environment["startup"] = startup;
 	environment["timeZone"] = javaCast("string", createObject("java", "java.util.TimeZone").getDefault().getID());
 	environment["utcTotalOffset"] = javaCast("int", getTimeZoneInfo().utcTotalOffset);
 	environment["serverTime"] = isoNow();

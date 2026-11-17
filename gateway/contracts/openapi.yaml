@@ -148,11 +148,30 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /internal/v2/cutover/status:
+    get:
+      operationId: cutoverStatusV2
+      summary: Reports what `cutoverStatus` reports, with in-flight writes grouped by instance, route, side and `orphaned`.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+        - platform.migration
+      responses:
+        '200':
+          description: Cut-over status with the orphan state of each in-flight group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CutoverStatusV2'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   '/internal/v1/inflight:clear-orphans':
     post:
       operationId: inflightClearOrphans
-      summary: Deletes `gateway.inflight` rows of dead instances that started before `evidence.at`; only evidence clears an orphan, never time.
-      description: '`legacy-restart` clears legacy-side rows; `gates-closed` clears target-side rows whose route units all appear in `evidence.units`.'
+      summary: Deletes orphaned `gateway.inflight` rows that started before `evidence.at`; only evidence clears an orphan, never time.
+      description: 'An orphan is a row of an instance not live, or one its live instance abandoned without knowing whether the write committed. `legacy-restart` clears legacy-side orphans; `gates-closed` clears target-side orphans whose route units all appear in `evidence.units`.'
       x-opt2-transport: service
       x-opt2-requires:
         - platform.operator
@@ -668,7 +687,7 @@ components:
             - 'null'
           minimum: 0
         inflight:
-          description: In-flight writes grouped by instance, route and side; rows of an instance not live in `instances` are orphans.
+          description: In-flight writes grouped by instance, route and side; rows of an instance not live in `instances` are orphans. `cutoverStatusV2` also reports rows a live instance abandoned as orphans.
           type: array
           items:
             type: object
@@ -696,6 +715,112 @@ components:
               oldestStartedAt:
                 type: string
                 pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$'
+        sessionMode:
+          type: string
+          enum:
+            - legacy-primary
+            - target-primary
+    CutoverStatusV2:
+      description: '`CutoverStatus` whose in-flight groups also carry `orphaned`.'
+      type: object
+      additionalProperties: false
+      required:
+        - tableVersion
+        - previous
+        - epoch
+        - groupAuthority
+        - frozen
+        - instances
+        - acknowledgedEpoch
+        - inflight
+        - sessionMode
+      properties:
+        tableVersion:
+          type:
+            - string
+            - 'null'
+          pattern: '^v[0-9]{4}$'
+        previous:
+          type:
+            - string
+            - 'null'
+          pattern: '^v[0-9]{4}$'
+        epoch:
+          type: integer
+          minimum: 0
+        groupAuthority:
+          type: object
+          additionalProperties:
+            type: string
+            enum:
+              - legacy
+              - target
+        frozen:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9-]+:\S+$'
+        instances:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - instanceId
+              - seenEpoch
+              - heartbeatAt
+              - live
+            properties:
+              instanceId:
+                type: string
+              seenEpoch:
+                type: integer
+                minimum: 0
+              heartbeatAt:
+                type: string
+                pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$'
+              live:
+                type: boolean
+        acknowledgedEpoch:
+          description: Lowest epoch seen by a live instance; null when none is live.
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+        inflight:
+          description: In-flight writes grouped by instance, route, side and `orphaned`.
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - instanceId
+              - route
+              - side
+              - count
+              - oldestStartedAt
+              - orphaned
+            properties:
+              instanceId:
+                type: string
+              route:
+                type: string
+                pattern: '^[a-z0-9-]+:\S+$'
+              side:
+                type: string
+                enum:
+                  - legacy
+                  - target
+              count:
+                type: integer
+                minimum: 1
+              oldestStartedAt:
+                type: string
+                pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$'
+              orphaned:
+                description: The rows' instance is not live, or the instance abandoned the exchange without knowing whether the write committed; only evidence clears them.
+                type: boolean
         sessionMode:
           type: string
           enum:
@@ -770,7 +895,7 @@ components:
                 type: string
                 pattern: '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$'
         instanceIds:
-          description: Limits clearing to these dead instances; absent means every dead instance.
+          description: Limits clearing to the orphans of these instances; absent means every instance's orphans.
           type: array
           uniqueItems: true
           items:

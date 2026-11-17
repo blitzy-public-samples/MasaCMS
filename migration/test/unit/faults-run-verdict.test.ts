@@ -42,7 +42,8 @@ const CASES: VerdictCase[] = [
   { label: 'every assertion passed over a difference', reconciles: true, run: [PASSED], resume: [], reconciled: 'difference', outcome: 'passed', exitCode: 1, result: 'difference' },
   { label: 'a skipped run assertion and no failure', reconciles: true, run: [PASSED, SKIPPED], resume: [PASSED], reconciled: 'zero-difference', outcome: 'unmet', exitCode: 1, result: 'zero-difference' },
   { label: 'a skipped resume assertion and no failure', reconciles: true, run: [PASSED], resume: [SKIPPED], reconciled: 'zero-difference', outcome: 'unmet', exitCode: 1, result: 'zero-difference' },
-  { label: 'a failed and a skipped assertion', reconciles: true, run: [SKIPPED], resume: [FAILED], reconciled: 'zero-difference', outcome: 'failed', exitCode: 1, result: 'difference' },
+  { label: 'a failed and a skipped assertion', reconciles: true, run: [SKIPPED], resume: [FAILED], reconciled: 'zero-difference', outcome: 'failed', exitCode: 1, result: 'zero-difference' },
+  { label: 'a failed assertion over a difference', reconciles: true, run: [FAILED], resume: [], reconciled: 'difference', outcome: 'failed', exitCode: 1, result: 'difference' },
   { label: 'a toggle whose assertion passed', reconciles: false, run: [PASSED], resume: [], reconciled: 'zero-difference', outcome: 'toggled', exitCode: 0 },
   { label: 'a toggle with a skipped assertion', reconciles: false, run: [PASSED, SKIPPED], resume: [], reconciled: 'zero-difference', outcome: 'unmet', exitCode: 1 },
   { label: 'a toggle with a failed and a skipped assertion', reconciles: false, run: [SKIPPED, FAILED], resume: [], reconciled: 'zero-difference', outcome: 'failed', exitCode: 1 },
@@ -58,38 +59,54 @@ function doubleScript(entry: VerdictCase): FaultScript {
   };
 }
 
-function reconcileReport(result: ReconcileResult): ReconcileReport {
-  return { point: POINT, expectedTableVersion: 'v0001', tableVersion: 'v0001', legacySource: 'live', legacyDatabase: LIVE_DATABASE, units: [], result } as unknown as ReconcileReport;
+/** The reconciliation's report as `reconcileUnits` builds it: the point's default expectation v0001 against `tableVersion` measured. */
+function reconcileReport(result: ReconcileResult, tableVersion: string | null = 'v0001'): ReconcileReport {
+  return {
+    point: POINT,
+    expectedTableVersion: 'v0001',
+    tableVersion,
+    tableVersionMatches: tableVersion === 'v0001',
+    legacySource: 'live',
+    legacyDatabase: LIVE_DATABASE,
+    units: [],
+    result,
+  } as unknown as ReconcileReport;
 }
 
-/** A context over the committed config and catalog, a gateway double at v0001 and a fixed clock. */
-function context(): MigrationContext {
+/** A context over the committed config and catalog, a gateway double at `active` and a fixed clock. */
+function context(active: string | null = 'v0001'): MigrationContext {
   return {
     env: { MURA_DATABASE: LIVE_DATABASE },
     config: CONFIG,
     catalog: CATALOG,
-    gateway: createGatewayDouble({ active: 'v0001' }),
+    gateway: createGatewayDouble({ active }),
     clock: { now: () => new Date('2026-06-30T10:00:00.000Z') },
     logger: { info: vi.fn(), warn: vi.fn() },
   } as unknown as MigrationContext;
 }
 
+/** Ports over `script`, a reconcile answering `answer` and a report writer recording into `written`. */
+function verdictDeps(script: FaultScript, answer: ReconcileReport, written: (ReconcileReport & { fault: FaultReportBlock })[]) {
+  const reconcile = vi.fn<NonNullable<RunFaultDeps['reconcile']>>(() => Promise.resolve(answer));
+  const deps: RunFaultDeps = {
+    scripts: { [script.name]: script },
+    processControl: {} as ProcessControl,
+    remote: { set: vi.fn(() => Promise.resolve()), clear: vi.fn(() => Promise.resolve()) },
+    reconcile,
+    writeReport: (_ctx, report) => {
+      written.push(report as ReconcileReport & { fault: FaultReportBlock });
+      return Promise.resolve(REPORT_PATH);
+    },
+    latestSnapshot: () => Promise.resolve({ seq: 4, databaseName: 'masa_snapshot_4' } as SnapshotRecord),
+    sleep: () => Promise.resolve(),
+  };
+  return { deps, reconcile };
+}
+
 describe('runFault verdict', () => {
   it.each(CASES)('reports $outcome, exit $exitCode for $label', async (entry) => {
     const written: (ReconcileReport & { fault: FaultReportBlock })[] = [];
-    const reconcile = vi.fn<NonNullable<RunFaultDeps['reconcile']>>(() => Promise.resolve(reconcileReport(entry.reconciled)));
-    const deps: RunFaultDeps = {
-      scripts: { [entry.reconciles ? RECONCILING_FAULT : TOGGLE_FAULT]: doubleScript(entry) },
-      processControl: {} as ProcessControl,
-      remote: { set: vi.fn(() => Promise.resolve()), clear: vi.fn(() => Promise.resolve()) },
-      reconcile,
-      writeReport: (_ctx, report) => {
-        written.push(report as ReconcileReport & { fault: FaultReportBlock });
-        return Promise.resolve(REPORT_PATH);
-      },
-      latestSnapshot: () => Promise.resolve({ seq: 4, databaseName: 'masa_snapshot_4' } as SnapshotRecord),
-      sleep: () => Promise.resolve(),
-    };
+    const { deps, reconcile } = verdictDeps(doubleScript(entry), reconcileReport(entry.reconciled), written);
 
     const result = await runFault(context(), entry.reconciles ? RECONCILING_FAULT : TOGGLE_FAULT, {}, deps);
 
@@ -105,6 +122,25 @@ describe('runFault verdict', () => {
     expect(result.reconciliation).toStrictEqual({ point: POINT, result: entry.result, reportPath: REPORT_PATH });
     expect(written).toHaveLength(1);
     expect(written[0]?.result).toBe(entry.result);
+    expect(written[0]).toMatchObject({ expectedTableVersion: 'v0001', tableVersion: 'v0001', tableVersionMatches: true });
     expect(written[0]?.fault).toMatchObject({ name: RECONCILING_FAULT, outcome: entry.outcome, tableVersion: 'v0001', steps: ['resumed'], assertions: [...entry.run, ...entry.resume] });
+  });
+});
+
+describe('runFault table version', () => {
+  it.each([
+    { label: 'the version active when the fault started', active: 'v0002', measured: 'v0002', expected: 'v0002', matches: true },
+    { label: 'the start version when another was activated during the fault', active: 'v0002', measured: 'v0003', expected: 'v0002', matches: false },
+    { label: "the point's default when no version was active at the start", active: null, measured: null, expected: 'v0001', matches: false },
+  ])('expects $label', async ({ active, measured, expected, matches }) => {
+    const entry = CASES[0] as VerdictCase;
+    const written: (ReconcileReport & { fault: FaultReportBlock })[] = [];
+    const { deps } = verdictDeps(doubleScript(entry), reconcileReport('zero-difference', measured), written);
+
+    const result = await runFault(context(active), RECONCILING_FAULT, {}, deps);
+
+    expect(result).toMatchObject({ outcome: 'passed', reconciliation: { result: 'zero-difference' }, exitCode: 0 });
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ expectedTableVersion: expected, tableVersion: measured, tableVersionMatches: matches, fault: { tableVersion: active } });
   });
 });

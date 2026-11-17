@@ -1,5 +1,5 @@
 // Unit suite of the gateway reach map against v0002: edge paths per route, skips, response verdicts and owner evidence.
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,6 +173,15 @@ describe('loadCutoverVersion', () => {
     });
   });
 
+  it('reads the version the gateway serves from OPT2_CUTOVER_DIR when it is set', async () => {
+    await mkdir(join(dir, 'versions'), { recursive: true });
+    await writeFile(join(dir, 'versions', 'v0002.json'), await readFile(cutoverVersionFile('v0002'), 'utf8'));
+    const file = cutoverVersionFile('v0002', { OPT2_CUTOVER_DIR: dir });
+
+    expect(file).toBe(join(dir, 'versions', 'v0002.json'));
+    expect(await loadCutoverVersion('v0002', file)).toEqual(version);
+  });
+
   it('refuses a file that names another version', async () => {
     await expect(loadCutoverVersion('v0003', cutoverVersionFile('v0002'))).rejects.toThrow(
       /differs from the requested v0003/,
@@ -221,7 +230,7 @@ describe('gatewayReach', () => {
     ['stub', 'GET', '/healthz', 'served-by-gateway', /gateway route GET \/healthz/],
     ['people', 'GET', '/opt2/svc/people/v1/users', 'served-by-gateway', /relay alias \/opt2\/svc\//],
     ['finance', 'GET', '/internal/v1/migration/export', 'no-target-entry', /page:render matches page:render, legacy/],
-    ['finance', 'GET', '/v1/finance/records', 'no-target-entry', /legacy in this version/],
+    ['finance', 'GET', '/v1/finance/records', 'no-target-entry', /opt2:\/v1\/finance\/records matches no entry, so legacy serves it/],
     ['people', 'GET', `${FIXTURE}/people/persons/:userId/archive`, 'no-target-entry', /archive@get, legacy/],
     ['people', 'GET', `${FIXTURE}/finance/records`, 'no-target-entry', /owned by finance rather than people/],
     ['people', 'GET', '/gateway/legacy-bridge/session', 'no-target-entry', /which the gateway answers with 404/],

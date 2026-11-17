@@ -187,11 +187,27 @@ function keyedRows(rows: readonly QueryResultRow[], columns: readonly string[]):
   };
 }
 
+/** The first site of the tenant `params[0]` whose siteid equals `params[1]` as SQL Server compares it: case-insensitively, trailing spaces ignored. */
+function matchedSiteRows(params: unknown[]): QueryResultRow[] {
+  const [tenantId, siteId] = params;
+  const key = String(siteId).replace(/ +$/, '').toLowerCase();
+  return SITE_ROWS.filter((row) => row.tenant_id === tenantId && String(row.siteid).replace(/ +$/, '').toLowerCase() === key).slice(0, 1);
+}
+
 /** Registry rows a lookup names: by tenant UUID, by site id ignoring case, else every row. */
 function registryRows(params: unknown[]): QueryResultRow[] {
   const [first] = params;
   if (typeof first !== 'string') return [...REGISTRY_ROWS];
   return REGISTRY_ROWS.filter((row) => row.tenant_id === first || String(row.site_id).toLowerCase() === first.toLowerCase());
+}
+
+/** A keyset page of the registry by site id: after the bound cursor when `sql` compares one, at most the last parameter. */
+function registryPage(params: unknown[], sql: string): QueryResultRow[] {
+  const after = /\bsite_id > \$1\b/.test(sql) ? String(params[0]) : null;
+  return [...REGISTRY_ROWS]
+    .sort((a, b) => String(a.site_id).localeCompare(String(b.site_id)))
+    .filter((row) => after === null || String(row.site_id) > after)
+    .slice(0, Number(params.at(-1)));
 }
 
 /** `[column, $n]` pairs an `INSERT (…) VALUES (…)` or `UPDATE … SET … WHERE` statement binds. */
@@ -222,7 +238,9 @@ function cursorTable(): (params: unknown[], sql: string) => QueryResultRow[] {
  */
 function seed(db: RecordingDb): void {
   db.respond(/FROM programs_sites\.tenant_registry/i, registryRows);
-  db.respond(/^SELECT \* FROM "programs_sites"\."site" WHERE/i, keyedRows(SITE_ROWS, ['siteid']));
+  db.respond(/^SELECT site_id, tenant_id FROM "programs_sites"\."tenant_registry"/i, registryPage);
+  db.respond(/^SELECT .+? FROM "programs_sites"\."site" WHERE/i, keyedRows(SITE_ROWS, ['siteid']));
+  db.respond(/^SELECT \* FROM "programs_sites"\."site" WHERE .*\blegacy_ci\b/i, matchedSiteRows);
   db.respond(/^SELECT \* FROM "programs_sites"\."image_size" WHERE/i, keyedRows([IMAGE_SIZE_ROW], ['sizeid', 'siteid', 'name']));
   db.respond(/^(?:SELECT|INSERT|UPDATE)\b.*\bprograms_sites"?\."?sitemonitor_state\b/i, cursorTable());
   db.respond(/\bto_regclass\(/i, [{ outbox: true, inbox: true }]);
@@ -687,6 +705,107 @@ const CASES: Record<string, Case[]> = {
       status: 403,
     },
   ],
+  lookupSiteFeedSettings: [
+    {
+      name: "reads the RSS writers' site settings of each listed site, matched ignoring case, in request order",
+      method: 'POST',
+      url: '/internal/v1/sites/feed-settings:lookup',
+      as: 'service:strategies-content',
+      payload: { siteIds: [SITE_B, SITE_A.toUpperCase()] },
+      status: 200,
+      verify: ({ body }) => {
+        const items = record(body).items as Array<{ siteID: string; domain: string }>;
+        expect(items.map(({ siteID, domain }) => [siteID, domain])).toEqual([
+          [SITE_B, `${SITE_B}.opt2.test`],
+          [SITE_A, `${SITE_A}.opt2.test`],
+        ]);
+      },
+    },
+    {
+      name: 'rejects an empty site id list as badRequest',
+      method: 'POST',
+      url: '/internal/v1/sites/feed-settings:lookup',
+      as: 'service:strategies-content',
+      payload: { siteIds: [] },
+      status: 400,
+    },
+    {
+      name: 'refuses the lookup to identity, which only strategies-content may call',
+      method: 'POST',
+      url: '/internal/v1/sites/feed-settings:lookup',
+      as: 'service:identity',
+      payload: { siteIds: [SITE_A] },
+      status: 403,
+    },
+  ],
+  lookupSiteConfigFlags: [
+    {
+      name: "reads the Site Manager's `$.siteConfig` flags of each listed site, matched ignoring case, in request order",
+      method: 'POST',
+      url: '/internal/v1/sites/config-flags:lookup',
+      as: 'service:strategies-content',
+      payload: { siteIds: [SITE_B, SITE_A.toUpperCase()] },
+      status: 200,
+      verify: ({ body }) => {
+        const flags = { hasLockableNodes: 0, hasChangesets: 1, dataCollection: 1, hasComments: 1, scaffolding: 1 };
+        expect(record(body).items).toEqual([
+          { siteID: SITE_B, ...flags },
+          { siteID: SITE_A, ...flags },
+        ]);
+      },
+    },
+    {
+      name: 'rejects an empty site id list as badRequest',
+      method: 'POST',
+      url: '/internal/v1/sites/config-flags:lookup',
+      as: 'service:strategies-content',
+      payload: { siteIds: [] },
+      status: 400,
+    },
+    {
+      name: 'refuses the lookup to the gateway, which only strategies-content may call',
+      method: 'POST',
+      url: '/internal/v1/sites/config-flags:lookup',
+      as: 'service:gateway',
+      payload: { siteIds: [SITE_A] },
+      status: 403,
+    },
+  ],
+  lookupSiteJsonApiValues: [
+    {
+      name: "reads findOne(site)'s values of each listed site under the caller's endpoint, each id kept as spelled, in request order",
+      method: 'POST',
+      url: '/internal/v1/sites/json-api-values:lookup',
+      as: 'service:strategies-content',
+      payload: { baseUrl: `http://localhost/index.cfm/_api/json/v1/${SITE_B}`, siteIds: [SITE_B, SITE_A.toUpperCase(), 'nosuch'] },
+      status: 200,
+      verify: ({ body }) => {
+        const items = record(body).items as Array<{ siteid: string; domain: string; isnew: number; links: { self: string } }>;
+        expect(items.map(({ siteid, domain, isnew }) => [siteid, domain, isnew])).toEqual([
+          [SITE_B, `${SITE_B}.opt2.test`, 0],
+          [SITE_A.toUpperCase(), `${SITE_A}.opt2.test`, 0],
+          ['nosuch', '', 1],
+        ]);
+        expect(items[0]?.links.self).toBe(`http://localhost/index.cfm/_api/json/v1/${SITE_B}/site`);
+      },
+    },
+    {
+      name: 'rejects a lookup without the base URL as badRequest',
+      method: 'POST',
+      url: '/internal/v1/sites/json-api-values:lookup',
+      as: 'service:strategies-content',
+      payload: { siteIds: [SITE_A] },
+      status: 400,
+    },
+    {
+      name: 'refuses the lookup to the gateway, which only strategies-content may call',
+      method: 'POST',
+      url: '/internal/v1/sites/json-api-values:lookup',
+      as: 'service:gateway',
+      payload: { baseUrl: 'http://localhost/index.cfm/_api/json/v1/default', siteIds: [SITE_A] },
+      status: 403,
+    },
+  ],
   listSiteCustomImageSizes: [
     {
       name: "lists strategies-content the tenant-a custom image sizes, the site matched ignoring case, writing nothing",
@@ -717,6 +836,95 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => {
         expect((record(body).sites as Array<{ siteid: string }>).map((site) => site.siteid).sort()).toEqual([SITE_A, SITE_B, UMBRELLA]);
       },
+    },
+  ],
+  listUserSitesV2: [
+    {
+      name: 'lists the first page of the registered sites in site-id order for s2',
+      method: 'GET',
+      url: '/v2/user-sites?limit=2',
+      as: 's2',
+      status: 200,
+      verify: ({ body }) =>
+        expect(body).toEqual({ items: [expect.objectContaining({ siteid: SITE_A }), expect.objectContaining({ siteid: SITE_B })], next: SITE_B }),
+    },
+    {
+      name: "lists the first page of a site admin's session sites in site-id order",
+      method: 'GET',
+      url: '/v2/user-sites?limit=1',
+      as: 'site-admin',
+      setup: (ctx) =>
+        ctx.client.on('identity', 'GET', '/v1/sessions/current/sites', () => ({
+          status: 200,
+          headers: {},
+          body: { sites: [SITE_B, SITE_A].map((siteID) => ({ siteID, site: siteID })) },
+        })),
+      status: 200,
+      verify: ({ body }) => expect(body).toEqual({ items: [expect.objectContaining({ siteid: SITE_A, showDashboard: 0 })], next: SITE_A }),
+    },
+    {
+      name: 'rejects a page size of 0 as invalidParameters',
+      method: 'GET',
+      url: '/v2/user-sites?limit=0',
+      as: 's2',
+      status: 400,
+    },
+    {
+      name: 'refuses the user-site pages to a member',
+      method: 'GET',
+      url: '/v2/user-sites',
+      as: 'member',
+      status: 403,
+    },
+  ],
+  listSitesV2: [
+    {
+      name: 'lists the first page of the registered sites in site-id order for s2',
+      method: 'GET',
+      url: '/v2/sites?limit=2',
+      as: 's2',
+      status: 200,
+      verify: ({ body }) =>
+        expect(body).toEqual({ items: [expect.objectContaining({ siteid: SITE_A }), expect.objectContaining({ siteid: SITE_B })], next: SITE_B }),
+    },
+    {
+      name: 'lists the last page after a cursor with no next cursor',
+      method: 'GET',
+      url: `/v2/sites?after=${SITE_B}`,
+      as: 's2',
+      status: 200,
+      verify: ({ body }) => expect(body).toEqual({ items: [expect.objectContaining({ siteid: UMBRELLA })], next: null }),
+    },
+    {
+      name: 'rejects a page size above 1000 as invalidParameters',
+      method: 'GET',
+      url: '/v2/sites?limit=1001',
+      as: 's2',
+      status: 400,
+    },
+    {
+      name: 'refuses the site pages to a site admin, which only s2 may call',
+      method: 'GET',
+      url: '/v2/sites',
+      as: 'site-admin',
+      status: 403,
+    },
+  ],
+  listImageSizesV2: [
+    {
+      name: 'lists the one page of the tenant-a custom image sizes as its site admin',
+      method: 'GET',
+      url: `/v2/sites/${SITE_A}/image-sizes?limit=1`,
+      as: 'site-admin',
+      status: 200,
+      verify: ({ body }) => expect(body).toEqual({ items: [expect.objectContaining({ sizeID: SIZE_ID, siteID: SITE_A, isNew: 0 })], next: null }),
+    },
+    {
+      name: 'rejects an empty cursor as invalidParameters',
+      method: 'GET',
+      url: `/v2/sites/${SITE_A}/image-sizes?after=`,
+      as: 'site-admin',
+      status: 400,
     },
   ],
   migrationApply: [

@@ -48,11 +48,11 @@ function fakeRegistry(rows: readonly RegistryRow[]): { db: TenantDb; statements:
     schema: 'content',
     onCommit: () => undefined,
     query: (text: string, values: readonly unknown[] = []) => {
-      if (/^SELECT [a-z_, ]+ FROM content\.tenant_registry ORDER BY site_id$/.test(text)) {
+      if (/^SELECT [a-z_, ]+ FROM content\.tenant_registry WHERE NOT deleted ORDER BY site_id$/.test(text)) {
         statements.push('list');
         return Promise.resolve({ rows: [...rows].sort((a, b) => a.site_id.localeCompare(b.site_id)) });
       }
-      if (/^SELECT [a-z_, ]+ FROM content\.tenant_registry WHERE tenant_id = \$1$/.test(text)) {
+      if (/^SELECT [a-z_, ]+ FROM content\.tenant_registry WHERE tenant_id = \$1 AND NOT deleted$/.test(text)) {
         statements.push('entry');
         return Promise.resolve({ rows: rows.filter((row) => row.tenant_id === values[0]) });
       }

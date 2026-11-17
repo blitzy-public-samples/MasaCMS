@@ -14,7 +14,7 @@ import {
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
 import { businessClock, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { MAX_SHEETS_PER_PAGE, createTimesheetsRepository, type SheetFilter, type TimesheetsRepository } from '../../src/repo/repository.js';
+import { MAX_SHEETS_PER_PAGE, createTimesheetsRepository, type SheetFilter, type SheetOrder, type TimesheetsRepository } from '../../src/repo/repository.js';
 import { TIMESHEETS_UNITS, type ApprovalActionRow, type BlackoutRow, type TimesheetDayRow, type TimesheetRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 0);
@@ -91,6 +91,11 @@ function recording(tx: TenantTx, seen: Statement[]): TenantTx {
     return tx.query(text, values);
   }) as TenantTx['query'];
   return { ...tx, query };
+}
+
+/** The CF id of `prefix` then ordinal `n`, so ids of one prefix compare as their ordinals. */
+function ordinalId(prefix: string, n: number): string {
+  return `${prefix}${n.toString(16).toUpperCase().padStart(7, '0')}-0000-0000-0000000000000000`;
 }
 
 /** Whether `statement` is the page query of `listSheets`. */
@@ -455,6 +460,51 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
         expect(await repository.blackoutsOfDays(tx, [blackedOut.day_id])).toEqual([]);
         expect(await repository.openDaysOfPerson(tx, { personId: P1, effectiveFrom: new Date(2000, 0, 1) })).toEqual([]);
       }, tenantIdForSite(`timesheets-repository-other-${tenants}`));
+    });
+  });
+
+  describe('sheet orders over many employees of one period', () => {
+    const EMPLOYEES = 40;
+    // Persons ascend as sheet ids descend, so within the week the export order reverses the list order.
+    const week = Array.from({ length: EMPLOYEES }, (_, i) => sheet({ timesheet_id: ordinalId('D', EMPLOYEES - i), person_id: ordinalId('B', i) }));
+    const earlier = sheet({ timesheet_id: ordinalId('F', 1), person_id: ordinalId('F', 1), period_start: new Date(2026, 4, 25) });
+    const later = sheet({ timesheet_id: ordinalId('0', 1), person_id: ordinalId('0', 1), period_start: new Date(2026, 5, 8) });
+    const ITEMS_PER_PAGE = 15;
+
+    beforeEach(async () => {
+      for (const row of [later, ...week, earlier]) await seed(row);
+    });
+
+    it.each<[string, SheetOrder | undefined, New<TimesheetRow>[]]>([
+      ['period start, then sheet id, for export', 'export', [earlier, ...[...week].reverse(), later]],
+      ['period start, person, then sheet id, for list', 'list', [earlier, ...week, later]],
+      ['period start, person, then sheet id, by default', undefined, [earlier, ...week, later]],
+    ])('pages the sheets by %s, with the count of every sheet on each page', async (_name, order, expected) => {
+      const pages = Math.ceil(expected.length / ITEMS_PER_PAGE);
+      const read = await inTenant(async (tx) => {
+        const ids: string[] = [];
+        for (let pageIndex = 1; pageIndex <= pages; pageIndex += 1) {
+          const { rows, total } = await repository.listSheets(tx, { order, pageIndex, itemsPerPage: ITEMS_PER_PAGE });
+          expect(total).toBe(expected.length);
+          ids.push(...rows.map((row) => row.timesheet_id));
+        }
+        return ids;
+      });
+      expect(read).toEqual(expected.map((row) => row.timesheet_id));
+    });
+
+    it('reads an export page through timesheet_list_idx, sorting only the sheets of each period start', async () => {
+      await inTenant(async (tx) => {
+        const seen: Statement[] = [];
+        expect((await repository.listSheets(recording(tx, seen), { order: 'export', pageIndex: 2, itemsPerPage: ITEMS_PER_PAGE })).rows).toHaveLength(ITEMS_PER_PAGE);
+        const page = seen.find(isSheetPage) ?? expect.unreachable('listSheets ran no page query');
+        await tx.query('SET LOCAL enable_seqscan = off');
+        const { rows } = await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN (COSTS OFF) ${page.text}`, page.values);
+        const plan = rows.map((row) => row['QUERY PLAN']).join('\n');
+        expect(plan).toContain('Index Scan using timesheet_list_idx');
+        expect(plan).toMatch(/Incremental Sort[\s\S]*Presorted Key: (?:t\.)?period_start\n/);
+        expect(plan).not.toMatch(/^(?:\s*->)?\s*Sort$/m);
+      });
     });
   });
 

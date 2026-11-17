@@ -31,7 +31,7 @@ export type {
   FileListing,
   LegacyFileEntry,
   LegacyFileVariant,
-  LegacyFileBytes,
+  LegacyFileDownload,
   FilePutResult,
   FileDeleteTarget,
   FileDeleteResult,

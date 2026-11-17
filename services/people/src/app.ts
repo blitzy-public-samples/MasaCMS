@@ -10,14 +10,16 @@ import {
   processEnvSchema,
   publisherEmulatorHost,
   systemClock,
-  type BaseEnv,
+  z,
   type Clock,
   type CreateServiceOptions,
   type FastifyInstance,
+  type LoadedEnv,
 } from '@opt2/platform/service-kit';
 import type { TaskPort } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import { createFaultHooks, type FaultHooks } from './domain/faults.js';
+import { createFaultHooks, FAULT_ENV, killStepOf, type FaultHooks } from './domain/faults.js';
+import { expirePasswordsSetting } from './domain/password-expiry.js';
 import { rosterOperationStatus } from './domain/roster-protocol.js';
 import { rosterRecoveryHook } from './domain/roster-recovery.js';
 import { peopleConsumerRegistrations } from './events/consumers.js';
@@ -40,11 +42,19 @@ export const SERVICE_VERSION = '1.0.0';
 /** Services people calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), identity and strategies-content. */
 const CALLEES: readonly string[] = [SERVICE_NAME, 'identity', 'strategies-content'];
 
-/** Base variables of the people process: its own name, its database and every callee's URL; `OPT2_FAULT` is read by `./domain/faults.ts` alone. */
-export const peopleEnvSchema = processEnvSchema(baseEnvSchema, { service: SERVICE_NAME, callees: CALLEES, database: true });
+/** Base variables of the people process plus the Masa password-expiry setting and the roster fault step, with its own name, its database and every callee's URL required. */
+export const peopleEnvSchema = processEnvSchema(
+  baseEnvSchema.extend({
+    // A blank or unevaluable value is 0, as configBean takes it, so no value fails start-up.
+    MURA_EXPIREPASSWORDS: z.string().optional().transform(expirePasswordsSetting),
+    // Fault suites only; a value naming another package's fault leaves no kill step.
+    [FAULT_ENV]: z.string().optional().transform(killStepOf),
+  }),
+  { service: SERVICE_NAME, callees: CALLEES, database: true },
+);
 
-/** Parsed environment of the people process, which `peopleEnvSchema` leaves the base environment. */
-export type PeopleEnv = BaseEnv;
+/** Parsed environment of the people process. */
+export type PeopleEnv = LoadedEnv<typeof peopleEnvSchema>;
 
 // Default project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
@@ -116,10 +126,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     const repository = createPeopleRepository({ clock, schema: db.schema });
     const events = createPeopleEvents(repository);
     const identity = options.identityClient ?? createIdentityClient(client);
-    const faults = options.faults ?? createFaultHooks();
+    const faults = options.faults ?? createFaultHooks({}, { killStep: env[FAULT_ENV] });
     registerWritePositionHeader(app);
 
-    await registerRoutes(app, { repository, events, db, clock, logger, client, identity, env, faults });
+    await registerRoutes(app, { repository, events, db, clock, logger, client, identity, env, faults, expirePasswords: env.MURA_EXPIREPASSWORDS });
     registerMigrationHandlers(app, {
       owner: SERVICE_NAME,
       repository: repository.base,

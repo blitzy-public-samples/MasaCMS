@@ -454,6 +454,7 @@ describe('counts', () => {
     ['tenant-a groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-a')), 50],
     ['tenant-a content nodes', () => siteTree('tenant-a').filter((c) => c.versions.length > 0), 5000],
     ['tenant-a forms', () => dataset.masa.content.filter((c) => site(c, 'tenant-a') && c.type === 'Form'), 1],
+    ['tenant-a File nodes', () => siteTree('tenant-a').filter((c) => c.type === 'File'), 1],
     ['tenant-a timesheet days', () => rowsOf('Program_1.timesheet_day'), 20000],
     ['tenant-a finance records', () => rowsOf('Program_1.finance_record'), 3000],
     ['tenant-a survey responses', () => rowsOf('synthetic.survey_response').filter((r) => r.siteID === 'tenant-a'), 500],
@@ -463,6 +464,7 @@ describe('counts', () => {
     ['tenant-b groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-b')), 10],
     ['tenant-b content nodes', () => siteTree('tenant-b').filter((c) => c.versions.length > 0), 300],
     ['tenant-b forms', () => dataset.masa.content.filter((c) => site(c, 'tenant-b') && c.type === 'Form'), 1],
+    ['tenant-b File nodes', () => siteTree('tenant-b').filter((c) => c.type === 'File'), 0],
     ['tenant-b timesheet days', () => rowsOf('Program_2.timesheet_day'), 2000],
     ['tenant-b finance records', () => rowsOf('Program_2.finance_record'), 300],
   ] as const)('%s', (_label, select, expected) => {
@@ -540,6 +542,19 @@ describe('ids', () => {
       ['tenant-a', 'tenant-b'].map((siteID) => [siteID, MASA_FORMS_MODULE_ID, MASA_FORMS_MODULE_ID, 'Form']),
     );
     expect(dataset.masa.files.filter((row) => row.moduleID !== MASA_DEFAULT_MODULE_ID)).toEqual([]);
+  });
+
+  it("names a seeded file of the site's file pool from each File node, whose version bodies are that file's filename", () => {
+    const files = new Map(dataset.masa.files.map((row) => [row.fileID, row]));
+    const pools = new Map(dataset.masa.sites.map((row) => [row.siteID, row.filePoolID]));
+    const nodes = dataset.masa.content.filter((row) => row.type === 'File');
+    expect(nodes.map((row) => row.siteID)).toEqual(['tenant-a']);
+    for (const node of nodes) {
+      const file = files.get(node.fileID ?? '');
+      expect(file?.siteID, node.contentID).toBe(pools.get(node.siteID));
+      expect(node.versions.map((version) => version.body)).toEqual(node.versions.map(() => file?.filename));
+    }
+    expect(dataset.masa.content.filter((row) => row.type !== 'File' && row.fileID !== undefined)).toEqual([]);
   });
 
   it.each([

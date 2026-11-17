@@ -26,8 +26,9 @@ import {
 } from './session.js';
 import { catalogueSeedKeys, type SeedKeyStores } from './workload.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
-import { repoPath, stateDir, type EnvLike } from '../lib/paths.js';
+import { cutoverVersionPath, stateDir, type EnvLike } from '../lib/paths.js';
 import { readJson, stableStringify } from '../lib/report.js';
+import { SYNTHETIC_SERVICES } from '../reporting/check-reviewability.js';
 
 export { INVENTORY_PATH, VARIANTS_PATH, defaultRouteKeyOptions } from './route-key-options.js';
 
@@ -35,7 +36,7 @@ export { INVENTORY_PATH, VARIANTS_PATH, defaultRouteKeyOptions } from './route-k
 export const NEUTRAL_ID = '00000000-0000-0000-0000000000000000';
 
 /** Cut-over version whose entries the gate checks by default. */
-export const DEFAULT_VERSION_PATH: string = repoPath('gateway/cutover/versions/v0002.json');
+export const DEFAULT_VERSION = 'v0002';
 
 /** Finding kinds, in the order {@link checkCoverage} reports them. */
 export const FINDING_KINDS = [
@@ -357,6 +358,13 @@ const SELF_SERVED_OWNERS: ReadonlySet<string> = new Set(['gateway', 'web']);
 // The stub is the platform-proof service: it has no legacy oracle to capture, the catalogue admits only the ten
 // services, and the platform-proof e2e suite proves its routes. Its target entries need no golden cover.
 const PLATFORM_PROOF_OWNER = 'stub';
+/** Owners of the `/v1/` entries a fixtures-unavailable build makes target: no legacy oracle exists to capture them. */
+const NO_ORACLE_OWNERS: ReadonlySet<string> = new Set(SYNTHETIC_SERVICES);
+
+/** Whether `entry` is a synthetic service's own `/v1/` route, as the gateway's version builder adds it. */
+function syntheticV1Entry(entry: Pick<CutoverEntry, 'route' | 'owningService'>): boolean {
+  return NO_ORACLE_OWNERS.has(entry.owningService) && entry.route.slice(entry.route.indexOf(':') + 1).startsWith('/v1/');
+}
 
 /** An authored route key read as `matchRouteKey` reads a computed one; `undefined` for an unknown family. */
 function keyOf(text: string): RouteKeyResult | undefined {
@@ -493,10 +501,10 @@ function unexercisedCovers(scenario: CoverageScenario, opts: RouteKeyOptions): s
 
 /**
  * Every coverage gap, none short-circuiting: covers that match no cut-over entry (error keys aside); `target`
- * entries (bar the stub's and static entries the gateway or web serves itself), `legacy-write` entries and carried
- * admin actions no cover matches; covers no step of a non-browser scenario exercises; reserved rehearsal identities a
- * scenario outside `REHEARSAL_SCENARIO_IDS` names or selects through its seedRefs and seeded role accounts; and
- * such selections that do not resolve.
+ * entries (bar the stub's, the synthetic services' own `/v1/` ones and static entries the gateway or web serves
+ * itself), `legacy-write` entries and carried admin actions no cover matches; covers no step of a non-browser
+ * scenario exercises; reserved rehearsal identities a scenario outside `REHEARSAL_SCENARIO_IDS` names or selects
+ * through its seedRefs and seeded role accounts; and such selections that do not resolve.
  */
 export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
   const opts = inputs.options ?? defaultRouteKeyOptions();
@@ -518,7 +526,7 @@ export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
   }
   for (const entry of inputs.entries) {
     const selfServed = entry.kind === 'static' && SELF_SERVED_OWNERS.has(entry.owningService);
-    const exempt = selfServed || entry.owningService === PLATFORM_PROOF_OWNER;
+    const exempt = selfServed || syntheticV1Entry(entry) || entry.owningService === PLATFORM_PROOF_OWNER;
     if (entry.state === 'target' && !exempt && !coveredRoutes.has(entry.route)) {
       findings.push({ kind: 'uncovered-target', route: entry.route, owningService: entry.owningService });
     }
@@ -570,7 +578,7 @@ export function countByKind(findings: readonly CoverageFinding[]): Record<Covera
 
 // ---- Inputs and CLI ----
 
-/** Input file locations; each defaults to the committed file. */
+/** Input file locations; each defaults to the committed file, the version to v0002 of the gateway's cut-over directory. */
 export interface CoveragePaths {
   version?: string;
   catalogue?: string;
@@ -588,7 +596,7 @@ export async function loadCoverageInputs(
 ): Promise<CoverageInputs> {
   const [catalogue, version, inventory, seed] = await Promise.all([
     loadCatalogue(paths.catalogue ?? CATALOGUE_PATH),
-    readJson(paths.version ?? DEFAULT_VERSION_PATH, versionSchema),
+    readJson(paths.version ?? cutoverVersionPath(DEFAULT_VERSION, env), versionSchema),
     readJson(paths.inventory ?? INVENTORY_PATH, inventorySchema),
     readJson(paths.seedConfig ?? SEED_CONFIG_PATH, seedConfigSchema),
   ]);
@@ -611,12 +619,12 @@ const USAGE =
   '[--seed-config <seed config json>]';
 const HELP = `${USAGE}
 
-Checks that golden-scenario covers reach every target and legacy-write entry of the cut-over version and every
-carried admin action, that each cover is exercised by a step, and that no scenario but GS-PE-RH-01, GS-PE-RH-02 and
-GS-PE-RH-03 names or selects a reserved rehearsal identity (--seed-config, default
-legacy-fixtures/seed/seed.config.json). SeedRefs and seeded role accounts resolve against
-\${OPT2_STATE_DIR}/seed/dataset.json and \${OPT2_STATE_DIR}/secrets/seed-credentials.json; one that does not resolve
-is a finding. Writes \${OPT2_STATE_DIR}/golden/coverage.json; exits 1 on any finding.`;
+Checks that golden-scenario covers reach every target and legacy-write entry of the cut-over version (default
+v0002 of \${OPT2_CUTOVER_DIR}, else gateway/cutover) and every carried admin action, that each cover is exercised
+by a step, and that no scenario but GS-PE-RH-01, GS-PE-RH-02 and GS-PE-RH-03 names or selects a reserved rehearsal
+identity (--seed-config, default legacy-fixtures/seed/seed.config.json). SeedRefs and seeded role accounts resolve
+against \${OPT2_STATE_DIR}/seed/dataset.json and \${OPT2_STATE_DIR}/secrets/seed-credentials.json; one that does not
+resolve is a finding. Writes \${OPT2_STATE_DIR}/golden/coverage.json; exits 1 on any finding.`;
 
 /** CLI entry: writes `<state>/golden/coverage.json` and exits 1 when any finding exists. */
 export async function main(argv: string[], env: EnvLike = process.env): Promise<CliOutcome> {

@@ -1,6 +1,7 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Export sources: the finance and timesheets reads of an export job, projected into the table the fixture runner writes. */
-import { ServiceUnavailableError, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import type { ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
 import type { paths as FinancePaths } from '../generated/clients/finance.js';
 import type { paths as TimesheetsPaths } from '../generated/clients/timesheets.js';
 import { EXPORT_SOURCES, type ExportDefinitionRow, type ExportJobRow, type ExportSource } from '../repo/tables.js';
@@ -29,23 +30,12 @@ export interface FetchExportTableInput {
   asOf: string;
 }
 
-/** The export's source could not be read: a `broken` source, an unreachable producer or a non-2xx answer. */
+/** The `broken` source, which fails every job reading it. */
 export class SourceUnavailableError extends Error {
   override readonly name: string = 'SourceUnavailableError';
-  /** The producer's HTTP status, when it answered. */
-  readonly status: number | undefined;
 
-  constructor(
-    readonly source: ExportSource,
-    options: { status?: number; cause?: unknown } = {},
-  ) {
-    super(
-      options.status === undefined
-        ? `Export source ${source} is unavailable`
-        : `Export source ${source} answered HTTP ${String(options.status)}`,
-      options.cause === undefined ? undefined : { cause: options.cause },
-    );
-    this.status = options.status;
+  constructor(readonly source: ExportSource) {
+    super(`Export source ${source} is unavailable`);
   }
 }
 
@@ -113,17 +103,31 @@ function isConnectionFailure(err: unknown): boolean {
   return err.name === 'TimeoutError' || (typeof code === 'string' && (NETWORK_ERROR_CODES.has(code) || code.startsWith('UND_ERR_')));
 }
 
-/** Sends one read to a source's producer and returns its 2xx body; an unreachable or refusing producer is a SourceUnavailableError. */
+/** Answers of a producer that is briefly unavailable. */
+const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+/** The legacy 503 of a source whose producer is briefly unavailable, so the run's task is retried. */
+function producerUnavailable(source: ExportSource, detail: string, cause?: unknown): LegacyServiceUnavailableError {
+  const unavailable = new LegacyServiceUnavailableError(`Export source ${source} ${detail}`, 'auto', 'service-unavailable');
+  unavailable.cause = cause;
+  return unavailable;
+}
+
+/**
+ * Sends one read to a source's producer and returns its 2xx body. An unreachable producer or a 502, 503 or 504 answer is a legacy
+ * 503, the client's ServiceUnavailableError passing unchanged; any other non-2xx answer is a plain error.
+ */
 async function readSource<T>(deps: Pick<ReportingDeps, 'client'>, source: ExportSource, request: ServiceRequest): Promise<T> {
   let response: ServiceResponse<T>;
   try {
     response = await deps.client.request<T>(request);
   } catch (err) {
-    // ServiceUnavailableError is a LegacyServiceUnavailableError, which the runner retries; an unreadable source fails the job instead.
-    if (err instanceof ServiceUnavailableError || isConnectionFailure(err)) throw new SourceUnavailableError(source, { cause: err });
+    if (isConnectionFailure(err)) throw producerUnavailable(source, 'is unreachable', err);
     throw err;
   }
-  if (response.status < 200 || response.status > 299) throw new SourceUnavailableError(source, { status: response.status });
+  const { status } = response;
+  if (TRANSIENT_STATUSES.has(status)) throw producerUnavailable(source, `answered HTTP ${String(status)}`);
+  if (status < 200 || status > 299) throw new Error(`Export source ${source} answered HTTP ${String(status)}`);
   return response.body;
 }
 
@@ -193,32 +197,6 @@ async function* financeRecords(
   }
 }
 
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function bySheetId(a: SheetStatusRow, b: SheetStatusRow): number {
-  return compareText(a.timesheetId, b.timesheetId);
-}
-
-/**
- * `rows` in the fixture's `ORDER BY period_start, timesheet_id`. The producer orders by period start, then person, so only each
- * run of one period start is held and re-sorted, by sheet id.
- */
-async function* inSheetFixtureOrder(rows: AsyncIterable<SheetStatusRow>): AsyncGenerator<SheetStatusRow> {
-  let periodStart: string | undefined;
-  let period: SheetStatusRow[] = [];
-  for await (const row of rows) {
-    if (row.periodStart !== periodStart) {
-      yield* period.sort(bySheetId);
-      periodStart = row.periodStart;
-      period = [];
-    }
-    period.push(row);
-  }
-  yield* period.sort(bySheetId);
-}
-
 /** The fixture's `WHERE siteID = :siteid`, compared case-insensitively as SQL Server does. */
 function ofSite(siteId: string, jobSiteId: string): boolean {
   return siteId.toLowerCase() === jobSiteId.toLowerCase();
@@ -269,8 +247,8 @@ export async function openExportTable(deps: Pick<ReportingDeps, 'client'>, input
     case 'broken':
       throw new SourceUnavailableError(source);
     case 'timesheets.sheets': {
-      // Ordering before the site filter gives the order ordering after it would.
-      const rows = inSheetFixtureOrder(sheetStatusRows(deps, input, await readSheetStatusPage(deps, input, 1)));
+      // The producer already orders by period start, then sheet id, the fixture's ORDER BY, so rows pass through as they arrive.
+      const rows = sheetStatusRows(deps, input, await readSheetStatusPage(deps, input, 1));
       return project(source, rows, (row) => ofSite(row.siteId, job.siteid), SHEET_CELLS, definition);
     }
     case 'finance.records': {

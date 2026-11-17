@@ -186,10 +186,18 @@ function postedText(post: ImageSizePost, key: string): string {
   return text;
 }
 
+/** One page of a site's image sizes; `next` is the `after` of the following page, null after the last. */
+export interface ImageSizeBeanPage {
+  items: ImageSizeBean[];
+  next: string | null;
+}
+
 /** Image size operations of the Edit Site dialog, each in the token tenant `claims.tid`, and the service callers' site read. */
 export interface ImageSizesDomain {
   /** The custom image sizes of `siteId` by `sizeid` (settingsBean.getCustomImageSizeIterator); 403 unless `siteId` is the token's site. */
   listImageSizes(db: TenantDb, claims: UserClaims, siteId: string): Promise<ImageSizeBean[]>;
+  /** At most `page.limit` of those sizes after the size id `page.after`; 403 unless `siteId` is the token's site. */
+  pageImageSizes(db: TenantDb, claims: UserClaims, siteId: string, page: { after?: string; limit: number }): Promise<ImageSizeBeanPage>;
   /** `csettings.loadcustomimage`: the stored size, else a new bean under a fresh id, which the dialog posts back. */
   loadImageSize(db: TenantDb, claims: UserClaims, sizeId: string): Promise<ImageSizeBean>;
   /** `loadcustomimages` with `imageaction=save`: the saved bean, or null with nothing written when `sizeid` is empty. */
@@ -219,6 +227,19 @@ export function createImageSizesDomain(deps: { repo: ProgramsSitesRepository; na
     assertSiteMatches(siteId, claims);
     const rows = await withTenant(db, claims.tid, (tx) => repo.listImageSizes(tx, siteId));
     return rows.map((row) => beanFromRow(row, nameOptions));
+  }
+
+  async function pageImageSizes(
+    db: TenantDb,
+    claims: UserClaims,
+    siteId: string,
+    { after, limit }: { after?: string; limit: number },
+  ): Promise<ImageSizeBeanPage> {
+    assertSiteMatches(siteId, claims);
+    // One row past the page tells whether another page follows.
+    const rows = await withTenant(db, claims.tid, (tx) => repo.listImageSizePage(tx, siteId, { after: after ?? null, limit: limit + 1 }));
+    const items = rows.slice(0, limit).map((row) => beanFromRow(row, nameOptions));
+    return { items, next: rows.length > limit ? (items.at(-1)?.sizeId ?? null) : null };
   }
 
   async function loadImageSize(db: TenantDb, claims: UserClaims, sizeId: string): Promise<ImageSizeBean> {
@@ -266,5 +287,5 @@ export function createImageSizesDomain(deps: { repo: ProgramsSitesRepository; na
     return rows.map((row) => beanFromRow(row, nameOptions));
   }
 
-  return Object.freeze({ listImageSizes, loadImageSize, saveImageSize, deleteImageSize, readSiteImageSizes });
+  return Object.freeze({ listImageSizes, pageImageSizes, loadImageSize, saveImageSize, deleteImageSize, readSiteImageSizes });
 }

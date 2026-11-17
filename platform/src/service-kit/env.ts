@@ -124,6 +124,25 @@ const stateDirPath = z.string().transform((dir, ctx) => {
   return resolved;
 });
 
+const OTEL_DIAG_LEVELS = ['ALL', 'VERBOSE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'] as const;
+
+/** OTel diagnostic level name. */
+export type OtelDiagLevel = (typeof OTEL_DIAG_LEVELS)[number];
+
+/** An OTel diagnostic level name in any case; any other text is `INFO`, as the OTel SDK reads `OTEL_LOG_LEVEL`. */
+const otelDiagLevel = z
+  .string()
+  .transform((name): OtelDiagLevel => OTEL_DIAG_LEVELS.find((level) => level === name.toUpperCase()) ?? 'INFO');
+
+/** Variables `@opt2/platform/tracing` parses when it starts, before the process loads its own schema; part of {@link baseEnvSchema}. */
+export const tracingEnvSchema = z.object({
+  OTEL_EXPORTER_OTLP_ENDPOINT: optionalEnvString(envUrl()),
+  OTEL_LOG_LEVEL: optionalEnvString(otelDiagLevel),
+});
+
+/** Parsed tracing variables. */
+export type TracingEnv = z.output<typeof tracingEnvSchema>;
+
 /** Variables every OPT-2 process reads; gateway, migration and communications `.extend()` it with the builders above. */
 export const baseEnvSchema = z.object({
   PORT: envPort(),
@@ -143,7 +162,7 @@ export const baseEnvSchema = z.object({
       .refine((value) => PORT_NUMBER.safeParse(HOST_PORT.exec(value)?.[1]).success, 'port must be from 1 to 65535'),
   ),
   GOOGLE_CLOUD_PROJECT: optionalEnvString(),
-  OTEL_EXPORTER_OTLP_ENDPOINT: optionalEnvString(envUrl()),
+  ...tracingEnvSchema.shape,
   OPT2_JWKS_URL: optionalEnvString(envUrl()),
   OPT2_TOKEN_ISSUER: requiredEnvString(),
   OPT2_TOKEN_AUDIENCE: requiredEnvString(),
@@ -362,6 +381,18 @@ function parsedBaseVariables(schema: EnvSchema, source: NodeJS.ProcessEnv): Part
     OPT2_TASKS_ADAPTER: base.OPT2_TASKS_ADAPTER ?? base.OPT2_ENV,
     OPT2_STORAGE_ADAPTER: base.OPT2_STORAGE_ADAPTER ?? base.OPT2_ENV,
   };
+}
+
+/** Parses `source` against {@link tracingEnvSchema}; throws `EnvValidationError`, prefixed with `service`, naming each invalid variable. */
+export function loadTracingEnv(source: NodeJS.ProcessEnv = process.env, service?: string): Readonly<TracingEnv> {
+  const result = tracingEnvSchema.safeParse(source);
+  if (!result.success) {
+    throw new EnvValidationError(
+      result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+      service,
+    );
+  }
+  return Object.freeze(result.data);
 }
 
 /** Parses and checks `source` against `schema`; throws `EnvValidationError` on any issue. */

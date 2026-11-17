@@ -1,12 +1,14 @@
 // Closed list of the non-request legacy writers that are prevented from writing outside a write window.
 import type { WriterTrigger } from './types.js';
 
-/** Inventory writer fields an entry matches: `component` (or `source.path`), the method when named, an overlapping inclusive line span when named. */
-export interface PreventedWriterMatch {
-  readonly component: string;
+/**
+ * Inventory writer fields an entry matches: `component` (or `source.path`) or the exact `condition`, or both, plus the
+ * method when named and an overlapping inclusive line span when named.
+ */
+export type PreventedWriterMatch = {
   readonly method?: string;
   readonly lines?: readonly [number, number];
-}
+} & ({ readonly component: string; readonly condition?: string } | { readonly component?: never; readonly condition: string });
 
 /** A known non-request legacy writer and the mechanism that closes it before it can run. */
 export interface PreventedWriter {
@@ -22,6 +24,7 @@ export interface WriterRecord {
   readonly component: string;
   readonly method?: string;
   readonly trigger: string;
+  readonly condition?: string | null;
   readonly source?: { readonly path?: string; readonly lines?: readonly [number, number] | string };
 }
 
@@ -75,6 +78,59 @@ export const PREVENTED_WRITERS: readonly PreventedWriter[] = deepFreeze<Prevente
       'Start-up guard: harness/repro/lib/legacy-start.sh windows every ColdFusion start, ?appreload is a legacy-write entry run inside a window, and the migration service keeps the start-up predicate (active File or Link tcontent rows with a null body and a filename) empty whenever a legacy request can run.',
     match: { component: 'core/appcfc/onApplicationStart_include.cfm', lines: [892, 929] },
   },
+  {
+    id: 'startup-deploy-bundle',
+    trigger: 'appstart',
+    mechanism:
+      'harness/repro/lib/legacy-start.sh refuses to start ColdFusion while the bundle Masa deploys at start-up exists (/tmp/MuraBundle.zip when MURA_DATASOURCE is set, else config/setup/deploy/bundle.zip [core/appcfc/applicationSettings.cfm:146; core/appcfc/onApplicationStart_include.cfm:797-811]), and environment.ts records its absence, which up.sh requires.',
+    match: {
+      condition:
+        'config/setup/deploy/bundle.zip exists and the project site has one page (core/appcfc/onApplicationStart_include.cfm:797-811)',
+    },
+  },
+  {
+    id: 'startup-project-site',
+    trigger: 'appstart',
+    mechanism:
+      'legacy-start.sh refuses a MURA_PROJECTSITEID other than default and environment.ts records the effective ProjectSiteID as default or an existing site, which up.sh requires, so start-up never creates the project site.',
+    match: {
+      condition: 'ProjectSiteID is not default and that site does not exist (core/appcfc/onApplicationStart_include.cfm:771)',
+    },
+  },
+  {
+    id: 'startup-db-updates',
+    trigger: 'appstart',
+    mechanism:
+      'ColdFusion always starts with MURA_APPLYDBUPDATES=false (legacy-start.sh), so start-up, reload and re-initialisation skip configBean.applyDbUpdates even with appAutoUpdated or url.applyDBUpdates [core/appcfc/onApplicationStart_include.cfm:421-424]; environment.ts records it, which up.sh requires.',
+    match: { condition: 'runs only on upgrade from an older version' },
+  },
+  {
+    id: 'startup-plugin-discovery',
+    trigger: 'appstart',
+    mechanism:
+      'ColdFusion always starts with MURA_AUTODISCOVERPLUGINS=false (legacy-start.sh), so start-up never runs pluginManager.discover; environment.ts records it, which up.sh requires.',
+    match: {
+      condition:
+        'autoDiscoverPlugins is true and the plugins folder holds an undeployed plugin or bundle (core/appcfc/onApplicationStart_include.cfm:534; core/mura/plugin/pluginManager.cfc:763-810)',
+    },
+  },
+  {
+    id: 'trash-restore-bean',
+    trigger: 'appstart',
+    mechanism:
+      'Only ctrash.restore sets fromMuraTrash, a withheld legacy-write entry that runs inside a write window; no start-up path saves such a bean.',
+    match: { condition: 'runs only for a bean carrying fromMuraTrash, which ctrash.restore sets (decision list)' },
+  },
+  {
+    id: 'startup-theme-site-sizes',
+    trigger: 'appstart',
+    mechanism:
+      "The theme-config site.save() (core/mura/extend/extendManager.cfc:1977-2017) runs only when a site's theme declares small, medium or large image sizes; environment.ts records such sites and up.sh requires none.",
+    match: { component: 'core/mura/settings/settingsDAO.cfc', method: 'update' },
+  },
+  // Not listed: the theme-config image-size upsert (settingsImageSizeBean.save via core/mura/extend/extendManager.cfc:1998-2012,
+  // core/appcfc/onApplicationStart_include.cfm:844) runs on every start-up, reload and re-initialisation with no closing
+  // mechanism, so programs_sites.image_size stays legacy.
 ]);
 
 function lineSpan(lines: readonly [number, number] | string | undefined): readonly [number, number] | undefined {
@@ -84,7 +140,10 @@ function lineSpan(lines: readonly [number, number] | string | undefined): readon
 }
 
 function matches(match: PreventedWriterMatch, writer: WriterRecord, span: readonly [number, number] | undefined): boolean {
-  if (writer.component !== match.component && writer.source?.path !== match.component) return false;
+  if (match.component !== undefined && writer.component !== match.component && writer.source?.path !== match.component) {
+    return false;
+  }
+  if (match.condition !== undefined && writer.condition !== match.condition) return false;
   if (match.method !== undefined && writer.method !== match.method) return false;
   if (match.lines === undefined) return true;
   return span !== undefined && span[0] <= match.lines[1] && match.lines[0] <= span[1];

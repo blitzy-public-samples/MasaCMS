@@ -15,6 +15,7 @@ import type { ContentRouteContext } from '../../src/routes/index.js';
 import { CONTENT_METHODS } from '../../src/routes/jsonapi/methods.js';
 import { createJsonApiParams, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
 import { ADMIN, END, HOME, NOBODY, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { recordingRelatedReader } from '../helpers/related-reader.js';
 
 type Struct = Record<string, unknown>;
 type Method = 'findCrumbArray' | 'findVersionHistory' | 'findRelatedContent' | 'findCalendarItems' | 'getURLForImage' | 'submitForm';
@@ -272,15 +273,28 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
       expect(wire('findCrumbArray', await on('findCrumbArray', { entityName: 'content', id: cfId('X', 2) }))).toMatchObject({ items: [], totalitems: 0 });
     });
 
+    it.each(['content', 'category'])('answers no %s crumbs for a blank id', async (entityname) => {
+      expect(wire('findCrumbArray', await on('findCrumbArray', { url: { entityname, id: '' } }))).toMatchObject({ items: [], totalitems: 0 });
+    });
+
+    it.each(['content', 'contentnav', 'category'])('answers the legacy 500 for %s crumbs called without an id argument', async (entityname) => {
+      await expect(on('findCrumbArray', { url: { entityname, contentid: ALPHA } })).rejects.toEqual(legacyError('server_error'));
+    });
+
     it('checks AllowAccess before the missing crumb iterator of a module entity', async () => {
       expect(await on('findCrumbArray', { entityName: 'changeset', id: cfId('X', 1) })).toEqual({ error: 'authorization' });
+      expect(await on('findCrumbArray', { entityName: 'changeset' })).toEqual({ error: 'authorization' });
       await expect(on('findCrumbArray', { actor: ADMIN, entityName: 'changeset', id: cfId('X', 1) })).rejects.toEqual(legacyError('server_error'));
     });
 
-    it('fails closed expanding a category crumb relation', async () => {
-      await expect(on('findCrumbArray', { entityName: 'category', id: CHILD_TOPIC.categoryid, url: { expand: 'kids' } })).rejects.toEqual(
-        unavailable('category-crumbs-expand-kids'),
+    it('expands each category crumb\'s relation through the related reader', async () => {
+      const { reader, reads } = recordingRelatedReader();
+      const call = { ...callFor('findCrumbArray', { entityName: 'category', id: CHILD_TOPIC.categoryid, url: { expand: 'kids' } }), related: reader };
+      const data = wire('findCrumbArray', await run('findCrumbArray', call));
+      expect(reads).toEqual(
+        [ROOT_TOPIC, CHILD_TOPIC].map((topic) => ({ read: 'findQuery', entityName: 'category', expand: 'kids', expanded: 1, params: { parentid: topic.categoryid } })),
       );
+      expect((data['items'] as Struct[]).map((item) => (item['kids'] as Struct)['related'])).toEqual(['category', 'category']);
     });
   });
 
@@ -290,6 +304,17 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
       ['a reader without node permission', NOBODY],
     ])('denies %s', async (_label, actor) => {
       expect(await on('findVersionHistory', { actor, id: ALPHA, path: ['content', ALPHA, 'history'] })).toEqual({ error: 'authorization' });
+    });
+
+    it.each([
+      ['an anonymous caller', ANONYMOUS],
+      ['an editor', ADMIN],
+    ])('answers the legacy 500 when %s passes no id argument', async (_label, actor) => {
+      await expect(on('findVersionHistory', { actor, url: { contentid: ALPHA } })).rejects.toEqual(legacyError('server_error'));
+    });
+
+    it('denies an editor a blank id, whose empty crumbs grant no node permission', async () => {
+      expect(await on('findVersionHistory', { actor: ADMIN, url: { id: '' } })).toEqual({ error: 'authorization' });
     });
 
     it('lists an editor every version, newest first, each self link naming its version', async () => {
@@ -314,6 +339,31 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
       const data = wire('findVersionHistory', await on('findVersionHistory', { actor: ADMIN, id: ALPHA, url }));
       expect((data['items'] as Struct[]).map((item) => item['summary'])).toEqual(summaries);
       expect(data).toMatchObject({ totalitems: 2, totalpages: 2, pageindex: pageIndex, itemsperpage: 1 });
+    });
+
+    it.each([
+      ['page 0', { itemsPerPage: 1, pageIndex: 0 }, 1, { pageindex: 0, totalpages: 2, startindex: 0, endindex: 0 }],
+      ['a negative page', { itemsPerPage: 2, pageIndex: -1 }, 2, { pageindex: -1, totalpages: 1, startindex: -3, endindex: -2 }],
+    ] satisfies Array<[string, Struct, number, Struct]>)('answers the new beans of the blank rows of %s', async (_label, url, count, values) => {
+      const fields = 'links,contenthistid,active';
+      const data = wire('findVersionHistory', await on('findVersionHistory', { actor: ADMIN, id: ALPHA, url: { ...url, fields } }));
+      const items = data['items'] as Struct[];
+      expect(items.map((item) => [item['contenthistid'], item['contentid'], item['isnew'], item['active']])).toEqual(Array.from({ length: count }, () => ['', '', 1, '']));
+      expect(data).toMatchObject({ totalitems: 2, ...values });
+    });
+
+    it('reads a version past the page getPageIDList names as a new bean', async () => {
+      const fields = 'links,contenthistid';
+      const versions = (data: Struct): unknown[][] => (data['items'] as Struct[]).map((item) => [item['contenthistid'], item['isnew']]);
+      const all = versions(wire('findVersionHistory', await on('findVersionHistory', { actor: ADMIN, id: ALPHA, url: { itemsPerPage: 2, fields } })));
+      // (1.75 - 1) * 2 = 1.5 reads row 2 from index 2.5, past the page query's records 2.5 to 2.
+      const late = wire('findVersionHistory', await on('findVersionHistory', { actor: ADMIN, id: ALPHA, url: { itemsPerPage: 2, pageIndex: 1.75, fields } }));
+      expect(all.map(([, isnew]) => isnew)).toEqual([0, 0]);
+      expect(versions(late)).toEqual([[all[1]?.[0], 1]]);
+    });
+
+    it('fails closed on the default site URL settings a blank version of another site builds', async () => {
+      await expect(on('findVersionHistory', { actor: ADMIN, id: ALPHA, url: { itemsPerPage: 1, pageIndex: 0 } })).rejects.toEqual(unavailable('content-pool-site-urls'));
     });
 
     it.each(['*', 0])('lists every version on one page for itemsPerPage=%s', async (itemsPerPage) => {
@@ -411,9 +461,9 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
         ['a startIndex past the last record', { itemsPerPage: 100, startIndex: 5000 }, [0, 100], { ...hundreds, pageindex: 1, startindex: 1, endindex: 100 }],
         ['a one-row page after the first 1000', { itemsPerPage: 1, pageIndex: 1001 }, [1000, 1001], { pageindex: 1001, totalpages: ROWS, startindex: 1001, endindex: 1001, itemsperpage: 1 }],
         ['a page across the 1000th row', { itemsPerPage: 300, pageIndex: 4 }, [900, ROWS], { pageindex: 4, totalpages: 4, startindex: 901, endindex: ROWS, itemsperpage: 300 }],
-        ['a fractional page size', { itemsPerPage: 2.5, pageIndex: 3 }, [5, 7], { pageindex: 3, totalpages: 402, startindex: 6, endindex: 7.5, itemsperpage: 2.5 }],
-        ['a negative page size', { itemsPerPage: -1000 }, [0, 5], { pageindex: 1, totalpages: 0, startindex: 1, endindex: -1000, itemsperpage: -1000 }],
-        ['a negative page window', { itemsPerPage: -100, pageIndex: 3 }, [0, 0], { pageindex: 3, totalpages: 0, startindex: -199, endindex: -300, itemsperpage: -100 }],
+        ['a fractional page size', { itemsPerPage: 2.5, pageIndex: 3 }, [5, 8], { pageindex: 3, totalpages: 402, startindex: 6, endindex: 7.5, itemsperpage: 2.5 }],
+        ['a negative page size', { itemsPerPage: -1000 }, [0, 0], { pageindex: 1, totalpages: -1, startindex: 1, endindex: -1000, itemsperpage: -1000 }],
+        ['a negative page window', { itemsPerPage: -100, pageIndex: 3 }, [0, 0], { pageindex: 3, totalpages: -10, startindex: -199, endindex: -300, itemsperpage: -100 }],
       ])(
         'pages %s as a slice of the full getHist read, reading only that slice',
         async (_label, url, [start, end], pageMeta) => {
@@ -427,10 +477,12 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
         120_000,
       );
 
-      it('answers the legacy 500 for a negative start row before reading any version', async () => {
+      it('answers the blank versions of a negative start row, reading only the first row for its columns', async () => {
         const reads: HistRead[] = [];
-        await expect(longHistory({ itemsPerPage: 100, startIndex: -5 }, reads)).rejects.toEqual(legacyError('server_error'));
-        expect(reads).toEqual([]);
+        const data = wire('findVersionHistory', await longHistory({ itemsPerPage: 100, startIndex: -5, fields: 'links,contenthistid' }, reads));
+        expect((data['items'] as Struct[]).map((item) => [item['contenthistid'], item['isnew']])).toEqual(Array.from({ length: 6 }, () => ['', 1]));
+        expect(data).toMatchObject({ totalitems: ROWS, pageindex: 0, startindex: -99, endindex: 0, itemsperpage: 100 });
+        expect(reads).toEqual([{ rows: 1, limited: true }]);
       });
     });
   });
@@ -451,6 +503,12 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
     it('fills a related item\'s file columns from the site\'s file pool', async () => {
       const [gallery] = itemsOf('findRelatedContent', await on('findRelatedContent', { id: ALPHA, url: { fields: 'title,fileid,fileext,filesize' } }));
       expect(gallery?.['items']).toEqual([expect.objectContaining({ title: 'Gamma', fileid: IMAGE, fileext: 'jpg', filesize: 10 })]);
+    });
+
+    it('reads a related item past the page getPageIDList names as a new bean', async () => {
+      // Default's second item is read from index 2.5, past the page query's records 2.5 to 2; Gallery's one item resets the page to 1.
+      const sets = itemsOf('findRelatedContent', await on('findRelatedContent', { id: ALPHA, url: { itemsPerPage: 2, pageIndex: 1.75, fields: 'title' } }));
+      expect(sets.map((set) => (set['items'] as Struct[]).map((item) => [item['title'], item['isnew']]))).toEqual([[['Gamma', 0]], [['Gamma', 1]]]);
     });
 
     it('applies the URL sort and reverse arguments', async () => {

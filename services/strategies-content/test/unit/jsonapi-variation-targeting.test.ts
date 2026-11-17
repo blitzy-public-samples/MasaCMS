@@ -609,6 +609,23 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     );
   });
 
+  // A blank row (queryRowToStruct before row 1) sets '' on a new bean, whose targetingid beanORM.init made a createUUID().
+  it.each<[string, string, (id: string) => Row]>([
+    ['every value', 'itemsPerPage=2&pageIndex=0', (id) => ({ contentid: '', initjs: '', targetingjs: '', links: beanLinks(id) })],
+    ['a field list', 'itemsPerPage=2&pageIndex=0&fields=initjs', (id) => ({ initjs: '', targetingid: id })],
+  ])('findQuery before the first record answers the beans of blank rows with %s, each under a fresh id', async (_label, raw, values) => {
+    const data = (wire(await run(ctx, 'findQuery', { raw, actor: CONTENT_EDITOR }), 'findQuery') as { data: Row }).data;
+    expect(data).toMatchObject({ totalitems: 2, pageindex: 0, startindex: -1 });
+    const items = data['items'] as Row[];
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      const id = String(item['id']);
+      expect(isCfUuid(id)).toBe(true);
+      expect(item).toEqual({ ...values(id), targetingid: id, id, siteid: '', isnew: 0, entityname: 'variationTargeting' });
+    }
+    expect(items[0]?.['id']).not.toBe(items[1]?.['id']);
+  });
+
   it('findQuery countOnly answers the count as text', async () => {
     const result = await run(ctx, 'findQuery', { raw: 'countOnly=true&contentid=ABC', actor: CONTENT_EDITOR });
     expect(wire(result, 'findQuery')).toEqual({ apiversion: 'v1', data: { count: '1' }, method: 'findQuery' });

@@ -890,19 +890,29 @@ describe.skipIf(!PG_AVAILABLE)('roster recovery, halting and opt2-people resolve
       expect(await rosterOperation(world, userId)).toMatchObject({ state: 'halted' });
     }));
 
-  it.each(['rolled-back', 'done'] as const)(
-    'lists a halted operation on listHaltedRosterOperations with its halt time, still after resolve-operation --to %s settles it',
-    (to) =>
+  it.each([
+    ['rolled-back', 'registered'],
+    ['done', 'deleted from the registry'],
+  ] as const)(
+    'lists a halted operation on listHaltedRosterOperations and listHaltedRosterOperationsPage with its halt time, still after resolve-operation --to %s settles it, with its site %s',
+    (to, site) =>
       inWorld(async (world) => {
         const { userId, operationId } = await haltOperation(world);
+        if (site !== 'registered') {
+          await world.db.withMetadata((tx) => tx.query(`UPDATE ${world.db.schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT]));
+        }
         const haltedAt = world.clock.now();
         const halted = await rosterOperation(world, userId);
-        const listHalted = async (): Promise<unknown> => {
-          const url = '/internal/v1/roster-operations/halted';
+        const read = async (url: string): Promise<unknown> => {
           const res = await world.app.inject({ method: 'GET', url, headers: await headersFor('service:operator') });
           assertResponseMatchesOpenApi(CONTRACT, { method: 'GET', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
           expect(res.statusCode).toBe(200);
           return res.json();
+        };
+        const listHalted = async (): Promise<unknown> => {
+          const whole = await read('/internal/v1/roster-operations/halted');
+          expect(await read('/internal/v2/roster-operations/halted')).toEqual({ ...(whole as object), next: null });
+          return whole;
         };
         const listed = (row: RosterOperationRow): unknown => ({
           operations: [

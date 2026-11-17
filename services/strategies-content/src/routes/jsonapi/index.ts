@@ -5,13 +5,13 @@
 import { contentEntities, type ContentEntityName } from '../../legacy/jsonapi-entities.js';
 import { categoryHandler, contentCategoryAssignHandler } from './category.js';
 import { changesetCategoryAssignmentHandler, changesetHandler } from './changeset.js';
-import { commentHandler } from './comment.js';
+import { commentHandler, commentRemoteFunctions } from './comment.js';
 import { contentHandler } from './content.js';
 import { feedHandler } from './feed.js';
 import { fileHandler, fileMetaDataHandler } from './file.js';
 import { CONTENT_METHODS } from './methods.js';
 import { statsHandler } from './stats.js';
-import type { EntityHandler, MethodHandler } from './types.js';
+import type { EntityHandler, MethodHandler, RemoteFunctionFn } from './types.js';
 import { variationTargetingHandler } from './variation-targeting.js';
 
 export * from './types.js';
@@ -58,3 +58,8 @@ export function lookupEntityHandler(name: string, opts: { variations: boolean })
 
 /** The public JSON API methods strategies-content serves, by legacy name. */
 export const CONTENT_METHOD_HANDLERS: Readonly<Record<string, MethodHandler>> = CONTENT_METHODS;
+
+/** The remote functions of each content entity bean, by legacy entity and function name; only contentCommentBean declares any. */
+export const CONTENT_REMOTE_FUNCTIONS: Readonly<Record<string, Readonly<Record<string, RemoteFunctionFn>>>> = Object.freeze({
+  comment: commentRemoteFunctions,
+});

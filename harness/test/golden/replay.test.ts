@@ -179,7 +179,7 @@ function fakeStack(opts: StackOptions = {}): FakeStack {
     };
     sent.push(request);
     if (url.origin === MAILPIT) return json({ total: 0, messages: [] });
-    if (url.origin === PEOPLE && url.pathname === '/internal/v1/roster-operations/halted') return json({ operations: [] });
+    if (url.origin === PEOPLE && url.pathname === '/internal/v2/roster-operations/halted') return json({ operations: [], next: null });
     if (url.origin === MIGRATION && url.pathname.startsWith('/internal/v1/faults/')) {
       const status = request.method === 'PUT' ? (opts.faultSetStatus ?? 204) : 204;
       return new Response(null, { status });

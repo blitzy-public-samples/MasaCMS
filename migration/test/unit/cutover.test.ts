@@ -52,6 +52,7 @@ import {
 } from '../helpers/gateway-double.js';
 
 const STATUS_PATH = '/internal/v1/cutover/status';
+const STATUS_V2_PATH = '/internal/v2/cutover/status';
 const WAIT_BUDGET = { timeoutMs: 1000, intervalMs: 100 } as const;
 
 const groups = fixtureGroups();
@@ -302,6 +303,8 @@ describe('gateway client', () => {
     switch (`${req.method} ${req.path}`) {
       case `GET ${STATUS_PATH}`:
         return json(200, await double.status());
+      case `GET ${STATUS_V2_PATH}`:
+        return json(200, double.snapshotV2());
       case 'POST /internal/v1/cutover/activate':
         return json(200, await double.activate((req.json as CutoverActivateRequest).tableVersion));
       case 'POST /internal/v1/cutover/freeze':
@@ -331,7 +334,7 @@ describe('gateway client', () => {
     let polls = 0;
     const router = createRoutedServiceClient({
       [GATEWAY_SERVICE]: (req) => {
-        if (req.path === STATUS_PATH) {
+        if (req.path === STATUS_PATH || req.path === STATUS_V2_PATH) {
           polls += 1;
           onPoll?.(polls, double);
         }
@@ -457,11 +460,49 @@ describe('gateway client', () => {
 
     expect(outcome).toEqual({
       orphans: [
-        { instanceId: 'gw-dead', route: FIXTURE_ROUTES.rosterUpdate, side: 'legacy', count: 1, oldestStartedAt: new Date(startedAt).toISOString() },
+        {
+          instanceId: 'gw-dead',
+          route: FIXTURE_ROUTES.rosterUpdate,
+          side: 'legacy',
+          count: 1,
+          oldestStartedAt: new Date(startedAt).toISOString(),
+          orphaned: true,
+        },
       ],
     });
     expect(run.router.calls).toHaveLength(2);
     expect(elapsedMs).toBe(WAIT_BUDGET.intervalMs);
+  });
+
+  it("returns a live instance's abandoned target write as an orphan without waiting, and gates-closed evidence clears only it", async () => {
+    const startedAt = createMutableClock().now().getTime() - 5_000;
+    const units = ['identity.user_account', 'people.person'];
+    const run = harness({
+      inflight: [
+        { instance: 'gw-1', requestId: 'req-abandoned', route: FIXTURE_ROUTES.rosterAdd, side: 'target', startedAt, abandoned: true, units },
+        { instance: 'gw-1', requestId: 'req-other', route: FIXTURE_ROUTES.contentUpdate, side: 'target', startedAt, units },
+      ],
+    });
+
+    const { outcome, elapsedMs } = await runWait(run, () => run.client.awaitInflightDrained(awaitedRoutes, WAIT_BUDGET));
+
+    expect(outcome).toEqual({
+      orphans: [
+        {
+          instanceId: 'gw-1',
+          route: FIXTURE_ROUTES.rosterAdd,
+          side: 'target',
+          count: 1,
+          oldestStartedAt: new Date(startedAt).toISOString(),
+          orphaned: true,
+        },
+      ],
+    });
+    expect(run.router.calls).toHaveLength(1);
+    expect(elapsedMs).toBe(0);
+    const evidence = { kind: 'gates-closed', holderId: 'trn-0001', at: run.clock.now().toISOString(), units } as const;
+    expect(await run.client.clearOrphans({ side: 'target', evidence, instanceIds: ['gw-1'] })).toEqual({ cleared: 1 });
+    expect(run.double.inflightRows().map((row) => row.requestId)).toEqual(['req-other']);
   });
 
   it('rejects awaitInflightDrained with GatewayWaitTimeoutError naming the live rows left once the budget is spent', async () => {

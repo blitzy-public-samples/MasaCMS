@@ -18,14 +18,19 @@ import { cutoverTable, entry } from '../helpers/versions.js';
 import type { CutoverTable } from '../../src/cutover/types.js';
 import type { SessionMode } from '../../src/session/mode.js';
 
-// Neither buildApp nor buildTestGateway takes a service-call timeout, and fake timers cannot drive undici's process-wide
-// fast-timer clock once a real request has started it, so the platform's 10 s bound is shortened for this file.
+// Neither buildApp nor buildTestGateway takes a forward timeout, and fake timers cannot drive undici's process-wide
+// fast-timer clock once a real request has started it, so both terms of the 40 s target-forward bound (the owner's
+// 30 s gate wait plus the platform's 10 s call bound) are shortened for this file.
 vi.mock('@opt2/platform/service-kit', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@opt2/platform/service-kit')>()),
   SERVICE_CALL_TIMEOUT_MS: 1_000,
 }));
+vi.mock('@opt2/platform/migration-kit', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@opt2/platform/migration-kit')>()),
+  GATE_WAIT_MS: 1_000,
+}));
 
-/** Per-case budget below the platform's 10 s bound, so a hung callee fails the case if the shortened bound stops applying. */
+/** Per-case budget below either unshortened term, so a hung callee fails the case if either shortened term stops applying. */
 const CASE_TIMEOUT_MS = 8_000;
 
 /** Node's default 503 reason phrase, which the JSON API envelope keeps. */

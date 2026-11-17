@@ -16,18 +16,43 @@ const writerRows = inventory.tables.flatMap((table) => table.writers.map((writer
 const nonRequestRows = writerRows.filter(({ writer }) => writer.trigger !== 'request');
 const ids = PREVENTED_WRITERS.map((entry) => entry.id);
 
+const OVERRIDE_REVIEWED = [
+  'scheduler-registration',
+  'native-sitemonitor-task',
+  'fixture-survey-tasks',
+  'fixture-export-threads',
+  'startup-url-conversion',
+];
+const conditionEntries = PREVENTED_WRITERS.filter((entry) => entry.match.condition !== undefined);
+const SETTINGS_DAO = 'core/mura/settings/settingsDAO.cfc';
+
 /** Inventory records whose reviewed override names the prevented-writer id. */
 const reviewedRecords = (id: string): InventoryWriter[] =>
   writerRows.filter(({ writer }) => writer.override === `${OVERRIDE_PREFIX}${id}`).map(({ writer }) => writer);
 
+/** Id of the entry a non-request inventory record must resolve to, or `undefined`; condition entries outrank settingsDAO.update. */
+function expectedEntry(table: string, writer: InventoryWriter): string | undefined {
+  const reviewed = OVERRIDE_REVIEWED.find((id) => writer.override === `${OVERRIDE_PREFIX}${id}`);
+  if (reviewed !== undefined) return reviewed;
+  if (table === 'synthetic.export_job' && writer.trigger === 'thread') return 'fixture-export-threads';
+  const byCondition = conditionEntries.find(
+    (entry) => entry.trigger === writer.trigger && entry.match.condition === writer.condition,
+  );
+  if (byCondition !== undefined) return byCondition.id;
+  const themeSiteSizes = writer.trigger === 'appstart' && writer.component === SETTINGS_DAO && writer.method === 'update';
+  return themeSiteSizes ? 'startup-theme-site-sizes' : undefined;
+}
+
 describe('PREVENTED_WRITERS', () => {
-  it('is the closed list of five mechanisms, in order', () => {
+  it('is the closed list of eleven mechanisms, in order', () => {
     expect(ids).toEqual([
-      'scheduler-registration',
-      'native-sitemonitor-task',
-      'fixture-survey-tasks',
-      'fixture-export-threads',
-      'startup-url-conversion',
+      ...OVERRIDE_REVIEWED,
+      'startup-deploy-bundle',
+      'startup-project-site',
+      'startup-db-updates',
+      'startup-plugin-discovery',
+      'trash-restore-bean',
+      'startup-theme-site-sizes',
     ]);
   });
 
@@ -41,11 +66,23 @@ describe('PREVENTED_WRITERS', () => {
     }
   });
 
-  it.each(PREVENTED_WRITERS.map((entry) => [entry.id, entry] as const))(
+  it.each(PREVENTED_WRITERS.filter((entry) => OVERRIDE_REVIEWED.includes(entry.id)).map((entry) => [entry.id, entry] as const))(
     '%s matches its reviewed inventory writer records',
     (id, entry) => {
       const records = reviewedRecords(id);
       expect(records.length, `no inventory writer carries override wov:${id}`).toBeGreaterThan(0);
+      for (const record of records) {
+        expect(record.trigger).toBe(entry.trigger);
+        expect(isPreventedWriter(record)?.id).toBe(id);
+      }
+    },
+  );
+
+  it.each(conditionEntries.map((entry) => [entry.id, entry] as const))(
+    '%s matches every non-request inventory writer recording its condition',
+    (id, entry) => {
+      const records = nonRequestRows.filter(({ writer }) => writer.condition === entry.match.condition).map(({ writer }) => writer);
+      expect(records.length, `no inventory writer records the condition of ${id}`).toBeGreaterThan(0);
       for (const record of records) {
         expect(record.trigger).toBe(entry.trigger);
         expect(isPreventedWriter(record)?.id).toBe(id);
@@ -62,12 +99,10 @@ describe('PREVENTED_WRITERS', () => {
   });
 
   it('matches no other non-request inventory writer', () => {
-    const unexpected = nonRequestRows.filter(({ table, writer }) => {
-      const reviewed = ids.some((id) => writer.override === `${OVERRIDE_PREFIX}${id}`);
-      const exportThread = table === 'synthetic.export_job' && writer.trigger === 'thread';
-      return !reviewed && !exportThread && isPreventedWriter(writer) !== undefined;
-    });
-    expect(unexpected).toEqual([]);
+    const mismatched = nonRequestRows
+      .map(({ table, writer }) => ({ table, writer, expected: expectedEntry(table, writer), actual: isPreventedWriter(writer)?.id }))
+      .filter(({ expected, actual }) => expected !== actual);
+    expect(mismatched).toEqual([]);
   });
 });
 
@@ -97,6 +132,31 @@ describe('isPreventedWriter', () => {
       'an entry without a line span',
       { component: 'legacy-fixtures/cfml/modules/reporting.cfc', method: 'createExport', trigger: 'thread' },
       'fixture-export-threads',
+    ],
+    [
+      'a condition whatever the component',
+      {
+        component: 'core/mura/publisher.cfc',
+        method: 'getToWorkUsers',
+        trigger: 'appstart',
+        condition: 'runs only on upgrade from an older version',
+      },
+      'startup-db-updates',
+    ],
+    [
+      'a condition ahead of a later component entry',
+      {
+        component: SETTINGS_DAO,
+        method: 'update',
+        trigger: 'appstart',
+        condition: 'ProjectSiteID is not default and that site does not exist (core/appcfc/onApplicationStart_include.cfm:771)',
+      },
+      'startup-project-site',
+    ],
+    [
+      'a component and method without a condition',
+      { component: SETTINGS_DAO, method: 'update', trigger: 'appstart', condition: null },
+      'startup-theme-site-sizes',
     ],
   ])('matches on %s', (_case, writer, id) => {
     expect(isPreventedWriter(writer)?.id).toBe(id);
@@ -128,6 +188,32 @@ describe('isPreventedWriter', () => {
     [
       'an unparseable line string',
       { component: 'core/appcfc/onApplicationStart_include.cfm', trigger: 'appstart', source: { lines: 'line 561' } },
+    ],
+    [
+      'a condition that differs from the entry',
+      { component: 'core/mura/publisher.cfc', trigger: 'appstart', condition: 'runs only on upgrade from an older version.' },
+    ],
+    [
+      'a null condition where the entry names one',
+      { component: 'core/mura/dbUpdates/5.2.0.cfm', trigger: 'appstart', condition: null },
+    ],
+    [
+      'a matching condition under another trigger',
+      { component: 'core/mura/publisher.cfc', trigger: 'scheduler', condition: 'runs only on upgrade from an older version' },
+    ],
+    [
+      'another settingsDAO method without a condition',
+      { component: SETTINGS_DAO, method: 'create', trigger: 'appstart', condition: null },
+    ],
+    [
+      'the theme-config image-size upsert',
+      {
+        component: 'core/mura/settings/settingsImageSizeBean.cfc',
+        method: 'save',
+        trigger: 'appstart',
+        condition: null,
+        source: { lines: [190, 190] },
+      },
     ],
   ])('returns undefined for %s', (_case, writer) => {
     expect(isPreventedWriter(writer)).toBeUndefined();

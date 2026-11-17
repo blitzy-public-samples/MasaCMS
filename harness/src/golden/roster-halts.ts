@@ -8,8 +8,8 @@ import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js'
 import type { EnvLike } from '../lib/paths.js';
 import { readJson } from '../lib/report.js';
 
-/** People `listHaltedRosterOperations` route. */
-export const HALTED_ROSTER_PATH = '/internal/v1/roster-operations/halted';
+/** People `listHaltedRosterOperationsPage` route. */
+export const HALTED_ROSTER_PATH = '/internal/v2/roster-operations/halted';
 
 const ROSTER_KINDS = ['admin-add', 'admin-update', 'json-save', 'profile-update'] as const;
 
@@ -40,6 +40,7 @@ const haltedRosterSchema = z.looseObject({
       units: z.array(z.string().min(1)),
     }),
   ),
+  next: z.string().min(1).nullable(),
 });
 
 /** One roster operation people lists as once halted, in its current `state`. */
@@ -58,21 +59,32 @@ export interface RosterHaltDeps {
 const listedIdsSchema = z.looseObject({ entries: z.array(z.looseObject({ id: z.string() })) });
 
 /**
- * Every roster operation people lists as once halted, resolved or not, oldest first; throws GoldenConfigError when
- * `OPT2_SERVICE_URLS` names no people URL, and an Error when people answers other than 200 with its contract's body.
+ * Every roster operation people lists as once halted, resolved or not, oldest first, following `next` page by page
+ * until it is null; throws GoldenConfigError when `OPT2_SERVICE_URLS` names no people URL, and an Error when people
+ * answers other than 200 with its contract's body or repeats the cursor it was sent.
  */
 export async function haltedRosterOperations(deps: RosterHaltDeps): Promise<HaltedRosterOperation[]> {
   const base = serviceUrl(deps.config, 'people');
   const invoker = deps.invoker ?? (await createHarnessInvoker({ caller: 'operator', env: deps.env ?? process.env }));
   const headers = await invoker.headersFor({ callee: 'people', url: `${base}${HALTED_ROSTER_PATH}` });
   const s = createHttpSession({ baseUrl: base, fetch: deps.fetch });
-  const result = await s.request({ method: 'GET', path: HALTED_ROSTER_PATH, headers, followRedirects: false });
-  if (result.status !== 200) throw new Error(`people listHaltedRosterOperations answered ${result.status}`);
-  const parsed = haltedRosterSchema.safeParse(result.json());
-  if (!parsed.success) {
-    throw new Error(`people listHaltedRosterOperations is not a HaltedRosterOperations: ${z.prettifyError(parsed.error)}`);
-  }
-  return parsed.data.operations;
+  const operations: HaltedRosterOperation[] = [];
+  let after: string | null = null;
+  do {
+    const query = after === null ? undefined : { after };
+    const result = await s.request({ method: 'GET', path: HALTED_ROSTER_PATH, query, headers, followRedirects: false });
+    if (result.status !== 200) throw new Error(`people listHaltedRosterOperationsPage answered ${result.status}`);
+    const parsed = haltedRosterSchema.safeParse(result.json());
+    if (!parsed.success) {
+      throw new Error(`people listHaltedRosterOperationsPage is not a HaltedRosterOperationsPage: ${z.prettifyError(parsed.error)}`);
+    }
+    if (parsed.data.next !== null && parsed.data.next === after) {
+      throw new Error('people listHaltedRosterOperationsPage answered the cursor it was sent as its next cursor');
+    }
+    operations.push(...parsed.data.operations);
+    after = parsed.data.next;
+  } while (after !== null);
+  return operations;
 }
 
 /** Exceptions-list id of `operation`: `EX-ROSTER-HALT-<operationId>`, upper-cased like every list id. */

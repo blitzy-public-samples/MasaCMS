@@ -6,7 +6,7 @@ import {
   type RepositoryRow,
   type WriteContext,
 } from '@opt2/platform/migration-kit';
-import type { TenantTx } from '@opt2/platform/tenancy';
+import type { MetadataTx, QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
@@ -40,6 +40,31 @@ export type ImageSizeInput = Pick<ImageSizeRow, 'siteid' | 'name' | 'height' | '
 /** Lookup of `settingsImageSizeBean.getQuery`: by `sizeId`, else by `name` within `siteId`, compared with SQL Server's equality, trailing spaces of `sizeId` and `name` ignored. */
 export type ImageSizeLookup = { sizeId: string } | { name: string; siteId: string };
 
+const SITE_LIST_COLUMNS = ['siteid', 'site', 'domain', 'orderno', 'deploy', 'lastdeployment'] as const;
+const SITE_SELECTOR_COLUMNS = ['siteid', 'site', 'orderno', 'domain', 'domainalias', 'showdashboard'] as const;
+const SITE_DOMAIN_COLUMNS = ['siteid', 'domain', 'domainalias', 'isremote', 'resourcedomain'] as const;
+
+/** The site columns of a Sites screen row. */
+export type SiteListRow = Pick<SiteRow, (typeof SITE_LIST_COLUMNS)[number]>;
+
+/** The site columns `getUserSites` and `bindToDomain` read. */
+export type SiteSelectorRow = Pick<SiteRow, (typeof SITE_SELECTOR_COLUMNS)[number]>;
+
+/** The site columns `getAccessControlOriginDomainList` and `getSite(siteId).getDomain()` read. */
+export type SiteDomainRow = Pick<SiteRow, (typeof SITE_DOMAIN_COLUMNS)[number]>;
+
+/** One `tenant_registry` site and its tenant. */
+export interface RegisteredSite {
+  siteId: string;
+  tenantId: string;
+}
+
+/** A keyset page request: at most `limit` entries after the key `after`, from the first when null. */
+export interface KeysetPage {
+  after: string | null;
+  limit: number;
+}
+
 /** The programs-sites extend definitions of one site, each list in legacy display order. */
 export interface SiteExtendDefinitions {
   subtypes: ExtendSubtypeRow[];
@@ -48,18 +73,28 @@ export interface SiteExtendDefinitions {
   rcsets: ExtendRcSetRow[];
 }
 
-/** The platform repository of schema `programs_sites` plus typed helpers; every helper runs in the caller's open tenant transaction. */
+/** The platform repository of schema `programs_sites` plus typed helpers; every helper runs in the caller's open tenant transaction, the registry page in its metadata one. */
 export interface ProgramsSitesRepository extends Repository {
   /** The site row with exactly `siteId`; null when absent. */
   readSite(tx: TenantTx, siteId: string): Promise<SiteRow | null>;
-  /** Every site of the transaction tenant by `orderno` ascending, NULLs first, ties by `siteid`. */
-  listSites(tx: TenantTx): Promise<SiteRow[]>;
+  /** The Sites screen columns of every site of the transaction tenant by `orderno` ascending, NULLs first, ties by `siteid`. */
+  listSites(tx: TenantTx): Promise<SiteListRow[]>;
+  /** The site selector columns of every site of the transaction tenant, in `listSites` order. */
+  listSiteSelectorRows(tx: TenantTx): Promise<SiteSelectorRow[]>;
+  /** The origin-domain columns of every site of the transaction tenant, in `listSites` order. */
+  listSiteDomains(tx: TenantTx): Promise<SiteDomainRow[]>;
+  /** The first site in `listSites` order whose siteid SQL Server's `siteid = ?` matches: case-insensitive, trailing spaces ignored; null when none does. */
+  matchSite(tx: TenantTx, siteId: string): Promise<SiteRow | null>;
   /** Sets `orderno` and adds 1 to `row_version`; null when the site is absent. */
   updateOrderNo(tx: TenantTx, siteId: string, orderNo: number, ctx?: WriteContext): Promise<SiteRow | null>;
   /** Sets `deploy` and adds 1 to `row_version`; null when the site is absent. */
   updateDeploy(tx: TenantTx, siteId: string, deploy: number, ctx?: WriteContext): Promise<SiteRow | null>;
   /** The image sizes of `siteId`, by `sizeid`. */
   listImageSizes(tx: TenantTx, siteId: string): Promise<ImageSizeRow[]>;
+  /** One keyset page of the image sizes of `siteId`, by `sizeid`. */
+  listImageSizePage(tx: TenantTx, siteId: string, page: KeysetPage): Promise<ImageSizeRow[]>;
+  /** One keyset page of the registered sites by site id, read from the non-tenant `tenant_registry` in `tx`. */
+  listRegisteredSitePage(tx: MetadataTx, page: KeysetPage): Promise<RegisteredSite[]>;
   /** The first image size matching `by` under SQL Server equality; null when none does. */
   findImageSize(tx: TenantTx, by: ImageSizeLookup): Promise<ImageSizeRow | null>;
   /** Updates the stored size with `row.sizeid`, else inserts it, and returns the stored row. */
@@ -94,9 +129,23 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
   const rcSet = qualified(schema, EXTEND_RC_SET.table);
   const data = qualified(schema, EXTEND_DATA.table);
 
-  const listSitesSql = `SELECT * FROM ${site} WHERE tenant_id = $1 ORDER BY orderno ASC NULLS FIRST, siteid`;
+  const siteOrder = 'ORDER BY orderno ASC NULLS FIRST, siteid';
+  const siteColumnsSql = (columns: readonly string[]): string =>
+    `SELECT ${columns.join(', ')} FROM ${site} WHERE tenant_id = $1 ${siteOrder}`;
+  const listSitesSql = siteColumnsSql(SITE_LIST_COLUMNS);
+  const siteSelectorSql = siteColumnsSql(SITE_SELECTOR_COLUMNS);
+  const siteDomainsSql = siteColumnsSql(SITE_DOMAIN_COLUMNS);
+  // The imageSizeByNameSql equality on siteid, so one row answers where the exact key read found none.
+  const matchSiteSql =
+    `SELECT * FROM ${site} WHERE tenant_id = $1 AND (siteid::bpchar COLLATE ${qualified(schema, 'legacy_ci')}) = $2::bpchar` +
+    ` ${siteOrder} LIMIT 1`;
   const lockSiteSql = `SELECT * FROM ${site} WHERE tenant_id = $1 AND siteid = $2 FOR UPDATE`;
   const imageSizesSql = `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND siteid = $2 ORDER BY sizeid`;
+  const imageSizePageSql = `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND siteid = $2 ORDER BY sizeid LIMIT $3`;
+  const imageSizePageAfterSql = `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND siteid = $2 AND sizeid > $3 ORDER BY sizeid LIMIT $4`;
+  const registry = qualified(schema, 'tenant_registry');
+  const registryPageSql = `SELECT site_id, tenant_id FROM ${registry} WHERE NOT deleted ORDER BY site_id LIMIT $1`;
+  const registryPageAfterSql = `SELECT site_id, tenant_id FROM ${registry} WHERE site_id > $1 AND NOT deleted ORDER BY site_id LIMIT $2`;
   // SQL Server's nvarchar equality, leakproof and so indexable under forced RLS: bpchar ignores trailing spaces, legacy_ci compares the rest.
   const imageSizeByNameSql =
     `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND (name::bpchar COLLATE ${qualified(schema, 'legacy_ci')}) = $2::bpchar` +
@@ -122,8 +171,25 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     return base.findByKey<SiteRow>(tx, SITE.table, { siteid: siteId });
   }
 
-  function listSites(tx: TenantTx): Promise<SiteRow[]> {
-    return base.read(tx, SITE.unit, async () => (await tx.query<SiteRow>(listSitesSql, [tx.tenantId])).rows);
+  /** The rows of `sql` over the transaction tenant's sites, read behind the site unit's read fence. */
+  function siteRows<R extends QueryResultRow>(tx: TenantTx, sql: string): Promise<R[]> {
+    return base.read(tx, SITE.unit, async () => (await tx.query<R>(sql, [tx.tenantId])).rows);
+  }
+
+  function listSites(tx: TenantTx): Promise<SiteListRow[]> {
+    return siteRows<SiteListRow>(tx, listSitesSql);
+  }
+
+  function listSiteSelectorRows(tx: TenantTx): Promise<SiteSelectorRow[]> {
+    return siteRows<SiteSelectorRow>(tx, siteSelectorSql);
+  }
+
+  function listSiteDomains(tx: TenantTx): Promise<SiteDomainRow[]> {
+    return siteRows<SiteDomainRow>(tx, siteDomainsSql);
+  }
+
+  function matchSite(tx: TenantTx, siteId: string): Promise<SiteRow | null> {
+    return base.read(tx, SITE.unit, async () => (await tx.query<SiteRow>(matchSiteSql, [tx.tenantId, siteId])).rows[0] ?? null);
   }
 
   /** Sets `patch` and the next `row_version` on site `siteId`, read under a row lock so concurrent writers never share a version. */
@@ -149,6 +215,20 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
 
   function listImageSizes(tx: TenantTx, siteId: string): Promise<ImageSizeRow[]> {
     return base.read(tx, IMAGE_SIZE.unit, async () => (await tx.query<ImageSizeRow>(imageSizesSql, [tx.tenantId, siteId])).rows);
+  }
+
+  function listImageSizePage(tx: TenantTx, siteId: string, { after, limit }: KeysetPage): Promise<ImageSizeRow[]> {
+    const [sql, params] =
+      after === null
+        ? [imageSizePageSql, [tx.tenantId, siteId, limit]]
+        : [imageSizePageAfterSql, [tx.tenantId, siteId, after, limit]];
+    return base.read(tx, IMAGE_SIZE.unit, async () => (await tx.query<ImageSizeRow>(sql, params)).rows);
+  }
+
+  async function listRegisteredSitePage(tx: MetadataTx, { after, limit }: KeysetPage): Promise<RegisteredSite[]> {
+    const [sql, params] = after === null ? [registryPageSql, [limit]] : [registryPageAfterSql, [after, limit]];
+    const { rows } = await tx.query<{ site_id: string; tenant_id: string }>(sql, params);
+    return rows.map((row) => ({ siteId: row.site_id, tenantId: row.tenant_id }));
   }
 
   function findImageSize(tx: TenantTx, by: ImageSizeLookup): Promise<ImageSizeRow | null> {
@@ -198,9 +278,14 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     ...base,
     readSite,
     listSites,
+    listSiteSelectorRows,
+    listSiteDomains,
+    matchSite,
     updateOrderNo,
     updateDeploy,
     listImageSizes,
+    listImageSizePage,
+    listRegisteredSitePage,
     findImageSize,
     saveImageSize,
     deleteImageSize,

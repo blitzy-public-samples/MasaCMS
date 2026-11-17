@@ -20,6 +20,10 @@ export const DEFAULT_SORT_RUN_BYTES = 64 * 1024 * 1024;
 /** Buffered rows at which the SQL request is paused; it resumes once half of them are consumed. */
 export const DEFAULT_HIGH_WATER_MARK = 256;
 
+/** Most spill runs one merge reads at once; each holds a file handle, a read buffer and its head record. */
+export const MAX_MERGE_FAN_IN = 16;
+
+const MIN_MERGE_FAN_IN = 2;
 const BINARY_COLLATION = 'Latin1_General_BIN2';
 const SPILL_PREFIX = 'opt2-extract-';
 const WRITE_BATCH_BYTES = 1024 * 1024;
@@ -546,13 +550,54 @@ export async function* mergeRuns(files: readonly string[]): AsyncGenerator<strin
   }
 }
 
-/** Keyless rows sorted by encoding through memory-bounded runs; duplicates are yielded once per occurrence. */
+/** Runs one merge reads at once: as many records of `largestRecord` bytes as `runBytes` holds, from 2 to {@link MAX_MERGE_FAN_IN}. */
+export function mergeFanIn(runBytes: number, largestRecord: number): number {
+  return Math.max(MIN_MERGE_FAN_IN, Math.min(MAX_MERGE_FAN_IN, Math.floor(runBytes / Math.max(largestRecord, 1))));
+}
+
+/**
+ * Merges consecutive groups of at most `fanIn` runs, in order, into new runs of `dir` written by `merge`, removing each
+ * merged group, until no more than `fanIn` runs remain; returns them in order.
+ * @throws RangeError when `fanIn` is not an integer of at least 2.
+ */
+export async function reduceRuns(
+  dir: string,
+  files: readonly string[],
+  fanIn: number,
+  merge: (group: readonly string[], file: string) => Promise<void>,
+): Promise<string[]> {
+  if (!Number.isInteger(fanIn) || fanIn < MIN_MERGE_FAN_IN) {
+    throw new RangeError(`fanIn must be an integer of at least ${String(MIN_MERGE_FAN_IN)}, got ${String(fanIn)}`);
+  }
+  let runs = [...files];
+  let merges = 0;
+  while (runs.length > fanIn) {
+    const reduced: string[] = [];
+    for (let start = 0; start < runs.length; start += fanIn) {
+      const group = runs.slice(start, start + fanIn);
+      if (group.length === 1) {
+        reduced.push(...group);
+        continue;
+      }
+      const file = join(dir, `merge-${String(merges)}`);
+      merges += 1;
+      await merge(group, file);
+      await Promise.all(group.map((run) => rm(run)));
+      reduced.push(file);
+    }
+    runs = reduced;
+  }
+  return runs;
+}
+
+/** Keyless rows sorted by encoding through memory-bounded runs and bounded merges; duplicates are yielded once per occurrence. */
 async function* keylessRows(rows: RequestRows, shape: StreamShape, options: StreamOptions): AsyncGenerator<CanonicalRow, void, undefined> {
   const runLimit = options.sortRunBytes ?? DEFAULT_SORT_RUN_BYTES;
   const files: string[] = [];
   let dir: string | undefined;
   let run: string[] = [];
   let runBytes = 0;
+  let largest = 0;
   const spill = async (): Promise<void> => {
     dir ??= await mkdtemp(join(options.spillDir ?? tmpdir(), SPILL_PREFIX));
     const file = join(dir, `run-${String(files.length)}`);
@@ -566,8 +611,10 @@ async function* keylessRows(rows: RequestRows, shape: StreamShape, options: Stre
       const raw = await rows.next();
       if (raw === undefined) break;
       const encoding = encodeRow(shape.columns, normaliseRow(shape.columns, raw));
+      const bytes = Buffer.byteLength(encoding, 'utf8');
       run.push(encoding);
-      runBytes += Buffer.byteLength(encoding, 'utf8');
+      runBytes += bytes;
+      largest = Math.max(largest, bytes);
       if (runBytes >= runLimit) {
         rows.hold();
         await spill();
@@ -580,7 +627,8 @@ async function* keylessRows(rows: RequestRows, shape: StreamShape, options: Stre
       return;
     }
     if (run.length > 0) await spill();
-    for await (const encoding of mergeRuns(files)) yield keylessRow(shape, encoding);
+    const runs = await reduceRuns(dir as string, files, mergeFanIn(runLimit, largest), (group, file) => writeRecords(file, mergeRuns(group)));
+    for await (const encoding of mergeRuns(runs)) yield keylessRow(shape, encoding);
   } finally {
     if (dir !== undefined) await rm(dir, { recursive: true, force: true });
   }

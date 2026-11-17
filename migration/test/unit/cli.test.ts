@@ -703,12 +703,12 @@ describe('main', () => {
       ok: false,
       error: {
         type: 'ExtractError',
-        message: '[REDACTED]',
+        message: 'SQL Server connection ESOCKET',
         database: 'muradb_opt2_snap_3',
         table: 'tcontent',
         causes: [
-          { type: 'ConnectionError', message: '[REDACTED]', code: 'ESOCKET' },
-          { type: 'ConnectionError', message: 'read ECONNRESET', code: 'ESOCKET' },
+          { type: 'ConnectionError', message: 'SQL Server connection ESOCKET', code: 'ESOCKET' },
+          { type: 'ConnectionError', message: 'SQL Server connection ESOCKET', code: 'ESOCKET' },
           { type: 'Error', message: 'read ECONNRESET', code: 'ECONNRESET' },
         ],
       },

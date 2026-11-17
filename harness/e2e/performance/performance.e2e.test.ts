@@ -3,13 +3,14 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { FIXTURES_UNAVAILABLE, loadCatalogue, scenarioById } from '../../src/golden/catalogue.js';
 import { createHttpSession, type FetchLike, type HttpSession } from '../../src/lib/http.js';
 import { reportsDir } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 import { readJson } from '../../src/lib/report.js';
 import {
+  CATALOGUE_SCENARIO,
   EXPECTED_MIN_INSTANCES,
-  GATEWAY_PROBES,
   GENERATED_BY,
   RATIO_FINDING_THRESHOLD,
   READ_SET,
@@ -17,20 +18,22 @@ import {
   RESTART_SERVICES,
   WINDOW_THRESHOLD_MS,
   checkMinInstanceCounts,
+  chooseProbe,
+  expandCatalogueReads,
+  loadCutoverTable,
   main,
   measureLatencySet,
   parseMinInstanceCounts,
   ratioFinding,
-  resolveReadPath,
   skippedLatency,
   terraformPlanReportSchema,
   windowsOverThreshold,
   windowsReportSchema,
+  type CutoverTable,
   type Finding,
   type LatencyRow,
   type LatencySummary,
   type PerformanceReport,
-  type ReadSetEntry,
   type RestartService,
 } from '../../src/performance/run.js';
 import { PACKAGE_NAMES } from '../../src/repro/ports.js';
@@ -60,17 +63,14 @@ function isRestartService(name: string): name is RestartService {
   return (RESTART_SERVICES as readonly string[]).includes(name);
 }
 
-/** Whether the gateway probe run.ts uses for `service` needs the legacy fixtures. */
-function probeNeedsFixtures(service: RestartService): boolean {
-  const probe = GATEWAY_PROBES[service];
-  return 'path' in probe && probe.fixtures === true;
+/** The latency row run.ts writes for `row`'s fixtures-backed set when the fixtures are unavailable. */
+function fixturesSkippedRow({ set, source, session, routeKey, servedBy }: LatencyRow): LatencyRow {
+  return skippedLatency({ set, source, session, routeKey, servedBy }, FIXTURES_UNAVAILABLE).row;
 }
 
-/** The latency row run.ts writes for a fixtures-backed set when the fixtures are unavailable. */
-function fixturesSkippedRow(entry: ReadSetEntry): LatencyRow {
-  const resolved = resolveReadPath(entry, { asOf: '', ids: [], feedId: undefined }, false);
-  if (!('skipped' in resolved)) throw new Error(`${entry.set} resolves without the fixtures`);
-  return skippedLatency(entry.set, resolved.skipped).row;
+/** The findings of `kind` recorded for `subject`. */
+function findingsFor(findings: readonly Finding[], kind: string, subject: string): Finding[] {
+  return findings.filter((finding) => finding.kind === kind && finding.subject === subject);
 }
 
 /** The recorded launch fields a restart must keep; the pid may change. */
@@ -115,6 +115,8 @@ describe('performance report', () => {
   let outcome: Awaited<ReturnType<typeof main>>;
   let report: WrittenReport;
   let markdown: string[];
+  let table: CutoverTable;
+  let expectedSets: string[];
 
   beforeAll(async () => {
     // Read first, so a stack that is not up fails with StackNotUpError rather than a refused gateway call.
@@ -122,6 +124,9 @@ describe('performance report', () => {
     await requireTableVersion('v0002');
     stackBefore = stack;
     fixturesAvailable = fixtureStatus().available;
+    table = await loadCutoverTable('v0002');
+    const scenario = scenarioById(await loadCatalogue(), CATALOGUE_SCENARIO);
+    expectedSets = [...expandCatalogueReads(scenario).map((read) => read.set), ...READ_SET.map((entry) => entry.set)];
     // Only the services run.ts stops are restored; gateway, web, migration and stub keep running throughout.
     const restartable = Object.keys(stack.processes).filter(isRestartService);
     outcome = await withRestoredServices(restartable, () => main([]));
@@ -158,20 +163,54 @@ describe('performance report', () => {
     expect(markdown[1]).toBe(`Source SHA: ${sha}`);
   });
 
-  it('records target and legacy p50 and p95 for 200 requests of every read set', () => {
+  it('records target and legacy p50 and p95 for 200 requests of every GS-CO-05 catalogue read and read-set entry', () => {
     expect(REQUESTS_PER_SET).toBe(200);
-    expect(report.latency.map((row) => row.set)).toEqual(READ_SET.map((entry) => entry.set));
-    for (const [index, entry] of READ_SET.entries()) {
-      const row = report.latency[index];
-      if (entry.fixtures === true && !fixturesAvailable) {
-        expect(row, entry.set).toEqual(fixturesSkippedRow(entry));
+    expect(report.latency.map((row) => row.set)).toEqual(expectedSets);
+    const catalogueRows = expectedSets.length - READ_SET.length;
+    for (const [index, row] of report.latency.entries()) {
+      const entry = READ_SET[index - catalogueRows];
+      expect(row.source, row.set).toBe(entry === undefined ? 'catalogue' : 'read-set');
+      if (entry?.fixtures === true && !fixturesAvailable) {
+        expect(row, row.set).toEqual(fixturesSkippedRow(row));
         continue;
       }
-      expect(row?.requests, entry.set).toBe(REQUESTS_PER_SET);
-      expectSummary(row?.target ?? null, `${entry.set} target`);
-      expectSummary(row?.legacy ?? null, `${entry.set} legacy`);
-      expect(nonOkFindings(report.findings, entry.set), `${entry.set} answers 200 on both sides`).toEqual([]);
+      expect(row.requests, row.set).toBe(REQUESTS_PER_SET);
+      expectSummary(row.target, `${row.set} target`);
+      expectSummary(row.legacy, `${row.set} legacy`);
+      // Catalogue reads may answer non-200 on legacy itself; the read-set reads must answer 200 on both sides.
+      if (entry === undefined) continue;
+      expect(row.statuses, row.set).toEqual({ legacy: [200], target: [200] });
+      expect(nonOkFindings(report.findings, row.set), `${row.set} answers 200 on both sides`).toEqual([]);
     }
+  });
+
+  it('answers each read with the same distinct statuses on target as on legacy', () => {
+    expect(report.findings.filter((finding) => finding.kind === 'status-mismatch')).toEqual([]);
+    for (const row of report.latency) expect(row.statuses.target, row.set).toEqual(row.statuses.legacy);
+  });
+
+  it('records the serving side of every row and a legacy-served finding for each legacy-served row', () => {
+    for (const row of report.latency) {
+      expect(['target', 'legacy'], row.set).toContain(row.servedBy);
+      expect(row.routeKey, row.set).toMatch(/^[a-z][a-z0-9]*:/);
+      const served = findingsFor(report.findings, 'legacy-served', row.set);
+      expect(served, row.set).toEqual(
+        row.servedBy === 'legacy'
+          ? [
+              {
+                kind: 'legacy-served',
+                subject: row.set,
+                detail: `${row.routeKey} is legacy-routed in v0002: the target columns measure the gateway proxying to legacy`,
+              },
+            ]
+          : [],
+      );
+    }
+  });
+
+  it('deletes the feed collection it created for the feed read set', () => {
+    expect(report.latency.find((row) => row.set === 'gs-co-05.feed')?.requests).toBe(REQUESTS_PER_SET);
+    expect(report.findings.filter((finding) => finding.kind === 'feed-cleanup-failed')).toEqual([]);
   });
 
   it('flags target p95 above 1.5 times legacy as a finding, not a failure', () => {
@@ -193,18 +232,27 @@ describe('performance report', () => {
     }
   });
 
-  it('records derived scale-to-zero-and-back timings', () => {
-    expect(report.scaleToZero.length).toBeGreaterThan(0);
+  it('records a derived scale-to-zero-and-back timing for every restartable service', () => {
+    expect(report.scaleToZero.map((row) => row.service).sort()).toEqual([...RESTART_SERVICES].sort());
     for (const row of report.scaleToZero) {
-      expect(RESTART_SERVICES).toContain(row.service);
       expect(row.label, row.service).toBe('derived');
-      if (!fixturesAvailable && isRestartService(row.service) && probeNeedsFixtures(row.service)) {
+      if (!isRestartService(row.service)) throw new Error(`${row.service} is not a restartable service`);
+      const choice = chooseProbe(row.service, table, fixturesAvailable);
+      if (choice.kind === 'skipped') {
+        expect(fixturesAvailable, `${row.service} probe skipped only without fixtures`).toBe(false);
+        expect(choice.reason, row.service).toBe(FIXTURES_UNAVAILABLE);
         expect(row.stopToFirstSuccessMs, row.service).toBeNull();
-        expect(report.findings).toContainEqual(
-          expect.objectContaining({ kind: 'scale-probe-skipped', subject: row.service }),
-        );
+        expect(findingsFor(report.findings, 'scale-probe-skipped', row.service)).toEqual([
+          { kind: 'scale-probe-skipped', subject: row.service, detail: FIXTURES_UNAVAILABLE },
+        ]);
         continue;
       }
+      // Soft, so one run names every service no gateway read reaches.
+      expect
+        .soft(choice.kind, `${row.service}: ${choice.routeKey} is legacy-routed in v0002, so no gateway read reaches it`)
+        .not.toBe('not-target');
+      if (choice.kind === 'not-target') continue;
+      expect(findingsFor(report.findings, 'probe-not-routed', row.service), row.service).toEqual([]);
       expectPositiveMs(row.stopToFirstSuccessMs, `${row.service} scale to zero and back`);
     }
   });
@@ -261,7 +309,7 @@ describe('performance report', () => {
 
 describe('performance read-set success check', () => {
   const REQUESTS = 3;
-  const entry = READ_SET.find((candidate) => candidate.set === 'gs-co-05.content.findOne');
+  const entry = READ_SET.find((candidate) => candidate.set === 'csettings.list');
 
   it.each<{ legacy: number; target: number; failing: ('legacy' | 'target')[] }>([
     { legacy: 400, target: 400, failing: ['legacy', 'target'] },
@@ -269,10 +317,10 @@ describe('performance read-set success check', () => {
     { legacy: 200, target: 400, failing: ['target'] },
     { legacy: 200, target: 200, failing: [] },
   ])('reports non-ok reads on $failing for legacy $legacy and target $target', async ({ legacy, target, failing }) => {
-    if (entry === undefined) throw new Error('gs-co-05.content.findOne is not in READ_SET');
+    if (entry === undefined) throw new Error('csettings.list is not in READ_SET');
     const clock = { t: 0 };
     const measured = await measureLatencySet(
-      entry,
+      { set: entry.set, source: 'read-set', session: entry.session, routeKey: 'admin:csettings.list', servedBy: 'legacy', path: entry.path },
       {
         legacy: answeringSession('http://legacy.invalid', clock, 1, legacy),
         target: answeringSession('http://gateway.invalid', clock, 3, target),
@@ -288,5 +336,6 @@ describe('performance read-set success check', () => {
         detail: `${REQUESTS} of ${REQUESTS}: 400`,
       })),
     );
+    expect(measured.findings.some((finding) => finding.kind === 'status-mismatch')).toBe(legacy !== target);
   });
 });

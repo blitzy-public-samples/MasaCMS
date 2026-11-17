@@ -237,10 +237,10 @@ describe('signed and download URLs', () => {
 });
 
 describe('normaliseUrl', () => {
-  it('replaces the legacy origin and masks the authToken parameter of the findQuery self link', () => {
+  it('replaces the legacy origin, masks the authToken parameter and sorts the url-scope query of the self link', () => {
     const out = normaliseUrl(fixture().data.links.self, createIdOrdinals(), rules);
     expect(out).toBe(
-      '<origin>/_api/json/v1/tenant-a/?&entityname=content&siteid=tenant-a&type=Page&authToken=<token>&method=findQuery&pageIndex=1',
+      '<origin>/_api/json/v1/tenant-a/?&authToken=<token>&entityname=content&method=findQuery&pageIndex=1&siteid=tenant-a&type=Page',
     );
     expect(out).not.toContain(LEGACY_TOKEN);
   });
@@ -343,7 +343,7 @@ describe('normaliseValue over the findQuery envelope', () => {
       entities: '<origin>/_api/json/v1/tenant-a',
       permissions: '<origin>/_api/json/v1/tenant-a/content/permissions',
       properties: '<origin>/_api/json/v1/tenant-a/content/properties',
-      self: '<origin>/_api/json/v1/tenant-a/?&entityname=content&siteid=tenant-a&type=Page&authToken=<token>&method=findQuery&pageIndex=1',
+      self: '<origin>/_api/json/v1/tenant-a/?&authToken=<token>&entityname=content&method=findQuery&pageIndex=1&siteid=tenant-a&type=Page',
     });
   });
 

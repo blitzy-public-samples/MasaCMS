@@ -12,6 +12,7 @@ import { GATE_WAIT_MS, MIGRATION_PATH_PREFIX, type ApplyRequest, type GatePhase,
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, systemClock, type Clock } from '@opt2/platform/service-kit';
 import type { MetadataTx, QueryConfig, QueryResult, TenantDb } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { MemorySpanExporter, activeSpanIds, flushTracing, shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
@@ -869,6 +870,56 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       expect(Object.keys(record as object).every((key) => ['type', 'message', 'stack'].includes(key))).toBe(true);
     }
     for (const error of errors) expect(logged).toContainEqual(serializeError(error));
+  });
+
+  describe('retry loop tracing', () => {
+    const exporter = new MemorySpanExporter();
+
+    beforeAll(async () => {
+      await startTracing({ serviceName: 'windows-service-test', version: '1.0.0', exporter });
+    });
+
+    afterAll(async () => {
+      await shutdownTracing();
+    });
+
+    it('passes in unsampled traces and records each window it recovers as one root span linked to its pass', async () => {
+      const owners = ownersDouble();
+      // The active span of every statement the loop runs, in order.
+      const statements: ReturnType<typeof activeSpanIds>[] = [];
+      const traced = hookedDb((_sql, run) => {
+        statements.push(activeSpanIds());
+        return run();
+      });
+      const { service } = instance(owners, gatewayDouble(), { db: traced, windows: { importRetryMs: 20 } });
+
+      const idle = service.startImportRetryLoop();
+      await vi.waitFor(() => expect(statements.length).toBeGreaterThanOrEqual(2), { timeout: 30_000 });
+      await idle.stop();
+      await flushTracing();
+      expect(exporter.getFinishedSpans()).toEqual([]);
+      expect(statements.map((ids) => ids?.traceSampled)).toStrictEqual(statements.map(() => false));
+      expect(new Set(statements.map((ids) => ids?.traceId)).size).toBe(statements.length);
+
+      statements.length = 0;
+      const windowId = await seedOpening([FINANCE], -1000);
+      owners.closeAs(windowId, [FINANCE]);
+      const working = service.startImportRetryLoop();
+      await vi.waitFor(async () => expect((await rowOf(windowId)).state).toBe('failed'), { timeout: 30_000, interval: 50 });
+      await working.stop();
+      await service.stop();
+      await flushTracing();
+      const [recover, ...others] = exporter.getFinishedSpans();
+      const first = statements.findIndex((ids) => ids?.traceSampled === true);
+
+      expect(others).toEqual([]);
+      expect(recover).toMatchObject({ name: 'windows.recover', attributes: { 'opt2.window_id': windowId } });
+      expect(recover?.parentSpanContext).toBeUndefined();
+      expect(recover?.links.map((link) => link.context.traceId)).toStrictEqual([statements[first - 1]?.traceId]);
+      expect(new Set(statements.filter((ids) => ids?.traceSampled === true).map((ids) => ids?.traceId))).toStrictEqual(
+        new Set([recover?.spanContext().traceId]),
+      );
+    });
   });
 
   describe('windows.json written from the window rows', () => {

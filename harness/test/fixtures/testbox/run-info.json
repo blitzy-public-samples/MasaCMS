@@ -38,6 +38,16 @@
     "clusterIPList": "",
     "peerCount": 0
   },
+  "startup": {
+    "projectSiteID": "default",
+    "projectSiteExists": true,
+    "deployBundlePath": "/tmp/MuraBundle.zip",
+    "deployBundlePresent": false,
+    "autoDiscoverPlugins": false,
+    "applyDbUpdates": false,
+    "appAutoUpdated": false,
+    "themeStandardImageSizes": []
+  },
   "timeZone": "America/New_York",
   "utcTotalOffset": 14400,
   "serverTime": "2026-06-30T00:00:00.000",

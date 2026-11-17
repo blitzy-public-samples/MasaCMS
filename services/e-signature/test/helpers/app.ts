@@ -320,6 +320,7 @@ interface CatalogTable {
 type DdlStmt =
   | { readonly kind: 'table'; readonly schema: string | undefined; readonly table: CatalogTable }
   | { readonly kind: 'force-rls'; readonly schema: string | undefined; readonly table: string }
+  | { readonly kind: 'add-column'; readonly schema: string | undefined; readonly table: string; readonly column: CatalogColumn }
   | { readonly kind: 'ignored' };
 
 const RESERVED_AFTER_TABLE: ReadonlySet<string> = new Set(['where', 'group', 'order', 'limit', 'offset', 'for', 'on', 'returning', 'set', 'values', 'select']);
@@ -741,7 +742,7 @@ class SqlParser {
     return fn;
   }
 
-  /** One DDL statement of a migration: a table, a forced RLS flag, or a statement that defines nothing modelled here. */
+  /** One DDL statement of a migration: a table, a forced RLS flag, an added column, or a statement that defines nothing modelled here. */
   ddl(): DdlStmt {
     if (this.eatWord('create')) {
       if (this.eatWord('table')) {
@@ -754,6 +755,15 @@ class SqlParser {
     if (this.eatWord('alter')) {
       this.expectWord('table');
       const ref = this.qualifiedName();
+      if (this.eatWord('add')) {
+        this.expectWord('column');
+        const unique: UniqueConstraint[] = [];
+        const checks: CheckConstraint[] = [];
+        const column = this.columnDef(ref.table, unique, checks);
+        if (unique.length > 0 || checks.length > 0) this.fail('an added column without constraints');
+        this.finish();
+        return { kind: 'add-column', schema: ref.schema, table: ref.table, column };
+      }
       const force = this.eatWord('force');
       if (!force) this.expectWord('enable');
       this.expectWord('row');
@@ -1485,6 +1495,13 @@ function loadCatalogue(): ReadonlyMap<string, CatalogTable> {
       if (stmt.schema !== SCHEMA) throw new CatalogueDriftError(`${file}: only schema ${SCHEMA} is modelled, not ${stmt.schema ?? 'an unqualified table'}`);
       if (stmt.kind === 'table') {
         tables.set(stmt.table.name, stmt.table);
+        continue;
+      }
+      if (stmt.kind === 'add-column') {
+        const altered = tables.get(stmt.table);
+        if (altered === undefined) throw new CatalogueDriftError(`${file}: column added to unknown table ${stmt.table}`);
+        const columns = [...altered.columns, stmt.column];
+        tables.set(stmt.table, { ...altered, columns, column: new Map(columns.map((column) => [column.name, column])) });
         continue;
       }
       const table = tables.get(stmt.table);

@@ -24,6 +24,8 @@ The tech spec's "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run's 
 | sqlcmd | `sqlcmd -?` version line | — | pending-run |
 | PostgreSQL client | `psql --version` | 16.x | pending-run |
 
+Not probed by `--phase local`: TypeScript 5.9.3 (pinned in `harness/package.json`; installed by `npm ci` after `--phase local`); provider hashicorp/google 8.9.0 (pinned in `infra/terraform/envs/plan/versions.tf`; selected by `terraform init`).
+
 ## Services phase (`--phase services`)
 
 | Component | Probe | Pinned / expected | Recorded |
@@ -34,6 +36,8 @@ The tech spec's "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run's 
 | SQL Server | `SELECT @@VERSION` | SQL Server 2022 | pending-run |
 | PostgreSQL server | `SELECT version()` | 16.x (CI image `postgres:16.15`) | pending-run |
 | Mailpit | `GET /api/v1/info` on 127.0.0.1:8025 | SMTP 127.0.0.1:1025 | pending-run |
+| TestBox | `harness/legacy-baseline/cfml/run.cfm?info=1` (`testbox` setting, `/testbox` mapping) | enabled and installed (`MURA_TESTBOX=true`) | pending-run |
+| Java (ColdFusion runtime) | `harness/legacy-baseline/cfml/run.cfm?info=1` (`java.version`) | 17 | pending-run |
 
 ## Settings
 
@@ -48,3 +52,11 @@ The tech spec's "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run's 
 | `tclustercommands` row count | Start-up guard | 0 | pending-run |
 | MySQL fallback used | `MURA_DBTYPE` | no (`mssql`) | pending-run |
 | Default hash algorithm | `MURA_DEFAULTHASHALGORITHM` | `CFMX_COMPAT` | pending-run |
+| Start-up guard verdict (`clusterSafe`) | Broadcasting off or no peers [core/mura/cluster/clusterManager.cfc:203-211, 273-277], and no `tclustercommands` rows | `true` | pending-run |
+| Project site (`ProjectSiteID`) | Start-up guard: `MURA_PROJECTSITEID` over the setting [core/appcfc/onApplicationStart_include.cfm:765-792] | `default`, or an existing site | pending-run |
+| Deploy bundle | Start-up guard: `/tmp/MuraBundle.zip` when `MURA_DATASOURCE` is set, else `config/setup/deploy/bundle.zip` [core/appcfc/onApplicationStart_include.cfm:797-811] | absent | pending-run |
+| `autoDiscoverPlugins` | Start-up guard [core/appcfc/onApplicationStart_include.cfm:534] | `false` (`MURA_AUTODISCOVERPLUGINS=false` on the start command) | pending-run |
+| `applyDbUpdates` | Start-up guard [core/appcfc/onApplicationStart_include.cfm:421-424] | `false` (`MURA_APPLYDBUPDATES=false` on the start command) | pending-run |
+| `appAutoUpdated` | Start-up guard: `application.appAutoUpdated` [core/appcfc/onApplicationStart_include.cfm:421] | `false` | pending-run |
+| Theme `small`, `medium` or `large` image sizes | Start-up guard: each site's theme `config.xml.cfm`, else `config.xml` [core/mura/extend/extendManager.cfc:1976-2017] | none | pending-run |
+| Start-up writers verdict (`writersClosed`) | Project site, deploy bundle, plugin discovery, DB updates and theme site sizes all closed | `true` | pending-run |

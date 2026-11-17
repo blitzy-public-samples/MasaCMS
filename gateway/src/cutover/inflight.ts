@@ -1,7 +1,8 @@
 // Registry of forwarded writes in `gateway.inflight`; a row leaves only by its own instance's `remove` or evidence-backed `clearOrphans`.
 // Dispatcher order: `register` (committed) before `state.readEpochForWrite()`; when the entry is frozen, `remove`, wait unfrozen,
-// `register` again and re-read; `remove` when the response completes. A write that read a pre-freeze epoch therefore has its row
-// committed before any instance can acknowledge the freeze, so a transition waiting for no in-flight rows cannot miss it.
+// `register` again and re-read; `remove` when the response completes, `abandon` when the exchange ended uncertainly. A write that
+// read a pre-freeze epoch therefore has its row committed before any instance can acknowledge the freeze, so a transition waiting
+// for no in-flight rows cannot miss it. A row is an orphan once abandoned or once its instance is not live.
 import { withMetadata, type MetadataTx, type TenantDb } from '@opt2/platform/tenancy';
 
 /** Side a forwarded write went to. */
@@ -10,8 +11,11 @@ export type InflightSide = 'legacy' | 'target';
 /** Evidence that an orphaned write can no longer commit: a controlled legacy restart, or the owners' gates closing on its units. */
 export type OrphanEvidence = 'legacy-restart' | 'gates-closed';
 
-/** Heartbeat age, in seconds, after which an instance is dead; it only narrows `clearOrphans`, never clears a row on its own. */
+/** Heartbeat age, in seconds, after which an instance is dead and its rows orphans; it never clears a row on its own. */
 export const INSTANCE_LIVENESS_SECONDS = 3;
+
+/** Most items one keyset page of a cut-over status list reads. */
+export const STATUS_PAGE_SIZE = 500;
 
 /** One `gateway.inflight` row; `startedAt` is ISO-8601 with the server's UTC offset. */
 export interface InflightRow {
@@ -69,6 +73,12 @@ export interface InflightSummaryRow {
   oldestStartedAt: string;
 }
 
+/** One `CutoverStatusV2.inflight` item: in-flight writes of one instance, route, side and orphan state. */
+export interface InflightOrphanSummaryRow extends InflightSummaryRow {
+  /** The instance is not live, or abandoned these writes; only evidence clears them. */
+  orphaned: boolean;
+}
+
 /** Settings of {@link createInflightStore}. */
 export interface InflightStoreOptions {
   /** Gateway schema pool. */
@@ -85,11 +95,17 @@ export interface InflightStore {
   register(input: InflightRegistration): Promise<void>;
   /** Deletes this instance's row for `requestId`; false when it held none. */
   remove(requestId: string): Promise<boolean>;
+  /** Marks this instance's row for `requestId` abandoned, an orphan only evidence clears; false when it held no unmarked row. */
+  abandon(requestId: string): Promise<boolean>;
   /** Rows of every instance matching `filter`, oldest first. */
   list(filter?: InflightFilter): Promise<InflightRow[]>;
   /** Rows grouped by instance, route and side, as `CutoverStatus.inflight`. */
   summary(): Promise<InflightSummaryRow[]>;
-  /** Deletes the evidence-covered rows of dead instances that started before `evidence.at`. */
+  /** `summary()` in keyset pages of at most `STATUS_PAGE_SIZE` groups, each read as it is iterated. */
+  summaryPages(): AsyncIterable<InflightSummaryRow[]>;
+  /** Rows grouped by instance, route, side and orphan state, as `CutoverStatusV2.inflight`, paged as `summaryPages()`. */
+  orphanSummaryPages(): AsyncIterable<InflightOrphanSummaryRow[]>;
+  /** Deletes the evidence-covered orphans (abandoned rows, or rows of instances not live) that started before `evidence.at`. */
   clearOrphans(input: InflightClearInput): Promise<InflightClearResult>;
 }
 
@@ -119,8 +135,37 @@ interface DbSummaryRow {
   oldest_started_at: string;
 }
 
+interface DbOrphanSummaryRow extends DbSummaryRow {
+  orphaned: boolean;
+}
+
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+function toSummaryRow(row: DbSummaryRow): InflightSummaryRow {
+  return {
+    instanceId: row.instance_id,
+    route: row.route,
+    side: row.side,
+    count: row.count,
+    oldestStartedAt: row.oldest_started_at,
+  };
+}
+
+function toOrphanSummaryRow(row: DbOrphanSummaryRow): InflightOrphanSummaryRow {
+  return { ...toSummaryRow(row), orphaned: row.orphaned };
+}
+
+/** Pages of `read`, each after the last item of the one before, until a page is shorter than `STATUS_PAGE_SIZE`. */
+async function* keysetPages<T>(read: (after: T | undefined) => Promise<T[]>): AsyncGenerator<T[]> {
+  let after: T | undefined;
+  for (;;) {
+    const page = await read(after);
+    if (page.length > 0) yield page;
+    if (page.length < STATUS_PAGE_SIZE) return;
+    after = page.at(-1);
+  }
 }
 
 function toRow(row: DbRow): InflightRow {
@@ -151,19 +196,55 @@ export function createInflightStore({ db, instanceId, unitsOf }: InflightStoreOp
   const rowColumns = (alias: string): string =>
     `${alias}.instance_id, ${alias}.request_id, ${alias}.route, ${alias}.side, ${alias}.window_id, ` +
     `to_char(${alias}.started_at::timestamptz, ${ISO_FORMAT}) AS started_at`;
-  // $1 side, $2 evidence time, $3 routes or null, $4 instance ids or null; liveness is read from the database clock.
+  // Liveness is read from the database clock.
+  const orphaned =
+    `(i.abandoned_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM ${instance} AS g WHERE g.instance_id = i.instance_id ` +
+    `AND g.heartbeat_at >= now() - interval '${String(INSTANCE_LIVENESS_SECONDS)} seconds'))`;
+  // $1 side, $2 evidence time, $3 routes or null, $4 instance ids or null.
   const orphanWhere =
     `i.side = $1 AND i.started_at < $2::timestamptz ` +
     `AND ($3::text[] IS NULL OR i.route = ANY($3::text[])) ` +
     `AND ($4::text[] IS NULL OR i.instance_id = ANY($4::text[])) ` +
-    `AND NOT EXISTS (SELECT 1 FROM ${instance} AS g WHERE g.instance_id = i.instance_id ` +
-    `AND g.heartbeat_at >= now() - interval '${INSTANCE_LIVENESS_SECONDS} seconds')`;
+    `AND ${orphaned}`;
 
   const coveredRoutes = async (tx: MetadataTx, params: unknown[], units: readonly string[]): Promise<string[]> => {
     const closed = new Set(units);
     const { rows } = await tx.query<{ route: string }>(`SELECT DISTINCT i.route FROM ${inflight} AS i WHERE ${orphanWhere}`, params);
     return rows.map((row) => row.route).filter((route) => coveredByGates(unitsOf(route), closed));
   };
+
+  /** The `CutoverStatus` groups after `after` in group-key order, at most `STATUS_PAGE_SIZE` of them. */
+  const summaryPage = async (after: InflightSummaryRow | undefined): Promise<InflightSummaryRow[]> => {
+    const { rows } = await withMetadata(db, (tx) =>
+      tx.query<DbSummaryRow>(
+        `SELECT i.instance_id, i.route, i.side, count(*)::int AS count, ` +
+          `to_char(min(i.started_at)::timestamptz, ${ISO_FORMAT}) AS oldest_started_at FROM ${inflight} AS i ` +
+          `WHERE $1::text IS NULL OR (i.instance_id, i.route, i.side) > ($1::text, $2::text, $3::text) ` +
+          `GROUP BY i.instance_id, i.route, i.side ORDER BY i.instance_id, i.route, i.side LIMIT $4`,
+        after === undefined ? [null, null, null, STATUS_PAGE_SIZE] : [after.instanceId, after.route, after.side, STATUS_PAGE_SIZE],
+      ),
+    );
+    return rows.map(toSummaryRow);
+  };
+
+  /** The `CutoverStatusV2` groups after `after` in group-key order, at most `STATUS_PAGE_SIZE` of them. */
+  const orphanSummaryPage = async (after: InflightOrphanSummaryRow | undefined): Promise<InflightOrphanSummaryRow[]> => {
+    const { rows } = await withMetadata(db, (tx) =>
+      tx.query<DbOrphanSummaryRow>(
+        `SELECT o.instance_id, o.route, o.side, o.orphaned, count(*)::int AS count, ` +
+          `to_char(min(o.started_at)::timestamptz, ${ISO_FORMAT}) AS oldest_started_at ` +
+          `FROM (SELECT i.instance_id, i.route, i.side, i.started_at, ${orphaned} AS orphaned FROM ${inflight} AS i) AS o ` +
+          `WHERE $1::text IS NULL OR (o.instance_id, o.route, o.side, o.orphaned) > ($1::text, $2::text, $3::text, $4::boolean) ` +
+          `GROUP BY o.instance_id, o.route, o.side, o.orphaned ORDER BY o.instance_id, o.route, o.side, o.orphaned LIMIT $5`,
+        after === undefined
+          ? [null, null, null, null, STATUS_PAGE_SIZE]
+          : [after.instanceId, after.route, after.side, after.orphaned, STATUS_PAGE_SIZE],
+      ),
+    );
+    return rows.map(toOrphanSummaryRow);
+  };
+
+  const summaryPages = (): AsyncGenerator<InflightSummaryRow[]> => keysetPages(summaryPage);
 
   return {
     async register({ requestId, route, side, windowId = null }) {
@@ -178,6 +259,16 @@ export function createInflightStore({ db, instanceId, unitsOf }: InflightStoreOp
     async remove(requestId) {
       const result = await withMetadata(db, (tx) =>
         tx.query(`DELETE FROM ${inflight} WHERE instance_id = $1 AND request_id = $2`, [instanceId, requestId]),
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async abandon(requestId) {
+      const result = await withMetadata(db, (tx) =>
+        tx.query(`UPDATE ${inflight} SET abandoned_at = now() WHERE instance_id = $1 AND request_id = $2 AND abandoned_at IS NULL`, [
+          instanceId,
+          requestId,
+        ]),
       );
       return (result.rowCount ?? 0) > 0;
     },
@@ -197,21 +288,14 @@ export function createInflightStore({ db, instanceId, unitsOf }: InflightStoreOp
     },
 
     async summary() {
-      const { rows } = await withMetadata(db, (tx) =>
-        tx.query<DbSummaryRow>(
-          `SELECT i.instance_id, i.route, i.side, count(*)::int AS count, ` +
-            `to_char(min(i.started_at)::timestamptz, ${ISO_FORMAT}) AS oldest_started_at ` +
-            `FROM ${inflight} AS i GROUP BY i.instance_id, i.route, i.side ORDER BY i.instance_id, i.route, i.side`,
-        ),
-      );
-      return rows.map((row) => ({
-        instanceId: row.instance_id,
-        route: row.route,
-        side: row.side,
-        count: row.count,
-        oldestStartedAt: row.oldest_started_at,
-      }));
+      const groups: InflightSummaryRow[] = [];
+      for await (const page of summaryPages()) groups.push(...page);
+      return groups;
     },
+
+    summaryPages,
+
+    orphanSummaryPages: () => keysetPages(orphanSummaryPage),
 
     async clearOrphans({ side, evidence, instanceIds, routes }) {
       if (EVIDENCE_SIDE[evidence.kind] !== side) {

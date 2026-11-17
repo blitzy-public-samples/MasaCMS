@@ -16,7 +16,6 @@ import {
   esapiUrlEncode,
   javaTrim,
   type ApiKeyHint,
-  type LegacyQuery,
 } from '@opt2/platform/legacy-compat';
 import { abandonOnDisconnect, legacyParamsOf, type Clock, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
@@ -31,33 +30,41 @@ import {
 } from '@opt2/platform/tenancy';
 import { listAddresses } from '../domain/addresses.js';
 import { extendSetData, type ExtendValue } from '../domain/extended-data.js';
-import { expirePasswordsSetting, passwordExpired } from '../domain/password-expiry.js';
+import { passwordExpired } from '../domain/password-expiry.js';
 import { newUserValues, type UserValues } from '../domain/person.js';
 import { awaitPersonOpen, observePersons, type PersonObserver, type PersonObserverDeps } from '../domain/roster-protocol.js';
 import {
   buildAdvancedSearchCriteria,
-  getAdvancedSearch,
   getAdvancedSearchPage,
-  getAllSitesUsers,
+  getAdvancedSearchStream,
   getAllSitesUsersPage,
-  getSearch,
+  getAllSitesUsersStream,
   getSearchPage,
-  getUnassignedUsers,
-  getUsers,
+  getSearchStream,
+  getUnassignedUsersStream,
   getUsersPage,
+  getUsersStream,
   newAdvancedSearchCriteria,
   numericArgument,
-  pageRows,
+  pageWindow,
   type AdvancedSearchCriteria,
   type NextN,
   type SearchDeps,
+  type StreamedQuery,
   type UsersPage,
   type UsersPaging,
-  type UsersQueryArgs,
 } from '../domain/search.js';
 import { addressesQuery, filteredEntityValues, userBeanValues, withExtendSetData } from '../domain/user-entity.js';
 import type { components, operations } from '../generated/openapi.js';
-import type { AdminSessionState, GroupSummary, IdentityClient, SessionSite, UserGroupRow } from '../legacy/identity-client.js';
+import {
+  GROUP_PAGE_LIMIT,
+  LOOKUP_MAX_IDS,
+  type AdminSessionState,
+  type GroupSummary,
+  type IdentityClient,
+  type SessionSite,
+  type UserGroupRow,
+} from '../legacy/identity-client.js';
 import type { PeopleRepository } from '../repo/repository.js';
 import type { AddressRow, ExtendSubtypeRow, PersonRow } from '../repo/tables.js';
 import {
@@ -71,6 +78,7 @@ import {
   type CusersContext,
   type CusersParamsOptions,
 } from './access.js';
+import { batchesOf, listBody, sendJsonStream } from './list-streams.js';
 
 type Schemas = components['schemas'];
 type PersonRecord = Schemas['PersonRecord'];
@@ -93,8 +101,8 @@ export type AdminUserRouteDeps = {
   sleep?: SearchDeps['sleep'];
   /** The roster protocol's wait on a user an open operation closes; defaults to `awaitPersonOpen`. */
   awaitPersonOpen?: (db: TenantDb, tenantId: string, userId: string, opts: { clock: Clock }) => Promise<void>;
-  /** configBean `expirePasswords`; defaults to `MURA_EXPIREPASSWORDS` of `process.env`. */
-  expirePasswords?: number;
+  /** configBean `expirePasswords` from the parsed `MURA_EXPIREPASSWORDS`, in days; 0 never expires. */
+  expirePasswords: number;
 };
 
 /** What `sanitizeHref` checks an absolute URL against. */
@@ -289,6 +297,13 @@ function userIdsOf(rows: readonly Readonly<Record<string, unknown>>[]): string[]
   return rows.map((row) => String(userListRow(row).UserID));
 }
 
+/** The ids of every row of a streamed user query, in its order. */
+async function streamedUserIds(query: StreamedQuery): Promise<string[]> {
+  const ids: string[] = [];
+  for await (const row of query.rows) ids.push(String(userListRow(row).UserID));
+  return ids;
+}
+
 /** `utility.getNextN`'s struct under the contract's lower-cased keys. */
 function wireNextN(n: NextN): Schemas['NextN'] {
   return {
@@ -310,9 +325,32 @@ function pagingOf(ctx: CusersContext): UsersPaging {
   return { startRow: ctx.startrow, recordsPerPage: ctx.recordsperpage };
 }
 
-/** The nextN of the page cusers shows for `rows` [legacy: admin/core/controllers/cusers.cfc:498-518]. */
-function pageNextN(rows: readonly unknown[], ctx: CusersContext): Schemas['NextN'] {
-  return wireNextN(pageRows(rows, pagingOf(ctx)).nextn);
+/** The nextN of the page cusers shows of `total` rows [legacy: admin/core/controllers/cusers.cfc:498-518]. */
+function pageNextN(total: number, ctx: CusersContext): Schemas['NextN'] {
+  return wireNextN(pageWindow(total, pagingOf(ctx)).nextn);
+}
+
+/**
+ * The `cusers.list` page `paging` selects of identity's groups [legacy: admin/core/controllers/cusers.cfc:498-518]: identity is
+ * asked for that page's rows only, at most GROUP_PAGE_LIMIT per call, and nextN counts every group it lists.
+ */
+async function groupsWindow(identity: IdentityClient, siteId: string, isPublic: number, paging: UsersPaging): Promise<UsersPage<UserGroupRow>> {
+  // The page of the longest listing identity can page; identity's total then decides the page, re-read only when it differs.
+  const reach = pageWindow(Number.MAX_SAFE_INTEGER, paging);
+  const limit = (from: number, to: number): number => Math.min(Math.max(to - from, 1), GROUP_PAGE_LIMIT);
+  const first = await identity.userGroupsPage(siteId, isPublic, { offset: reach.from, limit: limit(reach.from, reach.to) });
+  const window = pageWindow(first.total, paging);
+  const size = window.to - window.from;
+  const reused = window.from === reach.from;
+  const rows = reused ? first.rows.slice(0, size) : [];
+  let more = reused ? first.nextOffset !== null : size > 0;
+  while (more && rows.length < size) {
+    const from = window.from + rows.length;
+    const page = await identity.userGroupsPage(siteId, isPublic, { offset: from, limit: limit(from, window.to) });
+    rows.push(...page.rows.slice(0, size - rows.length));
+    more = page.nextOffset !== null && page.rows.length > 0;
+  }
+  return { rows, pageIndex: window.pageIndex, nextn: window.nextn };
 }
 
 /** One `getUserGroups` row; a NULL `Type` is left out, as the contract allows only 1. */
@@ -706,8 +744,8 @@ interface Admitted {
   abandonOnDisconnect(): void;
 }
 
-/** A route handler behind cUsers `before()`: a refused gate answers the denial, every other request runs `handler`. */
-function cusersHandler<R>(handler: (admitted: Admitted) => Promise<R>, options?: CusersParamsOptions) {
+/** A route handler behind cUsers `before()`: a refused gate answers the denial, every other request runs `handler`, which may answer on `reply` itself. */
+function cusersHandler<R>(handler: (admitted: Admitted, reply: FastifyReply) => Promise<R>, options?: CusersParamsOptions) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<R | undefined> => {
     const access = requireCusersAccess(request);
     if (access instanceof AdminDenial) {
@@ -715,36 +753,61 @@ function cusersHandler<R>(handler: (admitted: Admitted) => Promise<R>, options?:
       return undefined;
     }
     const params = legacyParamsOf(request);
-    return handler({ claims: access, ctx: normaliseCusersParams(params, access, options), params, abandonOnDisconnect: () => abandonOnDisconnect(request) });
+    const ctx = normaliseCusersParams(params, access, options);
+    return handler({ claims: access, ctx, params, abandonOnDisconnect: () => abandonOnDisconnect(request) }, reply);
   };
 }
 
-/** One API version of the cUsers user list reads: `L` answers the list and the search, `A` the advanced search. */
+/** Where a `/v1` user list's `listUnassignedUsers` comes from: each written batch's ids, or one read after the last row. */
+type UserListMarks = { ofBatch: (ids: string[]) => Promise<string[]> } | { afterRows: () => Promise<string[]> };
+
+/** One API version of the cUsers user list reads: `L` answers the list and the search, `A` the advanced search, or each the `reply` it sent. */
 interface UserListReads<L, A> {
   /** `cUsers.listUsers`; `siteid=all` reads every site for S2 [legacy: admin/core/controllers/cusers.cfc:184-217]. */
-  listUsers(admitted: Admitted): Promise<L>;
+  listUsers(admitted: Admitted, reply: FastifyReply): Promise<L>;
   /** `cUsers.search` [legacy: admin/core/controllers/cusers.cfc:402-427]. */
-  searchUsers(admitted: Admitted): Promise<L>;
+  searchUsers(admitted: Admitted, reply: FastifyReply): Promise<L>;
   /** `cUsers.advancedSearch` over `criteria` [legacy: admin/core/controllers/cusers.cfc:429-451]. */
-  advancedSearch(admitted: Admitted, criteria: AdvancedSearchCriteria): Promise<A>;
+  advancedSearch(admitted: Admitted, criteria: AdvancedSearchCriteria, reply: FastifyReply): Promise<A>;
 }
 
 /** Registers the cUsers reads people serves: lists, searches, the edit reads and `route()`. */
 export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminUserRouteDeps): Promise<void> {
   const { identity } = deps;
   const search: SearchDeps = { db: deps.db, repo: deps.repository, identity, photoFileExts: deps.photoFileExts, clock: deps.clock, sleep: deps.sleep };
-  const expirePasswords = deps.expirePasswords ?? expirePasswordsSetting(process.env);
+  const { expirePasswords } = deps;
+
+  /** The ids among `ids` of people without a stored group membership, from one lookup; with `allUnassigned` every id, without one. */
+  async function unassignedOf(ids: readonly string[], allUnassigned: boolean): Promise<string[]> {
+    if (allUnassigned || ids.length === 0) return [...ids];
+    const memberships = await identity.lookupMemberships(ids);
+    return ids.filter((id) => (memberships.get(id) ?? []).length === 0);
+  }
 
   /** A user list page on the wire; `listUnassignedUsers` marks its people without a stored group membership, or all with `allUnassigned`. */
   async function userListPage(page: UsersPage<Record<string, unknown>>, allUnassigned: boolean): Promise<Schemas['UserListPageV2']> {
-    const ids = userIdsOf(page.rows);
     // The view marks only the rows it shows, so the unassigned ids of the page stand for legacy's whole unassigned query.
-    const memberships = allUnassigned || ids.length === 0 ? new Map<string, string[]>() : await identity.lookupMemberships(ids);
-    return {
-      items: page.rows.map(userListRow),
-      nextn: wireNextN(page.nextn),
-      listUnassignedUsers: allUnassigned ? ids : ids.filter((id) => (memberships.get(id) ?? []).length === 0),
-    };
+    const listUnassignedUsers = await unassignedOf(userIdsOf(page.rows), allUnassigned);
+    return { items: page.rows.map(userListRow), nextn: wireNextN(page.nextn), listUnassignedUsers };
+  }
+
+  /** Answers a `/v1` user list of every row of `query`, each batch written as it is read, with `listUnassignedUsers` from `marks`. */
+  function sendUserList(reply: FastifyReply, ctx: CusersContext, query: StreamedQuery, marks: UserListMarks) {
+    const unassigned: string[] = [];
+    async function* marked(): AsyncGenerator<Schemas['UserListRow'][]> {
+      for await (const rows of batchesOf(query.rows, LOOKUP_MAX_IDS)) {
+        const items = rows.map(userListRow);
+        if ('ofBatch' in marks) unassigned.push(...(await marks.ofBatch(items.map((item) => String(item.UserID)))));
+        yield items;
+      }
+    }
+    return sendJsonStream(
+      reply,
+      listBody(marked(), async (count) => ({
+        nextn: pageNextN(count, ctx),
+        listUnassignedUsers: 'afterRows' in marks ? await marks.afterRows() : unassigned,
+      })),
+    );
   }
 
   /** The search form of an advanced-search answer: no unassigned mark, the criteria and the group options [legacy: admin/core/controllers/cusers.cfc:429-451]. */
@@ -760,77 +823,107 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
     app.get(
       `${prefix}/users`,
       { config: { opt2: LIST_USERS_AUTH } },
-      cusersHandler((admitted) => {
+      cusersHandler((admitted, reply) => {
         admitted.abandonOnDisconnect();
-        return reads.listUsers(admitted);
+        return reads.listUsers(admitted, reply);
       }, { allowAllSites: true }),
     );
     app.get(
       `${prefix}/users/search`,
       { config: { opt2: CUSERS_AUTH } },
-      cusersHandler((admitted) => {
+      cusersHandler((admitted, reply) => {
         admitted.abandonOnDisconnect();
-        return reads.searchUsers(admitted);
+        return reads.searchUsers(admitted, reply);
       }),
     );
     // `cUsers.advancedSearch` of the session's stored criteria.
     app.get(
       `${prefix}/users/advanced-search`,
       { config: { opt2: CUSERS_AUTH } },
-      cusersHandler(async (admitted) => {
+      cusersHandler(async (admitted, reply) => {
         admitted.abandonOnDisconnect();
-        return reads.advancedSearch(admitted, storedCriteria(await identity.adminSessionState()));
+        return reads.advancedSearch(admitted, storedCriteria(await identity.adminSessionState()), reply);
       }),
     );
     // Admin request start-up's capture of a non-empty `param`, then `cUsers.advancedSearch` [legacy: admin/Application.cfc:459-498].
     app.post(
       `${prefix}/users/advanced-search`,
       { config: { opt2: CUSERS_AUTH } },
-      cusersHandler(async (admitted) => {
+      cusersHandler(async (admitted, reply) => {
         const previous = storedCriteria(await identity.adminSessionState());
         const criteria = buildAdvancedSearchCriteria(new Map(Object.entries(admitted.params)), previous);
         if (criteria !== previous) await identity.saveAdminSessionState(sessionCriteria(criteria));
         // Legacy keeps the posted criteria whether or not its client stays, so only the read after the save is abandoned.
         admitted.abandonOnDisconnect();
-        return reads.advancedSearch(admitted, criteria);
+        return reads.advancedSearch(admitted, criteria, reply);
       }),
     );
   }
 
-  // `cUsers.list` [legacy: admin/core/controllers/cusers.cfc:177-182, core/mura/user/userGateway.cfc:93-122]
+  // `cUsers.list` [legacy: admin/core/controllers/cusers.cfc:177-182, core/mura/user/userGateway.cfc:93-122]; `/v1` answers every
+  // group, written one identity page at a time.
   app.get(
     '/v1/users/groups',
     { config: { opt2: CUSERS_AUTH } },
-    cusersHandler(async (admitted): Promise<Schemas['UserGroupsPage']> => {
+    cusersHandler(async (admitted, reply): Promise<FastifyReply> => {
       admitted.abandonOnDisconnect();
       const { ctx } = admitted;
       // userManager's numeric `isPublic` rejects a boolean word before any read [legacy: core/mura/user/userManager.cfc:119-123].
-      const groups = await identity.userGroups(ctx.siteid, numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups'));
-      return { items: groups.map(groupListRow), nextn: pageNextN(groups, ctx) };
+      const isPublic = numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups');
+      async function* pages(): AsyncGenerator<Schemas['GroupListRow'][]> {
+        for (let offset: number | null = 0; offset !== null; ) {
+          const page = await identity.userGroupsPage(ctx.siteid, isPublic, { offset });
+          yield page.rows.map(groupListRow);
+          offset = page.nextOffset;
+        }
+      }
+      return sendJsonStream(reply, listBody(pages(), (count) => ({ nextn: pageNextN(count, ctx) })));
     }),
   );
 
-  // `/v1` answers every match, with every unassigned user of the pool.
-  registerUserListReads<Schemas['UserListPage'], Schemas['AdvancedSearchPage']>('/v1', {
-    async listUsers({ claims, ctx }) {
+  // `cUsers.list` as `/v2`: identity is asked for the groups of the page `nextn` selects only.
+  app.get(
+    '/v2/users/groups',
+    { config: { opt2: CUSERS_AUTH } },
+    cusersHandler(async (admitted): Promise<Schemas['UserGroupsPageV2']> => {
+      admitted.abandonOnDisconnect();
+      const { ctx } = admitted;
+      const isPublic = numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups');
+      const page = await groupsWindow(identity, ctx.siteid, isPublic, pagingOf(ctx));
+      return { items: page.rows.map(groupListRow), nextn: wireNextN(page.nextn) };
+    }),
+  );
+
+  // `/v1` answers every match, read in one pass and written batch by batch.
+  registerUserListReads<FastifyReply, FastifyReply>('/v1', {
+    async listUsers({ claims, ctx }, reply) {
       const viewer = viewerScopeFor(claims);
-      const users = (args: Omit<UsersQueryArgs, 'siteid'>): Promise<LegacyQuery> =>
-        cfEq(ctx.siteid, 'all') ? getAllSitesUsers(search, viewer, args) : getUsers(search, viewer, { ...args, siteid: ctx.siteid });
-      const rs = await users({ ispublic: ctx.ispublic, isunassigned: ctx.unassigned });
-      // With `unassigned` set, the unassigned query is the list query itself.
-      const unassigned = cfToBoolean(ctx.unassigned) ? rs : await users({ ispublic: ctx.ispublic, isunassigned: 1 });
-      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), listUnassignedUsers: userIdsOf(unassigned.rows) };
+      const args = { ispublic: ctx.ispublic, isunassigned: ctx.unassigned };
+      const options = { batchSize: LOOKUP_MAX_IDS };
+      const query = cfEq(ctx.siteid, 'all')
+        ? await getAllSitesUsersStream(search, viewer, args, options)
+        : await getUsersStream(search, viewer, { ...args, siteid: ctx.siteid }, options);
+      // The list holds every unassigned user of its pool, so each batch's marks come from one membership lookup; with
+      // `unassigned` set, the unassigned query is the list query itself.
+      return sendUserList(reply, ctx, query, { ofBatch: (ids) => unassignedOf(ids, cfToBoolean(ctx.unassigned)) });
     },
-    async searchUsers({ claims, ctx }) {
+    async searchUsers({ claims, ctx }, reply) {
       const viewer = viewerScopeFor(claims);
-      const rs = await getSearch(search, viewer, { search: ctx.search, siteid: ctx.siteid, isPublic: ctx.ispublic });
-      const unassigned = await getUnassignedUsers(search, viewer, { siteid: ctx.siteid, ispublic: ctx.ispublic });
-      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), listUnassignedUsers: userIdsOf(unassigned.rows) };
+      const query = getSearchStream(search, viewer, { search: ctx.search, siteid: ctx.siteid, isPublic: ctx.ispublic });
+      // Legacy marks every unassigned user of the pool, matched or not; that read answers 503 for an unregistered tenant.
+      const pool = { siteid: ctx.siteid, ispublic: ctx.ispublic };
+      const afterRows = async () => streamedUserIds(await getUnassignedUsersStream(search, viewer, pool, { batchSize: LOOKUP_MAX_IDS }));
+      return sendUserList(reply, ctx, query, { afterRows });
     },
-    async advancedSearch({ claims, ctx }, criteria) {
+    async advancedSearch({ claims, ctx }, criteria, reply) {
       const form = await advancedSearchForm(ctx, criteria);
-      const rs = await getAdvancedSearch(search, viewerScopeFor(claims), criteria, { siteid: ctx.siteid, isPublic: ctx.ispublic });
-      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), ...form };
+      const options = { siteid: ctx.siteid, isPublic: ctx.ispublic };
+      // The feed's default `lname asc` is a person column, so the matches arrive in their order and are written unbuffered.
+      const query = await getAdvancedSearchStream(search, viewerScopeFor(claims), criteria, options, { batchSize: LOOKUP_MAX_IDS });
+      async function* items(): AsyncGenerator<Schemas['UserListRow'][]> {
+        for await (const rows of batchesOf(query.rows, LOOKUP_MAX_IDS)) yield rows.map(userListRow);
+      }
+      return sendJsonStream(reply, listBody(items(), (count) => ({ nextn: pageNextN(count, ctx), ...form })));
     },
   });
 

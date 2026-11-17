@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { z } from '@opt2/platform/service-kit';
+
 import { UsageError, isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
 import { createHttpSession } from '../lib/http.js';
 import { createReadOnlyMssql } from '../lib/mssql.js';
@@ -63,6 +65,23 @@ export type ClusterSettings = {
   clusterSafe: boolean;
 };
 
+/** Inputs of Masa's application-start writers [core/appcfc/onApplicationStart_include.cfm]; null when unreadable. */
+export type StartupSettings = {
+  projectSiteID: string | null;
+  projectSiteExists: boolean | null;
+  deployBundlePath: string | null;
+  deployBundlePresent: boolean | null;
+  autoDiscoverPlugins: boolean | null;
+  applyDbUpdates: boolean | null;
+  appAutoUpdated: boolean | null;
+  /** Sites whose theme config declares a `small`, `medium` or `large` image size. */
+  themeStandardImageSizes: string[] | null;
+  /** Every guard closed, so start-up runs none of these writers; `up.sh` requires it. */
+  writersClosed: boolean;
+  /** One entry per guard not shown closed. */
+  openGuards: string[];
+};
+
 /** Scheduled-task capture `up.sh` takes before the first OPT-2 start of ColdFusion. */
 export type NativeTaskCapture = {
   status: 'captured' | 'absent' | 'unreadable';
@@ -71,7 +90,7 @@ export type NativeTaskCapture = {
   detail: string | null;
 };
 
-/** Settings recorded by `--phase services`; `up.sh` reads `timeZone`, `ping` and `mysqlFallback`. */
+/** Settings recorded by `--phase services`; `up.sh` reads `timeZone`, `ping`, `startup.writersClosed` and `mysqlFallback`. */
 export type EnvironmentSettings = {
   timeZone: string | null;
   utcTotalOffset: number | null;
@@ -81,6 +100,7 @@ export type EnvironmentSettings = {
   siteMonitorTaskRegistered: boolean | null;
   nativeTasks: NativeTaskCapture;
   cluster: ClusterSettings;
+  startup: StartupSettings;
   dbtype: string;
   mysqlFallback: boolean;
   deviation: boolean;
@@ -109,6 +129,8 @@ export type PreservedSections = Partial<Record<'local' | 'services' | 'settings'
 /** Injectable process boundary; every field defaults to the real one. */
 export type EnvironmentDeps = {
   env?: EnvLike;
+  /** Parsed {@link environmentEnvSchema} variables; else parsed from `env`. */
+  config?: EnvironmentConfig;
   runCommand?: CommandRunner;
   fetch?: typeof fetch;
   mssqlFactory?: typeof createReadOnlyMssql;
@@ -124,6 +146,7 @@ export type EnvironmentSummary = {
   failed: string[];
   mysqlFallback: boolean | null;
   clusterSafe: boolean | null;
+  startupWritersClosed: boolean | null;
   ping: boolean | null;
   timeZone: string | null;
 };
@@ -337,11 +360,6 @@ function clock(deps: EnvironmentDeps): Date {
   return (deps.now ?? (() => new Date()))();
 }
 
-function envValue(env: EnvLike, name: string): string | undefined {
-  const value = env[name];
-  return value === undefined || value === '' ? undefined : value;
-}
-
 /** Contents of `file`, or null when it does not exist. */
 async function readOptional(file: string): Promise<string | null> {
   try {
@@ -387,10 +405,25 @@ type RowSpec = { id: string; label: string; source: string; planned: string };
 const INFO_PATH = '/harness/legacy-baseline/cfml/run.cfm?info=1';
 const INFO_SOURCE = '`harness/legacy-baseline/cfml/run.cfm?info=1`';
 const DEFAULT_MAILPIT_API = 'http://127.0.0.1:8025';
+
+/** A variable with `''` as unset; any other value, whitespace included, is kept as set. */
+const emptyAsUnset = z.preprocess((value) => (value === '' ? undefined : value), z.string().optional());
+
+/** Variables this command reads itself; none is rejected, so the probes record what is set. */
+export const environmentEnvSchema = z.object({
+  MURA_DBTYPE: emptyAsUnset.transform((dbtype) => (dbtype ?? 'unset').toLowerCase()),
+  MAILPIT_API_URL: emptyAsUnset.transform((url) => url ?? DEFAULT_MAILPIT_API),
+  TZ: emptyAsUnset,
+  MURA_DEFAULTHASHALGORITHM: emptyAsUnset,
+});
+
+/** Parsed {@link environmentEnvSchema} variables. */
+export type EnvironmentConfig = z.output<typeof environmentEnvSchema>;
+
 /** `cfpm` packages the fixtures need: `cfspreadsheet`, `cfdocument`, `cfmail` and `cfschedule`. */
 const REQUIRED_CFPM = ['spreadsheet', 'document', 'mail', 'scheduler'] as const;
 
-/** Services-phase rows, in report order; `testbox` and `java` follow the committed report's own rows, which stay unchanged. */
+/** Services-phase rows, in report order. */
 const SERVICE_ROWS = {
   coldfusion: {
     id: 'coldfusion',
@@ -642,13 +675,43 @@ function dbtypeDeviation(dbtype: string): string {
   return `${which}: a baseline deviation, and the migration stages stop, because SQL Server (mssql) is the only supported source`;
 }
 
+/** The `startup` block of `run.cfm?info=1` (lower-cased keys), with its verdict; an unreadable value is an open guard. */
+function startupSettings(value: unknown): StartupSettings {
+  const s = isRecord(value) ? value : {};
+  const sites = Array.isArray(s.themestandardimagesizes) ? s.themestandardimagesizes.map(text) : [null];
+  const siteIds = sites.filter((site): site is string => site !== null);
+  const read = {
+    projectSiteID: text(s.projectsiteid),
+    projectSiteExists: flag(s.projectsiteexists),
+    deployBundlePath: text(s.deploybundlepath),
+    deployBundlePresent: flag(s.deploybundlepresent),
+    autoDiscoverPlugins: flag(s.autodiscoverplugins),
+    applyDbUpdates: flag(s.applydbupdates),
+    appAutoUpdated: flag(s.appautoupdated),
+    themeStandardImageSizes: siteIds.length === sites.length ? siteIds : null,
+  };
+  // Masa compares ProjectSiteID with `default` case-insensitively [core/appcfc/onApplicationStart_include.cfm:771].
+  const otherSite = read.projectSiteID !== null && read.projectSiteID.toLowerCase() !== 'default';
+  const openGuards = [
+    ...Object.entries(read).flatMap(([name, field]) => (field === null ? [`${name} unreadable`] : [])),
+    otherSite && read.projectSiteExists === false ? `projectSiteID ${read.projectSiteID ?? ''} names no existing site` : null,
+    read.deployBundlePresent === true ? `deploy bundle present at ${read.deployBundlePath ?? 'an unreadable path'}` : null,
+    read.autoDiscoverPlugins === true ? 'autoDiscoverPlugins is true' : null,
+    read.applyDbUpdates === true ? 'applyDbUpdates is true' : null,
+    read.appAutoUpdated === true ? 'appAutoUpdated is true' : null,
+    read.themeStandardImageSizes?.length ? `themeStandardImageSizes: ${read.themeStandardImageSizes.join(', ')}` : null,
+  ].filter((guard): guard is string => guard !== null);
+  return { ...read, writersClosed: openGuards.length === 0, openGuards };
+}
+
 /** Reads legacy, SQL Server, PostgreSQL and Mailpit versions, and the settings `up.sh` and the start-up guard use. */
 export async function probeServices(deps: EnvironmentDeps = {}): Promise<ServicesResult> {
   const env = deps.env ?? process.env;
+  const config = deps.config ?? environmentEnvSchema.parse(env);
   const recordedAt = clock(deps).toISOString();
-  const dbtype = (envValue(env, 'MURA_DBTYPE') ?? 'unset').toLowerCase();
+  const dbtype = config.MURA_DBTYPE;
   const onMssql = dbtype === 'mssql';
-  const mailpitApi = envValue(env, 'MAILPIT_API_URL') ?? DEFAULT_MAILPIT_API;
+  const mailpitApi = config.MAILPIT_API_URL;
 
   const info = await attempt(() => legacyInfo(env, deps.fetch));
   const malformed = info.ok ? malformedInfo(info.value) : [];
@@ -695,7 +758,7 @@ export async function probeServices(deps: EnvironmentDeps = {}): Promise<Service
   const broadcastingOff = broadcastClusterCommands === false;
   const noPeers = peerCount === 0;
   const timeZone = text(v.timezone);
-  const processTz = envValue(env, 'TZ') ?? null;
+  const processTz = config.TZ ?? null;
   const settings: EnvironmentSettings = {
     timeZone,
     utcTotalOffset: count(v.utctotaloffset),
@@ -714,13 +777,14 @@ export async function probeServices(deps: EnvironmentDeps = {}): Promise<Service
       noPeers,
       clusterSafe: (broadcastingOff || noPeers) && tclustercommandsCount === 0,
     },
+    startup: startupSettings(v.startup),
     dbtype,
     mysqlFallback: dbtype === 'mysql',
     deviation: !onMssql,
     deviationReason: onMssql ? null : dbtypeDeviation(dbtype),
     edition: text(v.edition),
     expiration: text(v.expiration),
-    defaultHashAlgorithm: envValue(env, 'MURA_DEFAULTHASHALGORITHM') ?? null,
+    defaultHashAlgorithm: config.MURA_DEFAULTHASHALGORITHM ?? null,
   };
   return { services: { recordedAt, probes }, settings, failed };
 }
@@ -751,7 +815,7 @@ function why(reasons: (string | null)[]): string {
   return reasons.filter((reason): reason is string => reason !== null).join('; ');
 }
 
-/** Settings rows, in report order; the `clusterSafe` verdict follows the committed report's own rows, which stay unchanged. */
+/** Settings rows, in report order. */
 const SETTING_ROWS: readonly SettingRow[] = [
   {
     label: 'Server time zone',
@@ -848,6 +912,63 @@ const SETTING_ROWS: readonly SettingRow[] = [
                 ? 'tclustercommands not counted'
                 : `${c.tclustercommandsCount} tclustercommands rows`,
           ])}): the content units stay \`legacy\``,
+  },
+  {
+    label: 'Project site (`ProjectSiteID`)',
+    source: 'Start-up guard: `MURA_PROJECTSITEID` over the setting [core/appcfc/onApplicationStart_include.cfm:765-792]',
+    expected: '`default`, or an existing site',
+    recorded: ({ startup: st }) =>
+      st.projectSiteID === null
+        ? 'unavailable'
+        : `${st.projectSiteID} (${st.projectSiteExists === null ? 'existence unavailable' : st.projectSiteExists ? 'exists' : 'no such site'})`,
+  },
+  {
+    label: 'Deploy bundle',
+    source:
+      'Start-up guard: `/tmp/MuraBundle.zip` when `MURA_DATASOURCE` is set, else `config/setup/deploy/bundle.zip` [core/appcfc/onApplicationStart_include.cfm:797-811]',
+    expected: 'absent',
+    recorded: ({ startup: st }) =>
+      st.deployBundlePresent === null
+        ? 'unavailable'
+        : `${st.deployBundlePresent ? 'present' : 'absent'} at ${st.deployBundlePath ?? 'an unreadable path'}`,
+  },
+  {
+    label: '`autoDiscoverPlugins`',
+    source: 'Start-up guard [core/appcfc/onApplicationStart_include.cfm:534]',
+    expected: '`false` (`MURA_AUTODISCOVERPLUGINS=false` on the start command)',
+    recorded: ({ startup: st }) => (st.autoDiscoverPlugins === null ? 'unavailable' : String(st.autoDiscoverPlugins)),
+  },
+  {
+    label: '`applyDbUpdates`',
+    source: 'Start-up guard [core/appcfc/onApplicationStart_include.cfm:421-424]',
+    expected: '`false` (`MURA_APPLYDBUPDATES=false` on the start command)',
+    recorded: ({ startup: st }) => (st.applyDbUpdates === null ? 'unavailable' : String(st.applyDbUpdates)),
+  },
+  {
+    label: '`appAutoUpdated`',
+    source: 'Start-up guard: `application.appAutoUpdated` [core/appcfc/onApplicationStart_include.cfm:421]',
+    expected: '`false`',
+    recorded: ({ startup: st }) => (st.appAutoUpdated === null ? 'unavailable' : String(st.appAutoUpdated)),
+  },
+  {
+    label: 'Theme `small`, `medium` or `large` image sizes',
+    source: "Start-up guard: each site's theme `config.xml.cfm`, else `config.xml` [core/mura/extend/extendManager.cfc:1976-2017]",
+    expected: 'none',
+    recorded: ({ startup: st }) =>
+      st.themeStandardImageSizes === null
+        ? 'unavailable'
+        : st.themeStandardImageSizes.length === 0
+          ? 'none'
+          : `sites ${st.themeStandardImageSizes.join(', ')}`,
+  },
+  {
+    label: 'Start-up writers verdict (`writersClosed`)',
+    source: 'Project site, deploy bundle, plugin discovery, DB updates and theme site sizes all closed',
+    expected: '`true`',
+    recorded: ({ startup: st }) =>
+      st.writersClosed
+        ? 'true: application start-up runs none of these writers'
+        : `false (${st.openGuards.join('; ')}): \`up.sh\` stops`,
   },
 ];
 
@@ -972,7 +1093,8 @@ async function readRecord(file: string): Promise<EnvironmentRecord> {
   return {
     local: (parsed.local ?? null) as PhaseBlock | null,
     services: (parsed.services ?? null) as PhaseBlock | null,
-    settings: (parsed.settings ?? null) as EnvironmentSettings | null,
+    // Settings recorded before the start-up writer guards existed are stale; `--phase services` records them afresh.
+    settings: (isRecord(parsed.settings) && isRecord(parsed.settings.startup) ? parsed.settings : null) as EnvironmentSettings | null,
   };
 }
 
@@ -1012,6 +1134,7 @@ export async function runEnvironment(
       failed: result.failed,
       mysqlFallback: record.settings?.mysqlFallback ?? null,
       clusterSafe: record.settings?.cluster.clusterSafe ?? null,
+      startupWritersClosed: record.settings?.startup.writersClosed ?? null,
       ping: record.settings?.ping ?? null,
       timeZone: record.settings?.timeZone ?? null,
     },
@@ -1036,7 +1159,8 @@ export const main = async (argv: string[], deps: EnvironmentDeps = {}): Promise<
       USAGE,
     );
   }
-  return runEnvironment(phase, deps);
+  const env = deps.env ?? process.env;
+  return runEnvironment(phase, { ...deps, env, config: deps.config ?? environmentEnvSchema.parse(env) });
 };
 
 if (isMainModule(import.meta.url)) void runCli(main);

@@ -29,6 +29,7 @@ import {
   serializeContentEntity,
   urlParam,
   type ApiEntityView,
+  type ExpansionResolver,
   type FilteredValuesOptions,
   type JsonApiRequestContext,
 } from '../../legacy/jsonapi-serializers.js';
@@ -39,11 +40,14 @@ import {
   findPropertiesFor,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
   type BeanFeedResult,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
+  type RelationSourceKey,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Struct = Record<string, unknown>;
@@ -277,6 +281,18 @@ function rejectContentImages(view: ApiEntityView, call: JsonApiCall, opts: Pick<
   if (allFields || fields.includes('images')) throw new UndefinedLegacyMethodError('hasImage');
 }
 
+/**
+ * expandEntity over a feed bean: its `site` through the site findOne; crumbs and related content fail as legacy's do,
+ * findCrumbArray calling hasNext on the bean's undefined crumb iterator and findRelatedContent iterating no beans.
+ */
+function feedResolver(call: JsonApiCall): ExpansionResolver {
+  return {
+    ...relatedResolver(call),
+    crumbs: () => Promise.reject(new UndefinedLegacyMethodError('hasNext')),
+    relatedContent: () => Promise.reject(new UndefinedLegacyMethodError('getEntityName')),
+  };
+}
+
 /** getFilteredValues of a feed bean; under a content config `url` is the bean's getURL(), which getValue answers as ''. */
 async function serializeFeed(
   ctx: RouteContext,
@@ -289,7 +305,7 @@ async function serializeFeed(
   const filtered = { expanded: opts.expanded, expandLinks: expandOf(call) };
   const asContent = configName !== ENTITY;
   if (asContent) rejectContentImages(view, call, filtered);
-  const data = await serializeContentEntity(view, withFeedAction(ctx, call, bean), undefined, {
+  const data = await serializeContentEntity(view, withFeedAction(ctx, call, bean), feedResolver(call), {
     ...filtered,
     pk: PK,
     editableCheck: opts.editableCheck ?? false,
@@ -449,6 +465,12 @@ const remove: JsonApiHandlerFn = async (ctx, call) => {
   return jsonApiResultOf('');
 };
 
+/** loadBy(feedID=id) of a relation path's source; feedManager.read takes no `contentid` key, so that leaves the fresh bean. */
+async function loadBy(ctx: RouteContext, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+  const bean = 'primaryKey' in key ? await loadFeed(ctx, call, key.primaryKey) : newFeed(ctx, call);
+  return (name) => bean.get(cfEq(name, 'primaryKey') ? PK : name);
+}
+
 /** The `feed` entity's generic-method handlers. */
 export const feedHandler: EntityHandler = Object.freeze({
   entity: ENTITY,
@@ -462,5 +484,6 @@ export const feedHandler: EntityHandler = Object.freeze({
   findPermissions,
   save,
   delete: remove,
+  loadBy,
 });
 

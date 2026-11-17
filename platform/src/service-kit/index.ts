@@ -2,7 +2,9 @@
 export { systemClock, fixedClock, isClock, type Clock } from './clock.js';
 export {
   baseEnvSchema,
+  tracingEnvSchema,
   loadEnv,
+  loadTracingEnv,
   envModeIssues,
   EnvValidationError,
   EnvFileError,
@@ -16,6 +18,8 @@ export {
   type BaseEnv,
   type EnvSchema,
   type LoadedEnv,
+  type OtelDiagLevel,
+  type TracingEnv,
   type ProcessEnvRequirements,
 } from './env.js';
 export {

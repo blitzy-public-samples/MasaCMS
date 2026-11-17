@@ -31,7 +31,7 @@ const OWN_OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', im
 const SURVEYS_OPENAPI = load(readFileSync(new URL('../../../surveys/contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 
 const SCHEMA = 'communications';
-const REGISTRY_SQL = `SELECT site_id FROM ${SCHEMA}.tenant_registry WHERE tenant_id = $1`;
+const REGISTRY_SQL = `SELECT site_id FROM ${SCHEMA}.tenant_registry WHERE tenant_id = $1 AND NOT deleted`;
 const SURVEY_ID = '11111111-2222-3333-4444555566667777';
 const TASK_ID = '00000012-AAAA-BBBB-CCCCDDDDEEEEFFFF';
 const NOW = new Date(2026, 5, 30, 9, 15, 0, 42);

@@ -50,7 +50,7 @@ interface GatesFake {
   ignoresFilter: boolean;
 }
 
-/** One operation of the fake people `listHaltedRosterOperations`. */
+/** One operation of the fake people `listHaltedRosterOperationsPage`. */
 type HaltedFake = {
   operationId: string;
   tenantId: string;
@@ -64,8 +64,11 @@ type HaltedFake = {
   units: string[];
 };
 
-/** How the fake people service answers `listHaltedRosterOperations`: its halted operations, or a bare status. */
-type PeopleFake = { operations: readonly HaltedFake[] } | { status: number };
+/**
+ * How the fake people service answers `listHaltedRosterOperationsPage`: its halted operations, `pageSize` a page (all on
+ * one when absent) with the next offset as cursor, or, when `stalls`, none a page and the cursor it was sent; or a bare status.
+ */
+type PeopleFake = { operations: readonly HaltedFake[]; pageSize?: number; stalls?: boolean } | { status: number };
 
 const NO_HALTS: PeopleFake = { operations: [] };
 
@@ -112,7 +115,7 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
 }
 
-/** Fake gateway (503 on `/admin/` and `/_api/`), migration `gatesList`, people `listHaltedRosterOperations` and Mailpit, collecting their URLs. */
+/** Fake gateway (503 on `/admin/` and `/_api/`), migration `gatesList`, people `listHaltedRosterOperationsPage` and Mailpit, collecting their URLs. */
 function fakeStack(
   gates: GatesFake,
   people: PeopleFake = NO_HALTS,
@@ -122,9 +125,12 @@ function fakeStack(
   const fetch: FetchLike = async (input) => {
     const url = new URL(input);
     if (url.origin === MAILPIT) return json({ total: 0, messages: [] });
-    if (url.origin === PEOPLE && url.pathname === '/internal/v1/roster-operations/halted') {
+    if (url.origin === PEOPLE && url.pathname === '/internal/v2/roster-operations/halted') {
       peopleCalls.push(url);
-      return 'status' in people ? json({}, people.status) : json({ operations: people.operations });
+      if ('status' in people) return json({}, people.status);
+      const start = Number(url.searchParams.get('after') ?? 0);
+      const end = people.stalls === true ? start : start + (people.pageSize ?? people.operations.length);
+      return json({ operations: people.operations.slice(start, end), next: end < people.operations.length ? String(end) : null });
     }
     if (url.origin === MIGRATION && url.pathname === '/internal/v1/gates') {
       gatesCalls.push(url);
@@ -445,7 +451,10 @@ describe('halted roster operations', () => {
     expect((JSON.parse(await readFile(exceptionsFile, 'utf8')) as { entries: unknown[] }).entries).toEqual([rosterEntry(OPERATION_1, state)]);
   });
 
-  it('records each halted operation a scenario never touched once, apart from another halt on its route, leaving the 503 a difference', async () => {
+  it.each<{ name: string; pageSize: number | undefined; afters: (string | null)[] }>([
+    { name: 'listed on one page', pageSize: undefined, afters: [null, null] },
+    { name: 'listed one a page, following next until null', pageSize: 1, afters: [null, '1', null, '1'] },
+  ])('records each halted operation a scenario never touched once, apart from another halt on its route, leaving the 503 a difference, $name', async ({ pageSize, afters }) => {
     const caseHalt = {
       id: 'EX-HALT-GS-ID-01-01',
       scenario: 'GS-ID-01',
@@ -460,7 +469,7 @@ describe('halted roster operations', () => {
     await writeFile(exceptionsFile, `${JSON.stringify({ sourceSha: SHA, entries: [caseHalt] }, null, 2)}\n`);
     const stack = fakeStack(
       { rows: QUIET_A, ignoresFilter: false },
-      { operations: [haltedOperation(OPERATION_1), haltedOperation(OPERATION_2)] },
+      { operations: [haltedOperation(OPERATION_1), haltedOperation(OPERATION_2)], pageSize },
     );
     const deps = depsOf(await writeVersion(BOTH_ROUTES), stack.fetch);
 
@@ -481,7 +490,7 @@ describe('halted roster operations', () => {
       rosterEntry(OPERATION_1),
       rosterEntry(OPERATION_2),
     ]);
-    expect(stack.peopleCalls).toHaveLength(2);
+    expect(stack.peopleCalls.map((url) => url.searchParams.get('after'))).toEqual(afters);
 
     await replayScenario(id01, deps);
 
@@ -511,12 +520,18 @@ describe('halted roster operations', () => {
     },
   );
 
-  it.each<{ name: string; serviceUrls: Record<string, string>; message: RegExp }>([
-    { name: 'people answering 503', serviceUrls: { people: PEOPLE }, message: /people listHaltedRosterOperations answered 503/ },
-    { name: 'OPT2_SERVICE_URLS naming no people URL', serviceUrls: {}, message: /OPT2_SERVICE_URLS has no URL for people/ },
-  ])('fails the replay, keeping its exchanges and the list, given $name', async ({ serviceUrls, message }) => {
+  it.each<{ name: string; serviceUrls: Record<string, string>; people: PeopleFake; message: RegExp }>([
+    { name: 'people answering 503', serviceUrls: { people: PEOPLE }, people: { status: 503 }, message: /people listHaltedRosterOperationsPage answered 503/ },
+    {
+      name: 'people answering the cursor it was sent as its next cursor',
+      serviceUrls: { people: PEOPLE },
+      people: { operations: [haltedOperation(OPERATION_1)], stalls: true },
+      message: /people listHaltedRosterOperationsPage answered the cursor it was sent as its next cursor/,
+    },
+    { name: 'OPT2_SERVICE_URLS naming no people URL', serviceUrls: {}, people: { status: 503 }, message: /OPT2_SERVICE_URLS has no URL for people/ },
+  ])('fails the replay, keeping its exchanges and the list, given $name', async ({ serviceUrls, people, message }) => {
     const before = await readFile(exceptionsFile, 'utf8');
-    const stack = fakeStack({ rows: [], ignoresFilter: false }, { status: 503 });
+    const stack = fakeStack({ rows: [], ignoresFilter: false }, people);
     const deps = depsOf(await writeVersion([{ route: ROUTE_B, units: [UNIT_B] }]), stack.fetch);
 
     const result = await replayScenario(id01, { ...deps, sideEffects: { config: { serviceUrls, mailpitUrl: MAILPIT } } });

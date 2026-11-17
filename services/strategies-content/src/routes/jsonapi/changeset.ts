@@ -30,7 +30,7 @@ import {
   type ChangesetColumns,
 } from '../../domain/changesets.js';
 import type { Actor } from '../../domain/context.js';
-import { CONTENT_ENTITIES, type RelationProp } from '../../legacy/jsonapi-entities.js';
+import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
 import {
   paramUrl,
   serializeCollection,
@@ -46,15 +46,21 @@ import {
   beanFeedQuery,
   entityAccessAllowed,
   entityActionAllowed,
+  finderOf,
   findPropertiesFor,
+  isBlankFeedRow,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
   type BeanFeedResult,
+  type BlankFeedRow,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
+  type RelationSourceKey,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Struct = Record<string, unknown>;
@@ -118,71 +124,6 @@ const LOAD_BY_DEFAULTS: Readonly<Struct> = Object.freeze({ returnformat: 'self',
 
 // Base bean values set() stores as given (bean.cfc setValue without a setter); setErrors ignores a simple value.
 const STORED_BASE_VALUES = ['isnew', 'frommuracache', 'instanceid', 'addobjects', 'removeobjects'] as const;
-
-/** A varchar property of changesetBean; `required="true"` stays attribute text. */
-function varchar50(name: string, required: boolean): Struct {
-  const requiredText = required ? 'true' : false;
-  return { fieldtype: '', length: '50', required: requiredText, html: 'false', nullable: !required, name, datatype: 'varchar', default: '' };
-}
-
-/** A date property of changesetBean. */
-function datetime(name: string): Struct {
-  return { fieldtype: '', required: false, html: 'false', nullable: true, name, datatype: 'datetime', default: '' };
-}
-
-/** A one-to-many relation of changesetBean, keyed by the bean's primary key. */
-function oneToMany(name: string, relatesto: string): Struct {
-  return {
-    fieldtype: 'one-to-many', loadkey: 'primaryKey', length: '50', required: false, cascade: 'none', nullable: true, html: 'false',
-    fkcolumn: 'primaryKey', name, datatype: 'varchar', relatesto, default: 'null',
-  };
-}
-
-/** A many-to-one relation of changesetCategoryAssignmentBean. */
-function manyToOne(name: string, fkcolumn: string, length: string, datatype: string): Struct {
-  return {
-    fieldtype: 'many-to-one', loadkey: fkcolumn, length, required: false, cascade: 'none', nullable: true, html: 'false', fkcolumn,
-    name, datatype, relatesto: name, default: '',
-  };
-}
-
-/** Property formats keyed by name, in getProperties order. */
-function formatsOf(formats: readonly Struct[]): ReadonlyMap<string, Readonly<Struct>> {
-  return new Map(formats.map((format): [string, Readonly<Struct>] => [String(format['name']), Object.freeze(format)]));
-}
-
-// applyPropertyFormat of each persistent or related property, in getProperties order, exactly as the oracle answers
-// findProperties (jsonApiUtility.cfc:1517-1618).
-const CHANGESET_PROPERTIES = formatsOf([
-  { fieldtype: 'id', length: '35', required: 'true', nullable: false, html: 'false', name: 'changesetid', datatype: 'char', default: '' },
-  datetime('publishdate'),
-  oneToMany('categoryassignments', ASSIGNMENT.name),
-  varchar50('categoryid', false),
-  varchar50('siteid', true),
-  oneToMany('contentassignments', 'content'),
-  varchar50('name', true),
-  datetime('created'),
-  varchar50('remoteid', false),
-  datetime('lastupdate'),
-  { fieldtype: '', required: 'true', html: 'false', nullable: false, name: 'published', datatype: 'int', default: '0' },
-  varchar50('remotesourceurl', false),
-  varchar50('description', false),
-  datetime('remotepubdate'),
-  varchar50('lastupdateby', false),
-  datetime('closedate'),
-  varchar50('tags', false),
-]);
-
-const ASSIGNMENT_PROPERTIES = formatsOf([
-  manyToOne('site', 'siteid', '25', 'varchar'),
-  manyToOne('category', 'categoryid', '35', 'char'),
-  manyToOne('changeset', 'changesetid', '35', 'char'),
-  { fieldtype: 'id', length: '35', required: true, nullable: false, html: 'false', name: 'assignmentid', datatype: 'char', default: '' },
-]);
-
-// Non-persistent properties findProperties skips without error (bean.cfc:79-82, beanORM.cfc:79, changesetBean.cfc:21).
-const CHANGESET_NON_PERSISTENT: ReadonlySet<string> = new Set(['isnew', 'errors', 'frommuracache', 'instanceid']);
-const ASSIGNMENT_NON_PERSISTENT: ReadonlySet<string> = new Set(['isnew', 'errors', 'frommuracache', 'instanceid', 'saveerrors']);
 
 /** Per-call state: the call and the resolver of both entities' relations. */
 interface Scope {
@@ -285,25 +226,14 @@ function assertNoHumanCheck(call: JsonApiCall): void {
   }
 }
 
-// Fail closed: `contentAssignments` expands through the content entity's findQuery, `category` through the category
-// entity's findOne and `site` is programs-sites data, none of which these handlers reach; neither entity's links carry
-// crumbs, and only content expands related content.
-/** The legacy 503 for a relation another entity's finder serves. */
-function relationUnavailable(entity: string, name: string): LegacyServiceUnavailableError {
-  return new LegacyServiceUnavailableError(
-    `The ${name} relation of a ${entity} is served by another entity's finder`,
-    'auto',
-    `${entity.toLowerCase()}-expand-${name.toLowerCase()}`,
-  );
-}
-
-/** The scope of one handler call, whose resolver serves the relations of both entities. */
+/** The scope of one handler call: both entities' own relations through these finders, the others through their entities'. */
 function scopeOf(ctx: Ctx, call: JsonApiCall): Scope {
+  const related = relatedResolver(call);
   const resolver: ExpansionResolver = {
-    hasMany: (prop, params, opts) => expandMany(scope, prop, params, opts),
-    hasOne: (prop, id, opts) => expandOne(scope, prop, id, opts),
-    crumbs: (view) => Promise.reject(relationUnavailable(view.entityName, 'crumbs')),
-    relatedContent: (view) => Promise.reject(relationUnavailable(view.entityName, 'relatedcontent')),
+    hasMany: (prop, params, opts) => (cfEq(prop.cfc, ASSIGNMENT.name) ? expandMany(scope, params, opts) : related.hasMany(prop, params, opts)),
+    hasOne: (prop, id, opts) => (cfEq(prop.cfc, CHANGESET.name) ? expandOne(scope, id, opts) : related.hasOne(prop, id, opts)),
+    crumbs: related.crumbs,
+    relatedContent: related.relatedContent,
   };
   const scope: Scope = { ctx, call, resolver };
   return scope;
@@ -313,7 +243,7 @@ function scopeOf(ctx: Ctx, call: JsonApiCall): Scope {
 async function collectionData<R>(
   scope: Scope,
   result: BeanFeedResult<R>,
-  view: (row: R) => ApiEntityView,
+  view: (row: R | BlankFeedRow) => ApiEntityView,
   entityName: string,
   opts: { expand: string; expanded?: number },
   arrange: (items: Struct[]) => Struct[] = (items) => items,
@@ -371,13 +301,17 @@ function changesetView(values: Readonly<Struct>): ApiEntityView {
 }
 
 /** changesetIterator.packageRecord: a per-iterator new-bean template, then `set(row)` of the selected columns; isNew stays 1. */
-function changesetItems(scope: Scope, columns: readonly string[]): (row: ChangesetColumns) => ApiEntityView {
-  const template = changesetValues(newChangesetBean(scope.call.actor, scope.ctx.domain.clock));
+function changesetItems(scope: Scope, columns: readonly string[]): (row: ChangesetColumns | BlankFeedRow) => ApiEntityView {
+  const bean = newChangesetBean(scope.call.actor, scope.ctx.domain.clock);
+  const template = changesetValues(bean);
   return (row) => {
-    const stored = changesetValues(loadedBean({ ...row, tenant_id: scope.call.tenantId }));
+    const blank = isBlankFeedRow(row);
+    const stored = changesetValues(blank ? setChangesetValues(bean, row) : loadedBean({ ...row, tenant_id: scope.call.tenantId }));
     const values: Struct = { ...template };
     for (const column of columns) values[column] = stored[column];
-    return changesetView(values);
+    const view = changesetView(values);
+    // getChangesetID creates an id for a bean holding none (changesetBean.cfc:89-94), once getFilteredValues has copied the values.
+    return blank ? { ...view, values: { changesetid: cfUuid() } } : view;
   };
 }
 
@@ -405,7 +339,7 @@ async function changesetFeed(
   const feedScope = { siteId: call.siteId, changesetIds: ids };
   const result = await queryChangesetFeed(ctx.domain, readerOf(call), feedScope, (source) => beanFeedQuery(source, call, CHANGESET_FEED));
   const view = changesetItems(scope, selectedColumns(call, CHANGESET_COLUMNS));
-  return jsonApiResultOf(await collectionData(scope, result, view, CHANGESET.name, { expand: expandOf(call) }, arrange), CHANGESET.name);
+  return jsonApiResultOf(await collectionData(scope, result, view, CHANGESET.name, finderOf(call), arrange), CHANGESET.name);
 }
 
 // changesetBean.init holds a `LastUpdateByID` value but declares no such property, so findQuery rejects it as a value
@@ -434,27 +368,6 @@ function overlaid(bean: ChangesetBean, event: Readonly<Struct>): Struct {
   return values;
 }
 
-/** findProperties (1548-1618) from `formats`; an unknown requested name fails as `props[p]` does (1568). */
-async function propertiesResult(
-  call: JsonApiCall,
-  config: typeof CHANGESET | typeof ASSIGNMENT,
-  meta: { formats: ReadonlyMap<string, Readonly<Struct>>; nonPersistent: ReadonlySet<string>; bundleable: boolean | string; table: string },
-): Promise<JsonApiResult> {
-  const requested = cfListToArray(call.params.string('properties')).map((name) => name.toLowerCase());
-  const names = requested.length > 0 ? requested : [...meta.formats.keys()];
-  const properties = names.flatMap((name) => {
-    if (meta.nonPersistent.has(name)) return [];
-    const format = meta.formats.get(name);
-    if (format === undefined) throw new LegacyApiError('server_error');
-    return [{ ...format }];
-  });
-  const result = findPropertiesFor(config, call);
-  result['properties'] = properties;
-  result['bundleable'] = meta.bundleable;
-  if (Object.hasOwn(result, 'table')) result['table'] = meta.table;
-  return jsonApiResultOf(result, config.name);
-}
-
 /** The `changeset` entity: change sets of the request site behind the Change Sets module (`m:014`). */
 export const changesetHandler: EntityHandler = Object.freeze({
   entity: CHANGESET.name,
@@ -464,7 +377,7 @@ export const changesetHandler: EntityHandler = Object.freeze({
   async findOne(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, CHANGESET)) return authorizationDenied();
-    const data = await changesetEntity(scopeOf(ctx, call), call.id ?? '', { expand: expandOf(call), expanded: 0 });
+    const data = await changesetEntity(scopeOf(ctx, call), call.id ?? '', finderOf(call));
     return jsonApiResultOf(data, CHANGESET.name);
   },
 
@@ -493,9 +406,8 @@ export const changesetHandler: EntityHandler = Object.freeze({
   },
 
   /** findProperties (1548-1618): changesetBean's property metadata; no access check, as legacy. */
-  findProperties(_ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
-    const meta = { formats: CHANGESET_PROPERTIES, nonPersistent: CHANGESET_NON_PERSISTENT, bundleable: false, table: CHANGESET_TABLE };
-    return propertiesResult(call, CHANGESET, meta);
+  async findProperties(_ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
+    return jsonApiResultOf(findPropertiesFor(CHANGESET, call), CHANGESET.name);
   },
 
   /** findPermissions (2240-2266): the bean is loaded for a UUID or 35-character id; no access check, as legacy. */
@@ -584,11 +496,17 @@ function assignmentView(values: Readonly<Struct>): ApiEntityView {
 }
 
 /** beanIterator.packageRecord: a new bean, `set(row)` of the selected columns, isNew 0. */
-function assignmentItems(columns: readonly string[]): (row: ChangesetCategoryAssignmentColumns) => ApiEntityView {
+function assignmentItems(columns: readonly string[]): (row: ChangesetCategoryAssignmentColumns | BlankFeedRow) => ApiEntityView {
   return (row) => {
-    const stored = storedAssignmentValues(row);
     const values: Struct = { ...baseValues(), ...ASSIGNMENT_INIT };
-    for (const column of columns) values[column] = stored[column];
+    if (isBlankFeedRow(row)) {
+      for (const column of columns) values[column] = '';
+      // beanORM.init gives the id column a createUUID() (beanORM.cfc:101-102), which set() keeps for an empty key.
+      values['assignmentid'] = cfUuid();
+    } else {
+      const stored = storedAssignmentValues(row);
+      for (const column of columns) values[column] = stored[column];
+    }
     values['isnew'] = 0;
     return assignmentView(values);
   };
@@ -602,7 +520,7 @@ function serializeAssignment(
 ): Promise<Struct> {
   return serializeContentEntity(assignmentView(values), scope.call.apiContext, scope.resolver, {
     ...opts,
-    expandLinks: expandOf(scope.call),
+    expandLinks: finderOf(scope.call).expand,
     pk: ASSIGNMENT_PK,
   });
 }
@@ -625,7 +543,7 @@ async function assignmentFeed(
     beanFeedQuery(source, call, ASSIGNMENT_FEED),
   );
   const view = assignmentItems(selectedColumns(call, ASSIGNMENT_COLUMNS));
-  return jsonApiResultOf(await collectionData(scope, result, view, ASSIGNMENT.name, { expand: expandOf(call) }, arrange), ASSIGNMENT.name);
+  return jsonApiResultOf(await collectionData(scope, result, view, ASSIGNMENT.name, finderOf(call), arrange), ASSIGNMENT.name);
 }
 
 /** The bean's saveErrors after `set(event)`: a boolean param, else beanORM's false (beanORM.cfc:206-218). */
@@ -646,7 +564,8 @@ export const changesetCategoryAssignmentHandler: EntityHandler = Object.freeze({
     const id = call.id ?? '';
     const row = await findChangesetCategoryAssignment(ctx.domain, readerOf(call), { assignmentId: id, siteId: call.siteId });
     const values = row === null ? newAssignmentValues(id, call.siteId) : storedAssignmentValues(row);
-    return jsonApiResultOf(await serializeAssignment(scopeOf(ctx, call), values, { expanded: 0, editableCheck: true }), ASSIGNMENT.name);
+    const opts = { expanded: finderOf(call).expanded, editableCheck: true };
+    return jsonApiResultOf(await serializeAssignment(scopeOf(ctx, call), values, opts), ASSIGNMENT.name);
   },
 
   /** findMany (2627-2709): the site's assignments with the ids, in `ids` order unless the URL sorts them. */
@@ -668,10 +587,8 @@ export const changesetCategoryAssignmentHandler: EntityHandler = Object.freeze({
   },
 
   /** findProperties (1548-1618): the ORM property metadata; no access check, as legacy. */
-  findProperties(_ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
-    // The component declares bundleable=true, which getBundleable reports as metadata text.
-    const meta = { formats: ASSIGNMENT_PROPERTIES, nonPersistent: ASSIGNMENT_NON_PERSISTENT, bundleable: 'true', table: ASSIGNMENT_TABLE };
-    return propertiesResult(call, ASSIGNMENT, meta);
+  async findProperties(_ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
+    return jsonApiResultOf(findPropertiesFor(ASSIGNMENT, call), ASSIGNMENT.name);
   },
 
   /** findPermissions (2240-2266): the bean is loaded for a UUID or 35-character id; no access check, as legacy. */
@@ -731,13 +648,20 @@ export const changesetCategoryAssignmentHandler: EntityHandler = Object.freeze({
     await deleteChangesetCategoryAssignment(ctx.domain, actor, javaTrim(row.assignmentid));
     return jsonApiResultOf('');
   },
+
+  /** loadBy(assignmentid=id) of a relation path's source; a `contentid` key names no column, so no row matches it. */
+  async loadBy(ctx: Ctx, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+    const id = 'primaryKey' in key ? key.primaryKey : '';
+    const row = id === '' ? null : await findChangesetCategoryAssignment(ctx.domain, readerOf(call), { assignmentId: id, siteId: call.siteId });
+    const values = row === null ? newAssignmentValues(id, call.siteId) : storedAssignmentValues(row);
+    return (name) => getNoCase(values, cfEq(name, 'primaryKey') ? ASSIGNMENT_PK : name);
+  },
 });
 
 // ---- relation expansion (expandEntity, 2424-2498) ----
 
 /** findQuery(changesetCategoryAssignment, params) of a changeset's `categoryAssignments`; AllowAccess throws (2711-2720). */
-async function expandMany(scope: Scope, prop: RelationProp, params: Struct, opts: ExpansionOptions): Promise<unknown> {
-  if (!cfEq(prop.cfc, ASSIGNMENT.name)) throw relationUnavailable(CHANGESET.name, prop.name);
+async function expandMany(scope: Scope, params: Struct, opts: ExpansionOptions): Promise<unknown> {
   const { ctx, call } = scope;
   if (!entityAccessAllowed(call.actor, ASSIGNMENT)) throw new LegacyApiError('authorization');
   const feedCall: JsonApiCall = { ...call, entityName: ASSIGNMENT.name, method: 'findQuery' };
@@ -748,8 +672,7 @@ async function expandMany(scope: Scope, prop: RelationProp, params: Struct, opts
 }
 
 /** findOne(changeset, id) of an assignment's `changeset`; AllowAccess throws (2365-2371). */
-async function expandOne(scope: Scope, prop: RelationProp, id: unknown, opts: ExpansionOptions): Promise<unknown> {
-  if (!cfEq(prop.cfc, CHANGESET.name)) throw relationUnavailable(ASSIGNMENT.name, prop.name);
+async function expandOne(scope: Scope, id: unknown, opts: ExpansionOptions): Promise<unknown> {
   if (!entityAccessAllowed(scope.call.actor, CHANGESET)) throw new LegacyApiError('authorization');
   return changesetEntity(scope, text(id), opts);
 }

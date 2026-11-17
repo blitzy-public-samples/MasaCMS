@@ -13,6 +13,7 @@ import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, fixedClock } from '@o
 import {
   createBridgeClient,
   createSiteListClient,
+  isBridgeSessionMismatch,
   type BridgeClient,
   type BridgeClientOptions,
   type BridgeResult,
@@ -398,6 +399,7 @@ describe('createBridgeClient', () => {
       status,
       error,
     });
+    expect(isBridgeSessionMismatch(failure)).toBe(error === 'sessionMismatch');
     expect(double.requests).toHaveLength(1);
   });
 

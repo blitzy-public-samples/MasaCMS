@@ -2,7 +2,7 @@
 /** Scheduler hand-off of the fixture's `opt2-survey-*` ACF tasks: adoption as scheduled-task rows and queue tasks, and cancellation on restoration. */
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { requestMigrationAuthority, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
-import { registeredTenants, tenantIdForSite, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { knownTenants, tenantIdForSite, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
 import {
   RECOVERY_BATCH_SIZE,
@@ -254,14 +254,14 @@ async function cancelInTenant(
 }
 
 /**
- * Cancels the adopted tasks `request` names, or every adopted task, still `scheduled` in each registered tenant, one
- * transaction per tenant, then deletes their queue tasks; a repeated call finds nothing left to cancel.
+ * Cancels the adopted tasks `request` names, or every adopted task, still `scheduled` in each tenant the registry has
+ * known, one transaction per tenant, then deletes their queue tasks; a repeated call finds nothing left to cancel.
  * A failed delete is logged and left for `scheduledTaskRecovery`.
  */
 export async function cancelAdoptedScheduledTasks(deps: SurveyScheduleDeps, request: CancelRequest): Promise<CancelResult> {
   const contexts = handOffContexts();
-  // RLS permits no cross-tenant scan, so every registered tenant is visited; case-folded as withTenant folds them.
-  const tenants = new Set((await registeredTenants(deps.db)).map(({ tenantId }) => tenantId.toLowerCase()));
+  // RLS permits no cross-tenant scan, so every tenant the registry has known is visited; case-folded as withTenant folds them.
+  const tenants = new Set((await knownTenants(deps.db)).map(({ tenantId }) => tenantId.toLowerCase()));
   let cancelled = 0;
   for (const tenantId of tenants) {
     const rows = await withGatedTenant(deps.db, tenantId, (tx) => cancelInTenant(deps, tx, request.names, contexts.rows));

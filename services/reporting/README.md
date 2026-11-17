@@ -12,7 +12,9 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Behaviour-to-code-
 - **Export jobs.** A user holding `reporting.exporter` asks for an export of one of the site's definitions in `xlsx`, `csv` or `pdf`. A definition names a source and a column list. The sources are `timesheets.sheets` (sheet status as of the business date `asOf`, today when absent) and `finance.records`. A third source, `broken`, always fails; it exists to exercise the failure path.
 - **Asynchronous run.** The request returns at once with the job `queued`. A Cloud Task on `reporting-export-run` then runs it, and it ends in one of two states:
   - `done`, with the file downloadable;
-  - `failed`, with `source-unavailable` (a `broken` source, or a producer that is unreachable or answers non-2xx) or `export-failed` (any other failure).
+  - `failed`, with `source-unavailable` (a `broken` source) or `export-failed` (any other failure, a producer's refusal or other non-2xx answer included).
+
+  A producer that is unreachable or answers 502, 503 or 504 fails nothing: the task answers the legacy 503 with the job still `running`, and the queue's retry reclaims it.
 
   Before queuing, a create fails with `export-failed`, oldest first, the site's `running` jobs whose run task is gone and its `queued` jobs created more than 30 seconds earlier that still have none (`UNSCHEDULED_RECOVERY_AGE_MS` in `src/domain/jobs.ts`); a younger queued job may belong to a create that has not yet scheduled its run. The fixture has no such grace: it enters each job in its live-runner map before inserting the row, and fails every queued or running job of the site absent from that map.
 - **Output.** A header row of the definition's column names, then one row per source row, every value a string. The file is named `export-<job_id>.<format>`:
@@ -74,7 +76,7 @@ The legacy-served `cdashboard` screens read the table and write nothing to it.
 
 ## Schema and roles
 
-Schema `reporting` is created with its roles by `opt2-db bootstrap` (`migration/src/db-bootstrap/`). Its DDL is in `db/migrations/0001_platform.sql`, `db/migrations/0002_reporting.sql` and `db/migrations/0003_extensions.sql`.
+Schema `reporting` is created with its roles by `opt2-db bootstrap` (`migration/src/db-bootstrap/`). Its DDL is in `db/migrations/0001_platform.sql`, `db/migrations/0002_reporting.sql`, `db/migrations/0003_extensions.sql` and `db/migrations/0004_tenant_registry_deleted.sql`.
 
 | Role | Attributes | Use |
 |---|---|---|
@@ -133,6 +135,7 @@ In the cloud the download URL is a v4 signed Cloud Storage URL. Locally it is a 
 | `POST` | `/internal/v1/task-queues/{queue}/{pause,resume,ensure}` | `platform.migration`, `platform.operator` | Queue control for `reporting-export-run`. `ensure` answers 400, because the queue is not a recurring chain |
 | `POST` | `/internal/v1/events/reporting.programs-sites.site.changed.v1` | `service:pubsub-invoker` (the local push key locally) | Push delivery into `reporting.tenant_registry` |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` | `platform.migration` | Backfill, feed, reconciliation and unit gates. `export` also returns the `reporting-exports` object manifest |
+| `GET` | `/internal/v1/migration/objects?tenantId=&jobId=` | `platform.migration` | Streams one job's stored output, which the reverse projection writes into `synthetic.export_job.output`; 404 when the job names no stored object |
 | `GET` | `/healthz` | public | Liveness probe |
 
 ## Integration

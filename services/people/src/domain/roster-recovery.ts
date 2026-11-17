@@ -4,10 +4,16 @@ import { serializeError, type Logger } from '@opt2/platform/logging';
 import { endOperation, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { releaseOperation, type RecoveryHook } from '@opt2/platform/outbox';
 import { ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
-import { registeredTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { knownTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { PeopleEvents } from '../events/publish.js';
 import type { AccountOperationState, IdentityClient } from '../legacy/identity-client.js';
-import { RosterOperationClaimedError, type PeopleRepository, type RosterOperationStatePatch } from '../repo/repository.js';
+import {
+  RosterOperationClaimedError,
+  type HaltedRosterCursor,
+  type Page,
+  type PeopleRepository,
+  type RosterOperationStatePatch,
+} from '../repo/repository.js';
 import { FINISH_PENDING_ERROR, type RosterOperationRow, type RosterState } from '../repo/tables.js';
 import { IDENTITY_OPERATION_UNITS, PEOPLE_OPERATION_UNITS, restoreBeforeImageInTx, type RosterKind } from './roster-protocol.js';
 
@@ -294,11 +300,11 @@ export async function resolveOperation(deps: RecoveryDeps, args: { tenantId: str
   }
 }
 
-/** Resolves every operation of every registered tenant left unchanged past `RECOVERY_THRESHOLD_MS`; one failure is logged and the rest still run. */
+/** Resolves every operation of every tenant the registry has known left unchanged past `RECOVERY_THRESHOLD_MS`; one failure is logged and the rest still run. */
 export async function recoverRosterOperations(deps: RecoveryDeps): Promise<RecoveryCounts> {
   const counts: RecoveryCounts = { resolved: 0, halted: 0, failed: 0 };
   // Case-folded as withTenant folds them, so one tenant is never listed twice.
-  const tenantIds = new Set((await registeredTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase()));
+  const tenantIds = new Set((await knownTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase()));
   for (const tenantId of tenantIds) {
     const olderThan = new Date(deps.clock.now().getTime() - RECOVERY_THRESHOLD_MS);
     const stale = await withTenant(deps.db, tenantId, (tx) => deps.repo.listStaleRosterOperations(tx, olderThan));
@@ -319,15 +325,28 @@ export async function recoverRosterOperations(deps: RecoveryDeps): Promise<Recov
   return counts;
 }
 
-/** Every operation of every registered tenant that recovery ever halted, resolved or not, oldest first. */
-export async function listHaltedOperations(deps: Pick<RecoveryDeps, 'db' | 'repo'>): Promise<HaltedOperation[]> {
+/** Compares two positions by (startedAt, operationId), the order of each tenant's keyset listing. */
+function byStart(a: HaltedRosterCursor, b: HaltedRosterCursor): number {
+  return a.startedAt.getTime() - b.startedAt.getTime() || (a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0);
+}
+
+/**
+ * One page, in (startedAt, operationId) order across every tenant the registry has known, of the operations recovery ever
+ * halted, resolved or not, after `page.after`; `next` resumes after its last operation and is null on the last page.
+ */
+export async function listHaltedOperations(
+  deps: Pick<RecoveryDeps, 'db' | 'repo'>,
+  page: { after?: HaltedRosterCursor | null; limit: number },
+): Promise<Page<HaltedOperation, HaltedRosterCursor>> {
   // Case-folded as withTenant folds them, so one tenant is never listed twice.
-  const tenantIds = new Set((await registeredTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase()));
+  const tenantIds = new Set((await knownTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase()));
   const halted: HaltedOperation[] = [];
+  // The earliest last operation of a tenant page with more after it: later operations of other tenants wait for the next page.
+  let bound: HaltedOperation | undefined;
   for (const tenantId of tenantIds) {
-    const rows = await withTenant(deps.db, tenantId, (tx) => deps.repo.listHaltedRosterOperations(tx));
-    for (const row of rows) {
-      halted.push({
+    const listed = await withTenant(deps.db, tenantId, (tx) => deps.repo.pageHaltedRosterOperations(tx, page));
+    const operations = listed.rows.map(
+      (row): HaltedOperation => ({
         operationId: row.operation_id,
         tenantId,
         userId: unpadded(row.user_id),
@@ -339,10 +358,17 @@ export async function listHaltedOperations(deps: Pick<RecoveryDeps, 'db' | 'repo
         haltedAt: row.halted_at,
         identityUnreachableSince: row.identity_unreachable_since,
         units: OPERATION_UNITS,
-      });
-    }
+      }),
+    );
+    halted.push(...operations);
+    const last = operations.at(-1);
+    if (listed.next !== null && last !== undefined && (bound === undefined || byStart(last, bound) < 0)) bound = last;
   }
-  return halted.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || (a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0));
+  const ordered = halted.sort(byStart).filter((operation) => bound === undefined || byStart(operation, bound) <= 0);
+  const rows = ordered.slice(0, page.limit);
+  const last = rows.at(-1);
+  const more = bound !== undefined || ordered.length > rows.length;
+  return { rows, next: more && last !== undefined ? { startedAt: last.startedAt, operationId: last.operationId } : null };
 }
 
 /** The `roster-operations` recovery hook of the people outbox sweep; it fails, after trying every operation, when any failed. */

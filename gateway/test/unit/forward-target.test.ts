@@ -27,7 +27,12 @@ import {
 } from '@opt2/platform/tracing';
 import { BarrierTimeoutError } from '../../src/dispatcher/barrier.js';
 import type { FailContext } from '../../src/dispatcher/fail-closed.js';
-import { forwardToTarget, type TargetForwardContext, type TargetUpstream } from '../../src/dispatcher/forward-target.js';
+import {
+  TARGET_FORWARD_TIMEOUT_MS,
+  forwardToTarget,
+  type TargetForwardContext,
+  type TargetUpstream,
+} from '../../src/dispatcher/forward-target.js';
 import {
   sendBytes,
   sendJson,
@@ -83,8 +88,14 @@ interface Harness {
   setConfirm(confirm: () => Promise<void>): void;
 }
 
-/** A gateway stand-in whose catch-all forwards to `service` with the current overrides; `logger` replaces the `logs` capture. */
-async function startHarness(service: () => HttpDouble, logger?: Logger): Promise<Harness> {
+/**
+ * A gateway stand-in whose catch-all forwards to `service` through `forwardTo` with the current overrides; `logger` replaces the
+ * `logs` capture.
+ */
+async function startHarness(
+  service: () => HttpDouble,
+  { logger, forwardTo = forwardToTarget }: { logger?: Logger; forwardTo?: typeof forwardToTarget } = {},
+): Promise<Harness> {
   const minted: InvocationTarget[] = [];
   const recorded: Harness['recorded'] = [];
   const declared: Harness['declared'] = [];
@@ -158,7 +169,7 @@ async function startHarness(service: () => HttpDouble, logger?: Logger): Promise
       },
       ...fields,
     };
-    return traced ? withExtractedContext(ACTIVE_TRACE, () => forwardToTarget(request, reply, ctx)) : forwardToTarget(request, reply, ctx);
+    return traced ? withExtractedContext(ACTIVE_TRACE, () => forwardTo(request, reply, ctx)) : forwardTo(request, reply, ctx);
   };
   app.all('/*', forward);
   await app.ready();
@@ -570,22 +581,24 @@ describe('forwardToTarget fail closed', () => {
     await expectSettledOnce(harness);
   }
 
-  it.each([
-    [502, 'api'],
-    [503, 'api'],
-    [504, 'api'],
-    [502, 'admin'],
-    [503, 'admin'],
-    [504, 'admin'],
-  ] as const)('answers a service %i on the %s surface with the legacy 503', async (status, surface) => {
-    service.setHandler((_req, res) => sendBytes(res, status, 'upstream', { 'x-opt2-write-position': 'people=9', 'x-up': '1' }));
+  it.each(
+    ([502, 503, 504] as const).flatMap((status) =>
+      (['api', 'admin'] as const).flatMap((surface) =>
+        [true, false].map((positioned) => ({ status, surface, positioned, ends: positioned ? 'records its position' : 'releases it' })),
+      ),
+    ),
+  )('answers a declared write the service answers $status on the $surface surface with the legacy 503 and $ends', async ({ status, surface, positioned }) => {
+    const position: Record<string, string> = positioned ? { 'x-opt2-write-position': 'people=9' } : {};
+    service.setHandler((_req, res) => {
+      sendBytes(res, status, 'upstream', { ...position, 'x-up': '1' });
+    });
     harness.set({ failContext: surface === 'api' ? API : ADMIN, sessionId: SESSION_ID, declaresWrite: true });
     const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
     await expectFailClosed(res, surface);
     expect(res.headers['x-up']).toBeUndefined();
-    expect(harness.recorded).toEqual([]);
     expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
-    expect(harness.released).toEqual([]);
+    expect(harness.recorded).toEqual(positioned ? [[SESSION_ID, new Map([['people', '9']]), 'people']] : []);
+    expect(harness.released).toEqual(positioned ? [] : [[SESSION_ID, 'people']]);
   });
 
   it('does not retry a GET answered 503', async () => {
@@ -612,40 +625,9 @@ describe('forwardToTarget fail closed', () => {
     }
   });
 
-  it.each([
-    ['stalls past the call timeout', false],
-    ['receives the write, stalls past the call timeout, then commits it', true],
-  ])(
-    'answers a service that %s with the legacy 503 and keeps the in-flight registration',
-    { timeout: 25_000 },
-    async (_label, commits) => {
-      let committed!: () => void;
-      const commit = new Promise<void>((resolve) => {
-        committed = resolve;
-      });
-      service.setHandler(async (_req, res) => {
-        await new Promise((resolve) => setTimeout(resolve, 12_000));
-        committed();
-        if (commits) sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=77' });
-      });
-      harness.set({ sessionId: SESSION_ID, declaresWrite: true });
-      const started = Date.now();
-      const res = await harness.app.inject({ method: 'POST', url: '/v1/people', payload: 'name=late' });
-      expect(Date.now() - started).toBeLessThan(12_000);
-      expect(res.statusCode).toBe(503);
-      expect(res.body).toBe(apiUnavailable.body);
-      expect(service.requests).toHaveLength(1);
-      await commit;
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(harness.settled()).toBe(0);
-      expect(harness.recorded).toEqual([]);
-      expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
-      expect(harness.released).toEqual([]);
-      const uncertain = harness.logs.filter((line) => line.msg === UNCERTAIN);
-      expect(uncertain.map((line) => line.level)).toEqual([40]);
-      expect(Object.keys(uncertain[0]?.error as object).sort()).toEqual(expect.arrayContaining(['message', 'type']));
-    },
-  );
+  it("bounds a forward by the owner's 30 s gate wait plus the 10 s call bound", () => {
+    expect(TARGET_FORWARD_TIMEOUT_MS).toBe(40_000);
+  });
 
   it('answers an invalid upstream status with the legacy 503', async () => {
     service.setHandler((_req, res) => sendBytes(res, 600, 'odd'));
@@ -1011,7 +993,9 @@ describe('forwardToTarget lines through the platform logger', () => {
 
   beforeAll(async () => {
     const destination = { write: (chunk: string) => void chunks.push(chunk) };
-    platformHarness = await startHarness(() => service, createLogger({ service: 'gateway', version: '1.0.0', env: 'local', level: 'warn', destination }));
+    platformHarness = await startHarness(() => service, {
+      logger: createLogger({ service: 'gateway', version: '1.0.0', env: 'local', level: 'warn', destination }),
+    });
   });
 
   afterEach(() => {
@@ -1313,5 +1297,118 @@ describe('forwardToTarget trace context with the SDK started', () => {
       await h.app.close();
       await target.close();
     }
+  });
+});
+
+describe('forwardToTarget with both terms of its bound shortened', () => {
+  const CALL_MS = 1_500;
+  const GATE_MS = 2_500;
+  const BOUND_MS = CALL_MS + GATE_MS;
+  /** undici's fast timers fire up to one 499 ms tick before or after their delay. */
+  const TIMER_SLACK_MS = 500;
+  /** How long a stalled service holds the write before it may commit, well past the bound and its slack. */
+  const STALL_MS = BOUND_MS + 2_000;
+  const apiUnavailable = apiUnavailableResponse({ method: API.method, params: API.params });
+  let bounded: Harness;
+
+  beforeAll(async () => {
+    // Fake timers cannot drive undici's process-wide fast-timer clock, so forwardToTarget is reloaded over shortened terms.
+    vi.resetModules();
+    vi.doMock('@opt2/platform/service-kit', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@opt2/platform/service-kit')>()),
+      SERVICE_CALL_TIMEOUT_MS: CALL_MS,
+    }));
+    vi.doMock('@opt2/platform/migration-kit', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@opt2/platform/migration-kit')>()),
+      GATE_WAIT_MS: GATE_MS,
+    }));
+    const shortened = await import('../../src/dispatcher/forward-target.js');
+    expect(shortened.TARGET_FORWARD_TIMEOUT_MS).toBe(BOUND_MS);
+    bounded = await startHarness(() => service, { forwardTo: shortened.forwardToTarget });
+  });
+
+  afterEach(() => {
+    bounded.set({});
+  });
+
+  afterAll(async () => {
+    await bounded.app.close();
+    vi.doUnmock('@opt2/platform/service-kit');
+    vi.doUnmock('@opt2/platform/migration-kit');
+    vi.resetModules();
+  });
+
+  it.each<{
+    label: string;
+    status: number;
+    headers: Record<string, string>;
+    body: string;
+    recorded: Harness['recorded'];
+    released: Harness['released'];
+  }>([
+    {
+      label: 'commits past the call bound',
+      status: 201,
+      headers: { 'x-opt2-write-position': 'people=42' },
+      body: JSON.stringify({ data: 1 }),
+      recorded: [[SESSION_ID, new Map([['people', '42']]), 'people']],
+      released: [],
+    },
+    {
+      label: "answers the legacy 503 once the owner's gate wait ends",
+      status: 503,
+      headers: {},
+      body: apiUnavailable.body,
+      recorded: [],
+      released: [[SESSION_ID, 'people']],
+    },
+  ])('passes on the answer of a service that $label, and settles the exchange', async ({ status, headers, body, recorded, released }) => {
+    service.setHandler(async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, GATE_MS));
+      sendJson(res, status, { data: 1 }, headers);
+    });
+    bounded.set({ sessionId: SESSION_ID, declaresWrite: true });
+    const started = Date.now();
+    const res = await bounded.app.inject({ method: 'POST', url: '/v1/people', payload: 'name=late' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(GATE_MS);
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toBe(body);
+    await expectSettledOnce(bounded);
+    expect(bounded.declared).toEqual([[SESSION_ID, 'people', 0]]);
+    expect(bounded.recorded).toEqual(recorded);
+    expect(bounded.released).toEqual(released);
+  });
+
+  it.each([
+    ['stalls past the bound', false],
+    ['receives the write, stalls past the bound, then commits it', true],
+  ])('answers a service that %s with the legacy 503 and keeps the in-flight registration', async (_label, commits) => {
+    let committed!: () => void;
+    const commit = new Promise<void>((resolve) => {
+      committed = resolve;
+    });
+    service.setHandler(async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, STALL_MS));
+      committed();
+      if (commits) sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=77' });
+    });
+    bounded.set({ sessionId: SESSION_ID, declaresWrite: true });
+    const started = Date.now();
+    const res = await bounded.app.inject({ method: 'POST', url: '/v1/people', payload: 'name=late' });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(BOUND_MS - TIMER_SLACK_MS);
+    expect(elapsed).toBeLessThan(STALL_MS);
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe(apiUnavailable.body);
+    expect(service.requests).toHaveLength(1);
+    await commit;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(bounded.settled()).toBe(0);
+    expect(bounded.recorded).toEqual([]);
+    expect(bounded.declared).toEqual([[SESSION_ID, 'people', 0]]);
+    expect(bounded.released).toEqual([]);
+    const uncertain = bounded.logs.filter((line) => line.msg === UNCERTAIN);
+    expect(uncertain.map((line) => line.level)).toEqual([40]);
+    expect(Object.keys(uncertain[0]?.error as object).sort()).toEqual(expect.arrayContaining(['message', 'type']));
   });
 });

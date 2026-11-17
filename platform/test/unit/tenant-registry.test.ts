@@ -6,6 +6,7 @@ import {
   SITE_CHANGED_TOPIC,
   TenantMismatchError,
   contentPoolTenants,
+  knownTenants,
   poolTenantFor,
   registeredTenants,
   registryEntries,
@@ -51,25 +52,28 @@ const COLUMNS = [
 ];
 
 const SQL = {
-  registered: `SELECT tenant_id, site_id FROM ${TABLE} ORDER BY site_id`,
-  entries: `SELECT ${COLUMNS.join(', ')} FROM ${TABLE} ORDER BY site_id`,
-  entry: `SELECT ${COLUMNS.join(', ')} FROM ${TABLE} WHERE tenant_id = $1`,
-  tenantForSite: `SELECT tenant_id FROM ${TABLE} WHERE lower(site_id) = lower($1)`,
-  siteForTenant: `SELECT site_id FROM ${TABLE} WHERE tenant_id = $1`,
-  contentPool: `SELECT content_pool_tenants FROM ${TABLE} WHERE tenant_id = $1`,
-  fanout: `SELECT tenant_id FROM ${TABLE} WHERE public_user_pool_tenant = $1 OR private_user_pool_tenant = $1 ORDER BY site_id`,
-  pool: (column: string): string => `SELECT ${column} AS pool_tenant FROM ${TABLE} WHERE tenant_id = $1`,
+  registered: `SELECT tenant_id, site_id FROM ${TABLE} WHERE NOT deleted ORDER BY site_id`,
+  known: `SELECT tenant_id, site_id FROM ${TABLE} ORDER BY site_id`,
+  entries: `SELECT ${COLUMNS.join(', ')} FROM ${TABLE} WHERE NOT deleted ORDER BY site_id`,
+  entry: `SELECT ${COLUMNS.join(', ')} FROM ${TABLE} WHERE tenant_id = $1 AND NOT deleted`,
+  tenantForSite: `SELECT tenant_id FROM ${TABLE} WHERE lower(site_id) = lower($1) AND NOT deleted`,
+  siteForTenant: `SELECT site_id FROM ${TABLE} WHERE tenant_id = $1 AND NOT deleted`,
+  contentPool: `SELECT content_pool_tenants FROM ${TABLE} WHERE tenant_id = $1 AND NOT deleted`,
+  fanout: `SELECT tenant_id FROM ${TABLE} WHERE (public_user_pool_tenant = $1 OR private_user_pool_tenant = $1) AND NOT deleted ORDER BY site_id`,
+  pool: (column: string): string => `SELECT ${column} AS pool_tenant FROM ${TABLE} WHERE tenant_id = $1 AND NOT deleted`,
   upsert: [
-    `INSERT INTO ${TABLE} (${COLUMNS.join(', ')})`,
+    `INSERT INTO ${TABLE} (${[...COLUMNS.slice(0, -1), 'deleted', 'updated_at'].join(', ')})`,
     `VALUES (${COLUMNS.slice(0, -1)
       .map((_, index) => `$${String(index + 1)}`)
-      .join(', ')}, LOCALTIMESTAMP(3))`,
+      .join(', ')}, false, LOCALTIMESTAMP(3))`,
     'ON CONFLICT (tenant_id) DO UPDATE SET',
-    COLUMNS.filter((column) => column !== 'tenant_id')
+    [...COLUMNS.slice(0, -1), 'deleted', 'updated_at']
+      .filter((column) => column !== 'tenant_id')
       .map((column) => `${column} = EXCLUDED.${column}`)
       .join(', '),
     `WHERE ${TABLE}.aggregate_version < EXCLUDED.aggregate_version`,
   ].join(' '),
+  tombstone: `UPDATE ${TABLE} SET deleted = true, aggregate_version = $2, updated_at = LOCALTIMESTAMP(3) WHERE tenant_id = $1 AND aggregate_version < $2`,
 };
 
 const ROW_A = {
@@ -240,6 +244,15 @@ describe('registeredTenants', () => {
     const h = setup();
 
     await expect(registeredTenants(h.db)).resolves.toEqual([]);
+  });
+});
+
+describe('knownTenants', () => {
+  it('lists every stored site and tenant, deleted ones included, in a metadata transaction', async () => {
+    const h = setup({ [SQL.known]: [{ tenant_id: TENANT_B, site_id: 'tenant-b' }] });
+
+    await expect(knownTenants(h.db)).resolves.toEqual([{ tenantId: TENANT_B, siteId: 'tenant-b' }]);
+    expect(metadataReads(h.client)).toEqual([[SQL.known, undefined]]);
   });
 });
 
@@ -521,6 +534,23 @@ describe('tenantRegistryConsumer', () => {
     ]);
   });
 
+  it.each([
+    ['siteId', { siteId: 'tenant-a', deleted: true, publicUserPoolId: 42 }, 'tenant-a'],
+    ['legacy-cased', { SITEID: 'Tenant-A', DELETED: true }, 'Tenant-A'],
+  ])('marks the site entry deleted for a %s deleted payload unless stored newer, without reading its pools', async (_label, payload, siteId) => {
+    const client = new FakeClient();
+
+    await tenantRegistryConsumer.apply(tenantTx(client), siteChanged(payload, { aggregateId: siteId, aggregateVersion: 9 }));
+
+    expect(client.calls).toEqual([[SQL.tombstone, [TENANT_A, 9]]]);
+  });
+
+  it.each([false, 'true', 1])('upserts a payload whose deleted marker is %j', async (deleted) => {
+    const values = await upsertValues(siteChanged({ siteId: 'tenant-a', deleted }));
+
+    expect(values).toEqual(expectedValues('tenant-a', Array<string>(5).fill('tenant-a'), ['tenant-a']));
+  });
+
   it('writes inside the tenant transaction it is given', async () => {
     const h = setup();
 
@@ -661,13 +691,15 @@ describe('tenantRegistryConsumer', () => {
   });
 
   it.each([
-    { side: 'event', eventTenant: TENANT_B, txTenant: TENANT_A, actual: TENANT_B },
-    { side: 'event', eventTenant: 'tenant-a', txTenant: TENANT_A, actual: 'tenant-a' },
-    { side: 'transaction', eventTenant: TENANT_A, txTenant: TENANT_B, actual: TENANT_B },
-  ])('rejects a mismatched $side tenant $actual without writing', async ({ eventTenant, txTenant, actual }) => {
+    { side: 'event', eventTenant: TENANT_B, txTenant: TENANT_A, actual: TENANT_B, deleted: false },
+    { side: 'event', eventTenant: 'tenant-a', txTenant: TENANT_A, actual: 'tenant-a', deleted: false },
+    { side: 'transaction', eventTenant: TENANT_A, txTenant: TENANT_B, actual: TENANT_B, deleted: false },
+    { side: 'event', eventTenant: TENANT_B, txTenant: TENANT_A, actual: TENANT_B, deleted: true },
+    { side: 'transaction', eventTenant: TENANT_A, txTenant: TENANT_B, actual: TENANT_B, deleted: true },
+  ])('rejects a mismatched $side tenant $actual without writing, deleted $deleted', async ({ eventTenant, txTenant, actual, deleted }) => {
     const client = new FakeClient();
     const err = await rejection(
-      tenantRegistryConsumer.apply(tenantTx(client, txTenant), siteChanged({ siteId: 'tenant-a' }, { tenantId: eventTenant })),
+      tenantRegistryConsumer.apply(tenantTx(client, txTenant), siteChanged({ siteId: 'tenant-a', deleted }, { tenantId: eventTenant })),
     );
 
     expect(err).toBeInstanceOf(TenantMismatchError);

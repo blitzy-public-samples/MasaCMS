@@ -66,10 +66,10 @@ import { defaultRouteKeyOptions } from '../../src/golden/route-key-options.js';
 import {
   ADMIN_LOGIN_PATH,
   appReloadKey,
+  browserBaseUrl,
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
-  originBaseUrl,
   resolvePlaceholders,
   type Origin,
   type ScenarioContext,
@@ -240,6 +240,7 @@ type BrowserReplayRecord = ReplayOutput & {
 interface FlowRun {
   readonly scenario: Scenario;
   readonly origin: Origin;
+  /** {@link browserBaseUrl} of `origin`. */
   readonly baseUrl: string;
   readonly ctx: ScenarioContext;
   readonly xhr: XhrRecorder;
@@ -1253,7 +1254,7 @@ async function runFlow(suite: Suite, scenario: Scenario, id: ScenarioId, origin:
     const run: FlowRun = {
       scenario,
       origin,
-      baseUrl: ctx.baseUrl,
+      baseUrl: browserBaseUrl(origin),
       ctx,
       xhr,
       notes: [],
@@ -1268,7 +1269,7 @@ async function runFlow(suite: Suite, scenario: Scenario, id: ScenarioId, origin:
     try {
       await PREPARE[id]?.(suite, run);
       run.step = 'login';
-      await loginAdmin(page, ctx.baseUrl);
+      await loginAdmin(page, run.baseUrl);
       xhr.start();
       await FLOWS[id](page, run);
       run.step = 'settle';
@@ -1419,6 +1420,7 @@ function verdictOf(
     fixtures: readFixtureStatus(),
     browser: browserRecordSchema.parse(record),
     expected,
+    gatewayOrigin: new URL(browserBaseUrl('gateway')).origin,
   });
 }
 
@@ -1457,7 +1459,7 @@ async function captureFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Pr
 async function replayFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Promise<void> {
   const legacy = await capturedSide(id);
   const target = await runFlow(suite, scenario, id, 'gateway');
-  const gatewayOrigin = new URL(originBaseUrl('gateway')).origin;
+  const gatewayOrigin = new URL(browserBaseUrl('gateway')).origin;
   const opts = { scenario, rules: suite.rules, gatewayOrigin };
   const differences = browserDifferences(goldenSetOf(id, legacy), target, opts);
   const record: BrowserReplayRecord = {
@@ -1483,7 +1485,7 @@ async function replayFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Pro
 async function unsetFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Promise<void> {
   const legacy = await runFlow(suite, scenario, id, 'legacy');
   const target = await runFlow(suite, scenario, id, 'gateway');
-  const gatewayOrigin = new URL(originBaseUrl('gateway')).origin;
+  const gatewayOrigin = new URL(browserBaseUrl('gateway')).origin;
   const opts = { scenario, rules: suite.rules, gatewayOrigin };
   const differences = browserDifferences(goldenSetOf(id, legacy), target, opts);
   const error = legacy.error ?? target.error;

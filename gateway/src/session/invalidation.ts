@@ -1,9 +1,11 @@
 // Logout and login effects across the seam: a logout on either side ends both sessions; a legacy login is adopted.
 import { normaliseRouteKey, type RouteKeyResult } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
+import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import type { InventoryFacts, SessionEffect } from '../cutover/types.js';
 import type { BridgeCallOptions, BridgeClient } from './bridge-client.js';
 import type { AdoptedSession, IdentityClient } from './identity-client.js';
-import { isDeletedJarCookie, type JarCookies, type LegacyJar } from './jar.js';
+import { isDeletedJarCookie, type JarCookies, type JarRow, type LegacyJar } from './jar.js';
 import type { SessionMode } from './mode.js';
 import type { SessionStateChecker } from './state-check.js';
 import { DEFAULT_SITE_ID, type TokenCache } from './token-cache.js';
@@ -25,16 +27,46 @@ export interface LegacyLoginFacts extends BrowserFacts {
   siteId?: string;
 }
 
+/** Masa's request timeout in seconds when `requesttimeout` is unset [legacy: core/appcfc/applicationSettings.cfm:317]. */
+export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 1000;
+
+/** A legacy logout's outcome: legacy logged the session out, kept its login, or it or identity could not be read. */
+export type LegacyLogoutOutcome = 'logged-out' | 'kept' | 'unknown';
+
+/** The legacy session cookies of the browser, from which a legacy logout's outcome is judged. */
+export interface LegacyHeldSession extends BrowserFacts {
+  cookies: JarCookies;
+}
+
+/** What legacy holds for the browser after serving a logout, which {@link Invalidation.afterLegacyLogout} judges. */
+export interface LegacyLogoutFacts extends LegacyHeldSession {
+  /** The session cookies legacy received, overlaid with those its response set. */
+  cookies: JarCookies;
+  /** The request's session mode, in which an unknown outcome restores the mark. */
+  mode: SessionMode;
+}
+
+/** Logger method {@link createInvalidation} uses; Fastify's `app.log` satisfies it. */
+export interface InvalidationLogger {
+  warn(obj: object, msg: string): void;
+}
+
 /** Session follow-up of logouts and legacy logins; a legacy logout's identity end is marked owed before legacy runs. */
 export interface Invalidation {
   /** After identity ended the session: ends its legacy session (no database write), forgets jar, tokens and state. */
   afterTargetLogout(sessionId: string, browser?: BrowserFacts): Promise<void>;
   /** Before legacy logs the session out: forgets its tokens and state and durably marks its identity end pending. */
   beforeLegacyLogout(sessionId: string, mode: SessionMode): Promise<void>;
-  /** After legacy logged the session out: ends it in identity and drops its jar and mark; a failure keeps the mark. */
-  afterLegacyLogout(sessionId: string): Promise<void>;
-  /** Completes a marked session's pending end: ends it in identity and forgets its jar, mark, tokens and state. */
-  completePending(sessionId: string): Promise<void>;
+  /**
+   * After legacy served a logout: ends the session if legacy logged it out, clears the mark if kept and not re-marked
+   * since, else keeps it marked.
+   */
+  afterLegacyLogout(sessionId: string, legacy: LegacyLogoutFacts): Promise<void>;
+  /**
+   * Judges a marked session's pending end: ends it if legacy logged it out; a kept session's mark is cleared once no
+   * logout can still be running and none re-marked it since. Returns the outcome.
+   */
+  completePending(sessionId: string, legacy: LegacyHeldSession): Promise<LegacyLogoutOutcome>;
   /** After a legacy login or re-login: adopts the legacy session into identity; undefined without legacy cookies. */
   afterLegacyLogin(
     sessionId: string,
@@ -45,11 +77,17 @@ export interface Invalidation {
 
 /** Dependencies of {@link createInvalidation}. */
 export interface InvalidationOptions {
-  identity: Pick<IdentityClient, 'adopt' | 'end'>;
+  identity: Pick<IdentityClient, 'adopt' | 'end' | 'snapshot'>;
   bridge: Pick<BridgeClient, 'describe' | 'end'>;
-  jar: Pick<LegacyJar, 'withSessionLock' | 'drop' | 'markIdentityEndPending'>;
+  jar: Pick<LegacyJar, 'withSessionLock' | 'get' | 'drop' | 'markIdentityEndPending' | 'clearIdentityEndPending'>;
   tokenCache: Pick<TokenCache, 'drop'>;
   state: Pick<SessionStateChecker, 'forget'>;
+  /** Receives unreadable legacy logout evidence; omitted, it goes unlogged. */
+  logger?: InvalidationLogger;
+  /** Legacy's request timeout in ms, which no logout outlasts; defaults to {@link DEFAULT_REQUEST_TIMEOUT_SECONDS}. */
+  requestTimeoutMs?: number;
+  /** Ages pending marks; defaults to the system clock. */
+  clock?: Clock;
 }
 
 const PAGE_PREFIX = 'page:';
@@ -87,11 +125,6 @@ export function isLogoutRouteKey(routeKey: string): boolean {
   return isIdentityLogout(routeKey) || isPageLogout(routeKey);
 }
 
-/** True when legacy serves the logout: page logouts always, identity's logout keys in legacy-primary mode. */
-export function isLegacyLogout(routeKey: string, mode: SessionMode): boolean {
-  return isPageLogout(routeKey) || (mode === 'legacy-primary' && isIdentityLogout(routeKey));
-}
-
 /** True for identity's logout keys; asked only of requests the target served. */
 export function isTargetLogout(routeKey: string): boolean {
   return isIdentityLogout(routeKey);
@@ -105,17 +138,16 @@ function recordedEffects(routeKey: string, facts: InventoryFacts): readonly Sess
 }
 
 /**
- * Session change of a legacy-served request: `logout` for a legacy logout, `login` for a recorded login or re-login.
- * A reload key's change is that of the route legacy serves after start-up (`afterReload`).
+ * Session change of a legacy-served request: `logout` for a logout key in either session mode, `login` for a recorded
+ * login or re-login. A reload key's change is that of the route legacy serves after start-up (`afterReload`).
  */
 export function legacySessionEffect(
   route: string | RouteKeyResult,
-  mode: SessionMode,
   facts: InventoryFacts,
 ): LegacySessionChange | undefined {
   const routeKey = typeof route === 'string' ? route : (route.afterReload ?? route).key;
   if (baseKey(routeKey).startsWith(SESSIONLESS_PREFIX)) return undefined;
-  if (isLegacyLogout(routeKey, mode)) return 'logout';
+  if (isLogoutRouteKey(routeKey)) return 'logout';
   return recordedEffects(routeKey, facts).some((effect) => effect === 'login' || effect === 'relogin')
     ? 'login'
     : undefined;
@@ -128,11 +160,38 @@ function liveCookies(cookies: JarCookies): JarCookies {
 
 /** Creates the logout and legacy-login handlers over identity, the bridge, the jar and the per-instance caches. */
 export function createInvalidation(opts: InvalidationOptions): Invalidation {
-  const { identity, bridge, jar, tokenCache, state } = opts;
+  const { identity, bridge, jar, tokenCache, state, logger } = opts;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_SECONDS * 1000;
+  const clock = opts.clock ?? systemClock;
 
   function forget(sessionId: string): void {
     tokenCache.drop(sessionId);
     state.forget(sessionId);
+  }
+
+  /**
+   * Kept only while legacy holds the login under identity's CSRF secret, which Masa's login and logout both replace
+   * with `session.mura` (userUtility.cfc:760-762); logged out without live cookies or an identity session.
+   */
+  async function logoutOutcome(sessionId: string, held: LegacyHeldSession): Promise<LegacyLogoutOutcome> {
+    const cookies = liveCookies(held.cookies);
+    if (Object.keys(cookies).length === 0) return 'logged-out';
+    try {
+      const [described, snapshot] = await Promise.all([
+        bridge.describe(cookies, { userAgent: held.userAgent }),
+        identity.snapshot(sessionId),
+      ]);
+      const { isLoggedIn, csrfSecretKey } = described.body;
+      return isLoggedIn && snapshot !== undefined && csrfSecretKey === snapshot.csrfSecretKey ? 'kept' : 'logged-out';
+    } catch (error) {
+      logger?.warn({ error: serializeError(error) }, 'legacy logout outcome unknown; the identity session stays pending');
+      return 'unknown';
+    }
+  }
+
+  /** True once no logout that marked `row` can still run: a repeated mark keeps the first time, but every mark stamps `updatedAt`. */
+  function outlivedLogouts(row: JarRow): boolean {
+    return clock.now().getTime() - row.updatedAt.getTime() >= requestTimeoutMs;
   }
 
   /** Forgets tokens and state, ends the identity session as a legacy logout, then drops its jar and any mark. */
@@ -170,13 +229,33 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
 
     async beforeLegacyLogout(sessionId, mode) {
       forget(sessionId);
-      // Committed before legacy logs out, so a failed identity end leaves the session blocked until it completes.
+      // Committed before legacy logs out, so a logout the after-step cannot settle is judged again by the next request.
       await jar.markIdentityEndPending(sessionId, mode);
     },
 
-    afterLegacyLogout: endInIdentity,
+    async afterLegacyLogout(sessionId, legacy) {
+      // Read before judging, so a mark stamped by a later logout survives this one's clear.
+      const row = await jar.get(sessionId);
+      const outcome = await logoutOutcome(sessionId, legacy);
+      if (outcome === 'logged-out') await endInIdentity(sessionId);
+      // A reader may have cleared the mark meanwhile; the session's next request judges the logout again.
+      else if (outcome === 'unknown') await jar.markIdentityEndPending(sessionId, legacy.mode);
+      // A legacy answer that skipped the logout, such as Masa's site-domain redirect, leaves both sessions logged in.
+      else if (row?.identityEndPendingAt !== undefined) await jar.clearIdentityEndPending(sessionId, row.updatedAt);
+    },
 
-    completePending: endInIdentity,
+    async completePending(sessionId, legacy) {
+      const row = await jar.get(sessionId);
+      // A target-primary jar holds the legacy session's cookies, whose names carry identity's values in the browser.
+      const held = row?.mode === 'target-primary' ? { ...legacy, cookies: row.cookies } : legacy;
+      const outcome = await logoutOutcome(sessionId, held);
+      if (outcome === 'logged-out') await endInIdentity(sessionId);
+      // A logout still running may apply later; its own after-step then ends the session.
+      else if (outcome === 'kept' && row?.identityEndPendingAt !== undefined && outlivedLogouts(row)) {
+        await jar.clearIdentityEndPending(sessionId, row.updatedAt);
+      }
+      return outcome;
+    },
 
     async afterLegacyLogin(sessionId, mode, legacy = {}) {
       // Under the jar lock, so no hydration installs an older snapshot over the login or rebinds around it.

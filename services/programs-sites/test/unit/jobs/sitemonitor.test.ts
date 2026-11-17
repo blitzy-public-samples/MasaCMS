@@ -10,12 +10,15 @@ import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/
 import {
   SiteMonitorRunError,
   SiteMonitorUnavailableError,
+  createSiteMonitorRunner,
   defaultCursorStore,
   registrySiteFlags,
   runSiteMonitor,
   type CursorStore,
   type MonitoredSite,
   type SiteFlagsSource,
+  type SiteMonitorPassStarter,
+  type SiteMonitorResult,
 } from '../../../src/jobs/sitemonitor.js';
 import { SiteMonitorDeadlineError, type StepDispatcher, type StepInvocation, type StepOutcome } from '../../../src/jobs/dispatch.js';
 import type { SiteMonitorStepName } from '../../../src/jobs/steps.js';
@@ -30,15 +33,22 @@ const NO_DB = { schema: 'programs_sites' } as unknown as TenantDb;
 const STORED = new Date(2026, 5, 30, 11, 30, 10);
 const RUN_AT = new Date(2026, 5, 30, 12, 0, 45);
 
-/** In-memory lease port: stored cursor values, granted and released lease ids, and a takeover by another pass. */
+const OTHER_PASS = 'another-pass';
+
+/** In-memory lease port: stored cursor values, granted and released lease ids, and the lease of another instance's pass. */
 interface FakeCursor extends CursorStore {
   writes: Date[];
   granted: string[];
   released: string[];
+  /** Another pass takes the lease. */
   takeOver(): void;
+  /** The other pass stores `at` as the cursor and keeps the lease. */
+  otherPassStores(at: Date): void;
+  /** The other pass stores `at` as the cursor, when given, and releases the lease. */
+  endOtherPass(at?: Date): void;
 }
 
-/** Lease port over cursor `initial`; answers the first `busy` acquires busy, and every release throws `releaseError` when set. */
+/** Lease port over cursor `initial`; answers busy for the first `busy` acquires and while any lease is held, and every release throws `releaseError` when set. */
 function fakeCursor(initial: Date | null, opts: { log?: string[]; busy?: number; releaseError?: Error } = {}): FakeCursor {
   let value = initial;
   let holder: string | null = null;
@@ -49,14 +59,22 @@ function fakeCursor(initial: Date | null, opts: { log?: string[]; busy?: number;
     granted: [],
     released: [],
     takeOver() {
-      holder = 'another-pass';
+      holder = OTHER_PASS;
+    },
+    otherPassStores(at) {
+      value = at;
+    },
+    endOtherPass(at) {
+      if (at !== undefined) value = at;
+      holder = null;
     },
     async acquire(leaseId) {
       log.push('lease.acquire');
       if (busy > 0) {
         busy -= 1;
-        return { status: 'busy' };
+        return { status: 'busy', lastMonitored: value };
       }
+      if (holder !== null) return { status: 'busy', lastMonitored: value };
       holder = leaseId;
       cursor.granted.push(leaseId);
       return { status: 'granted', lastMonitored: value };
@@ -141,7 +159,7 @@ function recordingDispatcher(opts: { failOn?: SiteMonitorStepName; error?: unkno
 
 function run(
   dispatch: StepDispatcher,
-  opts: { at?: Date; cursor?: CursorStore; sites?: SiteFlagsSource; clock?: Clock; sleep?: (ms: number) => Promise<void>; pollIntervalMs?: number } = {},
+  opts: { at?: Date; cursor?: CursorStore; sites?: SiteFlagsSource; clock?: Clock; sleep?: (ms: number) => Promise<void>; pollIntervalMs?: number; deadlineMs?: number } = {},
 ) {
   return runSiteMonitor({
     db: NO_DB,
@@ -151,6 +169,7 @@ function run(
     sites: opts.sites ?? fakeSites([]),
     ...(opts.sleep === undefined ? {} : { sleep: opts.sleep }),
     ...(opts.pollIntervalMs === undefined ? {} : { pollIntervalMs: opts.pollIntervalMs }),
+    ...(opts.deadlineMs === undefined ? {} : { deadlineMs: opts.deadlineMs }),
   });
 }
 
@@ -237,6 +256,65 @@ describe('runSiteMonitor run lease', () => {
 
     expect([err.reason, err.step, err.completed.at(-1)?.step]).toEqual(['deadline', 'setCursor', 'setCursor']);
     expect(cursor.writes).toEqual([]);
+  });
+
+  const OTHER_PASS_END = new Date(2026, 5, 30, 12, 0, 40);
+  const OTHER_PASS_DEFAULT = new Date(OTHER_PASS_END.getTime() - MINUTE_MS);
+
+  /** A pass that finds another instance's lease; its waits run, in turn, the other pass storing its default cursor when `defaulted`, then `end`. Its clock moves by each wait. */
+  function runBehindOtherPass(cursor: FakeCursor, end: () => void, defaulted = false) {
+    const { clock, sleep } = sleepingClock(RUN_AT);
+    const dispatcher = recordingDispatcher();
+    const waits = defaulted ? [() => cursor.otherPassStores(OTHER_PASS_DEFAULT), end] : [end];
+    cursor.takeOver();
+    const pass = run(dispatcher, {
+      clock,
+      cursor,
+      pollIntervalMs: 250,
+      sleep: async (ms) => {
+        await sleep(ms);
+        waits.shift()?.();
+      },
+    });
+    return { dispatcher, pass };
+  }
+
+  it.each([
+    { name: 'releasing the lease it was then granted', initial: STORED, thenHeld: false, leases: 1 },
+    { name: 'while a later pass holds the lease', initial: STORED, thenHeld: true, leases: 0 },
+    { name: 'from the default it stored over no cursor, releasing the lease it was then granted', initial: null, thenHeld: false, leases: 1 },
+    { name: 'from the default it stored over no cursor, while a later pass holds the lease', initial: null, thenHeld: true, leases: 0 },
+  ])('resolves with no steps once the other pass moved the cursor, $name', async ({ initial, thenHeld, leases }) => {
+    const cursor = fakeCursor(initial);
+    const end = () => {
+      cursor.endOtherPass(OTHER_PASS_END);
+      if (thenHeld) cursor.takeOver();
+    };
+    const { dispatcher, pass } = runBehindOtherPass(cursor, end, initial === null);
+
+    expect(await pass).toEqual({ theTime: OTHER_PASS_END, lastMonitored: initial ?? OTHER_PASS_DEFAULT, steps: [] });
+    expect(dispatcher.calls).toEqual([]);
+    expect(cursor.writes).toEqual([]);
+    expect(cursor.granted).toHaveLength(leases);
+    expect(cursor.released).toEqual(cursor.granted);
+  });
+
+  // A null cursor sets no baseline, so a grant right after it cannot tell a completed pass from one that failed after its default.
+  it.each([
+    { name: 'failed and left the cursor', initial: STORED, defaulted: false, leftAt: undefined, from: STORED },
+    { name: 'started from no cursor and ended within one wait', initial: null, defaulted: false, leftAt: OTHER_PASS_END, from: OTHER_PASS_END },
+    { name: 'stored its default over no cursor and failed', initial: null, defaulted: true, leftAt: undefined, from: OTHER_PASS_DEFAULT },
+  ])('runs its own pass from the stored cursor once the other pass that $name ended', async ({ initial, defaulted, leftAt, from }) => {
+    const cursor = fakeCursor(initial);
+    const { dispatcher, pass } = runBehindOtherPass(cursor, () => cursor.endOtherPass(leftAt), defaulted);
+
+    const result = await pass;
+
+    const granted = new Date(RUN_AT.getTime() + 250 * (defaulted ? 2 : 1));
+    expect([result.theTime, result.lastMonitored]).toEqual([granted, from]);
+    expect(dispatcher.calls.map(label).at(-1)).toBe('setCursor');
+    expect(cursor.writes).toEqual([granted]);
+    expect(cursor.released).toEqual(cursor.granted);
   });
 
   it.each([
@@ -394,23 +472,32 @@ describe('runSiteMonitor abort', () => {
     expect(cursor.writes).toEqual([]);
   });
 
-  it('stops with reason deadline before the next step once the queue deadline has passed', async () => {
+  it.each([
+    { name: 'the queue deadline', deadlineMs: undefined, budgetMs: DEADLINE_MS },
+    { name: 'a given deadline', deadlineMs: 9000, budgetMs: 9000 },
+  ])('stops with reason deadline before the next step once $name has passed', async ({ deadlineMs, budgetMs }) => {
     let now = RUN_AT.getTime();
     const cursor = fakeCursor(STORED);
     const dispatcher = recordingDispatcher({
       beforeAnswer: (inv) => {
-        if (inv.step.step === 'trackBounces') now = RUN_AT.getTime() + DEADLINE_MS;
+        if (inv.step.step === 'trackBounces') now = RUN_AT.getTime() + budgetMs;
       },
     });
 
     const err = await runError(
-      run(dispatcher, { clock: { now: () => new Date(now) }, cursor, sites: fakeSites([site('A', { eb: true, fm: true, orderNo: 1 })]) }),
+      run(dispatcher, {
+        clock: { now: () => new Date(now) },
+        cursor,
+        sites: fakeSites([site('A', { eb: true, fm: true, orderNo: 1 })]),
+        ...(deadlineMs === undefined ? {} : { deadlineMs }),
+      }),
       SiteMonitorUnavailableError,
     );
 
     expect([err.reason, err.step, err.siteId, err.cause, err.surface]).toEqual(['deadline', 'feedAutoImport', 'A', undefined, 'auto']);
     expect(err.completed.map(label)).toEqual(['sendReminders', 'emailSend', 'publishScheduledChangesets', 'trackBounces@A']);
     expect(dispatcher.calls.map(label).at(-1)).toBe('trackBounces@A');
+    expect(new Set(dispatcher.calls.map((c) => c.deadlineAt.getTime()))).toEqual(new Set([RUN_AT.getTime() + budgetMs]));
     expect(cursor.writes).toEqual([]);
   });
 
@@ -432,6 +519,164 @@ describe('runSiteMonitor abort', () => {
     ]);
     expect(err.completed.map(label)).toEqual(['sendReminders']);
     expect(err.message).toContain('emailSend');
+  });
+});
+
+/** A promise the test settles. */
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+type GatedPass = Deferred<SiteMonitorResult> & { deadlineMs: number | undefined };
+
+/** Pass starter whose passes the test settles, each recorded with the deadline it started with. */
+function gatedStarter(): { start: SiteMonitorPassStarter; passes: GatedPass[] } {
+  const passes: GatedPass[] = [];
+  return {
+    passes,
+    start: (deadlineMs) => {
+      const pass: GatedPass = { ...deferred<SiteMonitorResult>(), deadlineMs };
+      passes.push(pass);
+      return pass.promise;
+    },
+  };
+}
+
+/** Budget timers the test expires; an aborted one rejects with its signal's reason. */
+function manualTimers(): { timers: Array<{ ms: number; signal: AbortSignal; expire: () => void }>; sleep: (ms: number, signal: AbortSignal) => Promise<unknown> } {
+  const timers: Array<{ ms: number; signal: AbortSignal; expire: () => void }> = [];
+  return {
+    timers,
+    sleep: (ms, signal) =>
+      new Promise((resolve, reject) => {
+        timers.push({ ms, signal, expire: () => resolve(undefined) });
+        signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true });
+      }),
+  };
+}
+
+describe('createSiteMonitorRunner', () => {
+  const BUDGET_MS = 9000;
+  const PASS: SiteMonitorResult = { theTime: RUN_AT, lastMonitored: STORED, steps: [] };
+
+  it.each([
+    { name: 'a public caller', first: BUDGET_MS },
+    { name: 'the task route', first: undefined },
+  ])('shares the pass $name started with every concurrent caller, then starts the next one', async ({ first }) => {
+    const { start, passes } = gatedStarter();
+    const { timers, sleep } = manualTimers();
+    const runner = createSiteMonitorRunner({ start, sleep });
+    const budgets = [first, BUDGET_MS, BUDGET_MS, undefined];
+
+    const callers = budgets.map((budgetMs) => runner.run(budgetMs));
+    passes[0]?.resolve(PASS);
+    const results = await Promise.all(callers);
+
+    expect(results.every((result) => result === PASS)).toBe(true);
+    expect(passes.map((pass) => pass.deadlineMs)).toEqual([first]);
+    expect(timers.map((timer) => [timer.ms, timer.signal.aborted])).toEqual(budgets.filter((b) => b !== undefined).map((b) => [b, true]));
+    const next = runner.run();
+    expect(passes.map((pass) => pass.deadlineMs)).toEqual([first, undefined]);
+    passes[1]?.resolve(PASS);
+    expect(await next).toBe(PASS);
+  });
+
+  it('rejects every caller of a failed pass with its error, and the next caller starts a new pass', async () => {
+    const { start, passes } = gatedStarter();
+    const runner = createSiteMonitorRunner({ start, sleep: manualTimers().sleep });
+    const error = new Error('pass failed');
+
+    const callers = [runner.run(BUDGET_MS), runner.run()].map((caller) => caller.then(() => undefined, (e: unknown) => e));
+    passes[0]?.reject(error);
+
+    expect(await Promise.all(callers)).toEqual([error, error]);
+    const next = runner.run();
+    passes[1]?.resolve(PASS);
+    expect(await next).toBe(PASS);
+  });
+
+  it('stops a public caller at its budget with the legacy 503 while the task pass it joined runs on', async () => {
+    const { start, passes } = gatedStarter();
+    const { timers, sleep } = manualTimers();
+    const runner = createSiteMonitorRunner({ start, sleep });
+
+    const task = runner.run();
+    const caller = runner.run(BUDGET_MS);
+    timers[0]?.expire();
+    const err = await runError(caller, LegacyServiceUnavailableError);
+
+    expect([err.surface, err.reason]).toEqual(['auto', 'sitemonitor-budget']);
+    expect(passes.map((pass) => pass.deadlineMs)).toEqual([undefined]);
+    passes[0]?.resolve(PASS);
+    expect(await task).toBe(PASS);
+  });
+
+  it('ends a pass a public caller started at its budget: the caller gets the legacy 503 and no further step runs', async () => {
+    let now = RUN_AT.getTime();
+    const { timers, sleep } = manualTimers();
+    const cursor = fakeCursor(STORED);
+    const dispatcher = recordingDispatcher({
+      beforeAnswer: (inv) => {
+        if (inv.step.step !== 'emailSend') return;
+        now += BUDGET_MS;
+        timers[0]?.expire();
+      },
+    });
+    let pass: Promise<SiteMonitorResult> | undefined;
+    const runner = createSiteMonitorRunner({
+      sleep,
+      start: (deadlineMs) => (pass = run(dispatcher, { clock: { now: () => new Date(now) }, cursor, ...(deadlineMs === undefined ? {} : { deadlineMs }) })),
+    });
+
+    await runError(runner.run(BUDGET_MS), LegacyServiceUnavailableError);
+    const stop = await runError(pass ?? Promise.resolve(), SiteMonitorUnavailableError);
+
+    expect([stop.reason, stop.step]).toEqual(['deadline', 'publishScheduledChangesets']);
+    expect(dispatcher.calls.map(label)).toEqual(['sendReminders', 'emailSend']);
+    expect(cursor.writes).toEqual([]);
+    expect(cursor.released).toEqual(cursor.granted);
+  });
+
+  it('waits out a budget on a real timer by default, which a settled pass cancels', async () => {
+    const stalled = createSiteMonitorRunner({ start: () => new Promise<SiteMonitorResult>(() => undefined) });
+    const quick = createSiteMonitorRunner({ start: async () => PASS });
+
+    await runError(stalled.run(5), LegacyServiceUnavailableError);
+    expect(await quick.run(60_000)).toBe(PASS);
+  });
+
+  it.each([
+    { name: 'no cursor', initial: null },
+    { name: 'a stored cursor', initial: STORED },
+  ])('runs one pass for independent runners starting together on $name and answers the others covered', async ({ initial }) => {
+    const cursor = fakeCursor(initial);
+    const dispatcher = recordingDispatcher();
+    const runners = Array.from({ length: 12 }, () =>
+      createSiteMonitorRunner({
+        start: (deadlineMs) => run(dispatcher, { cursor, sleep: async () => undefined, ...(deadlineMs === undefined ? {} : { deadlineMs }) }),
+      }),
+    );
+
+    const [pass, ...others] = await Promise.all(runners.map((runner) => runner.run(BUDGET_MS)));
+
+    const lastMonitored = initial ?? new Date(RUN_AT.getTime() - MINUTE_MS);
+    expect([pass?.theTime, pass?.lastMonitored, pass?.steps.map((s) => s.step).at(-1)]).toEqual([RUN_AT, lastMonitored, 'setCursor']);
+    expect(others).toEqual(Array.from({ length: 11 }, () => ({ theTime: RUN_AT, lastMonitored, steps: [] })));
+    expect(dispatcher.calls.filter((c) => c.step.step === 'setCursor')).toHaveLength(1);
+    expect(cursor.writes).toEqual(initial === null ? [lastMonitored, RUN_AT] : [RUN_AT]);
+    expect(cursor.released).toEqual(cursor.granted);
   });
 });
 
@@ -601,7 +846,7 @@ describe.skipIf(!available)('site-monitor adapters against PostgreSQL', () => {
     const logged = (await stateChanges()).length;
 
     expect(await store(at(12, 10)).acquire(a, at(12, 11))).toEqual({ status: 'granted', lastMonitored: clock.now() });
-    expect(await store(at(12, 10, 59, 999)).acquire(b, at(12, 12))).toEqual({ status: 'busy' });
+    expect(await store(at(12, 10, 59, 999)).acquire(b, at(12, 12))).toEqual({ status: 'busy', lastMonitored: clock.now() });
     expect(await store(at(12, 11)).acquire(b, at(12, 12))).toMatchObject({ status: 'granted' });
     expect(await store(at(12, 11)).advance(a, at(12, 11))).toBe(false);
     expect(await store(at(12, 11)).release(a)).toBe(false);
@@ -628,7 +873,10 @@ describe.skipIf(!available)('site-monitor adapters against PostgreSQL', () => {
     expect((await stateChanges()).slice(logged)).toHaveLength(3);
   });
 
-  it('serialises two concurrent passes: the second covers the first pass end to its own run time', async () => {
+  it.each([
+    { name: 'a completed holder pass covers the waiting pass', fails: false, theTime: at(12, 30), ownPass: false },
+    { name: 'a failed holder pass leaves the waiting pass to run its own', fails: true, theTime: at(12, 30, 6), ownPass: true },
+  ])('two instances: $name', async ({ fails, theTime, ownPass }) => {
     let now = at(12, 30).getTime();
     const shared: Clock = { now: () => new Date(now) };
     let reachedSetCursor!: () => void;
@@ -643,14 +891,21 @@ describe.skipIf(!available)('site-monitor adapters against PostgreSQL', () => {
     const slowFirst: StepDispatcher = {
       async dispatch(inv) {
         const outcome = await first.dispatch(inv);
-        if (inv.step.step === 'setCursor') await gate;
+        if (inv.step.step !== 'setCursor') return outcome;
+        await gate;
+        if (fails) throw new Error('setCursor failed');
         return outcome;
       },
     };
     const second = recordingDispatcher();
     const sleeps: number[] = [];
+    const before = await readCursor(handle.app);
 
     const firstPass = runSiteMonitor({ db: handle.app, clock: shared, dispatch: slowFirst });
+    const firstEnd = firstPass.then(
+      (result) => result,
+      (err: unknown) => err,
+    );
     await blocked;
     now = at(12, 30, 5).getTime();
     const secondPass = runSiteMonitor({
@@ -661,15 +916,79 @@ describe.skipIf(!available)('site-monitor adapters against PostgreSQL', () => {
         sleeps.push(ms);
         now += ms;
         releaseSetCursor();
-        await firstPass;
+        await firstEnd;
       },
     });
-    const [one, two] = await Promise.all([firstPass, secondPass]);
+    const [one, two] = await Promise.all([firstEnd, secondPass]);
 
+    expect(one instanceof SiteMonitorRunError).toBe(fails);
     expect(sleeps).toEqual([1000]);
-    expect([one.theTime, two.theTime]).toEqual([at(12, 30), at(12, 30, 6)]);
-    expect(new Set(second.calls.map((c) => c.lastMonitored.getTime()))).toEqual(new Set([at(12, 30).getTime()]));
-    expect((await readCursor(handle.app))?.getTime()).toBe(at(12, 30, 6).getTime());
+    expect([two.theTime, two.lastMonitored]).toEqual([theTime, before]);
+    expect(second.calls.length > 0).toBe(ownPass);
+    expect(second.calls.every((c) => c.lastMonitored.getTime() === before?.getTime())).toBe(true);
+    expect((await readCursor(handle.app))?.getTime()).toBe(theTime.getTime());
+    expect(await lease()).toEqual({ lease_id: null, lease_until: null });
+  });
+
+  it.each([
+    { name: 'no cursor', initial: null },
+    { name: 'a stored cursor', initial: at(12, 40) },
+  ])('instances starting together on $name run one pass and answer the others covered', async ({ initial }) => {
+    const instances = 4;
+    const theTime = at(12, 45);
+    const shared = fixedClock(theTime);
+    if (initial === null) await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => tx.query(`UPDATE ${handle.schema}.sitemonitor_state SET last_monitored = NULL`));
+    else await writeCursor(handle.app, initial, shared);
+    // Per waiting lease: the cursor of its first busy answer, and whether a busy answer has shown a stored cursor.
+    const firstBusy = new Map<string, Date | null>();
+    const sawStored = new Set<string>();
+    let everyBusy!: () => void;
+    let everyStored!: () => void;
+    const allBusy = new Promise<void>((resolve) => (everyBusy = resolve));
+    const allStored = new Promise<void>((resolve) => (everyStored = resolve));
+    const pg = defaultCursorStore(handle.app, shared);
+    // The holder's cursor writes wait until every other instance was answered busy, so a cold start shows them null first.
+    const cursor: CursorStore = {
+      async acquire(leaseId, until) {
+        const grant = await pg.acquire(leaseId, until);
+        if (grant.status === 'busy') {
+          if (!firstBusy.has(leaseId)) firstBusy.set(leaseId, grant.lastMonitored);
+          if (grant.lastMonitored !== null) sawStored.add(leaseId);
+          if (firstBusy.size === instances - 1) everyBusy();
+          if (sawStored.size === instances - 1) everyStored();
+        }
+        return grant;
+      },
+      advance: async (leaseId, to) => {
+        await allBusy;
+        return pg.advance(leaseId, to);
+      },
+      release: (leaseId) => pg.release(leaseId),
+    };
+    const recorded = recordingDispatcher();
+    // The holder's pass ends only after every other instance has seen a stored cursor while busy.
+    const dispatch: StepDispatcher = {
+      async dispatch(inv) {
+        if (inv.step.step === 'setCursor') await allStored;
+        return recorded.dispatch(inv);
+      },
+    };
+    const runners = Array.from({ length: instances }, () =>
+      createSiteMonitorRunner({
+        start: (deadlineMs) =>
+          runSiteMonitor({ db: handle.app, clock: shared, dispatch, cursor, pollIntervalMs: 50, ...(deadlineMs === undefined ? {} : { deadlineMs }) }),
+      }),
+    );
+
+    // A budget the loaded shared test host cannot exhaust: no caller may end on it.
+    const results = await Promise.all(runners.map((runner) => runner.run(60_000)));
+
+    const lastMonitored = initial ?? new Date(theTime.getTime() - MINUTE_MS);
+    expect([...firstBusy.values()]).toEqual(Array.from({ length: instances - 1 }, () => initial));
+    expect(results.filter((r) => r.steps.length > 0).map((r) => [r.theTime, r.lastMonitored])).toEqual([[theTime, lastMonitored]]);
+    expect(results.filter((r) => r.steps.length === 0)).toEqual(Array.from({ length: instances - 1 }, () => ({ theTime, lastMonitored, steps: [] })));
+    expect(recorded.calls.filter((c) => c.step.step === 'setCursor')).toHaveLength(1);
+    expect((await readCursor(handle.app))?.getTime()).toBe(theTime.getTime());
     expect(await lease()).toEqual({ lease_id: null, lease_until: null });
   });
 });

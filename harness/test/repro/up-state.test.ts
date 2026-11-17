@@ -562,6 +562,8 @@ describe('redactUpState', () => {
       { processes: {}, snapshot: { seq: null, kind: ['S'], name: { label: 'S0' }, key: 'synthetic-snapshot-key' } },
       { processes: {}, snapshot: {} },
     ],
+    ['a selected cut-over directory', { processes: {}, cutoverDir: '/x/state/cutover' }, { processes: {}, cutoverDir: '/x/state/cutover' }],
+    ['a null cut-over directory', { processes: {}, cutoverDir: null }, { processes: {}, cutoverDir: null }],
   ])('projects %s onto its allowlisted fields without changing it', (_label, input, expected) => {
     const state = deepFreeze(input);
     const before = structuredClone(state);
@@ -672,6 +674,19 @@ describe('repro:up-state CLI', () => {
     expect(readUpState({ env })).toEqual(sampleState());
   });
 
+  it.each<[string, string | null]>([
+    ['the fixtures-unavailable build', '/x/state/cutover'],
+    ['null for the committed versions', null],
+  ])('write --patch records cutoverDir as %s, and read --field cutoverDir prints it', async (_label, cutoverDir) => {
+    expect((await cli(['write', '--patch', JSON.stringify({ cutoverDir })])).code).toBe(0);
+    expect(readUpState({ env })).toEqual({ processes: {}, cutoverDir });
+
+    const result = await cli(['read', '--field', 'cutoverDir']);
+
+    expect(result.code).toBe(0);
+    expect(result.line.value).toBe(cutoverDir);
+  });
+
   it('read --field prints one nested value of the projection', async () => {
     writeUpState(sampleState(), { env });
     const result = await cli(['read', '--field', 'processes.gateway.pid']);
@@ -747,6 +762,7 @@ describe('repro:up-state CLI', () => {
       /^--env-json is not valid JSON: Unexpected token in JSON$/,
     ],
     ['a --patch that fails the schema', ['write', '--patch', '{"processes":{"gateway":{"pid":-1}}}'], /^--patch is invalid:/],
+    ['a relative cutoverDir', ['write', '--patch', '{"cutoverDir":"state/cutover"}'], /^--patch is invalid:[\s\S]*must be an absolute path/],
     ['--patch with process flags', ['write', '--patch', '{}', '--process', 'gateway'], /are mutually exclusive$/],
     ['a top-level flag the patch also sets', ['write', '--patch', '{"snapshot":"S0"}', '--snapshot-json', '"S1"'], /--snapshot-json conflicts with the patch's snapshot$/],
     ['a --snapshot-json that is not JSON', ['write', '--snapshot-json', '{'], /^--snapshot-json is not valid JSON: /],

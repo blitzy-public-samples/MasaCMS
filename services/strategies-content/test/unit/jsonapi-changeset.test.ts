@@ -25,6 +25,7 @@ import { createContentRepository, type ContentRepository } from '../../src/repo/
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { changesetCategoryAssignmentHandler, changesetHandler } from '../../src/routes/jsonapi/changeset.js';
+import { recordingRelatedReader } from '../helpers/related-reader.js';
 import {
   createJsonApiParams,
   rowsSource,
@@ -469,6 +470,37 @@ describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategor
       ]);
     });
 
+    // A blank row (queryRowToStruct before row 1) sets '' over the iterator template: setPublished keeps its 0, and
+    // getChangesetID creates an id for the empty changesetID, each bean its own.
+    it.each([
+      [
+        'every value',
+        {},
+        (id: string): Struct => ({
+          changesetid: '',
+          name: '',
+          created: '',
+          publishdate: '',
+          lastupdateby: '',
+          published: 0,
+          isnew: 1,
+          links: expect.objectContaining({ self: `${EP_A}/changeset/${id}`, categoryassignments: `${EP_A}/changesetCategoryAssignment?changesetID=${id}` }) as unknown,
+        }),
+      ],
+      ['a field list', { fields: 'name,published' }, (id: string): Struct => ({ changesetid: id, name: '', published: 0, isnew: 1 })],
+    ])('findAll before the first record answers blank rows over the iterator template with %s', async (_label, url, values) => {
+      const data = wire('findAll', await onChangeset('findAll', { actor: PUBLISHER_A, url: { itemsPerPage: '2', pageIndex: '0', ...url } }));
+      expect(data).toMatchObject({ totalitems: 2, pageindex: 0, startindex: -1 });
+      const items = itemsOf(data);
+      expect(items).toHaveLength(2);
+      for (const item of items) {
+        const id = String(item['id']);
+        expect(isCfUuid(id)).toBe(true);
+        expect(item).toMatchObject({ siteid: '', entityname: 'changeset', ...values(id) });
+      }
+      expect(items[0]?.['id']).not.toBe(items[1]?.['id']);
+    });
+
     it('findMany keeps the ids order unless the URL sorts', async () => {
       const ids = [String(SPRING['id']), MISSING, String(AUTUMN['id'])];
       const listed = wire('findMany', await onChangeset('findMany', { actor: PUBLISHER_A, ids }));
@@ -606,12 +638,15 @@ describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategor
       expect(itemsOf(expanded)[0]).toMatchObject({ changesetid: id, siteid: TENANT_A.siteId, isnew: 0 });
     });
 
-    it('refuses the expansion without the assignment module and fails closed on contentAssignments', async () => {
+    it('refuses the expansion without the assignment module and reads contentAssignments through the content findQuery', async () => {
       const id = String(SPRING['id']);
       await expect(onChangeset('findOne', { actor: PUBLISHER_A, id, url: { expand: 'categoryassignments' } })).rejects.toBeInstanceOf(LegacyApiError);
-      await expect(onChangeset('findOne', { actor: MANAGER_A, id, url: { expand: 'contentassignments' } })).rejects.toBeInstanceOf(
-        LegacyServiceUnavailableError,
-      );
+      const { reader, reads } = recordingRelatedReader();
+      const call = { ...callFor({ actor: MANAGER_A, id, url: { expand: 'contentassignments' }, method: 'findOne', entityName: 'changeset' }), related: reader };
+      const data = wire('findOne', await invoke(changesetHandler, 'findOne', call));
+      expect(reads).toEqual([{ read: 'findQuery', entityName: 'content', expand: 'contentassignments', expanded: 1, params: expect.any(Object) }]);
+      expect(Object.entries(reads[0]?.params ?? {}).filter(([key]) => key.toLowerCase() === 'changesetid')).toEqual([[expect.any(String), id]]);
+      expect(data['contentassignments']).toMatchObject({ related: 'content' });
     });
   });
 
@@ -644,6 +679,17 @@ describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategor
           entities: EP_A,
         },
       });
+    });
+
+    it('findAll before the first record answers a blank row\'s bean under the fresh id beanORM.init gave it', async () => {
+      const data = wire('findAll', await onAssignment('findAll', { actor: EDITOR_A, url: { itemsPerPage: '1', pageIndex: '0' } }));
+      expect(data).toMatchObject({ pageindex: 0, startindex: 0, endindex: 0 });
+      const [item, ...rest] = itemsOf(data);
+      expect(rest).toEqual([]);
+      const id = String(item?.['id']);
+      expect(isCfUuid(id)).toBe(true);
+      expect(item).toMatchObject({ assignmentid: id, changesetid: '', categoryid: '', siteid: '', isnew: 0, entityname: 'changesetCategoryAssignment' });
+      expect(linksOf(item ?? {})).toMatchObject({ self: `${EP_A}/changesetCategoryAssignment/${id}` });
     });
 
     it('save stores, reads, lists and deletes an assignment', async () => {
@@ -683,17 +729,20 @@ describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategor
       expect(wire('findOne', await onAssignment('findOne', { actor: EDITOR_A, id }))).toMatchObject({ isnew: 1 });
     });
 
-    it('expands its changeset through the changeset findOne and fails closed on category and site', async () => {
+    it('expands its changeset through the changeset findOne and reads category and site through the related reader', async () => {
       const data = wire('findNew', await onAssignment('findNew', { actor: MANAGER_A }));
       expect(data).toMatchObject({ siteid: TENANT_A.siteId, isnew: 1, cachedwithin: '0' });
       const found = await onAssignment('findOne', { actor: MANAGER_A, id: MISSING, url: { expand: 'changeset' } });
       expect(wire('findOne', found)['changeset']).toMatchObject({ siteid: TENANT_A.siteId, isnew: 1, entityname: 'changeset' });
       await expect(onAssignment('findOne', { actor: EDITOR_A, id: MISSING, url: { expand: 'changeset' } })).rejects.toBeInstanceOf(LegacyApiError);
-      for (const expand of ['category', 'site']) {
-        await expect(onAssignment('findOne', { actor: MANAGER_A, id: MISSING, url: { expand } })).rejects.toBeInstanceOf(
-          LegacyServiceUnavailableError,
-        );
-      }
+      const { reader, reads } = recordingRelatedReader();
+      const call = { ...callFor({ actor: MANAGER_A, id: MISSING, url: { expand: 'category,site' }, method: 'findOne', entityName: 'changesetCategoryAssignment' }), related: reader };
+      const expanded = wire('findOne', await invoke(changesetCategoryAssignmentHandler, 'findOne', call));
+      expect(reads).toEqual([
+        { read: 'findOne', entityName: 'site', id: TENANT_A.siteId, expand: 'category,site', expanded: 1 },
+        { read: 'findOne', entityName: 'category', id: '', expand: 'category,site', expanded: 1 },
+      ]);
+      expect({ site: expanded['site'], category: expanded['category'] }).toEqual({ site: { related: 'site', id: TENANT_A.siteId }, category: { related: 'category', id: '' } });
     });
 
     it('findProperties answers the ORM metadata', async () => {

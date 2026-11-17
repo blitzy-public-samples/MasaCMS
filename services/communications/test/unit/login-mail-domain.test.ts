@@ -15,7 +15,7 @@ import {
   type WriteContext,
 } from '@opt2/platform/migration-kit';
 import { writeOutbox, type OutboxRuntime, type OutboxWriteInput } from '@opt2/platform/outbox';
-import { registeredTenants, type CommitCallback, type CommitErrorHandler, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { knownTenants, registeredTenants, type CommitCallback, type CommitErrorHandler, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, createCapturingPublisher, fixedClock, testEnvelope } from '@opt2/platform/testing';
 import type { MailDeps } from '../../src/domain/delivery.js';
 import {
@@ -42,6 +42,7 @@ vi.mock('@opt2/platform/migration-kit', async (importOriginal) => ({
 vi.mock('@opt2/platform/tenancy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@opt2/platform/tenancy')>()),
   registeredTenants: vi.fn(),
+  knownTenants: vi.fn(),
 }));
 
 vi.mock('@opt2/platform/outbox', async (importOriginal) => ({
@@ -323,6 +324,7 @@ function createWorld(): World {
     return Promise.resolve(rows);
   });
   vi.mocked(registeredTenants).mockResolvedValue([]);
+  vi.mocked(knownTenants).mockResolvedValue([]);
   return Object.assign(state, { db, deps, insertMessage: repository.insertMessage, send, confirm, fromEmail });
 }
 
@@ -417,8 +419,11 @@ function sweep(world: World): Promise<void> {
   return loginMailRecovery(world.deps).run({ service: 'communications', runtime, clock: world.deps.clock, logger: world.deps.logger });
 }
 
-function registry(...tenantIds: string[]): void {
-  vi.mocked(registeredTenants).mockResolvedValue(tenantIds.map((tenantId, i) => ({ tenantId, siteId: `site-${i}` })));
+/** Registry entries of `tenantIds`; the `deleted` ones stay known to the registry but are no longer registered. */
+function registry(tenantIds: readonly string[], deleted: readonly string[] = []): void {
+  const entries = tenantIds.map((tenantId, i) => ({ tenantId, siteId: `site-${i}` }));
+  vi.mocked(knownTenants).mockResolvedValue(entries);
+  vi.mocked(registeredTenants).mockResolvedValue(entries.filter(({ tenantId }) => !deleted.includes(tenantId)));
 }
 
 /** The error nodemailer throws when the relay refuses the connection. */
@@ -634,12 +639,15 @@ describe('deliverLoginMail', () => {
 });
 
 describe('loginMailRecovery', () => {
-  it('reads mail queued over 30 s once per tenant', async () => {
-    registry(TENANT_A.tenantId.toUpperCase(), TENANT_A.tenantId, TENANT_B.tenantId);
+  it.each<[string, string[]]>([
+    ['registered', []],
+    ['deleted from the registry', [TENANT_B.tenantId]],
+  ])('reads mail queued over 30 s once per tenant the registry has known, with tenant B %s', async (_label, deleted) => {
+    registry([TENANT_A.tenantId.toUpperCase(), TENANT_A.tenantId, TENANT_B.tenantId], deleted);
 
     await sweep(world);
 
-    expect(registeredTenants).toHaveBeenCalledWith(world.db);
+    expect(knownTenants).toHaveBeenCalledWith(world.db);
     expect(world.batchReads).toEqual([
       { tenantId: TENANT_A.tenantId, cutoff: new Date(NOW.getTime() - 30_000), batch: {} },
       { tenantId: TENANT_B.tenantId, cutoff: new Date(NOW.getTime() - 30_000), batch: {} },
@@ -647,7 +655,7 @@ describe('loginMailRecovery', () => {
   });
 
   it('claims, gates, sends and confirms a lost mail', async () => {
-    registry(TENANT_A.tenantId);
+    registry([TENANT_A.tenantId]);
     seed(world, TENANT_A.tenantId, { from_address: '' });
 
     await sweep(world);
@@ -731,7 +739,7 @@ describe('loginMailRecovery', () => {
       log: `login mail ${MESSAGE_ID}: recovery send failed`,
     },
   ])('$case', async ({ to, inMailpit, sendError, drops, state, trail, sends, log }) => {
-    registry(TENANT_A.tenantId);
+    registry([TENANT_A.tenantId]);
     seed(world, TENANT_A.tenantId, to === undefined ? {} : { to_address: to });
     if (inMailpit === true) {
       world.mailpit.set(MESSAGE_ID, 'MP-early');
@@ -753,7 +761,7 @@ describe('loginMailRecovery', () => {
     ['no longer queued', (w, row) => void w.committed.get(TENANT_A.tenantId)?.messages.set(MESSAGE_ID, { ...row, state: 'sent' })],
     ['gone', (w) => void w.committed.get(TENANT_A.tenantId)?.messages.delete(MESSAGE_ID)],
   ])('leaves a mail %s untouched', async (_case, change) => {
-    registry(TENANT_A.tenantId);
+    registry([TENANT_A.tenantId]);
     const row = seed(world, TENANT_A.tenantId);
     vi.mocked(queuedLoginMailOlderThan).mockResolvedValueOnce([row]);
     change(world, row);
@@ -767,7 +775,7 @@ describe('loginMailRecovery', () => {
   });
 
   it('pages through the tenant by message cursor', async () => {
-    registry(TENANT_A.tenantId);
+    registry([TENANT_A.tenantId]);
     const rows = Array.from({ length: RECOVERY_BATCH_SIZE + 50 }, (_, i) => seed(world, TENANT_A.tenantId, { message_id: cfId(i) }));
 
     await sweep(world);
@@ -778,7 +786,7 @@ describe('loginMailRecovery', () => {
   });
 
   it('logs a failing mail and recovers the rest', async () => {
-    registry(TENANT_A.tenantId);
+    registry([TENANT_A.tenantId]);
     seed(world, TENANT_A.tenantId, { message_id: cfId(1) });
     seed(world, TENANT_A.tenantId, { message_id: cfId(2) });
     world.fromEmail.mockRejectedValueOnce(new Error('registry unavailable'));
@@ -792,7 +800,7 @@ describe('loginMailRecovery', () => {
   });
 
   it('re-runs a claim after a gate race and sends once', async () => {
-    registry(TENANT_A.tenantId);
+    registry([TENANT_A.tenantId]);
     seed(world, TENANT_A.tenantId);
     vi.mocked(acquireWriteGates).mockRejectedValueOnce(new GateRaceError([MESSAGE.unit]));
 
@@ -804,7 +812,7 @@ describe('loginMailRecovery', () => {
   });
 
   it('ends a tenant at a gate error and recovers the next', async () => {
-    registry(TENANT_A.tenantId, TENANT_B.tenantId);
+    registry([TENANT_A.tenantId, TENANT_B.tenantId]);
     seed(world, TENANT_A.tenantId, { message_id: cfId(1) });
     seed(world, TENANT_A.tenantId, { message_id: cfId(2) });
     seed(world, TENANT_B.tenantId, { message_id: cfId(3), siteid: TENANT_B.siteId });
@@ -832,7 +840,7 @@ describe('loginMailRecovery', () => {
     ['UnitReadBlockedError', () => new UnitReadBlockedError([MESSAGE.unit])],
     ['OperationBlockedError', () => new OperationBlockedError([MESSAGE.unit])],
   ])('skips a tenant whose batch read throws %s', async (type, gateError) => {
-    registry(TENANT_A.tenantId, TENANT_B.tenantId);
+    registry([TENANT_A.tenantId, TENANT_B.tenantId]);
     seed(world, TENANT_B.tenantId, { siteid: TENANT_B.siteId });
     vi.mocked(queuedLoginMailOlderThan).mockRejectedValueOnce(gateError());
 
@@ -843,7 +851,7 @@ describe('loginMailRecovery', () => {
   });
 
   it('rethrows any other tenant error', async () => {
-    registry(TENANT_A.tenantId, TENANT_B.tenantId);
+    registry([TENANT_A.tenantId, TENANT_B.tenantId]);
     const failure = new Error('connection terminated');
     vi.mocked(queuedLoginMailOlderThan).mockRejectedValueOnce(failure);
 

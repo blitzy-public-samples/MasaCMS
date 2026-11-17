@@ -22,9 +22,11 @@ import {
   beanFeedQuery,
   entityAccessAllowed,
   entityActionAllowed,
+  finderOf,
   findPropertiesFor,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
   type BeanFeedResult,
   type EntityHandler,
@@ -94,11 +96,11 @@ function siteFeed(ctx: ContentRouteContext, call: JsonApiCall, contentIds?: read
   return withTenant(db, call.tenantId, (tx) => beanFeedQuery(repository.beanFeed.source<StatsRow>((fn) => fn(tx), spec), call, FEED_OPTIONS));
 }
 
-/** The feed's count or page, each page row packaged as an iterator bean (`set(row).setIsNew(0)`). */
-async function feedResult(call: JsonApiCall, result: BeanFeedResult<StatsRow>, ids?: readonly string[]): Promise<JsonApiResult> {
+/** The feed's count or page, each page row packaged as an iterator bean (`set(row).setIsNew(0)`), keyed as serializeEntityList's `pk`. */
+async function feedResult(call: JsonApiCall, result: BeanFeedResult<StatsRow>, pk?: string, ids?: readonly string[]): Promise<JsonApiResult> {
   if ('count' in result) return jsonApiResultOf({ count: result.count }, ENTITY);
   const views = result.items.map((row) => statsView(statsValues({ ...row, isNew: 0 })));
-  let items = await serializeEntityList(views, call.apiContext, { entityName: ENTITY, expand: call.params.string('expand') });
+  let items = await serializeEntityList(views, call.apiContext, { entityName: ENTITY, ...finderOf(call), pk }, relatedResolver(call));
   if (ids !== undefined && String(urlParam(call.apiContext, 'sort') ?? '') === '') items = inIdOrder(items, ids);
   return jsonApiResultOf(serializeCollection(items, result.page, call.apiContext, { baseUrl: result.baseUrl }), ENTITY);
 }
@@ -110,27 +112,30 @@ const findOne: JsonApiHandlerFn = async (ctx, call) => {
   const stats = await withTenant(ctx.domain.db, call.tenantId, (tx) =>
     loadStats(tx, ctx.domain.repository, call.id ?? '', call.siteId),
   );
-  const data = await serializeContentEntity(statsView(statsValues(stats)), call.apiContext, undefined, {
-    expanded: 0,
-    expandLinks: call.params.string('expand'),
+  const { expand, expanded } = finderOf(call);
+  const data = await serializeContentEntity(statsView(statsValues(stats)), call.apiContext, relatedResolver(call), {
+    expanded,
+    expandLinks: expand,
     pk: CONFIG.primaryKey,
     editableCheck: true,
   });
   return jsonApiResultOf(data, ENTITY);
 };
 
-/** findAll and findQuery (2542-2625, 2711-2918): the site's stats rows through the generic beanFeed. */
-const findFeed: JsonApiHandlerFn = async (ctx, call) => {
-  if (!entityAccessAllowed(call.actor, CONFIG)) return authorizationDenied();
-  // Only the request site's rows: a `contentpoolid` naming other sites would reach other tenants' rows.
-  return feedResult(call, await siteFeed(ctx, call));
-};
+/** findAll and findQuery (2542-2625, 2711-2918): the site's stats rows through the generic beanFeed, keyed by `pk`. */
+function findFeed(pk?: string): JsonApiHandlerFn {
+  return async (ctx, call) => {
+    if (!entityAccessAllowed(call.actor, CONFIG)) return authorizationDenied();
+    // Only the request site's rows: a `contentpoolid` naming other sites would reach other tenants' rows.
+    return feedResult(call, await siteFeed(ctx, call), pk);
+  };
+}
 
 /** findMany (2627-2710): the site's rows of `ids`, in the order of `ids` unless the URL sorts them. */
 const findMany: JsonApiHandlerFn = async (ctx, call) => {
   if (!entityAccessAllowed(call.actor, CONFIG)) return authorizationDenied();
   const ids = call.ids ?? [];
-  return feedResult(call, await siteFeed(ctx, call, ids), ids);
+  return feedResult(call, await siteFeed(ctx, call, ids), CONFIG.primaryKey, ids);
 };
 
 /** findPermissions (2240-2266): bean.getPermissions of a fresh stats bean; an id makes legacy call `loadBy`. */
@@ -163,9 +168,9 @@ export const statsHandler: EntityHandler = Object.freeze({
   config: CONFIG,
   findOne,
   findMany,
-  findAll: findFeed,
+  findAll: findFeed(CONFIG.primaryKey),
   findNew: loadByFirst,
-  findQuery: findFeed,
+  findQuery: findFeed(),
   findProperties,
   findPermissions,
   save,

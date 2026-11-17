@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, serviceRole, verifyLocalServiceToken, type UserClaims } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, openOperations } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import { ServiceUnavailableError, fixedClock, type ServiceClient, type ServiceClientOptions } from '@opt2/platform/service-kit';
@@ -122,7 +122,7 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
     userMemberships: unused('userMemberships'),
     membershipGroupIds: () => Promise.resolve(['GROUP-1']),
     siteGroups: unused('siteGroups'),
-    userGroups: unused('userGroups'),
+    userGroupsPage: unused('userGroupsPage'),
     actingUser: unused('actingUser'),
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),
@@ -253,14 +253,22 @@ describe.skipIf(!PG_AVAILABLE)('resolve-operation against PostgreSQL', () => {
     return (await openOperations(db)).some((open) => open.operationId === operationId);
   }
 
-  it('aborts identity and rolls people back for an operation identity only prepared, found through the registry', async () => {
+  it.each([
+    ['registered', false],
+    ['deleted from the registry', true],
+  ])('aborts identity and rolls people back for an operation identity only prepared, found through the registry with its site %s', async (_label, deleted) => {
     const { operation: open } = await leftOpen({ commit: 'error', stateUnreachable: true });
     const identity = identityDouble(accounts);
-    const run = await runResolveOperation(recoveryDeps(identity.client), { operationId: open.operation_id });
-    expect(run).toEqual({
-      report: { operationId: open.operation_id, tenantId: A, from: 'people-committed', to: 'rolled-back', identityState: 'prepared', outcome: 'aborted' },
-      settled: true,
-    });
+    if (deleted) await db.withMetadata((tx) => tx.query(`UPDATE ${schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [A]));
+    try {
+      const run = await runResolveOperation(recoveryDeps(identity.client), { operationId: open.operation_id });
+      expect(run).toEqual({
+        report: { operationId: open.operation_id, tenantId: A, from: 'people-committed', to: 'rolled-back', identityState: 'prepared', outcome: 'aborted' },
+        settled: true,
+      });
+    } finally {
+      await seedRegistry(db);
+    }
     expect(identity.calls).toEqual(['state', 'abort']);
     expect(await operation(open.operation_id)).toMatchObject({ state: 'rolled-back' });
     expect(await heldFlags(open.operation_id)).toEqual([]);
@@ -393,13 +401,27 @@ describe.skipIf(!PG_AVAILABLE)('resolve-operation against PostgreSQL', () => {
     return (await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId: cfUuid(), payload: '{}' }))).operation_id;
   }
 
-  it.each<[string, () => Promise<string>, string[], DoubleBehaviour, RegExp]>([
-    ['an unknown operation', () => Promise.resolve(cfUuid()), ['--tenant', A], {}, /is held by no row of tenant/],
-    ['a refused combination', finishedAtIdentity, ['--to', 'rolled-back'], {}, /cannot resolve to rolled-back while identity reports finished/],
-    ['identity unavailable', finishedAtIdentity, ['--to', 'done'], { down: true }, /Service identity unavailable/],
-    ['an operation left halted', halted, [], {}, /is halted; rerun with --to rolled-back or --to done/],
-    ['an operation its request holds', freshlyStarted, [], {}, /is still started: its request or another resolution holds it/],
-  ])('exits 1 for %s, closing everything it opened', async (_label, setUp, flags, behaviour, message) => {
+  it.each<[string, () => Promise<string>, string[], DoubleBehaviour, string, string | undefined]>([
+    ['an unknown operation', () => Promise.resolve(cfUuid()), ['--tenant', A], {}, 'no searched tenant holds the roster operation', 'OperationNotFoundError'],
+    [
+      'a refused combination',
+      finishedAtIdentity,
+      ['--to', 'rolled-back'],
+      {},
+      'roster operation refused: its recorded states do not allow the resolution, or another resolution holds it',
+      'RosterResolutionError',
+    ],
+    ['identity unavailable', finishedAtIdentity, ['--to', 'done'], { down: true }, 'identity unavailable; rerun later', 'ServiceUnavailableError'],
+    ['an operation left halted', halted, [], {}, 'roster operation is halted; rerun with --to rolled-back or --to done', undefined],
+    [
+      'an operation its request holds',
+      freshlyStarted,
+      [],
+      {},
+      'roster operation is still started: its request or another resolution holds it, or identity is unreachable; rerun later',
+      undefined,
+    ],
+  ])('exits 1 for %s with one fixed log-record.v1 line on stderr, closing everything it opened', async (_label, setUp, flags, behaviour, problem, errorType) => {
     const operationId = await setUp();
     const end = vi.fn(() => Promise.resolve());
     mocks.createPool.mockResolvedValueOnce({ schema: db.schema, withTenant: db.withTenant.bind(db), withMetadata: db.withMetadata.bind(db), end } satisfies TenantDb);
@@ -409,7 +431,13 @@ describe.skipIf(!PG_AVAILABLE)('resolve-operation against PostgreSQL', () => {
     const stderr = captureWrites(process.stderr);
 
     expect(await main(['resolve-operation', operationId, ...flags], cliEnv())).toBe(1);
-    expect(stderr.join('')).toMatch(message);
+    expect(stderr).toHaveLength(1);
+    const record = JSON.parse(stderr[0] as string) as Record<string, unknown>;
+    expect(validateLogRecord(record)).toStrictEqual({ valid: true, errors: [] });
+    expect(record).toMatchObject({ severity: 'ERROR', service: 'people', message: `opt2-people: ${problem}` });
+    if (errorType === undefined) expect(record).not.toHaveProperty('error');
+    else expect(record).toMatchObject({ error: { type: errorType } });
+    expect(stderr.join('')).not.toContain(operationId);
     expect(end).toHaveBeenCalledOnce();
   });
 });

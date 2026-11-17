@@ -10,9 +10,10 @@ import { actorFromClaims, type Actor } from '../../src/domain/context.js';
 import { CONTENT_ENTITIES } from '../../src/legacy/jsonapi-entities.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
-import { contentExpansionResolver, contentHandler, contentNavViews } from '../../src/routes/jsonapi/content.js';
+import { CONTENT_RENDER_EXCEPTION, contentExpansionResolver, contentHandler, contentNavViews } from '../../src/routes/jsonapi/content.js';
 import { createJsonApiParams, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
 import { ADMIN, END, HOME, NOBODY, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { recordingRelatedReader } from '../helpers/related-reader.js';
 
 type Struct = Record<string, unknown>;
 type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'save' | 'delete';
@@ -36,6 +37,7 @@ interface CallArgs {
   csrf?: boolean;
   render?: { variation: boolean };
   site?: Partial<ContentSaveSite> & Struct;
+  defaultSiteUrls?: ContentSaveSite['urls'];
 }
 
 /** A call as ../jsonapi.ts builds it, with a CSRF check that answers `csrf` (default true) and records its calls. */
@@ -75,6 +77,7 @@ function callFor(method: Op, a: CallArgs = {}): JsonApiCall & { validateCsrf: Re
     tenantId: TENANT_A.tenantId,
     actor,
     site: { ...SITE, ...a.site },
+    ...(a.defaultSiteUrls === undefined ? {} : { defaultSiteUrls: a.defaultSiteUrls }),
     apiContext,
     httpMethod: method === 'save' ? 'POST' : method === 'delete' ? 'DELETE' : 'GET',
     headers: {},
@@ -221,25 +224,39 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
       expect(crumbs).toMatchObject({ totalitems: 2, itemsperpage: 2, entityname: 'content' });
     });
 
-    it.each(['comments', 'stats', 'site', 'relatedcontent'])('fails closed expanding %s, which another finder serves', async (relation) => {
-      await expect(on('findOne', { id: ALPHA, url: { fields: 'title', expand: relation } })).rejects.toEqual(unavailable(`content-expand-${relation}`));
+    it.each([
+      ['comments', () => ({ read: 'findQuery', entityName: 'comment', expand: 'comments', expanded: 1, params: { contentid: ALPHA } })],
+      ['stats', () => ({ read: 'findOne', entityName: 'stats', id: ALPHA, expand: 'stats', expanded: 1 })],
+      ['site', () => ({ read: 'findOne', entityName: 'site', id: SITE_ID, expand: 'site', expanded: 1 })],
+      ['relatedcontent', () => ({ read: 'relatedContent', entityName: 'content', expand: '', expanded: 1 })],
+    ])('expands %s through the related reader with the values expandEntity passes', async (relation, read) => {
+      const { reader, reads } = recordingRelatedReader();
+      const data = wire(await run('findOne', { ...callFor('findOne', { id: ALPHA, url: { fields: 'title', expand: relation } }), related: reader }));
+      expect(reads).toEqual([read()]);
+      expect(data[relation]).toBeDefined();
     });
   });
 
   describe('render', () => {
-    it.each(['no/such', 'no/such/index.json', 'no/such/_/a/b'])('answers the legacy 404 for the unknown filename %s', async (id) => {
-      await expect(on('findOne', { id, render: { variation: false } })).rejects.toMatchObject({ name: 'ContentNotFoundError' });
-    });
-
     it.each([
       ['a stored filename', { id: 'alpha', render: { variation: false } }],
       ['an index file and URL vars after it', { id: 'alpha/_/a/b/index.cfm', render: { variation: false } }],
       ['the home page', { id: 'null', render: { variation: false } }],
       ['a tag search of the home page', { id: 'tag/alpha', render: { variation: false } }],
+      ['an unknown filename, whose 404 page data the renderer answers', { id: 'no/such', render: { variation: false } }],
+      ['an unknown filename under an index file', { id: 'no/such/index.json', render: { variation: false } }],
+      ['an unknown filename before URL vars', { id: 'no/such/_/a/b', render: { variation: false } }],
       ['a variation', { id: 'remote-1', render: { variation: true } }],
       ['a linkservid', { id: 'no/such', render: { variation: false }, url: { linkservid: cfId('X', 4) } }],
     ] satisfies Array<[string, CallArgs]>)('fails closed for %s, which the CFML renderer answers', async (_label, args) => {
-      await expect(on('findOne', args)).rejects.toEqual(unavailable('cfml-render'));
+      await expect(on('findOne', args)).rejects.toEqual(
+        expect.objectContaining({
+          name: 'LegacyServiceUnavailableError',
+          reason: 'cfml-render',
+          message: expect.stringContaining(`(${CONTENT_RENDER_EXCEPTION})`),
+        }),
+      );
+      expect(CONTENT_RENDER_EXCEPTION).toBe('EX-CONTENT-RENDER');
     });
   });
 
@@ -270,6 +287,72 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
       await expect(on('findQuery', { url: { title: 'Alpha', offset: '1' } })).rejects.toEqual(legacyError('server_error'));
     });
 
+    it.each([
+      ['its row value', 'title', () => ({ title: 'Alpha' })],
+      ['a value of the active version its row lacks', 'url', () => ({ url: 'http://localhost/alpha/' })],
+    ] satisfies Array<[string, string, () => Struct]>)('findQuery with fields serializes %s', async (_label, fields, expected) => {
+      expect(itemsOf(await on('findQuery', { url: { title: 'Alpha', fields } }))).toEqual([
+        { contentid: ALPHA, id: ALPHA, siteid: SITE_ID, isnew: 0, entityname: 'content', ...expected() },
+      ]);
+    });
+
+    it.each([
+      ['page 0', { itemsPerPage: '1', pageIndex: '0' }, 1, { pageindex: 0, startindex: 0, endindex: 0, totalpages: 1 }],
+      ['a negative page', { itemsPerPage: '2', pageIndex: '-1' }, 2, { pageindex: -1, startindex: -3, endindex: -2, totalpages: 1 }],
+    ] satisfies Array<[string, Struct, number, Struct]>)('findQuery serializes the new beans of the blank rows of %s', async (_label, paging, count, values) => {
+      const data = wire(await on('findQuery', { url: { title: 'Alpha', fields: 'title', ...paging } }));
+      const blank = { contentid: '', title: '', id: '', siteid: '', isnew: 1, entityname: 'content' };
+      expect(data).toMatchObject({ totalitems: 1, ...values, items: Array.from({ length: count }, () => blank) });
+    });
+
+    it('findQuery fails closed on the URLs of blank rows when no default site is registered', async () => {
+      await expect(on('findQuery', { url: { title: 'Alpha', pageIndex: '0' } })).rejects.toEqual(unavailable('content-pool-site-urls'));
+    });
+
+    it('findQuery builds the URLs of blank rows with the default site settings and their links on the request endpoint', async () => {
+      const defaultSiteUrls = { ...SITE.urls, siteId: 'default', domain: 'default.example', requestDomain: 'default.example' };
+      const url = { title: 'Alpha', pageIndex: '0', fields: 'url,assocurl,images,links' };
+      const [item] = itemsOf(await on('findQuery', { url, defaultSiteUrls }));
+      expect(item).toMatchObject({ url: 'http://default.example/', assocurl: 'http://default.example/', images: {}, contentid: '', siteid: '' });
+      expect(item?.['links']).toMatchObject({ self: `${EP}/content/`, all: `${EP}/content`, rendered: `${EP}/content/_path/` });
+    });
+
+    it.each([
+      ["by contentid after a blank row, whose page query is of site ''", 'title', 1],
+      ['by contenthistid after a blank row', 'title,contenthistid', 0],
+    ])('findQuery reads a row %s as contentDAO reads it', async (_name, fields, isnew) => {
+      const items = itemsOf(await on('findQuery', { url: { title: 'Alpha', pageIndex: '0.5', itemsPerPage: '2', fields } }));
+      expect(items.map((item) => [item['title'], item['isnew']])).toEqual([['', 1], ['Alpha', isnew]]);
+    });
+
+    it('findQuery fails closed on a sortBy no extended attribute backs once more than one row could answer', async () => {
+      await expect(on('findQuery', { url: { sortBy: 'nosuchattr' } })).rejects.toEqual(unavailable('feed-extended-sort-unordered'));
+      expect(titlesOf(await on('findQuery', { url: { title: 'Alpha', sortBy: 'nosuchattr' } }))).toEqual(['Alpha']);
+    });
+
+    it('findQuery pages no row for a negative page size, with legacy page values', async () => {
+      expect(wire(await on('findQuery', { url: { title: 'Alpha', itemsPerPage: '-1' } }))).toMatchObject({
+        items: [],
+        totalitems: 1,
+        totalpages: -1,
+        pageindex: 1,
+        startindex: 1,
+        endindex: -1,
+        itemsperpage: -1,
+      });
+    });
+
+    it('counts a fields feed as any feed', async () => {
+      expect(wire(await on('findAll', { url: { countOnly: 'true', fields: 'title' } }))).toEqual({ count: '3' });
+    });
+
+    it.each([
+      ['an aggregate', { sum: 'orderno' }],
+      ['a join', { innerJoin: 'tcontentstats' }],
+    ])('findQuery fails closed for %s, which the feed reads do not reproduce', async (_label, url) => {
+      await expect(on('findQuery', { url })).rejects.toEqual(unavailable('feed-content-unsupported'));
+    });
+
     it('applies the extranet permission filter only where the site settings ask for it', async () => {
       expect(titlesOf(await on('findQuery', { url: { title: 'Members' } }))).toEqual(['Members']);
       expect(titlesOf(await on('findQuery', { url: { title: 'Members' }, site: { extranet: 1 } }))).toEqual([]);
@@ -289,6 +372,10 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
       );
       try {
         await expect(on('findQuery', { url: { title: 'Pooled', contentpoolid: '*' } })).rejects.toEqual(unavailable('content-pool-site-urls'));
+        const pooledId = pooled.bean.contentId();
+        expect(itemsOf(await on('findQuery', { url: { title: 'Pooled', contentpoolid: '*', fields: 'title' } }))).toEqual([
+          { contentid: pooledId, title: 'Pooled', id: pooledId, siteid: umbrella.siteId, isnew: 0, entityname: 'content' },
+        ]);
         const row = { siteid: umbrella.siteId, contenthistid: pooled.bean.contentHistId(), title: 'Pooled' };
         const [view] = await contentNavViews(routeCtx(), callFor('findQuery', { url: { fields: 'title' } }), [row], { expand: '', expanded: 0 });
         expect(view?.allValues).toMatchObject({ Title: 'Pooled', ContentHistID: row.contenthistid });
@@ -405,11 +492,16 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
   });
 
   describe('shared exports', () => {
-    it('the expansion resolver fails closed on relations of other entities', async () => {
-      const resolver = contentExpansionResolver(routeCtx(), callFor('findOne'));
+    it('the expansion resolver reads relations of other entities through the call\'s related reader, which it requires', async () => {
       const stats = CONTENT_ENTITIES.content.hasOne.find((prop) => prop.name === 'stats');
       if (stats === undefined) throw new Error('content has no stats relation');
-      await expect(resolver.hasOne(stats, ALPHA, { expand: 'stats', expanded: 1 })).rejects.toEqual(unavailable('content-expand-stats'));
+      const { reader, reads } = recordingRelatedReader();
+      const resolver = contentExpansionResolver(routeCtx(), { ...callFor('findOne'), related: reader });
+      expect(await resolver.hasOne(stats, ALPHA, { expand: 'stats', expanded: 1 })).toEqual({ related: 'stats', id: ALPHA });
+      expect(reads).toEqual([{ read: 'findOne', entityName: 'stats', id: ALPHA, expand: 'stats', expanded: 1 }]);
+      await expect(contentExpansionResolver(routeCtx(), callFor('findOne')).hasOne(stats, ALPHA, { expand: 'stats', expanded: 1 })).rejects.toThrow(
+        'carries no related-entity reader',
+      );
     });
 
     it('contentNavViews reads each row\'s full version behind the row values', async () => {

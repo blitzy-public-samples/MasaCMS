@@ -30,6 +30,13 @@ const RELATIVE_URL = /^(?:\/(?!\/)|\?|\.\.?\/)\S*$/;
 const QUERY_IN_TEXT = /(?<=\?)(?:<secret>|[^\s"'<>#])+/g;
 // What splitting a query at `&` leaves of an `&amp;` separator.
 const AMP_ENTITY_REST = 'amp;';
+// `?`, `=`, `&` and `#` of a URL percent-encoded as a query value; `?` and `=` may also stand unencoded there.
+const ENCODED_QUERY_START = /\?|%3F/i;
+const ENCODED_EQUALS = /=|%3D/i;
+const ENCODED_AMPERSAND = '%26';
+const ENCODED_HASH = '%23';
+// Scheme and authority, or path, before the query of an absolute or relative URL.
+const URL_HEAD = /^(?:https?:\/\/[^\s/?#]+(?:\/[^\s?#]*)?|\.{0,2}\/[^\s?#]*)$/i;
 
 interface CompiledClass {
   readonly name: string;
@@ -341,12 +348,65 @@ function urlRuleApplies(id: string, rules: NormaliseRules): boolean {
   return rules.urls.otherwise.apply.includes(id);
 }
 
-// Raw `name=value` pairs are edited in place, so encoding, order and repeats stay as each side sent them.
+/** A parameter's decoded name and its text as normalised. */
+type NamedParam = Pick<QueryParam, 'name' | 'text'>;
+
+const codeUnitOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const foldedName = (param: NamedParam): string => param.name.toLowerCase();
+const byFoldedName = (a: NamedParam, b: NamedParam): number => codeUnitOrder(foldedName(a), foldedName(b));
+
+// A CFML url-scope walk emits each case-insensitive name once, so a repeated name marks an order the sender chose.
+function hasDistinctNames(params: readonly NamedParam[]): boolean {
+  return new Set(params.map(foldedName)).size === params.length;
+}
+
+function tryDecode(raw: string): string | undefined {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Query value `value` with the `?&name=value…` query of the URL it percent-encodes sorted by name, its bytes kept;
+ * returned unchanged when it encodes no URL, another query or a repeated name.
+ */
+function sortEncodedUrlScope(value: string): string {
+  const hash = value.indexOf(ENCODED_HASH);
+  const beforeFragment = hash < 0 ? value : value.slice(0, hash);
+  const start = ENCODED_QUERY_START.exec(beforeFragment);
+  if (start === null) return value;
+  const queryAt = start.index + start[0].length;
+  const head = tryDecode(beforeFragment.slice(0, start.index));
+  if (head === undefined || !URL_HEAD.test(head) || !beforeFragment.startsWith(ENCODED_AMPERSAND, queryAt)) {
+    return value;
+  }
+  const params = beforeFragment
+    .slice(queryAt)
+    .split(ENCODED_AMPERSAND)
+    .map((text): NamedParam => {
+      const eq = text.search(ENCODED_EQUALS);
+      return { name: decodeParamName(eq < 0 ? text : text.slice(0, eq)), text };
+    });
+  if (!hasDistinctNames(params)) return value;
+  const query = params
+    .sort(byFoldedName)
+    .map((param) => param.text)
+    .join(ENCODED_AMPERSAND);
+  return `${beforeFragment.slice(0, queryAt)}${query}${value.slice(beforeFragment.length)}`;
+}
+
+// Raw `name=value` pairs are edited in place, so encoding, order and repeats stay as each side sent them; only a
+// url-scope query (`?&…`: admin/Application.cfc:319-331, jsonApiUtility.cfc:318-337) with distinct names is sorted,
+// as legacy's own order varies per request.
 function normaliseQuery(query: string, rules: NormaliseRules, compiled: Compiled): string {
   const maskTokens = urlRuleApplies(rules.tokens.id, rules);
+  const { urlScope } = rules.urls;
+  const scoped = urlRuleApplies(urlScope.id, rules);
   const all = queryParams(query);
   const names = maskTokens ? tokenParamNames(all, compiled) : new Set<string>();
-  const params = all.map((param) => {
+  const params = all.map((param): NamedParam => {
     const { text, rawName, name } = param;
     const value = param.value ?? '';
     if (maskTokens && value !== '' && compiled.tokenQueryParams.has(compiled.foldQuery(name))) {
@@ -358,9 +418,14 @@ function normaliseQuery(query: string, rules: NormaliseRules, compiled: Compiled
     if (value !== '' && compiled.lowerCaseParams.has(compiled.foldActionParam(name))) {
       return { name, text: `${rawName}=${value.toLowerCase()}` };
     }
+    // returnURL carries the url-scope URL percent-encoded (admin/core/controllers/controller.cfc:87).
+    if (scoped && urlScope.percentEncodedValues && value !== '') {
+      return { name, text: `${rawName}=${sortEncodedUrlScope(value)}` };
+    }
     return { name, text };
   });
-  if (rules.urls.otherwise.sortQuery) params.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  if (scoped && query.startsWith('&') && hasDistinctNames(all)) params.sort(byFoldedName);
+  else if (rules.urls.otherwise.sortQuery) params.sort((a, b) => codeUnitOrder(a.name, b.name));
   return params.map((param) => param.text).join('&');
 }
 
@@ -434,7 +499,8 @@ function textOf(
  * placeholder; otherwise token parameters, and valueless parameters a `tokens.valuelessParamsNamedBy` parameter
  * names, become the token placeholder, `muraAction`/`fuseaction` values are
  * lower-cased, configured origins become the origin placeholder and ids become ordinals. Path, parameter order and
- * fragment are kept; unparseable input is normalised as text.
+ * fragment are kept, except that url-scope queries (`?&…`) with distinct names, also percent-encoded in a parameter,
+ * are sorted by name; unparseable input is normalised as text.
  */
 export function normaliseUrl(url: string, state: IdOrdinals, rules: NormaliseRules): string {
   const compiled = compile(rules);

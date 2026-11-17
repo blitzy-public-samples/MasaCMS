@@ -11,7 +11,7 @@ import { parse } from 'yaml';
 import { collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates } from '@opt2/platform/migration-kit';
-import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { SERVICE_CALL_TIMEOUT_MS, createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SITEMONITOR_INTERVAL_S, SITEMONITOR_QUEUE, slotName, slotStartS, type CreateTaskInput, type TaskPort } from '@opt2/platform/tasks';
 import { SYSTEM_TENANT_ID, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
@@ -28,7 +28,7 @@ import {
 import { runSiteMonitor } from '../../src/jobs/sitemonitor.js';
 import { readState, writeCursor } from '../../src/repo/sitemonitor-state.js';
 import { UNITS } from '../../src/repo/tables.js';
-import { SITEMONITOR_RUN_PREFIXES, registerSiteMonitorRoutes } from '../../src/routes/sitemonitor.js';
+import { PUBLIC_RUN_BUDGET_MS, SITEMONITOR_RUN_PREFIXES, registerSiteMonitorRoutes } from '../../src/routes/sitemonitor.js';
 import { buildTestApp } from '../helpers/app.js';
 
 vi.mock('../../src/jobs/sitemonitor.js', async (importOriginal) => {
@@ -68,6 +68,13 @@ const JSON_BODY = { 'content-type': 'application/json' };
 const clock = fixedClock(RUN_AT);
 const available = await pgAvailable();
 const runSpy = vi.mocked(runSiteMonitor);
+
+type BudgetSleep = (ms: number, signal: AbortSignal) => Promise<unknown>;
+/** A budget that only ends when aborted, so a slow database never turns a pass into the budget's 503. */
+const endlessBudget: BudgetSleep = (_ms, signal) =>
+  new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true }));
+/** The routes' budget timer; a test replaces it to expire budgets by hand. */
+let budgetSleep: BudgetSleep = endlessBudget;
 
 /** Stub migration answering unit authority as all-legacy and each legacy step with `stepStatus`. */
 interface StubMigration {
@@ -184,7 +191,7 @@ beforeAll(async () => {
     pool: db,
     logger: createLogger({ service: 'programs-sites', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
   });
-  await registerSiteMonitorRoutes(app, { db, port, clock, serviceUrls });
+  await registerSiteMonitorRoutes(app, { db, port, clock, serviceUrls, sleep: (ms, signal) => budgetSleep(ms, signal) });
   await app.ready();
 });
 
@@ -203,6 +210,7 @@ beforeEach(async () => {
   port.failCreate = false;
   runSpy.mockClear();
   runSpy.mockImplementation(realRunSiteMonitor);
+  budgetSleep = endlessBudget;
   if (handle !== undefined) await writeCursor(db, SEEDED, clock);
 });
 
@@ -289,6 +297,79 @@ describe('letter case of the legacy paths', () => {
     } finally {
       await built.opt2.shutdown();
     }
+  });
+});
+
+describe('public caller budget', () => {
+  const PASS = { theTime: RUN_AT, lastMonitored: SEEDED, steps: [] };
+
+  /** Resolves once `done()` holds, checking on each event-loop turn. */
+  async function until(done: () => boolean): Promise<void> {
+    while (!done()) await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  /** Budget timers of this test, which it expires by hand. */
+  function manualBudgets(): Array<{ ms: number; expire: () => void }> {
+    const timers: Array<{ ms: number; expire: () => void }> = [];
+    budgetSleep = (ms, signal) =>
+      new Promise((resolve, reject) => {
+        timers.push({ ms, expire: () => resolve(undefined) });
+        signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true });
+      });
+    return timers;
+  }
+
+  /** Makes the next pass wait for the returned settle. */
+  function heldPass(): (result: typeof PASS) => Promise<void> {
+    let settle!: (result: typeof PASS) => void;
+    runSpy.mockImplementationOnce(() => new Promise((resolve) => (settle = resolve)));
+    return async (result) => {
+      settle(result);
+      await runSpy.mock.results[0]?.value;
+    };
+  }
+
+  it('answers the legacy 503 at its budget, below the gateway timeout, and starts its pass with that deadline', async () => {
+    const timers = manualBudgets();
+    const settle = heldPass();
+
+    const pending = app.inject({ method: 'GET', url: '/_api/sitemonitor/' });
+    await until(() => timers.length === 1);
+    timers[0]?.expire();
+    const res = await pending;
+    await settle(PASS);
+
+    expect(PUBLIC_RUN_BUDGET_MS).toBeLessThan(SERVICE_CALL_TIMEOUT_MS);
+    expect(timers.map((timer) => timer.ms)).toEqual([PUBLIC_RUN_BUDGET_MS]);
+    expect(runSpy.mock.calls.map(([deps]) => deps.deadlineMs)).toEqual([PUBLIC_RUN_BUDGET_MS]);
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    assertContract('GET', RUN_CONTRACT_PATH, res);
+  });
+
+  it('answers a public caller that joined a task pass with the legacy 503 at its budget, and the task with that pass result', async () => {
+    const timers = manualBudgets();
+    const settle = heldPass();
+
+    const task = app.inject({
+      method: 'POST',
+      url: TASK_PATH,
+      headers: { ...(await headersAs('service:tasks-invoker')), ...JSON_BODY },
+      payload: taskBody(),
+    });
+    await until(() => runSpy.mock.calls.length === 1);
+    const pending = app.inject({ method: 'GET', url: '/_api/sitemonitor' });
+    await until(() => timers.length === 1);
+    timers[0]?.expire();
+    const res = await pending;
+    await settle(PASS);
+    const taskRes = await task;
+
+    expect(res.statusCode).toBe(503);
+    expect(runSpy.mock.calls.map(([deps]) => deps.deadlineMs)).toEqual([undefined]);
+    expect(taskRes.statusCode).toBe(200);
+    expect(taskRes.json()).toEqual({ theTime: RUN_AT_TEXT, lastMonitored: SEEDED_TEXT, steps: [] });
+    assertContract('POST', TASK_PATH, taskRes);
   });
 });
 

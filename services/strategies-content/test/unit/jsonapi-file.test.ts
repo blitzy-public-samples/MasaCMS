@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
-import { LegacyServiceUnavailableError, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyServiceUnavailableError, isCfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createLocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
 import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
@@ -27,6 +27,7 @@ import {
   type JsonApiHandlerFn,
   type JsonApiResult,
 } from '../../src/routes/jsonapi/types.js';
+import { recordingRelatedReader } from '../helpers/related-reader.js';
 import { uploadedFile } from '../helpers/uploads.js';
 
 type Struct = Record<string, unknown>;
@@ -175,7 +176,7 @@ function part(fileName: string, contentType = 'application/pdf', fieldName = 'ne
 }
 
 /** The handler of `method`, which every file entity handler serves. */
-function handlerOf(entity: EntityHandler, method: keyof Omit<EntityHandler, 'entity' | 'config'>): JsonApiHandlerFn {
+function handlerOf(entity: EntityHandler, method: keyof Omit<EntityHandler, 'entity' | 'config' | 'loadBy'>): JsonApiHandlerFn {
   const handler = entity[method];
   if (handler === undefined) throw new Error(`${entity.entity} serves no ${method}`);
   return handler;
@@ -335,12 +336,22 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
     });
 
     it.each([
-      [fileHandler, 'content'],
-      [fileHandler, 'all'],
-      [fileMetaDataHandler, 'file'],
-    ] as const)('$entity findOne expanding %s fails closed with the legacy 503', async (entity, expand) => {
+      [fileHandler, 'content', [{ read: 'findOne', entityName: 'content', id: '', expand: 'content', expanded: 1 }]],
+      [
+        fileHandler,
+        'all',
+        [
+          { read: 'findOne', entityName: 'content', id: '', expand: 'all', expanded: 1 },
+          { read: 'findOne', entityName: 'site', id: TENANT_B.siteId, expand: 'all', expanded: 1 },
+        ],
+      ],
+      [fileMetaDataHandler, 'file', [{ read: 'findOne', entityName: 'file', id: '', expand: 'file', expanded: 1 }]],
+    ] as const)('$entity findOne expanding %s reads each relation through the related reader', async (entity, expand, expected) => {
+      const { reader, reads } = recordingRelatedReader();
       const { call } = callOf({ method: 'findOne', entity: entity.entity as 'file', id: cfId('N', 2), url: { expand } });
-      await expect(handlerOf(entity, 'findOne')(ctx, call)).rejects.toMatchObject({ name: 'LegacyServiceUnavailableError', reason: 'file-expand-related' });
+      const data = dataOf(await handlerOf(entity, 'findOne')(ctx, { ...call, related: reader }));
+      expect(reads).toEqual(expected);
+      for (const read of expected) expect(Object.values(data)).toContainEqual(expect.objectContaining({ related: read.entityName }));
     });
 
     it.each([
@@ -393,14 +404,37 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
         });
       });
 
-      it('findAll expanding the items fails closed with the legacy 503', async () => {
+      it('findAll expands each item\'s relation through the related reader', async () => {
+        const { reader, reads } = recordingRelatedReader();
         const { call } = callOf({ method: 'findAll', url: { expand: 'content' } });
-        await expect(handlerOf(fileHandler, 'findAll')(ctx, call)).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+        const result = await handlerOf(fileHandler, 'findAll')(ctx, { ...call, related: reader });
+        expect(idsOf(result)).toEqual([cfId('B', 1), cfId('B', 2), cfId('B', 3)]);
+        expect(reads.map((read) => [read.read, read.entityName, read.expanded])).toEqual(Array.from({ length: 3 }, () => ['findOne', 'content', 1]));
+        expect((dataOf(result)['items'] as Struct[]).every((item) => (item['content'] as Struct)['related'] === 'content')).toBe(true);
       });
 
       it('findAll answers countOnly with the count', async () => {
         const result = await handlerOf(fileHandler, 'findAll')(ctx, callOf({ method: 'findAll', url: { countOnly: 'true' } }).call);
         expect(dataOf(result)).toEqual({ count: 3 });
+      });
+
+      // A blank row (queryRowToStruct before row 1) sets '' on a new bean: setFileSize's int('') fails, so only a field
+      // list without filesize answers, its bean under the fileid beanORM.init made a createUUID().
+      it.each([
+        ['every column', {}],
+        ['a field list naming filesize', { fields: 'filename,filesize' }],
+      ])('findAll before the first record over %s fails as legacy does', async (_label, url) => {
+        const { call } = callOf({ method: 'findAll', url: { itemsPerPage: '1', pageIndex: '0', ...url } });
+        await expect(handlerOf(fileHandler, 'findAll')(ctx, call)).rejects.toEqual(new LegacyApiError('server_error'));
+      });
+
+      it('findAll before the first record answers a blank row\'s bean for a field list without filesize', async () => {
+        const result = await handlerOf(fileHandler, 'findAll')(ctx, callOf({ method: 'findAll', url: { itemsPerPage: '1', pageIndex: '0', fields: 'filename' } }).call);
+        const [item, ...rest] = dataOf(result)['items'] as Struct[];
+        expect(rest).toEqual([]);
+        const id = String(item?.['id']);
+        expect(isCfUuid(id)).toBe(true);
+        expect(item).toEqual({ filename: '', fileid: id, siteid: '', isnew: 0, id, entityname: 'file' });
       });
     });
   });
@@ -562,6 +596,15 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const data = dataOf(await handlerOf(fileMetaDataHandler, 'findAll')(ctx, call({ method: 'findAll' }).call));
       const item = (data['items'] as Struct[]).find((candidate) => candidate['metaid'] === META_ID);
       expect(item).toMatchObject({ caption: 'Meta caption', filename: '', filesize: 0, isnew: 0, entityname: 'fileMetaData' });
+    });
+
+    it('a feed before the first record answers a blank row\'s bean under the metaid beanORM.init made a createUUID()', async () => {
+      const data = dataOf(await handlerOf(fileMetaDataHandler, 'findAll')(ctx, call({ method: 'findAll', url: { itemsPerPage: '1', pageIndex: '0' } }).call));
+      const [item, ...rest] = data['items'] as Struct[];
+      expect(rest).toEqual([]);
+      const id = String(item?.['id']);
+      expect(isCfUuid(id)).toBe(true);
+      expect(item).toMatchObject({ metaid: id, fileid: '', siteid: '', caption: '', remotepubdate: '', directimages: true, isnew: 0, entityname: 'fileMetaData' });
     });
 
     it('save updates the stored row with the posted values only, ignoring remotePubDate', async () => {

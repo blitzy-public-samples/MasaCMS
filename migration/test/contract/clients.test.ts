@@ -165,6 +165,17 @@ const OWNER_SPECIFIC: readonly ClientCase[] = [
     check: (result) => expect(result).toMatchObject({ created: true, writePositions: new Map([['strategies-content', '77']]) }),
   },
   {
+    name: 'putObject streaming to strategies-content',
+    run: (owners) =>
+      owners.putObject(
+        { tenantId: TENANT, fileId: FILE_ID, variant: '', ext: 'pdf', contentType: 'application/pdf', sha256: SHA256 },
+        { stream: Readable.from([BYTES]), size: BYTES.length },
+      ),
+    answer: () => jsonAnswer(200, { key: `${TENANT}/${FILE_ID}.pdf`, size: BYTES.length, sha256: SHA256, created: false }),
+    operations: ['strategies-content POST /internal/v1/migration/objects'],
+    check: (result) => expect(result).toEqual({ key: `${TENANT}/${FILE_ID}.pdf`, size: BYTES.length, sha256: SHA256, created: false, writePositions: new Map() }),
+  },
+  {
     name: 'getObject from strategies-content',
     run: (owners) => owners.getObject(`${TENANT}/${FILE_ID}_small.jpg`),
     answer: () => streamAnswer(BYTES),
@@ -190,6 +201,13 @@ const OWNER_SPECIFIC: readonly ClientCase[] = [
     run: (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
     answer: () => streamAnswer(BYTES),
     operations: ['finance GET /internal/v1/migration/objects'],
+    check: async (result) => expect(await text(result as Readable)).toBe(BYTES.toString()),
+  },
+  {
+    name: 'getExportObject from reporting',
+    run: (owners) => owners.getExportObject({ tenantId: TENANT, jobId: FILE_ID }),
+    answer: () => streamAnswer(BYTES),
+    operations: ['reporting GET /internal/v1/migration/objects'],
     check: async (result) => expect(await text(result as Readable)).toBe(BYTES.toString()),
   },
   {

@@ -10,6 +10,7 @@ import {
   GatewayWaitTimeoutError,
   type CutoverActivateResponse,
   type CutoverStatus,
+  type CutoverStatusV2,
   type GatewayClient,
   type GatewayInstance,
   type InflightClearRequest,
@@ -17,6 +18,7 @@ import {
   type InflightDrainResult,
   type InflightRow,
   type InflightSide,
+  type InflightStatus,
   type OrphanEvidence,
   type WaitBudget,
 } from '../../src/cutover/index.js';
@@ -72,6 +74,8 @@ export interface GatewayInflightRow {
   startedAt: number;
   /** Marks the row's instance dead, which makes all its rows orphans. */
   orphan?: boolean;
+  /** Marks the row abandoned by its instance, which makes it an orphan while that instance lives. */
+  abandoned?: boolean;
   /** Units of a target-side row's route; `gates-closed` evidence clears the row only when they are known, non-empty and all named. */
   units?: string[];
 }
@@ -84,6 +88,9 @@ export type InstanceAck = 'auto' | 'manual';
 
 /** An error to reject with, or a gateway answer outside 2xx to reject with as {@link GatewayCallError}. */
 export type GatewayFailure = Error | { status: number; body?: unknown };
+
+/** Contract generation the double serves: `v2` answers `cutoverStatusV2`; `v1` answers it 404, as a gateway older than it does. */
+export type GatewayGeneration = 'v1' | 'v2';
 
 /** Initial state and timing of {@link createGatewayDouble}. */
 export interface GatewayDoubleOptions {
@@ -100,6 +107,8 @@ export interface GatewayDoubleOptions {
   /** `groupAuthority` the status reports while each version is active; `{}` for unlisted versions. */
   authorityByVersion?: Record<string, CutoverStatus['groupAuthority']>;
   sessionMode?: CutoverStatus['sessionMode'];
+  /** `v2` by default. */
+  generation?: GatewayGeneration;
   /** Clock of the waits' deadlines and of reported times. */
   clock?: Clock;
   /** Pause between the waits' polls; real timers by default. */
@@ -124,9 +133,11 @@ export interface GatewayDouble extends GatewayClient {
   readonly calls: GatewayDoubleCall[];
   readonly log: CallLog;
   readonly frozen: Set<string>;
-  /** Current status, without recording a call. */
+  /** Current `CutoverStatus`, without recording a call. */
   snapshot(): CutoverStatus;
-  /** Copies of the in-flight rows, `orphan` set from their instance's liveness. */
+  /** Current `CutoverStatusV2`, without recording a call. */
+  snapshotV2(): CutoverStatusV2;
+  /** Copies of the in-flight rows, `orphan` set when their instance is not live or they are abandoned. */
   inflightRows(): GatewayInflightRow[];
   /** Sets the active version, and the epoch when given, without recording a call. */
   setActive(tableVersion: string | null, epoch?: number): void;
@@ -142,7 +153,7 @@ export interface GatewayDouble extends GatewayClient {
   killInstance(instance: string): void;
   /** Makes the next call of `op` reject; queued failures apply in order. */
   failNext(op: GatewayOperationName, failure: GatewayFailure): void;
-  /** Serves the contract's cut-over and orphan-clearing operations over the same state on `127.0.0.1`. */
+  /** Serves the contract's cut-over and orphan-clearing operations of its generation over the same state on `127.0.0.1`. */
   listen(): Promise<GatewayListener>;
 }
 
@@ -165,9 +176,12 @@ const OPERATION_IDS = {
   freeze: 'cutoverFreeze',
   unfreeze: 'cutoverUnfreeze',
   awaitEpoch: 'cutoverStatus',
-  awaitInflightDrained: 'cutoverStatus',
+  inflightStatus: 'cutoverStatusV2',
+  awaitInflightDrained: 'cutoverStatusV2',
   clearOrphans: 'inflightClearOrphans',
 } as const satisfies Record<GatewayOperationName, string>;
+
+const STATUS_V2_PATH = '/internal/v2/cutover/status';
 
 const VERSION_PATTERN = /^v[0-9]{4}$/;
 const ROUTE_PATTERN = /^[a-z0-9-]+:\S+$/;
@@ -202,33 +216,54 @@ function coveredByGates(units: readonly string[] | undefined, closed: ReadonlySe
   return units !== undefined && units.length > 0 && units.every((unit) => closed.has(unit));
 }
 
-function groupInflight(rows: readonly GatewayInflightRow[]): InflightRow[] {
-  const groups = new Map<string, { instanceId: string; route: string; side: InflightSide; count: number; oldest: number }>();
+/** `CutoverStatus.inflight`: rows grouped by instance, route and side. */
+function groupInflightV1(rows: readonly GatewayInflightRow[]): CutoverStatus['inflight'] {
+  return groupInflight(rows, () => false).map(({ orphaned: _orphaned, ...group }) => group);
+}
+
+/** `CutoverStatusV2.inflight`: rows grouped by instance, route, side and `orphaned`, as `isOrphan` judges each row. */
+function groupInflight(rows: readonly GatewayInflightRow[], isOrphan: (row: GatewayInflightRow) => boolean): InflightRow[] {
+  type Group = { instanceId: string; route: string; side: InflightSide; orphaned: boolean; count: number; oldest: number };
+  const groups = new Map<string, Group>();
   for (const row of rows) {
-    const key = JSON.stringify([row.instance, row.route, row.side]);
+    const orphaned = isOrphan(row);
+    const key = JSON.stringify([row.instance, row.route, row.side, orphaned]);
     const group = groups.get(key);
-    if (group === undefined) groups.set(key, { instanceId: row.instance, route: row.route, side: row.side, count: 1, oldest: row.startedAt });
-    else {
+    if (group === undefined) {
+      groups.set(key, { instanceId: row.instance, route: row.route, side: row.side, orphaned, count: 1, oldest: row.startedAt });
+    } else {
       group.count += 1;
       group.oldest = Math.min(group.oldest, row.startedAt);
     }
   }
   return [...groups.values()]
-    .sort((a, b) => a.instanceId.localeCompare(b.instanceId) || a.route.localeCompare(b.route) || a.side.localeCompare(b.side))
-    .map(({ instanceId, route, side, count, oldest }) => ({ instanceId, route, side, count, oldestStartedAt: new Date(oldest).toISOString() }));
+    .sort(
+      (a, b) =>
+        a.instanceId.localeCompare(b.instanceId) ||
+        a.route.localeCompare(b.route) ||
+        a.side.localeCompare(b.side) ||
+        Number(a.orphaned) - Number(b.orphaned),
+    )
+    .map(({ instanceId, route, side, orphaned, count, oldest }) => ({
+      instanceId,
+      route,
+      side,
+      count,
+      oldestStartedAt: new Date(oldest).toISOString(),
+      orphaned,
+    }));
 }
 
 function laggingInstances(status: CutoverStatus, epoch: number): GatewayInstance[] {
   return status.instances.filter((instance) => instance.live && instance.seenEpoch < epoch);
 }
 
-/** The awaited routes' grouped rows, split as the real client splits them: by whether their instance is live. */
-function partitionInflight(status: CutoverStatus, routes: ReadonlySet<string>): { pending: InflightRow[]; orphans: InflightRow[] } {
-  const live = new Set(status.instances.filter((instance) => instance.live).map((instance) => instance.instanceId));
+/** The awaited routes' grouped rows, split as the real client splits them: by whether they are orphaned. */
+function partitionInflight(status: InflightStatus, routes: ReadonlySet<string>): { pending: InflightRow[]; orphans: InflightRow[] } {
   const pending: InflightRow[] = [];
   const orphans: InflightRow[] = [];
   for (const row of status.inflight) {
-    if (routes.has(row.route)) (live.has(row.instanceId) ? pending : orphans).push(row);
+    if (routes.has(row.route)) (row.orphaned ? orphans : pending).push(row);
   }
   return { pending, orphans };
 }
@@ -273,6 +308,7 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
   const log = opts.log ?? createCallLog();
   const authorityByVersion = opts.authorityByVersion ?? {};
   const sessionMode = opts.sessionMode ?? 'legacy-primary';
+  const generation = opts.generation ?? 'v2';
   const calls: GatewayDoubleCall[] = [];
   const frozen = new Set<string>();
   const failures = new Map<GatewayOperationName, GatewayFailure[]>();
@@ -307,7 +343,7 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
   }
 
   function isOrphan(row: GatewayInflightRow): boolean {
-    return instances.get(row.instance)?.live !== true;
+    return row.abandoned === true || instances.get(row.instance)?.live !== true;
   }
 
   /** Every live `auto` instance sees the current epoch. */
@@ -338,9 +374,24 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
       frozen: [...frozen].sort(),
       instances: reported,
       acknowledgedEpoch: seen.length === 0 ? null : Math.min(...seen),
-      inflight: groupInflight(rows),
+      inflight: groupInflightV1(rows),
       sessionMode,
     };
+  }
+
+  function snapshotV2(): CutoverStatusV2 {
+    return { ...snapshot(), inflight: groupInflight(rows, isOrphan) };
+  }
+
+  /** What the real client's `inflightStatus` reads from a gateway of this generation, a v1 one classified by instance liveness. */
+  function inflightView(): InflightStatus {
+    if (generation === 'v2') {
+      const { instances, inflight } = snapshotV2();
+      return { instances, inflight };
+    }
+    const { instances, inflight } = snapshot();
+    const live = new Set(instances.filter((item) => item.live).map((item) => item.instanceId));
+    return { instances, inflight: inflight.map((row) => ({ ...row, orphaned: !live.has(row.instanceId) })) };
   }
 
   /** Records the call in `calls` and the shared log, then rejects with a queued failure of `op` if there is one. */
@@ -354,15 +405,16 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
     throw new GatewayCallError(operationId, failure.status, failure.body ?? legacyError(operationId, failure.status, `Gateway refused ${operationId}`));
   }
 
-  /** The real client's poll loop over in-memory status: settle, else time out once the clock passes the deadline. */
-  async function poll<R>(
+  /** The real client's poll loop over in-memory state: settle, else time out once the clock passes the deadline. */
+  async function poll<S, R>(
     budget: WaitBudget,
-    settle: (current: CutoverStatus) => R | undefined,
-    timeout: (current: CutoverStatus) => GatewayWaitTimeoutError,
+    read: () => S,
+    settle: (current: S) => R | undefined,
+    timeout: (current: S) => GatewayWaitTimeoutError,
   ): Promise<R> {
     const deadline = clock.now().getTime() + budget.timeoutMs;
     for (;;) {
-      const current = snapshot();
+      const current = read();
       const result = settle(current);
       if (result !== undefined) return result;
       if (clock.now().getTime() >= deadline) throw timeout(current);
@@ -414,9 +466,15 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
       begin('awaitEpoch', { epoch: awaited, budget });
       return poll(
         budget,
+        snapshot,
         (current) => (laggingInstances(current, awaited).length === 0 ? current : undefined),
         (current) => new GatewayWaitTimeoutError({ kind: 'epoch', epoch: awaited, lagging: laggingInstances(current, awaited) }),
       );
+    },
+
+    async inflightStatus(): Promise<InflightStatus> {
+      begin('inflightStatus', undefined);
+      return inflightView();
     },
 
     async awaitInflightDrained(routes: readonly string[], budget: WaitBudget): Promise<InflightDrainResult> {
@@ -424,6 +482,7 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
       const awaitedRoutes: ReadonlySet<string> = new Set(routes);
       return poll(
         budget,
+        inflightView,
         (current) => {
           const { pending, orphans } = partitionInflight(current, awaitedRoutes);
           return pending.length === 0 ? { orphans } : undefined;
@@ -455,9 +514,14 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
   /** Answers one contract operation from the same state; refusals carry the contract's error bodies. */
   async function answer(method: string, path: string, body: unknown): Promise<HttpAnswer> {
     const malformed = (operationId: string): HttpAnswer => ({ status: 400, body: legacyError(operationId, 400, 'Malformed request body') });
+    const unknown: HttpAnswer = { status: 404, body: legacyError(`${method} ${path}`, 404, `No gateway double operation at ${method} ${path}`) };
     switch (`${method} ${path}`) {
       case 'GET /internal/v1/cutover/status':
         return { status: 200, body: await client.status() };
+      case `GET ${STATUS_V2_PATH}`:
+        if (generation === 'v1') return unknown;
+        begin('inflightStatus', undefined);
+        return { status: 200, body: snapshotV2() };
       case 'POST /internal/v1/cutover/activate':
         if (!isRecord(body) || typeof body.tableVersion !== 'string') return malformed(OPERATION_IDS.activate);
         return { status: 200, body: await client.activate(body.tableVersion) };
@@ -471,7 +535,7 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
         if (!isClearRequest(body)) return malformed(OPERATION_IDS.clearOrphans);
         return { status: 200, body: await client.clearOrphans(body) };
       default:
-        return { status: 404, body: legacyError(`${method} ${path}`, 404, `No gateway double operation at ${method} ${path}`) };
+        return unknown;
     }
   }
 
@@ -523,6 +587,7 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
     log,
     frozen,
     snapshot,
+    snapshotV2,
     inflightRows: () => rows.map((row) => ({ ...row, orphan: isOrphan(row) })),
     setActive(tableVersion, newEpoch) {
       if (tableVersion !== active) previous = active;

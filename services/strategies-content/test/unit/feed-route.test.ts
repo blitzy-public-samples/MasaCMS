@@ -9,7 +9,7 @@ import { collectRouteMatrix } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger, serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { createService, fixedClock, loadEnv, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, createService, fixedClock, loadEnv, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, pgAvailable, testVerifier, writeTestSecrets, type InjectResponse } from '@opt2/platform/testing';
 import { saveContent } from '../../src/domain/content.js';
@@ -48,9 +48,12 @@ const urlsOf = (siteId: string): LegacySiteUrlConfig => ({
   filePoolId: siteId === TENANT_A.siteId ? TENANT_UMBRELLA.siteId : siteId,
 });
 
+const SERVER = { serverPort: ':21080', context: '', indexPath: '' };
+
 const SOURCE: FeedSiteSource = {
-  server: { serverPort: ':21080', context: '', indexPath: '' },
-  site: async (siteId) => ({ urls: urlsOf(siteId), contact: 'admin@example.com', javaLocale: 'en_US' }),
+  server: () => SERVER,
+  sites: async (siteIds) =>
+    new Map(siteIds.map((siteId) => [siteId.toLowerCase(), { urls: urlsOf(siteId), contact: 'admin@example.com', javaLocale: 'en_US' }])),
 };
 
 /** The contract path a request URL reaches: the root template, or the wildcard one with any single segment. */
@@ -65,7 +68,7 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
   let stateDir: string;
   let app: FastifyInstance;
   let domain: FeedRouteContext['domain'];
-  let feedSites: FeedSiteSource | undefined;
+  let feedSites: FeedSiteSource = SOURCE;
   const ctx: FeedRouteContext = {
     get domain() {
       return domain;
@@ -166,6 +169,8 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     ids.events = await feed(ADMIN, { name: 'Events', contentid: events });
     ids.restrictedEvents = await feed(ADMIN, { name: 'Member events', contentid: events, restricted: 1 });
     ids.dynamic = await feed(ADMIN, { name: 'Dynamic', contentid: dynamic });
+    ids.unordered = await feed(ADMIN, { name: 'Unordered', contentid: probe, sortby: 'nosuchattr' });
+    ids.restrictedUnordered = await feed(ADMIN, { name: 'Member unordered', contentid: probe, sortby: 'nosuchattr', restricted: 1 });
     ids.pooled = await feed(ADMIN, { name: 'Pooled', contentid: HOME, contentpoolid: `${SITE_ID},${TENANT_B.siteId}` });
     const siteB = { ...SITE, siteId: TENANT_B.siteId, urls: { ...SITE.urls, siteId: TENANT_B.siteId, filePoolId: TENANT_B.siteId } };
     for (const data of [{ contentid: HOME, parentid: END, title: 'Home B' }, { parentid: HOME, title: 'Zulu B' }]) {
@@ -250,7 +255,7 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
   const renderOptions = (renderContent: boolean) => ({
     site: urlsOf(SITE_ID),
     contact: 'admin@example.com',
-    config: SOURCE.server,
+    config: SERVER,
     now: NOW,
     renderContent,
     requestHost: 'localhost:21080',
@@ -328,10 +333,22 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     expect((await get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}`, {}, false)).statusCode).toBe(401);
   });
 
-  it('fails closed where rendering needs site settings no source supplies', async () => {
-    feedSites = undefined;
+  it('fails closed with the legacy 503 when the site settings owner is unavailable, asked once before the feed query', async () => {
+    const asked: string[][] = [];
+    const feeds = { ...fx.repo.feeds };
+    const listing = vi.spyOn(feeds, 'feedContent');
+    feedSites = {
+      ...SOURCE,
+      sites: async (siteIds) => {
+        asked.push([...siteIds]);
+        throw new ServiceUnavailableError('programs-sites', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+      },
+    };
     try {
-      expect((await get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}`, await as(SITE_ID))).statusCode).toBe(503);
+      const res = await withDomain({ repository: { ...fx.repo, feeds } }, async () => get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}&content=true`, await as(SITE_ID)));
+      expect(res.statusCode).toBe(503);
+      expect(listing).not.toHaveBeenCalled();
+      expect(asked).toEqual([[SITE_ID]]);
     } finally {
       feedSites = SOURCE;
     }
@@ -400,6 +417,8 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     ['an unrestricted feed it cannot list fails closed', 'events', 503],
     ['a restricted one is refused first, as legacy refuses it', 'restrictedEvents', 401],
     ['an item with dynamic tags fails closed', 'dynamic', 503],
+    ['a TOP sorted by no extended attribute fails closed', 'unordered', 503],
+    ['a restricted feed so sorted is refused first', 'restrictedUnordered', 401],
   ])('%s', async (_label, key, status) => {
     expect((await get(`/_api/feed/v1/tenant-a/?feedid=${ids[key] ?? ''}`, await as(SITE_ID))).statusCode).toBe(status);
   });
@@ -413,6 +432,14 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
           TENANT_A.tenantId,
         ]),
       );
+    const asked: string[][] = [];
+    feedSites = {
+      ...SOURCE,
+      sites: (siteIds, request) => {
+        asked.push([...siteIds]);
+        return SOURCE.sites(siteIds, request);
+      },
+    };
     await pool([SITE_ID, TENANT_B.siteId]);
     try {
       const res = await get(`/_api/feed/v1/tenant-a/?feedid=${ids.pooled ?? ''}`, await as(SITE_ID));
@@ -420,7 +447,10 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
       expect([...res.body.matchAll(/<title>([^<]*)<\/title>/g)].map((match) => match[1])).toEqual(['Pooled', 'Dynamic', 'Events', 'Probe', 'Zulu B']);
       expect(res.body).toContain('<link>http://b.example:21080/zulu-b/</link>');
       expect(res.body).toContain('<link>http://localhost:21080/probe/</link>');
+      // The feed's site before the feed query, then only the item sites that lookup did not hold.
+      expect(asked).toEqual([[SITE_ID], [TENANT_B.siteId]]);
     } finally {
+      feedSites = SOURCE;
       await pool([SITE_ID]);
     }
   });

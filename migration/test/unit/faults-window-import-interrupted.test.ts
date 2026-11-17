@@ -29,9 +29,11 @@ const CONTENT_HIST_ID = 'C0FFEE00-1111-2222-3333444455556666';
 const OLD_CREDITS = 'Masa';
 const NEW_CREDITS = `opt2-fault-${WINDOW_ID}`;
 const GATEWAY_URL = 'http://gateway.test';
-// content.content is legacy-authoritative in every committed version; content.variation_targeting is target-authoritative in v0002.
+// Both target-authoritative in the committed v0002, whose content read still routes to legacy.
 const CONTENT_UNIT = 'content.content';
 const TARGET_UNIT = 'content.variation_targeting';
+// No carry write entry writes it, so legacy-authoritative in every committed version.
+const COMMITTED_LEGACY_UNIT = 'content.commenter';
 // Outside every group of the content read's units, so legacy-authoritative under both cut-over doubles.
 const LEGACY_UNIT = 'people.person';
 const DEFAULTS = windowImportInterrupted.paramsSchema.parse({});
@@ -334,7 +336,7 @@ describe('window-import-interrupted run', () => {
 
     expect(h.events).toStrictEqual(['select', 'open', 'arm', 'update', 'complete', 'get']);
     expect(h.fetchUrls).toStrictEqual([]);
-    expect(output.details).toMatchObject({ targetUnits: [TARGET_UNIT], tableVersion: 'v0002' });
+    expect(output.details).toMatchObject({ targetUnits: [CONTENT_UNIT, TARGET_UNIT], tableVersion: 'v0002' });
     expect(output.assertions).toStrictEqual([
       expect.objectContaining({ name: 'window-import-pending', status: 'pass' }),
       { name: 'read-not-superseded', status: 'skipped', reason: 'the content read (api:content.findone) routes to legacy under v0002' },
@@ -510,7 +512,7 @@ describe('window-import-interrupted resume', () => {
 
   it('feeds a window over units of both authorities and skips the target read while content reads route to legacy', async () => {
     const h = harness(baseScript({ windows: [{ state: 'closed' }], read: () => Promise.resolve(envelope(NEW_CREDITS)) }));
-    const output = await windowImportInterrupted.resume(h.env, params(), runOutput({ units: [CONTENT_UNIT, TARGET_UNIT] }));
+    const output = await windowImportInterrupted.resume(h.env, params(), runOutput({ units: [CONTENT_UNIT, COMMITTED_LEGACY_UNIT] }));
 
     expect(h.fetchUrls).toStrictEqual([]);
     expect(output.steps).toStrictEqual(['clear-fault', 'await-closed', 'rerun-feed']);

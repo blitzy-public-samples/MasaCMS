@@ -85,7 +85,7 @@ import { safeDiagnostic } from '../lib/diagnostics.js';
 import { createHttpSession, defaultFetch, type FetchLike, type HttpResult } from '../lib/http.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
 import { createHarnessLogger } from '../lib/logger.js';
-import { repoPath, stateDir, type EnvLike } from '../lib/paths.js';
+import { cutoverVersionPath, stateDir, type EnvLike } from '../lib/paths.js';
 import { readPin } from '../lib/pin.js';
 import { readJson, stableStringify, writeJsonReport } from '../lib/report.js';
 
@@ -364,12 +364,6 @@ type RouteUnits = ReadonlyMap<string, readonly string[]>;
 
 /** Cut-over versions read so far, by file; a version file is immutable once committed. */
 const routeUnitsByFile = new Map<string, Promise<RouteUnits>>();
-
-/** `<OPT2_CUTOVER_DIR, else gateway/cutover>/versions/<version>.json`, resolved as the gateway resolves it. */
-function cutoverVersionPath(version: string, env: EnvLike): string {
-  const dir = env.OPT2_CUTOVER_DIR;
-  return path.join(dir ? path.resolve(dir) : repoPath('gateway', 'cutover'), 'versions', `${version}.json`);
-}
 
 /** Entry units of cut-over version file `file`; throws when it is off-schema or names another version. */
 async function readRouteUnits(file: string, version: string): Promise<RouteUnits> {
@@ -946,7 +940,7 @@ async function replayRun(
   const secrets = secretValues(ctx);
   const reloadKey = configuredAppReloadKey(env);
   const scrub = <T>(value: T): T => redactReloadKey(redact(value, secrets), reloadKey);
-  const builder = createGoldenStepBuilder(scenario, deps.rules);
+  const builder = createGoldenStepBuilder(scenario, deps.rules, ctx.resolvedSecrets);
   const steps: GoldenStep[] = [];
   for (const [index, record] of scrub(records).entries()) {
     const exceptionId = record.exceptionId ?? ids.get(index);

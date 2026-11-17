@@ -182,7 +182,7 @@ describe('masa categories, content and files', () => {
       expect(folders.length).toBe(Math.round(rows.length * 0.02));
       const pool = new Set(masa.categories.filter((c) => c.siteID === index.site(site).categoryPoolID).map((c) => c.categoryID));
       for (const c of rows) {
-        expect(['Folder', 'Page']).toContain(c.type);
+        expect(['Folder', 'Page', 'File']).toContain(c.type);
         expect(seen.has(c.parentID)).toBe(true);
         if (c.type === 'Folder') expect(c.parentID).toBe(MASA_HOME_CONTENT_ID);
         else expect(c.parentID === MASA_HOME_CONTENT_ID || folders.some((f) => f.contentID === c.parentID)).toBe(true);
@@ -195,7 +195,7 @@ describe('masa categories, content and files', () => {
         for (let i = 1; i < c.versions.length; i += 1) expect(c.versions[i - 1]!.lastUpdate < c.versions[i]!.lastUpdate).toBe(true);
         for (const v of c.versions) {
           expect(v.title.length).toBeLessThanOrEqual(255);
-          expect(v.body).toMatch(/^<p>.+<\/p>$/s);
+          if (c.type !== 'File') expect(v.body).toMatch(/^<p>.+<\/p>$/s);
           expect(v.approved).toBe(1);
         }
         expect(c.categoryIDs.length).toBeLessThanOrEqual(3);
@@ -203,6 +203,7 @@ describe('masa categories, content and files', () => {
         for (const id of c.categoryIDs) expect(pool.has(id)).toBe(true);
         expect(c).not.toHaveProperty('responseMessage');
         expect(c).not.toHaveProperty('fieldIDs');
+        if (c.type !== 'File') expect(c).not.toHaveProperty('fileID');
       }
       expect(rows.filter((c) => c.objects.length > 0 || c.formID !== undefined)).toEqual([rows[rows.length - 1]]);
     }
@@ -253,6 +254,37 @@ describe('masa categories, content and files', () => {
     });
     expect(host.versions).toHaveLength(1);
     expect(form.versions[0]!.lastUpdate < host.versions[0]!.lastUpdate).toBe(true);
+  });
+  it('serves a pooled PDF from the one File node of a site whose file pool holds seeded files', () => {
+    const rows = masa.content.filter((c) => c.siteID === 'tenant-a');
+    const files = rows.filter((c) => c.type === 'File');
+    expect(files).toEqual([rows[rows.length - 3]]);
+    const node = files[0] as ContentRow;
+    const file = masa.files.find((f) => f.fileID === node.fileID);
+    expect(file).toMatchObject({ siteID: index.site('tenant-a').filePoolID, fileExt: 'pdf' });
+    expect(node).toMatchObject({
+      moduleID: MASA_DEFAULT_MODULE_ID,
+      parentID: MASA_HOME_CONTENT_ID,
+      subType: 'Default',
+      title: 'OPT-2 Seed Document',
+      menuTitle: 'OPT-2 Seed Document',
+      categoryIDs: [],
+      objects: [],
+    });
+    expect(node.versions.map((v) => [v.title, v.body, v.approved, v.active])).toEqual([[node.title, file?.filename, 1, 1]]);
+    expect(index.site('tenant-b').filePoolID).toBe('tenant-b');
+    expect(masa.content.filter((c) => c.siteID === 'tenant-b' && c.type === 'File')).toEqual([]);
+  });
+  it('takes the place of the last ordinary page and leaves every other node as it was', () => {
+    const ownPool = structuredClone(config);
+    delete ownPool.sites['tenant-a'].pools.filePoolID;
+    const without = build(ownPool).content.filter((c) => c.siteID === 'tenant-a');
+    const rows = masa.content.filter((c) => c.siteID === 'tenant-a');
+    expect(without.some((c) => c.type === 'File')).toBe(false);
+    expect(without).toHaveLength(rows.length);
+    expect(rows.slice(0, -3)).toEqual(without.slice(0, -3));
+    expect(rows.slice(-2)).toEqual(without.slice(-2));
+    expect(without[without.length - 3]?.type).toBe('Page');
   });
   it('files', () => {
     const png = masa.files.filter((f) => f.fileExt === 'png');
@@ -305,10 +337,15 @@ describe('masa determinism', () => {
       Object.assign(full.sites[site].counts, { contentNodes: 2, maxVersionsPerNode: 1440 });
     }
     const { content } = build(full);
-    expect(content.map((c) => c.type)).toEqual(['Page', 'Form', 'Page', 'Page', 'Form', 'Page']);
+    expect(content.map((c) => c.type)).toEqual(['File', 'Form', 'Page', 'Page', 'Form', 'Page']);
     for (const c of content) {
       expect(c.versions.length).toBeLessThanOrEqual(1440);
       for (let i = 1; i < c.versions.length; i += 1) expect(c.versions[i - 1]!.lastUpdate < c.versions[i]!.lastUpdate).toBe(true);
     }
+  });
+  it('leaves no room for a File node in a site whose only counted node is its form page', () => {
+    const one = structuredClone(config);
+    one.sites['tenant-a'].counts.contentNodes = 1;
+    expect(build(one).content.filter((c) => c.siteID === 'tenant-a').map((c) => c.type)).toEqual(['Form', 'Page']);
   });
 });

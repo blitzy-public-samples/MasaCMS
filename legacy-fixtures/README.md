@@ -57,7 +57,7 @@ SQL objects per module (`Program_N.` marks per-program objects):
 
 ## Loading
 
-`harness/repro/up.sh` runs `load-fixtures.sh` (no arguments, `-h` for help), then loads the dataset that `seed/` generated through `cfml/seed.cfm`.
+`harness/repro/up.sh` runs `load-fixtures.sh --check-only` before any target process starts, to select the cut-over versions, and `load-fixtures.sh` (no arguments, `-h` for help) at seeding. It then loads the dataset that `seed/` generated through `cfml/seed.cfm`. `--check-only` runs step 1 and writes `fixtures.json` (step 4) without loading anything.
 
 `load-fixtures.sh` steps:
 

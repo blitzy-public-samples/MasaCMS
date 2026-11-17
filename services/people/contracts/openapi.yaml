@@ -2693,7 +2693,8 @@ paths:
     get:
       operationId: listUserGroups
       summary: Lists the site's system or member groups with member counts and nextN paging, as `cusers.list` shows them.
-      description: Groups are read from identity; a caller holding only `m:008` also needs `m:000` on the site, and `ispublic` reads as 1 unless the caller is S2 or site admin.
+      description: Superseded by `listUserGroupsV2` (`GET /v2/users/groups`), which answers only the page `nextn` selects; groups are read from identity; a caller holding only `m:008` also needs `m:000` on the site, and `ispublic` reads as 1 unless the caller is S2 or site admin.
+      deprecated: true
       tags: [users]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3175,6 +3176,41 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A withheld branch, or a roster write-protocol step with identity that did not complete; nothing is written on either side.
+  /v2/users/groups:
+    get:
+      operationId: listUserGroupsV2
+      summary: Lists one page of the site's system or member groups with member counts, with nextN paging over every group, as `cusers.list` shows them.
+      description: Identity is asked for that page's groups only; a caller holding only `m:008` also needs `m:000` on the site, and `ispublic` reads as 1 unless the caller is S2 or site admin.
+      tags: [v2]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - m:008
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/IsPublicQuery'
+        - $ref: '#/components/parameters/StartRowQuery'
+        - $ref: '#/components/parameters/RecordsPerPageQuery'
+      responses:
+        '200':
+          description: The page of the groups, by `Perm` descending, then group name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGroupsPageV2'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: An `ispublic` boolean word such as `yes`, which the numeric `isPublic` argument of legacy `getUserGroups` rejects.
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v2/users:
     get:
       operationId: listUsersV2
@@ -3437,7 +3473,7 @@ paths:
   /internal/v1/roster-operations/halted:
     get:
       operationId: listHaltedRosterOperations
-      summary: Lists every roster operation recovery ever halted after identity stayed unreachable past 5 minutes, across the registered tenants.
+      summary: Lists every roster operation recovery ever halted after identity stayed unreachable past 5 minutes, across every tenant the registry has known, deleted sites included.
       description: A halted operation keeps its user closed until `opt2-people resolve-operation <operationId> --to rolled-back|done` resolves it; it stays listed afterwards with its new state, so parity replay records each halt on the exceptions list.
       tags: [operator]
       x-opt2-transport: service
@@ -3452,6 +3488,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HaltedRosterOperations'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The database is unavailable.
+
+  /internal/v2/roster-operations/halted:
+    get:
+      operationId: listHaltedRosterOperationsPage
+      summary: Lists one page of the roster operations recovery ever halted after identity stayed unreachable past 5 minutes, across every tenant the registry has known, deleted sites included.
+      description: The keyset-paged `listHaltedRosterOperations`; parity replay follows `next` until it is null and records each halt on the exceptions list. Pages follow one (startedAt, operationId) order across the tenants.
+      tags: [operator]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security: [{invocationCredential: []}]
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor; the first page when omitted.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: limit
+          in: query
+          required: false
+          description: Operations per page, 1 to 1000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        '200':
+          description: One page of the operations recovery halted, resolved or not, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HaltedRosterOperationsPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A `limit` outside 1 to 1000, or an `after` that is not a `next` this operation issued.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -5145,6 +5230,22 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/HaltedRosterOperation'
+    HaltedRosterOperationsPage:
+      type: object
+      required:
+        - operations
+        - next
+      additionalProperties: false
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/HaltedRosterOperation'
+        next:
+          description: Opaque cursor of the following page, passed as `after`; null on the last page.
+          type:
+            - string
+            - 'null'
     HaltedRosterOperation:
       type: object
       description: One roster operation recovery halted; `updatedAt` is its last write or operator claim.
@@ -5607,7 +5708,7 @@ components:
           minimum: 0
     InboxCounts:
       type: object
-      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      description: Inbox receipts over every tenant the registry has known, deleted sites included; `receipts` maps each asked event id to the tenants that applied it.
       required:
         - total
         - bySubscription
@@ -5652,7 +5753,7 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
         publishedNext:
@@ -5665,7 +5766,7 @@ components:
         publishedFrontier:
           type: string
           pattern: '^[0-9]+$'
-          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
         publishedUpTo:
           type: integer
           minimum: 0
@@ -6433,6 +6534,20 @@ components:
             $ref: '#/components/schemas/GroupListRow'
         nextn:
           $ref: '#/components/schemas/NextN'
+    UserGroupsPageV2:
+      type: object
+      required:
+        - items
+        - nextn
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: The groups of the page `nextn` selects, in list order; `nextn` counts every group.
+          items:
+            $ref: '#/components/schemas/GroupListRow'
+        nextn:
+          $ref: '#/components/schemas/NextN'
     CredentialFreeKey:
       type: string
       description: A key of a person row; `Password` and `PasswordCreated`, in any casing, are never sent.
@@ -6537,7 +6652,7 @@ components:
           $ref: '#/components/schemas/NextN'
         listUnassignedUsers:
           type: array
-          description: Ids of the listed people without a group membership, which the screen marks.
+          description: Ids of the people of the read's user pool, or of every site for `siteid=all`, without a group membership, as legacy `getUnassignedUsers` lists them for the screen to mark; a search includes those it does not match.
           items:
             $ref: '#/components/schemas/CfUuid'
     UserListPageV2:
@@ -6675,7 +6790,7 @@ components:
           $ref: '#/components/schemas/NextN'
         listUnassignedUsers:
           type: array
-          description: Ids of the listed people without a group membership, which the screen marks.
+          description: Always empty, as in legacy, where `cUsers.advancedSearch` sets no `rc.listUnassignedUsers` and the list marks no person as unassigned.
           items:
             $ref: '#/components/schemas/CfUuid'
         criteria:
@@ -6705,7 +6820,7 @@ components:
           $ref: '#/components/schemas/NextN'
         listUnassignedUsers:
           type: array
-          description: Ids of the page's people without a group membership, which the screen marks; the advanced search marks none.
+          description: Always empty, as in legacy, where `cUsers.advancedSearch` sets no `rc.listUnassignedUsers` and the list marks no person as unassigned.
           items:
             $ref: '#/components/schemas/CfUuid'
         criteria:

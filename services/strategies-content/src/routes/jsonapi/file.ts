@@ -39,22 +39,26 @@ import {
   serializeEntityList,
   urlParam,
   type ApiEntityView,
-  type ExpansionResolver,
 } from '../../legacy/jsonapi-serializers.js';
 import {
   authorizationDenied,
   beanFeedQuery,
   entityAccessAllowed,
   entityActionAllowed,
+  finderOf,
   findPropertiesFor,
+  isBlankFeedRow,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
   type BeanFeedSource,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
+  type RelationSourceKey,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Struct = Record<string, unknown>;
@@ -192,6 +196,11 @@ function columnsOf(row: Readonly<Struct>, selected?: ReadonlySet<string>): Struc
 /** `row`'s columns as the bean holds them after `set(query)`. */
 function beanColumns(row: Readonly<Struct>, selected?: ReadonlySet<string>): Struct {
   return Object.fromEntries(Object.entries(columnsOf(row, selected)).map(([column, value]) => [column, beanValue(value)]));
+}
+
+/** The columns `set(row)` stores from a feed row: a blank row's empty primary key is skipped (bean.cfc:333). */
+function setColumns(row: Readonly<Struct>, primaryKey: string): Readonly<Struct> {
+  return isBlankFeedRow(row) ? Object.fromEntries(Object.entries(row).filter(([column]) => column !== primaryKey)) : row;
 }
 
 /** bean.parseDateArg (bean.cfc:278-301) as fileBean.setRemotePubDate applies it; null for text that is no date. */
@@ -354,7 +363,11 @@ const FILE: FileEntity = {
       use(projectedSource(ctx, call, tx, repository.files.siteFilesFeed(tx, { siteId: call.siteId, ids }))),
     );
   },
-  item: (ctx, _call, row, selected) => ({ ...fileBeanDefaults(cfUuid(), '', ctx.domain.clock.now()), ...beanColumns(row, selected), isnew: 0 }),
+  item: (ctx, _call, row, selected) => {
+    // setFileSize stores int(fileSize) (fileBean.cfc:42-45), which fails on the '' of a blank row.
+    if (isBlankFeedRow(row) && (selected === undefined || selected.has('filesize'))) throw new LegacyApiError('server_error');
+    return { ...fileBeanDefaults(cfUuid(), '', ctx.domain.clock.now()), ...beanColumns(setColumns(row, FILE_CONFIG.primaryKey), selected), isnew: 0 };
+  },
   // The legacy oracle's file beans carry no `fileMetaData` back-reference, so no link or expansion names one.
   view: (values) => ({ entityName: 'file', configName: 'file', primaryKey: FILE_CONFIG.primaryKey, allValues: values, hasMany: [], hasOne: FILE_CONFIG.hasOne }),
 };
@@ -378,7 +391,7 @@ const META: FileEntity = {
   },
   // A feed selects the table alone, so iterator beans carry no joined file columns.
   item: (ctx, call, row, selected) => {
-    const values = beanColumns(row, selected);
+    const values = beanColumns(setColumns(row, META_CONFIG.primaryKey), selected);
     const siteId = text(values['siteid']);
     return { ...metaBeanDefaults(cfUuid(), siteId, call.site.urls.directImages, ctx.domain.clock.now()), ...values, isnew: 0 };
   },
@@ -400,31 +413,16 @@ async function loadOrNew(entity: FileEntity, ctx: RouteContext, call: JsonApiCal
   return { ...entity.fresh(ctx, call, id === '' ? cfUuid() : id, call.siteId), ...NOT_FOUND_ARGUMENTS };
 }
 
-/** Rejects with the legacy 503: every relation of these entities is served by another handler or service. */
-function relatedNotServed(): Promise<never> {
-  return Promise.reject(
-    new LegacyServiceUnavailableError('Expanding a related entity of a file is not served by the target', 'auto', 'file-expand-related'),
-  );
-}
-
-// Legacy expands content, site and file relations inline; the target fails closed rather than answer a bean without them.
-const RELATED_NOT_SERVED: ExpansionResolver = {
-  hasMany: relatedNotServed,
-  hasOne: relatedNotServed,
-  crumbs: relatedNotServed,
-  relatedContent: relatedNotServed,
-};
-
-/** getFilteredValues of one bean under the entity's own config, with the request's `expand` list. */
+/** getFilteredValues of one bean under the entity's own config, with the finder's `expand` list; relations through their entities. */
 function serializeBean(
   entity: FileEntity,
   call: JsonApiCall,
   values: Struct,
   opts: { expanded: number | boolean; editableCheck?: boolean },
 ): Promise<Struct> {
-  return serializeContentEntity(entity.view(values), call.apiContext, RELATED_NOT_SERVED, {
+  return serializeContentEntity(entity.view(values), call.apiContext, relatedResolver(call), {
     expanded: opts.expanded,
-    expandLinks: call.params.string('expand'),
+    expandLinks: finderOf(call).expand,
     pk: entity.config.primaryKey,
     editableCheck: opts.editableCheck ?? false,
   });
@@ -437,7 +435,8 @@ function findOneHandler(entity: FileEntity): JsonApiHandlerFn {
     const id = requiredId(call);
     if (!entityAccessAllowed(call.actor, entity.config)) return authorizationDenied();
     const values = await loadOrNew(entity, ctx, call, id);
-    return jsonApiResultOf(await serializeBean(entity, call, values, { expanded: 0, editableCheck: true }), entity.config.name);
+    const opts = { expanded: finderOf(call).expanded, editableCheck: true };
+    return jsonApiResultOf(await serializeBean(entity, call, values, opts), entity.config.name);
   };
 }
 
@@ -483,12 +482,7 @@ async function feedResult(entity: FileEntity, ctx: RouteContext, call: JsonApiCa
   if ('count' in result) return jsonApiResultOf({ count: result.count }, entity.config.name);
   const selected = selectedColumns(call, columns);
   const views = result.items.map((row) => entity.view(entity.item(ctx, call, row, selected)));
-  const items = await serializeEntityList(
-    views,
-    call.apiContext,
-    { entityName: entity.config.name, expand: call.params.string('expand') },
-    RELATED_NOT_SERVED,
-  );
+  const items = await serializeEntityList(views, call.apiContext, { entityName: entity.config.name, ...finderOf(call) }, relatedResolver(call));
   const ids = cfEq(call.method, 'findMany') && text(urlParam(call.apiContext, 'sort')) === '' ? call.ids : undefined;
   const ordered = ids === undefined ? items : inIdsOrder(items, ids);
   const options = result.baseUrl === undefined ? {} : { baseUrl: result.baseUrl };
@@ -647,6 +641,27 @@ export const fileHandler: EntityHandler = {
   delete: deleteFile,
 };
 
+/**
+ * contentFileMetaDataBean.loadBy as a relation path's source: by `metaid`, or by `contentid` the site's first row of the
+ * item whose file exists; a bean no row backs holds loadBy's arguments.
+ */
+async function loadFileMetaDataBy(ctx: RouteContext, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+  let values: Struct;
+  if ('primaryKey' in key) {
+    values = await loadOrNew(META, ctx, call, key.primaryKey);
+  } else {
+    const rows = await withTenant(ctx.domain.db, call.tenantId, (tx) => ctx.domain.repository.files.listFileMetadata(tx, { siteId: call.siteId }));
+    const contentId = key.contentid.trimEnd().toLowerCase();
+    let record: MetaRecord | null = null;
+    for (const row of rows.filter((candidate) => (candidate.contentid ?? '').trimEnd().toLowerCase() === contentId)) {
+      record = await loadMetaRecord(ctx, call, row.metaid);
+      if (record !== null) break;
+    }
+    values = record?.values ?? { ...META.fresh(ctx, call, cfUuid(), call.siteId), ...NOT_FOUND_ARGUMENTS, contentid: key.contentid };
+  }
+  return (name) => values[(cfEq(name, 'primaryKey') ? META_CONFIG.primaryKey : name).toLowerCase()];
+}
+
 /** The `fileMetaData` entity (jsonApiUtility.cfc:99): non-public, Site Manager module. */
 export const fileMetaDataHandler: EntityHandler = {
   entity: 'fileMetaData',
@@ -660,4 +675,5 @@ export const fileMetaDataHandler: EntityHandler = {
   findPermissions: findPermissionsHandler(META),
   save: saveFileMetaDataCall,
   delete: deleteFileMetaDataCall,
+  loadBy: loadFileMetaDataBy,
 };

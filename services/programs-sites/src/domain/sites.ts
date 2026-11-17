@@ -1,6 +1,6 @@
 /** Business operations of the carried `csettings` site actions (core/mura/settings). */
 import { AuthDenial, assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
-import { cfIsNumeric, cfToBoolean, cfToNumber, cfUuid } from '@opt2/platform/legacy-compat';
+import { cfIsNumeric, cfToBoolean, cfToNumber, cfUuid, masaCf2Java } from '@opt2/platform/legacy-compat';
 import { awaitReadable, withGatedTenant, type MigrationHandlerOptions } from '@opt2/platform/migration-kit';
 import { localTimestamp, type OutboxOrigin } from '@opt2/platform/outbox';
 import {
@@ -13,11 +13,12 @@ import {
   type TenantDb,
   type TenantTx,
 } from '@opt2/platform/tenancy';
-import { writeSiteChanged } from '../events/site-changed.js';
+import { lastAnnouncedVersion, writeSiteChanged } from '../events/site-changed.js';
 import type { components } from '../generated/openapi.js';
 import {
   LEGACY_GLOBAL_CONFIG_DEFAULTS,
   SITE_COLUMNS,
+  effectiveDataCollection,
   effectiveEditProfileURL,
   effectiveEmailBroadcaster,
   effectiveUseSSL,
@@ -30,14 +31,16 @@ import {
   type SiteBean,
   type SiteStoredValue,
 } from '../legacy/site-fields.js';
-import type { ProgramsSitesRepository, SiteExtendDefinitions } from '../repo/repository.js';
+import { jsonApiSiteBean, jsonApiSiteValues, type JsonApiSiteValues } from '../legacy/json-api-site.js';
+import type { ProgramsSitesRepository, SiteExtendDefinitions, SiteListRow } from '../repo/repository.js';
 import { SITE, type ExtendAttributeRow, type ExtendDataRow, type ImageSizeRow, type SiteRow } from '../repo/tables.js';
 import { createHrefDomainsReader } from './href-domains.js';
-import { siteChangedPayload } from './pools.js';
+import { LINE_BREAKS, siteChangedPayload } from './pools.js';
 
 type Schemas = components['schemas'];
 type Site = Schemas['Site'];
 type SiteListItem = Schemas['SiteListItem'];
+type SiteListPage = Schemas['SiteListPage'];
 type SiteDetail = Schemas['SiteDetail'];
 type ShellSite = Schemas['ShellSite'];
 type ShellSiteDetail = Schemas['ShellSiteDetail'];
@@ -49,12 +52,22 @@ type ImageSize = Schemas['ImageSize'];
 type HrefDomains = Schemas['HrefDomains'];
 type SiteMailSettings = Schemas['SiteMailSettings'];
 type SiteMailRemote = Schemas['SiteMailRemote'];
+type SiteFeedSettings = Schemas['SiteFeedSettings'];
+type SiteConfigFlags = Schemas['SiteConfigFlags'];
 
 /** Sort of the site list as `settingsGateway.getList` takes it; unknown values fall back to `orderno` / `asc`. */
 export interface SiteListOptions {
   sortBy?: string;
   sortDirection?: string;
   /** Ends the list's reads when it aborts, e.g. when the client disconnects. */
+  signal?: AbortSignal;
+}
+
+/** One page of the registered sites: at most `limit` after the site id `after`. */
+export interface SiteListPageOptions {
+  after?: string;
+  limit: number;
+  /** Ends the page's reads when it aborts, e.g. when the client disconnects. */
   signal?: AbortSignal;
 }
 
@@ -72,7 +85,10 @@ export interface SitesDomainDeps {
   config?: LegacyGlobalConfig;
 }
 
-/** Site operations behind `csettings.list`, `editSite`, the admin layout, `sanitizeHref` and identity's login mail. */
+/**
+ * Site operations behind `csettings.list`, `editSite`, the admin layout, `sanitizeHref`, identity's login mail, and
+ * strategies-content's RSS feeds, Site Manager flags and JSON API `site` relations.
+ */
 export interface SitesDomain {
   /**
    * The Sites screen rows: every registered site for an S2 token, else the token's own, one transaction per tenant and
@@ -80,6 +96,11 @@ export interface SitesDomain {
    * after an order save, a golden-comparison parity point. An abort of `options.signal` rejects with its reason.
    */
   listSites(db: TenantDb, claims: UserClaims, options?: SiteListOptions): Promise<SiteListItem[]>;
+  /**
+   * One page of the Sites screen rows for an S2 token, in registry site-id order: only the page's tenants are read, one
+   * transaction each and at most SITE_LIST_CONCURRENCY at once. An abort of `options.signal` rejects with its reason.
+   */
+  listSitePage(db: TenantDb, claims: UserClaims, options: SiteListPageOptions): Promise<SiteListPage>;
   /** The Edit Site data of `siteId`; an unknown id yields the defaulted new site with `isNew = 1`. */
   readSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<SiteDetail>;
   /** The admin layout's settings of `siteId`, EmailBroadcaster effective; an unknown id yields the new site, `isNew = 1`. */
@@ -95,7 +116,23 @@ export interface SitesDomain {
    * @throws Error when neither the named site nor `default` is stored, where legacy's getSite fails.
    */
   readMailSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteMailSettings[]>;
-  /** Writes `programs-sites.site.changed.v1` for each applied site insert or update of a migration apply. */
+  /**
+   * The settings the RSS writers read through `settingsManager.getSite` for each id, in order (feedApiUtility.cfc:257-446).
+   * @throws Error when neither the named site nor `default` is stored, where legacy's getSite fails.
+   */
+  readFeedSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteFeedSettings[]>;
+  /**
+   * The `$.siteConfig` flags strategies-content's Site Manager views test, of the site `settingsManager.getSite` resolves
+   * for each id, in order.
+   * @throws Error when neither the named site nor `default` is stored, where legacy's getSite fails.
+   */
+  readConfigFlags(db: TenantDb, siteIds: readonly string[]): Promise<SiteConfigFlags[]>;
+  /**
+   * The values findOne(entityName='site') answers for each id under the JSON API endpoint `baseUrl`, in order
+   * (jsonApiUtility.cfc:2292-2384): the registered site's bean holding the id as spelled, else the new bean.
+   */
+  readJsonApiValues(db: TenantDb, baseUrl: string, siteIds: readonly string[]): Promise<JsonApiSiteValues[]>;
+  /** Writes `programs-sites.site.changed.v1` for each applied site insert, update or delete of a migration apply. */
   emitStateEvents: NonNullable<MigrationHandlerOptions['emitStateEvents']>;
 }
 
@@ -106,6 +143,9 @@ const COLUMN_TYPES: ReadonlyMap<string, string> = new Map(SITE.columns.map((colu
 
 /** settingsManager `getSite`'s fallback for an empty or unknown site id. */
 const DEFAULT_SITE_ID = 'default';
+
+/** configBean's `locale` when the settings name none (configBean.cfc:138). */
+const DEFAULT_LOCALE = 'Server';
 
 /** Ports getServerPort leaves out of a remote site's URL (settingsBean.cfc:1406). */
 const DEFAULT_PORTS: readonly string[] = ['80', '443'];
@@ -167,7 +207,7 @@ function nullableText(value: unknown): string | null {
 }
 
 /** One Sites screen row from the stored row, which the legacy list reads as its raw query (list.cfm). */
-function listItem(row: SiteRow): SiteListItem {
+function listItem(row: SiteListRow): SiteListItem {
   return {
     siteid: row.siteid,
     site: nullableText(row.site),
@@ -247,6 +287,46 @@ function toMailSettings(bean: SiteBean, config: LegacyGlobalConfig): SiteMailSet
   };
 }
 
+/**
+ * The bean values rss20, rss092 and getURL read (feedApiUtility.cfc:257-446): getContact, getJavaLocale
+ * (settingsBean.cfc:647-654), and what getScheme and getWebPath read (settingsBean.cfc:1189-1221,1298-1300,1395-1467).
+ */
+function toFeedSettings(bean: SiteBean, config: LegacyGlobalConfig): SiteFeedSettings {
+  const siteLocale = getSiteText(bean, 'siteLocale');
+  return {
+    siteID: getSiteText(bean, 'siteID'),
+    contact: getSiteText(bean, 'contact'),
+    javaLocale: masaCf2Java(siteLocale !== '' ? siteLocale : (config.defaultLocale ?? DEFAULT_LOCALE)),
+    domain: getSiteText(bean, 'domain'),
+    domainAliases: getSiteText(bean, 'domainAlias')
+      .split(LINE_BREAKS)
+      .filter((alias) => alias !== ''),
+    enforcePrimaryDomain: cfToBoolean(getSiteText(bean, 'enforcePrimaryDomain')),
+    useSSL: effectiveUseSSL(bean) === '1',
+    remote: mailRemote(bean),
+  };
+}
+
+/** A bean flag as the contract's integer; null for the '' a NULL column leaves where no setter keeps the default. */
+function flagNumber(value: SiteStoredValue): number | null {
+  return typeof value === 'string' && cfIsNumeric(value) ? cfToNumber(value) : null;
+}
+
+/**
+ * The `getValue(<flag>)` answers the admin views test (settingsBean.cfc:360-364,427-433,576-581,1336-1341): the numeric
+ * setters keep their defaults over a NULL column, so only hasChangesets and dataCollection can be null.
+ */
+function toConfigFlags(bean: SiteBean, config: LegacyGlobalConfig): SiteConfigFlags {
+  return {
+    siteID: getSiteText(bean, 'siteID'),
+    hasLockableNodes: cfToNumber(getSiteText(bean, 'hasLockableNodes')),
+    hasChangesets: flagNumber(getSiteValue(bean, 'hasChangesets')),
+    dataCollection: flagNumber(effectiveDataCollection(bean, config)),
+    hasComments: cfToNumber(getSiteText(bean, 'hasComments')),
+    scaffolding: cfToNumber(getSiteText(bean, 'scaffolding')),
+  };
+}
+
 /** A stored custom image size; a NULL height or width reads as the bean's `AUTO` default. */
 function imageSize(row: ImageSizeRow): ImageSize {
   return {
@@ -318,18 +398,17 @@ function listInteger(list: readonly string[], index: number, name: string): numb
   return Math.trunc(cfToNumber(value));
 }
 
-/** The next `row_version` of a stored row; pg returns int8 as a decimal string. */
-function nextRowVersion(rowVersion: unknown): string {
-  return String(BigInt(String(rowVersion)) + 1n);
+/** The next `row_version` of a stored row, above `floor`; pg returns int8 as a decimal string. */
+function nextRowVersion(rowVersion: unknown, floor = 0n): bigint {
+  const stored = BigInt(String(rowVersion));
+  return (stored > floor ? stored : floor) + 1n;
 }
 
 /** Builds the site operations over the injected repository; it holds no state of its own. */
 export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS }: SitesDomainDeps): SitesDomain {
   /** The tenant's site row `siteId` names under SQL Server's `siteid = ?` matching; null when none does. */
   async function findSite(tx: TenantTx, siteId: string): Promise<SiteRow | null> {
-    const exact = await repo.readSite(tx, siteId);
-    if (exact !== null) return exact;
-    return (await repo.listSites(tx)).find((row) => sqlEq(row.siteid, siteId)) ?? null;
+    return (await repo.readSite(tx, siteId)) ?? repo.matchSite(tx, siteId);
   }
 
   /** Writes the site's state event for its stored row in `tx`. */
@@ -344,6 +423,25 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     const tenants = claims.s2 ? await withMetadata(db, siteListTenants, call) : [claims.tid];
     const rows = await readEachTenant(tenants, signal, (tenantId) => withTenant(db, tenantId, (tx) => repo.listSites(tx), call));
     return sortSites(rows.flat(), options.sortBy ?? 'orderno', options.sortDirection ?? 'asc').map(listItem);
+  }
+
+  async function listSitePage(db: TenantDb, claims: UserClaims, options: SiteListPageOptions): Promise<SiteListPage> {
+    if (!claims.s2) throw AuthDenial.forbidden();
+    const { signal, limit } = options;
+    const call = signal === undefined ? undefined : { signal };
+    // One entry past the page tells whether another page follows.
+    const entries = await withMetadata(
+      db,
+      async (tx) => {
+        await awaitReadable(tx, [SITE.unit]);
+        return repo.listRegisteredSitePage(tx, { after: options.after ?? null, limit: limit + 1 });
+      },
+      call,
+    );
+    const page = entries.slice(0, limit);
+    const tenants = [...new Set(page.map(({ tenantId }) => tenantId))];
+    const rows = await readEachTenant(tenants, signal, (tenantId) => withTenant(db, tenantId, (tx) => repo.listSites(tx), call));
+    return { items: rows.flat().map(listItem), next: entries.length > limit ? (page.at(-1)?.siteId ?? null) : null };
   }
 
   async function readSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<SiteDetail> {
@@ -399,14 +497,37 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     return null;
   }
 
-  async function readMailSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteMailSettings[]> {
-    const settings: SiteMailSettings[] = [];
+  /** `toSettings` of the bean getSite resolves each id to, in order; throws where neither the site nor `default` is stored. */
+  async function readResolvedSites<T>(db: TenantDb, siteIds: readonly string[], toSettings: (bean: SiteBean) => T): Promise<T[]> {
+    const settings: T[] = [];
     for (const siteId of siteIds) {
       const row = await mailSite(db, siteId);
       if (row === null) throw new Error(`Neither site '${siteId}' nor the default site is registered`);
-      settings.push(toMailSettings(readBean(row), config));
+      settings.push(toSettings(readBean(row)));
     }
     return settings;
+  }
+
+  async function readMailSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteMailSettings[]> {
+    return readResolvedSites(db, siteIds, (bean) => toMailSettings(bean, config));
+  }
+
+  async function readFeedSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteFeedSettings[]> {
+    return readResolvedSites(db, siteIds, (bean) => toFeedSettings(bean, config));
+  }
+
+  async function readConfigFlags(db: TenantDb, siteIds: readonly string[]): Promise<SiteConfigFlags[]> {
+    return readResolvedSites(db, siteIds, (bean) => toConfigFlags(bean, config));
+  }
+
+  async function readJsonApiValues(db: TenantDb, baseUrl: string, siteIds: readonly string[]): Promise<JsonApiSiteValues[]> {
+    const items: JsonApiSiteValues[] = [];
+    for (const siteId of siteIds) {
+      const tenantId = await tenantForRegisteredSite(db, siteId);
+      const row = tenantId === null ? null : await withTenant(db, tenantId, (tx) => findSite(tx, siteId));
+      items.push(jsonApiSiteValues(jsonApiSiteBean(row, siteId), baseUrl));
+    }
+    return items;
   }
 
   async function saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult> {
@@ -432,16 +553,27 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     return { written: true, sites: await listSites(db, claims, input) };
   }
 
+  /** Writes the `deleted` state event of a site row an apply removed, above every version announced for the site. */
+  async function announceDeletion(tx: TenantTx, row: SiteRow, origin: OutboxOrigin): Promise<void> {
+    const rowVersion = nextRowVersion(row.row_version, await lastAnnouncedVersion(tx, row.siteid));
+    await writeSiteChanged(tx, { siteId: row.siteid, rowVersion, payload: { ...siteChangedPayload(row), deleted: true }, origin });
+  }
+
   const emitStateEvents: SitesDomain['emitStateEvents'] = async (tx, change, write) => {
-    if (change.unit !== SITE.unit || (change.op !== 'insert' && change.op !== 'update') || change.after === undefined) {
+    if (change.unit !== SITE.unit) return;
+    if (change.op === 'delete') {
+      if (change.before !== undefined) await announceDeletion(tx, change.before as SiteRow, change.origin);
       return;
     }
+    if (change.after === undefined) return;
+    // A site created again after its deletion continues above the deletion's version, which consumers already hold.
+    const floor = change.op === 'insert' ? await lastAnnouncedVersion(tx, String(change.after.siteid)) : 0n;
     // The platform update reads the applied row under the apply's authority, with no window-phase read wait.
     const row = await repo.update<SiteRow>(
       tx,
       SITE.table,
       { siteid: change.after.siteid },
-      { row_version: nextRowVersion(change.after.row_version) },
+      { row_version: String(nextRowVersion(change.after.row_version, floor)) },
       write,
     );
     if (row === null) {
@@ -454,12 +586,16 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
 
   return Object.freeze({
     listSites,
+    listSitePage,
     readSite,
     readShellSite,
     readUserPoolSites,
     saveOrderAndDeploy,
     hrefDomains,
     readMailSettings,
+    readFeedSettings,
+    readConfigFlags,
+    readJsonApiValues,
     emitStateEvents,
   });
 }

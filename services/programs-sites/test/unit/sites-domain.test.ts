@@ -19,11 +19,12 @@ import {
   type TransactionCallOptions,
 } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { siteChangedPayload } from '../../src/domain/pools.js';
 import { createSitesDomain, type SitesDomainDeps } from '../../src/domain/sites.js';
 import { siteChangedValidator } from '../../src/events/consumers.js';
-import { writeSiteChanged } from '../../src/events/site-changed.js';
+import { lastAnnouncedVersion, writeSiteChanged } from '../../src/events/site-changed.js';
 import { SITE_COLUMNS } from '../../src/legacy/site-fields.js';
-import type { ProgramsSitesRepository, SiteExtendDefinitions } from '../../src/repo/repository.js';
+import type { KeysetPage, ProgramsSitesRepository, SiteExtendDefinitions, SiteListRow } from '../../src/repo/repository.js';
 import {
   SITE,
   type ExtendAttributeRow,
@@ -41,7 +42,7 @@ vi.mock('@opt2/platform/tenancy', async (importOriginal) => {
 
 vi.mock('../../src/events/site-changed.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/events/site-changed.js')>();
-  return { ...actual, writeSiteChanged: vi.fn() };
+  return { ...actual, writeSiteChanged: vi.fn(), lastAnnouncedVersion: vi.fn() };
 });
 
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
@@ -207,6 +208,14 @@ function newStore(rows: SiteRow[] = []): Store {
   return { sites, defs: emptyDefinitions(), data: [], imageSizes: [], registry: rows.map((row) => ({ siteId: row.siteid, tenantId: row.tenant_id })) };
 }
 
+/** The columns the repository's `listSites` selects. */
+const LIST_COLUMNS = ['siteid', 'site', 'domain', 'orderno', 'deploy', 'lastdeployment'] as const;
+
+/** SQL Server's `siteid = ?`: case-insensitive, trailing spaces ignored. */
+function sqlServerEq(stored: string, siteId: string): boolean {
+  return stored.replace(/ +$/, '').toLowerCase() === siteId.replace(/ +$/, '').toLowerCase();
+}
+
 /** Recording repository over `store`; site writes replace the stored row and advance its row_version. */
 function fakeRepo(store: Store) {
   const rowsOf = (tx: TenantTx): SiteRow[] => store.sites.get(tx.tenantId) ?? [];
@@ -222,7 +231,16 @@ function fakeRepo(store: Store) {
   };
   return {
     readSite: vi.fn(async (tx: TenantTx, siteId: string) => rowsOf(tx).find((row) => row.siteid === siteId) ?? null),
-    listSites: vi.fn(async (tx: TenantTx) => [...rowsOf(tx)]),
+    listSites: vi.fn(async (tx: TenantTx) =>
+      rowsOf(tx).map((row) => Object.fromEntries(LIST_COLUMNS.map((column) => [column, row[column]])) as SiteListRow),
+    ),
+    matchSite: vi.fn(async (tx: TenantTx, siteId: string) => rowsOf(tx).find((row) => sqlServerEq(row.siteid, siteId)) ?? null),
+    listRegisteredSitePage: vi.fn(async (_tx: MetadataTx, { after, limit }: KeysetPage) =>
+      [...store.registry]
+        .sort((a, b) => a.siteId.localeCompare(b.siteId))
+        .filter(({ siteId }) => after === null || siteId.localeCompare(after) > 0)
+        .slice(0, limit),
+    ),
     readSiteExtendDefinitions: vi.fn(async (_tx: TenantTx, _siteId: string) => store.defs),
     readSiteExtendData: vi.fn(async (_tx: TenantTx, baseId: string) => store.data.filter((row) => row.baseid === baseId)),
     listImageSizes: vi.fn(async (_tx: TenantTx, siteId: string) => store.imageSizes.filter((row) => row.siteid === siteId)),
@@ -313,6 +331,7 @@ function assertContract(method: string, path: string, body: unknown): void {
 
 beforeEach(() => {
   vi.mocked(writeSiteChanged).mockReset().mockResolvedValue(null);
+  vi.mocked(lastAnnouncedVersion).mockReset().mockResolvedValue(0n);
   vi.mocked(registeredTenants).mockReset();
   vi.mocked(registryEntryForTenant).mockReset();
   vi.mocked(tenantForRegisteredSite).mockReset();
@@ -474,13 +493,90 @@ describe('listSites', () => {
     const failing = tenantIdForSite('site-03');
     h.repo.listSites.mockImplementation(async (tx: TenantTx) => {
       if (tx.tenantId === failing) throw failure;
-      return [...(h.store.sites.get(tx.tenantId) ?? [])];
+      return (h.store.sites.get(tx.tenantId) ?? []).map((row) => Object.fromEntries(LIST_COLUMNS.map((column) => [column, row[column]])) as SiteListRow);
     });
     const t = tracking(h);
 
     await expect(h.domain.listSites(t.db, claimsFor('default'))).rejects.toBe(failure);
     expect(t.tenantCalls).toHaveLength(4);
     expect(h.repo.listSites).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('listSitePage', () => {
+  const rows = (): SiteRow[] => [siteRow('tenant-a', { orderno: 2 }), siteRow('tenant-b', { orderno: null }), siteRow('default', { orderno: 1 })];
+
+  it.each<{ name: string; after?: string; limit: number; items: string[]; next: string | null; requested: KeysetPage }>([
+    { name: 'the first page', limit: 2, items: ['default', 'tenant-a'], next: 'tenant-a', requested: { after: null, limit: 3 } },
+    { name: 'the last page after a cursor', after: 'tenant-a', limit: 2, items: ['tenant-b'], next: null, requested: { after: 'tenant-a', limit: 3 } },
+    { name: 'a page holding exactly every site', limit: 3, items: ['default', 'tenant-a', 'tenant-b'], next: null, requested: { after: null, limit: 4 } },
+  ])('reads $name in site-id order, opening only its tenants behind one gate fence', async ({ after, limit, items, next, requested }) => {
+    const { db, domain, opened, metadata, repo } = harness(rows());
+
+    const page = await domain.listSitePage(db, claimsFor('default'), { after, limit });
+
+    expect(page.items.map((site) => site.siteid)).toEqual(items);
+    expect(page.next).toBe(next);
+    expect(opened).toEqual(items.map((siteId) => tenantIdForSite(siteId)));
+    expect(metadata).toEqual([SITE_UNIT_FENCE]);
+    expect(repo.listRegisteredSitePage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'metadata' }), requested);
+    expect(registeredTenants).not.toHaveBeenCalled();
+    assertContract('GET', '/v2/sites', page);
+  });
+
+  it('maps rows to the Sites screen fields of the list', async () => {
+    const { db, domain } = harness([siteRow('tenant-a', { site: null, domain: 7, orderno: 4, deploy: 0, lastdeployment: LAST_DEPLOYMENT })]);
+
+    expect(await domain.listSitePage(db, claimsFor('tenant-a'), { limit: 1 })).toStrictEqual({
+      items: await domain.listSites(db, claimsFor('tenant-a', false)),
+      next: null,
+    });
+  });
+
+  it('reads a tenant registered under two site ids of one page once', async () => {
+    const { db, domain, opened, store } = harness(rows());
+    store.registry.push({ siteId: 'tenant-a-alias', tenantId: TENANT_A });
+
+    const page = await domain.listSitePage(db, claimsFor('default'), { limit: 3 });
+
+    expect(page).toMatchObject({ items: [{ siteid: 'default' }, { siteid: 'tenant-a' }], next: 'tenant-a-alias' });
+    expect(opened).toEqual([TENANT_DEFAULT, TENANT_A]);
+  });
+
+  it('denies a non-S2 token with 403 before any read', async () => {
+    const { db, domain, opened, metadata, repo } = harness(rows());
+
+    await expect(domain.listSitePage(db, claimsFor('tenant-a', false), { limit: 2 })).rejects.toMatchObject({ statusCode: 403 });
+    expect([opened, metadata]).toEqual([[], []]);
+    expect(repo.listRegisteredSitePage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['passes its signal to every transaction', false],
+    ['opens no tenant transaction once its signal has aborted, rejecting with the reason', true],
+  ])('%s', async (_label, aborted) => {
+    const h = harness(rows());
+    const controller = new AbortController();
+    const reason = new Error('client closed');
+    if (aborted) controller.abort(reason);
+    const options: (TransactionCallOptions | undefined)[] = [];
+    const db: TenantDb = {
+      ...h.db,
+      withTenant: (tenantId, fn, call) => {
+        options.push(call);
+        return h.db.withTenant(tenantId, fn);
+      },
+      withMetadata: (fn, call) => {
+        options.push(call);
+        return h.db.withMetadata(fn);
+      },
+    };
+
+    const page = h.domain.listSitePage(db, claimsFor('default'), { limit: 2, signal: controller.signal });
+
+    if (aborted) await expect(page).rejects.toBe(reason);
+    else expect((await page).items).toHaveLength(2);
+    expect(options).toEqual(Array.from({ length: aborted ? 1 : 3 }, () => ({ signal: controller.signal })));
   });
 });
 
@@ -596,15 +692,20 @@ describe('readSite', () => {
     assertContract('GET', '/v1/sites/tenant-a', detail);
   });
 
-  it('finds a stored id that differs in case and reads its parts under the stored id', async () => {
-    const { db, domain, repo } = harness([siteRow('Tenant-A', { tenant_id: TENANT_A })]);
+  it.each([
+    ['the exact stored id without a fallback lookup', 'tenant-a', 0],
+    ['a stored id that differs in case through one fallback lookup', 'Tenant-A', 1],
+  ])('finds %s and reads its parts under the stored id, never listing the tenant', async (_label, storedId, lookups) => {
+    const { db, domain, repo } = harness([siteRow(storedId, { tenant_id: TENANT_A })]);
 
     const detail = await domain.readSite(db, claimsFor('tenant-a'), 'tenant-a');
 
-    expect(detail).toMatchObject({ isNew: 0, site: { SiteID: 'Tenant-A' } });
-    expect(repo.listSites).toHaveBeenCalledOnce();
-    expect(repo.readSiteExtendDefinitions).toHaveBeenCalledWith(expect.anything(), 'Tenant-A');
-    expect(repo.listImageSizes).toHaveBeenCalledWith(expect.anything(), 'Tenant-A');
+    expect(detail).toMatchObject({ isNew: 0, site: { SiteID: storedId } });
+    expect(repo.matchSite).toHaveBeenCalledTimes(lookups);
+    if (lookups > 0) expect(repo.matchSite).toHaveBeenCalledWith(expect.objectContaining({ tenantId: TENANT_A }), 'tenant-a');
+    expect(repo.listSites).not.toHaveBeenCalled();
+    expect(repo.readSiteExtendDefinitions).toHaveBeenCalledWith(expect.anything(), storedId);
+    expect(repo.listImageSizes).toHaveBeenCalledWith(expect.anything(), storedId);
   });
 
   it('reads no extended values for a stored site without a baseID', async () => {
@@ -927,6 +1028,140 @@ describe('readMailSettings', () => {
   });
 });
 
+describe('readFeedSettings', () => {
+  const LOOKUP_PATH = '/internal/v1/sites/feed-settings:lookup';
+
+  it('answers one entry per listed id in request order, resolving an empty or unknown id to default as getSite does', async () => {
+    const { db, domain, opened } = harness([siteRow('default'), siteRow('tenant-a'), siteRow('tenant-b')]);
+
+    const items = await domain.readFeedSettings(db, ['TENANT-B', '', 'nosuch', 'tenant-a']);
+
+    expect(items.map(({ siteID }) => siteID)).toEqual(['tenant-b', 'default', 'default', 'tenant-a']);
+    expect(opened).toEqual([TENANT_B, TENANT_DEFAULT, TENANT_DEFAULT, TENANT_A]);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items } });
+  });
+
+  it.each<{ name: string; row: Partial<SiteRow>; defaultLocale?: string; expected: Record<string, unknown> }>([
+    {
+      name: 'the stored contact, domain and aliases of a local site, whose port and context are configBean’s',
+      row: {
+        contact: 'contact@a.example.test',
+        domain: 'a.example.test',
+        domainalias: 'alias-1.example.test\r\nalias-2.example.test\n\r\nalias-3.example.test\r\n',
+        enforceprimarydomain: 1,
+        sitelocale: 'English (UK)',
+        isremote: 0,
+        remoteport: 8443,
+        remotecontext: '/remote',
+      },
+      expected: {
+        siteID: 'tenant-a',
+        contact: 'contact@a.example.test',
+        javaLocale: 'en_GB',
+        domain: 'a.example.test',
+        domainAliases: ['alias-1.example.test', 'alias-2.example.test', 'alias-3.example.test'],
+        enforcePrimaryDomain: true,
+        useSSL: false,
+        remote: null,
+      },
+    },
+    { name: 'no aliases, no enforced domain and an empty contact from NULL columns', row: { contact: null, domainalias: null, enforceprimarydomain: null }, expected: { contact: '', domainAliases: [], enforcePrimaryDomain: false } },
+    { name: 'the JVM locale of configBean’s default `Server` for a site without a locale', row: { sitelocale: null }, expected: { javaLocale: 'en_US' } },
+    { name: 'configBean’s default locale for a site without a locale', row: { sitelocale: '' }, defaultLocale: 'German (Standard)', expected: { javaLocale: 'de_DE' } },
+    { name: 'a Java locale name kept as it is', row: { sitelocale: 'fr_CA' }, defaultLocale: 'German (Standard)', expected: { javaLocale: 'fr_CA' } },
+    { name: 'the port and context of a remote site', row: { isremote: 1, remoteport: 8443, remotecontext: '/remote' }, expected: { remote: { serverPort: ':8443', context: '/remote' } } },
+    { name: 'useSSL from extranetSSL when useSSL is NULL', row: { usessl: null, extranetssl: 1 }, expected: { useSSL: true } },
+    { name: 'no SSL when a stored useSSL 0 clears extranetSSL, as its setter does', row: { usessl: 0, extranetssl: 1 }, expected: { useSSL: false } },
+  ])('reads $name', async ({ row, defaultLocale, expected }) => {
+    const config = defaultLocale === undefined ? {} : { config: { emailBroadcaster: false, defaultLocale } };
+    const { db, domain, repo } = harness([siteRow('tenant-a', row)], config);
+
+    const [settings] = await domain.readFeedSettings(db, ['tenant-a']);
+
+    expect(settings).toMatchObject(expected);
+    expect(writesOf(repo)).toEqual([]);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items: [settings] } });
+  });
+});
+
+describe('readConfigFlags', () => {
+  const LOOKUP_PATH = '/internal/v1/sites/config-flags:lookup';
+  const STORED = { haslockablenodes: 0, haschangesets: 1, datacollection: 1, hascomments: 1, scaffolding: 1 } as const;
+
+  it('answers one entry per listed id in request order, resolving an empty or unknown id to default as getSite does', async () => {
+    const { db, domain, opened, repo } = harness([siteRow('default', STORED), siteRow('tenant-a', STORED), siteRow('tenant-b', STORED)]);
+
+    const items = await domain.readConfigFlags(db, ['TENANT-B', '', 'nosuch', 'tenant-a']);
+
+    expect(items.map(({ siteID }) => siteID)).toEqual(['tenant-b', 'default', 'default', 'tenant-a']);
+    expect(opened).toEqual([TENANT_B, TENANT_DEFAULT, TENANT_DEFAULT, TENANT_A]);
+    expect(writesOf(repo)).toEqual([]);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items } });
+  });
+
+  it.each<{ name: string; row: Partial<SiteRow>; dataCollection?: boolean; expected: Record<string, unknown> }>([
+    {
+      name: 'the stored flags of tenant-a, scaffolding on',
+      row: STORED,
+      expected: { siteID: 'tenant-a', hasLockableNodes: 0, hasChangesets: 1, dataCollection: 1, hasComments: 1, scaffolding: 1 },
+    },
+    {
+      name: 'every stored flag turned the other way',
+      row: { haslockablenodes: 1, haschangesets: 0, datacollection: 0, hascomments: 0, scaffolding: 0 },
+      expected: { hasLockableNodes: 1, hasChangesets: 0, dataCollection: 0, hasComments: 0, scaffolding: 0 },
+    },
+    {
+      name: 'the numeric setters’ defaults and null for the setter-less flags over NULL columns',
+      row: { haslockablenodes: null, haschangesets: null, datacollection: null, hascomments: null, scaffolding: null },
+      expected: { hasLockableNodes: 0, hasChangesets: null, dataCollection: null, hasComments: 1, scaffolding: 1 },
+    },
+    { name: 'dataCollection 0 while configBean’s is off', row: STORED, dataCollection: false, expected: { dataCollection: 0, hasChangesets: 1 } },
+  ])('reads $name', async ({ row, dataCollection, expected }) => {
+    const config = dataCollection === undefined ? {} : { config: { emailBroadcaster: false, dataCollection } };
+    const { db, domain } = harness([siteRow('tenant-a', row)], config);
+
+    const [flags] = await domain.readConfigFlags(db, ['tenant-a']);
+
+    expect(flags).toMatchObject(expected);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items: [flags] } });
+  });
+});
+
+
+describe('readJsonApiValues', () => {
+  const LOOKUP_PATH = '/internal/v1/sites/json-api-values:lookup';
+  const BASE_URL = 'http://localhost/index.cfm/_api/json/v1/tenant-a';
+  const linksOf = (siteId: string): Record<string, string> => ({
+    entities: BASE_URL,
+    all: `${BASE_URL}/site`,
+    properties: `${BASE_URL}/site/properties`,
+    self: `${BASE_URL}/site`,
+    permissions: `${BASE_URL}/site/${siteId}/permissions`,
+  });
+
+  it('answers findOne(site) values per listed id in order, each keeping its spelling, in its registered tenant', async () => {
+    const { db, domain, opened, repo } = harness([siteRow('tenant-a'), siteRow('tenant-b')]);
+
+    const items = await domain.readJsonApiValues(db, BASE_URL, ['TENANT-A', 'tenant-b']);
+
+    expect(items).toEqual([
+      { links: linksOf('TENANT-A'), domain: 'tenant-a.example.test', siteid: 'TENANT-A', isnew: 0, id: 'TENANT-A', entityname: 'site' },
+      { links: linksOf('tenant-b'), domain: 'tenant-b.example.test', siteid: 'tenant-b', isnew: 0, id: 'tenant-b', entityname: 'site' },
+    ]);
+    expect(opened).toEqual([TENANT_A, TENANT_B]);
+    expect(writesOf(repo)).toEqual([]);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items } });
+  });
+
+  it('answers the new bean, without a read, for an id no registered site holds', async () => {
+    const { db, domain, opened } = harness([siteRow('tenant-a')]);
+
+    const [values] = await domain.readJsonApiValues(db, BASE_URL, ['nosuch']);
+
+    expect(values).toEqual({ links: linksOf('nosuch'), domain: '', siteid: 'nosuch', isnew: 1, id: 'nosuch', entityname: 'site' });
+    expect(opened).toEqual([]);
+  });
+});
 
 describe('saveOrderAndDeploy', () => {
   const rows = (): SiteRow[] => [siteRow('tenant-a', { orderno: 1, deploy: 1 }), siteRow('tenant-b', { orderno: 2, deploy: 1 })];
@@ -1052,7 +1287,7 @@ describe('emitStateEvents', () => {
 
   it.each<{ name: string; applied: AppliedChange }>([
     { name: 'another unit', applied: change({ unit: 'programs_sites.image_size', table: 'image_size' }) },
-    { name: 'a delete', applied: change({ op: 'delete', before: { siteid: 'tenant-a' }, after: undefined }) },
+    { name: 'a delete without its row', applied: change({ op: 'delete', before: undefined, after: undefined }) },
     { name: 'an insert without its row', applied: change({ op: 'insert', after: undefined }) },
   ])('ignores $name', async ({ applied }) => {
     const { domain, repo } = harness([siteRow('tenant-a')]);
@@ -1061,6 +1296,41 @@ describe('emitStateEvents', () => {
 
     expect(writesOf(repo)).toEqual([]);
     expect(announced()).toEqual([]);
+  });
+
+  it.each<{ last: bigint; rowVersion: bigint }>([
+    { last: 0n, rowVersion: 42n },
+    { last: 41n, rowVersion: 42n },
+    { last: 60n, rowVersion: 61n },
+  ])('announces a deleted site as its last state marked deleted at $rowVersion after announced version $last', async ({ last, rowVersion }) => {
+    const { domain, repo } = harness([]);
+    const tx = tenantTx(TENANT_A);
+    const removed = siteRow('tenant-a', { row_version: '41', publicuserpoolid: 'umbrella' });
+    vi.mocked(lastAnnouncedVersion).mockResolvedValueOnce(last);
+
+    await domain.emitStateEvents(tx, change({ op: 'delete', before: removed, after: undefined, origin: 'legacy-window' }), write);
+
+    expect(writesOf(repo)).toEqual([]);
+    expect(lastAnnouncedVersion).toHaveBeenCalledExactlyOnceWith(tx, 'tenant-a');
+    const payload = { ...siteChangedPayload(removed), deleted: true };
+    expect(writeSiteChanged).toHaveBeenCalledExactlyOnceWith(tx, { siteId: 'tenant-a', rowVersion, payload, origin: 'legacy-window' });
+    expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: true, value: payload });
+  });
+
+  it.each<{ op: 'insert' | 'update'; last: bigint; rowVersion: string; reads: boolean }>([
+    { op: 'insert', last: 60n, rowVersion: '61', reads: true },
+    { op: 'insert', last: 12n, rowVersion: '42', reads: true },
+    { op: 'update', last: 60n, rowVersion: '42', reads: false },
+  ])('stores and announces a site $op after announced version $last at $rowVersion', async ({ op, last, rowVersion, reads }) => {
+    const { domain, repo } = harness([siteRow('tenant-a', { row_version: '41' })]);
+    const tx = tenantTx(TENANT_A);
+    vi.mocked(lastAnnouncedVersion).mockResolvedValue(last);
+
+    await domain.emitStateEvents(tx, change({ op }), write);
+
+    expect(vi.mocked(lastAnnouncedVersion).mock.calls).toEqual(reads ? [[tx, 'tenant-a']] : []);
+    expect(repo.update).toHaveBeenCalledExactlyOnceWith(tx, 'site', { siteid: 'tenant-a' }, { row_version: rowVersion }, write);
+    expect(announced()).toEqual([{ tenantId: TENANT_A, siteId: 'tenant-a', rowVersion: BigInt(rowVersion), origin: 'migration-feed' }]);
   });
 
   it.each(['insert', 'update'] as const)('advances the applied site row version under the apply write and announces a site %s with its origin', async (op) => {

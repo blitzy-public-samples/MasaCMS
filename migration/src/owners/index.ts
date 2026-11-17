@@ -17,6 +17,7 @@ export type {
   ApplyResult,
   PutObjectResult,
   PutObjectParams,
+  ObjectBody,
   FileObject,
   DeleteObjectResult,
   DeletedFileObject,

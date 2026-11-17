@@ -15,16 +15,14 @@ export type ManifestDifference =
   | { kind: 'changed'; before: ManifestEntry; after: ManifestEntry }
   | { kind: 'unchanged'; before: ManifestEntry; after: ManifestEntry };
 
-/** Differences from snapshot `from` to snapshot `to`; every list follows compareManifestKeys order. */
+/** Counts of each kind of difference from snapshot `from` to snapshot `to`. */
 export interface ManifestDiff {
   from: number;
   to: number;
-  added: ManifestEntry[];
-  changed: Array<{ before: ManifestEntry; after: ManifestEntry }>;
-  removed: ManifestEntry[];
+  added: number;
+  changed: number;
+  removed: number;
   unchanged: number;
-  /** Keys of `added` and `changed[].after`, in `to` order, to be read from snapshot `to`. */
-  toTransfer: ManifestKey[];
 }
 
 /** Orders keys by the UTF-8 bytes of `siteId`, then of `path`: PostgreSQL `COLLATE "C"`, as readManifest sorts. */
@@ -36,12 +34,9 @@ export function compareManifestKeys(a: ManifestKey, b: ManifestKey): number {
 }
 
 // An orphan gaining or losing its `tfiles` row can change tenant prefix, so a flipped `orphan` is a change.
-function differs(before: ManifestEntry, after: ManifestEntry): boolean {
+/** True when one key's entries of two snapshots differ in sha256, size or orphan flag. */
+export function differs(before: ManifestEntry, after: ManifestEntry): boolean {
   return before.sha256 !== after.sha256 || before.size !== after.size || before.orphan !== after.orphan;
-}
-
-function keyOf(entry: ManifestEntry): ManifestKey {
-  return { siteId: entry.siteId, path: entry.path };
 }
 
 /** Yields `entries`, throwing as soon as a key does not follow its predecessor in compareManifestKeys order. */
@@ -99,9 +94,20 @@ export async function* streamManifestDiff(
   }
 }
 
+/** Differences from snapshot `n` to snapshot `n1`, merged from both manifests streamed page by page. */
+function streamSnapshotDiff(
+  ctx: Pick<FilesContext, 'db'>,
+  n: number,
+  n1: number,
+  opts: DiffManifestOptions,
+): AsyncGenerator<ManifestDifference, void, undefined> {
+  const read = opts.read ?? ((snapshotSeq: number) => streamManifest(ctx, snapshotSeq));
+  return streamManifestDiff(read(n), read(n1));
+}
+
 /**
- * Merges the manifests of snapshots `n` and `n1` by key, streaming both; a key in both is `changed` when its sha256,
- * size or orphan flag differs.
+ * Counts the differences from snapshot `n` to snapshot `n1`, streaming both manifests; a key in both is `changed` when
+ * its sha256, size or orphan flag differs.
  * @throws Error when a manifest is not in compareManifestKeys order.
  */
 export async function diffSnapshotManifests(
@@ -110,25 +116,31 @@ export async function diffSnapshotManifests(
   n1: number,
   opts: DiffManifestOptions = {},
 ): Promise<ManifestDiff> {
-  const read = opts.read ?? ((snapshotSeq: number) => streamManifest(ctx, snapshotSeq));
-  const diff: ManifestDiff = { from: n, to: n1, added: [], changed: [], removed: [], unchanged: 0, toTransfer: [] };
-  for await (const difference of streamManifestDiff(read(n), read(n1))) {
-    switch (difference.kind) {
-      case 'added':
-        diff.added.push(difference.after);
-        diff.toTransfer.push(keyOf(difference.after));
-        break;
-      case 'removed':
-        diff.removed.push(difference.before);
-        break;
-      case 'changed':
-        diff.changed.push({ before: difference.before, after: difference.after });
-        diff.toTransfer.push(keyOf(difference.after));
-        break;
-      case 'unchanged':
-        diff.unchanged += 1;
-        break;
-    }
-  }
+  const diff: ManifestDiff = { from: n, to: n1, added: 0, changed: 0, removed: 0, unchanged: 0 };
+  for await (const difference of streamSnapshotDiff(ctx, n, n1, opts)) diff[difference.kind] += 1;
   return diff;
+}
+
+/** Entries of snapshot `n1` whose key snapshot `n` lacks or holds differently, in `n1` order: the copies a feed transfers. */
+export async function* streamChangedEntries(
+  ctx: Pick<FilesContext, 'db'>,
+  n: number,
+  n1: number,
+  opts: DiffManifestOptions = {},
+): AsyncGenerator<ManifestEntry, void, undefined> {
+  for await (const difference of streamSnapshotDiff(ctx, n, n1, opts)) {
+    if (difference.kind === 'added' || difference.kind === 'changed') yield difference.after;
+  }
+}
+
+/** Entries of snapshot `n` whose key snapshot `n1` lacks or holds differently, in `n` order: the copies a feed drops. */
+export async function* streamDroppedEntries(
+  ctx: Pick<FilesContext, 'db'>,
+  n: number,
+  n1: number,
+  opts: DiffManifestOptions = {},
+): AsyncGenerator<ManifestEntry, void, undefined> {
+  for await (const difference of streamSnapshotDiff(ctx, n, n1, opts)) {
+    if (difference.kind === 'removed' || difference.kind === 'changed') yield difference.before;
+  }
 }

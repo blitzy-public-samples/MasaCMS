@@ -165,7 +165,7 @@ const REGISTRY_READ = /FROM identity\.tenant_registry\b/;
 function registryAnswer(sql: string, values: readonly unknown[]): Record<string, unknown>[] {
   const [first] = values;
   if (/WHERE lower\(site_id\) = lower\(\$1\)/.test(sql)) return REGISTRY_ROWS.filter((row) => String(row.site_id) === String(first).toLowerCase());
-  if (/WHERE public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1/.test(sql)) {
+  if (/WHERE \(public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1\)/.test(sql)) {
     return REGISTRY_ROWS.filter((row) => row.public_user_pool_tenant === first || row.private_user_pool_tenant === first);
   }
   if (/WHERE tenant_id = \$1/.test(sql)) return REGISTRY_ROWS.filter((row) => row.tenant_id === first);

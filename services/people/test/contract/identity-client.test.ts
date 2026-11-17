@@ -32,7 +32,7 @@ import {
   type GroupSummary,
   type IdentityClient,
   type PrepareOutcome,
-  type UserGroupRow,
+  type UserGroupsPage,
 } from '../../src/legacy/identity-client.js';
 import { LegacyStorageError } from '../../src/repo/repository.js';
 import { TEST_CLOCK, buildTestApp, userHeaders, type TestApp } from '../helpers/app.js';
@@ -308,24 +308,28 @@ const CASES = {
     act: ({ identity }) => identity.siteGroups(TENANT_A.siteId, 0),
     expected: (): GroupSummary[] => [{ groupId: ADMIN_GROUP.UserID, groupName: ADMIN_GROUP.GroupName, siteId: TENANT_A.siteId, isPublic: 0, perm: 0 }],
   },
-  userGroups: {
+  userGroupsPage: {
     operations: ['listGroups'],
-    act: ({ identity }) => identity.userGroups(TENANT_A.siteId, 1),
-    expected: (): UserGroupRow[] => [
-      {
-        userId: MEMBERS_GROUP.UserID,
-        email: null,
-        groupName: MEMBERS_GROUP.GroupName,
-        type: 1,
-        lastLogin: null,
-        lastUpdate: null,
-        lastUpdateBy: null,
-        lastUpdateById: null,
-        counter: 1,
-        perm: 0,
-        isPublic: 1,
-      },
-    ],
+    act: ({ identity }) => identity.userGroupsPage(TENANT_A.siteId, 1, { offset: 0, limit: 10 }),
+    expected: (): UserGroupsPage => ({
+      rows: [
+        {
+          userId: MEMBERS_GROUP.UserID,
+          email: null,
+          groupName: MEMBERS_GROUP.GroupName,
+          type: 1,
+          lastLogin: null,
+          lastUpdate: null,
+          lastUpdateBy: null,
+          lastUpdateById: null,
+          counter: 1,
+          perm: 0,
+          isPublic: 1,
+        },
+      ],
+      total: 1,
+      nextOffset: null,
+    }),
   },
   actingUser: {
     operations: ['getCurrentSession'],
@@ -417,6 +421,25 @@ describe("requests people's identity client sends", () => {
     expect(acted.map(operationIdOf)).toEqual(CASES[name].operations);
     expect(result).toEqual(CASES[name].expected(ctx));
     expect(subject.exchanges.filter((exchange) => exchange.error !== undefined)).toEqual([]);
+    assertExchangesMatchContract(subject.exchanges);
+  });
+
+  it("sends lookupMemberships with byGroupName as declared and reads each user's getAccountMemberships ids", async () => {
+    const zulu: DoubleGroup = { UserID: cfUuid(), GroupName: 'zulu', SiteID: TENANT_A.siteId, isPublic: 0, Perm: 0 };
+    const userIds = [SYSTEM_USER_A_PERSON.userid, SITE_ADMIN_A_PERSON.userid];
+    subject.double.seedGroups(zulu);
+    subject.double.seedMemberships(SYSTEM_USER_A_PERSON.userid, [zulu.UserID, cfUuid(), MEMBERS_GROUP.UserID]);
+    const { looked, single } = await inSiteAdminSession(async () => ({
+      looked: await subject.identity.lookupMemberships(userIds, { byGroupName: true }),
+      single: await Promise.all(userIds.map((userId) => subject.identity.membershipGroupIds(userId))),
+    }));
+
+    expect([...looked]).toEqual([
+      [SYSTEM_USER_A_PERSON.userid, [MEMBERS_GROUP.UserID, zulu.UserID]],
+      [SITE_ADMIN_A_PERSON.userid, [ADMIN_GROUP.UserID]],
+    ]);
+    expect([...looked.values()]).toEqual(single);
+    expect(subject.exchanges[0]?.request.json).toEqual({ userIds, byGroupName: true });
     assertExchangesMatchContract(subject.exchanges);
   });
 

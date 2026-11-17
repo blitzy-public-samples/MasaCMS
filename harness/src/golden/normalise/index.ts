@@ -17,7 +17,7 @@ import { createIdOrdinals, normaliseIdsInString, type IdOrdinals } from './ids.j
 import { normaliseMail, type NormalisedMail } from './mail.js';
 import { applyMasks, masksFor, pathMasks, type Difference, type DifferenceKind, type KnownIssueMask } from './masks.js';
 import { compareRows, normaliseRows, type NormalisedRows } from './rows.js';
-import { applyOverrides, ruleEnabled, type KnownIssueId, type NormaliseRules } from './rules.js';
+import { applyOverrides, csvKeyColumns, ruleEnabled, type KnownIssueId, type NormaliseRules } from './rules.js';
 import { normaliseTasks, type NormalisedTask } from './tasks.js';
 import { isTokenKey, normaliseText, normaliseValue } from './values.js';
 
@@ -54,6 +54,8 @@ export interface NormaliseContext {
   state: NormaliseState;
   rules: NormaliseRules;
   scenario: Scenario;
+  /** The scenario's resolved secrets by name, in resolution order; stored bcrypt values none verifies stay literal. */
+  secrets?: ReadonlyMap<string, string>;
 }
 
 /** A step record as compared; `maskedPaths` lists the paths its known-issue masks cover. */
@@ -235,6 +237,8 @@ interface BodyEnv {
   rules: NormaliseRules;
   kinds: ReadonlySet<CompareKind>;
   masks: readonly KnownIssueMask[];
+  /** The step's `csvKeyOrder` columns. */
+  csvKeyColumns?: readonly string[];
 }
 
 interface JsonEnv extends BodyEnv {
@@ -358,7 +362,7 @@ async function responseBody(
   if (structured !== undefined) return structured;
   const media = mediaType(response.contentType);
   if (env.kinds.has('export') && !isJsonType(media, env.rules) && !HTML_TYPES.has(media)) {
-    return { export: await exportModel(response, env.ids, env.rules), maskedPaths: {} };
+    return { export: await exportModel(response, env.ids, env.rules, env.csvKeyColumns), maskedPaths: {} };
   }
   if (text !== undefined) return { body: normaliseText(text, env.ids, env.rules), maskedPaths: {} };
   return { export: fileModel({ sha256: response.sha256, contentType: response.contentType }), maskedPaths: {} };
@@ -388,7 +392,8 @@ export async function normaliseStep(record: StepRecord, ctx: NormaliseContext): 
   if (kinds.has('auth')) step.auth = normaliseAuth(response, ctx.state, rules);
   let bodyMasks: Record<string, KnownIssueId> = {};
   if (BODY_KINDS.some((kind) => kinds.has(kind))) {
-    const { maskedPaths, ...body } = await responseBody(response, text, { ids, rules, kinds, masks });
+    const csvKeys = csvKeyColumns(rules, record.name);
+    const { maskedPaths, ...body } = await responseBody(response, text, { ids, rules, kinds, masks, csvKeyColumns: csvKeys });
     Object.assign(step, body);
     bodyMasks = maskedPaths;
   } else if (kinds.has('transitions') && text !== undefined) {
@@ -479,7 +484,7 @@ export async function normaliseSideEffects(
   const out: NormalisedSideEffects = {};
   // `effects.legacyRows` (gateway only) has no golden counterpart, so it is left out of the comparison.
   if (kinds.has('mail')) out.mail = normaliseMail(effects.mail, ids, rules);
-  if (kinds.has('rows')) out.rows = normaliseRows(effects.rows, ids, rules);
+  if (kinds.has('rows')) out.rows = normaliseRows(effects.rows, ids, rules, ctx.secrets);
   if (kinds.has('tasks')) out.tasks = normaliseTasks(effects.tasks, { state: ids, rules });
   if (kinds.has('files')) out.files = normaliseFiles(effects.files, ids, rules);
   if (kinds.has('transitions') && steps !== undefined) {

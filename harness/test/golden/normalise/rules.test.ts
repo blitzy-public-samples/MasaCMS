@@ -10,6 +10,7 @@ import {
   KNOWN_ISSUE_IDS,
   RULES_PATH,
   applyOverrides,
+  csvKeyColumns,
   loadRules,
   ruleEnabled,
   ruleIds,
@@ -145,6 +146,46 @@ describe('loadRules', () => {
       'tokens.fields: must include csrf_token',
     ],
     [
+      'a CSV key-tie order it does not implement',
+      (doc) => {
+        (doc.exports as { csv: { keyTies: { order: string } } }).csv.keyTies.order = 'stable';
+      },
+      'exports/csv/keyTies/order',
+      'exports.csv.keyTies.order: ',
+    ],
+    [
+      'a volatile row column not named <table>.<column>',
+      (doc) => {
+        (doc.rows as { volatile: [{ column: string }] }).volatile[0].column = 'password';
+      },
+      'rows/volatile/0/column',
+      'rows.volatile.0.column: must be <table>.<column>',
+    ],
+    [
+      'a volatile row format that is not a regular expression',
+      (doc) => {
+        (doc.rows as { volatile: [{ format: string }] }).volatile[0].format = '^\\$2a\\$(';
+      },
+      'rows/volatile/0/format',
+      'rows.volatile.0.format: must be a valid regular expression',
+    ],
+    [
+      'a volatile row verification it does not implement',
+      (doc) => {
+        (doc.rows as { volatile: [{ verify: string }] }).volatile[0].verify = 'mask';
+      },
+      'rows/volatile/0/verify',
+      'rows.volatile.0.verify: ',
+    ],
+    [
+      'a volatile row masked by a placeholder',
+      (doc) => {
+        (doc.rows as { volatile: [Record<string, string>] }).volatile[0].placeholder = '<password-hash>';
+      },
+      'rows/volatile/0',
+      'placeholder',
+    ],
+    [
       'a parameter naming valueless tokens that is not a token query parameter',
       (doc) => {
         doc.tokens.queryParams = doc.tokens.queryParams.filter((name) => name !== 'reload');
@@ -243,6 +284,16 @@ describe('applyOverrides', () => {
     expect(() => applyOverrides(result, { dropHeaders: ['X-Other'] }, 'GS-CO-05')).toThrow(
       'rules already carry the overrides of scenario GS-CO-15',
     );
+  });
+
+  it("records csvKeyOrder entries and reads back each step's key columns", () => {
+    const result = applyOverrides(rules, { csvKeyOrder: ['download: LNAME, FNAME', 'group-members: LNAME'] }, 'GS-PE-05');
+
+    expect(result.overrides.applied.csvKeyOrder).toStrictEqual(['download: LNAME, FNAME', 'group-members: LNAME']);
+    expect(csvKeyColumns(result, 'download')).toStrictEqual(['LNAME', 'FNAME']);
+    expect(csvKeyColumns(result, 'group-members')).toStrictEqual(['LNAME']);
+    expect(csvKeyColumns(result, 'advanced-search')).toBeUndefined();
+    expect(csvKeyColumns(rules, 'download')).toBeUndefined();
   });
 
   it.each<[string, Scenario['normalisationOverrides'] | undefined]>([

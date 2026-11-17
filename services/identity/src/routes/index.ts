@@ -127,7 +127,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const events = createIdentityEvents(repo);
   const relay = createBridgeRelay(client);
 
-  const sessions: SessionDeps = { db, repo, clock };
+  const sessions: SessionDeps = { db, repo, clock, sessionTimeoutMinutes: legacy.sessionTimeout };
   const csrf: CsrfDeps = { db, repo, bridge: relay, clock };
   const login: LoginDeps = { db, repo, clock, settings: DEFAULT_LOGIN_SETTINGS };
   const groups: GroupDeps = { db, repo, events, clock };

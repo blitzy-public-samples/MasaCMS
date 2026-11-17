@@ -168,7 +168,7 @@ beforeAll(async () => {
     verifierOverride: testVerifier('people'),
     logger: createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
   });
-  await registerAdminUserRoutes(app, { db, repository, identity, clock: fixedClock(NOW) });
+  await registerAdminUserRoutes(app, { db, repository, identity, clock: fixedClock(NOW), expirePasswords: 0 });
   await app.ready();
 });
 

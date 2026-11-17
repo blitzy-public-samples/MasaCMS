@@ -150,6 +150,7 @@ const REGISTRY_COLUMNS = [
   'content_pool_tenants',
   'domains',
   'aggregate_version',
+  'deleted',
 ] as const;
 
 const POOL_ORDER: readonly PoolKind[] = ['publicUser', 'privateUser', 'category', 'file', 'display'];
@@ -166,6 +167,7 @@ function registryValues(site: TenantFixture): unknown[] {
     content.map((id) => tenantIdForSite(id)),
     domainsOf(site.siteId),
     1,
+    false,
   ];
 }
 

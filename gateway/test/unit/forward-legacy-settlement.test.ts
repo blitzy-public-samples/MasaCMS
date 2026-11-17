@@ -1,12 +1,18 @@
-// Tests when the legacy forwarder settles an exchange, what its response and shutdown wait for, and how it logs failures.
+// Tests when the legacy forwarder settles an exchange, what its response and shutdown wait for, how long it waits for legacy,
+// where buffer mode holds a response, and how it logs failures.
 import { Buffer } from 'node:buffer';
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, open, readdir, readlink, rm, stat, type FileHandle } from 'node:fs/promises';
 import { createServer, request as httpRequest, type ClientRequest, type IncomingHttpHeaders } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inspect } from 'node:util';
-import replyFrom from '@fastify/reply-from';
+import replyFrom, { type FastifyReplyFromOptions } from '@fastify/reply-from';
 import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
+import { Agent } from '@opt2/platform/service-kit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -16,6 +22,7 @@ import {
   type LegacyForwardContext,
   type LegacySettlement,
 } from '../../src/dispatcher/forward-legacy.js';
+import { replyFromOptions } from '../../src/dispatcher/response-head.js';
 import { sendBytes, startHttpDouble, type DoubleHandler, type HttpDouble } from '../helpers/http-double.js';
 
 /** How long the legacy stand-in runs a held write before answering, and again while streaming its answer. */
@@ -38,7 +45,11 @@ type OnSettled = (outcome: LegacySettlement) => Promise<void>;
 type OnBuffered = (res: BufferedLegacyResponse) => Promise<void>;
 
 /** Context fields a test chooses, plus the legacy origin; the rest is fixed. */
-type GatewayOptions = Pick<LegacyForwardContext, 'mode' | 'beforeSend' | 'onBuffered' | 'onSettled'> & { origin?: string };
+type GatewayOptions = Pick<LegacyForwardContext, 'mode' | 'beforeSend' | 'onBuffered' | 'onSettled' | 'timeoutMs'> & {
+  origin?: string;
+  /** Registers reply-from with the gateway's agent, which sends the raw request target, in place of reply-from's own. */
+  gatewayAgent?: boolean;
+};
 
 interface LogRecord {
   level: number;
@@ -195,12 +206,12 @@ async function startGateway(options: GatewayOptions): Promise<Gateway> {
       },
     },
   });
-  await app.register(replyFrom);
+  const { origin, gatewayAgent, ...ctx } = options;
+  await app.register(replyFrom, gatewayAgent === true ? replyFromOptions() : {});
   app.removeAllContentTypeParsers();
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, payload, done) => {
     done(null, payload);
   });
-  const { origin, ...ctx } = options;
   app.all('/*', (request, reply) => {
     void forwardToLegacy(request, reply, {
       legacyOrigin: origin ?? legacy.url,
@@ -337,14 +348,16 @@ describe('forwardToLegacy after legacy resets the connection', () => {
 describe('forwardToLegacy when the request never reaches legacy', () => {
   it.each([
     { name: 'the connection is refused', target: 'refusing', path: WRITE_PATH },
-    { name: 'reply-from rejects the path', target: 'legacy', path: '/admin/%2e%2e/index.cfm' },
+    { name: 'reply-from rejects the origin', target: 'unparseable', path: WRITE_PATH },
+    { name: 'undici refuses the request target', target: 'legacy', path: '*' },
   ] as const)('$name: settles not-sent once, and the 503 follows the settlement', async ({ target, path }) => {
     let committed = false;
     const onSettled = vi.fn<OnSettled>(async () => {
       await delay(SETTLE_DELAY_MS);
       committed = true;
     });
-    const gateway = await startGateway({ mode: 'buffer', onSettled, origin: target === 'refusing' ? refusedOrigin : legacy.url });
+    const origins = { refusing: refusedOrigin, unparseable: 'http://127.0.0.1:65536', legacy: legacy.url };
+    const gateway = await startGateway({ mode: 'buffer', onSettled, origin: origins[target], gatewayAgent: true });
 
     let committedAtResponse = false;
     const outcome = await send(gateway, path, {
@@ -443,7 +456,7 @@ describe('forwardToLegacy logs a failed callback through serializeError', () => 
     expect(outcome.headers['set-cookie']).toEqual(status === 200 ? ['CFID=1001;path=/;'] : undefined);
     expect(onSettled.mock.calls).toEqual([['completed']]);
     // Legacy executed even when its response is withheld, so a buffered response is still reported.
-    expect(onBuffered.mock.calls.map(([res]) => res.body.toString())).toEqual(mode === 'buffer' ? [LEGACY_BODY] : []);
+    expect(onBuffered.mock.calls.map(([res]) => res.bytes)).toEqual(mode === 'buffer' ? [Buffer.byteLength(LEGACY_BODY)] : []);
     expect(gateway.logArguments()).toContain(failure.name);
     expect(gateway.logArguments()).not.toContain(SECRET);
     expect(gateway.logText()).not.toContain(SECRET);
@@ -454,18 +467,27 @@ describe('forwardToLegacy logs a failed callback through serializeError', () => 
 });
 
 describe('forwardToLegacy when legacy answers a status Fastify rejects', () => {
-  it.each(['stream', 'buffer'] as const)('%s mode: answers the 503, drains legacy and settles completed once', async (mode) => {
+  it.each(['stream', 'buffer'] as const)('%s mode: answers the 503, settles completed once, then buffer mode reports', async (mode) => {
     legacy.setHandler((_req, res) => sendBytes(res, 600, LEGACY_BODY, { 'content-type': 'text/plain' }));
-    const onSettled = vi.fn<OnSettled>(() => Promise.resolve());
-    const onBuffered = vi.fn<OnBuffered>(() => Promise.resolve());
+    const events: string[] = [];
+    const onSettled = vi.fn<OnSettled>(async () => {
+      events.push('settled');
+    });
+    const onBuffered = vi.fn<OnBuffered>(async () => {
+      events.push('buffered');
+    });
     const gateway = await startGateway({ mode, onSettled, onBuffered });
 
     const outcome = await send(gateway, WRITE_PATH).outcome;
     await vi.waitFor(() => expect(onSettled).toHaveBeenCalled());
+    await delay(SETTLE_DELAY_MS);
 
     expect(outcome).toMatchObject({ status: 503, complete: true });
     expect(onSettled.mock.calls).toEqual([['completed']]);
-    expect(onBuffered).not.toHaveBeenCalled();
+    expect(onBuffered.mock.calls.map(([res]) => [res.statusCode, res.bytes])).toEqual(
+      mode === 'buffer' ? [[600, Buffer.byteLength(LEGACY_BODY)]] : [],
+    );
+    expect(events).toEqual(mode === 'buffer' ? ['settled', 'buffered'] : ['settled']);
     expect(gateway.logs().filter((record) => record.level >= ERROR_LEVEL).map((record) => record.msg)).toEqual([
       'fail-closed: legacy unavailable',
     ]);
@@ -487,6 +509,297 @@ describe('forwardToLegacy never retries', () => {
       expect(outcome.body.toString()).toBe('legacy busy');
       expect(legacy.requests).toHaveLength(1);
       expect(onSettled.mock.calls).toEqual(settles ? [['completed']] : []);
+    },
+  );
+});
+
+/** Bound the stall cases give legacy in place of Masa's 7200 s. */
+const STALL_BOUND_MS = 300;
+
+/** An origin that accepts connections and reads requests, but never answers them. */
+async function silentOrigin(): Promise<{ url: string; close(): Promise<void> }> {
+  const sockets = new Set<Socket>();
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.resume();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    },
+  };
+}
+
+describe('forwardToLegacy bounds its wait for legacy', () => {
+  it.each([
+    { timeoutMs: undefined, bound: 7_200_000 },
+    { timeoutMs: STALL_BOUND_MS, bound: STALL_BOUND_MS },
+  ])('gives undici $bound ms headers and body timeouts when timeoutMs is $timeoutMs', async ({ timeoutMs, bound }) => {
+    legacy.setHandler((_req, res) => sendBytes(res, 200, LEGACY_BODY, { 'content-type': 'text/plain' }));
+    const seen: Array<[number | null | undefined, number | null | undefined]> = [];
+    const agent = new Agent().compose((dispatch) => (opts, handler) => {
+      seen.push([opts.headersTimeout, opts.bodyTimeout]);
+      return dispatch(opts, handler);
+    });
+    const app = Fastify();
+    gateways.push(app);
+    await app.register(replyFrom, { undici: agent as FastifyReplyFromOptions['undici'], destroyAgent: true });
+    app.get('/*', (request, reply) => {
+      void forwardToLegacy(request, reply, {
+        legacyOrigin: legacy.url,
+        headers: request.headers,
+        sessionMode: 'legacy-primary',
+        mode: 'stream',
+        failContext: { surface: 'admin' },
+        timeoutMs,
+      });
+    });
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+
+    const response = await fetch(`${address}/admin/`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(LEGACY_BODY);
+    expect(seen).toEqual([[bound, bound]]);
+  });
+
+  it.each([
+    { mode: 'stream', stall: 'before-head', error: 'HeadersTimeoutError', status: 503, complete: true },
+    { mode: 'buffer', stall: 'before-head', error: 'HeadersTimeoutError', status: 503, complete: true },
+    { mode: 'stream', stall: 'mid-body', error: 'BodyTimeoutError', status: 200, complete: false },
+    { mode: 'buffer', stall: 'mid-body', error: 'BodyTimeoutError', status: 503, complete: true },
+  ] as const)(
+    '$mode mode, legacy silent $stall: ends at timeoutMs unsettled and unbuffered, client gets $status',
+    async ({ mode, stall, error, status, complete }) => {
+      const silent = stall === 'before-head' ? await silentOrigin() : undefined;
+      legacy.setHandler((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain', 'content-length': String(CHUNK.length * 2) });
+        res.write(CHUNK);
+      });
+      const onSettled = vi.fn<OnSettled>(() => Promise.resolve());
+      const onBuffered = vi.fn<OnBuffered>(() => Promise.resolve());
+      try {
+        const gateway = await startGateway({ mode, onSettled, onBuffered, timeoutMs: STALL_BOUND_MS, origin: silent?.url });
+
+        const outcome = await send(gateway, WRITE_PATH).outcome;
+        await delay(QUIET_MS);
+
+        expect(outcome.status).toBe(status);
+        expect(outcome.complete).toBe(complete);
+        if (status === 503) expect(outcome.body.toString()).toBe(LEGACY_ERROR_PAGE_HTML);
+        expect(onSettled).not.toHaveBeenCalled();
+        expect(onBuffered).not.toHaveBeenCalled();
+        const warnings = gateway.logs().filter((record) => record.msg === UNCERTAIN_MESSAGE);
+        const ends = warnings.map((record) => [record.level, (record.error as { type?: unknown } | undefined)?.type]);
+        expect(ends).toEqual([[WARN_LEVEL, error]]);
+        expect(legacy.requests).toHaveLength(stall === 'mid-body' ? 1 : 0);
+      } finally {
+        await silent?.close();
+      }
+    },
+  );
+});
+
+/** Body bytes buffer mode holds in memory before it moves a body to a file. */
+const MEMORY_BYTES = 1024 * 1024;
+/** A buffered response large enough to stream from its spool file in many chunks. */
+const LARGE_BODY = randomBytes(6 * MEMORY_BYTES);
+const SPOOL_FAILED_MESSAGE = 'legacy forward response spool failed';
+
+/** A file the process holds open, by its path under the directory asked about; a removed one ends in ` (deleted)`. */
+interface HeldFile {
+  name: string;
+  size: number;
+  mode: number;
+}
+
+/** Every file the process holds open under `dir`, read from /proc. */
+async function heldFilesUnder(dir: string): Promise<HeldFile[]> {
+  const held: HeldFile[] = [];
+  for (const fd of await readdir('/proc/self/fd')) {
+    const link = `/proc/self/fd/${fd}`;
+    const path = await readlink(link).catch(() => undefined);
+    if (path === undefined || !path.startsWith(`${dir}/`)) continue;
+    const stats = await stat(link).catch(() => undefined);
+    if (stats !== undefined) held.push({ name: path.slice(dir.length + 1), size: stats.size, mode: stats.mode & 0o777 });
+  }
+  return held;
+}
+
+/** Legacy stand-in answering `status` with `body` in CHUNK-sized writes, with a length unless `chunked`. */
+function sendBody(status: number, body: Buffer, chunked: boolean): DoubleHandler {
+  return (_req, res) => {
+    const length = chunked ? {} : { 'content-length': String(body.length) };
+    res.writeHead(status, { 'content-type': 'application/octet-stream', 'x-legacy': 'kept', ...length });
+    for (let at = 0; at < body.length; at += CHUNK.length) res.write(body.subarray(at, at + CHUNK.length));
+    res.end();
+  };
+}
+
+describe('forwardToLegacy buffer mode holds the response in a removed request-owned file', () => {
+  let spoolRoot: string;
+
+  beforeEach(async () => {
+    spoolRoot = await mkdtemp(join(tmpdir(), 'forward-legacy-spool-'));
+    vi.stubEnv('TMPDIR', spoolRoot);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    await rm(spoolRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    { length: MEMORY_BYTES, chunked: false, inFile: false },
+    { length: MEMORY_BYTES + 1, chunked: false, inFile: true },
+    { length: LARGE_BODY.length, chunked: false, inFile: true },
+    { length: LARGE_BODY.length, chunked: true, inFile: true },
+  ])(
+    '$length bytes, chunked $chunked: leaves byte-identical with legacy’s headers, held by a removed owner-only file: $inFile',
+    async ({ length, chunked, inFile }) => {
+      const body = LARGE_BODY.subarray(0, length);
+      legacy.setHandler(sendBody(201, body, chunked));
+      const held: Array<{ files: HeldFile[]; names: string[] }> = [];
+      const onSettled = vi.fn<OnSettled>(() => Promise.resolve());
+      const onBuffered = vi.fn<OnBuffered>(async () => {
+        held.push({ files: await heldFilesUnder(spoolRoot), names: await readdir(spoolRoot) });
+      });
+      const gateway = await startGateway({ mode: 'buffer', onSettled, onBuffered });
+
+      const outcome = await send(gateway, WRITE_PATH).outcome;
+
+      expect(outcome).toMatchObject({ status: 201, complete: true });
+      expect(outcome.body.equals(body)).toBe(true);
+      expect(outcome.headers).toMatchObject({ 'content-type': 'application/octet-stream', 'x-legacy': 'kept' });
+      expect(outcome.headers['content-length']).toBe(chunked ? undefined : String(length));
+      expect(outcome.headers['transfer-encoding']).toBe(chunked ? 'chunked' : undefined);
+      expect(onSettled.mock.calls).toEqual([['completed']]);
+      expect(onBuffered.mock.calls.map(([res]) => [res.statusCode, res.bytes])).toEqual([[201, length]]);
+      const file = { name: expect.stringMatching(/^opt2-legacy-response-[^/]+\/body \(deleted\)$/), size: length, mode: 0o600 };
+      expect(held).toEqual([{ files: inFile ? [file] : [], names: [] }]);
+      await vi.waitFor(async () => expect(await heldFilesUnder(spoolRoot)).toEqual([]));
+      expect(await readdir(spoolRoot)).toEqual([]);
+    },
+  );
+
+  it.each([
+    { name: 'beforeSend rejects', reject: true, status: 503, complete: true, buffered: true, settled: true },
+    { name: 'legacy resets mid-body', reset: true, status: 503, complete: true, buffered: false, settled: false },
+    { name: 'the client goes while it is held', leave: 'held', status: undefined, complete: false, buffered: true, settled: true },
+    { name: 'the client goes mid-send', leave: 'mid-send', status: 201, complete: false, buffered: true, settled: true },
+    { name: 'the file cannot be created', spool: 'unopenable', status: 503, complete: true, buffered: true, settled: true },
+    { name: 'the file cannot be written', spool: 'unwritable', status: 503, complete: true, buffered: true, settled: true },
+  ] as const)(
+    '$name: client gets $status, onBuffered only for a whole body, and no file is left',
+    async (row) => {
+      const { status, complete, buffered, settled } = row;
+      const reset = 'reset' in row;
+      const leave = 'leave' in row ? row.leave : undefined;
+      const spool = 'spool' in row ? row.spool : undefined;
+      legacy.setHandler(
+        reset
+          ? async (_req, res) => {
+              res.writeHead(201, { 'content-type': 'application/octet-stream', 'content-length': String(LARGE_BODY.length) });
+              res.write(LARGE_BODY.subarray(0, LARGE_BODY.length / 2));
+              await delay(50);
+              res.socket?.destroy();
+            }
+          : sendBody(201, LARGE_BODY, false),
+      );
+      if (spool === 'unopenable') vi.stubEnv('TMPDIR', join(spoolRoot, 'missing'));
+      if (spool === 'unwritable') {
+        const probe = await open(join(spoolRoot, 'probe'), 'w');
+        await probe.close();
+        await rm(join(spoolRoot, 'probe'));
+        const failure = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+        vi.spyOn(Object.getPrototypeOf(probe) as FileHandle, 'writeFile').mockRejectedValueOnce(failure);
+      }
+      let client: ReturnType<typeof send> | undefined;
+      const onSettled = vi.fn<OnSettled>(() => Promise.resolve());
+      const onBuffered = vi.fn<OnBuffered>(async () => {
+        if (leave !== 'held') return;
+        client?.req.destroy();
+        await delay(50);
+      });
+      const beforeSend = 'reject' in row ? vi.fn<LegacyBeforeSend>(() => Promise.reject(new Error('identity unavailable'))) : undefined;
+      const gateway = await startGateway({ mode: 'buffer', onSettled, onBuffered, beforeSend });
+
+      client = send(gateway, WRITE_PATH, { onData: leave === 'mid-send' ? (req) => req.destroy() : undefined });
+      const outcome = await client.outcome;
+      await delay(SETTLE_DELAY_MS);
+
+      expect(outcome.status).toBe(status);
+      expect(outcome.complete).toBe(complete);
+      if (status === 503) expect(outcome.body.toString()).toBe(LEGACY_ERROR_PAGE_HTML);
+      expect(onSettled.mock.calls).toEqual(settled ? [['completed']] : []);
+      expect(onBuffered.mock.calls.map(([res]) => [res.statusCode, res.bytes])).toEqual(buffered ? [[201, LARGE_BODY.length]] : []);
+      const spoolFailures = gateway.logs().filter((record) => record.msg === SPOOL_FAILED_MESSAGE);
+      expect(spoolFailures.map((record) => record.level)).toEqual(spool === undefined ? [] : [ERROR_LEVEL]);
+      expectSerializedErrors(gateway.logs());
+      await vi.waitFor(async () => expect(await heldFilesUnder(spoolRoot)).toEqual([]));
+      expect(await readdir(spoolRoot)).toEqual([]);
+      expect(legacy.requests).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    { mode: 'buffer', length: CHUNK.length, ends: 'whole', buffered: true },
+    { mode: 'buffer', length: LARGE_BODY.length, ends: 'whole', buffered: true },
+    { mode: 'buffer', length: LARGE_BODY.length, ends: 'reset', buffered: false },
+    { mode: 'buffer', length: LARGE_BODY.length, ends: 'stall', buffered: false },
+    { mode: 'stream', length: LARGE_BODY.length, ends: 'whole', buffered: false },
+  ] as const)(
+    '$mode mode, client gone before legacy’s head, $length-byte body ends $ends: onBuffered after onSettled for a whole body',
+    async ({ mode, length, ends, buffered }) => {
+      const body = LARGE_BODY.subarray(0, length);
+      const received = deferred<undefined>();
+      legacy.setHandler(async (req, res) => {
+        received.resolve(undefined);
+        await delay(HOLD_MS);
+        if (ends === 'whole') {
+          await sendBody(201, body, false)(req, res);
+          return;
+        }
+        res.writeHead(201, { 'content-type': 'application/octet-stream', 'content-length': String(length) });
+        res.write(body.subarray(0, length / 2));
+        if (ends === 'reset') {
+          await delay(50);
+          res.socket?.destroy();
+        }
+      });
+      const events: string[] = [];
+      const onSettled = vi.fn<OnSettled>(async () => {
+        events.push('settled');
+      });
+      const onBuffered = vi.fn<OnBuffered>(async () => {
+        events.push('buffered');
+      });
+      // Past legacy's HOLD_MS wait for its head, so only the stalled body times out.
+      const gateway = await startGateway({ mode, onSettled, onBuffered, timeoutMs: 2 * HOLD_MS });
+
+      const client = send(gateway, WRITE_PATH);
+      await received.promise;
+      client.req.destroy();
+      expect((await client.outcome).complete).toBe(false);
+      const uncertain = (): LogRecord[] => gateway.logs().filter((record) => record.msg === UNCERTAIN_MESSAGE);
+      // undici's coarse timers may fire a stalled body's timeout up to a second late.
+      await vi.waitFor(() => expect(ends === 'whole' ? onSettled.mock.calls : uncertain()).toHaveLength(1), { timeout: 4 * QUIET_MS });
+      await delay(QUIET_MS);
+
+      expect(events).toEqual(ends !== 'whole' ? [] : buffered ? ['settled', 'buffered'] : ['settled']);
+      expect(onBuffered.mock.calls.map(([res]) => [res.statusCode, res.bytes, res.headers['x-legacy']])).toEqual(
+        buffered ? [[201, length, 'kept']] : [],
+      );
+      expect(uncertain()).toHaveLength(ends === 'whole' ? 0 : 1);
+      expect(await heldFilesUnder(spoolRoot)).toEqual([]);
+      expect(await readdir(spoolRoot)).toEqual([]);
+      expect(legacy.requests).toHaveLength(1);
     },
   );
 });

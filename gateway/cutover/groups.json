@@ -207,7 +207,6 @@
         "api:stats.save",
         "cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag",
         "cfm:/core/modules/v1/rater/ajax/saverate.cfm",
-        "render:file",
         "rest:category.delete",
         "rest:category.save",
         "rest:changeset.delete",

@@ -2470,6 +2470,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       ended_at: null,
       admin_state: null,
       epoch: 0,
+      last_active_at: now,
       ...row,
       created_at: now,
       updated_at: now,
@@ -2478,7 +2479,32 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
   }
 
   function updateSession(tx: TenantTx, sessionId: string, patch: SessionPatch, ctx: WriteContext = {}): Promise<SessionRow | null> {
-    return update<SessionRow>(tx, SESSION.table, { session_id: sessionId }, { ...patch, updated_at: clock.now() }, ctx);
+    const now = clock.now();
+    return update<SessionRow>(tx, SESSION.table, { session_id: sessionId }, { last_active_at: now, ...patch, updated_at: now }, ctx);
+  }
+
+  // No row is locked elsewhere here, so no touch is skipped for a lock.
+  async function touchSession(tx: TenantTx, sessionId: string, at: Date, staleBefore: Date, ctx: WriteContext = {}): Promise<boolean> {
+    const stale = (current: Readonly<RepositoryRow>): boolean =>
+      current.state === 'active' && current.last_active_at instanceof Date && current.last_active_at.getTime() <= staleBefore.getTime();
+    return (await updateWhere(tx, SESSION.table, { session_id: sessionId }, (current) => (stale(current) ? { last_active_at: at } : null), ctx)) !== null;
+  }
+
+  async function purgeIdleSessions(tx: TenantTx, idleBefore: Date, limit: number, ctx: WriteContext = {}): Promise<number> {
+    const tenantId = tenantOf(tx);
+    const idle = sorted(
+      scan(SESSION.table, tenantId, (row) => row.last_active_at.getTime() < idleBefore.getTime()),
+      by<SessionRow>((row) => row.last_active_at),
+      by<SessionRow>((row) => row.session_id),
+    ).slice(0, limit);
+    const ids = new Set(idle.map((row) => row.session_id));
+    const claims = sorted(
+      scan(CSRF_CLAIM.table, tenantId, (row) => ids.has(row.session_id)),
+      by<CsrfClaimRow>((row) => row.session_id),
+      by<CsrfClaimRow>((row) => row.token),
+    );
+    await removeKeys(tx, CSRF_CLAIM.table, claims.map(({ session_id, token }) => ({ session_id, token })), ctx);
+    return removeKeys(tx, SESSION.table, idle.map(({ session_id }) => ({ session_id })), ctx);
   }
 
   async function deleteSession(tx: TenantTx, sessionId: string, ctx: WriteContext = {}): Promise<boolean> {
@@ -2934,6 +2960,8 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     lockSession,
     insertSession,
     updateSession,
+    touchSession,
+    purgeIdleSessions,
     deleteSession,
     readSessionAdminState,
     mergeSessionAdminState,

@@ -61,6 +61,7 @@ import {
   jsonApiBaseUrl,
   jsonApiEnvelope,
   jsonApiGenericValues,
+  jsonApiSiteBean,
   jsonApiSitePermissions,
   jsonApiSiteProperties,
   jsonApiSiteValues,
@@ -69,7 +70,15 @@ import {
   type JsonApiMode,
   type JsonApiSiteValues,
 } from '../legacy/json-api-site.js';
-import { applySet, getSiteText, newSiteBean, readBean, type SiteBean, type SiteRow } from '../legacy/site-fields.js';
+import {
+  LEGACY_GLOBAL_CONFIG_DEFAULTS,
+  applySet,
+  getSiteText,
+  newSiteBean,
+  readBean,
+  type LegacyGlobalConfig,
+  type SiteRow,
+} from '../legacy/site-fields.js';
 import type { ProgramsSitesRepository } from '../repo/repository.js';
 
 /** configBean and application settings the endpoint URL, the route key and the CORS allow-list read. */
@@ -203,6 +212,29 @@ export function jsonApiLegacySettings(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): JsonApiLegacySettings {
   const parsed = LEGACY_SETTINGS.safeParse(env);
+  if (parsed.success) return parsed.data;
+  const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
+  throw new EnvValidationError(issues, 'programs-sites');
+}
+
+const GLOBAL_CONFIG_SETTINGS = z
+  .object({
+    MURA_LOCALE: literalSetting((v) => !/\p{Cc}/u.test(v), 'must not contain control characters'),
+  })
+  .transform((env): LegacyGlobalConfig => ({
+    ...LEGACY_GLOBAL_CONFIG_DEFAULTS,
+    // configBean `setDefaultLocale` keeps `Server` for an empty value only (configBean.cfc:1206-1212).
+    ...(env.MURA_LOCALE === undefined || env.MURA_LOCALE === '' ? {} : { defaultLocale: env.MURA_LOCALE }),
+  }));
+
+/**
+ * The configBean settings the site bean's effective getters read, from `MURA_<KEY>` variables, else configBean's defaults.
+ * Throws EnvValidationError naming each malformed variable.
+ */
+export function legacyGlobalConfig(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): LegacyGlobalConfig {
+  const parsed = GLOBAL_CONFIG_SETTINGS.safeParse(env);
   if (parsed.success) return parsed.data;
   const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
   throw new EnvValidationError(issues, 'programs-sites');
@@ -394,15 +426,6 @@ function formScopeOf(call: SiteCall): Record<string, string> {
   return form;
 }
 
-/**
- * `$.getBean('site').loadBy(...)`: the scope seeds the bean with the request's site id (cfobject.cfc:138-149), and
- * setSiteID keeps it over the stored id it equals ignoring case; the defaulted new bean when no row is stored.
- */
-function loadedBean(row: StoredSite, scopeSiteId: string): SiteBean {
-  const bean = row === null ? newSiteBean() : readBean(row);
-  return { values: { ...bean.values, siteid: scopeSiteId }, isNew: bean.isNew };
-}
-
 /** Registers the contract's JSON API `site` routes; every mode and path shares one handler. */
 export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: JsonApiSiteRouteDeps): Promise<void> {
   const settings = deps.legacy ?? jsonApiLegacySettings();
@@ -488,7 +511,7 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
 
   /** findOne(entityName='site'): the site the merged `siteid` names (jsonApiUtility.cfc:2292-2382). */
   async function findOne(call: SiteCall): Promise<FastifyReply> {
-    const bean = loadedBean(await readSiteRow(call.tenantId, call.site), call.scopeSiteId);
+    const bean = jsonApiSiteBean(await readSiteRow(call.tenantId, call.site), call.scopeSiteId);
     assertNoHumanCheck(call);
     return respond(call, jsonApiSiteValues(bean, call.baseUrl, call.params.entityname ?? 'site'));
   }
@@ -496,7 +519,7 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
   /** findNew(entityName='site'): a new bean seeded with the scope's site id (jsonApiUtility.cfc:2386-2422). */
   function findNew(call: SiteCall): FastifyReply {
     assertNoHumanCheck(call);
-    return respond(call, jsonApiSiteValues(loadedBean(null, call.scopeSiteId), call.baseUrl));
+    return respond(call, jsonApiSiteValues(jsonApiSiteBean(null, call.scopeSiteId), call.baseUrl));
   }
 
   /** findProperties(entityname, properties) of the site entity (jsonApiUtility.cfc:1548-1622). */

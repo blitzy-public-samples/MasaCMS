@@ -7,7 +7,6 @@ import type { UserClaims } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import {
   CONTENT_CONFIG_DEFAULTS,
-  ContentNotFoundError,
   UndefinedLegacyMethodError,
   actorFromClaims,
   writeContextFor,
@@ -105,14 +104,6 @@ describe('writeContextFor', () => {
 });
 
 describe('domain errors', () => {
-  it('ContentNotFoundError is a named Error', () => {
-    const err = new ContentNotFoundError();
-    expect(err).toBeInstanceOf(Error);
-    expect(err.name).toBe('ContentNotFoundError');
-    expect(err.message).toBe('Content not found');
-    expect(new ContentNotFoundError('no such node').message).toBe('no such node');
-  });
-
   it('UndefinedLegacyMethodError carries the method and is not a LegacyApiError', () => {
     const err = new UndefinedLegacyMethodError('submitForm');
     expect(err).toBeInstanceOf(Error);

@@ -236,48 +236,62 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   javaEnabled: { key: 'javaenabled', template: 'true', fallback: true, apply: cfBoolean },
 };
 
-/** The value of `key` in `source`, else `template`, with unevaluable expressions blanked. */
-function sourceValue(source: NodeJS.ProcessEnv, key: string, template?: string): string | undefined {
-  const value = source[`MURA_${key.toUpperCase()}`] ?? template;
-  return value === undefined ? undefined : literalValue(value);
-}
+/** The `MURA_<KEY>` variable of a settings.ini key. */
+const settingVariable = (key: string): string => `MURA_${key.toUpperCase()}`;
 
-/** Resolves every setting from `source` as Masa start-up and configBean.set do. */
-function resolveLegacySettings(source: NodeJS.ProcessEnv): LegacySettings {
-  const read = <T>(rule: SettingRule<T>): T => {
-    const value = sourceValue(source, rule.key, rule.template);
-    return value === undefined ? rule.fallback : (rule.apply(value) ?? rule.fallback);
-  };
-  const ruled = Object.fromEntries(
-    Object.entries(SETTING_RULES).map(([field, rule]: [string, SettingRule<unknown>]) => [field, read(rule)]),
-  ) as unknown as RuledSettings;
+/** A `MURA_<KEY>` value, a blank one included, else `template`, with unevaluable expressions blanked; never rejected. */
+const settingSource = (template?: string) =>
+  z
+    .string()
+    .optional()
+    .transform((value) => {
+      const text = value ?? template;
+      return text === undefined ? undefined : literalValue(text);
+    });
 
-  // Start-up sets indexFileInAPI=false when only indexFileInURLS=false is configured.
-  const indexFileInAPI = sourceValue(source, 'indexfileinapi');
-  // An empty assetPath falls back to configBean getSiteAssetPath(): '/<siteDir>', siteDir defaulting to 'sites'.
-  const siteDir = sourceValue(source, 'sitedir') ?? 'sites';
-  const siteAssetPath = siteDir === '' ? '' : `/${siteDir}`;
-  const assetPath = cleanFilePath(sourceValue(source, 'assetpath', '') ?? '');
-  // configBean.set puts a non-empty s3assets in place of fileDir's first element before setFileDir cleans it.
-  const fileDir = sourceValue(source, 'filedir', '') ?? '';
-  const s3Assets = sourceValue(source, 's3assets') ?? '';
-  const s3Prefix = s3Assets === '' || s3Assets.endsWith('/') ? s3Assets : `${s3Assets}/`;
-  return {
-    ...ruled,
-    indexFileInAPI:
-      indexFileInAPI === undefined
-        ? cfBoolean(sourceValue(source, 'indexfileinurls', 'true') ?? '') !== false
-        : (cfBoolean(indexFileInAPI) ?? true),
-    assetPath: assetPath !== '' ? assetPath : siteAssetPath,
-    siteAssetPath,
-    fileDir: cleanFilePath(s3Prefix === '' ? fileDir : s3Prefix + listRest(fileDir)),
-    version: CORE_VERSION,
-  };
-}
+/** A rule's variable through its configBean setter: the fallback when no source sets it or the setter rejects it. */
+const ruledVariable = <T>(rule: SettingRule<T>) =>
+  settingSource(rule.template).transform((value): T => (value === undefined ? rule.fallback : (rule.apply(value) ?? rule.fallback)));
 
-/** Masa global settings resolved from `process.env` on first use. */
+/** The `MURA_<KEY>` variables of every {@link SETTING_RULES} entry and of the derived settings, resolved as Masa start-up and configBean.set do. */
+export const legacySettingsEnvSchema = z
+  .object({
+    ...(Object.fromEntries(
+      Object.values(SETTING_RULES).map((rule: SettingRule<unknown>) => [settingVariable(rule.key), ruledVariable(rule)]),
+    ) as Record<string, ReturnType<typeof ruledVariable<unknown>>>),
+    MURA_INDEXFILEINAPI: settingSource(),
+    MURA_SITEDIR: settingSource(),
+    MURA_ASSETPATH: settingSource(''),
+    MURA_FILEDIR: settingSource(''),
+    MURA_S3ASSETS: settingSource(),
+  })
+  .transform((variables): LegacySettings => {
+    const ruled = Object.fromEntries(
+      Object.entries(SETTING_RULES).map(([field, rule]) => [field, (variables as Record<string, unknown>)[settingVariable(rule.key)]]),
+    ) as unknown as RuledSettings;
+    // Start-up sets indexFileInAPI=false when only indexFileInURLS=false is configured.
+    const indexFileInAPI = variables.MURA_INDEXFILEINAPI;
+    // An empty assetPath falls back to configBean getSiteAssetPath(): '/<siteDir>', siteDir defaulting to 'sites'.
+    const siteDir = variables.MURA_SITEDIR ?? 'sites';
+    const siteAssetPath = siteDir === '' ? '' : `/${siteDir}`;
+    const assetPath = cleanFilePath(variables.MURA_ASSETPATH ?? '');
+    // configBean.set puts a non-empty s3assets in place of fileDir's first element before setFileDir cleans it.
+    const fileDir = variables.MURA_FILEDIR ?? '';
+    const s3Assets = variables.MURA_S3ASSETS ?? '';
+    const s3Prefix = s3Assets === '' || s3Assets.endsWith('/') ? s3Assets : `${s3Assets}/`;
+    return {
+      ...ruled,
+      indexFileInAPI: indexFileInAPI === undefined ? ruled.indexFileInURLS : (cfBoolean(indexFileInAPI) ?? true),
+      assetPath: assetPath !== '' ? assetPath : siteAssetPath,
+      siteAssetPath,
+      fileDir: cleanFilePath(s3Prefix === '' ? fileDir : s3Prefix + listRest(fileDir)),
+      version: CORE_VERSION,
+    };
+  });
+
+/** Masa global settings parsed from `process.env` by {@link legacySettingsEnvSchema} on first use. */
 export function legacySettings(): Readonly<LegacySettings> {
-  resolvedSettings ??= Object.freeze(resolveLegacySettings(process.env));
+  resolvedSettings ??= Object.freeze(legacySettingsEnvSchema.parse(process.env));
   return resolvedSettings;
 }
 

@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { decodeRow, encodeRow, type CanonicalColumn, type CanonicalValue } from '@opt2/platform/migration-kit';
+import bcrypt from 'bcryptjs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createIdOrdinals, ordinalFor } from '../../../src/golden/normalise/ids.js';
 import { loadRules, type NormaliseRules } from '../../../src/golden/normalise/rules.js';
@@ -39,6 +40,22 @@ const ARCHIVE_COLUMNS: CanonicalColumn[] = [
 const OUTPUT_COLUMNS: CanonicalColumn[] = COLUMNS.map((column) =>
   column.name === 'LastUpdate' ? { name: 'LastUpdate', type: 's' } : column,
 );
+const CREDENTIAL = 'identity.credential';
+
+/** Credential columns of `tusers`, the password column spelt `password`. */
+function credentialColumns(password = 'Password'): CanonicalColumn[] {
+  return [
+    { name: 'UserID', type: 's' },
+    { name: password, type: 's' },
+    { name: 'PasswordCreated', type: 't' },
+  ];
+}
+
+/** A bcrypt hash of `secret` in revision `variant` at `cost`, under a fresh salt. */
+function bcryptHash(secret: string, variant = '2a', cost = 4): string {
+  const salt = bcrypt.genSaltSync(cost).slice('$2b$04$'.length);
+  return bcrypt.hashSync(secret, `$${variant}$${String(cost).padStart(2, '0')}$${salt}`);
+}
 
 type PersonRow = {
   UserID: string;
@@ -313,5 +330,143 @@ describe('compareRows differences', () => {
     expect(tableOf(golden).entries).toEqual([]);
     expect(compareRows(golden, normalise(snapshot([])))).toEqual({ [PERSON]: EQUAL });
     expect(compareRows({}, {})).toEqual({});
+  });
+});
+
+describe('normaliseRows volatile columns', () => {
+  // Assembled at run time, so secret scanning does not read them as credentials.
+  const SECRET = ['fixture', 'created', 'password'].join('-');
+  const OTHER = ['fixture', 'admin', 'password'].join('-');
+  const UNKNOWN = ['fixture', 'seeded', 'password'].join('-');
+  const CREATED = 'generated:gs-pe-01';
+  const SECRETS: ReadonlyMap<string, string> = new Map([
+    ['admin', OTHER],
+    [CREATED, SECRET],
+  ]);
+
+  interface CredentialOptions {
+    secrets?: ReadonlyMap<string, string>;
+    legacyTable?: string;
+    column?: string;
+  }
+
+  /** One side's credential rows: one row of `password` in column `column` of `legacyTable`. */
+  function credential(password: string, opts: CredentialOptions = {}): NormalisedTable {
+    const column = opts.column ?? 'Password';
+    const row = { UserID: cfUuid(), [column]: password, PasswordCreated: SAVED_AT };
+    const of = { unit: CREDENTIAL, legacyTable: opts.legacyTable ?? 'tusers', columns: credentialColumns(column) };
+    const rows = normaliseRows({ [CREDENTIAL]: snapshot([row], of) }, createIdOrdinals(), rules, opts.secrets);
+    return tableOf(rows, CREDENTIAL);
+  }
+
+  /** The comparison of two sides that differ in their one row. */
+  function differing(golden: NormalisedTable, replay: NormalisedTable): Record<string, RowComparison> {
+    return {
+      [CREDENTIAL]: {
+        missing: golden.entries.map((entry) => entry.encoding),
+        extra: replay.entries.map((entry) => entry.encoding),
+        checksumEqual: false,
+      },
+    };
+  }
+
+  it.each<[variant: string, legacyTable: string, column: string]>([
+    ['2a', 'tusers', 'Password'],
+    ['2b', 'dbo.[tusers]', 'password'],
+    ['2y', 'TUSERS', 'PASSWORD'],
+    ['2', 'tusers', 'Password'],
+  ])('names the secret two fresh %s hashes in %s.%s verify, so the rows are equal', (variant, legacyTable, column) => {
+    const opts = { secrets: SECRETS, legacyTable, column };
+    const golden = credential(bcryptHash(SECRET, variant), opts);
+    const replay = credential(bcryptHash(SECRET, variant), opts);
+    expect(decoded(golden)).toEqual([
+      { UserID: '<id:1>', [column]: `$${variant}$04$<verifies:${CREATED}>`, PasswordCreated: TIMESTAMP },
+    ]);
+    expect(compareRows({ [CREDENTIAL]: golden }, { [CREDENTIAL]: replay })).toEqual({ [CREDENTIAL]: EQUAL });
+  });
+
+  // A `null` shown value is the hash itself, kept literal.
+  it.each<[label: string, golden: () => string, replay: () => string, shown: [string | null, string | null]]>([
+    [
+      'hashes of different secrets',
+      () => bcryptHash(SECRET),
+      () => bcryptHash(OTHER),
+      [`$2a$04$<verifies:${CREATED}>`, '$2a$04$<verifies:admin>'],
+    ],
+    [
+      'one secret at different costs',
+      () => bcryptHash(SECRET),
+      () => bcryptHash(SECRET, '2a', 5),
+      [`$2a$04$<verifies:${CREATED}>`, `$2a$05$<verifies:${CREATED}>`],
+    ],
+    [
+      'one secret in different revisions',
+      () => bcryptHash(SECRET),
+      () => bcryptHash(SECRET, '2b'),
+      [`$2a$04$<verifies:${CREATED}>`, `$2b$04$<verifies:${CREATED}>`],
+    ],
+    [
+      'a verified hash and one no secret verifies',
+      () => bcryptHash(SECRET),
+      () => bcryptHash(UNKNOWN),
+      [`$2a$04$<verifies:${CREATED}>`, null],
+    ],
+    ['two hashes no secret verifies', () => bcryptHash(UNKNOWN), () => bcryptHash(UNKNOWN), [null, null]],
+  ])('tells apart %s', (_label, goldenValue, replayValue, shown) => {
+    const [goldenHash, replayHash] = [goldenValue(), replayValue()];
+    const golden = credential(goldenHash, { secrets: SECRETS });
+    const replay = credential(replayHash, { secrets: SECRETS });
+    expect([decoded(golden)[0]?.Password, decoded(replay)[0]?.Password]).toEqual([
+      shown[0] ?? goldenHash,
+      shown[1] ?? replayHash,
+    ]);
+    expect(compareRows({ [CREDENTIAL]: golden }, { [CREDENTIAL]: replay })).toEqual(differing(golden, replay));
+  });
+
+  it.each<[label: string, secrets: ReadonlyMap<string, string> | undefined, hashed: string]>([
+    ['no secret verifies it', SECRETS, UNKNOWN],
+    ['no secrets are supplied', undefined, SECRET],
+    ['the secrets are empty', new Map(), SECRET],
+  ])('keeps a hash literal when %s, so the same hash is equal and a fresh one differs', (_label, secrets, hashed) => {
+    const hash = bcryptHash(hashed);
+    const golden = credential(hash, { secrets });
+    expect(decoded(golden).map((row) => row.Password)).toEqual([hash]);
+    const same = credential(hash, { secrets });
+    expect(compareRows({ [CREDENTIAL]: golden }, { [CREDENTIAL]: same })).toEqual({ [CREDENTIAL]: EQUAL });
+    const fresh = credential(bcryptHash(hashed), { secrets });
+    expect(compareRows({ [CREDENTIAL]: golden }, { [CREDENTIAL]: fresh })).toEqual(differing(golden, fresh));
+  });
+
+  it.each<[first: string, second: string]>([
+    ['generated:gs-id-05', CREATED],
+    [CREATED, 'generated:gs-id-05'],
+  ])('names %s, the first of two secrets with one value in resolution order', (first, second) => {
+    const secrets = new Map([
+      ['admin', OTHER],
+      [first, SECRET],
+      [second, SECRET],
+    ]);
+    expect(decoded(credential(bcryptHash(SECRET), { secrets }))[0]?.Password).toBe(`$2a$04$<verifies:${first}>`);
+  });
+
+  it('writes no secret value into the normalised rows', () => {
+    const tables = [bcryptHash(SECRET), bcryptHash(OTHER), bcryptHash(UNKNOWN)].map((hash) =>
+      credential(hash, { secrets: SECRETS }),
+    );
+    const text = JSON.stringify(tables);
+    expect(text).toContain('<verifies:admin>');
+    for (const value of [SECRET, OTHER, UNKNOWN]) expect(text).not.toContain(value);
+  });
+
+  it.each<[label: string, legacyTable: string, value: () => string]>([
+    ['an MD5 hex digest', 'tusers', () => randomBytes(16).toString('hex')],
+    ['a bcrypt hash one character short', 'tusers', () => bcryptHash(SECRET).slice(0, -1)],
+    ['a bcrypt hash in a password column of another table', 'tcontent', () => bcryptHash(SECRET)],
+  ])('compares %s literally, so two values still differ', (_label, legacyTable, value) => {
+    const [goldenValue, replayValue] = [value(), value()];
+    const golden = credential(goldenValue, { secrets: SECRETS, legacyTable });
+    const replay = credential(replayValue, { secrets: SECRETS, legacyTable });
+    expect(decoded(golden).map((row) => row.Password)).toEqual([goldenValue]);
+    expect(compareRows({ [CREDENTIAL]: golden }, { [CREDENTIAL]: replay })).toEqual(differing(golden, replay));
   });
 });

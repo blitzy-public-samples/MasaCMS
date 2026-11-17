@@ -1,5 +1,5 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** `listExportSheetStatus`: reporting's read of one page of sheet status rows for the running export job it names. */
+/** `listExportSheetStatus`: reporting's read of one page of sheet status rows, by period start then sheet id, for the running export job it names. */
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import type { Clock, FastifyInstance } from '@opt2/platform/service-kit';
@@ -46,7 +46,7 @@ export function registerExportReadRoutes(app: FastifyInstance, deps: ExportReadD
       const businessDate = parseFixtureAsOf(asOf, deps.clock);
       if (!businessDate.ok) throw new LegacyApiError('invalidParameters');
       const tenantId = await verifiedExportTenant({ db: deps.db, client: app.opt2.client }, { exportId, siteId, claim }, 'timesheets.sheets');
-      return withTenant(deps.db, tenantId, (tx) => sheetStatusPage(tx, deps.repository, { pageIndex, itemsPerPage }, businessDate.asOf));
+      return withTenant(deps.db, tenantId, (tx) => sheetStatusPage(tx, deps.repository, { pageIndex, itemsPerPage, order: 'export' }, businessDate.asOf));
     },
   );
 }

@@ -11,7 +11,7 @@ import { createService, fixedClock, loadEnv, type BaseEnv, type FastifyInstance 
 import type { TaskPort } from '@opt2/platform/tasks';
 import type { TenantDb, TenantTx } from '@opt2/platform/tenancy';
 import { ROLE_SET, TENANT_A, authHeadersFor, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
-import type { ProgramsSitesRepository } from '../../src/repo/repository.js';
+import type { KeysetPage, ProgramsSitesRepository } from '../../src/repo/repository.js';
 import type { ImageSizeRow } from '../../src/repo/tables.js';
 import { registerRoutes, registerSiteMonitorRoutes, type RouteDeps } from '../../src/routes/index.js';
 
@@ -20,7 +20,7 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 };
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 // Contract paths of the site, image size and JSON API `site` modules.
-const MODULE_PATH = /^\/v1\/|^\/internal\/v1\/sites\/|^\/_api\/(?:json|ajax|rest)\/v1(?:\/|$)/;
+const MODULE_PATH = /^\/v[12]\/|^\/internal\/v1\/sites\/|^\/_api\/(?:json|ajax|rest)\/v1(?:\/|$)/;
 const JSON_API_PATH = /^\/_api\//;
 const SITE_MONITOR_URLS = [
   '/_api/sitemonitor*',
@@ -64,7 +64,8 @@ const port: TaskPort = {
 };
 
 const listImageSizes = vi.fn(async (_tx: TenantTx, _siteId: string): Promise<ImageSizeRow[]> => [SIZE_ROW]);
-const repository = { listImageSizes } as unknown as ProgramsSitesRepository;
+const listImageSizePage = vi.fn(async (_tx: TenantTx, _siteId: string, _page: KeysetPage): Promise<ImageSizeRow[]> => [SIZE_ROW]);
+const repository = { listImageSizes, listImageSizePage } as unknown as ProgramsSitesRepository;
 
 let stateDir: string;
 let env: BaseEnv;
@@ -125,6 +126,7 @@ afterAll(async () => {
 beforeEach(() => {
   tenants.length = 0;
   listImageSizes.mockClear();
+  listImageSizePage.mockClear();
 });
 
 afterEach(async () => {
@@ -183,6 +185,21 @@ describe('registerRoutes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([expect.objectContaining({ sizeID: SIZE_ROW.sizeid, siteID: 'tenant-a', name: 'hero-wide' })]);
     expect(listImageSizes).toHaveBeenCalledWith(tx, 'tenant-a');
+    expect(tenants).toEqual([TENANT_A.tenantId]);
+  });
+
+  it('serves the image size page through the same domain, reading one row past the default page size', async () => {
+    const { app } = await addedBy((app) => registerRoutes(app, deps()));
+    const subject = ROLE_SET.find((candidate) => candidate.name === 'site-admin');
+    if (subject === undefined) throw new Error('No role subject site-admin');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/sites/tenant-a/image-sizes',
+      headers: await authHeadersFor(subject, { audience: 'programs-sites', site: 'tenant-a' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [expect.objectContaining({ sizeID: SIZE_ROW.sizeid, name: 'hero-wide' })], next: null });
+    expect(listImageSizePage).toHaveBeenCalledExactlyOnceWith(tx, 'tenant-a', { after: null, limit: 51 });
     expect(tenants).toEqual([TENANT_A.tenantId]);
   });
 });

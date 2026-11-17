@@ -1,7 +1,8 @@
-/** People's Masa JSON API `user` and `address` routes through `buildTestApp` and `app.inject` over the recording database: wire format, route ownership and denials; and the iterator page hold. */
+/** People's Masa JSON API `user` and `address` routes through `buildTestApp` and `app.inject` over the recording database: wire format, route ownership and denials, address findMany batching; and the iterator page hold. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LegacyApiError, WWW_AUTHENTICATE, isCfUuid } from '@opt2/platform/legacy-compat';
-import { ROLE_SET, TENANT_A, TENANT_B, fixtureForSite, registryPayloads, type RoleSubject } from '@opt2/platform/testing';
+import { ROLE_SET, TENANT_A, TENANT_B, TENANT_UMBRELLA, fixtureForSite, registryPayloads, type RoleSubject } from '@opt2/platform/testing';
+import type { AddressRow, ExtendAttributeRow, ExtendDataRow } from '../../src/repo/tables.js';
 import { iteratorPage, iteratorPageHold } from '../../src/routes/legacy-api.js';
 import {
   buildTestApp,
@@ -16,6 +17,9 @@ import {
   SITE_ADMIN_A,
   SYSTEM_USER_A,
   accountsForSeed,
+  addressRow,
+  extendAttributeRow,
+  extendDataRow,
 } from '../helpers/fixtures.js';
 import {
   CSRF,
@@ -34,6 +38,7 @@ import {
   type InjectedResponse,
   type Method,
 } from '../helpers/legacy-api-wire.js';
+import { UNEXPECTED_DB_FAILURES, captureRequestLogs, expectSerializedErrorLog } from '../helpers/request-logs.js';
 
 /** The gateway's invocation credential alone: an anonymous browser request. */
 function anonymousHeaders(): Promise<Record<string, string>> {
@@ -296,6 +301,185 @@ describe('JSON API wire format, ownership and denials over the recording databas
       expect(testApp.identity.csrf.consumed()).toEqual([]);
       expectUntouched();
     });
+  });
+});
+
+/** Whether two char ids are equal as SQL Server compares them: case-insensitively, trailing spaces ignored. */
+function sameId(a: unknown, b: unknown): boolean {
+  return String(a).trimEnd().toUpperCase() === String(b).trimEnd().toUpperCase();
+}
+
+/** The rows of `store`'s tenant `values[0]` whose `column` matches the id or ids `values[1]`; a request-position read answers each requested id's rows under its position. */
+function requestedRows(store: ReadonlyMap<string, readonly Record<string, unknown>[]>, column: string, text: string, values: readonly unknown[]): Record<string, unknown>[] {
+  const rows = store.get(String(values[0])) ?? [];
+  const requested = values[1];
+  if (!Array.isArray(requested)) return rows.filter((row) => sameId(row[column], requested));
+  if (!text.includes('request_position')) return rows.filter((row) => requested.some((id) => sameId(row[column], id)));
+  return requested.flatMap((id, index) => rows.filter((row) => sameId(row[column], id)).map((row) => ({ request_position: index + 1, ...row })));
+}
+
+describe('address findMany over the recording database', () => {
+  const ids = {
+    pooled: 'A1000000-0000-0000-0000000000000000',
+    home: 'B2000000-0000-0000-0000000000000000',
+    both: 'C3000000-0000-0000-0000000000000000',
+    work: 'D4000000-0000-0000-0000000000000000',
+    elsewhere: 'E5000000-0000-0000-0000000000000000',
+    umbrellaSite: 'F6000000-0000-0000-0000000000000000',
+  } as const;
+  type Name = keyof typeof ids;
+  const owner = SYSTEM_USER_A.sub;
+  const umbrella = TENANT_UMBRELLA.tenantId;
+  /** tenant-a's own addresses and its public pool's in umbrella, where a second `both` names another city. */
+  const ADDRESSES: ReadonlyMap<string, readonly AddressRow[]> = new Map([
+    [
+      TENANT_A.tenantId,
+      [
+        addressRow({ addressid: ids.home, userid: owner, city: 'Home' }),
+        addressRow({ addressid: ids.both, userid: owner, city: 'Own' }),
+        addressRow({ addressid: ids.work, userid: owner, city: 'Work' }),
+        addressRow({ addressid: ids.elsewhere, userid: owner, siteid: TENANT_B.siteId, city: 'Elsewhere' }),
+      ],
+    ],
+    [
+      umbrella,
+      [
+        addressRow({ tenant_id: umbrella, addressid: ids.pooled, city: 'Pooled' }),
+        addressRow({ tenant_id: umbrella, addressid: ids.both, city: 'Pool' }),
+        addressRow({ tenant_id: umbrella, addressid: ids.umbrellaSite, siteid: TENANT_UMBRELLA.siteId, city: 'Umbrella' }),
+      ],
+    ],
+  ]);
+  const EXTEND_DATA: ReadonlyMap<string, readonly ExtendDataRow[]> = new Map([
+    [TENANT_A.tenantId, [extendDataRow({ baseid: ids.home, attributeid: 7, attributevalue: 'North' })]],
+    [umbrella, [extendDataRow({ tenant_id: umbrella, baseid: ids.pooled, attributeid: 8, attributevalue: '3' })]],
+  ]);
+  const ATTRIBUTES: ReadonlyMap<string, readonly ExtendAttributeRow[]> = new Map([
+    [TENANT_A.tenantId, [extendAttributeRow({ attributeid: 7, name: 'gate' })]],
+    [umbrella, [extendAttributeRow({ tenant_id: umbrella, attributeid: 8, name: 'floor' })]],
+  ]);
+  /** Each address item's stored city and extended values, `both` as tenant-a holds it. */
+  const ITEMS: Readonly<Record<Name, Record<string, unknown>>> = {
+    pooled: { addressid: ids.pooled, city: 'Pooled', floor: '3' },
+    home: { addressid: ids.home, city: 'Home', gate: 'North' },
+    both: { addressid: ids.both, city: 'Own' },
+    work: { addressid: ids.work, city: 'Work' },
+    elsewhere: { addressid: ids.elsewhere, city: 'Elsewhere' },
+    umbrellaSite: { addressid: ids.umbrellaSite, city: 'Umbrella' },
+  };
+  const MISSING = '0F000000-0000-0000-0000000000000000';
+  /** Every id in an order unlike the addressid order, one in another case and one repeated. */
+  const REQUESTED = [ids.work, ids.pooled, ids.elsewhere, ids.both.toLowerCase(), ids.home, ids.umbrellaSite, ids.work];
+  let testApp: TestApp;
+
+  beforeAll(async () => {
+    testApp = await buildTestApp();
+    respondWithRegistry(testApp.db);
+    testApp.db.respond(/"user_address"/, (text, values) => requestedRows(ADDRESSES, 'addressid', text, values));
+    testApp.db.respond(/"extend_data_user_activity"/, (text, values) => requestedRows(EXTEND_DATA, 'baseid', text, values));
+    testApp.db.respond(/"extend_attribute"/, (_text, values) =>
+      (ATTRIBUTES.get(String(values[0])) ?? []).filter((row) => Array.isArray(values[2]) && values[2].includes(row.attributeid)),
+    );
+  });
+
+  afterAll(async () => {
+    await testApp?.close();
+  });
+
+  beforeEach(() => {
+    testApp.db.clear();
+  });
+
+  /** findMany of the addresses `requested`, then `query`, for tenant-a's site administrator. */
+  async function findMany(requested: readonly string[], query = ''): Promise<InjectedResponse> {
+    return send(testApp.app, 'GET', apiPath('json', `?method=findMany&entityname=address&ids=${requested.join(',')}${query}`), await actorHeaders(SITE_ADMIN_A));
+  }
+
+  /** The tenant and requested ids of each recorded read of `table`. */
+  function readsOf(table: string): Array<[unknown, unknown]> {
+    return testApp.db.statements().flatMap((statement) => (statement.text.includes(`"${table}"`) ? [[statement.values[0], statement.values[1]] as [unknown, unknown]] : []));
+  }
+
+  it.each<[string, string, Name[], Record<string, number>]>([
+    ['every address of the site in the order of the ids, a repeated id twice', '', ['work', 'pooled', 'both', 'home', 'work'], { totalitems: 4, totalpages: 1, pageindex: 1 }],
+    ['a page of the addressid order in the order of the ids', '&itemsPerPage=2&pageIndex=2', ['work', 'both', 'work'], { totalitems: 4, totalpages: 2, pageindex: 2, itemsperpage: 2 }],
+    ['the first limit rows of the addressid order', '&limit=3', ['pooled', 'both', 'home'], { totalitems: 3, totalpages: 1, pageindex: 1 }],
+    ['the first row of a page size 1 under a limit', '&itemsPerPage=1&limit=3', ['pooled'], { totalitems: 3, totalpages: 3, pageindex: 1, itemsperpage: 1 }],
+  ])('answers %s, each from the first user tenant holding it, with its extended data', async (_label, query, expected, page) => {
+    const data = dataOf(await findMany(REQUESTED, query));
+    expect(data).toMatchObject({ entityname: 'address', ...page });
+    expect(data.items).toMatchObject(expected.map((name) => ITEMS[name]));
+    expect(testApp.db.writes()).toEqual([]);
+  });
+
+  it.each([
+    ['first', [MISSING, ids.home, ids.work]],
+    ['between held ids', [ids.home, MISSING, ids.pooled]],
+    ['last, after an address of another site', [ids.elsewhere, ids.home, MISSING]],
+  ])('refuses an id no user tenant holds, %s, with the legacy 503', async (_label, requested) => {
+    legacyError(await findMany(requested), 'server_error', 503);
+    expect(testApp.db.writes()).toEqual([]);
+  });
+
+  it('refuses a sorted address findMany with the legacy 503 before reading an address', async () => {
+    legacyError(await findMany([ids.home], '&sort=addressid'), 'server_error', 503);
+    expect(readsOf('user_address')).toEqual([]);
+  });
+
+  it.each<[string, string[], Array<[string, string[]]>, Array<[string, string[]]>]>([
+    ['ids tenant-a holds alone', [ids.home, ids.work], [[TENANT_A.tenantId, [ids.home, ids.work]]], [[TENANT_A.tenantId, [ids.home]]]],
+    [
+      'an id only the public pool holds',
+      [ids.home, ids.pooled],
+      [[TENANT_A.tenantId, [ids.home, ids.pooled]], [umbrella, [ids.pooled]]],
+      [[umbrella, [ids.pooled]]],
+    ],
+    [
+      'every id',
+      REQUESTED,
+      [[TENANT_A.tenantId, [ids.work, ids.pooled, ids.elsewhere, ids.both, ids.home, ids.umbrellaSite]], [umbrella, [ids.pooled, ids.umbrellaSite]]],
+      [[umbrella, [ids.pooled]]],
+    ],
+  ])('reads %s with one address statement per user tenant still missing ids, and extended data of the page only', async (_label, requested, addressReads, extendReads) => {
+    legacyEnvelope(await findMany(requested, '&itemsPerPage=1'), 200);
+    expect(readsOf('user_address')).toEqual(addressReads);
+    expect(readsOf('extend_data_user_activity')).toEqual(extendReads);
+  });
+
+  it('issues as many statements for a page of one over seven ids as over two', async () => {
+    const statements = async (requested: readonly string[]): Promise<number> => {
+      testApp.db.clear();
+      legacyEnvelope(await findMany(requested, '&itemsPerPage=1'), 200);
+      return testApp.db.statements().length;
+    };
+    expect(await statements(REQUESTED)).toBe(await statements([ids.home, ids.pooled]));
+  });
+});
+
+describe('JSON API unhandled-exception log', () => {
+  let testApp: TestApp;
+
+  beforeAll(async () => {
+    testApp = await buildTestApp();
+    respondWithRegistry(testApp.db);
+  });
+
+  afterAll(async () => {
+    await testApp?.close();
+  });
+
+  it.each(UNEXPECTED_DB_FAILURES)('answers server_error for %s on a user read, logging only its serialized record', async (_label, failure, safeMessage) => {
+    const logs = captureRequestLogs(testApp.app);
+    testApp.db.clear();
+    testApp.db.respond(/\bFROM \S*\bperson"? WHERE\b/, () => {
+      throw failure;
+    });
+
+    const res = await send(testApp.app, 'GET', apiPath('json', `/user/${SYSTEM_USER_A.sub}`), await actorHeaders(SITE_ADMIN_A));
+
+    expect(legacyError(res, 'server_error').method).toBe('findOne');
+    expect(testApp.db.writes()).toEqual([]);
+    expectSerializedErrorLog(logs, 'unhandled JSON API error', safeMessage);
   });
 });
 

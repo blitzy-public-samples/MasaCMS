@@ -313,6 +313,7 @@ describe.skipIf(!live)('hydration and logout across instances over one PostgreSQ
           return { sessionId: 'A-new', epoch: 2, setCookie: [] };
         },
         end: () => Promise.reject(new Error('no logout here')),
+        snapshot: () => Promise.reject(new Error('no logout here')),
       },
       bridge: {
         describe: () => Promise.resolve({ body: describeBody(NATIVE_ID), setCookies: [] }),

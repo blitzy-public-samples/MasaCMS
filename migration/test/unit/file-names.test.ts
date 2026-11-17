@@ -49,6 +49,18 @@ describe('stored names', () => {
     expect(parseObjectKey(`${TENANT}/${name}`)).toBeNull();
   });
 
+  it.each([
+    'QAORPHAN-FILE-0000-0000000000000058.txt',
+    'C3700000-0000-0000-0000000000000F0G.pdf',
+    'C37000000000-0000-00000000000000F07.pdf',
+    'C3700000-0000-0000-0000-00000000F07.pdf',
+  ])('rejects %j, whose 35-character id is no CF UUID, as a stored name but keeps its object key form', (name) => {
+    const fileId = name.slice(0, 35);
+    expect(parseStoredName(name)).toBeNull();
+    expect(objectKey(TENANT, fileId, '', name.slice(36))).toBe(`${TENANT}/${name}`);
+    expect(parseObjectKey(`${TENANT}/${name}`)).toEqual({ tenantId: TENANT, fileId, variant: '', ext: name.slice(36) });
+  });
+
   it.each<[string, StoredName]>([
     ['a dotted extension that would parse as part of the variant', { fileId: FILE_ID, variant: '_a', ext: 'b.jpg' }],
     ['a separator in the variant', { fileId: FILE_ID, variant: '_a/b', ext: 'jpg' }],

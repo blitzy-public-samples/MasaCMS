@@ -8,6 +8,7 @@ import { serializeError } from '@opt2/platform/logging';
 import { GATE_WAIT_MS, type GatePhase, type GateRequest } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS } from '@opt2/platform/service-kit';
 import type { MetadataTx } from '@opt2/platform/tenancy';
+import { SpanKind, startLinkedRootSpan, withUnsampledTrace } from '@opt2/platform/tracing';
 
 import { resolveReportsDir } from '../config.js';
 import type { MigrationContext } from '../context.js';
@@ -221,9 +222,12 @@ export interface WindowService {
   runReloadWindow(): Promise<ReloadWindowResult>;
   /** At service start: gives back what windows left opening took, skipping those another live instance holds claimed; open and import-pending windows go to the retry loop. */
   resumeWindows(): Promise<void>;
-  /** One pass of the retry loop: retries import-pending windows with evidence and handles expired leases, skipping windows another live instance holds claimed. */
+  /**
+   * One pass of the retry loop: retries import-pending windows with evidence and handles expired leases, skipping windows another
+   * live instance holds claimed; each window it acts on is recorded as its own linked root span.
+   */
   runRecoveryPass(): Promise<void>;
-  /** Runs {@link runRecoveryPass} every configured import-retry interval until stopped. */
+  /** Runs {@link runRecoveryPass} in an unsampled trace every configured import-retry interval until stopped. */
   startImportRetryLoop(): { stop(): Promise<void> };
   /** Stops the loop, waits for every window operation in progress, then writes `windows.json` from the window rows. */
   stop(): Promise<void>;
@@ -359,6 +363,7 @@ function fencedOwners(owners: OwnersClient): OwnersClient {
     getObject: (...args) => fenced(() => owners.getObject(...args)),
     deleteObject: (...args) => fenced(() => owners.deleteObject(...args)),
     getAttachmentObject: (...args) => fenced(() => owners.getAttachmentObject(...args)),
+    getExportObject: (...args) => fenced(() => owners.getExportObject(...args)),
     siteMonitorState: () => fenced(() => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => fenced(() => owners.putSiteMonitorState(...args)),
     adoptScheduledTasks: (...args) => fenced(() => owners.adoptScheduledTasks(...args)),
@@ -375,6 +380,7 @@ function fencedGateway(gateway: GatewayClient): GatewayClient {
     freeze: (...args) => fenced(() => gateway.freeze(...args)),
     unfreeze: (...args) => fenced(() => gateway.unfreeze(...args)),
     awaitEpoch: (...args) => fenced(() => gateway.awaitEpoch(...args)),
+    inflightStatus: () => fenced(() => gateway.inflightStatus()),
     awaitInflightDrained: (...args) => fenced(() => gateway.awaitInflightDrained(...args)),
     clearOrphans: (...args) => fenced(() => gateway.clearOrphans(...args)),
   };
@@ -1428,7 +1434,9 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     for (const record of await listActive()) {
       if (tails.has(record.windowId) || recoveryAction(record, now()) === 'none') continue;
       try {
-        await exclusive(record.windowId, () => recoverOne(record.windowId));
+        await startLinkedRootSpan('windows.recover', SpanKind.INTERNAL, () => exclusive(record.windowId, () => recoverOne(record.windowId)), {
+          'opt2.window_id': record.windowId,
+        });
       } catch (error) {
         ctx.logger.warn({ error: serializeError(error) }, `Recovery of window ${record.windowId} failed; retried next pass`);
       }
@@ -1474,7 +1482,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
         await Promise.race([sleep(importRetryMs), stopped]);
         if (stopping) break;
         try {
-          await runRecoveryPass();
+          await withUnsampledTrace(runRecoveryPass);
         } catch (error) {
           ctx.logger.warn({ error: serializeError(error) }, 'Write window recovery pass failed');
         }

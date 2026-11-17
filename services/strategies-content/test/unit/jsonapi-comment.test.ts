@@ -1,6 +1,7 @@
 /** JSON API `comment` feeds over a throwaway content schema: SQL-bounded answers equal the whole-site in-memory feed. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates, qualified } from '@opt2/platform/migration-kit';
 import { withTenant, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type TenantFixture, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -333,6 +334,31 @@ describe.skipIf(!(await pgAvailable()))('JSON API comment feeds', () => {
     expect(itemIds(await outcomeOf(ctx, method, raw, MODULE_USER, ids))).toEqual(expected);
   });
 
+  // A blank row (queryRowToStruct before row 1) sets '' on a new bean; set() skips its empty commentID, which
+  // getCommentID creates when the field list reads it, each bean its own.
+  it('answers the beans of blank rows before the first record, each under a fresh id', async () => {
+    const outcome = JSON.parse(await outcomeOf(ctx, 'findAll', 'itemsPerPage=2&pageIndex=0', MODULE_USER)) as { result: { data: { items: Row[]; startindex: number } } };
+    const { items, startindex } = outcome.result.data;
+    expect(startindex).toBe(-1);
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      const id = String(item['id']);
+      expect(isCfUuid(id)).toBe(true);
+      expect(item).toMatchObject({
+        commentID: id,
+        siteid: '',
+        name: '',
+        flagcount: 0,
+        isapproved: 0,
+        entered: NOW.toJSON(),
+        isnew: 0,
+        entityname: 'comment',
+        links: expect.objectContaining({ self: `${ENDPOINT}/comment/${id}`, kids: `${ENDPOINT}/comment?parentid=${id}` }) as unknown,
+      });
+    }
+    expect(items[0]?.['id']).not.toBe(items[1]?.['id']);
+  });
+
   it('expands kids from the site rows of the tenant', async () => {
     const outcome = JSON.parse(await outcomeOf(ctx, 'findQuery', `expand=kids&id=${cfId(1)}`, MODULE_USER)) as { result: { data: { items: Row[] } } };
     const kids = outcome.result.data.items[0]?.['kids'] as { items: Row[] };
@@ -357,6 +383,20 @@ describe.skipIf(!(await pgAvailable()))('JSON API comment feeds', () => {
     expect(itemIds(await outcomeOf(ctx, 'findAll', 'countOnly=true', MODULE_USER))).toBe(8);
     const reads = commentReads();
     expect(reads.map((s) => s.sql.includes('count(*)') && !s.sql.includes('LIMIT'))).toEqual([true]);
+  });
+
+  it("findOne reads by id in the token tenant only, answering a new bean for tenant-b's comment where legacy loads it by id alone", async () => {
+    const findOne = commentHandler.findOne;
+    if (findOne === undefined) throw new Error('commentHandler has no findOne');
+    const dataOf = async (id: string): Promise<Row> => {
+      const base = callFor('findAll', '', PUBLIC);
+      const call: JsonApiCall = { ...base, method: 'findOne', routeKey: 'api:comment.findone', id, apiContext: { ...base.apiContext, method: 'findOne' } };
+      return (await findOne(ctx, call)).data as Row;
+    };
+    expect(await dataOf(cfId(1))).toMatchObject({ id: cfId(1), name: 'Alice', isnew: 0 });
+    const foreign = await dataOf(cfId(30));
+    expect(foreign).toMatchObject({ name: '', isnew: 1 });
+    expect(String(foreign['id']).toUpperCase()).not.toBe(cfId(30).toUpperCase());
   });
 
   /** The `data` a bean call answered. */

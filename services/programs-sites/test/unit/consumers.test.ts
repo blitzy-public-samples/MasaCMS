@@ -166,6 +166,7 @@ describe('site.changed payload validator', () => {
       }),
     },
     { name: 'a site without domains or content pools', payload: sitePayload({ contentPoolIds: [], domains: [] }) },
+    { name: 'the last state of a deleted site', payload: sitePayload({ deleted: true }) },
   ])('accepts $name', ({ payload }) => {
     expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: true, value: payload });
   });
@@ -206,6 +207,12 @@ describe('site.changed payload validator', () => {
       payload: sitePayload({ filePoolId: null }),
       errors: ['/filePoolId must be string'],
       schemaPaths: ['#/properties/filePoolId/type'],
+    },
+    {
+      name: 'a textual deletion marker',
+      payload: { ...sitePayload(), deleted: 'true' },
+      errors: ['/deleted must be boolean'],
+      schemaPaths: ['#/properties/deleted/type'],
     },
   ])('rejects $name', ({ payload, errors, schemaPaths }) => {
     expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: false, errors, schemaPaths });

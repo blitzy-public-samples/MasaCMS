@@ -2,6 +2,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import { SAFE_ERROR_TEXT } from '@opt2/platform/logging';
 import { formatWritePosition, isApplied, mergeWritePosition, type WritePositions } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 
@@ -44,6 +45,11 @@ export class ProjectionTimeoutError extends LegacyServiceUnavailableError {
   ) {
     const awaited = formatWritePosition(new Map(pending.map(({ owner, xid }) => [owner, xid])));
     super(`Projection of ${awaited} was not applied in legacy within ${String(timeoutMs)} ms`, 'auto', 'projection-timeout');
+  }
+
+  /** The message, which names only the awaited owners, their xids and the budget, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.message;
   }
 }
 

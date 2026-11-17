@@ -236,7 +236,7 @@ const RUN_CASES: RunCase[] = [
     output: { assertions: [INJECTED, NOT_RECOVERED] },
     outcome: 'failed',
     exitCode: 1,
-    result: 'difference',
+    result: 'zero-difference',
     assertions: [INJECTED, NOT_RECOVERED],
   },
   {
@@ -244,7 +244,7 @@ const RUN_CASES: RunCase[] = [
     output: new Error('injection refused'),
     outcome: 'failed',
     exitCode: 1,
-    result: 'difference',
+    result: 'zero-difference',
     assertions: [],
     error: { phase: 'run', message: 'Error: injection refused' },
   },
@@ -292,12 +292,60 @@ describe.each(RECONCILING_FAULTS)('runFault %s', (name) => {
     expect(report).toMatchObject({
       sourceSha: TEST_SOURCE_SHA,
       point,
+      expectedTableVersion: 'v0001',
+      tableVersion: 'v0001',
+      tableVersionMatches: true,
       result: entry.result,
       summary: { differences: 0, unitsWithDifferences: 0 },
       fault: { name, params: {}, outcome: entry.outcome, tableVersion: 'v0001', assertions: entry.assertions, steps: ['resumed'] },
     });
     expect(report.fault.error).toStrictEqual(entry.error);
     expect(report.fault.resumeError).toBeUndefined();
+    expect(await readFile(path.join(reconciliationDir(t), 'summary.md'), 'utf8')).toContain('Zero difference at every point: yes');
+  });
+});
+
+describe('runFault failed reconciliation', () => {
+  const name = 'forced-reinit' satisfies FaultName;
+  const point = `after-fault-${name}`;
+
+  it.each([
+    { label: 'the version active when the fault started', active: 'v0002', expected: 'v0002', matches: true, cell: '| v0002 |' },
+    { label: "the point's default when no version was active", active: null, expected: 'v0001', matches: false, cell: '| none |' },
+  ])('writes a difference report expecting $label', async ({ active, expected, matches, cell }) => {
+    const t = await buildTestContext({ bridge: false, gateway: { active } });
+    opened.push(t);
+    const events: string[] = [];
+    const { script } = doubleScript(name, { assertions: [INJECTED] }, events);
+    const d = doubles({ [name]: script }, events);
+    d.reconcile.mockRejectedValueOnce(new Error('snapshot database unreachable'));
+
+    const result = await runFault(t.ctx, name, {}, d.deps);
+
+    const reportPath = path.join(reconciliationDir(t), `${point}.json`);
+    const failure = { phase: 'reconcile', message: 'Error: snapshot database unreachable' };
+    expect(result).toStrictEqual({
+      name,
+      outcome: 'passed',
+      assertions: [INJECTED],
+      error: failure,
+      reconciliation: { point, result: 'difference', reportPath },
+      exitCode: 1,
+    });
+    const report = await readReport(reportPath);
+    expect(report).toMatchObject({
+      point,
+      expectedTableVersion: expected,
+      tableVersion: active,
+      tableVersionMatches: matches,
+      units: [],
+      result: 'difference',
+      error: failure,
+      fault: { name, outcome: 'passed', tableVersion: active },
+    });
+    const row = (await readFile(path.join(reconciliationDir(t), 'summary.md'), 'utf8')).split('\n').find((line) => line.startsWith(`| ${point} |`));
+    expect(row).toContain(cell);
+    expect(row).not.toContain('expected');
   });
 });
 

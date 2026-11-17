@@ -84,7 +84,7 @@ Same image, `node dist/db-bootstrap/cli.js bootstrap --target cloud`. Declared i
 | Target data | Only through each owner's `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` and `/internal/v1/migration/objects` |
 | Legacy SQL Server (`MURA_DB*`) | Snapshot databases read-only. Live database read; written only by reverse projection of `target`-authoritative units, `init-legacy` and the test-sequence restore |
 | Legacy file store | Only through `gateway/legacy-bridge/cfml/files.cfm` |
-| Gateway | Cut-over activate, freeze, unfreeze, status and in-flight orphan clearing over HTTP |
+| Gateway | Cut-over activate, freeze, unfreeze, status (v1, and v2 for orphans) and in-flight orphan clearing over HTTP |
 
 SQL Server is the only supported source: `MURA_DBTYPE` naming anything else (the setup's MySQL fallback, recorded by `harness/src/baseline/environment.ts`) fails start-up with `UnsupportedLegacyDatabaseError`, so the migration stages stop.
 
@@ -130,14 +130,16 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql); r
 |---|---|---|
 | 1 | `transition-set` | Derives the units `T` whose authority changes and the affected entries; leases `T` as holder kind `transition` |
 | 2 | `stop-new-work` | Pauses the native and survey tasks and the owners' queues that write `T` (outbox sweeps excepted); freezes the entries and waits for every gateway instance's epoch |
-| 3 | `confirm-inflight-finished` | Waits for `gateway.inflight` to hold none of them; orphaned legacy-bound rows are cleared only by a controlled restart (`OPT2_LEGACY_RESTART_CMD`), otherwise the transition aborts naming the orphan; waits for fixture `cfthread` exports (10 min bound) |
+| 3 | `confirm-inflight-finished` | Waits for `gateway.inflight` to hold none of them but orphans (the instance is dead, or abandoned the exchange); orphaned legacy-bound rows are cleared only by a controlled restart (`OPT2_LEGACY_RESTART_CMD`), otherwise the transition aborts naming the orphan, and orphaned target-bound rows pass to step 5; waits for fixture `cfthread` exports (10 min bound) |
 | 4 | `drain-effects` | Runs the outbox sweeps and waits until every published event for `T` has an inbox receipt, or a dead letter for a `state` event, with the gates still open; a dead-lettered `process` event aborts the step, and an owner that does not answer is asked again until `transition.drainTimeoutMs` |
-| 5 | `close-gates` | Closes `T`'s gates at their owners with the transition as holder |
+| 5 | `close-gates` | Closes `T`'s gates at their owners with the transition as holder, then clears step 3's target-bound orphans with that `gates-closed` evidence |
 | 6 | `final-state-and-reconcile` | Final snapshot and diff for units moving to `target`; projector to every owner's write position for units moving to `legacy`; reconciles `T` to zero or aborts |
 | 7 | `activate` | Activates the version once and waits for every gateway instance's epoch |
 | 8 | `hand-off-and-reopen` | Hands off schedulers, sets gates `open` or `legacy`, releases leases, unfreezes, resumes queues and tasks, reconciles recurring tasks |
 
 An abort before step 7 reopens what it closed and leaves the active version unchanged. A transition that would make units `target`-authoritative is refused while the legacy database lacks `opt2_sync.projector_checkpoint` (run `init-legacy` first). One that would make a content unit `target`-authoritative is also refused (`cluster-unsafe`) unless `${OPT2_STATE_DIR}/baseline/environment.json` records `settings.cluster.clusterSafe: true` and the live `tclustercommands` is empty; a missing record refuses too (run `harness/src/baseline/environment.ts --phase services`).
+
+Orphan classification (the in-flight waits of step 3, reload windows and `opt2-ops drain-and-suspend`) reads the gateway's `cutoverStatusV2`; a gateway without it (404, or legacy's redirect of the path) falls back to `cutoverStatus`, where the rows of instances not live are the orphans.
 
 ### Reverse projection and the read-after-write barrier (`src/reverse/`)
 
@@ -176,8 +178,10 @@ Masa's start-up rewrites `tcontent` rows of type `File` or `Link` that are activ
 
 ### File-store transfer (`src/files/`)
 
-- `files.cfm?op=list` per site records every file whose name starts with a `fileID`, so variants (`_source`, `_small`, `_medium`, as `core/mura/content/file/fileDAO.cfc:153-199` writes them) are found, not assumed. Files without a `tfiles` row are kept and flagged as orphans.
-- Each object is read with `op=get`, checked against its SHA-256 and sent to strategies-content `POST /internal/v1/migration/objects`, which stores it as `<tenant>/<fileID><variant>.<ext>` in `content-files`; the same hash again is a no-op.
+- `files.cfm?op=list` per site records every file whose name starts with a `fileID`, so variants (`_source`, `_small`, `_medium`, as `core/mura/content/file/fileDAO.cfc:153-199` writes them) are found, not assumed. Files without a `tfiles` row are kept and flagged as orphans. A listed name whose 35-character id is no CF UUID is no `fileID`; the build lists it under `skipped` with its reason.
+- `tfiles` owners and content types are read per batch of file ids, never as a whole table.
+- Each object is streamed from `op=get` into a temporary file, checked against its SHA-256 and streamed from that file to strategies-content `POST /internal/v1/migration/objects`, which stores it as `<tenant>/<fileID><variant>.<ext>` in `content-files`; the same hash again is a no-op. The migration service holds no whole object in memory and one object at a time on disk. An object the owner refuses (a 4xx other than 401 or 403) is listed under the transfer's `rejected` and the transfer goes on; reconciliation reports the missing object.
+- The feed streams the two manifests' diff twice: first to transfer added and changed copies, then to delete the objects of dropped copies that the new snapshot no longer plans.
 - A live store other than `fileDir` is not moved: `/_api/render` stays legacy.
 
 ### Fault injection (`src/faults/`)
@@ -251,6 +255,7 @@ Read by the service, `opt2-migrate` and `opt2-ops`, whose `--help` lists every v
 | `OPT2_LEGACY_RESTART_CMD` | Controlled ColdFusion restart; locally `harness/repro/lib/legacy-start.sh`, whose no-argument form restarts. Absent in the cloud, so orphaned legacy writes need `opt2-migrate resolve-window <id>` |
 | `OPT2_REPORTS_DIR` | Absolute reports directory; default `<repo>/opt2/reports` |
 | `OPT2_PRISTINE_DIR` | Absolute pristine-baseline directory (`native-tasks.json`); default `~/.opt2/pristine` |
+| `OPT2_CUTOVER_DIR` | Absolute cut-over directory (`versions/`, `groups.json`), the one the gateway reads; default `cutoverDir` of `config/migration.config.json` (`gateway/cutover`) |
 
 - With `OPT2_ENV=local`, `GOOGLE_CLOUD_PROJECT` and `PUBSUB_EMULATOR_HOST` are required.
 - The service, `opt2-migrate` and `opt2-ops` use schema `migration` as `migration_app`: locally `PG_USER=migration_app` with the password the bootstrap set from `${OPT2_STATE_DIR}/secrets/db-migration-app`, in the cloud (`OPT2_DB_AUTH=iam`) the migration service account's IAM database user, a member of `migration_app`. They never connect as the bootstrap administrator below. `opt2-db` reads only the variables of [Bootstrap environment](#bootstrap-environment).

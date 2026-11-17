@@ -23,7 +23,15 @@ import {
   type TaskLogger,
 } from '../../src/tasks/index.js';
 import { TASKS_INVOKER_ROLE, createLocalCloudTasksTransport, loadLocalSigningKeys, transportForPath } from '../../src/auth/index.js';
-import { SYSTEM_TENANT_ID, TENANT_SETTING, tenantRegistrySql, withTenant } from '../../src/tenancy/index.js';
+import {
+  SYSTEM_TENANT_ID,
+  TENANT_SETTING,
+  registeredTenants,
+  tenantIdForSite,
+  tenantRegistryConsumer,
+  tenantRegistrySql,
+  withTenant,
+} from '../../src/tenancy/index.js';
 import { MemorySpanExporter, shutdownTracing, startTracing, withExtractedContext } from '../../src/tracing/index.js';
 import type { Clock } from '../../src/service-kit/index.js';
 import {
@@ -403,5 +411,26 @@ describe('local tasks adapter on PostgreSQL', () => {
     });
     expect((await adapter.list(SWEEP_QUEUE)).tasks.map((task) => task.name)).toEqual([next]);
     expect(await adapter.delete(SWEEP_QUEUE, next)).toEqual({ name: next, deleted: true });
+  });
+
+  it('lists, delivers and deletes the tasks of a tenant whose site the registry marks deleted', async () => {
+    const siteId = 'iso-deleted-site';
+    const tenantId = tenantIdForSite(siteId);
+    for (const [aggregateVersion, deleted] of [[1, false], [2, true]] as const) {
+      await withTenant(handle.app, tenantId, (tx) =>
+        tenantRegistryConsumer.apply(tx, { tenantId, aggregateType: 'site', aggregateId: siteId, aggregateVersion, payload: { siteId, deleted } }),
+      );
+    }
+    expect((await registeredTenants(handle.app)).map((entry) => entry.tenantId)).not.toContain(tenantId);
+    const [due, later] = ['iso-deleted-due', 'iso-deleted-later'];
+    await adapter.create(exportTask(due, tenantId));
+    await adapter.create(exportTask(later, tenantId, { scheduleTime: new Date(nowMs + HOUR_MS) }));
+
+    const listed = (await adapter.list(QUEUE)).tasks.filter((task) => task.tenantId === tenantId).map((task) => task.name);
+    expect(listed).toEqual([due, later]);
+    await adapter.dispatchDue();
+    expect(deliveredNames()).toContain(due);
+    expect(await rowOf(tenantId, due)).toMatchObject({ status: 'done', attempts: 1, last_status: 204 });
+    expect(await adapter.delete(QUEUE, later)).toEqual({ name: later, deleted: true });
   });
 });

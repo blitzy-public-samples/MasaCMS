@@ -761,9 +761,9 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
 
   describe('the window routes of the composed service', () => {
     const REAL_CATALOG = loadUnitCatalog(CONFIG.paths.tableOwnership);
-    // Under the committed v0002 the finance record is target-authoritative and site content is legacy-authoritative.
+    // Under the committed v0002 the finance record is target-authoritative; class-extension sets, with no carry writer, stay legacy-authoritative in every version.
     const TARGET_UNIT = 'finance.record';
-    const LEGACY_UNIT = 'content.content';
+    const LEGACY_UNIT = 'content.extend_set';
 
     let app: FastifyInstance | undefined;
 
@@ -806,7 +806,7 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
       const { app: target } = await composed(h);
 
       const opened = await call(target, 'gateway', 'POST', '/internal/v1/windows', {
-        routeKey: 'admin:carch.update{upload=image}',
+        routeKey: 'admin:cextend.saveextendsetsort',
         units: [LEGACY_UNIT],
         scope: { keys: { siteid: 'tenant-a' } },
         requestId: cfUuid(),

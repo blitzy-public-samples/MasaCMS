@@ -1,6 +1,6 @@
 // Unit tests for the service-restarted-mid-apply fault script: a fake owners client and process control around mocked commands.
 import { REDACTED, type Logger } from '@opt2/platform/logging';
-import type { ApplyRequest } from '@opt2/platform/migration-kit';
+import type { ApplyRequest, ExportResponse } from '@opt2/platform/migration-kit';
 import type { ServiceClient } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,6 +39,8 @@ const PARAMS: ServiceRestartParams = { owner: 'people', afterBatches: 1, command
 const OLD_PID = 4100;
 const NEW_PID = 4200;
 const DOWN = 'Service people unavailable (ECONNREFUSED)';
+const APPLY_DOWN = `apply: ${DOWN}`;
+const NO_CALL_REASON = 'no call to the restarting owner failed after its restart started';
 const HEALTHY_RESTART = { triggered: true, healthy: true, oldPid: OLD_PID, newPid: NEW_PID };
 const STALE = 'pid 4100 does not own port 23212; the up.json record is stale';
 const NO_START = 'cannot run the start command';
@@ -123,6 +125,71 @@ function callOrder(mocks: Record<string, { mock: { invocationCallOrder: number[]
     .map(({ name }) => name);
 }
 
+type OwnerMethod = keyof OwnersClient;
+
+const UPLOAD: Parameters<OwnersClient['putObject']> = [
+  { tenantId: 'tenant-a', fileId: 'F1', variant: '', ext: 'png', contentType: 'image/png', sha256: 'ab' },
+  new Uint8Array([1]),
+];
+
+const WATERMARK: Parameters<OwnersClient['putWatermark']>[1] = {
+  legacyTable: 'tusers',
+  direction: 'forward',
+  snapshotSeq: 4,
+  backupLsn: null,
+  finishedAt: '2026-01-01T00:00:00.000Z',
+};
+
+/** One call of every promise-returning owners-client method but `apply`, with the owner it addresses. */
+const OWNER_CALLS: [Exclude<OwnerMethod, 'apply' | 'exportPages'>, DataOwner, unknown[]][] = [
+  ['export', 'people', ['people', { unit: 'people.person', tenantId: 'tenant-a' }]],
+  ['changes', 'people', ['people', { tenantId: 'tenant-a', after: '7' }]],
+  ['position', 'people', ['people', {}, { timeoutMs: 5 }]],
+  ['watermark', 'people', ['people', 'tusers', 'forward']],
+  ['putWatermark', 'people', ['people', WATERMARK]],
+  ['gate', 'people', ['people', { op: 'read', units: ['people.person'] }, { timeoutMs: 5 }]],
+  ['queueControl', 'people', ['people', 'outbox-sweep', 'pause']],
+  ['putObject', 'strategies-content', UPLOAD],
+  ['getObject', 'strategies-content', ['tenant-a/F1.png']],
+  ['deleteObject', 'strategies-content', ['tenant-a/F1.png']],
+  ['getAttachmentObject', 'finance', [{ tenantId: 'tenant-a', attachmentId: 'A1' }]],
+  ['getExportObject', 'reporting', [{ tenantId: 'tenant-a', jobId: 'J1' }]],
+  ['siteMonitorState', 'programs-sites', []],
+  ['putSiteMonitorState', 'programs-sites', [{ lastMonitored: '2026-01-01T00:00:00.000Z' }]],
+  ['adoptScheduledTasks', 'communications', [{ tasks: [] }]],
+  ['cancelAdoptedScheduledTasks', 'communications', [{ names: [] }]],
+];
+
+/** Replaces `method` of the harness's owners client, which the wrapped client calls through, with `mock`. */
+function stubOwner<T>(h: Harness, method: OwnerMethod, mock: T): T {
+  Object.assign(h.owners, { [method]: mock });
+  return mock;
+}
+
+/** Calls `method` of `owners` with `args`, as a feed or backfill would. */
+function callOwner(owners: OwnersClient, method: OwnerMethod, args: readonly unknown[]): Promise<unknown> {
+  return (owners as unknown as Record<OwnerMethod, (...rest: readonly unknown[]) => Promise<unknown>>)[method](...args);
+}
+
+const PAGE: ExportResponse = { unit: 'people.person', tenantId: 'tenant-a', tables: [], next: 'k1' };
+
+/** An `exportPages` that yields `PAGE`, then fails fetching the next page; `fetched` names each page fetch. */
+function failingExport(fetched: string[] = []) {
+  return vi.fn(async function* () {
+    fetched.push(await Promise.resolve('page-1'));
+    yield PAGE;
+    fetched.push(await Promise.resolve('page-2'));
+    throw new Error(DOWN);
+  });
+}
+
+/** Every page of `owner`'s export, rejecting as its iteration rejects. */
+async function exportedPages(owners: OwnersClient, owner: DataOwner): Promise<ExportResponse[]> {
+  const pages: ExportResponse[] = [];
+  for await (const page of owners.exportPages(owner, { unit: 'people.person', tenantId: 'tenant-a' })) pages.push(page);
+  return pages;
+}
+
 beforeEach(() => {
   vi.mocked(runFeed).mockReset();
   vi.mocked(runBackfill).mockReset();
@@ -179,14 +246,13 @@ describe('service-restarted-mid-apply fault script', () => {
     expect(options).toStrictEqual({});
     expect(wrappedCtx).not.toBe(h.ctx);
     expect(wrappedCtx?.owners).not.toBe(h.ctx.owners);
-    expect(wrappedCtx?.owners.watermark).toBe(h.ctx.owners.watermark);
     expect(wrappedCtx?.db).toBe(h.ctx.db);
     expect(output).toStrictEqual({
       assertions: [
-        { name: 'apply-interrupted', status: 'pass', detail: { acknowledged: 3, failedAfterRestart: DOWN } },
+        { name: 'apply-interrupted', status: 'pass', detail: { acknowledged: 3, failedAfterRestart: APPLY_DOWN } },
         { name: 'owner-healthy', status: 'pass', detail: { oldPid: OLD_PID, pid: NEW_PID, healthyMs: 12 } },
       ],
-      details: { owner: 'people', command: 'feed', afterBatches: 2, acknowledged: 3, failedAfterRestart: DOWN, seqBefore: 3, seqAfter: 4 },
+      details: { owner: 'people', command: 'feed', afterBatches: 2, acknowledged: 3, failedAfterRestart: APPLY_DOWN, seqBefore: 3, seqAfter: 4 },
       state: { command: 'feed', resumeSeq: 4, restart: HEALTHY_RESTART },
     });
     expect(h.processControl.waitHealthy).toHaveBeenCalledExactlyOnceWith('people', { timeoutMs: 5000 });
@@ -205,7 +271,7 @@ describe('service-restarted-mid-apply fault script', () => {
 
     const output = await serviceRestartedMidApply.run(h.env, PARAMS);
 
-    expect(output.assertions[0]).toStrictEqual({ name: 'apply-interrupted', status: 'pass', detail: { acknowledged: 1, failedAfterRestart: DOWN } });
+    expect(output.assertions[0]).toStrictEqual({ name: 'apply-interrupted', status: 'pass', detail: { acknowledged: 1, failedAfterRestart: APPLY_DOWN } });
     expect(output.state).toStrictEqual({ command: 'feed', resumeSeq: undefined, restart: HEALTHY_RESTART });
   });
 
@@ -244,17 +310,17 @@ describe('service-restarted-mid-apply fault script', () => {
       },
       { acknowledged: 1, error: 'legacy read failed' },
     ],
-  ] as const)('fails apply-interrupted with "no apply reached the restarting owner" when %s', async (_case, command, detail) => {
+  ] as const)('fails apply-interrupted with "no call to the restarting owner failed" when %s', async (_case, command, detail) => {
     const h = await harness();
     vi.mocked(runFeed).mockImplementation(command);
 
     const output = await serviceRestartedMidApply.run(h.env, PARAMS);
 
-    expect(output.assertions[0]).toStrictEqual({ name: 'apply-interrupted', status: 'fail', detail, reason: 'no apply reached the restarting owner' });
+    expect(output.assertions[0]).toStrictEqual({ name: 'apply-interrupted', status: 'fail', detail, reason: NO_CALL_REASON });
     expect(output.assertions[1]?.status).toBe('pass');
   });
 
-  it('fails apply-interrupted when the run succeeded although an apply to the restarting owner failed', async () => {
+  it('fails apply-interrupted when the run succeeded although a call to the restarting owner failed', async () => {
     const h = await harness({ failing: (_owner, call) => call === 2 });
     vi.mocked(runFeed).mockImplementation(async (ctx) => {
       await ctx.owners.apply('people', {} as ApplyRequest);
@@ -264,7 +330,11 @@ describe('service-restarted-mid-apply fault script', () => {
 
     const output = await serviceRestartedMidApply.run(h.env, PARAMS);
 
-    expect(output.assertions[0]).toMatchObject({ status: 'fail', detail: { acknowledged: 1, failedAfterRestart: DOWN, exitCode: 0 } });
+    expect(output.assertions[0]).toMatchObject({
+      status: 'fail',
+      detail: { acknowledged: 1, failedAfterRestart: APPLY_DOWN, exitCode: 0 },
+      reason: 'the run succeeded although a call to the restarting owner failed',
+    });
   });
 
   it('counts only the owner it restarts and leaves failures before the restart unrecorded', async () => {
@@ -275,6 +345,109 @@ describe('service-restarted-mid-apply fault script', () => {
 
     expect(output.assertions[0]).toStrictEqual({ name: 'apply-interrupted', status: 'fail', detail: { acknowledged: 0, afterBatches: 1, error: DOWN } });
     expect(output.details).toMatchObject({ acknowledged: 0, failedAfterRestart: undefined });
+  });
+
+  it.each(OWNER_CALLS)(
+    'passes apply-interrupted naming %s when it is the first call to the restarting owner %s that fails after the restart',
+    async (method, owner, args) => {
+      const h = await harness();
+      const original = stubOwner(h, method, vi.fn().mockRejectedValue(new Error(DOWN)));
+      vi.mocked(runFeed).mockImplementation(async (ctx) => {
+        await ctx.owners.apply(owner, {} as ApplyRequest);
+        await callOwner(ctx.owners, method, args);
+        return commandResult(3, 0);
+      });
+
+      const output = await serviceRestartedMidApply.run(h.env, { ...PARAMS, owner });
+
+      expect(original).toHaveBeenCalledExactlyOnceWith(...args);
+      expect(h.processControl.restart).toHaveBeenCalledExactlyOnceWith(owner, { timeoutMs: 5000 });
+      expect(output.assertions[0]).toStrictEqual({
+        name: 'apply-interrupted',
+        status: 'pass',
+        detail: { acknowledged: 1, failedAfterRestart: `${method}: ${DOWN}` },
+      });
+    },
+  );
+
+  it.each(OWNER_CALLS)('forwards %s with its arguments and answer', async (method, _owner, args) => {
+    const h = await harness();
+    const answer = { from: method };
+    const original = stubOwner(h, method, vi.fn().mockResolvedValue(answer));
+    let answered: unknown;
+    vi.mocked(runFeed).mockImplementation(async (ctx) => {
+      answered = await callOwner(ctx.owners, method, args);
+      return commandResult(3, 0);
+    });
+
+    await serviceRestartedMidApply.run(h.env, PARAMS);
+
+    expect(original).toHaveBeenCalledExactlyOnceWith(...args);
+    expect(answered).toBe(answer);
+  });
+
+  it('passes apply-interrupted naming exportPages when its iteration fails mid-way, fetching each page only once the last is consumed', async () => {
+    const h = await harness();
+    const fetched: string[] = [];
+    const original = stubOwner(h, 'exportPages', failingExport(fetched));
+    const consumed: { page: ExportResponse; fetched: number }[] = [];
+    vi.mocked(runFeed).mockImplementation(async (ctx) => {
+      await ctx.owners.apply('people', {} as ApplyRequest);
+      for await (const page of ctx.owners.exportPages('people', { unit: 'people.person', tenantId: 'tenant-a' })) {
+        consumed.push({ page, fetched: fetched.length });
+      }
+      return commandResult(3, 0);
+    });
+
+    const output = await serviceRestartedMidApply.run(h.env, PARAMS);
+
+    expect(original).toHaveBeenCalledExactlyOnceWith('people', { unit: 'people.person', tenantId: 'tenant-a' });
+    expect(consumed).toStrictEqual([{ page: PAGE, fetched: 1 }]);
+    expect(fetched).toStrictEqual(['page-1', 'page-2']);
+    expect(output.assertions[0]).toStrictEqual({
+      name: 'apply-interrupted',
+      status: 'pass',
+      detail: { acknowledged: 1, failedAfterRestart: `exportPages: ${DOWN}` },
+    });
+  });
+
+  it.each<[string, OwnerMethod, (owners: OwnersClient) => Promise<unknown>]>([
+    ['a watermark read of identity', 'watermark', (owners) => owners.watermark('identity', 'tusers', 'forward')],
+    ['an object upload to strategies-content', 'putObject', (owners) => owners.putObject(...UPLOAD)],
+    ['an export of identity', 'exportPages', (owners) => exportedPages(owners, 'identity')],
+  ])('does not record %s failing while people restarts', async (_case, method, call) => {
+    const h = await harness();
+    stubOwner(h, method, method === 'exportPages' ? failingExport() : vi.fn().mockRejectedValue(new Error(DOWN)));
+    vi.mocked(runFeed).mockImplementation(async (ctx) => {
+      await ctx.owners.apply('people', {} as ApplyRequest);
+      await call(ctx.owners);
+      return commandResult(3, 0);
+    });
+
+    const output = await serviceRestartedMidApply.run(h.env, PARAMS);
+
+    expect(output.assertions[0]).toStrictEqual({ name: 'apply-interrupted', status: 'fail', detail: { acknowledged: 1, error: DOWN }, reason: NO_CALL_REASON });
+    expect(output.details).toMatchObject({ failedAfterRestart: undefined });
+  });
+
+  it('leaves a call to the owner that failed before its restart unrecorded', async () => {
+    const h = await harness();
+    stubOwner(h, 'watermark', vi.fn().mockRejectedValue(new Error('watermark read timed out')));
+    stubOwner(h, 'putWatermark', vi.fn().mockRejectedValue(new Error(DOWN)));
+    vi.mocked(runFeed).mockImplementation(async (ctx) => {
+      await ctx.owners.watermark('people', 'tusers', 'forward').catch(() => undefined);
+      await ctx.owners.apply('people', {} as ApplyRequest);
+      await ctx.owners.putWatermark('people', WATERMARK);
+      return commandResult(3, 0);
+    });
+
+    const output = await serviceRestartedMidApply.run(h.env, PARAMS);
+
+    expect(output.assertions[0]).toStrictEqual({
+      name: 'apply-interrupted',
+      status: 'pass',
+      detail: { acknowledged: 1, failedAfterRestart: `putWatermark: ${DOWN}` },
+    });
   });
 
   it.each<[string, (h: Harness) => void, Record<string, unknown>]>([
@@ -315,7 +488,7 @@ describe('service-restarted-mid-apply fault script', () => {
     const output = await serviceRestartedMidApply.run(h.env, PARAMS);
 
     expect(output.assertions).toStrictEqual([
-      { name: 'apply-interrupted', status: 'pass', detail: { acknowledged: 1, failedAfterRestart: DOWN } },
+      { name: 'apply-interrupted', status: 'pass', detail: { acknowledged: 1, failedAfterRestart: APPLY_DOWN } },
       { name: 'owner-healthy', status: 'fail', detail },
     ]);
     const { error: _error, ...progress } = detail;

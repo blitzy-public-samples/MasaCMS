@@ -1,6 +1,6 @@
 /** Producer of `programs-sites.site.changed.v1`, the full-state site event that feeds every service's tenant registry. */
 import type { EventEnvelope } from '@opt2/platform/events';
-import { writeOutbox, type OutboxOrigin } from '@opt2/platform/outbox';
+import { outboxTable, writeOutbox, type OutboxOrigin } from '@opt2/platform/outbox';
 import { SITE_CHANGED_TOPIC, tenantRegistryConsumer, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
 
 /** Topic of the site state event. */
@@ -29,4 +29,14 @@ export async function writeSiteChanged(tx: TenantTx, args: SiteChangedArgs): Pro
   });
   if (envelope !== null) await tenantRegistryConsumer.apply(tx, envelope);
   return envelope;
+}
+
+/** Highest `aggregateVersion` announced for `siteId` in any letter case in `tx`'s tenant outbox, deletions included; 0 when none. */
+export async function lastAnnouncedVersion(tx: TenantTx, siteId: string): Promise<bigint> {
+  const { rows } = await tx.query<{ version: string | null }>(
+    `SELECT max((envelope->>'aggregateVersion')::bigint)::text AS version FROM ${outboxTable(tx.schema)}` +
+      ' WHERE tenant_id = $1 AND topic = $2 AND lower(ordering_key) = lower($3)',
+    [tx.tenantId, TOPIC, siteId],
+  );
+  return BigInt(rows[0]?.version ?? 0);
 }

@@ -95,6 +95,10 @@ export interface LegacyGlobalConfig {
   readonly emailBroadcaster: boolean;
   /** configBean `indexFile`; omitted, its default '' (configBean.cfc:93). */
   readonly indexFile?: string;
+  /** configBean `getDefaultLocale()`; omitted, its default `Server` (configBean.cfc:138). */
+  readonly defaultLocale?: string;
+  /** configBean `getDataCollection()`; omitted, its default true (configBean.cfc:1623-1629). */
+  readonly dataCollection?: boolean;
 }
 
 /** configBean defaults: broadcaster off (configBean.cfc:210). */
@@ -466,6 +470,14 @@ export function effectiveEmailBroadcaster(
   config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
 ): string {
   return config.emailBroadcaster ? getSiteText(bean, 'EmailBroadcaster') : '0';
+}
+
+/** getDataCollection (settingsBean.cfc:427-433): '0' while the global dataCollection is off, else the stored value. */
+export function effectiveDataCollection(
+  bean: SiteBean,
+  config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
+): SiteStoredValue {
+  return config.dataCollection === false ? '0' : getSiteValue(bean, 'DataCollection');
 }
 
 /** getUseSSL (settingsBean.cfc:396-402): '1' when useSSL or the deprecated extranetSSL is true, as CF booleans. */

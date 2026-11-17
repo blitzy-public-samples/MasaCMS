@@ -1370,6 +1370,30 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(await operationStatus(handle.app, [])).toEqual({});
     });
 
+    it.each([
+      ['abort', 'prepared', 'aborted', 'rolled-back'],
+      ['revert', 'committed', 'reverted', 'rolled-back'],
+      ['finish', 'committed', 'finished', 'done'],
+    ] as const)('reads an operation whose site the registry marked deleted after it was recorded, and resolves it by %s', async (step, from, state, status) => {
+      const userId = await seedUser(uname('gone'), { site: SITE_B });
+      const prepare = await prepared(input('update', userId, {}, { requestSiteId: SITE_B, siteId: SITE_B }));
+      if (from === 'committed') await commitAccountOperation(deps(), prepare.operationId);
+      const markDeleted = (deleted: boolean) =>
+        withMetadata(handle.app, (tx) => tx.query(`UPDATE ${handle.schema}.tenant_registry SET deleted = $1 WHERE site_id = $2`, [deleted, SITE_B]));
+      const run = { abort: abortAccountOperation, revert: revertAccountOperation, finish: finishAccountOperation }[step];
+      await markDeleted(true);
+      try {
+        expect(await accountOperationStatus(deps(), prepare.operationId, { userId })).toMatchObject({ operationId: prepare.operationId, userId, state: from });
+        expect(await operationStatus(handle.app, [prepare.operationId])).toEqual({ [prepare.operationId]: 'open' });
+        expect((await run(deps(), prepare.operationId, { userId })).outcome).toBe('stepped');
+        expect(await operationOf(prepare.operationId, SITE_B)).toMatchObject({ state });
+        expect(await operationStatus(handle.app, [prepare.operationId])).toEqual({ [prepare.operationId]: status });
+        expect(await registered(prepare.operationId)).toBe(false);
+      } finally {
+        await markDeleted(false);
+      }
+    });
+
     it('issues one lookup per registered tenant for the ids still unresolved, resolving duplicate ids, and stops once none remain', async () => {
       const open = await prepared(input('update', await seedUser(uname('batch')), {}));
       const done = await prepared(input('update', await seedUser(uname('batch')), {}));

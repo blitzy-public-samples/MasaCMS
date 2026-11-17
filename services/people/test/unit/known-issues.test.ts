@@ -41,7 +41,7 @@ describe('known legacy issues', () => {
 
   beforeEach(async () => {
     t = await buildTestApp();
-    storeRows(t.db, /^INSERT INTO people\.tenant_registry /, /FROM people\.tenant_registry WHERE tenant_id = \$1$/);
+    storeRows(t.db, /^INSERT INTO people\.tenant_registry /, /FROM people\.tenant_registry WHERE tenant_id = \$1 AND NOT deleted$/);
     storeRows(t.db, /^INSERT INTO "people"\."person" /, /FROM "people"\."person" WHERE tenant_id = \$1 /);
     await seedRegistry(t.db);
   });

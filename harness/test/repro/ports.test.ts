@@ -58,10 +58,10 @@ const VARIABLES: Record<PackageName, string> = {
   stub: 'OPT2_PORT_STUB',
 };
 
-/** Shared tooling ports the shell scripts read from the same file; `parsePortsEnv` ignores them. */
+/** Tooling ports the shell scripts read from the same file; `parsePortsEnv` ignores them. */
 const TOOL_PORTS: Record<string, number> = {
   OPT2_TOOL_PORT_PUBSUB_EMULATOR: 8085,
-  OPT2_TOOL_PORT_OTLP_HTTP: 4318,
+  OPT2_TOOL_PORT_OTLP_HTTP: 4319,
   OPT2_TOOL_PORT_MAILPIT_SMTP: 1025,
   OPT2_TOOL_PORT_MAILPIT_HTTP: 8025,
 };
@@ -181,7 +181,7 @@ describe('parsePortsEnv', () => {
     ],
     ['double- and single-quoted values', portsText({ OPT2_PORT_GATEWAY: '"8100"', OPT2_PORT_WEB: "'8101'" }), EXPECTED],
     ['an export prefix', portsText({ OPT2_PORT_STUB: undefined }, ['export   OPT2_PORT_STUB=8199']), EXPECTED],
-    ['keys outside OPT2_PORT_*, PORT included', portsText({}, ['OPT2_TOOL_PORT_OTLP_HTTP=4318', 'PORT=8100', 'OTHER="x y"']), EXPECTED],
+    ['keys outside OPT2_PORT_*, PORT included', portsText({}, ['OPT2_TOOL_PORT_OTLP_HTTP=4319', 'PORT=8100', 'OTHER="x y"']), EXPECTED],
     ['a later assignment overriding an earlier one', portsText({ OPT2_PORT_PEOPLE: '9999' }, ['OPT2_PORT_PEOPLE=8112']), EXPECTED],
     [
       'the range bounds 1 and 65535',

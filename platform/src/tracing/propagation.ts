@@ -186,3 +186,21 @@ export async function startLinkedRootSpan<T>(
     .getTracer(TRACER_NAME)
     .startActiveSpan(name, { kind, attributes, root: true, links }, ROOT_CONTEXT, (span: Span) => runInSpan(span, fn));
 }
+
+/** Random lower-case hex id of `bytes` bytes; never all zeros, which W3C trace context rejects. */
+function randomId(bytes: number): string {
+  for (;;) {
+    const id = randomBytes(bytes).toString('hex');
+    if (!/^0+$/.test(id)) return id;
+  }
+}
+
+/**
+ * Runs one background-loop iteration in a fresh unsampled trace: spans `fn` starts are not recorded, and its outgoing calls
+ * carry `traceparent` flags `00`, so callees record none either. Work the iteration does records itself with
+ * {@link startLinkedRootSpan}, which links to this trace.
+ */
+export function withUnsampledTrace<T>(fn: () => T): T {
+  const parent = trace.wrapSpanContext({ traceId: randomId(16), spanId: randomId(8), traceFlags: TraceFlags.NONE });
+  return context.with(trace.setSpan(context.active(), parent), fn);
+}

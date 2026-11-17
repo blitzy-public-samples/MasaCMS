@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { PubSub, type Message } from '@google-cloud/pubsub';
+import { createCliDiagnostics, parseArgsProblem } from '../logging/index.js';
 import { originalAttributes } from './dlq.js';
 import { decodeEnvelopeData } from './envelope.js';
 import { InvalidEventNameError, dlqReplaySubscriptionName, topicOfSubscription } from './naming.js';
@@ -58,22 +59,24 @@ export interface ReplaySummary {
   stoppedBy: 'max' | 'idle';
 }
 
-/** Raised when pulling or republishing fails; `replayed` counts the messages republished and acked before it. */
+/** Raised when pulling or republishing fails; `replayed` counts the messages republished and acked before it, and `cause` holds the failure. */
 export class ReplayError extends Error {
   override readonly name = 'ReplayError';
   readonly replayed: number;
 
   constructor(message: string, replayed: number, cause: unknown) {
-    super(`${message} after ${replayed} replayed: ${messageOf(cause)}`, { cause });
+    // The cause's text stays out of the message; diagnostics write only its safe record.
+    super(`${message} after ${replayed} replayed`, { cause });
     this.replayed = replayed;
   }
 }
 
-/** Invalid command-line usage; answered on stderr with the usage line and exit code 2. */
+/** Invalid command-line usage, its message a fixed problem text; answered on stderr with the usage line and exit code 2. */
 class UsageError extends Error {}
 
 /** Runs `opt2-events` with the arguments after the script path; returns 0 when done, 1 on a failure, 2 on a usage error. */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  const diagnostics = createCliDiagnostics({ cli: 'opt2-events', usage: USAGE });
   try {
     const command = parseCommand(argv, process.env);
     if (command === 'help') {
@@ -84,13 +87,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     await writeStdout(`${JSON.stringify(summary)}\n`);
     return 0;
   } catch (err) {
-    // InvalidEventNameError comes only from the subscription name, checked before any client is created.
-    if (err instanceof UsageError || err instanceof InvalidEventNameError) {
-      process.stderr.write(`opt2-events: ${err.message}; ${USAGE}\n`);
+    if (err instanceof UsageError) {
+      diagnostics.usage(err.message);
       return 2;
     }
-    process.stderr.write(`opt2-events: ${messageOf(err)}\n`);
+    // InvalidEventNameError comes only from the subscription name, checked before any client is created.
+    if (err instanceof InvalidEventNameError) {
+      diagnostics.usage('--subscription is not a <consumer>.<service>.<entity>.<event>.v<major> name');
+      return 2;
+    }
+    diagnostics.fatal(err instanceof ReplayError ? `replay failed after ${err.replayed} replayed` : 'replay failed', err);
     return 1;
+  } finally {
+    await diagnostics.flush();
   }
 }
 
@@ -111,7 +120,7 @@ function parseCommand(argv: string[], env: NodeJS.ProcessEnv): ReplayOptions | '
       },
     });
   } catch (err) {
-    throw new UsageError(messageOf(err));
+    throw new UsageError(parseArgsProblem(err));
   }
   const { values, positionals } = parsed;
   if (values.help) {
@@ -121,7 +130,7 @@ function parseCommand(argv: string[], env: NodeJS.ProcessEnv): ReplayOptions | '
     throw new UsageError('missing subcommand');
   }
   if (positionals.length !== 1 || positionals[0] !== 'replay') {
-    throw new UsageError(`unknown subcommand ${JSON.stringify(positionals.join(' '))}`);
+    throw new UsageError('unknown subcommand');
   }
   if (!values.subscription) {
     throw new UsageError('missing --subscription');
@@ -142,7 +151,7 @@ function parseCommand(argv: string[], env: NodeJS.ProcessEnv): ReplayOptions | '
 function positiveInteger(flag: string, text: string, limit: number): number {
   const value = Number(text);
   if (!POSITIVE_INTEGER.test(text) || value > limit) {
-    throw new UsageError(`${flag} must be a positive integer up to ${limit}, got ${JSON.stringify(text)}`);
+    throw new UsageError(`${flag} must be a positive integer up to ${limit}`);
   }
   return value;
 }
@@ -256,10 +265,6 @@ function orderingKeyOf(message: Message): string | undefined {
   }
   const aggregateId = typeof decoded === 'object' && decoded !== null ? (decoded as Record<string, unknown>)['aggregateId'] : undefined;
   return typeof aggregateId === 'string' && aggregateId !== '' ? aggregateId : undefined;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Writes to stdout and resolves once the chunk is flushed. */

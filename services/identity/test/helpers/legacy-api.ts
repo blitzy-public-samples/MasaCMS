@@ -74,7 +74,7 @@ export const EDITOR_GROUP = '3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D';
 export const USERS_MODULE = 'm:008';
 export const FORM_BODY = { 'content-type': 'application/x-www-form-urlencoded' };
 export const LEGACY_JSON_TYPE = 'application/json;charset=utf-8';
-export const SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '' });
+export const SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '', sessionTimeout: 180 });
 const FAST_LOGIN: LoginDeps['settings'] = { password: { ...DEFAULT_LOGIN_SETTINGS.password, bcryptLogRounds: 4 }, strikes: DEFAULT_LOGIN_SETTINGS.strikes };
 const RELAY: BridgeRelay = { markUsed: () => Promise.resolve({ applied: true }) };
 const noSleep = (): Promise<void> => Promise.resolve();

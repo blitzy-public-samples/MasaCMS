@@ -1,18 +1,24 @@
 // Unit tests for the window import over a scripted legacy SQL Server, fake owners and a fake bridge.
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable, type Writable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
+import { pipeline } from 'node:stream/promises';
 
 import type { Logger } from '@opt2/platform/logging';
 import { MAX_EXPORT_MATCH_LENGTH, decodeRow, encodeRow, type ApplyRequest, type CanonicalColumn, type ExportResponse, type ObjectManifestEntry } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import type { ConnectionPool } from 'mssql';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
 import { clearCatalogCache, compareKeyValues, type KeyValue } from '../../src/extract/index.js';
 import { objectKey, type StoredVariant } from '../../src/files/index.js';
 import { UnsupportedFileStoreError, type BridgeClient, type FileListing, type LegacyDb, type LegacyFileEntry } from '../../src/legacy/index.js';
-import { OwnerCallError, UnknownUnitError, loadUnitCatalog, type ExportParams, type OwnersClient, type PutObjectParams } from '../../src/owners/index.js';
+import { OwnerCallError, UnknownUnitError, loadUnitCatalog, type ExportParams, type ObjectBody, type OwnersClient, type PutObjectParams } from '../../src/owners/index.js';
 import {
   WindowImportError,
   importWindow,
@@ -214,14 +220,15 @@ function matchedRows(columns: readonly CanonicalColumn[], rows: Row[], match: Ex
 
 /**
  * Fake owners: exports served per unit and tenant in pages of two rows, filtered by `match` when `honourMatch`; export params,
- * applies, object uploads and deletes recorded. A delete of a key in `absentKeys` answers `deleted: false`.
+ * applies, object uploads (each body read to its end with its declared size) and deletes recorded. `failPut` fails each
+ * upload; a delete of a key in `absentKeys` answers `deleted: false`.
  */
 function fakeOwners(
   units: Record<string, UnitExportSpec>,
-  options: { failApply?: Error; honourMatch?: boolean; failDelete?: Error; absentKeys?: readonly string[] } = {},
+  options: { failApply?: Error; failPut?: Error; honourMatch?: boolean; failDelete?: Error; absentKeys?: readonly string[] } = {},
 ) {
   const applies: { owner: string; request: ApplyRequest }[] = [];
-  const puts: { params: PutObjectParams; bytes: Uint8Array }[] = [];
+  const puts: { params: PutObjectParams; bytes: Buffer; size: number }[] = [];
   const deletes: string[] = [];
   const exports: ExportParams[] = [];
   let xid = 100;
@@ -255,8 +262,11 @@ function fakeOwners(
       return Promise.resolve({ batchId: request.batchId, duplicate: false, applied: request.rows.length, skipped: 0, writePositions: new Map([[owner, String(xid)]]) });
     }),
     exportPages,
-    putObject: vi.fn((params: PutObjectParams, bytes: Uint8Array) => {
-      puts.push({ params, bytes });
+    putObject: vi.fn(async (params: PutObjectParams, body: ObjectBody) => {
+      if (body instanceof Uint8Array) throw new Error('the window import sends a stream');
+      const bytes = await buffer(body.stream);
+      puts.push({ params, bytes, size: body.size });
+      if (options.failPut !== undefined) throw options.failPut;
       return Promise.resolve({
         key: objectKey(params.tenantId, params.fileId, params.variant as StoredVariant, params.ext),
         size: bytes.byteLength,
@@ -279,9 +289,14 @@ function fakeOwners(
   return { owners, applies, puts, deletes, appliedRows, exports };
 }
 
-/** Fake bridge: one `fileDir` listing per store directory, with the bytes of each stored name. */
-function fakeBridge(listings: Record<string, { fileStore?: string; files: { name: string; bytes: Buffer }[] }>) {
+/**
+ * Fake bridge: one `fileDir` listing per store directory, with the bytes of each stored name, which `files.get` writes to its
+ * sink; a file's `served` bytes replace them there, as when the file changed after its listing. `spools` records the
+ * temporary directory's entries at each read.
+ */
+function fakeBridge(listings: Record<string, { fileStore?: string; files: { name: string; bytes: Buffer; served?: Buffer }[] }>) {
   const gets: string[] = [];
+  const spools: string[][] = [];
   const entry = (name: string, bytes: Buffer): LegacyFileEntry => {
     const dot = name.lastIndexOf('.');
     return { name, fileId: name.slice(0, 35), variant: name.slice(35, dot) as LegacyFileEntry['variant'], ext: name.slice(dot + 1), size: bytes.byteLength, sha256: sha(bytes), lastModified: '2026-06-30T12:00:00.000' };
@@ -291,13 +306,17 @@ function fakeBridge(listings: Record<string, { fileStore?: string; files: { name
       const listing = listings[dir];
       return Promise.resolve({ fileStore: listing?.fileStore ?? 'fileDir', files: (listing?.files ?? []).map(({ name, bytes }) => entry(name, bytes)), serverTime: '2026-06-30T12:00:00.000' });
     }),
-    filesGet: vi.fn((dir: string, name: string) => {
+    filesGet: vi.fn(async (dir: string, name: string, sink: Writable) => {
       gets.push(`${dir}/${name}`);
+      spools.push(await readdir(tmpdir()));
       const found = listings[dir]?.files.find((file) => file.name === name);
-      return found === undefined ? Promise.reject(new Error(`no file ${dir}/${name}`)) : Promise.resolve({ bytes: found.bytes, sha256: sha(found.bytes) });
+      if (found === undefined) throw new Error(`no file ${dir}/${name}`);
+      const bytes = found.served ?? found.bytes;
+      await pipeline(Readable.from([bytes]), sink);
+      return { sha256: sha(bytes), size: bytes.byteLength };
     }),
   } as unknown as BridgeClient;
-  return { bridge, gets };
+  return { bridge, gets, spools };
 }
 
 const varchar = (name: string, maxLength = 50): ColumnSpec => ({ name, type: 'varchar', maxLength });
@@ -753,7 +772,8 @@ describe('importWindow', () => {
     expect(gets).toEqual([`umbrella/${FILE_1}_small.jpg`]);
     expect(fake.puts).toHaveLength(1);
     expect(fake.puts[0]?.params).toEqual({ tenantId: UMBRELLA, fileId: FILE_1, variant: '_small', ext: 'jpg', contentType: 'image/jpeg', sha256: sha(small) });
-    expect(Buffer.from(fake.puts[0]?.bytes ?? []).equals(small)).toBe(true);
+    expect(fake.puts[0]?.bytes.equals(small)).toBe(true);
+    expect(fake.puts[0]?.size).toBe(small.byteLength);
     expect(result).toMatchObject({ objectsTransferred: 1, objectsRemoved: [], rowsImported: 0 });
     expect(fake.deletes).toEqual([]);
     expect(result.writePositions.get('strategies-content')).toBe('900');
@@ -861,6 +881,62 @@ describe('importWindow', () => {
       [TENANT_B, FILE_1, '', 'image/png'],
       [TENANT_B, FILE_1, '_small', 'image/png'],
     ]);
+  });
+
+  describe('object spool', () => {
+    const listed = Buffer.from('png-bytes');
+    const changed = Buffer.from('changed-png-bytes');
+    const files: TableSpec = {
+      columns: [varchar('fileID', 35), varchar('siteID', 25), varchar('contentType'), varchar('contentSubType'), varchar('fileExt')],
+      primaryKey: ['fileID'],
+      rows: [{ fileID: FILE_1, siteID: 'tenant-b', contentType: 'image', contentSubType: 'png', fileExt: 'png' }],
+    };
+    const ownerFailure = new OwnerCallError('strategies-content', 'POST', '/internal/v1/migration/objects', 503, {});
+    let spoolParent: string;
+
+    beforeEach(async () => {
+      spoolParent = await mkdtemp(join(tmpdir(), 'windows-import-spool-'));
+      vi.stubEnv('TMPDIR', spoolParent);
+    });
+
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      await rm(spoolParent, { recursive: true, force: true });
+    });
+
+    it.each<{ label: string; served?: Buffer; failPut?: Error; puts: number; expected: (outcome: unknown) => void }>([
+      { label: 'the object is stored', puts: 1, expected: (outcome) => expect(outcome).toMatchObject({ objectsTransferred: 1 }) },
+      {
+        label: 'the bytes read differ from the listing, sending nothing',
+        served: changed,
+        puts: 0,
+        expected: (outcome) => {
+          expect(outcome).toBeInstanceOf(WindowImportError);
+          expect((outcome as Error).message).toBe(
+            `window W1 import of tfiles failed: legacy file tenant-b/cache/file/${FILE_1}.png hashes to ${sha(changed)}, not its listing's ${sha(listed)}`,
+          );
+        },
+      },
+      {
+        label: 'the owner fails the upload',
+        failPut: ownerFailure,
+        puts: 1,
+        expected: (outcome) => expect(outcome).toMatchObject({ name: 'WindowImportError', owner: 'strategies-content', cause: ownerFailure }),
+      },
+    ])('leaves no spool behind when $label', async ({ served, failPut, puts, expected }) => {
+      const { bridge, spools } = fakeBridge({ 'tenant-b': { files: [{ name: `${FILE_1}.png`, bytes: listed, ...(served === undefined ? {} : { served }) }] } });
+      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'dbo.tfiles': files });
+      const fake = fakeOwners({ 'content.file': { legacyTable: 'tfiles', columns: [s('fileID')] } }, failPut === undefined ? {} : { failPut });
+
+      const outcome = await importWindow(contextOf({ legacy, owners: fake.owners, bridge }), windowInput(['content.file_object'], { keys: { siteid: 'tenant-b' } })).catch(
+        (caught: unknown) => caught,
+      );
+
+      expected(outcome);
+      expect(fake.puts).toHaveLength(puts);
+      expect(spools).toEqual([[expect.stringMatching(/^opt2-file-spool-/)]]);
+      expect(await readdir(spoolParent)).toEqual([]);
+    });
   });
 
   it('lets UnsupportedFileStoreError through unwrapped', async () => {

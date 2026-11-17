@@ -170,8 +170,8 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function resolvePaths(config: MigrationConfig): ResolvedPaths {
-  const cutoverDir = packagePath(config.cutoverDir);
+function resolvePaths(config: MigrationConfig, cutoverOverride: string | undefined): ResolvedPaths {
+  const cutoverDir = cutoverOverride ?? packagePath(config.cutoverDir);
   return {
     sourcePin: packagePath(config.sourceShaFile),
     tableOwnership: packagePath(config.ownershipFile),
@@ -182,7 +182,7 @@ function resolvePaths(config: MigrationConfig): ResolvedPaths {
   };
 }
 
-function parseFile(file: string): LoadedMigrationConfig {
+function parseFile(file: string, cutoverOverride: string | undefined): LoadedMigrationConfig {
   let json: unknown;
   try {
     json = JSON.parse(readFileSync(file, 'utf8'));
@@ -196,7 +196,7 @@ function parseFile(file: string): LoadedMigrationConfig {
   }
   let paths: ResolvedPaths;
   try {
-    paths = resolvePaths(result.data);
+    paths = resolvePaths(result.data, cutoverOverride);
   } catch (error) {
     throw new MigrationConfigError(file, [messageOf(error)], { cause: error });
   }
@@ -204,16 +204,21 @@ function parseFile(file: string): LoadedMigrationConfig {
 }
 
 /**
- * Reads and validates the configuration once per file and returns the same frozen object on later calls.
+ * Reads and validates the configuration once per file and cut-over directory and returns the same frozen object on later calls.
  * @param opts.path a fixture to load instead of `config/migration.config.json`.
+ * @param opts.env a non-empty `OPT2_CUTOVER_DIR` (absolute, as the parsed environment holds it) replaces the configured
+ *   `cutoverDir`, and the `groups.json` in it, as it relocates the gateway's.
  * @throws MigrationConfigError naming the file and every problem found.
  */
-export function loadConfig(opts: { path?: string } = {}): LoadedMigrationConfig {
+export function loadConfig(opts: { path?: string; env?: { OPT2_CUTOVER_DIR?: string } } = {}): LoadedMigrationConfig {
   const file = path.resolve(opts.path ?? CONFIG_PATH);
-  const cached = loaded.get(file);
+  const override = opts.env?.OPT2_CUTOVER_DIR;
+  const cutoverOverride = override !== undefined && override !== '' ? override : undefined;
+  const key = cutoverOverride === undefined ? file : `${file}\0${cutoverOverride}`;
+  const cached = loaded.get(key);
   if (cached !== undefined) return cached;
-  const config = parseFile(file);
-  loaded.set(file, config);
+  const config = parseFile(file, cutoverOverride);
+  loaded.set(key, config);
   return config;
 }
 

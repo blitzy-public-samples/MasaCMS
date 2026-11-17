@@ -16,11 +16,11 @@ import { legacyPageIndex, renderNextN, type NextN } from './inc/dsp_nextn';
 // the text around them joins, and whitespace-only text between two CFML constructs prints one space after output that
 // ends in non-whitespace, else nothing.
 
-/** One group of people's `listUserGroups` answer, in `getUserGroups` column casing. */
+/** One group of people's `listUserGroupsV2` answer, in `getUserGroups` column casing. */
 export type GroupListRow = components['schemas']['GroupListRow'];
 
-/** People's `listUserGroups` answer: every group of the pool, and the `getNextN` paging of the request. */
-export type UserGroupsPage = components['schemas']['UserGroupsPage'];
+/** People's `listUserGroupsV2` answer: the groups of the page `nextn` selects, and the `getNextN` paging over every group. */
+export type UserGroupsPage = components['schemas']['UserGroupsPageV2'];
 
 /** Everything the view reads after `list()` and `setUsersIterator()`. */
 export interface GroupListData {
@@ -75,7 +75,7 @@ function nextNOf(page: UserGroupsPage['nextn']): NextN {
  */
 export async function loadGroupList(ctx: ScreenContext): Promise<GroupListData> {
   const rc = normaliseCusersRc(ctx.req);
-  const response = await ctx.gateway.people.call('get', '/v1/users/groups', {
+  const response = await ctx.gateway.people.call('get', '/v2/users/groups', {
     query: relayFields(ctx.req, {
       siteid: rc.siteid,
       ispublic: rc.ispublic,
@@ -83,11 +83,10 @@ export async function loadGroupList(ctx: ScreenContext): Promise<GroupListData> 
       recordsperpage: String(rc.recordsperpage),
     }),
   });
-  const page = okBody(response, 'people', 'listUserGroups');
+  const page = okBody(response, 'people', 'listUserGroupsV2');
   const nextn = nextNOf(page.nextn);
-  const pageIndex = legacyPageIndex(nextn.startRow, nextn.recordsPerPage, page.items.length);
-  const first = (pageIndex - 1) * nextn.recordsPerPage;
-  return { rc, rows: page.items.slice(first, first + nextn.recordsPerPage), nextn, pageIndex };
+  // people answers only the groups of the page `nextn` selects.
+  return { rc, rows: page.items, nextn, pageIndex: legacyPageIndex(nextn.startRow, nextn.recordsPerPage, nextn.totalRecords) };
 }
 
 /**

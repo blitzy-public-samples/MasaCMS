@@ -32,7 +32,9 @@ const VALUE_EXPORTS = {
     env,
     [
       'baseEnvSchema',
+      'tracingEnvSchema',
       'loadEnv',
+      'loadTracingEnv',
       'envModeIssues',
       'EnvValidationError',
       'EnvFileError',

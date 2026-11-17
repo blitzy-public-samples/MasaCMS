@@ -1,5 +1,7 @@
 // Tests that the composed gateway proxies unmoved routes to legacy byte for byte, and how credentials differ for target-bound routes.
 import { Buffer } from 'node:buffer';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { testVerifier } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -55,6 +57,21 @@ function onlyPage(g: TestGateway): RecordedRequest {
   const received = pages(g);
   expect(received).toHaveLength(1);
   return received[0] as RecordedRequest;
+}
+
+/** GETs raw `target` from the listening gateway on its own connection, so no client URL parsing folds or encodes it. */
+function rawGet(g: TestGateway, target: string): Promise<{ status: number | undefined; body: Buffer }> {
+  const { port } = g.app.server.address() as AddressInfo;
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: target, headers: { host: SITE_HOST }, agent: false }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 /** Lower-cased names of the `x-opt2-*` headers in `headers`. */
@@ -170,6 +187,41 @@ describe('legacy forwarding under v0001', () => {
     expect(res.rawPayload.equals(Buffer.from(body))).toBe(true);
     expect(res.headers).toMatchObject(headers);
     if (!('location' in headers)) expect(res.headers.location).toBeUndefined();
+  });
+
+  it.each([
+    '/default/../',
+    '/default/%2e%2e/',
+    '/admin/%2e%2e/index.cfm',
+    '/core/%2e%2e/index.cfm',
+    '/a/./b/../',
+    '/%2e/',
+    '/default/%2E%2E/x',
+    '/a//b/../c',
+    '/a%2F..%2Fb',
+    '/legacy-fixtures/cfml/api.cfm/finance/x/%2e%2e/records',
+    '/default/?q=%E0%A4%A',
+    '/default/?',
+  ])("%s reaches legacy as the raw request target, and the client gets legacy's answer", async (target) => {
+    const g = await v0001();
+    await g.app.listen({ host: '127.0.0.1', port: 0 });
+    g.legacy.setResponse({ status: 404, headers: { 'content-type': 'text/html' }, body: '<h1>404 - Not Found</h1>' });
+
+    const res = await rawGet(g, target);
+
+    expect(onlyPage(g).url).toBe(target);
+    expect(res.status).toBe(404);
+    expect(res.body.toString()).toBe('<h1>404 - Not Found</h1>');
+  });
+
+  it("answers a malformed path escape with legacy's bare 400 before dispatch, as legacy's container rejects it", async () => {
+    const g = await v0001();
+    await g.app.listen({ host: '127.0.0.1', port: 0 });
+
+    const res = await rawGet(g, '/x/%E0%A4%A');
+
+    expect(res).toEqual({ status: 400, body: Buffer.alloc(0) });
+    expect(pages(g)).toEqual([]);
   });
 
   it("a target-bound request never carries the client's Authorization or forged invocation credential", async () => {

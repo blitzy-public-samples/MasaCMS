@@ -1,5 +1,14 @@
-import { context, createContextKey, diag, propagation, ProxyTracerProvider, trace, type Span } from '@opentelemetry/api';
-import { diagLogLevelFromString, ExportResultCode, getStringFromEnv, W3CTraceContextPropagator } from '@opentelemetry/core';
+import {
+  context,
+  createContextKey,
+  diag,
+  DiagLogLevel,
+  propagation,
+  ProxyTracerProvider,
+  trace,
+  type Span,
+} from '@opentelemetry/api';
+import { ExportResultCode, W3CTraceContextPropagator } from '@opentelemetry/core';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
@@ -7,6 +16,8 @@ import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { defaultResource, resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK, type NodeSDKConfiguration } from '@opentelemetry/sdk-node';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+// The module, not the service-kit barrel, which loads Fastify before tracing starts.
+import { loadTracingEnv } from '../service-kit/env.js';
 import { platformDiagLogger } from './diag.js';
 import { RedactingSpanExporter } from './redact.js';
 
@@ -20,7 +31,7 @@ export type ReadableSpan = Parameters<SpanExporter['export']>[0][number];
 export interface StartTracingOptions {
   serviceName: string;
   version: string;
-  /** OTLP/HTTP base URL; defaults to `OTEL_EXPORTER_OTLP_ENDPOINT`, then `http://localhost:4318`. */
+  /** OTLP/HTTP base URL; defaults to the parsed `OTEL_EXPORTER_OTLP_ENDPOINT`, then `http://localhost:4318`. */
   endpoint?: string;
   /** Replaces the OTLP exporter, for example with a {@link MemorySpanExporter} in tests; it receives redacted spans. */
   exporter?: SpanExporter;
@@ -76,14 +87,12 @@ let instrumentationSet: [HttpInstrumentation, UndiciInstrumentation, PgInstrumen
  * Call it first in `main.ts`, then dynamically import the app: fastify and pg are CommonJS and are
  * patched through require hooks when loaded afterwards, and undici is traced through
  * `diagnostics_channel`, so no ESM loader hook is needed.
+ * @throws EnvValidationError When `OTEL_EXPORTER_OTLP_ENDPOINT` is not an http(s) URL; nothing is patched then.
  */
 export async function startTracing(options: StartTracingOptions): Promise<void> {
   if (state) return;
-  // An empty OTEL_EXPORTER_OTLP_ENDPOINT counts as unset, as the OTel exporters themselves treat it.
-  const base = (options.endpoint ?? getStringFromEnv('OTEL_EXPORTER_OTLP_ENDPOINT') ?? 'http://localhost:4318').replace(
-    /\/+$/,
-    '',
-  );
+  const env = loadTracingEnv(process.env, options.serviceName);
+  const base = (options.endpoint ?? env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/+$/, '');
   instrumentationSet ??= [
     new HttpInstrumentation(),
     new UndiciInstrumentation({ requestHook: nameAfterCallee }),
@@ -91,7 +100,6 @@ export async function startTracing(options: StartTracingOptions): Promise<void> 
   ];
   const instrumentations = instrumentationSet;
   for (const instrumentation of instrumentations) instrumentation.enable();
-  const diagLevel = getStringFromEnv('OTEL_LOG_LEVEL');
   // Withheld while NodeSDK is built: for OTEL_LOG_LEVEL it installs a console diag logger, whose lines are not log-record.v1.
   const rawDiagLevel = process.env.OTEL_LOG_LEVEL;
   delete process.env.OTEL_LOG_LEVEL;
@@ -112,8 +120,8 @@ export async function startTracing(options: StartTracingOptions): Promise<void> 
     if (rawDiagLevel !== undefined) process.env.OTEL_LOG_LEVEL = rawDiagLevel;
   }
   const diagInstalled =
-    diagLevel !== undefined &&
-    diag.setLogger(platformDiagLogger, { logLevel: diagLogLevelFromString(diagLevel), suppressOverrideMessage: true });
+    env.OTEL_LOG_LEVEL !== undefined &&
+    diag.setLogger(platformDiagLogger, { logLevel: DiagLogLevel[env.OTEL_LOG_LEVEL], suppressOverrideMessage: true });
   sdk.start();
   state = { sdk, instrumentations, diagInstalled };
 }

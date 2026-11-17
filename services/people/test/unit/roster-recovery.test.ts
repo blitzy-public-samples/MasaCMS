@@ -112,6 +112,38 @@ const staleRosterPage: ListSelect<RosterOperationRow> = (text, values, rows) => 
     .slice(0, take);
 };
 
+/** The summary columns `pageHaltedRosterOperations` selects. */
+const HALTED_SUMMARY_COLUMNS = ['operation_id', 'kind', 'user_id', 'state', 'started_at', 'updated_at', 'identity_unreachable_since', 'halted_at'] as const;
+
+/** `pageHaltedRosterOperations`' statement: the summary columns of `take + 1` once-halted operations of the tenant after the cursor, in keyset order. */
+const HALTED_SELECT =
+  `SELECT ${HALTED_SUMMARY_COLUMNS.join(', ')} FROM "people"."roster_operation"` +
+  ' WHERE tenant_id = $1 AND halted_at IS NOT NULL AND ($2::timestamp IS NULL OR (started_at, operation_id) > ($2::timestamp, $3::bpchar))' +
+  ' ORDER BY started_at, operation_id LIMIT $4';
+
+const isHaltedSelect = (text: string): boolean => text === HALTED_SELECT;
+
+/** Answers HALTED_SELECT from `stored` as PostgreSQL does: only the summary columns of at most `$4` rows after `($2, $3)`. */
+function haltedPage(stored: readonly RosterOperationRow[]): (text: string, values: readonly unknown[]) => Row[] {
+  return (_text, values) => {
+    const [tenantId, afterAt, afterId, take] = values as [string, Date | null, string | null, number];
+    const byKey = (a: RosterOperationRow, b: RosterOperationRow): number =>
+      a.started_at.getTime() - b.started_at.getTime() || (a.operation_id < b.operation_id ? -1 : a.operation_id > b.operation_id ? 1 : 0);
+    const after = (row: RosterOperationRow): boolean =>
+      afterAt === null || row.started_at > afterAt || (row.started_at.getTime() === afterAt.getTime() && row.operation_id > String(afterId));
+    return stored
+      .filter((row) => sameTenant(row, tenantId) && row.halted_at !== null && after(row))
+      .sort(byKey)
+      .slice(0, take)
+      .map((row) => Object.fromEntries(HALTED_SUMMARY_COLUMNS.map((column) => [column, row[column]])));
+  };
+}
+
+/** The bound values of each HALTED_SELECT the world issued, in order. */
+function haltedSelects(w: World): unknown[][] {
+  return w.db.statements().filter((statement) => isHaltedSelect(statement.text)).map((statement) => [...statement.values]);
+}
+
 /** The people outbox: writes, the operation hold, its release and discard, and the in-request flush's selection and stamp. */
 function outboxTable(db: RecordingDb): OutboxRow[] {
   const rows: OutboxRow[] = [];
@@ -180,6 +212,12 @@ function world(): World {
     outbox: outboxTable(db),
     lines,
   };
+}
+
+/** Registry rows of `tenantIds`, in that order; reads of registered sites leave out the `deleted` tenants, as the registry does. */
+function registry(w: World, tenantIds: readonly string[], deleted: readonly string[] = []): void {
+  const rows = tenantIds.map((tenantId, index) => ({ tenant_id: tenantId, site_id: `site-${String(index)}` }));
+  w.db.respond(/ FROM people\.tenant_registry /, (text) => (/\bNOT deleted\b/.test(text) ? rows.filter((row) => !deleted.includes(row.tenant_id)) : rows));
 }
 
 /** `ms` before the world's clock. */
@@ -263,11 +301,6 @@ describe('recovery thresholds', () => {
 });
 
 describe('the roster-operations recovery hook', () => {
-  /** Registry rows of `tenantIds`, in that order. */
-  function registry(w: World, tenantIds: readonly string[]): void {
-    w.db.respond(/ FROM people\.tenant_registry /, tenantIds.map((tenantId, index) => ({ tenant_id: tenantId, site_id: `site-${String(index)}` })));
-  }
-
   function context(w: World): RecoveryContext {
     return { service: 'people', runtime: w.runtime, clock: w.clock, logger: w.deps.logger };
   }
@@ -276,9 +309,12 @@ describe('the roster-operations recovery hook', () => {
     expect(rosterRecoveryHook(world().deps).name).toBe('roster-operations');
   });
 
-  it('visits each registry tenant once and resolves only operations older than the threshold', async () => {
+  it.each<[string, string[]]>([
+    ['registered', []],
+    ['deleted from the registry', [B]],
+  ])('visits each tenant the registry has known once, with tenant B %s, and resolves only operations older than the threshold', async (_label, deleted) => {
     const w = world();
-    registry(w, [A, A.toUpperCase(), B]);
+    registry(w, [A, A.toUpperCase(), B], deleted);
     const { operation: fresh } = await storedOperation(w, 'started', { updated_at: ago(w, RECOVERY_THRESHOLD_MS - 1_000) });
     const { operation: stale } = await storedOperation(w, 'started', { updated_at: ago(w, RECOVERY_THRESHOLD_MS + 1_000) });
     const { operation: otherTenant } = await storedOperation(w, 'started', { tenant_id: B });
@@ -575,16 +611,18 @@ describe('halting', () => {
     expect(w.publisher.published).toHaveLength(published ? 1 : 0);
   });
 
-  it('lists every operation of each registry tenant that ever halted once, oldest first, in its current state, each user unpadded with the units it keeps closed', async () => {
+  it.each<[string, string[]]>([
+    ['registered', []],
+    ['deleted from the registry', [B]],
+  ])('lists every operation of each tenant the registry has known, with tenant B %s, that ever halted once, oldest first, in its current state, each user unpadded with the units it keeps closed', async (_label, deleted) => {
     const w = world();
-    w.db.respond(/ FROM people\.tenant_registry /, [A, A.toUpperCase(), B].map((tenantId, index) => ({ tenant_id: tenantId, site_id: `site-${String(index)}` })));
+    registry(w, [A, A.toUpperCase(), B], deleted);
     const since = ago(w, HALT_AFTER_MS + 1_000);
     const haltedAt = ago(w, 1_000);
     const later = rosterOperationRow({ tenant_id: B, state: 'halted', kind: 'json-save', user_id: 'SHORT-USER-ID'.padEnd(35), started_at: ago(w, 2_000), identity_unreachable_since: since, halted_at: haltedAt });
     const resolved = rosterOperationRow({ tenant_id: A, state: 'rolled-back', started_at: ago(w, 5_000), halted_at: haltedAt });
     const stored = [later, resolved, rosterOperationRow({ tenant_id: A, state: 'people-committed' }), rosterOperationRow({ tenant_id: B, state: 'rolled-back' })];
-    const haltedSelect = /^SELECT \* FROM "people"\."roster_operation" WHERE tenant_id = \$1 AND halted_at IS NOT NULL ORDER BY started_at, operation_id$/;
-    w.db.respond(haltedSelect, (_text, values) => stored.filter((row) => sameTenant(row, values[0]) && row.halted_at !== null));
+    w.db.respond(isHaltedSelect, haltedPage(stored));
     const units = [
       'people.person',
       'people.user_address',
@@ -598,7 +636,10 @@ describe('halting', () => {
       'identity.membership',
     ];
 
-    expect(await listHaltedOperations(w.deps)).toEqual([
+    const page = await listHaltedOperations(w.deps, { limit: 100 });
+
+    expect(page.next).toBeNull();
+    expect(page.rows).toEqual([
       {
         operationId: resolved.operation_id,
         tenantId: A,
@@ -624,8 +665,71 @@ describe('halting', () => {
         units,
       },
     ]);
-    expect(w.db.statements().filter((statement) => haltedSelect.test(statement.text)).map((statement) => statement.values[0])).toEqual([A, B]);
+    expect(haltedSelects(w)).toEqual([
+      [A, null, null, 101],
+      [B, null, null, 101],
+    ]);
     expect(w.db.writes()).toEqual([]);
+  });
+
+  /** Once-halted operations of A and B interleaved by start, with a start tie across tenants broken by operation id. */
+  function interleavedHalts(w: World): RosterOperationRow[] {
+    const halt = (tenant_id: string, operation_id: string, startedMsAgo: number): RosterOperationRow =>
+      rosterOperationRow({ tenant_id, operation_id, state: 'halted', started_at: ago(w, startedMsAgo), halted_at: ago(w, 1_000) });
+    return [
+      halt(A, 'A1000000-0000-0000-0000000000000001', 9_000),
+      halt(B, 'B1000000-0000-0000-0000000000000001', 8_500),
+      halt(A, 'A2000000-0000-0000-0000000000000002', 8_000),
+      halt(B, 'A3000000-0000-0000-0000000000000003', 7_000),
+      halt(A, 'B3000000-0000-0000-0000000000000003', 7_000),
+      halt(B, 'B4000000-0000-0000-0000000000000004', 5_000),
+    ];
+  }
+
+  it.each([1, 2, 4, 6])(
+    'pages the halted operations of every tenant %i at a time in one (startedAt, operationId) order, each page resuming after the last one listed until next is null',
+    async (limit) => {
+      const w = world();
+      w.db.respond(/ FROM people\.tenant_registry /, [A, B].map((tenantId, index) => ({ tenant_id: tenantId, site_id: `site-${String(index)}` })));
+      const stored = interleavedHalts(w);
+      w.db.respond(isHaltedSelect, haltedPage(stored));
+
+      const pages: Awaited<ReturnType<typeof listHaltedOperations>>[] = [];
+      let after: (typeof pages)[number]['next'] = null;
+      do {
+        const page = await listHaltedOperations(w.deps, { after, limit });
+        pages.push(page);
+        after = page.next;
+      } while (after !== null && pages.length <= stored.length);
+
+      expect(pages.flatMap((page) => page.rows.map((operation) => operation.operationId))).toEqual(stored.map((row) => row.operation_id));
+      expect(pages.map((page) => page.rows.length)).toEqual(Array.from({ length: Math.ceil(stored.length / limit) }, (_, i) => Math.min(limit, stored.length - i * limit)));
+      const cursors = pages.slice(0, -1).map((page) => {
+        const last = page.rows.at(-1);
+        return [last?.startedAt, last?.operationId];
+      });
+      expect(pages.slice(0, -1).map((page) => [page.next?.startedAt, page.next?.operationId])).toEqual(cursors);
+      // Every tenant is asked for limit + 1 operations after the cursor the previous page returned.
+      expect(haltedSelects(w)).toEqual([[null, null], ...cursors].flatMap(([at, id]) => [A, B].map((tenantId) => [tenantId, at ?? null, id ?? null, limit + 1])));
+    },
+  );
+
+  it("never skips another tenant's operation when a tenant's page stops at the repository's page maximum below the limit", async () => {
+    const w = world();
+    w.db.respond(/ FROM people\.tenant_registry /, [A, B].map((tenantId, index) => ({ tenant_id: tenantId, site_id: `site-${String(index)}` })));
+    const many = Array.from({ length: 1001 }, (_, i) =>
+      rosterOperationRow({ tenant_id: A, state: 'halted', started_at: ago(w, 3_000_000 - i * 1_000), halted_at: ago(w, 1_000) }),
+    );
+    const latest = rosterOperationRow({ tenant_id: B, state: 'halted', started_at: ago(w, 500), halted_at: ago(w, 1_000) });
+    w.db.respond(isHaltedSelect, haltedPage([...many, latest]));
+
+    const first = await listHaltedOperations(w.deps, { limit: 1001 });
+    const second = await listHaltedOperations(w.deps, { after: first.next, limit: 1001 });
+
+    expect(first.rows.map((operation) => operation.operationId)).toEqual(many.slice(0, 1000).map((row) => row.operation_id));
+    expect(first.next).toEqual({ startedAt: many[999]?.started_at, operationId: many[999]?.operation_id });
+    expect(second.rows.map((operation) => operation.operationId)).toEqual([many[1000]?.operation_id, latest.operation_id]);
+    expect(second.next).toBeNull();
   });
 
   it("fails an operator's run while identity is unreachable and leaves the halted operation as it was", async () => {

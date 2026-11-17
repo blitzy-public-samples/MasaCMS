@@ -36,11 +36,12 @@ import { RELAY_SERVICES, registerRelayRoutes, type RelayDeps } from './dispatche
 import { replyFromOptions } from './dispatcher/response-head.js';
 import { createSiteRegistry } from './dispatcher/site-registry.js';
 import { createWriteWindowClient } from './dispatcher/write-window.js';
+import { jarIdleLimitMs, sessionTimeoutMinutes, trackJarActivity } from './session/activity.js';
 import { createBridgeClient, createSiteListClient, type BridgeClient } from './session/bridge-client.js';
 import { createCsrfContinuity } from './session/csrf.js';
 import { createHydrator } from './session/hydration.js';
 import { createIdentityClient, type IdentityClient } from './session/identity-client.js';
-import { createInvalidation } from './session/invalidation.js';
+import { DEFAULT_REQUEST_TIMEOUT_SECONDS, createInvalidation } from './session/invalidation.js';
 import { createLegacyJar } from './session/jar.js';
 import { registerMarkUsedRoute } from './session/mark-used-route.js';
 import { sessionModeFor } from './session/mode.js';
@@ -63,12 +64,38 @@ const ADMIN_DIR = '/admin';
 /** Services the gateway calls in every environment: the relay services, identity among them, and web. */
 const REQUIRED_SERVICES: readonly string[] = [...RELAY_SERVICES, 'web'];
 
-/** Base variables plus LEGACY_ORIGIN, OPT2_CUTOVER_DIR, OPT2_BRIDGE_HMAC_KEY and Masa's reload key, `appreload` when blank or unset. */
+/** True for a Masa setting that is an expression, `${…}` or `{{…}}`, which the gateway does not evaluate. */
+function isSettingExpression(value: string): boolean {
+  return (value.startsWith('${') && value.endsWith('}')) || (value.startsWith('{{') && value.endsWith('}}'));
+}
+
+/**
+ * Base variables plus LEGACY_ORIGIN, OPT2_CUTOVER_DIR, OPT2_BRIDGE_HMAC_KEY, Masa's reload key, `appreload` when blank
+ * or unset, Masa's session timeout in minutes, read as identity reads it: unset or an expression as unset, and Masa's
+ * request timeout in seconds, 1000 when blank or unset.
+ */
 const gatewayVariables = baseEnvSchema.extend({
   LEGACY_ORIGIN: envUrl(),
   OPT2_CUTOVER_DIR: optionalEnvString(),
   OPT2_BRIDGE_HMAC_KEY: requiredEnvString(),
   MURA_APPRELOADKEY: requiredEnvString(z.string().default('appreload')),
+  MURA_SESSIONTIMEOUT: z
+    .preprocess(
+      (value) => (typeof value === 'string' && !isSettingExpression(value) ? value : undefined),
+      z
+        .string()
+        .refine((value) => value.trim() === '' || Number.isFinite(Number(value)), 'must be blank or a number of minutes')
+        .optional(),
+    )
+    .transform(sessionTimeoutMinutes),
+  MURA_REQUESTTIMEOUT: z
+    .string()
+    .refine(
+      (value) => value.trim() === '' || (Number.isFinite(Number(value)) && Number(value) > 0),
+      'must be blank or a positive number of seconds',
+    )
+    .optional()
+    .transform((value) => (value === undefined || value.trim() === '' ? DEFAULT_REQUEST_TIMEOUT_SECONDS : Number(value))),
 });
 
 /** Gateway variables requiring its own name, its database and each callee's URL: the required services, the stub locally, and migration. */
@@ -180,15 +207,37 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   const identity = options.identityClient ?? createIdentityClient(client);
   const bridge = options.bridgeClient ?? createBridgeClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock });
-  const jar = createLegacyJar(db);
+  const jar = createLegacyJar(db, { purgeIdleAfterMs: jarIdleLimitMs(env.MURA_SESSIONTIMEOUT) });
   const tokenCache = createTokenCache({ identity, clock });
-  const stateCheck = createSessionStateChecker({ identity, clock, tokenCache });
+  // Every check that finds a session active is its activity, so the jar's idle clock runs as identity's does.
+  const stateCheck = trackJarActivity({
+    states: createSessionStateChecker({ identity, clock, tokenCache }),
+    jar,
+    clock,
+    logger: app.log,
+  });
   const projectedOwners = projectedOwnersOf(ownership.units, () => state.active());
   const barrier = createSessionBarrier({ db, client: migrationClient, projectedOwners });
   const hydrator = createHydrator({ identity, bridge, jar, barrier, clock });
-  const resolver = createSessionResolver({ identity, bridge, jar, state: stateCheck });
+  const resolver = createSessionResolver({
+    identity,
+    bridge,
+    jar,
+    state: stateCheck,
+    clock,
+    attachmentIdleMs: env.MURA_SESSIONTIMEOUT * 60_000,
+  });
   const csrf = createCsrfContinuity({ identity, bridge, sessions: resolver, jar, facts, clock });
-  const invalidation = createInvalidation({ identity, bridge, jar, tokenCache, state: stateCheck });
+  const invalidation = createInvalidation({
+    identity,
+    bridge,
+    jar,
+    tokenCache,
+    state: stateCheck,
+    logger: app.log,
+    requestTimeoutMs: env.MURA_REQUESTTIMEOUT * 1000,
+    clock,
+  });
 
   const modes = createResponseModes(facts);
   // Site existence comes only from legacy's own registry; with background loops off, route keys keep their every-site default.

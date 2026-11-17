@@ -22,7 +22,7 @@ import {
 import { createFaultHooks, type FaultHooks } from '../../src/domain/faults.js';
 import { normaliseParams } from '../../src/domain/person.js';
 import { USER_CLOSED_WAIT_MS, personFence, runRosterOperation, type RosterDeps } from '../../src/domain/roster-protocol.js';
-import { getAdvancedSearch, getSearch, getUsers, newAdvancedSearchCriteria, type SearchDeps, type ViewerScope } from '../../src/domain/search.js';
+import { getAdvancedSearch, getSearch, getSearchPage, getUsers, newAdvancedSearchCriteria, type SearchDeps, type ViewerScope } from '../../src/domain/search.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
 import { peoplePayloadValidators } from '../../src/events/topics.js';
 import type { AccountPrepareRequest, AccountView, IdentityClient } from '../../src/legacy/identity-client.js';
@@ -102,7 +102,7 @@ function personInput(userId: string): PersonInput {
 }
 
 /** What a user query shows of `userId`; undefined when it lists no such user. */
-function listed(query: LegacyQuery, userId: string): Seen | undefined {
+function listed(query: Pick<LegacyQuery, 'rows'>, userId: string): Seen | undefined {
   const row = query.rows.find((candidate) => (candidate.UserID ?? candidate.userID) === userId);
   return row === undefined ? undefined : { fname: row.Fname, username: row.UserName };
 }
@@ -201,7 +201,7 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       return [];
     },
     siteGroups: () => Promise.resolve([]),
-    userGroups: unused('userGroups'),
+    userGroupsPage: unused('userGroupsPage'),
     actingUser: unused('actingUser'),
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),
@@ -239,7 +239,7 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       userMemberships: unused('userMemberships'),
       membershipGroupIds: () => Promise.resolve([]),
       siteGroups: unused('siteGroups'),
-      userGroups: unused('userGroups'),
+      userGroupsPage: unused('userGroupsPage'),
       actingUser: unused('actingUser'),
       adminSessionState: unused('adminSessionState'),
       saveAdminSessionState: unused('saveAdminSessionState'),
@@ -283,6 +283,10 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
         const page = await repo.pagePersonsInOrder(tx, scope, opts);
         return afterRead(page, page.rows.map((row) => row.userid));
       },
+      listPersonSearchKeys: async (tx, scope, orderBy) => {
+        const keys = await repo.listPersonSearchKeys(tx, scope, orderBy);
+        return afterRead(keys, keys.map((key) => key.userid));
+      },
       pageQueryPersons: async (tx, query, opts) => {
         const page = await repo.pageQueryPersons(tx, query, opts);
         return afterRead(page, page.rows.map((row) => row.userid));
@@ -307,7 +311,7 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       logger,
     });
     cleanups.push(() => app.close());
-    await registerAdminUserRoutes(app, { db, repository: observedRepo, identity: observerIdentity, clock: liveClock, sleep: liveSleep });
+    await registerAdminUserRoutes(app, { db, repository: observedRepo, identity: observerIdentity, clock: liveClock, sleep: liveSleep, expirePasswords: 0 });
     await registerAdminProfileRoutes(app, { roster });
     const photoFileExts = async (): Promise<ReadonlyMap<string, string>> => {
       const due = selectedHook;
@@ -432,6 +436,14 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
   const OBSERVERS: [string, Observer][] = [
     ['getUsers', { read: async (userId) => listed(await getUsers(searchDeps(), viewer, { siteid: SITE, ispublic: 0 }), userId), attempt: ['readAccounts'], lead: 0 }],
     ['getSearch', { read: async (userId) => listed(await getSearch(searchDeps(), viewer, { search: 'Observed', isPublic: 0 }), userId), attempt: ['readAccounts'], lead: 0 }],
+    [
+      'getSearchPage',
+      {
+        read: async (userId) => listed(await getSearchPage(searchDeps(), viewer, { search: 'Observed', isPublic: 0 }, { recordsPerPage: 1000 }), userId),
+        attempt: ['readAccounts'],
+        lead: 0,
+      },
+    ],
     [
       'getAdvancedSearch over both user pools',
       { read: async (userId) => listed(await getAdvancedSearch(searchDeps(), viewer, { ...newAdvancedSearchCriteria(), ispublic: '' }), userId), attempt: ['readAccounts'], lead: 0 },

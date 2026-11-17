@@ -6,11 +6,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { inspect } from 'node:util';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { tenantDbFromPool, withMetadata, type MetadataTx, type Pool, type TenantDb } from '@opt2/platform/tenancy';
+import {
+  tenantDbFromPool,
+  withMetadata,
+  type MetadataTx,
+  type Pool,
+  type QueryConfig,
+  type QueryResult,
+  type QueryResultRow,
+  type TenantDb,
+} from '@opt2/platform/tenancy';
+import { MemorySpanExporter, activeSpanIds, shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
@@ -19,7 +31,7 @@ import {
   testPgConfig,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { INSTANCE_LIVENESS_SECONDS, createInflightStore } from '../../src/cutover/inflight.js';
+import { INSTANCE_LIVENESS_SECONDS, STATUS_PAGE_SIZE, createInflightStore } from '../../src/cutover/inflight.js';
 import { loadGroups, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from '../../src/cutover/paths.js';
 import {
@@ -31,7 +43,9 @@ import {
   createCutoverState,
   type CutoverState,
   type CutoverStateLogger,
+  type CutoverStatus,
 } from '../../src/cutover/state.js';
+import { collectStatus, statusJson } from '../../src/cutover/status-pages.js';
 import type { GroupsFile, VariantsFile } from '../../src/cutover/types.js';
 
 const FROZEN_ROUTE = 'admin:cperm.update';
@@ -96,6 +110,31 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     withMetadata: (fn) => (failing() ? Promise.reject(new Error('database unavailable')) : handle.app.withMetadata(fn)),
     end: () => Promise.resolve(),
   });
+
+  /** The app pool, except that each statement matching `statement` after the first `passing` of them rejects with `error`. */
+  const rejectingDb = (statement: RegExp, passing: number, error: Error): TenantDb => {
+    let matched = 0;
+    const rejects = (text: string | QueryConfig): boolean => {
+      if (typeof text !== 'string' || !statement.test(text)) return false;
+      matched += 1;
+      return matched > passing;
+    };
+    return {
+      schema: handle.app.schema,
+      withTenant: (tenantId, fn) => handle.app.withTenant(tenantId, fn),
+      withMetadata: (fn, options) =>
+        handle.app.withMetadata(
+          (tx) =>
+            fn({
+              ...tx,
+              query: <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> =>
+                rejects(text) ? Promise.reject(error) : tx.query<R>(text, values),
+            }),
+          options,
+        ),
+      end: () => Promise.resolve(),
+    };
+  };
 
   const expectContract = (method: string, path: string, status: number, body: unknown): void => {
     expect(() => assertResponseMatchesOpenApi(contract, { method, path, status, contentType: 'application/json', body })).not.toThrow();
@@ -352,6 +391,56 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     expect(status.sessionMode).toBe(state.active()?.loginGroupAuthority() === 'target' ? 'target-primary' : 'legacy-primary');
   });
 
+  it('reads instances and both versions of the in-flight groups in keyset pages, complete and in order, and streams the status as its JSON', async () => {
+    await setActive('v0001', null, 1);
+    const count = 2 * STATUS_PAGE_SIZE + 1;
+    await sql(
+      `INSERT INTO ${handle.schema}.instance (instance_id, seen_epoch, started_at, heartbeat_at)
+       SELECT 'gw-' || lpad(n::text, 4, '0'), 1, now(), now() - interval '1 hour' FROM generate_series(1, $1) AS n`,
+      [count],
+    );
+    await sql(
+      `INSERT INTO ${handle.schema}.inflight (instance_id, request_id, route, side, window_id, started_at, abandoned_at)
+       SELECT 'gw-' || lpad(n::text, 4, '0'), 'r-' || s.side, $2, s.side, NULL, now(), NULL
+         FROM generate_series(1, $1) AS n CROSS JOIN (VALUES ('legacy'), ('target')) AS s(side)`,
+      [count, FROZEN_ROUTE],
+    );
+    const state = makeState('gw-live');
+    await state.start();
+    const live = createInflightStore({ db: handle.app, instanceId: 'gw-live', unitsOf: () => undefined });
+    await live.register({ requestId: 'running', route: FROZEN_ROUTE, side: 'target' });
+    await live.register({ requestId: 'abandoned', route: FROZEN_ROUTE, side: 'target' });
+    await live.abandon('abandoned');
+    await heartbeat('gw-live', 1);
+
+    const status = await state.status();
+    const statusV2 = await collectStatus(await state.statusV2Pages());
+
+    expectContract('GET', '/internal/v1/cutover/status', 200, status);
+    expectContract('GET', '/internal/v2/cutover/status', 200, statusV2);
+    const ids = Array.from({ length: count }, (_, i) => `gw-${String(i + 1).padStart(4, '0')}`);
+    expect(status.instances.map((instance) => [instance.instanceId, instance.live])).toEqual([...ids.map((id) => [id, false]), ['gw-live', true]]);
+    expect(statusV2.instances).toEqual(status.instances.map((instance) => ({ ...instance, heartbeatAt: expect.any(String) })));
+    const deadGroups = ids.flatMap((id) => [
+      [id, 'legacy', 1],
+      [id, 'target', 1],
+    ]);
+    // v1 groups the live instance's running and abandoned writes as one; v2 splits them by orphan state.
+    expect(status.inflight.map((group) => [group.instanceId, group.side, group.count])).toEqual([...deadGroups, ['gw-live', 'target', 2]]);
+    expect(status.inflight.every((group) => !('orphaned' in group))).toBe(true);
+    expect(statusV2.inflight.map((group) => [group.instanceId, group.side, group.count, group.orphaned])).toEqual([
+      ...deadGroups.map((group) => [...group, true]),
+      ['gw-live', 'target', 1, false],
+      ['gw-live', 'target', 1, true],
+    ]);
+    expect([status.acknowledgedEpoch, statusV2.acknowledgedEpoch]).toEqual([1, 1]);
+    await heartbeat('gw-live', 1);
+    let body = '';
+    for await (const chunk of statusJson(await state.statusPages())) body += chunk;
+    expect(JSON.parse(body)).toEqual({ ...status, instances: expect.any(Array) });
+    expect((JSON.parse(body) as CutoverStatus).instances.map((instance) => instance.instanceId)).toEqual([...ids, 'gw-live']);
+  }, 60_000);
+
   it('prunes at start the instances dead past the retention window that hold no in-flight write, and still reports the contract status', async () => {
     await setActive('v0001', null, 1);
     await heartbeat('gw-old', 1, INSTANCE_RETENTION_SECONDS + 60);
@@ -414,7 +503,7 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     await vi.waitFor(
       () =>
         expect(logger.error).toHaveBeenCalledWith(
-          { err: expect.objectContaining({ message: 'database unavailable' }) },
+          { error: expect.objectContaining({ type: 'Error', message: REDACTED }) },
           'cut-over state refresh failed: instance=gw-a',
         ),
       { timeout: 2000, interval: 25 },
@@ -423,6 +512,71 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     await setActive('v0002', 'v0001', 2);
     await vi.waitFor(() => expect(state.epoch()).toBe(2), { timeout: 2500, interval: 25 });
     state.stop();
+  });
+
+  it.each<[string, RegExp, number, string]>([
+    ['a background refresh', /^SELECT table_version\b/, 1, 'cut-over state refresh failed: instance=gw-log'],
+    ['instance pruning at start', /^DELETE FROM \S+\.instance AS g\b/, 0, 'cut-over instance pruning failed: instance=gw-log'],
+  ])('hands the logger a serialized error record when %s fails, and writes no probe text', async (_label, statement, passing, message) => {
+    await setActive('v0001', null, 1);
+    const secret = `probe-${randomUUID()}`;
+    const probes = [secret, 'password=', '10.0.0.7', 'gateway_app'];
+    const thrown = new Error(`password authentication failed for user "gateway_app" with password=${secret} from 10.0.0.7`);
+    const written: string[] = [];
+    const destination = { write: (chunk: string) => void written.push(chunk) };
+    const logger = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination });
+    const logError = vi.spyOn(logger, 'error');
+    const state = makeState('gw-log', { db: rejectingDb(statement, passing, thrown), logger });
+
+    await state.start();
+    await vi.waitFor(() => expect(logError).toHaveBeenCalled(), { timeout: 2000, interval: 25 });
+    state.stop();
+
+    const record = { type: 'Error', message: REDACTED, stack: expect.stringMatching(/^Error: \[REDACTED\](?:\n {4}at \S.*)+$/) };
+    expect(logError.mock.calls).toStrictEqual([[{ error: record }, message]]);
+    expect((logError.mock.calls[0]?.[0] as unknown as { error: unknown }).error).not.toBeInstanceOf(Error);
+    const lines = written
+      .join('')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line.message === message);
+    expect(lines).toStrictEqual([expect.objectContaining({ severity: 'ERROR', message, error: record })]);
+    expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
+    for (const text of probes) {
+      expect(inspect(logError.mock.calls, { depth: null })).not.toContain(text);
+      expect(written.join('')).not.toContain(text);
+    }
+  });
+
+  it('runs each background refresh in a fresh unsampled trace', async () => {
+    await setActive('v0001', null, 1);
+    await startTracing({ serviceName: 'cutover-state-test', version: '1.0.0', exporter: new MemorySpanExporter() });
+    try {
+      // The active span of each refresh transaction, from the start-up one on.
+      const refreshes: ReturnType<typeof activeSpanIds>[] = [];
+      const db: TenantDb = {
+        schema: handle.app.schema,
+        withTenant: (tenantId, fn) => handle.app.withTenant(tenantId, fn),
+        withMetadata: (fn, options) => {
+          refreshes.push(activeSpanIds());
+          return handle.app.withMetadata(fn, options);
+        },
+        end: () => Promise.resolve(),
+      };
+      const state = makeState('gw-a', { db });
+      await state.start();
+      const startup = refreshes.length;
+      await vi.waitFor(() => expect(refreshes.length).toBeGreaterThanOrEqual(startup + 2), { timeout: 10_000, interval: 25 });
+      state.stop();
+      const background = refreshes.slice(startup);
+
+      expect(refreshes.slice(0, startup)).toStrictEqual(refreshes.slice(0, startup).map(() => undefined));
+      expect(background.map((ids) => ids?.traceSampled)).toStrictEqual(background.map(() => false));
+      expect(new Set(background.map((ids) => ids?.traceId)).size).toBe(background.length);
+    } finally {
+      await shutdownTracing();
+    }
   });
 
   it('fails closed on a snapshot older than its maximum age while refreshes fail, and recovers on the next successful refresh', async () => {

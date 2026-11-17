@@ -341,6 +341,9 @@ export interface PersonOrderScope {
   nameLike?: PersonNameLike;
 }
 
+/** A person's userid and the columns `PersonNameLike.pattern` matches, as `listPersonSearchKeys` reads them. */
+export type PersonSearchKey = Pick<PersonRow, 'userid' | (typeof NAME_LIKE_COLUMNS)[number]>;
+
 /** Paging of `pagePersonsInOrder` by `orderBy`, then userid. */
 export interface PersonOrderPageOptions extends PageOptions<PersonCursor> {
   orderBy: readonly PersonSortKey[];
@@ -367,6 +370,12 @@ export interface PersonCursor {
 /** The position after one operation of the stale roster-operation listing. */
 export interface RosterOperationCursor {
   updatedAt: Date;
+  operationId: string;
+}
+
+/** The position after one operation of the halted roster-operation listing. */
+export interface HaltedRosterCursor {
+  startedAt: Date;
   operationId: string;
 }
 
@@ -550,6 +559,8 @@ export interface PeopleRepository extends Repository {
   pageQueryPersons(tx: TenantTx, query: Omit<PersonQuery, 'limit'>, opts?: PageOptions<PersonCursor>): Promise<Page<PersonRow, PersonCursor>>;
   /** One keyset page of the persons in `scope`, in the people domain's comparator order: `opts.orderBy`, then userid. */
   pagePersonsInOrder(tx: TenantTx, scope: PersonOrderScope, opts: PersonOrderPageOptions): Promise<Page<PersonRow, PersonCursor>>;
+  /** Every person in `scope` as its search key, in one statement, in `pagePersonsInOrder` order: `orderBy`, then userid. */
+  listPersonSearchKeys(tx: TenantTx, scope: PersonOrderScope, orderBy: readonly PersonSortKey[]): Promise<PersonSearchKey[]>;
 
   /** The person's addresses, primary first [legacy: core/mura/user/userDAO.cfc:862-871]. */
   listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]>;
@@ -557,6 +568,8 @@ export interface PeopleRepository extends Repository {
   listAddressesOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, AddressRow[]>>;
   /** The address `addressId`; null when absent. */
   findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null>;
+  /** `findAddress` of each of `addressIds` in one statement, keyed by the id as given; an id no address matches is absent. */
+  findAddresses(tx: TenantTx, addressIds: readonly string[]): Promise<Map<string, AddressRow>>;
   /** The address `addressId`, row-locked until `tx` ends; null when absent. */
   findAddressForUpdate(tx: TenantTx, addressId: string): Promise<AddressRow | null>;
   /** Row-locks the addresses `addressIds` and every address of `userId` until `tx` ends, in address id order. */
@@ -642,8 +655,8 @@ export interface PeopleRepository extends Repository {
   findOpenRosterOperations(tx: TenantTx, userIds?: readonly string[]): Promise<RosterOperationRow[]>;
   /** How many operations, in any state and only among `operationIds` when given, any of `userIds` has; ids match as `findOpenRosterOperation` matches them. */
   countRosterOperations(tx: TenantTx, userIds: readonly string[], operationIds?: readonly string[]): Promise<number>;
-  /** Every operation of the tenant recovery ever halted, in whatever state it is now, oldest first. */
-  listHaltedRosterOperations(tx: TenantTx): Promise<HaltedRosterOperationRow[]>;
+  /** One keyset page, in (started_at, operation_id) order, of the tenant's operations recovery ever halted, in whatever state each is now. */
+  pageHaltedRosterOperations(tx: TenantTx, opts?: PageOptions<HaltedRosterCursor>): Promise<Page<HaltedRosterOperationRow, HaltedRosterCursor>>;
   /** Takes the transaction tenant's roster lock until `tx` ends; tenant-wide readers share it, a roster intent takes it exclusively; throws RosterLockTimeoutError past `opts.timeoutMs`. */
   lockRosterTenant(tx: TenantTx, mode: RosterLockMode, opts?: RosterLockOptions): Promise<void>;
   /** Takes each user's roster lock until `tx` ends, once per collation-equal id and in key order, before the tenant's when both are needed; throws RosterLockTimeoutError past `opts.timeoutMs`. */
@@ -891,6 +904,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ` SELECT u.n AS request_position, r.* FROM found AS r JOIN unnest($2::bpchar[]) WITH ORDINALITY AS u(v, n) ON ${idEquals(`r.${column}`, 'u.v')}` +
     ` ORDER BY u.n, ${order}`;
   const addressesOfSql = requestedRowsSql(address, 'userid', 'r.isprimary DESC NULLS LAST, r.addressid');
+  const addressesByIdSql = requestedRowsSql(address, 'addressid', 'r.addressid');
   const interestsOfSql = requestedRowsSql(interest, 'userid', 'r.categoryid');
   const extendDataOfSql = requestedRowsSql(extendData, 'baseid', 'r.baseid, r.attributeid, r.dataid');
   const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')} ORDER BY dataid FOR UPDATE`;
@@ -925,7 +939,11 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const openTenantRostersSql = `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND state = ANY($2::text[]) ORDER BY started_at, operation_id`;
   const rosterCountSql = `SELECT count(*)::int AS count FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idIn('user_id', '$2')}`;
   const rosterCountAmongSql = `${rosterCountSql} AND operation_id = ANY($3::bpchar[])`;
-  const haltedRostersSql = `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND halted_at IS NOT NULL ORDER BY started_at, operation_id`;
+  // Served by the partial index roster_operation_tenant_halted_idx (tenant_id, started_at, operation_id).
+  const haltedRostersSql =
+    `SELECT operation_id, kind, user_id, state, started_at, updated_at, identity_unreachable_since, halted_at FROM ${rosterOperation}` +
+    ' WHERE tenant_id = $1 AND halted_at IS NOT NULL AND ($2::timestamp IS NULL OR (started_at, operation_id) > ($2::timestamp, $3::bpchar))' +
+    ' ORDER BY started_at, operation_id LIMIT $4';
   const openRosterSql =
     `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idEquals('user_id', '$2')} AND state = ANY($3::text[])` +
     ' ORDER BY started_at, operation_id LIMIT 1';
@@ -1165,6 +1183,13 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return keyedPersonPage(tx, orderScopeFilter(tx, scope), keys, opts.after, pageSize(opts.limit));
   }
 
+  async function listPersonSearchKeys(tx: TenantTx, scope: PersonOrderScope, orderBy: readonly PersonSortKey[]): Promise<PersonSearchKey[]> {
+    const filter = orderScopeFilter(tx, scope);
+    const order = [...[...orderBy.flatMap(textOrderKey), ...textOrderTie].map(orderSql), 'userid'].join(', ');
+    const sql = `SELECT ${['userid', ...NAME_LIKE_COLUMNS].join(', ')} FROM ${person} WHERE ${filter.where.join(' AND ')} ORDER BY ${order}`;
+    return readUnits<PersonSearchKey>(tx, PERSON.unit, sql, filter.params);
+  }
+
   function listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]> {
     return readUnits<AddressRow>(tx, ADDRESS.unit, addressesSql, [tx.tenantId, userId]);
   }
@@ -1175,6 +1200,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
 
   async function findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
     return (await readUnits<AddressRow>(tx, ADDRESS.unit, addressByIdSql, [tx.tenantId, addressId]))[0] ?? null;
+  }
+
+  async function findAddresses(tx: TenantTx, addressIds: readonly string[]): Promise<Map<string, AddressRow>> {
+    const found = new Map<string, AddressRow>();
+    for (const [addressId, [row]] of await rowsByRequest<AddressRow>(tx, ADDRESS.unit, addressesByIdSql, addressIds)) {
+      if (row !== undefined) found.set(addressId, row);
+    }
+    return found;
   }
 
   async function findAddressForUpdate(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
@@ -1543,8 +1576,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return row?.count ?? 0;
   }
 
-  function listHaltedRosterOperations(tx: TenantTx): Promise<HaltedRosterOperationRow[]> {
-    return select<HaltedRosterOperationRow>(tx, haltedRostersSql, [tx.tenantId]);
+  async function pageHaltedRosterOperations(
+    tx: TenantTx,
+    opts: PageOptions<HaltedRosterCursor> = {},
+  ): Promise<Page<HaltedRosterOperationRow, HaltedRosterCursor>> {
+    const take = pageSize(opts.limit);
+    const params = [tx.tenantId, opts.after?.startedAt ?? null, opts.after?.operationId ?? null, take + 1];
+    const found = await select<HaltedRosterOperationRow>(tx, haltedRostersSql, params);
+    return pageOf(found, take, (row) => ({ startedAt: row.started_at, operationId: row.operation_id }));
   }
 
   /** The statement taking the transaction tenant's roster lock. */
@@ -1650,9 +1689,11 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     queryPersons,
     pageQueryPersons,
     pagePersonsInOrder,
+    listPersonSearchKeys,
     listAddresses,
     listAddressesOf,
     findAddress,
+    findAddresses,
     findAddressForUpdate,
     lockAddresses,
     insertAddress,
@@ -1687,7 +1728,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     findOpenRosterOperation,
     findOpenRosterOperations,
     countRosterOperations,
-    listHaltedRosterOperations,
+    pageHaltedRosterOperations,
     lockRosterTenant,
     lockRosterUsers,
     listStaleRosterOperations,

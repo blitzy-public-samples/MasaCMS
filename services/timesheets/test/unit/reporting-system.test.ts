@@ -16,6 +16,7 @@ import { ServiceUnavailableError, createService, fixedClock, loadEnv, type Fasti
 import {
   TENANT_A,
   TENANT_B,
+  TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   mintServiceToken,
@@ -184,7 +185,7 @@ describe.skipIf(!available)('timesheets export sheet status read', () => {
       ['the job site', TENANT_A.siteId],
       ['the job site in another case', TENANT_A.siteId.toUpperCase()],
     ])(
-      "answers the registry tenant's rows as the sheet status list pages them, after one scope lookup sending %s and no user token",
+      "answers the registry tenant's rows shaped as the sheet status list's, after one scope lookup sending %s and no user token",
       async (_case, siteId) => {
         const { res, tenantStatements, lookups: made } = await send(readUrl({ siteId }), await reportingHeaders());
 
@@ -214,6 +215,49 @@ describe.skipIf(!available)('timesheets export sheet status read', () => {
       expect(res.statusCode, res.body).toBe(200);
       const body = JSON.parse(res.body) as { items: Array<{ timesheetId: string }>; total: number };
       expect([body.items.map((item) => item.timesheetId), body.total]).toStrictEqual([sheetsA.slice(2), sheetsA.length]);
+    });
+  });
+
+  describe('many employees of one period', () => {
+    const EMPLOYEES = 12;
+    /** The CF id of `prefix` then ordinal `n`, so ids of one prefix compare as their ordinals. */
+    const ordinalId = (prefix: string, n: number): string => `${prefix}${n.toString(16).toUpperCase().padStart(7, '0')}-0000-0000-0000000000000000`;
+    // Umbrella sheets of one week: persons ascend as sheet ids descend, so the export order reverses the list order.
+    const week = Array.from({ length: EMPLOYEES }, (_, i) => ({ id: ordinalId('D', EMPLOYEES - i), person: ordinalId('B', i) }));
+
+    beforeAll(async () => {
+      await handle.app.withTenant(TENANT_UMBRELLA.tenantId, async (tx) => {
+        for (const { id, person } of week) {
+          await repository.insert(tx, 'timesheet', { ...sheet(id, TENANT_UMBRELLA.siteId, new Date(2026, 5, 1), 1), person_id: person });
+        }
+      });
+    });
+
+    it('answers them by sheet id across pages, while the sheet status list keeps them by person', async () => {
+      scopeAnswer = confirmed({ tenantId: TENANT_UMBRELLA.tenantId, siteId: TENANT_UMBRELLA.siteId });
+      const exported: string[] = [];
+      for (const pageIndex of ['1', '2']) {
+        const { res } = await send(readUrl({ siteId: TENANT_UMBRELLA.siteId, pageIndex, itemsPerPage: String(EMPLOYEES / 2) }), await reportingHeaders());
+        expect(res.statusCode, res.body).toBe(200);
+        assertContract(res);
+        const body = JSON.parse(res.body) as { items: Array<{ timesheetId: string }>; total: number };
+        expect(body.total).toBe(EMPLOYEES);
+        exported.push(...body.items.map((item) => item.timesheetId));
+      }
+      const [user, gateway] = await Promise.all([
+        mintUserToken({ sub: PERSON, site: TENANT_UMBRELLA.siteId, roles: [Roles.systemUser, Roles.reportingExporter] }),
+        mintServiceToken({ caller: 'gateway', audience: 'timesheets' }),
+      ]);
+      const listed = await app.inject({
+        url: `/v1/timesheets/sheet-status?asOf=${AS_OF}`,
+        headers: { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` },
+      });
+      expect(listed.statusCode, listed.body).toBe(200);
+      const ids = week.map(({ id }) => id);
+      expect({ exported, listed: (JSON.parse(listed.body) as { items: Array<{ timesheetId: string }> }).items.map((item) => item.timesheetId) }).toStrictEqual({
+        exported: [...ids].reverse(),
+        listed: ids,
+      });
     });
   });
 

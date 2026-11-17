@@ -54,7 +54,7 @@ import { hasWritePositionHeader } from './write-position.js';
 import {
   InvalidTenantIdError,
   assertTenantId,
-  registeredTenants,
+  knownTenants,
   tenantIdForSite,
   withMetadata,
   withTenant,
@@ -62,7 +62,7 @@ import {
   type TenantDb,
   type TenantTx,
 } from '../tenancy/index.js';
-import { OUTBOX_TABLE, outboxDrainCounts, registryTenants, type OutboxDrainCounts, type OutboxKind } from '../outbox/index.js';
+import { OUTBOX_TABLE, OutboxPayloadError, outboxDrainCounts, registryTenants, type OutboxDrainCounts, type OutboxKind } from '../outbox/index.js';
 import { INBOX_TABLE, isTopicName } from '../events/index.js';
 import { Roles, type Opt2RouteConfig } from '../auth/index.js';
 import { z, type FastifyInstance, type FastifyRequest, type Opt2RouteLogConfig } from '../service-kit/index.js';
@@ -208,7 +208,7 @@ export interface ChangesResponse {
   operations: Record<string, OperationStatus>;
 }
 
-/** Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it. */
+/** Inbox receipts over every known registry tenant; `receipts` maps each asked event id to the tenants that applied it. */
 export interface InboxCounts {
   total: number;
   bySubscription: Record<string, number>;
@@ -235,8 +235,8 @@ export interface PositionResponse {
   outbox: OutboxDrainCounts | null;
   inbox: InboxCounts | null;
   /**
-   * The asked topics' published events in every registered tenant: unpaged, every one by tenant, topic and id; paged, one
-   * page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+   * The asked topics' published events in every tenant the registry has known: unpaged, every one by tenant, topic and id; paged,
+   * one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
    */
   published?: PublishedEvent[];
   /** `publishedAfter` of the next page; it never passes an unpublished or held row of the asked topics at or below `publishedFrontier`. */
@@ -245,7 +245,7 @@ export interface PositionResponse {
   publishedComplete?: boolean;
   /**
    * Last `seq` the page covers: the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not,
-   * in every registered tenant when read, or `publishedAfter` when there is none. Later rows are neither listed nor blocking, so a
+   * in every tenant the registry has known when read, or `publishedAfter` when there is none. Later rows are neither listed nor blocking, so a
    * caller pages one pass through it.
    */
   publishedFrontier?: string;
@@ -840,7 +840,24 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     return before === undefined ? { op: 'insert', after } : { op: 'update', before, after };
   }
 
-  async function apply(body: ApplyBody): Promise<ApplyResponse> {
+  /**
+   * Writes the state events of one applied change. An event its topic contract cannot express, such as one whose legacy
+   * id is no CF UUID, is withheld with a warning: the row stays applied exactly as legacy holds it.
+   */
+  async function emitState(tx: TenantTx, change: AppliedChange, ctx: WriteContext, legacyTable: string, log: FastifyRequest['log']): Promise<void> {
+    try {
+      await options.emitStateEvents?.(tx, change, ctx);
+    } catch (err) {
+      if (!(err instanceof OutboxPayloadError)) throw err;
+      // log-record.v1 admits no extra fields, so the case is named in the message; validator errors carry no row values.
+      log.warn(
+        { tenantId: change.tenantId },
+        `migration apply withheld the ${err.topic} state event of a ${change.unit} row of ${legacyTable}: ${err.errors.join('; ')}`,
+      );
+    }
+  }
+
+  async function apply(body: ApplyBody, log: FastifyRequest['log']): Promise<ApplyResponse> {
     const tenantId = tenantOf(body);
     const program = parseProgramTable(body.legacyTable);
     if (program !== null && body.legacyProgramId !== undefined && body.legacyProgramId !== program.programId) {
@@ -898,11 +915,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
           const change = await applyRow(tx, entry, input.op, target, ctx);
           if (change === null) continue;
           wrote = true;
-          await options.emitStateEvents?.(
-            tx,
-            { ...change, unit: entry.mapping.unit, table: entry.table, origin: body.origin, tenantId },
-            ctx,
-          );
+          await emitState(tx, { ...change, unit: entry.mapping.unit, table: entry.table, origin: body.origin, tenantId }, ctx, batchTable, log);
         }
         if (wrote) applied += 1;
       }
@@ -1006,14 +1019,14 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     );
   }
 
-  /** Inbox receipts of every registered tenant, each counted in its own tenant transaction. */
+  /** Inbox receipts of every known registry tenant, each counted in its own tenant transaction. */
   async function inboxCounts(eventIds: readonly string[] | undefined): Promise<InboxCounts> {
     const table = qualified(db.schema, INBOX_TABLE);
     const asked = eventIds === undefined ? undefined : [...new Set(eventIds.map((id) => id.toLowerCase()))];
     const bySubscription = new Map<string, number>();
     const receipts = new Map<string, string[]>((asked ?? []).map((id) => [id, []]));
     let total = 0;
-    const tenants = new Set((await registeredTenants(db)).map((entry) => entry.tenantId));
+    const tenants = new Set((await knownTenants(db)).map((entry) => entry.tenantId));
     for (const tenantId of tenants) {
       await withTenant(db, tenantId, async (tx) => {
         const counted = await tx.query<{ subscription: string; count: string }>(
@@ -1036,7 +1049,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     return counts;
   }
 
-  /** Every published event of `topics` in every registered tenant, by tenant, topic and id, each tenant read in its own transaction. */
+  /** Every published event of `topics` in every tenant the registry has known, by tenant, topic and id, each tenant read in its own transaction. */
   async function publishedEvents(topics: readonly string[]): Promise<PublishedEvent[]> {
     const table = qualified(db.schema, OUTBOX_TABLE);
     const tenantIds = [...new Set((await registryTenants(db)).map((id) => id.toLowerCase()))].sort();
@@ -1072,8 +1085,8 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
   }
 
   /**
-   * One page of the published events of `topics` after `after` and at or below `through` when given, merged over every registered
-   * tenant by `seq`. Each tenant is read in one statement, so its page, lowest unpublished `seq` and highest `seq` agree; the page
+   * One page of the published events of `topics` after `after` and at or below `through` when given, merged over every tenant the
+   * registry has known by `seq`. Each tenant is read in one statement, so its page, lowest unpublished `seq` and highest `seq` agree; the page
    * stops below the lowest unpublished or held row and below the last row of a tenant whose own page is full. Only a complete page
    * counts the published rows at or below `after`.
    */
@@ -1183,7 +1196,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
   }
 
   app.post(`${MIGRATION_PATH_PREFIX}/apply`, { config: ROUTE }, (request) =>
-    handle(request, () => apply(applyBodySchema.parse(request.body)), true),
+    handle(request, () => apply(applyBodySchema.parse(request.body), request.log), true),
   );
 
   app.get(`${MIGRATION_PATH_PREFIX}/export`, { config: ROUTE }, (request) =>

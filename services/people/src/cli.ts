@@ -10,7 +10,7 @@ import {
   type InvocationMinter,
 } from '@opt2/platform/auth';
 import { createPublisher, type EventPublisher } from '@opt2/platform/events';
-import { createLogger, serializeError, type Logger } from '@opt2/platform/logging';
+import { createCliDiagnostics, parseArgsProblem, serializeError, type CliDiagnostics, type Logger } from '@opt2/platform/logging';
 import { createOutbox } from '@opt2/platform/outbox';
 import {
   EnvValidationError,
@@ -28,7 +28,7 @@ import {
   InvalidTenantIdError,
   assertTenantId,
   createPool,
-  registeredTenants,
+  knownTenants,
   withTenant,
   type DbEnv,
   type TenantDb,
@@ -88,7 +88,7 @@ export interface ResolveRun {
   settled: boolean;
 }
 
-/** Invalid command-line usage; answered on stderr with the usage line and exit code 2. */
+/** Invalid command-line usage, its message a fixed problem text; answered on stderr with the usage line and exit code 2. */
 export class UsageError extends Error {
   override readonly name = 'UsageError';
 }
@@ -101,7 +101,7 @@ export class OperationNotFoundError extends Error {
     readonly operationId: string,
     tenant?: string,
   ) {
-    super(`Roster operation ${operationId} is held by ${tenant === undefined ? 'no registered tenant' : `no row of tenant ${tenant}`}`);
+    super(`Roster operation ${operationId} is held by ${tenant === undefined ? 'no tenant the registry has known' : `no row of tenant ${tenant}`}`);
   }
 }
 
@@ -120,17 +120,17 @@ export function parseArgs(argv: string[]): ResolveOperationArgs | 'help' {
       },
     });
   } catch (err) {
-    throw new UsageError(messageOf(err));
+    throw new UsageError(parseArgsProblem(err));
   }
   const { values, positionals } = parsed;
   if (values.help) return 'help';
   const [command, operationId, ...extra] = positionals;
   if (command === undefined) throw new UsageError('missing subcommand');
-  if (command !== 'resolve-operation') throw new UsageError(`unknown subcommand ${JSON.stringify(command)}`);
+  if (command !== 'resolve-operation') throw new UsageError('unknown subcommand');
   if (operationId === undefined || operationId === '') throw new UsageError('missing operation id');
-  if (extra.length > 0) throw new UsageError(`unexpected argument ${JSON.stringify(extra[0])}`);
+  if (extra.length > 0) throw new UsageError('unexpected argument');
   const { to, tenant } = values;
-  if (to !== undefined && !isTarget(to)) throw new UsageError(`--to must be one of ${TARGETS.join(', ')}, got ${JSON.stringify(to)}`);
+  if (to !== undefined && !isTarget(to)) throw new UsageError(`--to must be one of ${TARGETS.join(', ')}`);
   return { command, operationId, ...(to === undefined ? {} : { to }), ...(tenant === undefined ? {} : { tenant: tenantArg(tenant) }) };
 }
 
@@ -142,7 +142,7 @@ function tenantArg(value: string): string {
   try {
     return assertTenantId(value);
   } catch (err) {
-    if (err instanceof InvalidTenantIdError) throw new UsageError(`--tenant must be a tenant UUID, got ${JSON.stringify(value)}`);
+    if (err instanceof InvalidTenantIdError) throw new UsageError('--tenant must be a tenant UUID');
     throw err;
   }
 }
@@ -152,10 +152,10 @@ function isSettled(row: RosterOperationRow | null): boolean {
   return row !== null && (row.state === 'rolled-back' || (row.state === 'done' && row.error !== FINISH_PENDING_ERROR));
 }
 
-/** The tenant holding the operation: `tenant` when given, else the first registered tenant whose own transaction reads it. */
+/** The tenant holding the operation: `tenant` when given, else the first tenant the registry has known whose own transaction reads it. */
 async function locateTenant(deps: Pick<RecoveryDeps, 'db' | 'repo'>, operationId: string, tenant?: string): Promise<string> {
   // Case-folded as withTenant folds them, so one tenant is never read twice.
-  const candidates = tenant === undefined ? new Set((await registeredTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase())) : [tenant];
+  const candidates = tenant === undefined ? new Set((await knownTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase())) : [tenant];
   for (const tenantId of candidates) {
     const row = await withTenant(deps.db, tenantId, (tx) => deps.repo.findRosterOperation(tx, operationId));
     if (row !== null) return tenantId;
@@ -186,6 +186,17 @@ export async function runResolveOperation(deps: RecoveryDeps, args: Omit<Resolve
 
 /** Runs `opt2-people` with the arguments after the script path and the process environment; returns the exit code HELP lists. */
 export async function main(argv: string[] = process.argv.slice(2), source: NodeJS.ProcessEnv = process.env): Promise<number> {
+  // On stderr from the start, so parse and environment failures are logged too and stdout carries only the help or report line.
+  const diagnostics = createCliDiagnostics({ cli: CLI, usage: USAGE, service: OWNER, version: await peopleVersion(), source });
+  try {
+    return await resolveFromArgs(argv, source, diagnostics);
+  } finally {
+    await diagnostics.flush();
+  }
+}
+
+/** Parses the arguments and environment, then resolves the operation; every diagnostic is a fixed message, never argv text. */
+async function resolveFromArgs(argv: string[], source: NodeJS.ProcessEnv, diagnostics: CliDiagnostics): Promise<number> {
   let args: ResolveOperationArgs;
   let env: CliEnv;
   try {
@@ -198,40 +209,42 @@ export async function main(argv: string[] = process.argv.slice(2), source: NodeJ
     env = loadCliEnv(source);
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`${CLI}: ${err.message}; ${USAGE}\n`);
+      diagnostics.usage(err.message);
       return 2;
     }
     if (err instanceof EnvValidationError) {
-      process.stderr.write(`${err.message}\n`);
+      // Its safe record names the invalid variables, never their values or issue texts.
+      diagnostics.error('invalid environment', err);
       return 2;
     }
-    throw err;
+    diagnostics.fatal('resolve-operation failed', err);
+    return 1;
   }
 
-  // stderr, so stdout carries only the report line.
-  const { base } = env;
-  const logger = createLogger({
-    service: OWNER,
-    version: await peopleVersion(),
-    env: base.OPT2_ENV,
-    googleCloudProject: base.GOOGLE_CLOUD_PROJECT,
-    destination: process.stderr,
-    ...(base.LOG_LEVEL === undefined ? {} : { level: base.LOG_LEVEL }),
-  });
+  // LOG_LEVEL filters the run's own lines; the outcome diagnostics below always print.
+  const logger = diagnostics.logger.child({});
+  if (env.base.LOG_LEVEL !== undefined) logger.level = env.base.LOG_LEVEL;
   try {
     const { report, settled } = await withCliDeps(env, logger, (deps) => runResolveOperation(deps, args));
     await writeStdout(`${JSON.stringify(report)}\n`);
     if (settled) return 0;
-    process.stderr.write(`${CLI}: ${unsettledMessage(report, args.to)}\n`);
+    // The report line on stdout already names the operation.
+    diagnostics.error(unsettledProblem(report, args.to));
     return 1;
   } catch (err) {
-    if (err instanceof OperationNotFoundError || err instanceof RosterResolutionError || err instanceof ServiceUnavailableError) {
-      process.stderr.write(`${CLI}: ${err.message}\n`);
-      return 1;
-    }
-    logger.fatal({ error: serializeError(err) }, `${CLI} resolve-operation failed`);
+    const problem = outcomeProblem(err);
+    if (problem === undefined) diagnostics.fatal('resolve-operation failed', err);
+    else diagnostics.error(problem, err);
     return 1;
   }
+}
+
+/** Fixed problem of a run the operation's or identity's state ended with exit code 1; undefined for any other failure. */
+function outcomeProblem(err: unknown): string | undefined {
+  if (err instanceof OperationNotFoundError) return 'no searched tenant holds the roster operation';
+  if (err instanceof RosterResolutionError) return 'roster operation refused: its recorded states do not allow the resolution, or another resolution holds it';
+  if (err instanceof ServiceUnavailableError) return 'identity unavailable; rerun later';
+  return undefined;
 }
 
 /** The service environment, its database settings and its publisher's emulator host. */
@@ -255,12 +268,12 @@ function loadCliEnv(source: NodeJS.ProcessEnv): CliEnv {
   return { base, db: { ...base, OPT2_DB_AUTH, PG_DATABASE }, emulatorHost };
 }
 
-/** Why an operation the run returned is still open, with the flag a halted one needs. */
-function unsettledMessage(report: ResolveReport, to: ResolveTarget | undefined): string {
-  const { operationId, to: state } = report;
-  if (state === 'halted' && to === undefined) return `roster operation ${operationId} is halted; rerun with --to rolled-back or --to done`;
-  if (state === 'done') return `roster operation ${operationId} is done but identity's finish is still pending; rerun later`;
-  return `roster operation ${operationId} is still ${state}: its request or another resolution holds it, or identity is unreachable; rerun later`;
+/** Why an operation the run returned is still open, with the flag a halted one needs; names its recorded state only. */
+function unsettledProblem(report: ResolveReport, to: ResolveTarget | undefined): string {
+  const { to: state } = report;
+  if (state === 'halted' && to === undefined) return 'roster operation is halted; rerun with --to rolled-back or --to done';
+  if (state === 'done') return "roster operation is done but identity's finish is still pending; rerun later";
+  return `roster operation is still ${state}: its request or another resolution holds it, or identity is unreachable; rerun later`;
 }
 
 /** Opens the people pool, identity client and outbox publisher as service `people`, runs `fn`, then closes the publisher, client and pool. */
@@ -315,10 +328,6 @@ function invocationMinter(env: Readonly<BaseEnv>): InvocationMinter {
 async function peopleVersion(): Promise<string> {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
   return manifest.version;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Writes to stdout and resolves once the chunk is flushed. */

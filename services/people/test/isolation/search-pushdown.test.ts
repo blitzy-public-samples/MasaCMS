@@ -177,7 +177,7 @@ async function openSchema(holderId: string): Promise<ThrowawaySchema> {
   return handle;
 }
 
-/** A repository that counts its ordered person pages. */
+/** A repository that counts its ordered person reads: keyset pages and search-key lists. */
 function countingRepo(repo: PeopleRepository): { repo: PeopleRepository; pages: () => number } {
   let pages = 0;
   return {
@@ -186,6 +186,10 @@ function countingRepo(repo: PeopleRepository): { repo: PeopleRepository; pages: 
       pagePersonsInOrder: (tx, scope, opts) => {
         pages += 1;
         return repo.pagePersonsInOrder(tx, scope, opts);
+      },
+      listPersonSearchKeys: (tx, scope, orderBy) => {
+        pages += 1;
+        return repo.listPersonSearchKeys(tx, scope, orderBy);
       },
     },
     pages: () => pages,
@@ -631,13 +635,20 @@ describe.skipIf(!available)('search reads over large pools', () => {
       asked.push(fileIds.length);
       return new Map();
     };
-    const { deps, pages } = counted(ADMIN_A);
+    const { deps, identity, pages } = counted(ADMIN_A);
     const page = await getSearchPage({ ...deps, photoFileExts }, ADMIN_A, { search: 'broad' }, paging);
     const full = await getSearch(counted(ADMIN_A).deps, ADMIN_A, { search: 'broad' });
     expect(page).toEqual(pageRows(full.rows, paging));
     expect(page.nextn.TotalRecords).toBe(SEARCH_MAX_ROWS);
     expect(asked).toEqual([50]);
-    expect(pages()).toBeLessThanOrEqual(Math.ceil(SEARCH_MAX_ROWS / 500) + 1);
+    // One search-key read; the third account chunk holds the 2100th match.
+    expect(pages()).toBe(1);
+    expect(identity.calls).toEqual([
+      { op: 'usernameCandidates', ids: 0 },
+      { op: 'readAccounts', ids: 1000 },
+      { op: 'readAccounts', ids: 1000 },
+      { op: 'readAccounts', ids: 600 },
+    ]);
   });
 
   it('merges every tenant for siteid=all with one count and one all-sites lookup per batch', async () => {

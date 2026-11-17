@@ -236,6 +236,11 @@ function predicate(term: string, params: readonly unknown[]): (row: Row) => bool
     const values = (param(index) as unknown[]).map(text);
     return (row) => values.includes(text(row[column]));
   }
+  m = /^NOT (\w+)$/.exec(term);
+  if (m !== null) {
+    const [, column = ''] = m;
+    return (row) => row[column] === false;
+  }
   m = /^(\w+) IS NOT NULL$/.exec(term);
   if (m !== null) {
     const [, column = ''] = m;

@@ -5,6 +5,7 @@ import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@o
 import { LEGACY_ERROR_PAGE_HTML, normaliseRouteKey, routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
 import {
   TENANT_A,
+  TENANT_B,
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   findOperation,
@@ -578,6 +579,42 @@ function favoriteCases(): Record<string, Case[]> {
 }
 
 const HALTED_OPERATION = rosterOperationRow({ user_id: MODULE_USER, state: 'halted', identity_unreachable_since: TEST_CLOCK.now(), halted_at: TEST_CLOCK.now() });
+/** A tenant-a operation recovery halted a minute after HALTED_OPERATION started, since resolved. */
+const LATER_HALTED_OPERATION = rosterOperationRow({
+  user_id: SYSTEM_USER,
+  state: 'rolled-back',
+  started_at: new Date(HALTED_OPERATION.started_at.getTime() + 60_000),
+  halted_at: TEST_CLOCK.now(),
+});
+const HALTED_SELECT = /FROM "people"\."roster_operation" WHERE tenant_id = \$1 AND halted_at IS NOT NULL/;
+
+/** Answers the halted listing from `stored`, by default tenant-a's two operations above: the tenant's rows after the bound cursor in keyset order, at most `$4` of them. */
+function haltedOperations(ctx: TestApp, stored: readonly (typeof HALTED_OPERATION)[] = [HALTED_OPERATION, LATER_HALTED_OPERATION]): void {
+  const ordered = [...stored].sort(
+    (a, b) => a.started_at.getTime() - b.started_at.getTime() || (a.operation_id < b.operation_id ? -1 : a.operation_id > b.operation_id ? 1 : 0),
+  );
+  ctx.db.respond(HALTED_SELECT, (_text, values) => {
+    const [tenantId, afterAt, afterId, take] = values as [string, Date | null, string | null, number];
+    const after = (row: typeof HALTED_OPERATION): boolean =>
+      afterAt === null || row.started_at > afterAt || (row.started_at.getTime() === afterAt.getTime() && row.operation_id > String(afterId));
+    return ordered.filter((row) => row.tenant_id === tenantId && after(row)).slice(0, take);
+  });
+}
+
+/** The cursor-and-take values of each halted read of `tenantId` the app issued, in order. */
+function haltedReads(ctx: TestApp, tenantId: string): unknown[][] {
+  return ctx.db
+    .statements()
+    .filter((statement) => HALTED_SELECT.test(statement.text) && statement.values[0] === tenantId)
+    .map((statement) => statement.values.slice(1));
+}
+
+/** `after` values that are not a `next` the halted listing issued. */
+const FOREIGN_CURSORS: readonly [string, string][] = [
+  ['text that is not base64url JSON', 'not-a-cursor'],
+  ['JSON without the cursor fields', Buffer.from(JSON.stringify({ offset: 1 }), 'utf8').toString('base64url')],
+  ['a cursor whose start is not a timestamp', Buffer.from(JSON.stringify({ startedAt: 'yesterday', operationId: HALTED_OPERATION.operation_id }), 'utf8').toString('base64url')],
+];
 
 const rejectedUsername = (ctx: TestApp): void => ctx.identity.setPrepareErrors(MODULE_USER, { username: USERNAME_TAKEN });
 const unreachableIdentity = (ctx: TestApp): void => ctx.identity.setUnreachable(true);
@@ -912,6 +949,17 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => expect(record(body)).toMatchObject({ written: true, errors: {}, redirect: { action: 'home.redirect' } }),
     },
   ],
+  listUserGroupsV2: [
+    {
+      name: "pages tenant-a's private-pool groups for its site admin",
+      inject: send('GET', `/v2/users/groups?siteid=${SITE_A}&ispublic=0&recordsperpage=1`, SA),
+      status: 200,
+      verify: ({ body }) => {
+        expect((record(body).items as Array<{ GroupName: string }>).map((group) => group.GroupName)).toHaveLength(1);
+        expect(record(body).nextn).toMatchObject({ recordsperpage: 1, startrow: 1 });
+      },
+    },
+  ],
   listUsersV2: [{ name: "pages tenant-a's system users", inject: send('GET', `/v2/users?siteid=${SITE_A}&ispublic=0`, SA), status: 200, verify: listsUser(SYSTEM_USER) }],
   searchUsersV2: [{ name: 'pages the search for Sydney', inject: send('GET', `/v2/users/search?siteid=${SITE_A}&ispublic=0&search=Sydney`, SA), status: 200, verify: listsUser(SYSTEM_USER) }],
   getAdvancedSearchV2: [{ name: 'pages the stored advanced search', inject: send('GET', `/v2/users/advanced-search?siteid=${SITE_A}&ispublic=0`, SA), status: 200, verify: listsUser(SYSTEM_USER) }],
@@ -932,19 +980,64 @@ const CASES: Record<string, Case[]> = {
     },
   ],
   listHaltedRosterOperations: [
+    ...['', '?limit=1&after=not-a-cursor'].map(
+      (query): Case => ({
+        name: `lists tenant-a's halted roster operations for the operator, every one and without next, on ${query === '' ? 'no query' : query}`,
+        inject: send('GET', `/internal/v1/roster-operations/halted${query}`, OPERATOR),
+        setup: haltedOperations,
+        status: 200,
+        verify: ({ body }, ctx) => {
+          expect(record(body)).toEqual({
+            operations: [
+              expect.objectContaining({ operationId: HALTED_OPERATION.operation_id, tenantId: TENANT_A.tenantId, userId: MODULE_USER, kind: 'admin-update', state: 'halted' }),
+              expect.objectContaining({ operationId: LATER_HALTED_OPERATION.operation_id, tenantId: TENANT_A.tenantId, userId: SYSTEM_USER, state: 'rolled-back' }),
+            ],
+          });
+          expect(haltedReads(ctx, TENANT_A.tenantId)).toEqual([[null, null, 1001]]);
+        },
+      }),
+    ),
+  ],
+  listHaltedRosterOperationsPage: [
     {
-      name: "lists tenant-a's halted roster operation for the operator",
-      inject: send('GET', '/internal/v1/roster-operations/halted', OPERATOR),
-      setup: (ctx) =>
-        ctx.db.respond(/FROM "people"\."roster_operation" WHERE tenant_id = \$1 AND halted_at IS NOT NULL/, (_text, values) =>
-          values[0] === TENANT_A.tenantId ? [HALTED_OPERATION] : [],
-        ),
+      name: "lists tenant-a's halted roster operations for the operator on one page",
+      inject: send('GET', '/internal/v2/roster-operations/halted', OPERATOR),
+      setup: haltedOperations,
       status: 200,
       verify: ({ body }) =>
-        expect(record(body).operations).toEqual([
-          expect.objectContaining({ operationId: HALTED_OPERATION.operation_id, tenantId: TENANT_A.tenantId, userId: MODULE_USER, kind: 'admin-update', state: 'halted' }),
-        ]),
+        expect(record(body)).toEqual({
+          operations: [
+            expect.objectContaining({ operationId: HALTED_OPERATION.operation_id, tenantId: TENANT_A.tenantId, userId: MODULE_USER, kind: 'admin-update', state: 'halted' }),
+            expect.objectContaining({ operationId: LATER_HALTED_OPERATION.operation_id, tenantId: TENANT_A.tenantId, userId: SYSTEM_USER, state: 'rolled-back' }),
+          ],
+          next: null,
+        }),
     },
+    {
+      name: 'lists one operation a page with the cursor of the following page',
+      inject: send('GET', '/internal/v2/roster-operations/halted?limit=1', OPERATOR),
+      setup: haltedOperations,
+      status: 200,
+      verify: ({ body }) => {
+        expect(record(body).operations).toEqual([expect.objectContaining({ operationId: HALTED_OPERATION.operation_id })]);
+        expect(record(body).next).toEqual(expect.any(String));
+      },
+    },
+    ...[
+      ...['0', '1001', '2.5', 'ten'].map((limit): [string, string] => [`limit=${limit}`, `limit=${limit}`]),
+      ...FOREIGN_CURSORS.map(([label, after]): [string, string] => [`an after of ${label}`, `after=${encodeURIComponent(after)}`]),
+    ].map(
+      ([label, query]): Case => ({
+        name: `answers the legacy 400 before any read for ${label}`,
+        inject: send('GET', `/internal/v2/roster-operations/halted?${query}`, OPERATOR),
+        setup: haltedOperations,
+        status: 400,
+        verify: ({ body }, ctx) => {
+          expect(record(body).error).toEqual({ message: 'Invalid parameters', code: 'invalid_request' });
+          expect(ctx.db.statements().filter((statement) => HALTED_SELECT.test(statement.text))).toEqual([]);
+        },
+      }),
+    ),
   ],
   readPoolUser: [
     {
@@ -1261,7 +1354,7 @@ describe('registered routes', () => {
       ...['archivePerson', 'getPersonArchive'],
       ...['listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'downloadAdvancedSearchCsv', 'downloadUsersCsv'],
       ...['getUserEdit', 'updateUser', 'getAddressEdit', 'updateAddress', 'routeUser', 'getProfile', 'updateProfile'],
-      ...['listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'readPoolUser', 'listHaltedRosterOperations'],
+      ...['listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'readPoolUser', 'listHaltedRosterOperations', 'listHaltedRosterOperationsPage'],
       ...['Apply', 'Export', 'Changes', 'Position', 'WatermarkGet', 'WatermarkPost', 'Gate'].map((name) => `migration${name}`),
       ...['pushSiteChanged', 'pushGroupChanged', 'outboxSweep', 'queuePause', 'queueResume', 'queueEnsure', 'healthz'],
     ];
@@ -1440,5 +1533,69 @@ describe('responses', () => {
     c.setup?.(built);
     const answer = await sendCase(built, c);
     c.verify?.(answer, built);
+  });
+});
+
+describe('listHaltedRosterOperations', () => {
+  it('answers all 2500 halted operations of two tenants oldest first, without next, from keyset reads of 1000', async () => {
+    const built = await buildTestApp();
+    try {
+      seedApp(built);
+      const stored = Array.from({ length: 2500 }, (_, i) =>
+        rosterOperationRow({
+          tenant_id: i % 3 === 0 ? TENANT_B.tenantId : TENANT_A.tenantId,
+          state: 'halted',
+          started_at: new Date(HALTED_OPERATION.started_at.getTime() + i * 1_000),
+          halted_at: TEST_CLOCK.now(),
+        }),
+      );
+      haltedOperations(built, stored);
+      const path = '/internal/v1/roster-operations/halted';
+
+      const res = await built.app.inject({ method: 'GET', url: path, headers: await OPERATOR() });
+
+      expect(res.statusCode, res.body.slice(0, 400)).toBe(200);
+      const body = JSON.parse(res.body) as { operations: { operationId: string; tenantId: string }[] };
+      assertResponseMatchesOpenApi(DOC, { method: 'GET', path, status: res.statusCode, contentType: res.headers['content-type'], body });
+      expect(Object.keys(body)).toEqual(['operations']);
+      expect(body.operations.map(({ operationId, tenantId }) => [operationId, tenantId])).toEqual(stored.map((row) => [row.operation_id, row.tenant_id]));
+      // The first read, then one after each 1000th operation, each taking limit + 1.
+      const resumed = [null, stored[999], stored[1999]].map((row) => [row?.started_at ?? null, row?.operation_id ?? null, 1001]);
+      expect(haltedReads(built, TENANT_A.tenantId)).toEqual(resumed);
+      expect(haltedReads(built, TENANT_B.tenantId)).toEqual(resumed);
+    } finally {
+      await built.close();
+    }
+  });
+});
+
+describe('listHaltedRosterOperationsPage paging', () => {
+  it('resumes each page after the last operation of the page whose next it is sent, until next is null', async () => {
+    const built = await buildTestApp();
+    try {
+      seedApp(built);
+      haltedOperations(built);
+      const headers = await OPERATOR();
+      const page = async (query: string): Promise<{ operations: { operationId: string }[]; next: string | null }> => {
+        const path = '/internal/v2/roster-operations/halted';
+        const res = await built.app.inject({ method: 'GET', url: `${path}?${query}`, headers });
+        expect(res.statusCode, res.body.slice(0, 400)).toBe(200);
+        assertResponseMatchesOpenApi(DOC, { method: 'GET', path, status: res.statusCode, contentType: res.headers['content-type'], body: JSON.parse(res.body) });
+        return JSON.parse(res.body) as { operations: { operationId: string }[]; next: string | null };
+      };
+
+      const first = await page('limit=1');
+      const second = await page(`limit=1&after=${encodeURIComponent(first.next ?? '')}`);
+
+      expect(first.operations.map(({ operationId }) => operationId)).toEqual([HALTED_OPERATION.operation_id]);
+      expect(second.operations.map(({ operationId }) => operationId)).toEqual([LATER_HALTED_OPERATION.operation_id]);
+      expect(second.next).toBeNull();
+      expect(haltedReads(built, TENANT_A.tenantId)).toEqual([
+        [null, null, 2],
+        [HALTED_OPERATION.started_at, HALTED_OPERATION.operation_id, 2],
+      ]);
+    } finally {
+      await built.close();
+    }
   });
 });

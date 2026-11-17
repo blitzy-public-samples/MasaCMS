@@ -10,7 +10,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import type { CsrfValidation, InventoryFacts, RouteFacts } from '../cutover/types.js';
-import type { BridgeClient } from './bridge-client.js';
+import { isBridgeSessionMismatch, type BridgeClient } from './bridge-client.js';
 import type { IdentityClient } from './identity-client.js';
 import { isDeletedJarCookie, type JarCookies, type LegacyJar } from './jar.js';
 import type { SessionMode } from './mode.js';
@@ -51,7 +51,7 @@ export interface CsrfContinuity {
   /**
    * Claims the request's token when its branch validates, before forwarding; a reload key is judged by its
    * `afterReload` route. Undefined when no legacy ledger needs settling, or in legacy-primary while identity is
-   * unavailable.
+   * unavailable or once the cookies no longer attach the jar's legacy session.
    */
   beforeLegacy(
     request: SessionRequestInput,
@@ -155,14 +155,18 @@ export function createCsrfContinuity(opts: CsrfContinuityOptions): CsrfContinuit
     return Object.keys(cookies).length > 0 ? { legacySessionId: row.legacySessionId, cookies } : undefined;
   }
 
-  /** Claims `token`; one identity already holds as used goes into the legacy ledger, so legacy rejects it itself. */
+  /**
+   * Claims `token`; one identity already holds as used goes into the legacy ledger, so legacy rejects it itself.
+   * Undefined in legacy-primary when the cookies no longer attach that legacy session: legacy then serves the request
+   * in a new session, whose own secret rejects the token.
+   */
   async function claimToken(
     request: SessionRequestInput,
     served: ServedRoute,
     routeFacts: RouteFacts | undefined,
     token: string,
-    session: { sessionId: string; attached: AttachedSession; userAgent: string | undefined },
-  ): Promise<string[]> {
+    session: { sessionId: string; attached: AttachedSession; userAgent: string | undefined; mode: SessionMode },
+  ): Promise<string[] | undefined> {
     const result = await identity.claim({
       sessionId: session.sessionId,
       token,
@@ -171,10 +175,15 @@ export function createCsrfContinuity(opts: CsrfContinuityOptions): CsrfContinuit
       context: routeFacts?.csrfContext ?? '',
     });
     if (result.state === 'pending-legacy') return [token];
-    await bridge.markUsed(session.attached.cookies, [{ token, usedAt: wireTime(clock.now()) }], {
-      legacySessionId: session.attached.legacySessionId,
-      userAgent: session.userAgent,
-    });
+    try {
+      await bridge.markUsed(session.attached.cookies, [{ token, usedAt: wireTime(clock.now()) }], {
+        legacySessionId: session.attached.legacySessionId,
+        userAgent: session.userAgent,
+      });
+    } catch (error) {
+      if (session.mode === 'legacy-primary' && isBridgeSessionMismatch(error)) return undefined;
+      throw error;
+    }
     return [];
   }
 
@@ -199,7 +208,7 @@ export function createCsrfContinuity(opts: CsrfContinuityOptions): CsrfContinuit
       const claimedTokens =
         validates && token !== undefined
           ? await unlessIdentityDown(mode, () =>
-              claimToken(request, served, routeFacts, token, { sessionId: resolution.sessionId, attached, userAgent }),
+              claimToken(request, served, routeFacts, token, { sessionId: resolution.sessionId, attached, userAgent, mode }),
             )
           : [];
       if (claimedTokens === undefined) return undefined;

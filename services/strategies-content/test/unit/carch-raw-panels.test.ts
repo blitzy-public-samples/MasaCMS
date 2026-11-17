@@ -19,7 +19,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { SESSION_EFFECTS_HEADER, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
-import { TEST_CLOCK, buildContentApp, createRecordingDb, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { SITE_CONFIG_FLAGS_PATH, TEST_CLOCK, buildContentApp, createRecordingDb, siteConfigFlagsAnswer, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 
@@ -70,7 +70,7 @@ const ACTIONS = /^SELECT \* FROM "content"\."approval_action" WHERE/;
 const GROUPS = /^SELECT \* FROM "content"\."group_projection" WHERE/;
 const CHANGESET = /^SELECT \* FROM "content"\."changeset" WHERE/;
 const STATS = /FROM "content"\."content_stats" s WHERE/;
-const REGISTRY_ENTRY = /^SELECT site_id, tenant_id, .* FROM content\.tenant_registry WHERE tenant_id = \$1$/;
+const REGISTRY_ENTRY = /^SELECT site_id, tenant_id, .* FROM content\.tenant_registry WHERE tenant_id = \$1 AND NOT deleted$/;
 const CONTENT_INSERT = /^INSERT INTO "content"\."content" \(/;
 
 const db = createRecordingDb();
@@ -109,7 +109,8 @@ beforeAll(async () => {
     },
   });
   ctx.storage = t.storage;
-  const answer = (req: ServiceRequest): ServiceResponse => {
+  const answer = (req: ServiceRequest): ServiceResponse | Promise<ServiceResponse> => {
+    if (req.service === 'programs-sites' && req.method === 'POST' && req.path === SITE_CONFIG_FLAGS_PATH) return siteConfigFlagsAnswer()(req);
     if (req.service === 'identity' && req.method === 'GET' && req.path === '/v1/sessions/current/admin-state') return { status: 200, headers: {}, body: identity.state };
     if (req.service === 'identity' && req.method === 'GET' && req.path === '/v1/sessions/current') return { status: 200, headers: {}, body: { user: identity.user } };
     if (req.service === 'identity' && req.method === 'POST' && req.path === '/v1/csrf/tokens') {

@@ -7,6 +7,8 @@ import { parse } from 'csv-parse/sync';
 import ExcelJS from 'exceljs';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { sha256Hex } from '@opt2/platform/migration-kit';
+import { GoldenConfigError } from '../errors.js';
+import { createIdOrdinals } from './ids.js';
 import type { NormaliseRules } from './rules.js';
 import { normaliseValue } from './values.js';
 
@@ -97,20 +99,66 @@ function columnKeys(header: readonly unknown[] | undefined, rules: NormaliseRule
   return header.map((cell) => (typeof cell === 'string' && cell.trim() !== '' ? cell.trim() : undefined));
 }
 
+function csvRow(row: readonly string[], state: IdOrdinals, rules: NormaliseRules, keys: readonly (string | undefined)[]): string[] {
+  return row.map((cell, c) => normaliseString(applyWhitespace(cell, rules.exports.csv.whitespace), state, rules, keys[c]));
+}
+
+const codeUnitOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** `rows` with each run tying on `keyColumns` sorted per `exports.csv.keyTies`; throws GoldenConfigError for a column the header lacks. */
+function orderKeyTies(
+  header: readonly string[],
+  rows: readonly string[][],
+  keyColumns: readonly string[],
+  keys: readonly (string | undefined)[],
+  rules: NormaliseRules,
+): string[][] {
+  const ties = rules.exports.csv.keyTies;
+  const indexes = keyColumns.map((name) => {
+    const index = header.findIndex((cell) => cell.trim() === name);
+    if (index < 0) throw new GoldenConfigError(`csvKeyOrder column ${name} is not a header of the CSV`);
+    return index;
+  });
+  const keyOf = (row: readonly string[]): string =>
+    indexes
+      .map((index) => {
+        const cell = applyWhitespace(row[index] ?? '', ties.whitespace);
+        return ties.match === 'case-insensitive' ? cell.toLowerCase() : cell;
+      })
+      .join('\u0000');
+  // A row normalised alone numbers only its own ids, so the order never depends on raw ids or earlier steps.
+  const sortKey = (row: readonly string[]): [string, string] => [
+    JSON.stringify(csvRow(row, createIdOrdinals(), rules, keys)),
+    JSON.stringify(row),
+  ];
+  const rowKeys = rows.map(keyOf);
+  const ordered: string[][] = [];
+  for (let start = 0; start < rows.length; ) {
+    let end = start + 1;
+    while (end < rows.length && rowKeys[end] === rowKeys[start]) end += 1;
+    const run = rows.slice(start, end);
+    if (run.length > 1) {
+      const sorted = run.map((row) => ({ row, by: sortKey(row) }));
+      sorted.sort((a, b) => codeUnitOrder(a.by[0], b.by[0]) || codeUnitOrder(a.by[1], b.by[1]));
+      ordered.push(...sorted.map(({ row }) => row));
+    } else {
+      ordered.push(...run);
+    }
+    start = end;
+  }
+  return ordered;
+}
+
 /**
- * CSV `text` as its cell grid, each cell normalised as a body value under its column header.
- * Cells keep their whitespace under `exports.csv.whitespace: exact`, so Masa's appended-space quirk stays visible.
+ * CSV `text` as its cell grid, each cell normalised under its column header after runs tying on `keyColumns` are
+ * ordered; `exports.csv.whitespace: exact` keeps Masa's appended-space quirk visible.
  */
-export function csvModel(text: string, state: IdOrdinals, rules: NormaliseRules): CsvModel {
-  const records = parse(text, { bom: true, relax_column_count: true, relax_quotes: true });
-  const keys = columnKeys(records[0], rules);
-  const mode = rules.exports.csv.whitespace;
-  return {
-    kind: 'csv',
-    rows: records.map((row, r) =>
-      row.map((cell, c) => normaliseString(applyWhitespace(cell, mode), state, rules, r === 0 ? undefined : keys[c])),
-    ),
-  };
+export function csvModel(text: string, state: IdOrdinals, rules: NormaliseRules, keyColumns: readonly string[] = []): CsvModel {
+  const [header, ...rows] = parse(text, { bom: true, relax_column_count: true, relax_quotes: true });
+  if (header === undefined) return { kind: 'csv', rows: [] };
+  const keys = columnKeys(header, rules);
+  const ordered = keyColumns.length === 0 ? rows : orderKeyTies(header, rows, keyColumns, keys, rules);
+  return { kind: 'csv', rows: [csvRow(header, state, rules, []), ...ordered.map((row) => csvRow(row, state, rules, keys))] };
 }
 
 // exceljs decodes date serials into the UTC fields of a Date, so these are the wall-clock values the sheet holds.
@@ -216,15 +264,16 @@ function bodyBytes(response: ExportResponse): Buffer {
     : Buffer.from(response.bytesBase64, 'base64');
 }
 
-/** Model of a recorded export or download response, by the kind its content type selects. */
+/** Model of a recorded export or download response, by the kind its content type selects; `csvKeyColumns` as {@link csvModel}. */
 export async function exportModel(
   response: ExportResponse,
   state: IdOrdinals,
   rules: NormaliseRules,
+  csvKeyColumns: readonly string[] = [],
 ): Promise<ExportModel> {
   switch (exportKindFor(response.contentType)) {
     case 'csv':
-      return csvModel(response.text ?? bodyBytes(response).toString('utf8'), state, rules);
+      return csvModel(response.text ?? bodyBytes(response).toString('utf8'), state, rules, csvKeyColumns);
     case 'xlsx':
       return xlsxModel(bodyBytes(response), state, rules);
     case 'pdf':

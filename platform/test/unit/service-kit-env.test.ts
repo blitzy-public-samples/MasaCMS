@@ -15,11 +15,13 @@ import {
   envPort,
   envUrl,
   loadEnv,
+  loadTracingEnv,
   optionalEnvString,
   processEnvSchema,
   publisherEmulatorHost,
   readEnvFile,
   requiredEnvString,
+  tracingEnvSchema,
   type ProcessEnvRequirements,
 } from '../../src/service-kit/env.js';
 
@@ -309,6 +311,50 @@ describe('loadEnv', () => {
     expect(() => loadEnv()).toThrow(/\n {2}TZ: must be an IANA time zone name/);
   });
 });
+
+describe('loadTracingEnv', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['nothing', {}, {}],
+    ['blank values', { OTEL_EXPORTER_OTLP_ENDPOINT: '  ', OTEL_LOG_LEVEL: '' }, {}],
+    ['an endpoint and a level', { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318//', OTEL_LOG_LEVEL: 'debug' }, { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318', OTEL_LOG_LEVEL: 'DEBUG' }],
+    ['a level in mixed case', { OTEL_LOG_LEVEL: 'All' }, { OTEL_LOG_LEVEL: 'ALL' }],
+    ['an unknown level', { OTEL_LOG_LEVEL: 'trace' }, { OTEL_LOG_LEVEL: 'INFO' }],
+    ['a padded level', { OTEL_LOG_LEVEL: ' warn ' }, { OTEL_LOG_LEVEL: 'INFO' }],
+  ])('parses %s', (_case, source, expected) => {
+    const env = loadTracingEnv(source);
+
+    expect({ ...env }).toEqual(expected);
+    expect(Object.isFrozen(env)).toBe(true);
+  });
+
+  it('reads process.env by default, and baseEnvSchema carries the same variables', () => {
+    vi.stubEnv('OTEL_LOG_LEVEL', 'error');
+
+    expect(loadTracingEnv().OTEL_LOG_LEVEL).toBe('ERROR');
+    expect(Object.keys(tracingEnvSchema.shape).filter((key) => !(key in baseEnvSchema.shape))).toEqual([]);
+    expect(loadEnv(baseEnvSchema, { ...localEnv, OTEL_LOG_LEVEL: 'verbose' })).toMatchObject({ OTEL_LOG_LEVEL: 'VERBOSE' });
+  });
+
+  it('throws EnvValidationError naming an invalid endpoint after the service, never its value', () => {
+    const value = 'collector.internal:4318';
+    let failure: unknown;
+    try {
+      loadTracingEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: value, OTEL_LOG_LEVEL: 'debug' }, 'people');
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(EnvValidationError);
+    expect((failure as EnvValidationError).issues).toEqual(['OTEL_EXPORTER_OTLP_ENDPOINT: Invalid URL']);
+    expect((failure as EnvValidationError).message).not.toContain(value);
+    expect(serializeError(failure).message).toBe('people: invalid environment (OTEL_EXPORTER_OTLP_ENDPOINT: expected an http(s) URL)');
+  });
+});
+
 
 describe('publisherEmulatorHost', () => {
   it.each([

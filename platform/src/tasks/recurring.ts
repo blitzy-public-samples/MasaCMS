@@ -135,7 +135,8 @@ export async function ensureRecurring(port: TaskPort, opts: RecurringSpec & { cl
   const live = await liveChainTask(port, queue);
   if (live !== undefined) return { queue, name: live, created: false, reason: 'live' };
 
-  const slot = await durableSlot(port, opts, current);
+  // As a successor does, the new chain task stores its own root span's context, so its first run is traced even when ensured from an unsampled trace.
+  const slot = await startLinkedRootSpan(`tasks.ensure ${queue}`, SpanKind.PRODUCER, () => durableSlot(port, opts, current));
   if (!slot.created) return { queue, name: slot.name, created: false, reason: 'live' };
   return { queue, name: slot.name, created: true, reason: slot.slotS === current ? 'created-current' : 'created-next' };
 }

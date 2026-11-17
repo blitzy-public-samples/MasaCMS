@@ -1,13 +1,13 @@
 /** Per-tenant counts of outbox rows still to publish, which migration's position endpoint reports while a transition drains. */
-import { registeredTenants, withTenant, type TenantDb } from '../tenancy/index.js';
+import { knownTenants, withTenant, type TenantDb } from '../tenancy/index.js';
 import { outboxTable } from './ddl.js';
 
 /** Lists the tenants whose outbox rows are counted. */
 export type TenantsOf = (db: TenantDb) => Promise<readonly string[]>;
 
-/** Every tenant of the service's `tenant_registry`, without repeats. */
+/** Every tenant of the service's `tenant_registry`, deleted sites included, without repeats. */
 export const registryTenants: TenantsOf = async (db) => [
-  ...new Set((await registeredTenants(db)).map((entry) => entry.tenantId)),
+  ...new Set((await knownTenants(db)).map((entry) => entry.tenantId)),
 ];
 
 /** Outbox counts of one tenant: `unpublished` excludes held rows, `held` counts rows of open operations. */

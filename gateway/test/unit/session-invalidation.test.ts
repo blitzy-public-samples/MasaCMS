@@ -3,16 +3,19 @@ import { normaliseRouteKey, routeKeyForRequest, type RouteKeyRequest } from '@op
 import { describe, expect, it } from 'vitest';
 import type { InventoryFacts, RouteFacts, SessionEffect } from '../../src/cutover/types.js';
 import type { LegacyDescribe } from '../../src/session/bridge-client.js';
-import type { AdoptedSession } from '../../src/session/identity-client.js';
+import type { AdoptedSession, SessionSnapshot } from '../../src/session/identity-client.js';
 import {
   IDENTITY_LOGOUT_ROUTE_KEYS,
   createInvalidation,
-  isLegacyLogout,
   isLogoutRouteKey,
   isTargetLogout,
   legacySessionEffect,
+  type Invalidation,
   type InvalidationOptions,
+  type LegacyHeldSession,
   type LegacyLoginFacts,
+  type LegacyLogoutFacts,
+  type LegacyLogoutOutcome,
 } from '../../src/session/invalidation.js';
 import type { JarCookie, JarCookies, JarRow, JarUpsert, LockedJar } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
@@ -72,6 +75,17 @@ function described(overrides: Partial<LegacyDescribe> = {}): LegacyDescribe {
   };
 }
 
+/** Identity's snapshot of the session under CSRF secret `csrfSecretKey`. */
+function snapshotOf(csrfSecretKey: string): SessionSnapshot {
+  return {
+    sessionId: SESSION_ID,
+    epoch: 4,
+    loginSnapshot: { user: { userID: 'USER-0001', username: 'admin' }, roles: ['S2IsPrivate;default', 'S2'] },
+    csrfSecretKey,
+    usedTokens: [],
+  };
+}
+
 type Call = [op: string, ...args: unknown[]];
 
 /** Stub identity, bridge, jar, token cache and state checker sharing one ordered call log. */
@@ -82,6 +96,10 @@ interface Harness {
   describe: LegacyDescribe;
   /** Answers of the next `op=describe` calls, in order. */
   describes: LegacyDescribe[];
+  /** Refuses every `op=describe` once set. */
+  describeError?: Error;
+  /** Identity's snapshot of the session; undefined reads as ended. */
+  snapshot: SessionSnapshot | undefined;
   adopted: AdoptedSession;
   /** Runs when a locked section has taken a legacy session's lock. */
   onNative?: () => void;
@@ -94,6 +112,7 @@ function harness(row?: JarRow): Harness {
     rows: new Map(row === undefined ? [] : [[row.sessionId, row]]),
     describe: described(),
     describes: [],
+    snapshot: snapshotOf(described().csrfSecretKey),
     adopted: { sessionId: SESSION_ID, epoch: 6, setCookie: [] },
     options: undefined as unknown as InvalidationOptions,
   };
@@ -153,10 +172,15 @@ function harness(row?: JarRow): Harness {
         record('identity.end', sessionId, reason);
         return Promise.resolve({ ended: true, epoch: 9 });
       },
+      snapshot(sessionId) {
+        record('identity.snapshot', sessionId);
+        return Promise.resolve(h.snapshot);
+      },
     },
     bridge: {
       describe(cookies, call) {
         record('bridge.describe', cookies, call);
+        if (h.describeError !== undefined) return Promise.reject(h.describeError);
         return Promise.resolve({ body: h.describes.shift() ?? h.describe, setCookies: [] });
       },
       end(cookies, call) {
@@ -176,6 +200,10 @@ function harness(row?: JarRow): Harness {
           throw err;
         }
       },
+      get(sessionId) {
+        record('jar.get', sessionId);
+        return Promise.resolve(h.rows.get(sessionId));
+      },
       drop(sessionId) {
         record('jar.drop', sessionId);
         return Promise.resolve(h.rows.delete(sessionId));
@@ -185,6 +213,19 @@ function harness(row?: JarRow): Harness {
         const row = h.rows.get(sessionId);
         const empty: JarRow = { sessionId, legacySessionId: null, cookies: {}, mode, hydratedEpoch: null, updatedAt: NOW };
         h.rows.set(sessionId, { identityEndPendingAt: NOW, ...(row ?? empty) });
+        return Promise.resolve();
+      },
+      clearIdentityEndPending(sessionId, updatedAt) {
+        record('jar.clearIdentityEndPending', sessionId, updatedAt);
+        const row = h.rows.get(sessionId);
+        // As the jar does, a row changed since the version read keeps its mark.
+        const current = updatedAt === undefined || row?.updatedAt.getTime() === updatedAt.getTime();
+        if (row?.identityEndPendingAt !== undefined && current) {
+          const { identityEndPendingAt: _cleared, ...kept } = row;
+          const empty = kept.legacySessionId === null && Object.keys(kept.cookies).length === 0 && kept.hydratedEpoch === null;
+          if (empty) h.rows.delete(sessionId);
+          else h.rows.set(sessionId, kept);
+        }
         return Promise.resolve();
       },
     },
@@ -233,44 +274,41 @@ describe('logout route-key predicates', () => {
     expect(Object.isFrozen(IDENTITY_LOGOUT_ROUTE_KEYS)).toBe(true);
   });
 
-  it.each<[string, boolean, boolean, boolean, boolean]>([
-    ['admin:clogin.logout', true, true, false, true],
-    [' ADMIN:cLogin.Logout ', true, true, false, true],
-    ['admin:clogin.logout{compact}', true, true, false, true],
-    ['api:logout', true, true, false, true],
-    ['page:logout', true, true, true, false],
-    ['page:login,logout', true, true, true, false],
-    ['page:logout+saveform', true, true, true, false],
-    ['page:saverate', false, false, false, false],
-    ['page:render', false, false, false, false],
-    ['page:saveform', false, false, false, false],
-    ['admin:clogin.login', false, false, false, false],
-    ['rest:logout', false, false, false, false],
-  ])('%s: logout %s, legacy logout %s legacy-primary and %s target-primary, target logout %s', (key, logout, legacyPrimary, targetPrimary, target) => {
+  it.each<[string, boolean, boolean]>([
+    ['admin:clogin.logout', true, true],
+    [' ADMIN:cLogin.Logout ', true, true],
+    ['admin:clogin.logout{compact}', true, true],
+    ['api:logout', true, true],
+    ['page:logout', true, false],
+    ['page:login,logout', true, false],
+    ['page:logout+saveform', true, false],
+    ['page:saverate', false, false],
+    ['page:render', false, false],
+    ['page:saveform', false, false],
+    ['admin:clogin.login', false, false],
+    ['rest:logout', false, false],
+  ])('%s: logout %s, target logout %s', (key, logout, target) => {
     expect(isLogoutRouteKey(key)).toBe(logout);
-    expect(isLegacyLogout(key, 'legacy-primary')).toBe(legacyPrimary);
-    expect(isLegacyLogout(key, 'target-primary')).toBe(targetPrimary);
     expect(isTargetLogout(key)).toBe(target);
   });
 });
 
 describe('legacySessionEffect', () => {
-  it.each<[string, string, SessionMode, 'login' | 'logout' | undefined]>([
-    ['the admin logout in legacy-primary mode', 'admin:clogin.logout', 'legacy-primary', 'logout'],
-    ['the admin logout in target-primary mode', 'admin:clogin.logout', 'target-primary', undefined],
-    ['the JSON API logout in legacy-primary mode', 'api:logout', 'legacy-primary', 'logout'],
-    ['a page logout in target-primary mode', 'page:logout', 'target-primary', 'logout'],
-    ['a page logout listed after a login doaction', 'page:login,logout', 'legacy-primary', 'logout'],
-    ['a recorded login', 'admin:clogin.login', 'legacy-primary', 'login'],
-    ['a recorded re-login', 'API:save', 'target-primary', 'login'],
-    ['an unlisted page key with a login doaction', 'page:saverate,login', 'target-primary', 'login'],
-    ['an unlisted page key without one', 'page:saverate,comment+saveform', 'legacy-primary', undefined],
-    ['a plain page render', 'page:render', 'legacy-primary', undefined],
-    ['a sessionless REST login', 'rest:login', 'legacy-primary', undefined],
-    ['a write recording no session effect', 'admin:cusers.update', 'legacy-primary', undefined],
-    ['a route without facts', 'admin:carch.update', 'target-primary', undefined],
-  ])('is %s for %s', (_label, key, mode, expected) => {
-    expect(legacySessionEffect(key, mode, FACTS)).toBe(expected);
+  it.each<[string, string, 'login' | 'logout' | undefined]>([
+    ['the admin logout', 'admin:clogin.logout', 'logout'],
+    ['the JSON API logout', 'api:logout', 'logout'],
+    ['a page logout', 'page:logout', 'logout'],
+    ['a page logout listed after a login doaction', 'page:login,logout', 'logout'],
+    ['a recorded login', 'admin:clogin.login', 'login'],
+    ['a recorded re-login', 'API:save', 'login'],
+    ['an unlisted page key with a login doaction', 'page:saverate,login', 'login'],
+    ['an unlisted page key without one', 'page:saverate,comment+saveform', undefined],
+    ['a plain page render', 'page:render', undefined],
+    ['a sessionless REST login', 'rest:login', undefined],
+    ['a write recording no session effect', 'admin:cusers.update', undefined],
+    ['a route without facts', 'admin:carch.update', undefined],
+  ])('is %s for %s', (_label, key, expected) => {
+    expect(legacySessionEffect(key, FACTS)).toBe(expected);
   });
 
   it.each<[string, RouteKeyRequest, 'login' | 'logout']>([
@@ -290,7 +328,7 @@ describe('legacySessionEffect', () => {
       'logout',
     ],
   ])('reads a route-key result: %s', (_label, request, expected) => {
-    expect(legacySessionEffect(routeKeyForRequest(request), 'legacy-primary', FACTS)).toBe(expected);
+    expect(legacySessionEffect(routeKeyForRequest(request), FACTS)).toBe(expected);
   });
 });
 
@@ -390,23 +428,218 @@ describe('beforeLegacyLogout', () => {
   });
 });
 
-describe.each(['afterLegacyLogout', 'completePending'] as const)('%s', (method) => {
-  const marked = (): JarRow => ({ ...jarRow(), identityEndPendingAt: NOW });
+const marked = (overrides: Partial<JarRow> = {}): JarRow => ({ ...jarRow(overrides), identityEndPendingAt: NOW });
+const ENDED: Call[] = [...FORGET_SESSION, ['identity.end', SESSION_ID, 'legacy-logout'], ['jar.drop', SESSION_ID]];
+/** Legacy's default request timeout, 1000 s. */
+const REQUEST_TIMEOUT_MS = 1_000_000;
+/** A later logout's mark: it keeps the first mark's time and stamps only `updatedAt`. */
+const REMARKED_AT = new Date(NOW.getTime() + 1);
 
+describe.each<[string, (invalidation: Invalidation) => Promise<unknown>, Call[]]>([
+  [
+    'afterLegacyLogout without live legacy cookies',
+    (invalidation) => invalidation.afterLegacyLogout(SESSION_ID, { cookies: DELETED, mode: 'legacy-primary' }),
+    [['jar.get', SESSION_ID]],
+  ],
+  [
+    'completePending of a legacy-primary jar without live legacy cookies',
+    (invalidation) => invalidation.completePending(SESSION_ID, { cookies: DELETED }),
+    [['jar.get', SESSION_ID]],
+  ],
+])('%s', (_label, run, read) => {
   it('forgets tokens and state, ends the identity session as a legacy logout and drops the marked jar', async () => {
-    const h = harness(marked());
-    await createInvalidation(h.options)[method](SESSION_ID);
-    expect(h.calls).toEqual([...FORGET_SESSION, ['identity.end', SESSION_ID, 'legacy-logout'], ['jar.drop', SESSION_ID]]);
+    const h = harness(marked({ mode: 'legacy-primary' }));
+    await run(createInvalidation(h.options));
+    expect(h.calls).toEqual([...read, ...ENDED]);
     expect(h.rows.size).toBe(0);
   });
 
   it('rejects and keeps the marked jar untouched when identity cannot end the session', async () => {
-    const h = harness(marked());
+    const h = harness(marked({ mode: 'legacy-primary' }));
     const refusal = new Error('identity unavailable');
     h.options.identity.end = () => Promise.reject(refusal);
-    await expect(createInvalidation(h.options)[method](SESSION_ID)).rejects.toBe(refusal);
-    expect(h.calls.map(([op]) => op)).toEqual(['tokenCache.drop', 'state.forget']);
+    await expect(run(createInvalidation(h.options))).rejects.toBe(refusal);
+    expect(h.calls).toEqual([...read, ...FORGET_SESSION]);
+    expect(h.rows.get(SESSION_ID)).toEqual(marked({ mode: 'legacy-primary' }));
+  });
+});
+
+describe('afterLegacyLogout judged by the login legacy holds', () => {
+  const HELD: LegacyLogoutFacts = { cookies: { ...BROWSER_LIVE, ...EXPIRED }, userAgent: USER_AGENT, mode: 'target-primary' };
+  const EVIDENCE: Call[] = [
+    ['jar.get', SESSION_ID],
+    ['bridge.describe', BROWSER_LIVE, { userAgent: USER_AGENT }],
+    ['identity.snapshot', SESSION_ID],
+  ];
+
+  it('only clears the mark at the version read, keeping the identity session and its jar, when legacy holds the login under identity secret', async () => {
+    const h = harness(marked());
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls).toEqual([...EVIDENCE, ['jar.clearIdentityEndPending', SESSION_ID, NOW]]);
+    expect(h.rows.get(SESSION_ID)).toEqual(jarRow());
+  });
+
+  it('clears nothing when legacy keeps the login of a session a reader already unmarked', async () => {
+    const h = harness(jarRow());
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls).toEqual(EVIDENCE);
+    expect(h.rows.get(SESSION_ID)).toEqual(jarRow());
+  });
+
+  it.each<[string, Partial<LegacyDescribe>, SessionSnapshot | undefined]>([
+    ['legacy logged the session out', { isLoggedIn: false }, snapshotOf('CSRF-SECRET-0001')],
+    ['legacy logged in again under a fresh CSRF secret', { csrfSecretKey: 'CSRF-SECRET-0002' }, snapshotOf('CSRF-SECRET-0001')],
+    ['identity reports the session ended', {}, undefined],
+  ])('ends the identity session and drops the jar when %s', async (_label, legacy, snapshot) => {
+    const h = harness(marked());
+    h.describe = described(legacy);
+    h.snapshot = snapshot;
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls).toEqual([...EVIDENCE, ...ENDED]);
+    expect(h.rows.size).toBe(0);
+  });
+
+  it.each<[string, (options: InvalidationOptions, refusal: Error) => void]>([
+    ['legacy cannot be described', (options, refusal) => (options.bridge.describe = () => Promise.reject(refusal))],
+    ['identity cannot report its snapshot', (options, refusal) => (options.identity.snapshot = () => Promise.reject(refusal))],
+  ])('logs and keeps the session and its mark, ending nothing, when %s', async (_label, refuse) => {
+    const h = harness(marked());
+    const refusal = new TypeError('fetch failed');
+    refuse(h.options, refusal);
+    const warnings: Array<[object, string]> = [];
+    h.options.logger = { warn: (obj, msg) => warnings.push([obj, msg]) };
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls.slice(-1)).toEqual([['jar.markIdentityEndPending', SESSION_ID, 'target-primary']]);
+    expect(h.calls.map(([op]) => op)).not.toContain('identity.end');
+    expect(warnings).toEqual([
+      [{ error: expect.objectContaining({ type: 'TypeError' }) }, 'legacy logout outcome unknown; the identity session stays pending'],
+    ]);
     expect(h.rows.get(SESSION_ID)).toEqual(marked());
+  });
+
+  it('marks the session again when a reader cleared the mark before the outcome proved unknown', async () => {
+    const h = harness(jarRow());
+    h.describeError = new TypeError('fetch failed');
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls).toEqual([...EVIDENCE, ['jar.markIdentityEndPending', SESSION_ID, 'target-primary']]);
+    expect(h.rows.get(SESSION_ID)).toEqual(marked());
+  });
+
+  it('rejects without ending the identity session when the mark cannot be cleared', async () => {
+    const h = harness(marked());
+    const refusal = new Error('gateway database unavailable');
+    h.options.jar.clearIdentityEndPending = () => Promise.reject(refusal);
+    await expect(createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD)).rejects.toBe(refusal);
+    expect(h.calls).toEqual(EVIDENCE);
+    expect(h.rows.get(SESSION_ID)).toEqual(marked());
+  });
+});
+
+describe('completePending judged by the login legacy holds', () => {
+  const HELD: LegacyHeldSession = { cookies: { ...BROWSER_LIVE, ...EXPIRED }, userAgent: USER_AGENT };
+  const EVIDENCE: Call[] = [
+    ['jar.get', SESSION_ID],
+    ['bridge.describe', JAR_LIVE, { userAgent: USER_AGENT }],
+    ['identity.snapshot', SESSION_ID],
+  ];
+
+  const CLEARED: Call[] = [['jar.clearIdentityEndPending', SESSION_ID, NOW]];
+
+  it.each<{
+    name: string;
+    legacy: Partial<LegacyDescribe> | Error;
+    initial?: Partial<JarRow>;
+    elapsedMs: number;
+    timeoutMs?: number;
+    outcome: LegacyLogoutOutcome;
+    after: Call[];
+    row: JarRow | undefined;
+  }>([
+    { name: 'ends the session legacy logged out', legacy: { isLoggedIn: false }, elapsedMs: 0, outcome: 'logged-out', after: ENDED, row: undefined },
+    {
+      name: 'keeps a session legacy kept logged in, with its fresh mark',
+      legacy: {},
+      elapsedMs: REQUEST_TIMEOUT_MS - 1,
+      outcome: 'kept',
+      after: [],
+      row: marked(),
+    },
+    {
+      name: 'keeps a session legacy kept logged in and clears its mark once older than the default request timeout',
+      legacy: {},
+      elapsedMs: REQUEST_TIMEOUT_MS,
+      outcome: 'kept',
+      after: CLEARED,
+      row: jarRow(),
+    },
+    {
+      name: 'keeps the first mark of a kept session while its latest re-mark is younger than the request timeout',
+      legacy: {},
+      initial: { updatedAt: REMARKED_AT },
+      elapsedMs: REQUEST_TIMEOUT_MS,
+      outcome: 'kept',
+      after: [],
+      row: marked({ updatedAt: REMARKED_AT }),
+    },
+    {
+      name: 'clears the mark of a kept session once older than a configured request timeout',
+      legacy: {},
+      elapsedMs: 60_000,
+      timeoutMs: 60_000,
+      outcome: 'kept',
+      after: CLEARED,
+      row: jarRow(),
+    },
+    {
+      name: 'keeps the mark and ends nothing while legacy cannot be described',
+      legacy: new TypeError('fetch failed'),
+      elapsedMs: REQUEST_TIMEOUT_MS,
+      outcome: 'unknown',
+      after: [],
+      row: marked(),
+    },
+  ])('$name', async ({ legacy, initial, elapsedMs, timeoutMs, outcome, after, row }) => {
+    const h = harness(marked(initial));
+    if (legacy instanceof Error) h.describeError = legacy;
+    else h.describe = described(legacy);
+    h.options.clock = { now: () => new Date(NOW.getTime() + elapsedMs) };
+    if (timeoutMs !== undefined) h.options.requestTimeoutMs = timeoutMs;
+    await expect(createInvalidation(h.options).completePending(SESSION_ID, HELD)).resolves.toBe(outcome);
+    expect(h.calls).toEqual([...EVIDENCE, ...after]);
+    expect(h.rows.get(SESSION_ID)).toEqual(row);
+  });
+
+  it.each<[SessionMode, JarCookies]>([
+    ['target-primary', JAR_LIVE],
+    ['legacy-primary', BROWSER_LIVE],
+  ])('describes a %s session by the live cookies legacy holds for it', async (mode, cookies) => {
+    const h = harness(marked({ mode }));
+    await createInvalidation(h.options).completePending(SESSION_ID, HELD);
+    expect(h.calls[1]).toEqual(['bridge.describe', cookies, { userAgent: USER_AGENT }]);
+  });
+});
+
+describe('a kept logout judged while a later logout of the session marks it again', () => {
+  const HELD: LegacyHeldSession = { cookies: BROWSER_LIVE, userAgent: USER_AGENT };
+
+  it.each<[string, (invalidation: Invalidation) => Promise<unknown>]>([
+    ['the after-step', (invalidation) => invalidation.afterLegacyLogout(SESSION_ID, { ...HELD, mode: 'target-primary' })],
+    ['a reader', (invalidation) => invalidation.completePending(SESSION_ID, HELD)],
+  ])('leaves the later mark standing when %s clears at the version it read', async (_label, run) => {
+    const h = harness(marked());
+    h.options.clock = { now: () => new Date(NOW.getTime() + REQUEST_TIMEOUT_MS) };
+    const describeLegacy = h.options.bridge.describe;
+    h.options.bridge.describe = (cookies, call) => {
+      const row = h.rows.get(SESSION_ID);
+      if (row !== undefined) h.rows.set(SESSION_ID, { ...row, updatedAt: REMARKED_AT });
+      return describeLegacy(cookies, call);
+    };
+    await run(createInvalidation(h.options));
+    expect(h.calls.filter(([op]) => op.startsWith('jar.') || op === 'identity.end')).toEqual([
+      ['jar.get', SESSION_ID],
+      ['jar.clearIdentityEndPending', SESSION_ID, NOW],
+    ]);
+    expect(h.rows.get(SESSION_ID)).toEqual(marked({ updatedAt: REMARKED_AT }));
   });
 });
 

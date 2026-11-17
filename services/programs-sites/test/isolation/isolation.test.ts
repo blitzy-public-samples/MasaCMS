@@ -377,6 +377,72 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
       expect(res.statusCode).toBe(403);
     });
 
+    it("pages the sites of every registered tenant for an s2 token, each page holding its tenants' rows of the full list", async () => {
+      type Item = { siteid: string };
+      const pageAfter = async (after: string | null): Promise<{ items: Item[]; next: string | null }> => {
+        const res = await inject('GET', `/v2/sites?limit=2${after === null ? '' : `&after=${encodeURIComponent(after)}`}`, 's2');
+        const { statusCode: status, body } = res;
+        assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: '/v2/sites', status, contentType: res.headers['content-type'], body });
+        expect(status).toBe(200);
+        return res.json();
+      };
+      const ids = (items: Item[]): string[] => items.map(({ siteid }) => siteid).sort();
+      const stored = async (...tenants: TenantFixture[]): Promise<string[]> => (await Promise.all(tenants.map(storedSiteIds))).flat().sort();
+
+      const first = await pageAfter(null);
+      const last = await pageAfter(first.next);
+      const full = (await inject('GET', '/v1/sites', 's2')).json<Item[]>();
+
+      expect([first.next, last.next]).toEqual([TENANT_B.siteId, null]);
+      expect(ids(first.items)).toEqual(await stored(TENANT_A, TENANT_B));
+      expect(ids(last.items)).toEqual(await stored(TENANT_UMBRELLA));
+      expect([...first.items, ...last.items]).toEqual(expect.arrayContaining(full));
+      expect(full).toHaveLength(first.items.length + last.items.length);
+      expect((await inject('GET', '/v2/sites', 'site-admin')).statusCode).toBe(403);
+    });
+
+    it("pages the user sites of every registered tenant for an s2 token, each page holding its tenants' rows of the /v1 list", async () => {
+      type Item = { siteid: string };
+      const pageAfter = async (after: string | null): Promise<{ items: Item[]; next: string | null }> => {
+        const res = await inject('GET', `/v2/user-sites?limit=2${after === null ? '' : `&after=${encodeURIComponent(after)}`}`, 's2');
+        const { statusCode: status, body } = res;
+        assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: '/v2/user-sites', status, contentType: res.headers['content-type'], body });
+        expect(status).toBe(200);
+        return res.json();
+      };
+      const ids = (items: Item[]): string[] => items.map(({ siteid }) => siteid).sort();
+      const stored = async (...tenants: TenantFixture[]): Promise<string[]> => (await Promise.all(tenants.map(storedSiteIds))).flat().sort();
+
+      const first = await pageAfter(null);
+      const last = await pageAfter(first.next);
+      const full = (await inject('GET', '/v1/user-sites', 's2')).json<{ sites: Item[] }>().sites;
+
+      expect([first.next, last.next]).toEqual([TENANT_B.siteId, null]);
+      expect(ids(first.items)).toEqual(await stored(TENANT_A, TENANT_B));
+      expect(ids(last.items)).toEqual(await stored(TENANT_UMBRELLA));
+      expect([...first.items, ...last.items]).toEqual(expect.arrayContaining(full));
+      expect(full).toHaveLength(first.items.length + last.items.length);
+    });
+
+    it("pages a tenant A site-admin's user sites over its session's site only", async () => {
+      const session = { sites: [{ siteID: TENANT_A.siteId, site: TENANT_A.siteId }] };
+      service().client.on('identity', 'GET', '/v1/sessions/current/sites', () => ({ status: 200, headers: {}, body: session }));
+      const res = await inject('GET', '/v2/user-sites', 'site-admin');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ items: [expect.objectContaining({ siteid: TENANT_A.siteId })], next: null });
+    });
+
+    it('answers a tenant A site-admin the image size page of its own site only, refusing that of tenant B', async () => {
+      const own = await inject('GET', `/v2/sites/${TENANT_A.siteId}/image-sizes`, 'site-admin');
+      const other = await inject('GET', `/v2/sites/${TENANT_B.siteId}/image-sizes`, 'site-admin');
+      expect(own.statusCode).toBe(200);
+      const { items, next } = own.json<{ items: Array<{ siteID: string }>; next: string | null }>();
+      expect(items.filter(({ siteID }) => siteID.toLowerCase() !== TENANT_A.siteId)).toEqual([]);
+      expect(next).toBeNull();
+      expect(other.statusCode).toBe(403);
+      expect(other.json()).not.toHaveProperty('items');
+    });
+
     it('lets a tenant A site-admin read its own site and refuses the site of tenant B', async () => {
       const own = await inject('GET', `/v1/sites/${TENANT_A.siteId}`, 'site-admin');
       const other = await inject('GET', `/v1/sites/${TENANT_B.siteId}`, 'site-admin');

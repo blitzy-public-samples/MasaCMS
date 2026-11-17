@@ -44,11 +44,18 @@ describe('route-key parity with the dispatcher matcher', () => {
   it.each(routeKeyConflictCases)('$name', async (c) => {
     const { request, body } = matcherInputFromCase(c);
     const outcome = await matcher.match(request, body, index);
-    expect(outcome.result?.key).toBe(c.expectedKey);
-    expect(routed(outcome.result)).toEqual(routed(routeKeyForRequest(c.request, routeKeyCaseOptions)));
+    const shared = routeKeyForRequest(c.request, routeKeyCaseOptions);
+    expect(shared.key).toBe(c.expectedKey);
+    // A legacy-bound opt2 request is keyed as legacy's own pipeline serves it.
+    const served =
+      shared.family === 'opt2' && outcome.destination.kind === 'legacy'
+        ? routeKeyForRequest(c.request, { ...routeKeyCaseOptions, opt2Namespaces: false })
+        : shared;
+    expect(outcome.result?.key).toBe(served.key);
+    expect(routed(outcome.result)).toEqual(routed(served));
 
     // The exact entry wins; otherwise only a glob may match, so a variant never falls back to its base entry.
-    const exact = index.entryFor(c.expectedKey);
+    const exact = index.entryFor(served.key);
     if (exact !== undefined) expect(outcome.entry).toBe(exact);
     else if (outcome.entry !== undefined) expect(outcome.entry.route).toMatch(/\/\*\*$/);
     else expect(outcome.destination).toEqual({ kind: 'legacy' });

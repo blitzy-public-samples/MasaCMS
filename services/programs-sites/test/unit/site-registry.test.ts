@@ -27,7 +27,7 @@ const PAYLOAD_KEYS = Object.keys({
   displayPoolId: true,
   contentPoolIds: true,
   domains: true,
-} satisfies Record<keyof SiteChangedPayload, true>);
+} satisfies Record<Exclude<keyof SiteChangedPayload, 'deleted'>, true>);
 
 const POOL_COLUMNS = ['publicuserpoolid', 'privateuserpoolid', 'categorypoolid', 'filepoolid', 'displaypoolid', 'contentpoolid'];
 const PLATFORM_COLUMNS = new Set(['tenant_id', 'row_version']);

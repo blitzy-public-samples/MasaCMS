@@ -1,9 +1,10 @@
-/** People's environment schema: the base variables with its own name, its database and every `OPT2_SERVICE_URLS` callee required at start-up. */
+/** People's environment schema: the base variables, the password-expiry setting and the roster fault step, with its own name, its database and every `OPT2_SERVICE_URLS` callee required at start-up. */
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { serializeError } from '@opt2/platform/logging';
 import { EnvValidationError, baseEnvSchema, loadEnv } from '@opt2/platform/service-kit';
 import { peopleEnvSchema } from '../../src/app.js';
+import type { RosterStep } from '../../src/domain/faults.js';
 
 // Ports of harness/repro/ports.env.
 const CALLEE_URLS = { people: 'http://127.0.0.1:8112', identity: 'http://127.0.0.1:8111', 'strategies-content': 'http://127.0.0.1:8114' };
@@ -13,8 +14,8 @@ const EVERY_CALLEE = [
   'OPT2_SERVICE_URLS.strategies-content: is required',
 ];
 
-/** What `loadEnv(peopleEnvSchema)` throws for a valid local environment with `overrides`; undefined when it parses. */
-function refusal(overrides: Readonly<Record<string, string | undefined>>): unknown {
+/** A valid local people environment with `overrides`, `undefined` removing a variable. */
+function localSource(overrides: Readonly<Record<string, string | undefined>>): Record<string, string> {
   const source: Record<string, string | undefined> = {
     PORT: '8112',
     OPT2_SERVICE_NAME: 'people',
@@ -33,11 +34,13 @@ function refusal(overrides: Readonly<Record<string, string | undefined>>): unkno
     TZ: 'UTC',
     ...overrides,
   };
+  return Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined));
+}
+
+/** What `loadEnv(peopleEnvSchema)` throws for a valid local environment with `overrides`; undefined when it parses. */
+function refusal(overrides: Readonly<Record<string, string | undefined>>): unknown {
   try {
-    loadEnv(
-      peopleEnvSchema,
-      Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined)),
-    );
+    loadEnv(peopleEnvSchema, localSource(overrides));
     return undefined;
   } catch (err) {
     return err;
@@ -53,8 +56,20 @@ function envIssues(overrides: Readonly<Record<string, string | undefined>>): str
 }
 
 describe('peopleEnvSchema', () => {
-  it('reads only the base variables', () => {
-    expect(Object.keys(peopleEnvSchema.shape)).toStrictEqual(Object.keys(baseEnvSchema.shape));
+  it('reads the base variables, MURA_EXPIREPASSWORDS and OPT2_FAULT', () => {
+    expect(Object.keys(peopleEnvSchema.shape)).toStrictEqual([...Object.keys(baseEnvSchema.shape), 'MURA_EXPIREPASSWORDS', 'OPT2_FAULT']);
+  });
+
+  it.each<[string, string | undefined, number | RosterStep | undefined]>([
+    ['MURA_EXPIREPASSWORDS', undefined, 0],
+    ['MURA_EXPIREPASSWORDS', '30', 30],
+    ['MURA_EXPIREPASSWORDS', '', 0],
+    ['MURA_EXPIREPASSWORDS', '{{expirePasswords}}', 0],
+    ['OPT2_FAULT', undefined, undefined],
+    ['OPT2_FAULT', 'roster:after-prepare', 'after-prepare'],
+    ['OPT2_FAULT', 'timesheets:after-start', undefined],
+  ])('parses %s %j as %j without rejecting it', (key, value, parsed) => {
+    expect(loadEnv(peopleEnvSchema, localSource({ [key]: value }))[key as 'MURA_EXPIREPASSWORDS' | 'OPT2_FAULT']).toBe(parsed);
   });
 
   it.each<[string, Record<string, string | undefined>, string[]]>([

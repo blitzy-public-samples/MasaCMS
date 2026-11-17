@@ -9,6 +9,7 @@ import {
 } from 'node:http';
 import type { FastifyReplyFromOptions } from '@fastify/reply-from';
 import { Agent, SERVICE_MAX_HEADER_SIZE, type Dispatcher } from '@opt2/platform/service-kit';
+import { sendRequestTarget } from './request-target.js';
 
 /** A final response head as received: status, reason phrase and header lines in wire order, each value's bytes read as latin1. */
 export interface RawResponseHead {
@@ -71,14 +72,18 @@ export function recordResponseHead<T>(slot: ResponseHeadSlot, forward: () => T):
 }
 
 /**
- * reply-from options of every forward: reply-from's own agent defaults, the head recorder, and a response-head limit
- * that admits legacy echoing a request head of its limit (a redirect's `Location`); the agent is destroyed on close.
+ * reply-from options of every forward: reply-from's own agent defaults, the head recorder, the raw request target, and a
+ * response-head limit that admits legacy echoing a request head of its limit (a redirect's `Location`); the agent is destroyed on close.
  * reply-from's per-forward info lines are off, so each request logs only the service kit's request line.
  */
 export function replyFromOptions(): FastifyReplyFromOptions {
   const agent = new Agent({ pipelining: 1, connections: 128, maxHeaderSize: SERVICE_MAX_HEADER_SIZE });
   // reply-from types `undici` against its own undici copy, but calls only `request(options, callback)` and `destroy()` on it.
-  return { undici: agent.compose(recordHead) as FastifyReplyFromOptions['undici'], destroyAgent: true, disableRequestLogging: true };
+  return {
+    undici: agent.compose(recordHead, sendRequestTarget) as FastifyReplyFromOptions['undici'],
+    destroyAgent: true,
+    disableRequestLogging: true,
+  };
 }
 
 /** Whether `current` holds exactly the values reply-from copied from `received`. */

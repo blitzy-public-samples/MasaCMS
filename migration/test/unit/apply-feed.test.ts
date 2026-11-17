@@ -19,7 +19,7 @@ import { loadConfig } from '../../src/config.js';
 import { currentAuthority } from '../../src/cutover/index.js';
 import { compareCanonicalRows, describeLegacyTable, listLegacyTables, migratableTables, streamLegacyTable } from '../../src/extract/index.js';
 import type { CanonicalRow, LegacyTableRef, MigratableTable } from '../../src/extract/index.js';
-import { FileStoreUnsupportedError, diffSnapshotManifests, removeDroppedObjects, transferFiles } from '../../src/files/index.js';
+import { FileStoreUnsupportedError, removeDroppedObjects, streamChangedEntries, transferFiles } from '../../src/files/index.js';
 import type { ManifestEntry, RemovalResult, TransferResult } from '../../src/files/index.js';
 import { computeDependencyOrder } from '../../src/order/index.js';
 import { UnknownUnitError, loadUnitCatalog } from '../../src/owners/index.js';
@@ -72,7 +72,7 @@ vi.mock('../../src/cutover/index.js', async (importOriginal) => ({
 
 vi.mock('../../src/files/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/files/index.js')>()),
-  diffSnapshotManifests: vi.fn(),
+  streamChangedEntries: vi.fn(),
   transferFiles: vi.fn(),
   removeDroppedObjects: vi.fn(),
 }));
@@ -501,6 +501,18 @@ function manifestEntry(fileId: string): ManifestEntry {
   return { siteId: 'tenant-a', path: `tenant-a/cache/file/${name}`, snapshotSeq: 1, name, fileId, variant: '', ext: 'pdf', size: 42, sha256: 'a'.repeat(64), orphan: false };
 }
 
+/** A stream of `entries`, as streamChangedEntries yields a diff's copies. */
+async function* entriesOf(entries: readonly ManifestEntry[]): AsyncGenerator<ManifestEntry, void, undefined> {
+  yield* entries;
+}
+
+/** Every entry a transfer was asked to send. */
+async function sentEntries(entries: AsyncIterable<ManifestEntry> | Iterable<ManifestEntry> | undefined): Promise<ManifestEntry[]> {
+  const sent: ManifestEntry[] = [];
+  for await (const found of entries ?? []) sent.push(found);
+  return sent;
+}
+
 function installFakes(): void {
   vi.mocked(currentAuthority).mockImplementation(() => {
     const targetUnits = new Set([...world.targetUnits].sort());
@@ -618,11 +630,9 @@ function installFakes(): void {
     }),
   );
   vi.mocked(writeReconciliationReport).mockImplementation((_ctx, report) => Promise.resolve(`/reports/reconciliation/${report.point}.json`));
-  vi.mocked(diffSnapshotManifests).mockImplementation((_ctx, from, to) =>
-    Promise.resolve({ from, to, added: [], changed: [], removed: [], unchanged: 0, toTransfer: [] }),
-  );
+  vi.mocked(streamChangedEntries).mockImplementation(() => entriesOf([]));
   vi.mocked(transferFiles).mockImplementation((_ctx, snapshotSeq) =>
-    Promise.resolve({ snapshotSeq, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [] }),
+    Promise.resolve({ snapshotSeq, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [], rejected: [] }),
   );
   vi.mocked(removeDroppedObjects).mockImplementation((_ctx, diff) =>
     Promise.resolve({ from: diff.from, to: diff.to, deleted: 0, absent: 0, retained: 0, misplaced: 0 }),
@@ -1001,7 +1011,7 @@ describe('runFeed files step', () => {
     const result = await runFeed(contextFor());
 
     expect(result.files).toEqual(files);
-    expect(diffSnapshotManifests).not.toHaveBeenCalled();
+    expect(streamChangedEntries).not.toHaveBeenCalled();
     expect(transferFiles).not.toHaveBeenCalled();
     expect(removeDroppedObjects).not.toHaveBeenCalled();
     expect(vi.mocked(reconcileUnits).mock.calls[0]?.[1].units.includes('content.file_object')).toBe(reconciled);
@@ -1024,20 +1034,21 @@ describe('runFeed files step', () => {
 
     expect(result.files).toEqual({ status: 'up-to-date', from: 1, to: 1 });
     expect(result.tables[0]?.owners[0]).toMatchObject({ owner: 'strategies-content', status: 'up-to-date', base: 1 });
-    expect(diffSnapshotManifests).not.toHaveBeenCalled();
+    expect(streamChangedEntries).not.toHaveBeenCalled();
     expect(world.applies).toEqual([]);
   });
 
   it('transfers the objects added or changed since the tfiles watermark, then deletes the removed ones before the watermark moves', async () => {
     seed({ tfiles: [file('F1', 'tenant-a')] }, { tfiles: [file('F2', 'tenant-a')] });
     const added = manifestEntry('F2');
-    const removed = manifestEntry('F1');
-    const only = [{ siteId: added.siteId, path: added.path }];
-    const diff = { from: 0, to: 1, added: [added], changed: [], removed: [removed], unchanged: 0, toTransfer: only };
-    const transfer: TransferResult = { snapshotSeq: 1, transferred: 1, unchanged: 0, bytes: 42, orphans: [], misplaced: [] };
+    const transfer: TransferResult = { snapshotSeq: 1, transferred: 1, unchanged: 0, bytes: 42, orphans: [], misplaced: [], rejected: [] };
     const removal: RemovalResult = { from: 0, to: 1, deleted: 1, absent: 0, retained: 0, misplaced: 0 };
-    vi.mocked(diffSnapshotManifests).mockResolvedValueOnce(diff);
-    vi.mocked(transferFiles).mockResolvedValueOnce(transfer);
+    vi.mocked(streamChangedEntries).mockImplementationOnce(() => entriesOf([added]));
+    const sent: ManifestEntry[][] = [];
+    vi.mocked(transferFiles).mockImplementationOnce(async (_ctx, _seq, opts) => {
+      sent.push(await sentEntries(opts?.entries));
+      return transfer;
+    });
     const seen: { watermark: number | null | undefined; applies: number }[] = [];
     vi.mocked(removeDroppedObjects).mockImplementationOnce(() => {
       seen.push({ watermark: watermarkOf('strategies-content', 'tfiles')?.snapshotSeq, applies: world.applies.length });
@@ -1047,9 +1058,9 @@ describe('runFeed files step', () => {
     const result = await runFeed(contextFor());
 
     expect(result.files).toEqual({ status: 'transferred', from: 0, to: 1, transfer, removal });
-    expect(diffSnapshotManifests).toHaveBeenCalledWith(expect.anything(), 0, 1);
-    expect(transferFiles).toHaveBeenCalledWith(expect.anything(), 1, { only });
-    expect(removeDroppedObjects).toHaveBeenCalledWith(expect.anything(), diff);
+    expect(streamChangedEntries).toHaveBeenCalledWith(expect.anything(), 0, 1);
+    expect(sent).toEqual([[added]]);
+    expect(removeDroppedObjects).toHaveBeenCalledWith(expect.anything(), { from: 0, to: 1 });
     expect(vi.mocked(transferFiles).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(removeDroppedObjects).mock.invocationCallOrder[0] ?? 0);
     expect(seen).toEqual([{ watermark: 0, applies: 0 }]);
     expect(watermarkOf('strategies-content', 'tfiles')?.snapshotSeq).toBe(1);
@@ -1059,8 +1070,7 @@ describe('runFeed files step', () => {
 
   it('stops before any table batch, its watermark unmoved, when a removal fails, and deletes again on the resumed run', async () => {
     seed({ tfiles: [file('F1', 'tenant-a')] }, { tfiles: [file('F2', 'tenant-a')] });
-    const diff = { from: 0, to: 1, added: [], changed: [], removed: [manifestEntry('F1')], unchanged: 0, toTransfer: [] };
-    vi.mocked(diffSnapshotManifests).mockResolvedValue(diff);
+    const diff = { from: 0, to: 1 };
     vi.mocked(removeDroppedObjects).mockRejectedValueOnce(new Error('strategies-content unavailable'));
 
     await expect(runFeed(contextFor())).rejects.toThrow('strategies-content unavailable');
@@ -1072,6 +1082,21 @@ describe('runFeed files step', () => {
     expect(vi.mocked(removeDroppedObjects).mock.calls.map(([, called]) => called)).toEqual([diff, diff]);
     expect(resumed.files).toMatchObject({ status: 'transferred', from: 0, to: 1 });
     expect(watermarkOf('strategies-content', 'tfiles')?.snapshotSeq).toBe(1);
+  });
+
+  it('reports an object the owner refused with the transfer, then applies the tables and reconciles the file unit', async () => {
+    seed({ tfiles: [file('F1', 'tenant-a')] }, { tfiles: [file('F2', 'tenant-a')] });
+    const refused = manifestEntry('F2');
+    const rejected = [{ siteId: refused.siteId, path: refused.path, key: `tenant/${refused.name}`, status: 400, error: 'invalid_request: Invalid parameters' }];
+    const transfer: TransferResult = { snapshotSeq: 1, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [], rejected };
+    vi.mocked(transferFiles).mockResolvedValueOnce(transfer);
+
+    const result = await runFeed(contextFor());
+
+    expect(result.files).toMatchObject({ status: 'transferred', from: 0, to: 1, transfer: { rejected } });
+    expect(requests('strategies-content').flatMap((request) => request.rows.map((change) => change.op))).toEqual(['delete', 'upsert']);
+    expect(watermarkOf('strategies-content', 'tfiles')?.snapshotSeq).toBe(1);
+    expect(vi.mocked(reconcileUnits).mock.calls[0]?.[1].units).toContain('content.file_object');
   });
 
   it('halts the files step when the transfer meets an unsupported store', async () => {

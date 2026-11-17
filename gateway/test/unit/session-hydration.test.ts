@@ -310,6 +310,18 @@ describe('createHydrator', () => {
     expect(h.ops()).toEqual(['jar.get', 'bridge.describe']);
   });
 
+  it.each<[string, number | null, boolean, string[]]>([
+    ['needs hydrating answers undefined', null, false, ['jar.get', 'barrier', 'jar.lock', ...LOCKED_READ, 'bridge.describe', 'jar.commit']],
+    ['is current and still logged in answers as it is', 3, true, ['jar.get', 'bridge.describe']],
+  ])('installs no login while a legacy logout is pending: a marked jar that %s', async (_label, hydratedEpoch, kept, ops) => {
+    const stored = jarRow({ hydratedEpoch, identityEndPendingAt: NOW });
+    const h = harness(stored);
+    await expect(createHydrator(h.options).ensureHydrated(SESSION_ID, 3)).resolves.toBe(kept ? stored : undefined);
+    expect(h.ops()).toEqual(ops);
+    expect(h.rows.get(SESSION_ID)).toBe(stored);
+  });
+
+
   const NEW_CFID = 'CFID=2002;path=/;HttpOnly';
   it.each<[string, BridgeResult<LegacyDescribe>, JarCookies, string]>([
     [

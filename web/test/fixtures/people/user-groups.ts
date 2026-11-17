@@ -1,7 +1,7 @@
 import type { components } from '@/generated/clients/people';
 import { GROUP_IDS, adminGroupMembers, editorGroupMembers, groupsById, tenantAAdminGroupMembers } from '../identity/groups';
 
-type UserGroupsPage = components['schemas']['UserGroupsPage'];
+type UserGroupsPage = components['schemas']['UserGroupsPageV2'];
 type GroupListRow = components['schemas']['GroupListRow'];
 
 const RECORDS_PER_PAGE = 25;
@@ -27,7 +27,7 @@ function listRow(groupId: string, Counter: number | null): GroupListRow {
   });
 }
 
-/** People's answer for `startrow=1&recordsperpage=25`: every row, with `utility.getNextN` paging (page buffer 3). */
+/** People's `listUserGroupsV2` answer for `startrow=1&recordsperpage=25`: every row fits page 1, with `utility.getNextN` paging (page buffer 3). */
 function firstPageOf(items: GroupListRow[]): UserGroupsPage {
   const totalrecords = items.length;
   const numberofpages = Math.ceil(totalrecords / RECORDS_PER_PAGE);

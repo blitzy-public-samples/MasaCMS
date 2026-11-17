@@ -5,6 +5,7 @@ import {
   COMPARE_KINDS,
   OVERRIDE_OPERATIONS,
   SCENARIO_ID_PATTERN,
+  parseCsvKeyOrder,
   type OverrideOperation,
   type Scenario,
 } from '../catalogue.js';
@@ -250,6 +251,12 @@ const urlsSchema = z.strictObject({
   downloadFields: z.array(z.strictObject({ key: z.string().min(1), whenContains: nonEmptyNames.optional() })),
   downloadFieldMatch: matchMode,
   otherwise: z.strictObject({ apply: ruleRefs, sortQuery: z.boolean() }),
+  urlScope: z.strictObject({
+    id: ruleId,
+    match: z.literal('query-starting-with-ampersand'),
+    order: z.literal('by-name'),
+    percentEncodedValues: z.boolean(),
+  }),
 });
 /** Signed and download URLs, and the rules applied to every other URL. */
 export type UrlRules = z.infer<typeof urlsSchema>;
@@ -372,7 +379,12 @@ export type DomRules = z.infer<typeof domSchema>;
 const exportsSchema = z.strictObject({
   id: ruleId,
   apply: ruleRefs,
-  csv: z.strictObject({ parser: z.literal('csv-parse'), compare: z.literal('cells'), whitespace: whitespaceMode }),
+  csv: z.strictObject({
+    parser: z.literal('csv-parse'),
+    compare: z.literal('cells'),
+    whitespace: whitespaceMode,
+    keyTies: z.strictObject({ match: matchMode, whitespace: whitespaceMode, order: z.literal('row-alone-then-raw') }),
+  }),
   xlsx: z.strictObject({
     parser: z.literal('exceljs'),
     compare: z.literal('cells-per-sheet'),
@@ -418,6 +430,13 @@ const rowsSchema = z.strictObject({
   keyless: z.literal('multiset-with-counts'),
   apply: ruleRefs,
   literal: z.strictObject({ money: pattern, dateOnlyFields: z.boolean() }),
+  volatile: z.array(
+    z.strictObject({
+      column: z.string().regex(/^[A-Za-z_]\w*\.[A-Za-z_]\w*$/, 'must be <table>.<column>'),
+      format: pattern,
+      verify: z.literal('bcrypt-scenario-secrets'),
+    }),
+  ),
 });
 /** Stored-row comparison over canonical encodings. */
 export type RowRules = z.infer<typeof rowsSchema>;
@@ -562,6 +581,7 @@ function emptyApplied(): AppliedOverrides {
     applyRules: [],
     domExclude: [],
     sortArrays: [],
+    csvKeyOrder: [],
   };
 }
 
@@ -583,6 +603,7 @@ const overridesSchema = z
       applyRules: overrideOperation('rule-ids'),
       domExclude: overrideOperation('css-selectors'),
       sortArrays: overrideOperation('json-paths'),
+      csvKeyOrder: overrideOperation('step-key-columns'),
     }) satisfies z.ZodType<Record<OverrideOperation, unknown>>,
   })
   .transform((section) => ({ ...section, applied: emptyApplied() }));
@@ -774,6 +795,15 @@ export function ruleEnabled(rules: NormaliseRules, id: string): boolean {
   const entry = ruleEntries(rules).get(id);
   if (entry === undefined) throw new GoldenConfigError(`normalise rules declare no rule ${id}`);
   return entry.optIn !== true || rules.overrides.applied.applyRules.includes(id);
+}
+
+/** Key columns the applied `csvKeyOrder` overrides declare for step `step`; undefined when they declare none. */
+export function csvKeyColumns(rules: NormaliseRules, step: string): string[] | undefined {
+  for (const entry of rules.overrides.applied.csvKeyOrder) {
+    const parsed = parseCsvKeyOrder(entry);
+    if (parsed?.step === step) return parsed.columns;
+  }
+  return undefined;
 }
 
 function union(base: readonly string[], extra: readonly string[], fold: (value: string) => string): string[] {

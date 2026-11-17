@@ -18,6 +18,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import {
   csrfPreHandler,
   isUnstorableTextError,
@@ -199,7 +200,7 @@ function failureResponse(request: FastifyRequest, error: unknown): SerializedLeg
   if (error instanceof AuthDenial) recordOutcomeReason(request, error.reason);
   else if (error instanceof LegacyApiError) recordOutcomeReason(request, error.type);
   else if (isUnstorableTextError(error)) recordOutcomeReason(request, error.code);
-  else request.log.error({ error }, 'unhandled fixture exception');
+  else request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
   return errorResponse(fixtureErrorRow(error));
 }
 

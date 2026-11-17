@@ -12,6 +12,8 @@ const CREDENTIAL_WORD =
   /password|passwd|pwd|passphrase|secret|token|credential|authorization|cookie|sessionid|signature|hmac|salt|(?:api|access|private|signing|encryption|shared|push|bridge|master|client|auth)key/;
 const PERSONAL_WORD =
   /fname|lname|firstname|lastname|middlename|fullname|displayname|username|email|phone|mobile|fax|address|street|city|postcode|postalcode|zip|birth|dob|ssn|nationalid|passport/;
+/** Service and schema names containing a credential word, which as property names key per-owner maps. */
+const OWNER_NAMES: ReadonlySet<string> = new Set(['e-signature', 'esignature']);
 const RAW_NAMES: ReadonlySet<string> = new Set([
   'key',
   'keyValues',
@@ -37,9 +39,13 @@ const EVIDENCE_NAMES: ReadonlySet<string> = new Set([
   'windowId', 'holderId', 'transitionId', 'id', 'relationId', 'siteid', 'siteId', 'userid', 'userId', 'contentid',
   'contentId', 'phase', 'at', 'outcome', 'from', 'to', 'startedAt', 'finishedAt', 'checkedAt', 'setT', 'steps',
   'provenance', 'path', 'golden', 'replay',
+  // Fault parameters and details: enums, ids, names and timestamps, never row values.
+  'command', 'action', 'step', 'order', 'signal', 'state', 'windowState', 'read', 'reconciliation', 'batchId',
+  'contentHistId', 'reportPath', 'droppedDatabase', 'targetUnits', 'feedUnits', 'skippedTables', 'producers',
+  'subscriptions', 'inPullMode', 'endpoint', 'since', 'unproven', 'differing', 'unchecked', 'left', 'deleted',
 ]);
 const ROUTE_NAMES: ReadonlySet<string> = new Set([
-  'routeKey', 'route', 'entriesChanged', 'legacyWriteEntries', 'writeEntries', 'entryPoints', 'appliesTo',
+  'routeKey', 'route', 'routes', 'entriesChanged', 'legacyWriteEntries', 'writeEntries', 'entryPoints', 'appliesTo',
 ]);
 /** Cut-over route key of a known family, `<family>:<body>[{variant}]`. */
 const ROUTE_KEY =
@@ -47,13 +53,14 @@ const ROUTE_KEY =
 const QUERY_NAME = /[?&]([^=&#?\s]*)=/g;
 const FREE_TEXT_NAMES: ReadonlySet<string> = new Set([
   'abortReason', 'reason', 'result', 'purpose', 'cyclePolicy', 'relations', 'kinds', 'tables', 'unitIds', 'message',
-  'error', 'detail', 'details', 'note', 'notes', 'description', 'summaryText',
+  'error', 'detail', 'details', 'note', 'notes', 'description', 'summaryText', 'stderrTail', 'failedAfterRestart',
+  'completeError',
 ]);
 /** Hash-valued names; a generic `*Hash` name is not one. */
 const HASH_NAME = /^(?:sha256|checksum|rowHash|sourceSha|[a-z]\w*(?:Sha256|RowHash))$/;
 const HASH_VALUE = /^[0-9a-f]{40,128}$/i;
-/** Transition step or fault name, the only form of `name` value kept. */
-const STEP_NAME = /^[a-z][a-z0-9-]*$/;
+/** Transition step, fault or assertion name, optionally `:<producer or subscription>`; the only form of `name` value kept. */
+const STEP_NAME = /^[a-z][a-z0-9-]*(?::[a-z0-9][a-z0-9.-]*)?$/;
 const DIGEST = /^sha256:[0-9a-f]{64} \(\d+ (?:chars|bytes)\)$/;
 const SURROGATE_PAIR = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g;
 const MARKDOWN_LABEL = /^[A-Za-z][\w-]*(?: [\w-]+)*$/;
@@ -91,9 +98,9 @@ function isSensitiveWord(name: string): boolean {
   return CREDENTIAL_WORD.test(normalised) || PERSONAL_WORD.test(normalised);
 }
 
-/** True when `name` is an identifier containing a credential word; dotted map keys never are. */
+/** True when `name` is an identifier containing a credential word; dotted map keys and owner names never are. */
 function isCredentialName(name: string): boolean {
-  return IDENTIFIER.test(name) && CREDENTIAL_WORD.test(normalise(name));
+  return IDENTIFIER.test(name) && !OWNER_NAMES.has(name) && CREDENTIAL_WORD.test(normalise(name));
 }
 
 /** True when `name` is an identifier containing a personal-data word; dotted map keys never are. */
@@ -146,7 +153,7 @@ function renderString(text: string, name: string, context: Context): string {
   if (context === 'raw') return digestText(text);
   if (ROUTE_NAMES.has(name) && isRouteKey(text)) return text;
   if (ROUTE_NAMES.has(name) || EVIDENCE_NAMES.has(name)) return evidenceText(text);
-  if (name === 'name') return STEP_NAME.test(text) ? text : digestText(text);
+  if (name === 'name') return STEP_NAME.test(text) ? evidenceText(text) : digestText(text);
   if (FREE_TEXT_NAMES.has(name)) return redactReportText(text);
   return digestText(text);
 }

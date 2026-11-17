@@ -2,6 +2,7 @@
 /** Fixture routes `esignature/…` of legacy-fixtures/cfml/api.cfm, answered as legacy-fixtures/cfml/modules/esignature.cfc answers them. */
 import { Roles, hasAnyRole, type DenialRenderer, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
   csrfPreHandler,
@@ -338,7 +339,7 @@ export const esignatureFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = asy
     // toFixtureError rethrows LegacyServiceUnavailableError, which the service-kit handler answers with the legacy 503.
     const response = toFixtureError(error, contextOf(request, route));
     // Logged as api.cfm writes its exception record; this handler replaces the service-kit one that would log it.
-    if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error }, 'unhandled fixture exception');
+    if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
     else recordOutcomeReason(request, fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });

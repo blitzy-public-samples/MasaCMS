@@ -178,7 +178,7 @@ describe('replayScenario logging', () => {
       if (new URL(input).origin === MAILPIT) {
         return Response.json(init.method === 'DELETE' ? {} : { total: 0, messages: [] });
       }
-      if (new URL(input).origin === PEOPLE) return Response.json({ operations: [] });
+      if (new URL(input).origin === PEOPLE) return Response.json({ operations: [], next: null });
       if (answer === 'throw') throw new TypeError('fetch failed');
       return new Response('', { status: answer });
     };

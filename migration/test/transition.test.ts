@@ -91,9 +91,11 @@ const ROLLBACK_BEFORE_REPORT = 'opt2/reports/reconciliation/rollback-before.json
 const ARCHIVED_TOPIC = 'people.person.archived.v1';
 const PEOPLE_SWEEP_ENSURE = '/internal/v1/task-queues/people-outbox-sweep/ensure';
 const EPOCH = 10;
+const LIVE_INSTANCE = 'gw-1';
 const LAGGING_INSTANCE = 'gw-3';
 const ORPHAN_INSTANCE = 'gw-2';
 const ORPHAN_REQUEST_ID = 'req-orphaned-archive-0001';
+const ABANDONED_REQUEST_ID = 'req-abandoned-archive-0001';
 const PUBSUB_PROJECT = 'opt2-transition-suite';
 const SYNC_SQL = readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
 const MIGRATION_DOC = parse(readFileSync(new URL('../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
@@ -235,6 +237,8 @@ interface ScenarioOptions {
   env?: Partial<Record<string, string>>;
   /** Adds a legacy-bound write of the archive route still registered by an instance that died a minute before. */
   orphan?: boolean;
+  /** Adds a target-bound write of the archive route that the live instance abandoned a minute before. */
+  abandoned?: boolean;
   /** People also holds an archive whose change never reaches legacy, so step 6 reconciles a difference. */
   unprojected?: boolean;
 }
@@ -335,6 +339,17 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
             },
           ]
         : [];
+    if (options.abandoned === true) {
+      inflight.push({
+        instance: LIVE_INSTANCE,
+        requestId: ABANDONED_REQUEST_ID,
+        route: FIXTURE_ROUTES.archive,
+        side: 'target',
+        startedAt: clock.now().getTime() - 60_000,
+        abandoned: true,
+        units: [...(VERSION_A.entries.find((entry) => entry.route === FIXTURE_ROUTES.archive)?.units ?? [])],
+      });
+    }
     const lagging: { gateway?: GatewayDouble } = {};
     // The lagging instance sees a new epoch only once an epoch wait has polled.
     const gatewaySleep = async (ms: number): Promise<void> => {
@@ -351,7 +366,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
         active: V_A,
         epoch: EPOCH,
         inflight,
-        instances: ['gw-1', LAGGING_INSTANCE],
+        instances: [LIVE_INSTANCE, LAGGING_INSTANCE],
         manualAck: [LAGGING_INSTANCE],
         clock,
         sleep: gatewaySleep,
@@ -652,6 +667,30 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
     expect(at(s, 'owner:timesheets', 'effect')).toBeGreaterThan(at(s, 'gateway', 'clearOrphans'));
     expect(s.t.gateway.inflightRows()).toEqual([]);
     expect(await leasesOf(s.t.ctx, transitionId)).toEqual([]);
+    expect(s.t.gateway.snapshot().tableVersion).toBe(V_B);
+  });
+
+  it("hands a target-bound write the live gateway abandoned to step 5, whose closed gates clear it, then completes", async () => {
+    const s = await arrange({ abandoned: true });
+    expect(s.t.gateway.snapshotV2().inflight).toMatchObject([
+      { instanceId: LIVE_INSTANCE, route: FIXTURE_ROUTES.archive, side: 'target', count: 1, orphaned: true },
+    ]);
+    const service = s.service();
+
+    const { transitionId } = await service.start({ to: V_B });
+    expect(await settled(() => service.get(transitionId))).toMatchObject({ state: 'completed', step: 8 });
+
+    expect(m.restartLegacy).not.toHaveBeenCalled();
+    const anyString: unknown = expect.any(String);
+    expect(s.t.gateway.calls.filter((call) => call.op === 'clearOrphans')).toEqual([
+      {
+        op: 'clearOrphans',
+        args: { side: 'target', evidence: { kind: 'gates-closed', holderId: transitionId, at: anyString, units: SET_T }, instanceIds: [LIVE_INSTANCE] },
+      },
+    ]);
+    const closedAt = Math.max(at(s, 'owner:people', 'gate.close'), at(s, 'owner:timesheets', 'gate.close'));
+    expect(at(s, 'gateway', 'clearOrphans')).toBeGreaterThan(closedAt);
+    expect(s.t.gateway.inflightRows()).toEqual([]);
     expect(s.t.gateway.snapshot().tableVersion).toBe(V_B);
   });
 

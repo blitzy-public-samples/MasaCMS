@@ -8,7 +8,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
-import { TEST_CLOCK, buildContentApp, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { SITE_CONFIG_FLAGS_PATH, TEST_CLOCK, buildContentApp, siteConfigFlagsAnswer, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 /** The bundle-file I/O the mocked fs modules see: reads, synchronous calls and the file bodies a test substitutes. */
 const bundleIo = vi.hoisted(() => ({
@@ -63,9 +63,10 @@ let t: ContentTestApp;
 let ctx: ContentRouteContext;
 const identity = { state: {} as Record<string, unknown>, sessionCalls: 0 };
 
-/** identity's admin session store and session struct; any other service call fails the test. */
+/** identity's admin session store and session struct, and programs-sites' site flags; any other service call fails the test. */
 function identityDouble<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
   const answer = (body: unknown): Promise<ServiceResponse<T>> => Promise.resolve({ status: 200, headers: {}, body: body as T });
+  if (req.service === 'programs-sites' && req.method === 'POST' && req.path === SITE_CONFIG_FLAGS_PATH) return Promise.resolve(siteConfigFlagsAnswer()(req) as ServiceResponse<T>);
   if (req.service === IDENTITY_SERVICE && req.method === 'GET' && req.path === '/v1/sessions/current/admin-state') return answer(identity.state);
   if (req.service === IDENTITY_SERVICE && req.method === 'GET' && req.path === '/v1/sessions/current') {
     identity.sessionCalls += 1;

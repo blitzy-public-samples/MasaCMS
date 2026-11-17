@@ -119,15 +119,6 @@ export function writeContextFor(actor: Actor, requestId?: string): WriteContext 
   return { actorUserId: actor.userId || undefined, actorService: OWNER, requestId };
 }
 
-/** Raised where a legacy path would `render404()`; routes answer it with the legacy 404 response. */
-export class ContentNotFoundError extends Error {
-  override readonly name: string = 'ContentNotFoundError';
-
-  constructor(message = 'Content not found') {
-    super(message);
-  }
-}
-
 // Deliberately not a LegacyApiError: service-kit's error handler answers unrecognised errors with the legacy 500
 // (the `server_error` envelope on API routes), as ACF does for a call to a missing function.
 /** Raised where legacy calls a CFC function that does not exist (e.g. JSON API `submitForm`). */

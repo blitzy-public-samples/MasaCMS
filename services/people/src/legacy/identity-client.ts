@@ -92,6 +92,19 @@ export interface UserGroupRow {
   isPublic: Schemas['NullableInteger'];
 }
 
+/** The window of one `listGroups` page: rows to skip and, when given, the most rows (1 to GROUP_PAGE_LIMIT). */
+export interface UserGroupsWindow {
+  offset: number;
+  limit?: number;
+}
+
+/** One `listGroups` page: its rows, how many groups the whole listing holds, and the offset of the next page (null after the last). */
+export interface UserGroupsPage {
+  rows: UserGroupRow[];
+  total: number;
+  nextOffset: number | null;
+}
+
 /** The logged-in session user legacy stamps into `LastUpdateBy`/`LastUpdateByID` and `ttrash.deletedBy`. */
 export interface ActingUser {
   userId: string;
@@ -123,16 +136,16 @@ export interface IdentityClient {
   countAccounts(request: AccountCountRequest): Promise<number>;
   /** `lookupUsernameCandidates`: the first `limit` pool accounts by user id whose UserName matches the pattern, and whether that was all. */
   usernameCandidates(request: UsernameCandidateRequest): Promise<UsernameCandidates>;
-  /** `lookupMemberships`: each user's stored membership group ids, keyed by requested id, one call per 1000 ids; an empty list makes no call. */
-  lookupMemberships(userIds: readonly string[]): Promise<Map<string, string[]>>;
+  /** `lookupMemberships`: each user's stored membership group ids, or with `byGroupName` its `readMembershipIDs` ids, keyed by requested id, one call per 1000 ids; an empty list makes no call. */
+  lookupMemberships(userIds: readonly string[], options?: { byGroupName?: boolean }): Promise<Map<string, string[]>>;
   /** `listUserMemberships`: the site's groups and the user's memberships, for cUsers callers only; `siteId` defaults to the token's site. */
   userMemberships(userId: string, siteId?: string): Promise<UserMemberships>;
   /** `getAccountMemberships`: ids of the groups the user belongs to, in `readMembershipIDs` order, whatever the caller's roles. */
   membershipGroupIds(userId: string, options?: IdentityCallOptions): Promise<string[]>;
   /** `listSiteGroupsV2`: every group of the site's private (`isPublic` 0) or public (1) user pool, in identity's order, read page by page. */
   siteGroups(siteId: string, isPublic: number): Promise<GroupSummary[]>;
-  /** `listGroups`: every `cusers.list` group row, by `Perm` descending, then group name, read page by page. */
-  userGroups(siteId: string, isPublic: number): Promise<UserGroupRow[]>;
+  /** `listGroups`: the `window` of the `cusers.list` group rows, by `Perm` descending, then group name, with the listing's total. */
+  userGroupsPage(siteId: string, isPublic: number, window: UserGroupsWindow): Promise<UserGroupsPage>;
   /** `getCurrentSession`: the forwarded token's login-time session user when it is `sessionId` and logged in. */
   actingUser(sessionId: string): Promise<ActingUser | undefined>;
   /** `getAdminSessionState`: the admin session values of the forwarded token's session; `{}` when it stored none. */
@@ -175,7 +188,7 @@ const OPS = {
   lookupMemberships: { operationId: 'lookupMemberships', method: 'POST', path: '/internal/v1/accounts:memberships' },
   userMemberships: { operationId: 'listUserMemberships', method: 'GET', path: '/v1/users/{userId}/memberships' },
   siteGroups: { operationId: 'listSiteGroupsV2', method: 'GET', path: '/internal/v2/groups' },
-  userGroups: { operationId: 'listGroups', method: 'GET', path: '/v1/groups' },
+  userGroupsPage: { operationId: 'listGroups', method: 'GET', path: '/v1/groups' },
   currentSession: { operationId: 'getCurrentSession', method: 'GET', path: '/v1/sessions/current' },
   adminState: { operationId: 'getAdminSessionState', method: 'GET', path: '/v1/sessions/current/admin-state' },
   saveAdminState: { operationId: 'saveAdminSessionState', method: 'POST', path: '/v1/sessions/current/admin-state' },
@@ -191,7 +204,10 @@ const HTTP_CONFLICT = 409;
 const HTTP_SERVER_ERROR = 500;
 
 /** `maxItems` of identity's `MembershipLookupRequest` user ids; account lookups take the same chunks to keep request bodies bounded. */
-const LOOKUP_MAX_IDS = 1000;
+export const LOOKUP_MAX_IDS = 1000;
+
+/** `maximum` of identity's `ListLimit`: the most rows one `listGroups` page answers. */
+export const GROUP_PAGE_LIMIT = 1000;
 
 /** `maxItems` of identity's `GroupFavoriteLookupRequest` favorite ids. */
 const GROUP_FAVORITE_LOOKUP_MAX_IDS = 100;
@@ -386,11 +402,11 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       return { items: items.map(({ userId, username }) => ({ userId, username })), complete };
     },
 
-    async lookupMemberships(userIds) {
+    async lookupMemberships(userIds, options) {
       const op = OPS.lookupMemberships;
       const memberships = new Map<string, string[]>();
       for (const chunk of lookupChunks(userIds)) {
-        const lookup: Schemas['MembershipLookupRequest'] = { userIds: chunk };
+        const lookup: Schemas['MembershipLookupRequest'] = options?.byGroupName === true ? { userIds: chunk, byGroupName: true } : { userIds: chunk };
         const { items } = okBody(op, await send<Schemas['MembershipList']>(op, op.path, { json: lookup }));
         for (const item of items) memberships.set(item.userId, item.groupIds);
       }
@@ -417,17 +433,13 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       return groups;
     },
 
-    async userGroups(siteId, isPublic) {
-      const op = OPS.userGroups;
-      const rows: UserGroupRow[] = [];
-      // Every page in turn, each at identity's default size, until nextOffset ends the listing.
-      for (let offset: number | null = 0; offset !== null; ) {
-        const query: Record<string, string> = { siteid: siteId, ispublic: String(isPublic), offset: String(offset) };
-        const page: Schemas['GroupList'] = okBody(op, await send<Schemas['GroupList']>(op, op.path, { query }));
-        for (const item of page.items) rows.push(userGroupRow(item));
-        offset = page.nextOffset;
-      }
-      return rows;
+    async userGroupsPage(siteId, isPublic, { offset, limit }) {
+      const op = OPS.userGroupsPage;
+      const query: Record<string, string> = { siteid: siteId, ispublic: String(isPublic), offset: String(offset) };
+      // Without a limit identity answers its default page size.
+      if (limit !== undefined) query.limit = String(limit);
+      const page = okBody(op, await send<Schemas['GroupList']>(op, op.path, { query }));
+      return { rows: page.items.map(userGroupRow), total: page.total, nextOffset: page.nextOffset };
     },
 
     // getSessionSnapshot admits only service:gateway; getCurrentSession reads the same login-time user for the forwarded token.

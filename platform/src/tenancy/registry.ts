@@ -43,6 +43,8 @@ export interface SiteChangedPayload {
   /** An array, or Masa's comma-separated `contentPoolID` text. */
   contentPoolIds?: string[] | string | null;
   domains?: string[] | null;
+  /** True when the site was deleted; the other fields then carry its last stored state. */
+  deleted?: boolean;
 }
 
 /** The envelope fields the registry consumer reads. */
@@ -150,8 +152,18 @@ function toEntry(row: RegistryRow): TenantRegistryEntry {
   };
 }
 
-/** Every registered site and its tenant, ordered by site id. */
+/** Every registered site and its tenant, ordered by site id; deleted sites are not registered. */
 export async function registeredTenants(db: RegistrySource): Promise<Array<{ tenantId: string; siteId: string }>> {
+  return read(db, async (reader) => {
+    const { rows } = await reader.query<{ tenant_id: string; site_id: string }>(
+      `SELECT tenant_id, site_id FROM ${registryTable(reader)} WHERE NOT deleted ORDER BY site_id`,
+    );
+    return rows.map((row) => ({ tenantId: row.tenant_id, siteId: row.site_id }));
+  });
+}
+
+/** Every site the registry has known and its tenant, deleted sites included, ordered by site id; for recovery scans only. */
+export async function knownTenants(db: RegistrySource): Promise<Array<{ tenantId: string; siteId: string }>> {
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ tenant_id: string; site_id: string }>(
       `SELECT tenant_id, site_id FROM ${registryTable(reader)} ORDER BY site_id`,
@@ -164,7 +176,7 @@ export async function registeredTenants(db: RegistrySource): Promise<Array<{ ten
 export async function registryEntries(db: RegistrySource): Promise<TenantRegistryEntry[]> {
   return read(db, async (reader) => {
     const { rows } = await reader.query<RegistryRow>(
-      `SELECT ${ENTRY_COLUMNS} FROM ${registryTable(reader)} ORDER BY site_id`,
+      `SELECT ${ENTRY_COLUMNS} FROM ${registryTable(reader)} WHERE NOT deleted ORDER BY site_id`,
     );
     return rows.map((row) => toEntry(row));
   });
@@ -175,7 +187,7 @@ export async function registryEntryForTenant(db: RegistrySource, tenantId: strin
   const tid = assertTenantId(tenantId);
   return read(db, async (reader) => {
     const { rows } = await reader.query<RegistryRow>(
-      `SELECT ${ENTRY_COLUMNS} FROM ${registryTable(reader)} WHERE tenant_id = $1`,
+      `SELECT ${ENTRY_COLUMNS} FROM ${registryTable(reader)} WHERE tenant_id = $1 AND NOT deleted`,
       [tid],
     );
     const row = rows[0];
@@ -187,7 +199,7 @@ export async function registryEntryForTenant(db: RegistrySource, tenantId: strin
 export async function tenantForRegisteredSite(db: RegistrySource, siteId: string): Promise<string | null> {
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ tenant_id: string }>(
-      `SELECT tenant_id FROM ${registryTable(reader)} WHERE lower(site_id) = lower($1)`,
+      `SELECT tenant_id FROM ${registryTable(reader)} WHERE lower(site_id) = lower($1) AND NOT deleted`,
       [siteId],
     );
     return rows[0]?.tenant_id ?? null;
@@ -199,7 +211,7 @@ export async function siteForTenant(db: RegistrySource, tenantId: string): Promi
   const tid = assertTenantId(tenantId);
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ site_id: string }>(
-      `SELECT site_id FROM ${registryTable(reader)} WHERE tenant_id = $1`,
+      `SELECT site_id FROM ${registryTable(reader)} WHERE tenant_id = $1 AND NOT deleted`,
       [tid],
     );
     return rows[0]?.site_id ?? null;
@@ -215,7 +227,7 @@ export async function poolTenantFor(db: RegistrySource, tenantId: string, kind: 
   const column = POOL_TENANT_COLUMNS[kind];
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ pool_tenant: string | null }>(
-      `SELECT ${column} AS pool_tenant FROM ${registryTable(reader)} WHERE tenant_id = $1`,
+      `SELECT ${column} AS pool_tenant FROM ${registryTable(reader)} WHERE tenant_id = $1 AND NOT deleted`,
       [tid],
     );
     return rows[0]?.pool_tenant ?? null;
@@ -227,7 +239,7 @@ export async function contentPoolTenants(db: RegistrySource, tenantId: string): 
   const tid = assertTenantId(tenantId);
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ content_pool_tenants: string[] | null }>(
-      `SELECT content_pool_tenants FROM ${registryTable(reader)} WHERE tenant_id = $1`,
+      `SELECT content_pool_tenants FROM ${registryTable(reader)} WHERE tenant_id = $1 AND NOT deleted`,
       [tid],
     );
     return rows[0]?.content_pool_tenants ?? [];
@@ -240,7 +252,7 @@ export async function userPoolFanoutTenants(db: RegistrySource, tenantId: string
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ tenant_id: string }>(
       `SELECT tenant_id FROM ${registryTable(reader)}` +
-        ' WHERE public_user_pool_tenant = $1 OR private_user_pool_tenant = $1 ORDER BY site_id',
+        ' WHERE (public_user_pool_tenant = $1 OR private_user_pool_tenant = $1) AND NOT deleted ORDER BY site_id',
       [tid],
     );
     return [...new Set([tid, ...rows.map((row) => row.tenant_id)])];
@@ -296,7 +308,10 @@ function domainList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
-/** Applies `programs-sites.site.changed.v1` to `tenant_registry` when its aggregate is the payload site; older or equal versions are ignored. */
+/**
+ * Applies `programs-sites.site.changed.v1` to `tenant_registry` when its aggregate is the payload site; older or equal versions
+ * are ignored. A `deleted` payload marks the site's entry deleted; a later full state registers it again.
+ */
 export const tenantRegistryConsumer = {
   topic: SITE_CHANGED_TOPIC,
   kind: 'state' as const,
@@ -321,18 +336,26 @@ export const tenantRegistryConsumer = {
     if (tx.tenantId !== expected) {
       throw new TenantMismatchError(expected, tx.tenantId);
     }
+    const table = `${tx.schema}.tenant_registry`;
+    if (readField(payload, 'deleted') === true) {
+      await tx.query(
+        `UPDATE ${table} SET deleted = true, aggregate_version = $2, updated_at = LOCALTIMESTAMP(3)` +
+          ' WHERE tenant_id = $1 AND aggregate_version < $2',
+        [expected, event.aggregateVersion],
+      );
+      return;
+    }
 
     const pools = (['publicUserPoolId', 'privateUserPoolId', 'categoryPoolId', 'filePoolId', 'displayPoolId'] as const).map(
       (name) => poolId(readField(payload, name), siteId, name),
     );
     const contentPoolIds = contentPool(readField(payload, 'contentPoolIds', 'contentPoolId'), siteId);
-    const table = `${tx.schema}.tenant_registry`;
     await tx.query(
       `INSERT INTO ${table} (site_id, tenant_id,
          public_user_pool_id, private_user_pool_id, category_pool_id, file_pool_id, display_pool_id, content_pool_ids,
          public_user_pool_tenant, private_user_pool_tenant, category_pool_tenant, file_pool_tenant, display_pool_tenant,
-         content_pool_tenants, domains, aggregate_version, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, LOCALTIMESTAMP(3))
+         content_pool_tenants, domains, aggregate_version, deleted, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, false, LOCALTIMESTAMP(3))
        ON CONFLICT (tenant_id) DO UPDATE SET
          site_id = EXCLUDED.site_id,
          public_user_pool_id = EXCLUDED.public_user_pool_id,
@@ -349,6 +372,7 @@ export const tenantRegistryConsumer = {
          content_pool_tenants = EXCLUDED.content_pool_tenants,
          domains = EXCLUDED.domains,
          aggregate_version = EXCLUDED.aggregate_version,
+         deleted = EXCLUDED.deleted,
          updated_at = EXCLUDED.updated_at
        WHERE ${table}.aggregate_version < EXCLUDED.aggregate_version`,
       [

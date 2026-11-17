@@ -102,11 +102,11 @@ function registryTx(tenantId: string): { tx: TenantTx; query: Mock } {
   query.mockImplementation((sql: string, params: readonly unknown[] = []) => {
     const [value] = params;
     const sites = [...REGISTERED_SITES];
-    if (/WHERE lower\(site_id\) = lower\(\$1\)$/.test(sql)) {
+    if (/WHERE lower\(site_id\) = lower\(\$1\) AND NOT deleted$/.test(sql)) {
       const found = sites.find(([site]) => site.toLowerCase() === String(value).toLowerCase());
       return Promise.resolve({ rows: found === undefined ? [] : [{ tenant_id: found[1] }] });
     }
-    if (/WHERE tenant_id = \$1$/.test(sql)) {
+    if (/WHERE tenant_id = \$1 AND NOT deleted$/.test(sql)) {
       const found = sites.find(([, tenant]) => tenant === value);
       return Promise.resolve({ rows: found === undefined ? [] : [{ site_id: found[0], tenant_id: found[1], aggregate_version: '1' }] });
     }

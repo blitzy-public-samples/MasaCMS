@@ -19,6 +19,7 @@ import { legacyParamsGuard } from './legacy-params.js';
 
 type ImageSize = components['schemas']['ImageSize'];
 type ImageSizeList = components['schemas']['ImageSizeList'];
+type ImageSizePage = components['schemas']['ImageSizePage'];
 type ImageSizeInput = components['schemas']['ImageSizeInput'];
 
 /** The database and image size operations the routes delegate to. */
@@ -38,6 +39,22 @@ interface SizeParams extends SiteParams {
 const SITE_SIZES_PATH = '/v1/sites/:siteId/image-sizes';
 const SIZE_PATH = `${SITE_SIZES_PATH}/:sizeId`;
 const SERVICE_SITE_SIZES_PATH = '/internal/v1/sites/:siteId/image-sizes';
+const SITE_SIZES_PAGE_PATH = '/v2/sites/:siteId/image-sizes';
+
+/** Query of `listImageSizesV2`, `limit` defaulted. */
+interface SizePageQuery {
+  limit: number;
+  after?: string;
+}
+
+/** Bounds of `ListPageSize` and `ImageSizePageAfter`. */
+const SIZE_PAGE_QUERY_SCHEMA = {
+  type: 'object',
+  properties: {
+    limit: { type: 'integer', minimum: 1, maximum: 1000, default: 50 },
+    after: { type: 'string', minLength: 1, maxLength: 35 },
+  },
+} as const;
 
 // csettings.before() admits S2 or an Admin of the site's private user pool (csettings.cfc:85-94); the dialog checks no CSRF token.
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([Roles.s2, Roles.siteAdmin]) });
@@ -75,7 +92,7 @@ function siteClaims(auth: Opt2AuthContext, siteId: string): UserClaims {
   return claims;
 }
 
-/** Registers `listImageSizes`, `getImageSize`, `saveImageSize`, `deleteImageSize` and `listSiteCustomImageSizes`. */
+/** Registers `listImageSizes`, `listImageSizesV2`, `getImageSize`, `saveImageSize`, `deleteImageSize` and `listSiteCustomImageSizes`. */
 export async function registerImageSizeRoutes(app: FastifyInstance, deps: ImageSizeRouteDeps): Promise<void> {
   const { db, imageSizes } = deps;
 
@@ -89,6 +106,17 @@ export async function registerImageSizeRoutes(app: FastifyInstance, deps: ImageS
     const { siteId } = request.params;
     return siteSizes(siteClaims(request.opt2Auth, siteId), siteId);
   });
+
+  /** `listImageSizesV2`: one page of the site's custom image sizes by size id. */
+  app.get<{ Params: SiteParams; Querystring: SizePageQuery; Reply: ImageSizePage }>(
+    SITE_SIZES_PAGE_PATH,
+    { config: { opt2: ROUTE_AUTH }, schema: { querystring: SIZE_PAGE_QUERY_SCHEMA } },
+    async (request) => {
+      const { siteId } = request.params;
+      const page = await imageSizes.pageImageSizes(db, siteClaims(request.opt2Auth, siteId), siteId, request.query);
+      return { items: page.items.map(toImageSize), next: page.next };
+    },
+  );
 
   /** `getImageSize`: `loadBy(sizeid)`, an unknown id answering the defaulted new size (loadcustomimage.cfm:2). */
   app.get<{ Params: SizeParams; Reply: ImageSize }>(SIZE_PATH, { config: { opt2: ROUTE_AUTH } }, async (request) => {

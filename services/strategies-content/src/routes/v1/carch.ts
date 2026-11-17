@@ -93,6 +93,8 @@ import {
   type AttachmentLinkParts,
 } from '../../domain/forms.js';
 import { FeedBean, feedContent, listFeedNames } from '../../domain/feeds.js';
+import { createSitesClient, type SiteConfigFlags } from '../../legacy/sites-client.js';
+import { UNORDERED_SORT_REASON } from '../../repo/feed-queries.js';
 import type { UploadedFile } from '../../domain/files.js';
 import { getModulePerm, getNodePerm, getNodePerms, getNodePermsInTx, getPerm, getPerms, loadMemberships, setRestriction, type NodeVerdict, type UserMemberships } from '../../domain/permissions.js';
 import { contentPoolSites, withPoolTenant, type PoolSite } from '../../domain/pools.js';
@@ -618,23 +620,27 @@ async function siteOf(ctx: ContentRouteContext, actor: Actor): Promise<ContentSa
   };
 }
 
-/** The settingsBean values the admin views read, at their defaults where the registry holds none. */
-interface SiteFlags {
-  hasLockableNodes: boolean;
-  hasChangesets: boolean;
-  dataCollection: boolean;
-  hasComments: boolean;
-  scaffolding: boolean;
+const siteFlagReads = new WeakMap<FastifyRequest, Promise<SiteConfigFlags>>();
+
+/** programs-sites' `$.siteConfig` flags of the token's site, which is the request's, read once per request. */
+function siteFlagsOf(request: FastifyRequest, actor: Actor): Promise<SiteConfigFlags> {
+  let read = siteFlagReads.get(request);
+  if (read === undefined) {
+    read = createSitesClient(request.server.opt2.client)
+      .configFlags([actor.siteId])
+      .then(([flags]) => {
+        if (flags === undefined) throw new TypeError(`programs-sites answered no config flags for site '${actor.siteId}'`);
+        return flags;
+      });
+    siteFlagReads.set(request, read);
+  }
+  return read;
 }
 
-/** settingsBean defaults (settingsBean.cfc:83-159). */
-const SITE_FLAGS: Readonly<SiteFlags> = Object.freeze({
-  hasLockableNodes: false,
-  hasChangesets: true,
-  dataCollection: true,
-  hasComments: true,
-  scaffolding: false,
-});
+/** A flag as a CFML condition tests it; the null of a NULL column fails there, as `cfif ''` does. */
+function siteFlag(value: number | null): boolean {
+  return cfToBoolean(value ?? '');
+}
 
 // ---- render context ----
 
@@ -645,6 +651,7 @@ type RenderBase = Omit<AdminRenderContext, 'csrf'>;
 async function renderBaseOf(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, site: ContentSaveSite): Promise<RenderBase> {
   const state = await storedSession(request);
   const pools = await registryEntryForTenant(ctx.domain.db, actor.tenantId);
+  const flags = await siteFlagsOf(request, actor);
   const locale = state.locale ?? 'en_US';
   const nextN = muraValue(state, 'nextN');
   const session: AdminSession = {
@@ -663,8 +670,8 @@ async function renderBaseOf(request: FastifyRequest, ctx: ContentRouteContext, a
     site: site.urls,
     siteSettings: {
       locking: site.locking,
-      hasComments: SITE_FLAGS.hasComments,
-      hasLockableNodes: SITE_FLAGS.hasLockableNodes,
+      hasComments: siteFlag(flags.hasComments),
+      hasLockableNodes: siteFlag(flags.hasLockableNodes),
       privateUserPoolId: pools?.privateUserPoolId ?? site.siteId,
       extranet: false,
     },
@@ -841,11 +848,13 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   rcSet(rc, 'rsTop', rows);
   const moduleId = rcText(rc, 'moduleid');
   const site = await siteOf(ctx, actor);
+  const flags = await siteFlagsOf(request, actor);
   rcSet(rc, 'siteConfig', {
     customTagGroups: site.customTagGroups ?? '',
-    scaffolding: SITE_FLAGS.scaffolding,
-    dataCollection: SITE_FLAGS.dataCollection,
-    hasLockableNodes: SITE_FLAGS.hasLockableNodes,
+    scaffolding: siteFlag(flags.scaffolding),
+    // A NULL getDataCollection() stays '' so the view fails only where list.cfm tests it (its Architectural tab).
+    dataCollection: flags.dataCollection === null ? '' : siteFlag(flags.dataCollection),
+    hasLockableNodes: siteFlag(flags.hasLockableNodes),
   });
   if (!CONTENT_MODULES.includes(moduleId)) {
     rcSet(rc, 'nextN', getNextN(rows.length, LIST_NEXT_N, rcRow(rc, 'startrow')));
@@ -984,12 +993,13 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
   }
   const stats = await inTenant(ctx, actor, (tx) => ctx.domain.repository.stats.readStats(tx, { contentId, siteId }));
   const site = await siteOf(ctx, actor);
+  const flags = await siteFlagsOf(request, actor);
   return {
     ...view,
     crumbData,
     contentBean: { ...Object.fromEntries(bean.entries()), stats: stats ?? {} },
     perm: await getNodePerm(ctx.domain, actor, crumbData),
-    hasLockableNodes: SITE_FLAGS.hasLockableNodes,
+    hasLockableNodes: siteFlag(flags.hasLockableNodes),
     useLayoutManager: false,
     rsDataInfo: queryCells(rsDataInfo),
     rsData,
@@ -1033,11 +1043,12 @@ async function draftRows(request: FastifyRequest, ctx: ContentRouteContext, acto
   });
 }
 
-/** The history and audit screens' rc: the screen model under legacy names, the site and configBean flags, and `rc.deletable` (hist.cfm:96). */
+/** The history and audit screens' rc: the screen model under legacy names, the site's settings and flags, and `rc.deletable` (hist.cfm:96). */
 function versionScreenRc(
   rc: Rc,
   model: Awaited<ReturnType<typeof getHistory>> | Awaited<ReturnType<typeof getAudit>>,
   site: ContentSaveSite,
+  flags: SiteConfigFlags,
   purgeDrafts: boolean,
 ): Rc {
   if (!rcHas(rc, 'parentid')) throw new UndefinedLegacyElementError('Element PARENTID is undefined in RC.');
@@ -1056,8 +1067,8 @@ function versionScreenRc(
     perm: model.perm,
     stats,
     deletable,
-    hasLockableNodes: SITE_FLAGS.hasLockableNodes,
-    hasChangesets: SITE_FLAGS.hasChangesets,
+    hasLockableNodes: siteFlag(flags.hasLockableNodes),
+    hasChangesets: siteFlag(flags.hasChangesets),
     purgeDrafts,
     siteLocking: site.locking,
   };
@@ -1143,7 +1154,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     const model = await getHistory(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid') });
     const site = await siteOf(ctx, actor);
     // rc.deletable's parentid read (hist.cfm:96) fails before the version rows print their previews (hist.cfm:177-182).
-    const screen = versionScreenRc(rc, model, site, ctx.domain.config.purgeDrafts);
+    const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), ctx.domain.config.purgeDrafts);
     haltVersionPreviews('cArch.hist', model.items);
     const items = model.items.map((item) => ({ ...item, parentid: model.parents.get(item.contenthistid ?? '') ?? '' }));
     return viewModel({ ...rc, ...screen, items, historyTotal: model.historyTotal });
@@ -1170,7 +1181,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
       const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
       const model = await getAudit(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid'), contentHistId: request.params.contenthistid });
       const site = await siteOf(ctx, actor);
-      const screen = versionScreenRc(rc, model, site, ctx.domain.config.purgeDrafts);
+      const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), ctx.domain.config.purgeDrafts);
       haltVersionPreviews('cArch.audit', model.trail);
       const items = model.trail.map((version) => {
         const changeset = model.changesets.get(version.changesetid ?? '');
@@ -1517,7 +1528,8 @@ async function runDraftPromptData(request: FastifyRequest, ctx: ContentRouteCont
   const draft = data.hasDraft ? await legacyVersion(ctx, actor, data.historyId, siteId) : undefined;
   const active = await getActiveContent(ctx.domain, actor, { contentId, siteId });
   // The locked-by notice prints only on sites with lockable nodes, for a node lock.
-  const lockedBy = SITE_FLAGS.hasLockableNodes && cfEq(data.lockType, 'node') ? await userNamed(request, actor, 'draftpromptdata', data.lockId) : undefined;
+  const lockable = siteFlag((await siteFlagsOf(request, actor)).hasLockableNodes);
+  const lockedBy = lockable && cfEq(data.lockType, 'node') ? await userNamed(request, actor, 'draftpromptdata', data.lockId) : undefined;
   const model: DraftPromptModel = {
     data,
     targetVersion: rcText(rc, 'targetversion'),
@@ -1872,6 +1884,14 @@ function byDates<R>(rows: readonly R[], direction: string, ...keys: Array<(row: 
   });
 }
 
+/** `sorted`, unless two rows tie on every key: their legacy order is the plan order of the feed's `desc` extended sort. */
+function untied<R>(sorted: R[], ...keys: Array<(row: R) => Date | null>): R[] {
+  const time = (value: Date | null): number => value?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const tied = sorted.some((row, i) => i > 0 && keys.every((key) => time(key(row)) === time(key(sorted[i - 1] as R))));
+  if (tied) throw new LegacyServiceUnavailableError('Rows tying on the due date and last update keep the order SQL Server\'s TOP plan picks', 'auto', UNORDERED_SORT_REASON);
+  return sorted;
+}
+
 /** A flat-view feed row with the report columns loadsiteflat.cfm:249-303 adds. */
 type FlatFeedRow = FeedContentRow & { approvalstatus?: string | null; duedate?: Date | null };
 
@@ -1963,7 +1983,9 @@ async function siteFlatFeed(ctx: ContentRouteContext, actor: Actor, event: SiteF
     addFeedParam(feed, { field: 'tcontent.subtype', datatype: 'varchar', criteria: row.subtype ?? '' });
     addFeedParam(feed, { relationship: ')' });
   }
-  return { feed, rows: await feedContent(ctx.domain, actor, feed), drafts };
+  // A pending report's due-date view re-sorts the rows of its `desc` sort (loadsiteflat.cfm:351-354).
+  const resorted = listFindNoCaseOf('myapprovals,mysubmissions', report) && cfEq(ev('sortby'), 'duedate');
+  return { feed, rows: await feedContent(ctx.domain, actor, feed, { resorted }), drafts };
 }
 
 /** CFML `listFindNoCase(list, value) > 0`. */
@@ -1983,7 +2005,7 @@ function withReportColumns(rows: FlatFeedRow[], report: string, sortBy: string, 
       return { ...row, lastupdate: maxDate(own.map((draft) => draft.lastupdate)), approvalstatus: 'Pending', duedate: publish ?? display };
     });
     if (cfEq(sortBy, 'lastupdate')) return byDates(updated, direction, (row) => row.lastupdate);
-    if (cfEq(sortBy, 'duedate')) return byDates(updated, direction, (row) => row.duedate ?? null, (row) => row.lastupdate);
+    if (cfEq(sortBy, 'duedate')) return untied(byDates(updated, direction, (row) => row.duedate ?? null, (row) => row.lastupdate), (row) => row.duedate ?? null, (row) => row.lastupdate);
     return updated;
   }
   if (cfEq(report, 'mydrafts')) {
@@ -2803,7 +2825,8 @@ async function runStatusModal(request: FastifyRequest, ctx: ContentRouteContext,
     if (user.isNew) user = await statusUser(request, actor, loaded.values.userid);
   }
   const changesetId = content.text('changesetid');
-  const changeset = SITE_FLAGS.hasChangesets ? await readChangeset(ctx.domain, actor, changesetId) : undefined;
+  const hasChangesets = siteFlag((await siteFlagsOf(request, actor)).hasChangesets);
+  const changeset = hasChangesets ? await readChangeset(ctx.domain, actor, changesetId) : undefined;
   const stats = await inTenant(ctx, actor, (tx) => ctx.domain.repository.stats.readStats(tx, { contentId: content.contentId(), siteId }));
   const model: StatusModalModel = {
     mode: rcText(rc, 'mode'),
@@ -2813,7 +2836,7 @@ async function runStatusModal(request: FastifyRequest, ctx: ContentRouteContext,
     showApprovalStatus: approval.shown,
     ...(pending === undefined ? {} : { approval: pending }),
     lockType: stats?.locktype ?? '',
-    hasChangesets: SITE_FLAGS.hasChangesets,
+    hasChangesets,
     changesetName: changeset === undefined || changeset.isnew === 1 ? undefined : changeset.name,
     membershipIds: (await sessionUser(request)).membershipids ?? '',
     resourcePath: '',

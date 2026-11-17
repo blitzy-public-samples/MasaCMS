@@ -33,10 +33,11 @@ type Method = 'GET' | 'PUT' | 'DELETE';
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
-const SIZE_PATHS = ['/v1/sites/{siteId}/image-sizes', '/v1/sites/{siteId}/image-sizes/{sizeId}'];
+const SIZE_PATHS = ['/v1/sites/{siteId}/image-sizes', '/v2/sites/{siteId}/image-sizes', '/v1/sites/{siteId}/image-sizes/{sizeId}'];
 const SIZE_ID = '6A1C9E2B-1D3F-4A5B-8C7D9E0F1A2B3C4D';
 const NEW_SIZE_ID = '0B2D4F6A-8C0E-4A1B-9D3F5A7C9E1B3D5F';
 const LIST_URL = '/v1/sites/tenant-a/image-sizes';
+const PAGE_URL = '/v2/sites/tenant-a/image-sizes';
 const SIZE_URL = `${LIST_URL}/${SIZE_ID}`;
 const STORED: ImageSizeBean = {
   sizeId: SIZE_ID,
@@ -54,6 +55,7 @@ const JSON_BODY = { 'content-type': 'application/json' };
 const SIZE_BODY = { name: 'hero', height: '400', width: 'AUTO' };
 const ROUTES: ReadonlyArray<[Method, string]> = [
   ['GET', LIST_URL],
+  ['GET', PAGE_URL],
   ['GET', SIZE_URL],
   ['PUT', SIZE_URL],
   ['DELETE', SIZE_URL],
@@ -84,6 +86,7 @@ afterAll(async () => {
 beforeEach(async () => {
   imageSizes = {
     listImageSizes: vi.fn<ImageSizesDomain['listImageSizes']>(async () => [STORED]),
+    pageImageSizes: vi.fn<ImageSizesDomain['pageImageSizes']>(async () => ({ items: [STORED], next: null })),
     loadImageSize: vi.fn<ImageSizesDomain['loadImageSize']>(async () => STORED),
     saveImageSize: vi.fn<ImageSizesDomain['saveImageSize']>(async () => STORED),
     deleteImageSize: vi.fn<ImageSizesDomain['deleteImageSize']>(async () => true),
@@ -149,7 +152,7 @@ function expectNoDomainCall(): void {
 
 describe('route declarations', () => {
   it('match the contract operations', () => {
-    const declared = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/v1/sites/'));
+    const declared = collectRouteMatrix(app).routes.filter((route) => /^\/v[12]\/sites\//.test(route.url));
     const expected = SIZE_PATHS.flatMap((template) =>
       Object.entries(OPENAPI.paths[template] ?? {})
         .filter(([method]) => method !== 'parameters')
@@ -161,9 +164,29 @@ describe('route declarations', () => {
           siteCheck: true,
         })),
     );
-    expect(expected).toHaveLength(4);
+    expect(expected).toHaveLength(5);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
-    expect(declared).toHaveLength(4);
+    expect(declared).toHaveLength(5);
+  });
+});
+
+describe('GET /v2/sites/:siteId/image-sizes', () => {
+  it.each([
+    ['s2', 'tenant-a', '', { limit: 50 }, { items: [STORED], next: SIZE_ID }, { items: [STORED_JSON], next: SIZE_ID }],
+    ['site-admin', 'TENANT-A', `?limit=1000&after=${SIZE_ID}`, { limit: 1000, after: SIZE_ID }, { items: [], next: null }, { items: [], next: null }],
+  ])('answers the domain page of the path site for %s on %s%s', async (as, site, query, page, answer, expected) => {
+    imageSizes.pageImageSizes.mockResolvedValueOnce(answer);
+    const res = await send('GET', `/v2/sites/${site}/image-sizes${query}`, await headersAs(as));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect(imageSizes.pageImageSizes).toHaveBeenCalledExactlyOnceWith(db, tenantAClaims(`test-${as}`), site, page);
+  });
+
+  it.each(['?limit=0', '?limit=1001', '?limit=x', '?after=', `?after=${'A'.repeat(36)}`])('answers invalidParameters for %s without reading', async (query) => {
+    const res = await send('GET', `${PAGE_URL}${query}`, await headersAs('s2'));
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expectNoDomainCall();
   });
 });
 

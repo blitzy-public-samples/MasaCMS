@@ -26,7 +26,7 @@ export function rlsSql(schema: string, table: string): string {
   ].join('\n');
 }
 
-/** Returns the DDL of the non-tenant `<schema>.tenant_registry` site projection. */
+/** Returns the DDL of the non-tenant `<schema>.tenant_registry` site projection; a `deleted` row is a site tombstone. */
 export function tenantRegistrySql(schema: string): string {
   return [
     `CREATE TABLE ${ident(schema, 'schema')}.tenant_registry (`,
@@ -46,7 +46,8 @@ export function tenantRegistrySql(schema: string): string {
     `  content_pool_tenants uuid[],`,
     `  domains text[],`,
     `  aggregate_version bigint NOT NULL,`,
-    `  updated_at timestamp(3) without time zone NOT NULL`,
+    `  updated_at timestamp(3) without time zone NOT NULL,`,
+    `  deleted boolean NOT NULL DEFAULT false`,
     `);`,
   ].join('\n');
 }

@@ -679,6 +679,39 @@ describe('checkCoverage on the sample fixtures', () => {
     ]);
   });
 
+  it("asks no cover of a synthetic service's own /v1/ entry, which has no legacy oracle", async () => {
+    const loaded = await load();
+    const target = (route: string, owningService: string): CutoverEntry => ({ route, owningService, state: 'target', kind: 'write' });
+    const before = checkCoverage(loaded).map((finding) => JSON.stringify(finding));
+    const found = checkCoverage({
+      ...loaded,
+      entries: [
+        ...loaded.entries,
+        target('opt2:/v1/finance/**', 'finance'),
+        target('opt2:/v1/esignature/**', 'e-signature'),
+        target('opt2:/v1/messages/**', 'communications'),
+        target('opt2:/v1/templates/**', 'communications'),
+        target('opt2:/v1/people/**', 'people'),
+        target('opt2:/v2/finance/**', 'finance'),
+      ],
+    });
+    expect(found.filter((finding) => !before.includes(JSON.stringify(finding)))).toEqual([
+      { kind: 'uncovered-target', route: 'opt2:/v1/people/**', owningService: 'people' },
+      { kind: 'uncovered-target', route: 'opt2:/v2/finance/**', owningService: 'finance' },
+    ]);
+  });
+
+  it('reads the default v0002 from OPT2_CUTOVER_DIR when it is set', async () => {
+    const cutover = path.join(state, 'cutover');
+    await mkdir(path.join(cutover, 'versions'), { recursive: true });
+    await writeFile(path.join(cutover, 'versions', 'v0002.json'), await readFile(SAMPLE_VERSION, 'utf8'));
+    const relocated = await loadCoverageInputs(
+      { catalogue: VALID_CATALOGUE, inventory: MINI_INVENTORY, seedConfig: SAMPLE_SEED_CONFIG },
+      { OPT2_STATE_DIR: state, OPT2_CUTOVER_DIR: cutover },
+    );
+    expect(relocated.entries).toEqual((await load()).entries);
+  });
+
   it('reports nothing once steps cover every gap and the seed refs resolve', async () => {
     await seedStores(state, {
       [DATASET_FILE]: {

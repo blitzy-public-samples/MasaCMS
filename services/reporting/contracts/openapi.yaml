@@ -1052,6 +1052,52 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The gates could not close within the wait budget.
+  /internal/v1/migration/objects:
+    get:
+      operationId: migrationGetExportObject
+      summary: Reads the stored output of one export job from `reporting-exports`, for the reverse projection to its fixture `varbinary(max)` column.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: tenantId
+          in: query
+          required: true
+          description: Tenant UUID of the export job row.
+          schema:
+            type: string
+            format: uuid
+            pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+        - name: jobId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/CfUuid'
+      responses:
+        '200':
+          description: The bytes stored under the row's `object_key`, whatever the job's format.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: The tenant has no such job row, the row names no object, or storage holds no object under its key.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /healthz:
     get:
       operationId: healthz
@@ -2616,7 +2662,7 @@ components:
           minimum: 0
     InboxCounts:
       type: object
-      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      description: Inbox receipts over every tenant the registry has known, deleted sites included; `receipts` maps each asked event id to the tenants that applied it.
       required:
         - total
         - bySubscription
@@ -2661,7 +2707,7 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
         publishedNext:
@@ -2674,7 +2720,7 @@ components:
         publishedFrontier:
           type: string
           pattern: '^[0-9]+$'
-          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
         publishedUpTo:
           type: integer
           minimum: 0

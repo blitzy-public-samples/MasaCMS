@@ -111,6 +111,7 @@ describe('name lists', () => {
         'cgi',
         'client',
         'cookie',
+        'file',
         'form',
         'local',
         'request',
@@ -221,7 +222,7 @@ describe('isDefinedApiName', () => {
     expect(names.filter((name) => !isDefinedApiName(name))).toEqual([]);
   });
 
-  it.each(['FINDONE', 'getbean', 'Variables', 'PARAMS', 'SiteId'])('resolves %s case-insensitively', (name) => {
+  it.each(['FINDONE', 'getbean', 'Variables', 'PARAMS', 'SiteId', 'FILE', 'File'])('resolves %s case-insensitively', (name) => {
     expect(isDefinedApiName(name)).toBe(true);
   });
 
@@ -235,6 +236,10 @@ describe('isDefinedApiName', () => {
     ['jsessionid', 'a cookie'],
     ['remote_addr', 'a CGI variable'],
     ['thread', 'the thread scope outside a thread'],
+    ...['attributes', 'caller', 'thistag', 'flash'].map((name): [string, string] => [name, 'a scope name the oracle reports undefined']),
+    ...['cfhttp', 'cfcatch', 'cferror', 'error', 'cfquery', 'cfdirectory', 'cfftp', 'cfstoredproc'].map(
+      (name): [string, string] => [name, 'a tag result no request has set'],
+    ),
   ])('does not resolve %s, %s', (name) => {
     expect(isDefinedApiName(name)).toBe(false);
   });

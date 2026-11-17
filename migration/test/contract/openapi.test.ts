@@ -19,7 +19,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { parse } from 'yaml';
 
 import { loadConfig } from '../../src/config.js';
-import { createGatewayClient, type CutoverStatus, type InflightClearRequest, type InflightRow } from '../../src/cutover/index.js';
+import {
+  createGatewayClient,
+  type CutoverStatus,
+  type CutoverStatusV2,
+  type InflightClearRequest,
+  type InflightRow,
+} from '../../src/cutover/index.js';
 import type { components } from '../../src/generated/openapi.js';
 import { loadUnitCatalog } from '../../src/owners/index.js';
 import { createBackgroundState } from '../../src/quiesce/index.js';
@@ -1068,10 +1074,10 @@ describe('declared answers over stubbed window, gate and transition services', (
 describe('gateway client against the gateway contract', () => {
   const ROUTE = OPEN_REQUEST.routeKey;
   const BUDGET = { timeoutMs: 1000, intervalMs: 10 };
-  const ORPHAN: InflightRow = { instanceId: 'gw-0', route: ROUTE, side: 'legacy', count: 1, oldestStartedAt: AT };
+  const ORPHAN: InflightRow = { instanceId: 'gw-0', route: ROUTE, side: 'legacy', count: 1, oldestStartedAt: AT, orphaned: true };
   const CLEAR: InflightClearRequest = { side: 'legacy', evidence: { kind: 'legacy-restart', holderId: WINDOW_ID, at: AT }, instanceIds: ['gw-0'] };
   /** The gateway's status at `epoch`: one live instance that has seen it, and a dead one's orphaned legacy write on ROUTE. */
-  const statusAt = (epoch: number): CutoverStatus => ({
+  const statusV2At = (epoch: number): CutoverStatusV2 => ({
     tableVersion: 'v0002',
     previous: 'v0001',
     epoch,
@@ -1085,9 +1091,15 @@ describe('gateway client against the gateway contract', () => {
     inflight: [ORPHAN],
     sessionMode: 'legacy-primary',
   });
+  /** `statusV2At` as `cutoverStatus` reports it, its groups without `orphaned`. */
+  const statusAt = (epoch: number): CutoverStatus => {
+    const status = statusV2At(epoch);
+    return { ...status, inflight: status.inflight.map(({ orphaned: _orphaned, ...group }) => group) };
+  };
   const respond: Responder = (req) => {
     if (req.path === '/internal/v1/cutover/activate') return jsonAnswer(200, { tableVersion: 'v0002', epoch: 8 });
     if (req.path === '/internal/v1/inflight:clear-orphans') return jsonAnswer(200, { cleared: 1 });
+    if (req.path === '/internal/v2/cutover/status') return jsonAnswer(200, statusV2At(8));
     return jsonAnswer(200, statusAt(8));
   };
 
@@ -1100,22 +1112,34 @@ describe('gateway client against the gateway contract', () => {
       sleep: () => Promise.resolve(),
     });
 
+    const { instances } = statusV2At(8);
     expect([
       await gateway.status(),
       await gateway.activate('v0002'),
       await gateway.freeze([ROUTE]),
       await gateway.unfreeze([ROUTE]),
       await gateway.awaitEpoch(8, BUDGET),
+      await gateway.inflightStatus(),
       await gateway.awaitInflightDrained([ROUTE], BUDGET),
       await gateway.clearOrphans(CLEAR),
-    ]).toEqual([statusAt(8), { tableVersion: 'v0002', epoch: 8 }, statusAt(8), statusAt(8), statusAt(8), { orphans: [ORPHAN] }, { cleared: 1 }]);
+    ]).toEqual([
+      statusAt(8),
+      { tableVersion: 'v0002', epoch: 8 },
+      statusAt(8),
+      statusAt(8),
+      statusAt(8),
+      { instances, inflight: [ORPHAN] },
+      { orphans: [ORPHAN] },
+      { cleared: 1 },
+    ]);
     expect(calls.map(({ caller, operationId, status }) => [caller, operationId, status])).toEqual([
       ['migration', 'cutoverStatus', 200],
       ['operator', 'cutoverActivate', 200],
       ['operator', 'cutoverFreeze', 200],
       ['operator', 'cutoverUnfreeze', 200],
       ['migration', 'cutoverStatus', 200],
-      ['migration', 'cutoverStatus', 200],
+      ['migration', 'cutoverStatusV2', 200],
+      ['migration', 'cutoverStatusV2', 200],
       ['migration', 'inflightClearOrphans', 200],
     ]);
     for (const { caller, req } of calls) {

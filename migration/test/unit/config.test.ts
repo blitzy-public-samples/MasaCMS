@@ -267,6 +267,23 @@ describe('resolved paths', () => {
     });
     expect(Object.values(config.paths).every((resolved) => path.isAbsolute(resolved))).toBe(true);
   });
+
+  it('takes the cut-over directory and its groups.json from a set OPT2_CUTOVER_DIR, cached per directory', () => {
+    const cutoverDir = path.join(os.tmpdir(), 'opt2-state', 'cutover');
+    const relocated = loadConfig({ env: { OPT2_CUTOVER_DIR: cutoverDir } });
+
+    expect(relocated.paths).toEqual({ ...config.paths, cutoverDir, groupsFile: path.join(cutoverDir, 'groups.json') });
+    expect(Object.isFrozen(relocated.paths)).toBe(true);
+    expect(loadConfig({ env: { OPT2_CUTOVER_DIR: cutoverDir } })).toBe(relocated);
+    expect(loadConfig()).toBe(config);
+  });
+
+  it.each([
+    ['unset', {}],
+    ['empty', { OPT2_CUTOVER_DIR: '' }],
+  ])('keeps the configured cut-over directory when OPT2_CUTOVER_DIR is %s', (_state, env) => {
+    expect(loadConfig({ env })).toBe(config);
+  });
 });
 
 describe('resolveReportsDir', () => {
@@ -522,12 +539,12 @@ describe('migration environment', () => {
     expect((error as EnvValidationError).issues).toEqual(['PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud']);
   });
 
-  it('accepts an absolute OPT2_REPORTS_DIR and rejects a relative one', () => {
-    const absolute = path.join(os.tmpdir(), 'opt2-reports');
+  it.each(['OPT2_REPORTS_DIR', 'OPT2_CUTOVER_DIR'] as const)('accepts an absolute %s and rejects a relative one', (key) => {
+    const absolute = path.join(os.tmpdir(), 'opt2-dir');
 
-    expect(loadMigrationEnv({ ...ENV, OPT2_REPORTS_DIR: absolute }).OPT2_REPORTS_DIR).toBe(absolute);
-    expect(() => loadMigrationEnv({ ...ENV, OPT2_REPORTS_DIR: 'reports' })).toThrow(
-      new EnvValidationError(['OPT2_REPORTS_DIR: must be an absolute path'], 'migration'),
+    expect(loadMigrationEnv({ ...ENV, [key]: absolute })[key]).toBe(absolute);
+    expect(() => loadMigrationEnv({ ...ENV, [key]: 'reports' })).toThrow(
+      new EnvValidationError([`${key}: must be an absolute path`], 'migration'),
     );
   });
 

@@ -14,6 +14,7 @@ import type { ServiceRequest } from '@opt2/platform/service-kit';
 import { mintTasksInvokerToken } from '@opt2/platform/testing';
 import { formatLegacyTime } from '../../src/jobs/dispatch.js';
 import { SITE_MONITOR_STEPS, type SiteMonitorStepName } from '../../src/jobs/steps.js';
+import { PUBLIC_RUN_BUDGET_MS } from '../../src/routes/sitemonitor.js';
 import {
   TEST_CLOCK,
   buildTestApp,
@@ -29,7 +30,8 @@ const LEGACY_STEPS_PATH = '/internal/v1/legacy-steps';
 const AUTHORITY_PATH = '/internal/v1/authority';
 const CURSOR_TABLE = '"programs_sites"."sitemonitor_state"';
 const THE_TIME = TEST_CLOCK.now();
-const DEADLINE_AT = new Date(THE_TIME.getTime() + queueDefinition(SITEMONITOR_QUEUE).deadlineS * 1000);
+// A public caller's pass ends at its budget.
+const DEADLINE_AT = new Date(THE_TIME.getTime() + PUBLIC_RUN_BUDGET_MS);
 // No cursor row yet: legacy's cfparam default, contentServer.cfc:676.
 const DEFAULT_CURSOR = new Date(THE_TIME.getTime() - MINUTE_MS);
 const CATCH_UP = new Date(THE_TIME.getTime() - 30 * MINUTE_MS);
@@ -118,6 +120,36 @@ function stepBodies(test: TestApp): unknown[] {
   return test.client.requestsTo('migration', LEGACY_STEPS_PATH).map((call) => call.json);
 }
 
+/** Steps of the legacy-step calls, in call order. */
+function stepNames(test: TestApp): string[] {
+  return stepBodies(test).map((body) => (body as { step: string }).step);
+}
+
+/** Holds every legacy step until `open()`; `reached` resolves at the first. */
+function gateLegacySteps(test: TestApp): { reached: Promise<void>; open: () => void } {
+  let reach!: () => void;
+  let open!: () => void;
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  test.client.on('migration', 'POST', LEGACY_STEPS_PATH, async (req: ServiceRequest) => {
+    reach();
+    await opened;
+    const step = (req.json as { step: string }).step;
+    return { status: 200, headers: {}, body: { step, completed: true, serverTime: THE_TIME.toISOString() } };
+  });
+  return { reached, open };
+}
+
+/** Lets the requests already sent reach their handlers. */
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Resolves once `done()` holds, checking on each event-loop turn. */
+async function until(done: () => boolean): Promise<void> {
+  while (!done()) await nextTurn();
+}
+
 /** Statements that named the cursor table. */
 function cursorStatements(db: RecordingDb): string[] {
   return db
@@ -203,6 +235,23 @@ describe('public /_api/sitemonitor on the composed app', () => {
     expect(stepBodies(test)).toEqual(FIRST_PASS.slice(0, 3).map(([step, at]) => legacyStepBody(step, at)));
     expect(test.cursor()).toMatchObject({ last_monitored: DEFAULT_CURSOR, lease_id: null, lease_until: null });
   });
+
+  it('answers the callers that arrive during a pass from it, and a caller after it ended with a new pass', async () => {
+    const test = await composedApp();
+    const gate = gateLegacySteps(test);
+
+    const during = Array.from({ length: 5 }, () => test.app.inject({ method: 'GET', url: '/_api/sitemonitor/' }));
+    await gate.reached;
+    await nextTurn();
+    gate.open();
+    const answers = await Promise.all(during);
+    const after = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor/' });
+
+    expect([...answers, after].map((res) => [res.statusCode, res.body])).toEqual(Array.from({ length: 6 }, () => [200, '']));
+    expect(stepBodies(test).slice(0, FIRST_PASS.length)).toEqual(FIRST_PASS.map(([step, at]) => legacyStepBody(step, at)));
+    expect(stepNames(test)).toEqual([...FIRST_PASS, ...FIRST_PASS].map(([step]) => step));
+    expect(test.cursor()).toMatchObject({ last_monitored: THE_TIME, lease_id: null, lease_until: null });
+  });
 });
 
 describe(`POST ${TASK_PATH} on the composed app`, () => {
@@ -267,6 +316,27 @@ describe(`POST ${TASK_PATH} on the composed app`, () => {
       steps: FIRST_PASS.map(([step, at]) => ({ step, routedTo: 'legacy', status: 'completed', theTime: localTimestamp(at) })),
     });
     expect(test.cursor()).toMatchObject({ last_monitored: THE_TIME });
+  });
+
+  it('joins the pass a public caller started and answers its run result', async () => {
+    const test = await composedApp();
+    const gate = gateLegacySteps(test);
+
+    const publicRun = test.app.inject({ method: 'GET', url: '/_api/sitemonitor' });
+    await gate.reached;
+    const task = invokeChainTask(test);
+    await until(() => test.tasksSinceStartup().length === 1);
+    await nextTurn();
+    gate.open();
+    const [publicRes, taskRes] = await Promise.all([publicRun, task]);
+
+    expect([publicRes.statusCode, publicRes.body, taskRes.statusCode]).toEqual([200, '', 200]);
+    expect(taskRes.json()).toEqual({
+      theTime: localTimestamp(THE_TIME),
+      lastMonitored: localTimestamp(DEFAULT_CURSOR),
+      steps: FIRST_PASS.map(([step, at]) => ({ step, routedTo: 'legacy', status: 'completed', theTime: localTimestamp(at) })),
+    });
+    expect(stepBodies(test)).toEqual(FIRST_PASS.map(([step, at]) => legacyStepBody(step, at)));
   });
 
   it('answers the legacy 503 and runs no step and touches no cursor when the successor cannot be created', async () => {

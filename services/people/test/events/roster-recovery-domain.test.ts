@@ -118,7 +118,7 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
       return Promise.resolve(['GROUP-1']);
     },
     siteGroups: unused('siteGroups'),
-    userGroups: unused('userGroups'),
+    userGroupsPage: unused('userGroupsPage'),
     actingUser: unused('actingUser'),
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),
@@ -468,6 +468,22 @@ describe.skipIf(!available)('roster recovery against PostgreSQL', () => {
       expect(lines.filter((line) => line.includes('recovery failed'))).toEqual([]);
     },
   );
+
+  it('resolves through the sweep an operation of a tenant whose site the registry marked deleted after its request left it open', async () => {
+    const { userId, addressId } = await seedUser();
+    const open = await leftOpen(userId, addressId, {}, { 'after-identity-commit': fault });
+    const identity = identityDouble(accounts);
+    await db.withMetadata((tx) => tx.query(`UPDATE ${schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [A]));
+    try {
+      expect(await recoverRosterOperations(recoveryDeps(identity.client, RECOVERY_THRESHOLD_MS + 1))).toEqual({ resolved: 1, halted: 0, failed: 0 });
+    } finally {
+      await seedRegistry(db);
+    }
+    expect(identity.calls).toEqual(['state', 'revert']);
+    expect(await snapshot(userId)).toMatchObject({ ...OLD, rowVersion: '3' });
+    expect(await operation(open.operation_id)).toMatchObject({ state: 'rolled-back' });
+    expect(await registered(open.operation_id)).toBe(false);
+  });
 
   it.each<[string, RosterStep, DoubleBehaviour, ResolveAction]>([
     ['its done transition', 'after-identity-commit', {}, 'reverted'],

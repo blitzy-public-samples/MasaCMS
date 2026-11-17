@@ -59,6 +59,8 @@ export const migrationEnvSchema = baseEnvSchema.extend({
   OPT2_LEGACY_RESTART_CMD: optionalEnvString(),
   OPT2_REPORTS_DIR: optionalEnvString(absolutePath()),
   OPT2_PRISTINE_DIR: optionalEnvString(absolutePath()),
+  // The gateway's cut-over directory, so a transition reads the versions the gateway serves.
+  OPT2_CUTOVER_DIR: optionalEnvString(absolutePath()),
 }).superRefine((env, ctx) => {
   if (env.OPT2_ENV !== 'local') return;
   for (const key of LOCAL_PUBSUB_KEYS) {

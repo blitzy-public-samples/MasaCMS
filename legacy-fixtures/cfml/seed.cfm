@@ -351,6 +351,10 @@
 			if (structKeyExists(local.row, "responseMessage")) {
 				local.node["responseMessage"] = local.row.responseMessage;
 			}
+			// A new File node must name its file; saved without an upload, it keeps each version's body, the file's filename.
+			if (structKeyExists(local.row, "fileID")) {
+				local.node["fileID"] = local.row.fileID;
+			}
 			// contentManager.save writes the saved version's tcontentobjects rows from its objectlist<columnID> fields.
 			structAppend(local.node, objectLists(local.row));
 			// The dataset's contentHistID is never passed: Masa always generates it, and a given one would be read as the version to edit.

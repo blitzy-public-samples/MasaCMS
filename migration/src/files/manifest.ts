@@ -6,11 +6,12 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import type { MetadataTx } from '@opt2/platform/tenancy';
+import sql from 'mssql';
 
 import type { MigrationContext } from '../context.js';
-import { UnsupportedFileStoreError, type FileListing } from '../legacy/bridge.js';
+import { UnsupportedFileStoreError, type FileListing, type LegacyFileEntry } from '../legacy/bridge.js';
 
-import { nameFromStorePath, parseStoredName, storePath, type StoredVariant } from './names.js';
+import { STORED_NAME_PATTERN, nameFromStorePath, parseStoredName, storePath, type StoredName, type StoredVariant } from './names.js';
 
 /** Context the file-store functions use; each function takes the narrowest part it needs. */
 export type FilesContext = Pick<MigrationContext, 'env' | 'config' | 'db' | 'legacy' | 'bridge' | 'owners' | 'logger'>;
@@ -34,6 +35,9 @@ export interface ManifestEntry extends ManifestKey {
   orphan: boolean;
 }
 
+/** Why a listed name is left out of the manifest. */
+export type SkipReason = 'not a stored-object name' | 'file id is not a CF UUID';
+
 /** Outcome of one manifest build; `skipped` lists listed names that are not stored-object names. */
 export interface ManifestBuildResult {
   snapshotSeq: number;
@@ -42,7 +46,7 @@ export interface ManifestBuildResult {
   entries: number;
   orphans: number;
   bytes: number;
-  skipped: { siteId: string; name: string }[];
+  skipped: { siteId: string; name: string; reason: SkipReason }[];
 }
 
 /** The only legacy file store whose objects can be listed, read and moved. */
@@ -50,6 +54,18 @@ export const SUPPORTED_FILE_STORE = 'fileDir';
 
 /** Default entries per manifest page read. */
 export const MANIFEST_PAGE_ROWS = 1000;
+
+/** Most file ids one `tfiles` lookup binds, well below SQL Server's 2,100 parameters per request; also the most names one manifest lookup binds. */
+export const FILE_LOOKUP_IDS = 1000;
+
+/** The `tfiles` columns the file store needs of one row: its file-pool site and content type parts. */
+export interface FileRow {
+  fileID: string;
+  siteID: string | null;
+  contentType: string | null;
+  contentSubType: string | null;
+  fileExt: string | null;
+}
 
 /** Raised when the legacy file store is not `fileDir`, so the file units cannot move. */
 export class FileStoreUnsupportedError extends Error {
@@ -67,8 +83,10 @@ export class FileStoreUnsupportedError extends Error {
 
 const SNAPSHOT_DATABASE_SQL = 'SELECT database_name FROM migration.snapshot WHERE seq = $1';
 const SNAPSHOT_SITES_SQL = 'SELECT DISTINCT [SiteID] FROM [dbo].[tsettings] ORDER BY [SiteID];';
-// The varbinary(max) image columns stay unread: only ownership is needed here.
-const SNAPSHOT_FILE_OWNERS_SQL = 'SELECT [fileID], [siteID] FROM [dbo].[tfiles];';
+// The varbinary(max) image columns stay unread: only ownership and the content type parts are needed.
+const SNAPSHOT_FILES_SQL = 'SELECT [fileID], [siteID], [contentType], [contentSubType], [fileExt] FROM [dbo].[tfiles] WHERE [fileID] IN';
+/** Width of `tfiles.fileID`, `char(35)` [core/setup/db/mssql.sql:271]. */
+const FILE_ID_LENGTH = 35;
 const DELETE_MANIFEST_SQL = 'DELETE FROM migration.file_manifest WHERE snapshot_seq = $1';
 const MARK_MANIFEST_COMPLETE_SQL = 'UPDATE migration.snapshot SET manifest_complete = true WHERE seq = $1';
 const SELECT_MANIFEST = 'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan FROM migration.file_manifest';
@@ -77,6 +95,11 @@ const READ_MANIFEST_FIRST_PAGE_SQL = `${SELECT_MANIFEST} WHERE snapshot_seq = $1
 const READ_MANIFEST_PAGE_SQL =
   `${SELECT_MANIFEST} WHERE snapshot_seq = $1 AND (site_id COLLATE "C", path COLLATE "C") > ($2, $3) ` +
   `${MANIFEST_ORDER} LIMIT $4`;
+// bpchar[] keeps the comparison on file_id's own type, so file_manifest_file_id_idx serves it; the unnested
+// (file_id, variant, ext) triples then keep only the exact names asked.
+const READ_MANIFEST_NAMES_SQL =
+  `${SELECT_MANIFEST} WHERE snapshot_seq = $1 AND file_id = ANY($2::bpchar[]) ` +
+  `AND (file_id, variant, ext) IN (SELECT * FROM unnest($2::bpchar[], $3::text[], $4::text[])) ${MANIFEST_ORDER}`;
 const SPILL_PREFIX = 'opt2-file-manifest-';
 const SPILL_FILE = 'rows.ndjson';
 
@@ -128,14 +151,28 @@ export async function readSnapshotSites(ctx: Pick<FilesContext, 'legacy'>, datab
   return result.recordset.flatMap((row) => (row.SiteID === null || row.SiteID === '' ? [] : [row.SiteID]));
 }
 
-/** `tfiles` owners of the snapshot database: upper-cased trimmed `fileID` to its `siteID`, the file-pool site. */
-export async function readSnapshotFileOwners(
+/**
+ * `tfiles` rows of `fileIds` in database `database`, by upper-cased trimmed `fileID`; one parameterized query per
+ * FILE_LOOKUP_IDS distinct ids, and none without ids.
+ */
+export async function readSnapshotFiles(
   ctx: Pick<FilesContext, 'legacy'>,
   database: string,
-): Promise<Map<string, string | null>> {
+  fileIds: Iterable<string>,
+): Promise<Map<string, FileRow>> {
+  const ids = [...new Set(Array.from(fileIds, (fileId) => fileId.toUpperCase()))];
+  const files = new Map<string, FileRow>();
+  if (ids.length === 0) return files;
   const pool = await ctx.legacy.database(database);
-  const result = await pool.request().query<{ fileID: string; siteID: string | null }>(SNAPSHOT_FILE_OWNERS_SQL);
-  return new Map(result.recordset.map((row) => [row.fileID.trim().toUpperCase(), row.siteID]));
+  for (let start = 0; start < ids.length; start += FILE_LOOKUP_IDS) {
+    const chunk = ids.slice(start, start + FILE_LOOKUP_IDS);
+    const request = pool.request();
+    chunk.forEach((fileId, index) => request.input(`p${String(index)}`, sql.Char(FILE_ID_LENGTH), fileId));
+    const params = chunk.map((_fileId, index) => `@p${String(index)}`).join(', ');
+    const result = await request.query<FileRow>(`${SNAPSHOT_FILES_SQL} (${params});`);
+    for (const row of result.recordset) files.set(row.fileID.trim().toUpperCase(), row);
+  }
+  return files;
 }
 
 /** Store named by a bridge 409 `unsupportedFileStore` body, whose `message` carries it. */
@@ -214,12 +251,15 @@ async function* spilledRows(spill: string): AsyncGenerator<ManifestRowInput, voi
 /** Counts of one manifest build. */
 type BuildCounts = Pick<ManifestBuildResult, 'entries' | 'orphans' | 'bytes' | 'skipped'>;
 
-/** Lists the sites one at a time and appends each one's stored objects to `spill` in insert-sized chunks. */
+/**
+ * Lists the sites one at a time and appends each one's stored objects to `spill` in insert-sized chunks, flagging as
+ * orphans those whose file id has no `tfiles` row in `database`, looked up per chunk.
+ */
 async function spillSites(
-  ctx: Pick<FilesContext, 'bridge'>,
+  ctx: Pick<FilesContext, 'bridge' | 'legacy'>,
   snapshotSeq: number,
   sites: readonly string[],
-  owners: ReadonlyMap<string, string | null>,
+  database: string,
   spill: string,
 ): Promise<BuildCounts> {
   const counts: BuildCounts = { entries: 0, orphans: 0, bytes: 0, skipped: [] };
@@ -227,40 +267,44 @@ async function spillSites(
   try {
     for (const siteId of sites) {
       const listing = await listSite(ctx, siteId);
-      let batch: ManifestRowInput[] = [];
+      const stored: { file: LegacyFileEntry; parsed: StoredName }[] = [];
       for (const file of listing.files) {
         // Parts come from the name itself, not the listing; on-demand renditions such as `_W100_H50` parse as variants
         // and are recorded like fileDAO's, so only names outside the stored-name language are skipped.
         const parsed = parseStoredName(file.name);
         if (parsed === null) {
-          counts.skipped.push({ siteId, name: file.name });
+          const reason: SkipReason = STORED_NAME_PATTERN.test(file.name) ? 'file id is not a CF UUID' : 'not a stored-object name';
+          counts.skipped.push({ siteId, name: file.name, reason });
           continue;
         }
-        // The listing is CFML-serialized JSON; coerce before summing.
-        const size = Number(file.size);
-        const orphan = !owners.has(parsed.fileId.toUpperCase());
-        batch.push({
-          snapshotSeq,
-          siteId,
-          path: storePath(siteId, file.name),
-          name: file.name,
-          fileId: parsed.fileId,
-          variant: parsed.variant,
-          ext: parsed.ext,
-          size,
-          sha256: file.sha256.toLowerCase(),
-          orphan,
-          lastModified: file.lastModified,
-        });
-        counts.entries += 1;
-        if (orphan) counts.orphans += 1;
-        counts.bytes += size;
-        if (batch.length === INSERT_CHUNK_ROWS) {
-          await spillRows(handle, batch);
-          batch = [];
-        }
+        stored.push({ file, parsed });
       }
-      await spillRows(handle, batch);
+      for (let start = 0; start < stored.length; start += INSERT_CHUNK_ROWS) {
+        const chunk = stored.slice(start, start + INSERT_CHUNK_ROWS);
+        const owned = await readSnapshotFiles(ctx, database, chunk.map(({ parsed }) => parsed.fileId));
+        const rows = chunk.map(({ file, parsed }): ManifestRowInput => {
+          // The listing is CFML-serialized JSON; coerce before summing.
+          const size = Number(file.size);
+          const orphan = !owned.has(parsed.fileId.toUpperCase());
+          counts.entries += 1;
+          if (orphan) counts.orphans += 1;
+          counts.bytes += size;
+          return {
+            snapshotSeq,
+            siteId,
+            path: storePath(siteId, file.name),
+            name: file.name,
+            fileId: parsed.fileId,
+            variant: parsed.variant,
+            ext: parsed.ext,
+            size,
+            sha256: file.sha256.toLowerCase(),
+            orphan,
+            lastModified: file.lastModified,
+          };
+        });
+        await spillRows(handle, rows);
+      }
     }
   } finally {
     await handle.close();
@@ -270,7 +314,7 @@ async function spillSites(
 
 /**
  * Lists every site of the snapshot through the bridge and records each stored object, replacing earlier rows of the snapshot.
- * Files without a `tfiles` row are kept with `orphan: true`.
+ * Files without a `tfiles` row are kept with `orphan: true`; each skipped name is logged as a warning with its reason.
  * @param opts.database restored snapshot database; defaults to the one recorded for `snapshotSeq`.
  * @param opts.spillDir parent of the temporary directory the listed rows are spilled to; defaults to the OS temporary directory.
  * @throws FileStoreUnsupportedError before any row is written when the store is not `fileDir`.
@@ -282,17 +326,19 @@ export async function buildFileManifest(
 ): Promise<ManifestBuildResult> {
   const database = opts.database ?? (await snapshotDatabase(ctx, snapshotSeq));
   const sites = await readSnapshotSites(ctx, database);
-  const owners = await readSnapshotFileOwners(ctx, database);
 
   const dir = await mkdtemp(join(opts.spillDir ?? tmpdir(), SPILL_PREFIX));
   try {
     const spill = join(dir, SPILL_FILE);
-    const { entries, orphans, bytes, skipped } = await spillSites(ctx, snapshotSeq, sites, owners, spill);
+    const { entries, orphans, bytes, skipped } = await spillSites(ctx, snapshotSeq, sites, database, spill);
     await writeManifest(ctx, snapshotSeq, spilledRows(spill));
     ctx.logger.info(
       `file manifest of snapshot ${String(snapshotSeq)} built: ${String(sites.length)} sites, ` +
         `${String(entries)} entries, ${String(orphans)} orphans, ${String(skipped.length)} skipped`,
     );
+    for (const { siteId, name, reason } of skipped) {
+      ctx.logger.warn(`file manifest of snapshot ${String(snapshotSeq)} skipped ${name} of site ${siteId}: ${reason}`);
+    }
     return { snapshotSeq, database, sites: sites.length, entries, orphans, bytes, skipped };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -334,6 +380,26 @@ export async function readManifestPage(
       : tx.query<ManifestRow>(READ_MANIFEST_PAGE_SQL, [snapshotSeq, after.siteId, after.path, limit]),
   );
   return result.rows.map((row) => manifestEntry(snapshotSeq, row));
+}
+
+/**
+ * Entries of snapshot `snapshotSeq` whose file id, variant and extension are exactly those of one of `names`, at most one
+ * per site and name; one query per FILE_LOOKUP_IDS distinct names, each in readManifest order, and none without names.
+ */
+export async function readManifestNames(
+  ctx: Pick<FilesContext, 'db'>,
+  snapshotSeq: number,
+  names: readonly StoredName[],
+): Promise<ManifestEntry[]> {
+  const distinct = [...new Map(names.map((name) => [`${name.fileId}\u0000${name.variant}\u0000${name.ext}`, name])).values()];
+  const entries: ManifestEntry[] = [];
+  for (let start = 0; start < distinct.length; start += FILE_LOOKUP_IDS) {
+    const chunk = distinct.slice(start, start + FILE_LOOKUP_IDS);
+    const values = [snapshotSeq, chunk.map((name) => name.fileId), chunk.map((name) => name.variant), chunk.map((name) => name.ext)];
+    const result = await ctx.db.withMetadata((tx) => tx.query<ManifestRow>(READ_MANIFEST_NAMES_SQL, values));
+    for (const row of result.rows) entries.push(manifestEntry(snapshotSeq, row));
+  }
+  return entries;
 }
 
 /** Manifest of snapshot `snapshotSeq` in readManifest order, one keyset page of `opts.pageRows` entries per query. */

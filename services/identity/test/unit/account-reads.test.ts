@@ -5,11 +5,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Roles, type UserClaims } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { UnitReadBlockedError, ensureUnitGates, withGatedTenant, type GatePhase } from '@opt2/platform/migration-kit';
-import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
+import { registeredTenants, tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   CLOSED_USER_WAIT_MS,
   createAccountReads,
+  readMembershipIds,
   type AccountCountRequest,
   type AccountWhere,
   type UsernameCandidateRequest,
@@ -286,11 +287,14 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       ]);
     });
 
-    it('answers lookupMemberships with the legacy 503 once a listed user without membership rows stays closed past the wait', async () => {
+    it.each([
+      ['stored rows', {}],
+      ['group-name order', { byGroupName: true }],
+    ])('answers lookupMemberships for %s with the legacy 503 once a listed user without membership rows stays closed past the wait', async (_label, options) => {
       const operationId = await openOperation(BARE);
       try {
         const started = Date.now();
-        const error = await reads().lookupMemberships(handle.app, [ACTIVE, BARE]).catch((err: unknown) => err);
+        const error = await reads().lookupMemberships(handle.app, [ACTIVE, BARE], options).catch((err: unknown) => err);
         expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
         expect(error).toMatchObject({ reason: 'user-closed', surface: 'auto' });
         expect(Date.now() - started).toBeGreaterThanOrEqual(SHORT_MS);
@@ -299,16 +303,19 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       }
     });
 
-    it('waits while a listed user is closed and reads its memberships once the operation ends', async () => {
+    it.each([
+      ['stored rows', {}, [SECOND_GROUP]],
+      ['group-name order, without the dangling id', { byGroupName: true }, []],
+    ])('waits while a listed user is closed and reads its memberships as %s once the operation ends', async (_label, options, publicGroups) => {
       const operationId = await openOperation(CLOSED);
       const started = Date.now();
-      const read = createAccountReads({ repo, closedUserWaitMs: LONG_MS }).lookupMemberships(handle.app, [CLOSED, PUBLIC]);
+      const read = createAccountReads({ repo, closedUserWaitMs: LONG_MS }).lookupMemberships(handle.app, [CLOSED, PUBLIC], options);
       await sleep(RELEASE_AFTER_MS);
       await endOperation(operationId);
 
       expect(await read).toEqual([
         { userId: CLOSED, groupIds: [GROUP] },
-        { userId: PUBLIC, groupIds: [SECOND_GROUP] },
+        { userId: PUBLIC, groupIds: publicGroups },
       ]);
       expect(Date.now() - started).toBeGreaterThanOrEqual(RELEASE_AFTER_MS);
     });
@@ -468,6 +475,7 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       ['listSiteGroupsV2', GROUP_ACCOUNT.unit, (claims: UserClaims) => reads().listSiteGroupsV2(handle.app, claims, 0, WHOLE_LIST)],
       ['lookupAccountsAllSites', LOGIN_STATE.unit, () => reads().lookupAccountsAllSites(handle.app, [ACTIVE])],
       ['lookupMemberships', MEMBERSHIP.unit, () => reads().lookupMemberships(handle.app, [ACTIVE])],
+      ['lookupMemberships by group name', GROUP_ACCOUNT.unit, () => reads().lookupMemberships(handle.app, [ACTIVE], { byGroupName: true })],
       ['loadLoginBlock', USER_STRIKE.unit, (claims: UserClaims) => reads().loadLoginBlock(handle.app, claims, ACTIVE, { removeBlock: false })],
     ])('answers %s with the legacy 503 while a window outlasts the gate wait', async (_label, unit, read) => {
       await setPhase(unit, 'importing');
@@ -756,6 +764,84 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
 
       expect(await list).toEqual({ items: [{ userId: N_ALICE, username: 'Alice' }], complete: true });
       expect(Date.now() - started).toBeGreaterThanOrEqual(RELEASE_AFTER_MS);
+    });
+  });
+
+  describe('lookupMemberships by group name', () => {
+    // order-site pools privately in itself and publicly in order-pool; group ids sort against group names, two names tie ignoring case.
+    const O_FIRST = id(61, 'G');
+    const O_SECOND = id(62, 'G');
+    const O_DANGLING_ONLY = id(63, 'G');
+    const G_TIE_LOW = id(70, 'H');
+    const G_TIE_HIGH = id(71, 'H');
+    const G_REPORTING = id(72, 'H');
+    const G_CLOTHING = id(73, 'H');
+    const G_BEAUTY = id(74, 'H');
+    const G_UNNAMED = id(75, 'H');
+    const G_DANGLING = id(76, 'H');
+    const HELD_GROUPS = [G_TIE_HIGH, G_TIE_LOW, G_REPORTING, G_CLOTHING, G_BEAUTY, G_UNNAMED, G_DANGLING];
+
+    const reads = (deps: { repo: IdentityRepository } = { repo }): ReturnType<typeof createAccountReads> =>
+      createAccountReads({ ...deps, closedUserWaitMs: SHORT_MS, gateWaitMs: SHORT_MS });
+
+    beforeAll(async () => {
+      await registerSite('order-site', 'order-site', 'order-pool');
+      await registerSite('order-pool', 'order-pool', 'order-pool');
+      const named = (userid: string, groupname: string, siteid: string, ispublic = 0): GroupInput => groupInput({ userid, groupname, siteid, ispublic });
+      await gated('order-site', async (tx) => {
+        await repo.insertGroup(tx, named(G_REPORTING, 'reporting.exporter', 'order-site'), null);
+        await repo.insertGroup(tx, named(G_BEAUTY, 'Beauty Team', 'order-site'), null);
+        await repo.insertGroup(tx, named(G_TIE_LOW, 'SAME', 'order-site'), null);
+        await repo.insertGroup(tx, named(G_UNNAMED, '', 'order-site'), null);
+        for (const groupId of [G_REPORTING, G_DANGLING, G_TIE_HIGH, G_BEAUTY]) await repo.addMembership(tx, O_FIRST, groupId);
+        await repo.addMembership(tx, O_DANGLING_ONLY, G_DANGLING);
+      });
+      // Rows of members stored elsewhere: one repeats an order-site row in other case.
+      await gated('order-pool', async (tx) => {
+        await repo.insertGroup(tx, named(G_CLOTHING, 'Clothing Team', 'order-pool', 1), null);
+        await repo.insertGroup(tx, named(G_TIE_HIGH, 'same', 'order-pool', 1), null);
+        for (const groupId of [G_CLOTHING, G_BEAUTY.toLowerCase(), G_UNNAMED, G_TIE_LOW]) await repo.addMembership(tx, O_FIRST, groupId);
+        for (const groupId of [G_REPORTING, G_CLOTHING]) await repo.addMembership(tx, O_SECOND, groupId);
+      });
+    });
+
+    it('answers each user as readMembershipIds: stored groups only, NULL name first, then name ignoring case, ties by id', async () => {
+      const userIds = [O_FIRST, O_SECOND.toLowerCase(), O_DANGLING_ONLY, MISSING];
+      const items = await reads().lookupMemberships(handle.app, userIds, { byGroupName: true });
+
+      expect(items).toEqual([
+        { userId: O_FIRST, groupIds: [G_UNNAMED, G_BEAUTY, G_CLOTHING, G_REPORTING, G_TIE_LOW, G_TIE_HIGH] },
+        { userId: O_SECOND.toLowerCase(), groupIds: [G_CLOTHING, G_REPORTING] },
+        { userId: O_DANGLING_ONLY, groupIds: [] },
+        { userId: MISSING, groupIds: [] },
+      ]);
+      for (const { userId, groupIds } of items) expect(groupIds).toEqual(await readMembershipIds({ db: handle.app, repo }, userId));
+      expect((await reads().lookupMemberships(handle.app, userIds))[0]?.groupIds).toContain(G_DANGLING);
+    });
+
+    it('reads the groups once per registered tenant for all listed users together, and not at all without held ids', async () => {
+      const calls: string[][] = [];
+      const counting: IdentityRepository = {
+        ...repo,
+        findGroupsByIds: (tx, groupIds) => {
+          calls.push(groupIds.map((groupId) => groupId.toLowerCase()));
+          return repo.findGroupsByIds(tx, groupIds);
+        },
+      };
+      const tenants = (await registeredTenants(handle.app)).length;
+      await reads({ repo: counting }).lookupMemberships(handle.app, [O_FIRST, O_SECOND, O_DANGLING_ONLY, MISSING], { byGroupName: true });
+
+      expect(calls).toHaveLength(tenants);
+      for (const groupIds of calls) expect([...groupIds].sort()).toEqual(HELD_GROUPS.map((groupId) => groupId.toLowerCase()).sort());
+      calls.length = 0;
+      await reads({ repo: counting }).lookupMemberships(handle.app, [MISSING, BARE], { byGroupName: true });
+      expect(calls).toEqual([]);
+    });
+
+    it('reads stored rows past a window on the group unit, which only the group-name order reads', async () => {
+      await setPhase(GROUP_ACCOUNT.unit, 'importing');
+      expect((await reads().lookupMemberships(handle.app, [O_SECOND]))[0]?.groupIds).toHaveLength(2);
+      await expect(reads().lookupMemberships(handle.app, [O_SECOND], { byGroupName: true })).rejects.toBeInstanceOf(UnitReadBlockedError);
     });
   });
 });

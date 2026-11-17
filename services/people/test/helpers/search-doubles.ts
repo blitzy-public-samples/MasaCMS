@@ -9,7 +9,7 @@ import type {
   UsernameCandidates,
 } from '../../src/legacy/identity-client.js';
 import { compareLegacyText } from '../../src/domain/text-order.js';
-import type { PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
+import type { PersonOrderScope, PersonSearchKey, PersonSortKey } from '../../src/repo/repository.js';
 import type { PersonRow } from '../../src/repo/tables.js';
 
 /** The identity calls people's search reads make. */
@@ -76,6 +76,17 @@ export function personsInOrder(rows: readonly PersonRow[], scope: PersonOrderSco
       }
       return compareValue(a.userid, b.userid);
     });
+}
+
+/** `listPersonSearchKeys` over `rows`: the search keys of the persons `personsInOrder` reads, in its order. */
+export function personSearchKeys(rows: readonly PersonRow[], scope: PersonOrderScope, orderBy: readonly PersonSortKey[]): PersonSearchKey[] {
+  return personsInOrder(rows, scope, orderBy).map(({ userid, lname, fname, company, email, jobtitle }) => ({ userid, lname, fname, company, email, jobtitle }));
+}
+
+/** `findPersons` over `rows`: the persons of `userIds`, each once at its first input position, ids compared as `charKey` does. */
+export function personsById(rows: readonly PersonRow[], userIds: readonly string[]): PersonRow[] {
+  const wanted = [...new Set(userIds.map(charKey))];
+  return wanted.flatMap((key) => rows.filter((row) => charKey(row.userid) === key));
 }
 
 /** The pool site and tenant of `entry`'s public or private user pool, an empty pool id read as the site's own. */

@@ -1,6 +1,7 @@
 /**
  * JSON API `comment` entity (core/mura/client/api/json/v1/jsonApiUtility.cfc:76-80): the generic finders, save and
- * delete of contentCommentBean (core/mura/content/contentCommentBean.cfc) and its feed, over ../../domain/comments.ts.
+ * delete of contentCommentBean (core/mura/content/contentCommentBean.cfc), its feed and its remote functions, over
+ * ../../domain/comments.ts.
  */
 import {
   cfEq,
@@ -19,8 +20,13 @@ import {
   deleteComment,
   feedCommentValues,
   findCommentValues,
+  flagComment,
   getComments,
+  markAsSpam,
   saveComment,
+  undeleteComment,
+  unmarkAsSpam,
+  type CommentCallOptions,
   type CommentSaveSite,
   type CommentValues,
   type CommentValuesView,
@@ -42,15 +48,23 @@ import {
   authorizationDenied,
   beanFeedQuery,
   entityActionAllowed,
+  finderOf,
+  finderParamsOf,
   findPropertiesFor,
+  isBlankFeedRow,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type BeanFeedOptions,
   type BeanFeedResult,
+  type BlankFeedRow,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
+  type RelationSourceKey,
+  type RemoteFunctionFn,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Ctx = Parameters<JsonApiHandlerFn>[0];
@@ -148,11 +162,13 @@ function allowModuleAccess(actor: Actor): boolean {
 function allowQueryParams(params: Struct, actor: Actor): void {
   paramNoCase(params, 'isspam', 0);
   paramNoCase(params, 'isdeleted', 0);
+  // `<cfset arguments.params.fields=…>` creates an absent key upper-cased.
+  const fieldsKey = keyOf(params, 'fields') ?? 'FIELDS';
   if (allowModuleAccess(actor)) {
-    setNoCase(params, 'fields', MODULE_QUERY_FIELDS);
+    params[fieldsKey] = MODULE_QUERY_FIELDS;
     return;
   }
-  setNoCase(params, 'fields', PUBLIC_QUERY_FIELDS);
+  params[fieldsKey] = PUBLIC_QUERY_FIELDS;
   setNoCase(params, 'isspam', 0);
   setNoCase(params, 'isdeleted', 0);
 }
@@ -162,17 +178,6 @@ function assertNoHumanCheck(call: JsonApiCall): void {
   if (urlParam(call.apiContext, 'ishuman') !== undefined) {
     throw new LegacyServiceUnavailableError('The ishuman field renders a CFML display object', 'auto', 'cfml-render');
   }
-}
-
-// Fail closed: `content` expands through the content entity's findOne and `site` is programs-sites data, neither of
-// which a comment call reaches; comment links carry no crumbs and only content expands related content.
-/** The legacy 503 for a relation a comment cannot expand here. */
-function relationUnavailable(name: string): LegacyServiceUnavailableError {
-  return new LegacyServiceUnavailableError(
-    `The ${name} relation of a comment is served by another entity's finder`,
-    'auto',
-    `comment-expand-${name}`,
-  );
 }
 
 /** beanFeed over the site's comments (the feed's `siteID in (contentPoolID)` scope), or those of `ids`, in SQL in one transaction in the call's tenant. */
@@ -188,17 +193,18 @@ function valuesView(call: JsonApiCall): CommentValuesView {
   return { scheme: call.site.urls.scheme };
 }
 
-/** The scope of one handler call. */
+/** The scope of one handler call: comment relations through the comment finders, the others through their entities'. */
 function commentScope(ctx: Ctx, call: JsonApiCall): CommentScope {
+  const related = relatedResolver(call);
   const scope: CommentScope = {
     ctx,
     call,
     view: valuesView(call),
     resolver: {
-      hasMany: (prop, params, opts) => expandMany(scope, prop, params, opts),
-      hasOne: (prop, id, opts) => expandOne(scope, prop, id, opts),
-      crumbs: () => Promise.reject(relationUnavailable('crumbs')),
-      relatedContent: () => Promise.reject(relationUnavailable('relatedcontent')),
+      hasMany: (prop, params, opts) => (cfEq(prop.cfc, 'comment') ? expandMany(scope, params, opts) : related.hasMany(prop, params, opts)),
+      hasOne: (prop, id, opts) => (cfEq(prop.cfc, 'comment') ? expandOne(scope, prop, id, opts) : related.hasOne(prop, id, opts)),
+      crumbs: related.crumbs,
+      relatedContent: related.relatedContent,
     },
   };
   return scope;
@@ -230,9 +236,13 @@ async function commentData(
 }
 
 /** iteratorToArray (2920-2953) over feed rows, each a beanIterator bean of the row. */
-function serializeItems(scope: CommentScope, rows: readonly FeedRow[], opts: ExpansionOptions): Promise<Struct[]> {
+function serializeItems(scope: CommentScope, rows: ReadonlyArray<FeedRow | BlankFeedRow>, opts: ExpansionOptions): Promise<Struct[]> {
   const now = scope.ctx.domain.clock.now();
-  const views = rows.map((row) => commentView(feedCommentValues(row, scope.view.scheme, now)));
+  const views = rows.map((row): ApiEntityView => {
+    const view = commentView(feedCommentValues(row, scope.view.scheme, now));
+    // set() skips the blank id and getCommentID creates one (contentCommentBean.cfc:156-161), once getFilteredValues has copied the values.
+    return isBlankFeedRow(row) ? { ...view, values: { commentid: cfUuid() } } : view;
+  });
   return serializeEntityList(views, scope.call.apiContext, { entityName: 'comment', ...opts }, scope.resolver);
 }
 
@@ -254,8 +264,7 @@ async function feedData(
 }
 
 /** expandEntity's `kids` (2432-2468): findQuery's expanded branch over its params after allowQueryParams. */
-async function expandMany(scope: CommentScope, prop: RelationProp, params: Struct, opts: ExpansionOptions): Promise<unknown> {
-  if (!cfEq(prop.cfc, 'comment')) throw relationUnavailable(prop.name);
+async function expandMany(scope: CommentScope, params: Struct, opts: ExpansionOptions): Promise<unknown> {
   const expandedParams = { ...params };
   allowQueryParams(expandedParams, scope.call.actor);
   const result = await siteFeed(scope.ctx, scope.call, { ...FEED_OPTIONS, expandedParams });
@@ -264,16 +273,12 @@ async function expandMany(scope: CommentScope, prop: RelationProp, params: Struc
 
 /** expandEntity's `parent` (2472-2482): findOne of the parent comment at the next depth. */
 async function expandOne(scope: CommentScope, prop: RelationProp, id: unknown, opts: ExpansionOptions): Promise<unknown> {
-  if (!cfEq(prop.cfc, 'comment')) throw relationUnavailable(prop.name);
   return commentData(scope, prop.cfc, typeof id === 'string' ? id : '', opts);
 }
 
 /** findOne (2292-2384): a missing comment serializes as a new bean with 200, as legacy answers it. */
 async function findOne(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
-  const data = await commentData(commentScope(ctx, call), call.entityName, call.id ?? '', {
-    expand: expandOf(call),
-    expanded: 0,
-  });
+  const data = await commentData(commentScope(ctx, call), call.entityName, call.id ?? '', finderOf(call));
   return jsonApiResultOf(data, 'comment');
 }
 
@@ -281,9 +286,16 @@ async function findOne(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
 async function findFeed(ctx: Ctx, call: JsonApiCall, method: 'findall' | 'findQuery'): Promise<JsonApiResult> {
   const scope = commentScope(ctx, call);
   paramUrl(call.apiContext, 'entityname', call.entityName);
-  allowQueryParams(call.apiContext.url, call.actor);
+  allowQueryParams(finderParamsOf(call), call.actor);
   const result = await siteFeed(ctx, call, FEED_OPTIONS);
-  return jsonApiResultOf(await feedData(scope, result, method, { expand: expandOf(call), expanded: 0 }), 'comment');
+  return jsonApiResultOf(await feedData(scope, result, method, finderOf(call)), 'comment');
+}
+
+/** loadBy (226-232): by `commentID`; a `contentid` key names no argument getQuery reads, so the bean stays new. */
+async function loadBy(ctx: Ctx, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+  const id = 'primaryKey' in key ? key.primaryKey : cfUuid();
+  const values: Struct = { ...(await findCommentValues(ctx.domain, call.tenantId, id, valuesView(call))) };
+  return (name) => getNoCase(values, cfEq(name, 'primaryKey') ? BEAN_PRIMARY_KEY : name);
 }
 
 /** findMany (2627-2709): the comments of `ids`, in the order of `ids` (repeats included) unless `sort` is set. */
@@ -421,6 +433,39 @@ async function remove(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   return jsonApiResultOf('', 'comment');
 }
 
+/** The bean's own remote functions run under the API request, and no manager try/catch swallows their failures. */
+const REMOTE_OPTIONS: CommentCallOptions = Object.freeze({ apiRequest: true, onSwallowedError: rethrow });
+
+/** The acting user in the call's verified tenant, which an anonymous actor does not carry itself. */
+function actorOf(call: JsonApiCall): Actor {
+  return { ...call.actor, tenantId: call.tenantId };
+}
+
+/** The comment a remote function changes: the one `loadBy` loaded, else a new bean's getCommentID(), a fresh id no comment holds. */
+function remoteCommentId(beanId: string | undefined): string {
+  return beanId ?? cfUuid();
+}
+
+/**
+ * contentCommentBean's remote functions (contentCommentBean.cfc:317-428) by legacy name: `flag` adds one to the flag count
+ * for any caller; the others set `isDeleted` or `isSpam` only under allowModuleAccess. Each write recounts the content's comments.
+ */
+export const commentRemoteFunctions: Readonly<Record<string, RemoteFunctionFn>> = Object.freeze({
+  delete: async (ctx, call, beanId) => {
+    await deleteComment(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
+  },
+  undelete: async (ctx, call, beanId) => {
+    await undeleteComment(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
+  },
+  flag: (ctx, call, beanId) => flagComment(ctx.domain, call.tenantId, remoteCommentId(beanId), { actor: call.actor }),
+  markAsSpam: async (ctx, call, beanId) => {
+    await markAsSpam(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
+  },
+  unMarkAsSpam: async (ctx, call, beanId) => {
+    await unmarkAsSpam(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
+  },
+});
+
 /** The JSON API `comment` entity: public reads, writes under the comments module (`m:015`). */
 export const commentHandler: EntityHandler = {
   entity: 'comment',
@@ -434,4 +479,5 @@ export const commentHandler: EntityHandler = {
   findPermissions,
   save,
   delete: remove,
+  loadBy,
 };

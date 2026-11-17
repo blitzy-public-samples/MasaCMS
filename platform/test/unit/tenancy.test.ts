@@ -258,6 +258,7 @@ describe('tenancy subpath', () => {
         'iamDbUser',
         'sessionTimeZoneSetter',
         'registeredTenants',
+        'knownTenants',
         'registryEntries',
         'registryEntryForTenant',
         'tenantForRegisteredSite',

@@ -90,7 +90,7 @@ const INTERNAL_NAMESPACE = '/internal/v1';
 export interface DispatcherDeps {
   matcher: Matcher;
   state: Pick<CutoverState, 'active' | 'readEpochForWrite' | 'isFrozen' | 'waitUnfrozen'>;
-  inflight: Pick<InflightStore, 'register' | 'remove'>;
+  inflight: Pick<InflightStore, 'register' | 'remove' | 'abandon'>;
   windows: WriteWindowClient;
   barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitForSession' | 'awaitPositions' | 'awaitOwners'>;
   resolver: SessionResolver;
@@ -168,6 +168,13 @@ class Exchange {
     await this.deps.inflight.remove(this.requestId);
   }
 
+  /** Leaves this request's row to evidence as an orphan, because the target may still commit its write. */
+  async abandonRow(): Promise<void> {
+    if (this.row === undefined) return;
+    this.row = undefined;
+    await this.deps.inflight.abandon(this.requestId);
+  }
+
   /** Settles the CSRF claims once: tokens legacy consumed become used, the rest are released. */
   settleCsrf(): Promise<void> {
     this.csrfSettlement ??= this.deps.csrf.afterLegacy(this.csrfHandle, this.csrfStartedAt);
@@ -189,6 +196,14 @@ class Exchange {
     await guarded(this.request, 'edge CSRF claim release failed', () => this.settleCsrf());
     await guarded(this.request, 'edge in-flight row removal failed', () => this.dropRow());
   }
+}
+
+/** Takes the request's CSRF claims while its barrier is awaited; the exchange holds them even when the barrier fails. */
+async function claimBehind(ex: Exchange, barrier: Promise<void>, claim: Promise<CsrfHandle | undefined>): Promise<void> {
+  const [awaited, claimed] = await Promise.allSettled([barrier, claim]);
+  if (claimed.status === 'fulfilled') ex.csrfHandle = claimed.value;
+  if (awaited.status === 'rejected') throw awaited.reason;
+  if (claimed.status === 'rejected') throw claimed.reason;
 }
 
 function isForwarded(outcome: RoutedOutcome): outcome is ForwardedOutcome {
@@ -486,6 +501,24 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     return selected === '' ? DEFAULT_SITE_ID : selected;
   };
 
+  /**
+   * Whether a resolved session goes on as itself: a flagged one only when its pending logout is judged kept, from the
+   * jar's legacy cookies in target-primary, else the request's own.
+   */
+  const keptThroughPending = async (
+    request: FastifyRequest,
+    resolution: Extract<LegacyBoundResolution, { sessionId: string }>,
+    mode: SessionMode,
+    userAgent: string | undefined,
+  ): Promise<boolean> => {
+    if (resolution.identityEndPending !== true) return true;
+    const cookies =
+      mode === 'target-primary' && resolution.kind === 'session'
+        ? resolution.legacyCookies
+        : requestSessionCookies(request.headers.cookie, {}, clock.now());
+    return (await deps.invalidation.completePending(resolution.sessionId, { userAgent, cookies })) === 'kept';
+  };
+
   /** Forwards to the owning service or web with the session's site-scoped user token and the gateway's own credential. */
   const toTarget = async (ex: Exchange, route: Route, destination: TargetDestination, mode: SessionMode): Promise<FastifyReply> => {
     const { request, reply } = ex;
@@ -504,10 +537,8 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         siteId: result.siteId,
       });
       if (resolution.kind === 'response') return sendLegacyResponse(reply, resolution);
-      if (resolution.kind === 'session' && resolution.identityEndPending === true) {
-        // A legacy logout of the session began: once identity confirmed the end, the request goes on anonymously.
-        await deps.invalidation.completePending(resolution.sessionId);
-      } else if (resolution.kind === 'session') {
+      // A legacy logout of the session began: unless legacy shows it kept the login, the request goes on anonymously.
+      if (resolution.kind === 'session' && (await keptThroughPending(request, resolution, mode, userAgent))) {
         const check = await deps.stateCheck.check(resolution.sessionId);
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
@@ -550,6 +581,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         }
       },
       onSettled: ex.row === undefined ? undefined : () => ex.dropRow(),
+      onAbandoned: ex.row === undefined ? undefined : () => ex.abandonRow(),
     });
   };
 
@@ -576,14 +608,14 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       if (resolution.kind === 'unverified') {
         request.log.warn({ route: result.key }, 'edge legacy-bound session unverified: identity unavailable');
       }
+      let barrier: Promise<void> | undefined;
       if (resolution.kind !== 'none') {
         sessionId = resolution.sessionId;
-        // A legacy logout of a flagged session began: identity's end completes first, and legacy sees no session.
-        const ended = resolution.identityEndPending === true;
-        if (ended) await deps.invalidation.completePending(sessionId);
-        await deps.barrier.awaitForSession(sessionId);
+        // A legacy logout of a flagged session began: unless legacy shows it kept the login, legacy sees no session.
+        const anonymous = !(await keptThroughPending(request, resolution, mode, userAgent));
         if (mode === 'target-primary') {
-          const check = ended ? undefined : await deps.stateCheck.check(sessionId);
+          await deps.barrier.awaitForSession(sessionId);
+          const check = anonymous ? undefined : await deps.stateCheck.check(sessionId);
           const row =
             check?.state === 'active' ? await deps.hydrator.ensureHydrated(sessionId, check.epoch, { userAgent }) : undefined;
           if (check !== undefined && check.state !== 'active') await deps.invalidation.afterTargetLogout(sessionId, { userAgent });
@@ -591,28 +623,38 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
           if (row === undefined) sessionId = undefined;
           cookieHeader = legacyCookieHeaderFor(request.headers.cookie, row?.cookies ?? {}, clock.now());
         } else {
+          // The claim reads no hydrated jar in legacy-primary, so it is taken while the barrier is awaited.
+          barrier = deps.barrier.awaitForSession(sessionId);
           const legacyCookies = resolution.kind === 'session' ? resolution.legacyCookies : {};
           if (Object.keys(legacyCookies).length > 0) {
             cookieHeader = legacyCookieHeaderFor(request.headers.cookie, legacyCookies, clock.now());
           }
-          if (ended) sessionId = undefined;
+          if (anonymous) sessionId = undefined;
         }
       }
-      ex.csrfHandle = await deps.csrf.beforeLegacy(input, result, mode);
+      const claim = deps.csrf.beforeLegacy(input, result, mode);
+      if (barrier === undefined) ex.csrfHandle = await claim;
+      else await claimBehind(ex, barrier, claim);
       ex.csrfStartedAt = clock.now();
     }
     const extras = [...setCookiesOf(resolution), ...(ex.csrfHandle?.setCookies ?? [])];
     const session = sessionId;
     const sentCookies = cookieHeader ?? request.headers.cookie;
 
-    /** The browser's legacy session cookies plus those legacy set, for adopting a legacy login. */
-    const loginFacts = (legacySetCookies: readonly string[]): LegacyLoginFacts => {
+    /** The session cookies legacy holds for the browser after its response: those it received, overlaid with those it set. */
+    const heldCookies = (legacySetCookies: readonly string[]): JarCookies => {
       const set = absorbLegacySetCookies(legacySetCookies).sessionCookies;
-      const cookies = { ...requestSessionCookies(sentCookies, set, clock.now()), ...set };
-      return { userAgent, siteId: result.siteId, cookies };
+      return { ...requestSessionCookies(sentCookies, set, clock.now()), ...set };
     };
 
-    const effect = legacySessionEffect(result, mode, deps.facts);
+    /** The browser's legacy session cookies plus those legacy set, for adopting a legacy login. */
+    const loginFacts = (legacySetCookies: readonly string[]): LegacyLoginFacts => ({
+      userAgent,
+      siteId: result.siteId,
+      cookies: heldCookies(legacySetCookies),
+    });
+
+    const effect = legacySessionEffect(result, deps.facts);
     /** What beforeSend saw of legacy's response; a login is adopted only once it and legacy's completion both happened. */
     let afterHeaders: { adopted: string | undefined; legacySetCookies: readonly string[] } | undefined;
     let completed = false;
@@ -629,7 +671,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       );
     };
 
-    /** Maps legacy's session cookies at its headers and ends identity's session after a legacy logout. */
+    /** Maps legacy's session cookies at its headers and ends identity's session after a logout legacy performed. */
     const beforeSend = async (upstream: LegacyUpstream): Promise<LegacyBeforeSendResult | undefined> => {
       const legacySetCookies = upstream.headers['set-cookie'] ?? [];
       let setCookies: string[] | undefined;
@@ -649,8 +691,8 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         setCookies = prepend(extras, legacySetCookies);
       }
       if (effect === 'logout' && session !== undefined) {
-        // Not guarded: a failure answers the 503, so legacy's logout is not acknowledged while identity's session lives.
-        await deps.invalidation.afterLegacyLogout(session);
+        // Not guarded: a failure answers the 503, so legacy's logout is not acknowledged while identity's session lives unmarked.
+        await deps.invalidation.afterLegacyLogout(session, { userAgent, cookies: heldCookies(legacySetCookies), mode });
       }
       afterHeaders = { adopted, legacySetCookies };
       // Legacy may have completed already, as it always has in buffer mode; the login is then adopted here.
@@ -693,7 +735,11 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     return forwardToLegacy(request, reply, {
       ...context,
       mode: 'buffer',
-      onBuffered: (res) => ex.closeWindow({ forwarded: true, legacyStatus: res.statusCode }),
+      // Migration records only an HTTP status (100-599); one Fastify rejects is left out, so the window still closes.
+      onBuffered: ({ statusCode }) => {
+        const status = statusCode >= 100 && statusCode <= 599 ? { legacyStatus: statusCode } : {};
+        return ex.closeWindow({ forwarded: true, ...status });
+      },
     });
   };
 

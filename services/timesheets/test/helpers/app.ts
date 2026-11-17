@@ -407,6 +407,12 @@ function loadCatalogue(): ReadonlyMap<string, CatalogTable> {
       if (table === undefined) throw new CatalogueDriftError(`${file}: row level security forced on unknown table ${match[1] ?? ''}`);
       table.tenantOwned = true;
     }
+    for (const match of sql.matchAll(new RegExp(`ALTER TABLE ${TIMESHEETS_SCHEMA}\\.(\\w+) ADD COLUMN ([^;]+);`, 'g'))) {
+      const table = catalog.get(match[1] ?? '');
+      if (table === undefined) throw new CatalogueDriftError(`${file}: column added to unknown table ${match[1] ?? ''}`);
+      const columns = [...table.columns, parseColumn(table.name, match[2] ?? '')];
+      catalog.set(table.name, { ...table, columns, column: new Map(columns.map((column) => [column.name, column])) });
+    }
   }
   assertCatalogue(catalog);
   return catalog;

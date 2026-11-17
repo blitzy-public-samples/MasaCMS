@@ -12,7 +12,6 @@ import {
   mergeWritePosition,
   programTableName,
   resolveTenant,
-  sha256Hex,
   type ApplyRequest,
   type CanonicalColumn,
   type CanonicalValue,
@@ -40,7 +39,7 @@ import {
   type ExtractScope,
   type ScopeFilter,
 } from '../extract/index.js';
-import { SUPPORTED_FILE_STORE, objectKey, parseObjectKey, parseStoredName, storePath, type StoredName } from '../files/index.js';
+import { SUPPORTED_FILE_STORE, objectKey, parseObjectKey, parseStoredName, storePath, withSpool, type StoredName } from '../files/index.js';
 import type { components } from '../generated/openapi.js';
 import { UnsupportedFileStoreError, quoteIdent, type LegacyDb, type LegacyFileEntry } from '../legacy/index.js';
 import { OwnerCallError, type DataOwner, type ExportParams, type LegacyTableTarget, type Unit, type UnitCatalog } from '../owners/index.js';
@@ -1160,13 +1159,15 @@ async function importFiles(session: ImportSession, unit: string, owner: DataOwne
     const stored = manifest.get(object.key.toLowerCase());
     const expected = object.file.sha256.toLowerCase();
     if (stored !== undefined && stored.sha256.toLowerCase() === expected && stored.size === object.file.size) continue;
-    const { bytes } = await ctx.bridge.filesGet(object.dir, object.file.name);
-    const sha256 = sha256Hex(bytes);
-    if (sha256 !== expected) throw new Error(`legacy file ${storePath(object.dir, object.file.name)} hashes to ${sha256}, not its listing's ${expected}`);
-    const put = await ctx.owners.putObject(
-      { tenantId: object.tenantId, fileId: object.name.fileId, variant: object.name.variant, ext: object.name.ext, contentType: object.contentType, sha256 },
-      bytes,
-    );
+    // Spooled to disk rather than held in memory, and verified before any byte reaches the owner.
+    const put = await withSpool(async (spool) => {
+      const { sha256, size } = await ctx.bridge.filesGet(object.dir, object.file.name, await spool.writer());
+      if (sha256 !== expected) throw new Error(`legacy file ${storePath(object.dir, object.file.name)} hashes to ${sha256}, not its listing's ${expected}`);
+      return ctx.owners.putObject(
+        { tenantId: object.tenantId, fileId: object.name.fileId, variant: object.name.variant, ext: object.name.ext, contentType: object.contentType, sha256 },
+        { stream: await spool.reader(), size },
+      );
+    });
     session.result.objectsTransferred += 1;
     session.addPositions(put.writePositions);
   }

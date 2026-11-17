@@ -45,15 +45,22 @@ export class InvocationsRunningError extends Error {
   }
 }
 
-/** Dead gateway instances hold in-flight writes that may still commit; `rows` names them. */
+/** Orphaned in-flight writes, of dead gateway instances or abandoned by live ones, may still commit; `rows` names them. */
 export class OrphanedWritesError extends Error {
   override readonly name: string = 'OrphanedWritesError';
   readonly rows: InflightRow[];
 
   constructor(rows: readonly InflightRow[]) {
     const named = rows.map((row) => `${row.instanceId} ${row.side} ${row.route} (${String(row.count)} since ${row.oldestStartedAt})`);
-    super(`In-flight writes of dead gateway instances clear only with legacy-restart or gates-closed evidence: ${named.join(', ')}`);
-    this.rows = rows.map(({ instanceId, route, side, count, oldestStartedAt }) => ({ instanceId, route, side, count, oldestStartedAt }));
+    super(`Orphaned in-flight writes of gateway instances clear only with legacy-restart or gates-closed evidence: ${named.join(', ')}`);
+    this.rows = rows.map(({ instanceId, route, side, count, oldestStartedAt, orphaned }) => ({
+      instanceId,
+      route,
+      side,
+      count,
+      oldestStartedAt,
+      orphaned,
+    }));
   }
 }
 
@@ -219,21 +226,20 @@ async function awaitStopped(ctx: DrainAndSuspendContext, running: readonly Runni
 }
 
 /**
- * The gateway's in-flight rows, all of live instances: native task runs and forwarded writes still executing.
- * @throws OrphanedWritesError when a row's instance is not live.
+ * The gateway's in-flight rows, none orphaned: native task runs and forwarded writes still executing.
+ * @throws OrphanedWritesError when a row is orphaned (its instance is not live, or abandoned it).
  */
 async function liveInflight(ctx: DrainAndSuspendContext): Promise<InflightRow[]> {
-  const status = await ctx.gateway.status();
-  const live = new Set(status.instances.filter((instance) => instance.live).map((instance) => instance.instanceId));
-  const orphans = status.inflight.filter((row) => !live.has(row.instanceId));
+  const { inflight } = await ctx.gateway.inflightStatus();
+  const orphans = inflight.filter((row) => row.orphaned);
   if (orphans.length > 0) throw new OrphanedWritesError(orphans);
-  return status.inflight;
+  return inflight;
 }
 
 /**
  * Waits for the stopped producers' running tasks and the live in-flight writes, then drains with the sweeps and push still live,
  * repeating until a confirming poll finds neither.
- * @throws OrphanedWritesError when a dead instance holds an in-flight row.
+ * @throws OrphanedWritesError when an in-flight row is orphaned.
  * @throws InvocationsRunningError, GatewayWaitTimeoutError or DrainTimeoutError when that outlasts the barrier's deadline.
  */
 async function awaitQuiescent(

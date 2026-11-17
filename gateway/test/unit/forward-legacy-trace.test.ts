@@ -230,7 +230,7 @@ describe('forwardToLegacy trace headers with the SDK started', () => {
       ['GET legacy'],
     ],
     ['legacy refuses the connection', '/forward/refused', () => ({ legacyOrigin: closed.url }), ['GET legacy']],
-    ['reply-from rejects the path before sending', '/forward/%2e%2e/secret', () => ({}), []],
+    ['reply-from rejects the origin before sending', '/forward/rejected', () => ({ legacyOrigin: 'http://127.0.0.1:65536' }), []],
   ])('answers the legacy 503 with no client span other than the forward when %s', async (_label, path, overrides, names) => {
     gateway.set(overrides());
     expect(await sendRaw(gateway.port, path, INBOUND)).toMatch(/^HTTP\/1\.1 503 /);

@@ -227,6 +227,41 @@ describe('gatewayEnvSchema MURA_APPRELOADKEY', () => {
   });
 });
 
+describe('gatewayEnvSchema MURA_SESSIONTIMEOUT', () => {
+  it.each<[string, string | undefined, number]>([
+    ['unset', undefined, 180],
+    ['blank', ' ', 180],
+    ['below one minute', '0.5', 180],
+    ['an expression', '${sessionTimeout}', 180],
+    ['a template expression', '{{sessionTimeout}}', 180],
+    ['a number of minutes', ' 45 ', 45],
+    ['a fractional number of minutes', '90.5', 90.5],
+  ])('reads %s (%j) as %d minutes, as identity does', (_case, value, minutes) => {
+    expect(loadEnv(gatewayEnvSchema, sourceOf({ MURA_SESSIONTIMEOUT: value })).MURA_SESSIONTIMEOUT).toBe(minutes);
+  });
+
+  it.each(['soon', 'Infinity'])('fails start-up naming MURA_SESSIONTIMEOUT for %j', (value) => {
+    expect(issuesOf(sourceOf({ MURA_SESSIONTIMEOUT: value }))).toEqual(['MURA_SESSIONTIMEOUT: must be blank or a number of minutes']);
+  });
+});
+
+describe('gatewayEnvSchema MURA_REQUESTTIMEOUT', () => {
+  it.each<[string, string | undefined, number]>([
+    ['unset', undefined, 1000],
+    ['blank', ' ', 1000],
+    ['a number of seconds', ' 600 ', 600],
+    ['a fractional number of seconds', '0.5', 0.5],
+  ])('reads %s (%j) as %d seconds, as Masa sets its request timeout', (_case, value, seconds) => {
+    expect(loadEnv(gatewayEnvSchema, sourceOf({ MURA_REQUESTTIMEOUT: value })).MURA_REQUESTTIMEOUT).toBe(seconds);
+  });
+
+  it.each(['soon', 'Infinity', '0', '-5', '${requesttimeout}'])('fails start-up naming MURA_REQUESTTIMEOUT for %j', (value) => {
+    expect(issuesOf(sourceOf({ MURA_REQUESTTIMEOUT: value }))).toEqual([
+      'MURA_REQUESTTIMEOUT: must be blank or a positive number of seconds',
+    ]);
+  });
+});
+
 describe('route-key wiring of the reload key', () => {
   it.each([
     ['the configured key', `/?${FIXTURE_RELOAD_KEY}`, 'reload:application'],
@@ -286,12 +321,24 @@ describe('route-key wiring of the legacy site registry', () => {
 
 describe('projected owners of the active version', () => {
   const ownership = loadTableOwnership(resolveGatewayPaths({}));
-  const V0002_OWNERS = ['communications', 'e-signature', 'finance', 'people', 'reporting', 'strategies-content', 'surveys', 'timesheets'];
+  // v0003 returns only part of identity's and people's units to legacy, so it projects to the same owners as v0002.
+  const V0002_OWNERS = [
+    'communications',
+    'e-signature',
+    'finance',
+    'identity',
+    'people',
+    'programs-sites',
+    'reporting',
+    'strategies-content',
+    'surveys',
+    'timesheets',
+  ];
 
   it.each<[CommittedVersion, string[]]>([
     ['v0001', []],
     ['v0002', V0002_OWNERS],
-    ['v0003', V0002_OWNERS.filter((owner) => owner !== 'people')],
+    ['v0003', V0002_OWNERS],
   ])('are the table-ownership owners of the units %s makes target-authoritative', async (version, owners) => {
     const index = await committedIndex(version);
     const projected = projectedOwnersOf((await ownership).units, () => index);
@@ -300,7 +347,7 @@ describe('projected owners of the active version', () => {
   });
 
   it('are none before any version is active, and the last seen version stays in force while the cache is stale', async () => {
-    const [v0002, v0003] = await Promise.all([committedIndex('v0002'), committedIndex('v0003')]);
+    const [v0002, v0001] = await Promise.all([committedIndex('v0002'), committedIndex('v0001')]);
     let active: RoutingIndex | undefined;
     const projected = projectedOwnersOf((await ownership).units, () => active);
 
@@ -311,7 +358,7 @@ describe('projected owners of the active version', () => {
     expect(projected()).toBe(first);
     active = undefined;
     expect(projected()).toBe(first);
-    active = v0003;
+    active = v0001;
     expect(projected().has('people')).toBe(false);
   });
 

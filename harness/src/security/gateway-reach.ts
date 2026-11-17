@@ -20,7 +20,7 @@ import { z } from '@opt2/platform/service-kit';
 import { LOCAL_SIGNED_URL_PREFIX, isBucketName, signLocalUrl, type BucketName } from '@opt2/platform/storage';
 import { ROLE_SET, TENANT_A, type RoleSubject } from '@opt2/platform/testing';
 import type { CapturedLogLine } from '../events/traces.js';
-import { repoPath } from '../lib/paths.js';
+import { cutoverVersionPath, type EnvLike } from '../lib/paths.js';
 import { readJson } from '../lib/report.js';
 import { ROUTED_PACKAGES, type Expectation, type LoadedMatrix, type Observation } from './authz-matrix.js';
 
@@ -78,9 +78,9 @@ const GATE_ACTIONS: ReadonlyMap<string, number> = new Map([
   [ADMIN_NOACCESS_ACTION.toLowerCase(), 403],
 ]);
 
-/** Committed cut-over version file of `version`. */
-export function cutoverVersionFile(version: string): string {
-  return repoPath('gateway', 'cutover', 'versions', `${version}.json`);
+/** Cut-over version file of `version` the gateway reads: under `OPT2_CUTOVER_DIR`, else the committed one. */
+export function cutoverVersionFile(version: string, env: EnvLike = process.env): string {
+  return cutoverVersionPath(version, env);
 }
 
 /** Reads the entry fields of a cut-over version file; throws when it is malformed or names another version. */

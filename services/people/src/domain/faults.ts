@@ -41,16 +41,15 @@ export function isRosterStep(value: string): value is RosterStep {
   return STEP_SET.has(value);
 }
 
-// Values without the roster prefix or with an unknown step belong to other packages' fault names and are ignored.
-function killStepFrom(value: string | undefined): RosterStep | undefined {
+/** The step an `OPT2_FAULT` value kills the process at; a value without the roster prefix or with an unknown step names another package's fault, so none. */
+export function killStepOf(value: string | undefined): RosterStep | undefined {
   if (value === undefined || !value.startsWith(FAULT_PREFIX)) return undefined;
   const step = value.slice(FAULT_PREFIX.length);
   return isRosterStep(step) ? step : undefined;
 }
 
-/** Builds hooks that SIGKILL the process at the `OPT2_FAULT=roster:<step>` step, else throw that step's injected error. */
-export function createFaultHooks(injected: InjectedFaults = {}, env: NodeJS.ProcessEnv = process.env): FaultHooks {
-  const killStep = killStepFrom(env[FAULT_ENV]);
+/** Builds hooks that SIGKILL the process at `killStep`, the parsed `OPT2_FAULT=roster:<step>`, else throw that step's injected error. */
+export function createFaultHooks(injected: InjectedFaults = {}, { killStep }: { killStep?: RosterStep } = {}): FaultHooks {
   return {
     async at(step: RosterStep): Promise<void> {
       if (step === killStep) {

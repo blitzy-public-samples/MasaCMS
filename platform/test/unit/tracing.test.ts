@@ -17,7 +17,9 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setDiagnosticLogger } from '../../src/logging/diagnostics.js';
 import { createLogger } from '../../src/logging/logger.js';
+import { serializeError } from '../../src/logging/safe-error.js';
 import { validateLogRecord } from '../../src/logging/validate.js';
+import { EnvValidationError } from '../../src/service-kit/env.js';
 import {
   activeSpanIds,
   assertTraceContinuity,
@@ -41,6 +43,7 @@ import {
   TraceContinuityError,
   withCallee,
   withExtractedContext,
+  withUnsampledTrace,
   type Context,
   type ContinuitySpan,
   type HeaderBag,
@@ -255,6 +258,28 @@ describe('tracing sdk', () => {
     expect(otlpUrls).toEqual([url]);
   });
 
+  it.each(['collector:4318', 'file:///tmp/otlp'])(
+    'rejects OTEL_EXPORTER_OTLP_ENDPOINT %s with an EnvValidationError naming only the variable and its reason, patching nothing',
+    async (value) => {
+      process.env[ENDPOINT_VAR] = value;
+      otlpUrls.length = 0;
+      const http = loadHttp();
+      const original = http.request;
+
+      const failure = await startTracing(SERVICE).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(failure).toBeInstanceOf(EnvValidationError);
+      expect((failure as EnvValidationError).issues).toEqual([`${ENDPOINT_VAR}: Invalid URL`]);
+      expect(serializeError(failure).message).toBe(`tracing-test: invalid environment (${ENDPOINT_VAR}: expected an http(s) URL)`);
+      expect(loadHttp().request).toBe(original);
+      expect(otlpUrls).toEqual([]);
+      await expect(startSpan('untraced', SpanKind.INTERNAL, (span) => span.isRecording())).resolves.toBe(false);
+    },
+  );
+
   it('unpatches and unregisters when the final export fails, so tracing restarts', async () => {
     const http = loadHttp();
     const original = http.request;
@@ -375,6 +400,24 @@ describe('tracing diag logger', () => {
     expect(() => diag.error('sink down', new Error('dropped'))).not.toThrow();
 
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['WARN', ['warn', 'error']],
+    ['Verbose', ['verbose', 'debug', 'info', 'warn', 'error']],
+    ['none', []],
+    ['chatty', ['info', 'warn', 'error']],
+    [' debug ', ['info', 'warn', 'error']],
+  ] as const)('reads OTEL_LOG_LEVEL %j as a level name in any case, any other text as INFO', async (value, kept) => {
+    setLevel(value);
+    const lines = captureDiagnostics();
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+    lines.length = 0;
+
+    for (const method of ['verbose', 'debug', 'info', 'warn', 'error'] as const) diag[method](method);
+
+    expect(lines.map((line) => line.message)).toEqual(kept);
+    expect(process.env[LEVEL_VAR]).toBe(value);
   });
 
   it.each([undefined, '', '  '])('installs no diag logger for OTEL_LOG_LEVEL %j, and shutdown removes an installed one', async (value) => {
@@ -655,6 +698,65 @@ describe('tracing propagation', () => {
       expect(span?.parentSpanContext).toBeUndefined();
       expect(span?.spanContext().traceId).not.toBe(TRACE_ID);
       expect(span?.links.map((link) => link.context)).toStrictEqual(linked ? [trace.getSpanContext(ctx)] : []);
+    });
+  });
+
+  describe('withUnsampledTrace', () => {
+    type Ids = ReturnType<typeof activeSpanIds>;
+    it.each<{ name: string; fn: () => Ids | Promise<Ids> }>([
+      { name: 'returning a value', fn: () => activeSpanIds() },
+      { name: 'returning a promise', fn: () => startSpan('dropped', SpanKind.CLIENT, () => activeSpanIds()) },
+    ])('runs an iteration $name in a fresh unsampled trace whose spans are not exported', async ({ fn }) => {
+      const first = await context.with(remoteContext(), () => withUnsampledTrace(fn));
+      const second = await withUnsampledTrace(fn);
+
+      expect(first).toMatchObject({ traceId: expect.stringMatching(/^[0-9a-f]{32}$/), spanId: expect.stringMatching(/^[0-9a-f]{16}$/), traceSampled: false });
+      expect(first?.traceId).not.toBe(TRACE_ID);
+      expect(second?.traceId).not.toBe(first?.traceId);
+      expect(await exported(exporter)).toEqual([]);
+    });
+
+    it('rethrows what the iteration throws', async () => {
+      const failure = new Error('iteration failed');
+
+      await expect(withUnsampledTrace(() => Promise.reject(failure))).rejects.toBe(failure);
+    });
+
+    it('sends traceparent flags 00 on outgoing calls and exports no client span', async () => {
+      const received: (string | undefined)[] = [];
+      const server = createServer((request, response) => {
+        received.push(request.headers.traceparent as string | undefined);
+        request.resume();
+        response.end('ok');
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      try {
+        const ids = await withUnsampledTrace(async () => {
+          await (await fetch(`http://127.0.0.1:${String(port)}/internal/v1/x`)).text();
+          return activeSpanIds();
+        });
+
+        expect(received).toHaveLength(1);
+        expect(received[0]).toMatch(new RegExp(`^00-${String(ids?.traceId)}-[0-9a-f]{16}-00$`));
+        expect(clientSpans(await exported(exporter))).toEqual([]);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it('exports work recorded inside as one root span linked to the iteration, with its children', async () => {
+      const iteration = await withUnsampledTrace(() =>
+        startLinkedRootSpan('batch', SpanKind.INTERNAL, () => startSpan('write', SpanKind.CLIENT, () => undefined)).then(() => activeSpanIds()),
+      );
+      const spans = await exported(exporter);
+      const root = spans.find((span) => span.name === 'batch');
+
+      expect(spans.map((span) => span.name).sort()).toEqual(['batch', 'write']);
+      expect(root?.parentSpanContext).toBeUndefined();
+      expect(root?.links.map((link) => link.context.traceId)).toEqual([iteration?.traceId]);
+      expect(spans.find((span) => span.name === 'write')?.parentSpanContext?.spanId).toBe(root?.spanContext().spanId);
     });
   });
 });

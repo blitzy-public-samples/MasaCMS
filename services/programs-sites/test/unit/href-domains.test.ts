@@ -14,6 +14,8 @@ vi.mock('@opt2/platform/tenancy', async (importOriginal) => {
 });
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+/** The columns the repository's `listSiteDomains` selects. */
+const DOMAIN_COLUMNS = ['siteid', 'domain', 'domainalias', 'isremote', 'resourcedomain'] as const;
 
 function siteRow(siteid: string, overrides: Partial<SiteRow> = {}): SiteRow {
   return {
@@ -36,7 +38,7 @@ function siteRow(siteid: string, overrides: Partial<SiteRow> = {}): SiteRow {
   };
 }
 
-/** The sites domain's reader over `rows`, registered in site-id order, recording the tenants it opened. */
+/** The sites domain's reader over the origin-domain columns of `rows`, registered in site-id order, recording the tenants it opened. */
 function readerOver(rows: SiteRow[]): { read: SitesDomain['hrefDomains']; db: TenantDb; opened: string[] } {
   const opened: string[] = [];
   const db: TenantDb = {
@@ -50,7 +52,13 @@ function readerOver(rows: SiteRow[]): { read: SitesDomain['hrefDomains']; db: Te
     withMetadata: () => Promise.reject(new Error('metadata transaction opened')),
     end: () => Promise.resolve(),
   };
-  const repo = { listSites: vi.fn(async (tx: TenantTx) => rows.filter((row) => row.tenant_id === tx.tenantId)) };
+  const repo = {
+    listSiteDomains: vi.fn(async (tx: TenantTx) =>
+      rows
+        .filter((row) => row.tenant_id === tx.tenantId)
+        .map((row) => Object.fromEntries(DOMAIN_COLUMNS.map((column) => [column, row[column]]))),
+    ),
+  };
   vi.mocked(registeredTenants).mockResolvedValue(
     rows
       .map((row) => ({ siteId: String(row.siteid), tenantId: String(row.tenant_id) }))

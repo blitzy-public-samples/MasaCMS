@@ -991,6 +991,32 @@ describe('projectReportValue', () => {
       },
     },
     {
+      label: 'keeps values keyed by the e-signature service and schema names',
+      input: { totals: { 'e-signature': 4, esignature: 2 }, perOwner: { 'e-signature': { inbox: 3, ok: true } } },
+      expected: { totals: { 'e-signature': 4, esignature: 2 }, perOwner: { 'e-signature': { inbox: 3, ok: true } } },
+    },
+    {
+      label: 'masks credential names containing signature',
+      input: {
+        totals: { signature: 4 },
+        signature: TOKEN,
+        eSignatureKey: TOKEN,
+        esignature_token: TOKEN,
+        signatureSecret: TOKEN,
+        'e-signature-key': TOKEN,
+        ESIGNATURE: TOKEN,
+      },
+      expected: {
+        totals: { signature: REDACTED },
+        signature: REDACTED,
+        eSignatureKey: REDACTED,
+        esignature_token: REDACTED,
+        signatureSecret: REDACTED,
+        'e-signature-key': REDACTED,
+        ESIGNATURE: REDACTED,
+      },
+    },
+    {
       label: 'digests the key and values of a difference, keeping its kind, column and count',
       input: DIFFERENCE,
       expected: {
@@ -1176,6 +1202,51 @@ describe('projectReportValue', () => {
 
   it.each(projectionCases)('$label', ({ input, expected }) => {
     expect(projectReportValue(input)).toEqual(expected);
+  });
+
+  const BEARER = `Bearer ${TOKEN}`;
+  const RESET_ROUTE = `api:/reset?token=${TOKEN}`;
+  const EVENT_ID = '33333333-3333-4333-8333-333333333333';
+  const CHECKSUM_KEY = 'people|people.person|dbo.tusers|11111111-1111-5111-8111-111111111111';
+  const WITNESS = 'witness_pubsub-redelivery_0a1b2c3d.identity.group.changed.v1';
+  it.each([
+    { name: 'command', value: 'feed', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'action', value: 'health-check', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'step', value: 'start', credential: EMAIL, masked: digestOf(EMAIL) },
+    { name: 'signal', value: 'SIGKILL', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'state', value: 'import-pending', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'windowState', value: 'closed', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'read', value: 'waited', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'reconciliation', value: 'difference', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'batchId', value: 'fault:duplicate-batch:2026-06-30T10:00:00.000Z', credential: `token=${TOKEN}`, masked: digestOf(`token=${TOKEN}`) },
+    { name: 'contentHistId', value: '0B6D2F1A-3C4E-5F60-718293A4B5C6D7E8', credential: EMAIL, masked: digestOf(EMAIL) },
+    { name: 'reportPath', value: '/srv/opt2/reports/reconciliation/after-feed-4.json', credential: `/srv/${EMAIL}/r.json`, masked: digestOf(`/srv/${EMAIL}/r.json`) },
+    { name: 'droppedDatabase', value: 'muradb_opt2_snap_3', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'since', value: '2026-06-30T08:00:00.000Z', credential: BEARER, masked: digestOf(BEARER) },
+    { name: 'endpoint', value: 'http://127.0.0.1:20118/internal/v1/events/push', credential: `https://u:${TOKEN}@h/push`, masked: digestOf(`https://u:${TOKEN}@h/push`) },
+    { name: 'order', value: ['freeze', 'commit', 'reload-window', 'unfreeze'], credential: [BEARER], masked: [digestOf(BEARER)] },
+    { name: 'targetUnits', value: ['strategies-content.content'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'feedUnits', value: ['strategies-content.content'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'skippedTables', value: ['Program_1.timesheet_day'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'producers', value: ['identity', 'people', 'programs-sites'], credential: [BEARER], masked: [digestOf(BEARER)] },
+    { name: 'subscriptions', value: ['timesheets.people.person.archived.v1'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'inPullMode', value: ['timesheets.people.person.archived.v1'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'unproven', value: [EVENT_ID], credential: [BEARER], masked: [digestOf(BEARER)] },
+    { name: 'differing', value: [CHECKSUM_KEY], credential: [`people|people.person|dbo.tusers|${EMAIL}`], masked: [digestOf(`people|people.person|dbo.tusers|${EMAIL}`)] },
+    { name: 'unchecked', value: ['timesheets'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'left', value: [WITNESS], credential: [`token=${TOKEN}`], masked: [digestOf(`token=${TOKEN}`)] },
+    { name: 'deleted', value: [WITNESS], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'routes', value: [FLAG_ROUTE], credential: [RESET_ROUTE], masked: [digestOf(RESET_ROUTE)] },
+    { name: 'name', value: 'replayed:programs-sites', credential: `token:${TOKEN}`, masked: digestOf(`token:${TOKEN}`) },
+    { name: 'name', value: 'redelivered:timesheets.people.person.archived.v1', credential: 'Avery Quinn', masked: digestOf('Avery Quinn') },
+    { name: 'stderrTail', value: 'apply people: Service people unavailable (ECONNREFUSED)', credential: BEARER, masked: `Bearer ${REDACTED}` },
+    { name: 'failedAfterRestart', value: 'Service people unavailable (ECONNREFUSED)', credential: `failed for ${EMAIL}`, masked: `failed for ${REDACTED}` },
+    { name: 'completeError', value: 'Window W1 is import-pending', credential: `password=${PASSWORD}`, masked: `password=${REDACTED}` },
+  ])('keeps the fault evidence under $name and masks a credential-looking value there', ({ name, value, credential, masked }) => {
+    expect(projectReportValue({ [name]: value })).toEqual({ [name]: value });
+    const projected = projectReportValue({ [name]: credential });
+    expect(projected).toEqual({ [name]: masked });
+    expect(projectReportValue(projected)).toEqual(projected);
   });
 
   it('masks a top-level value by the property name it is held under', () => {

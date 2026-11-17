@@ -11,7 +11,7 @@ import {
   type GateState,
   type WriteContext,
 } from '@opt2/platform/migration-kit';
-import { createOutbox, discardOperation, releaseOperation } from '@opt2/platform/outbox';
+import { OutboxPayloadError, createOutbox, discardOperation, releaseOperation } from '@opt2/platform/outbox';
 import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { createLogger } from '@opt2/platform/logging';
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
@@ -384,6 +384,19 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
       [MEMBERSHIP_CHANGED_TOPIC, 2],
     ]);
     expect(rows.at(-1)?.envelope.payload.groupIds).toEqual([]);
+  });
+
+  it('refuses the membership event of a legacy user id that is no CF UUID with OutboxPayloadError, writing no outbox row', async () => {
+    const write = migrationWrite('migration-feed', 'crafted-batch');
+    const userId = 'QAUSER00-0000-0000-0000000000000058';
+    await registerSite();
+    const error = await inTenant(async (tx) => {
+      const m = await repo.upsert(tx, MEMBERSHIP.table, { userid: userId, groupid: id(71, 'B') }, write);
+      return events.emitStateEvents(tx, change(MEMBERSHIP.unit, MEMBERSHIP.table, 'insert', m, 'migration-feed'), write).catch((caught: unknown) => caught);
+    });
+    expect(error).toBeInstanceOf(OutboxPayloadError);
+    expect(error).toMatchObject({ topic: MEMBERSHIP_CHANGED_TOPIC });
+    expect(await outboxRows()).toEqual([]);
   });
 
   it('throws for an applied change without an image', async () => {

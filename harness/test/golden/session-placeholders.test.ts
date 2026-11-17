@@ -10,6 +10,7 @@ import {
   SEED_CONFIG_PATH,
   SEED_CREDENTIALS_FILE,
   appReloadKey,
+  browserBaseUrl,
   configuredAppReloadKey,
   createScenarioContext,
   loadSecretStore,
@@ -220,6 +221,20 @@ describe('originBaseUrl', () => {
   );
 });
 
+describe('browserBaseUrl', () => {
+  it.each<[Origin, EnvLike, string]>([
+    ['legacy', { PORT: LEGACY_PORT }, 'http://localhost:20080'],
+    ['legacy', { LEGACY_ORIGIN: 'http://127.0.0.9:20080/' }, 'http://localhost:20080'],
+    ['gateway', {}, `http://localhost:${GATEWAY_PORT}`],
+    ['gateway', { OPT2_GATEWAY_URL: 'http://127.0.0.1:20100/' }, 'http://localhost:20100'],
+    ['gateway', { OPT2_GATEWAY_URL: 'http://[::1]:20100' }, 'http://localhost:20100'],
+    ['gateway', { OPT2_GATEWAY_URL: 'http://tenant-a.localhost:20100' }, 'http://tenant-a.localhost:20100'],
+    ['gateway', { OPT2_GATEWAY_URL: 'https://gateway.example.test' }, 'https://gateway.example.test'],
+  ])('resolves %s with %j to %s, a loopback IP host as localhost', (origin, vars, expected) => {
+    expect(browserBaseUrl(origin, vars)).toBe(expected);
+  });
+});
+
 describe('createScenarioContext', () => {
   it('opens one logged-out session per declared name on the origin, with empty bindings and seed rows', async () => {
     const ctx = contextFor({ id: SCENARIO, sessions: sessionsNamed(['admin', 'editor']) });
@@ -291,10 +306,29 @@ describe('createScenarioContext', () => {
     const secrets: SecretStore = loadSecretStore(env);
     const seed: SeedStore = loadSeedStore(env);
     const ctx = createScenarioContext({ id: SCENARIO }, { origin: 'gateway', secrets, seed, fetch: fakeFetch().fetch });
-    expect(ctx.secrets).toBe(secrets);
+    expect(ctx.secrets.secret('admin')).toBe(ADMIN_PASSWORD);
+    expect(secrets.values()).toEqual([ADMIN_PASSWORD]);
+    expect(ctx.secrets.values()).toEqual(secrets.values());
     expect(ctx.seed).toBe(seed);
     expect(ctx.env).toBe(process.env);
     expect(ctx.baseUrl).toBe(originBaseUrl('gateway', process.env));
+  });
+
+  it('records the secrets each scenario resolves by name, first resolution first, over one shared store', () => {
+    writeSeedCredentials();
+    const secrets = loadSecretStore(env);
+    const opts = { origin: 'legacy', env, secrets, fetch: fakeFetch().fetch } as const;
+    const first = createScenarioContext({ id: SCENARIO }, opts);
+    const second = createScenarioContext({ id: 'GS-PE-01' }, opts);
+    const generated = `generated:${GENERATED_NAME}`;
+    resolvePlaceholders(`\${secret:${generated}} \${secret:admin} \${secret:${generated}}`, first);
+    second.secrets.secret('qa_editor');
+    expect([...(first.resolvedSecrets ?? [])]).toEqual([
+      [generated, GENERATED_PW],
+      ['admin', ADMIN_PASSWORD],
+    ]);
+    expect([...(second.resolvedSecrets ?? [])]).toEqual([['qa_editor', EDITOR_PASSWORD]]);
+    expect(secrets.values()).toEqual([GENERATED_PW, ADMIN_PASSWORD, EDITOR_PASSWORD]);
   });
 
   it('resolves seedRefs in declaration order, so a later where reads an earlier row', () => {

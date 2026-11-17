@@ -3,6 +3,7 @@ import { serializeError } from '@opt2/platform/logging';
 import { createService, systemClock, type Clock, type CreateServiceOptions, type FastifyInstance } from '@opt2/platform/service-kit';
 import { reconcileRecurringQueues } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
+import { withUnsampledTrace } from '@opt2/platform/tracing';
 
 import { createMigrationContext, type CreateContextOptions, type MigrationContext } from './context.js';
 import { preloadCutover } from './cutover/index.js';
@@ -51,8 +52,8 @@ interface LoopDeps {
 }
 
 /**
- * Runs `iteration` `intervalMs` after the previous run settled, skipping while background work is suspended.
- * A failure is logged and the chain continues.
+ * Runs `iteration` in an unsampled trace `intervalMs` after the previous run settled, skipping while background work is
+ * suspended. A failure is logged and the chain continues.
  */
 function startLoop(name: string, intervalMs: number, iteration: () => Promise<void>, deps: LoopDeps): Loop {
   let timer: NodeJS.Timeout | undefined;
@@ -68,13 +69,13 @@ function startLoop(name: string, intervalMs: number, iteration: () => Promise<vo
 
   function tick(): void {
     timer = undefined;
-    inflight = (async () => {
+    inflight = withUnsampledTrace(async () => {
       try {
         if (!(await deps.isSuspended())) await iteration();
       } catch (error) {
         deps.logger.warn({ error: serializeError(error) }, `${name} failed; it runs again in ${String(intervalMs)} ms`);
       }
-    })().finally(() => {
+    }).finally(() => {
       inflight = undefined;
       schedule();
     });

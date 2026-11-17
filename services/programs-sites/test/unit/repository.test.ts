@@ -101,6 +101,38 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
     expect(await inTenant((tx) => repository.readSite(tx, 'ALPHA'))).toBeNull();
   });
 
+  it.each<[string, (tx: TenantTx) => Promise<readonly Record<string, unknown>[]>, readonly string[]]>([
+    ['listSites', (tx: TenantTx) => repository.listSites(tx), ['siteid', 'site', 'domain', 'orderno', 'deploy', 'lastdeployment']],
+    ['listSiteSelectorRows', (tx: TenantTx) => repository.listSiteSelectorRows(tx), ['siteid', 'site', 'orderno', 'domain', 'domainalias', 'showdashboard']],
+    ['listSiteDomains', (tx: TenantTx) => repository.listSiteDomains(tx), ['siteid', 'domain', 'domainalias', 'isremote', 'resourcedomain']],
+  ])('%s reads only its columns of every tenant site, in list order', async (_name, list, columns) => {
+    const rows: readonly Record<string, unknown>[] = await inTenant(list);
+    const stored = (await Promise.all(rows.map((row) => inTenant((tx) => repository.readSite(tx, String(row.siteid)))))) as SiteRow[];
+
+    expect(rows.map((row) => row.siteid)).toEqual(['nul', 'first', 'alpha', 'zeta']);
+    expect(rows).toEqual(stored.map((row) => Object.fromEntries(columns.map((column) => [column, row[column]]))));
+    expect(await inTenant(list, otherTenantId)).toEqual([]);
+  });
+
+  it.each([
+    ['a differently cased id', 'ALPHA', 'alpha'],
+    ['an id with trailing spaces', 'Zeta  ', 'zeta'],
+    ['a leading space SQL Server does not ignore', ' alpha', null],
+    ['a prefix', 'alp', null],
+  ])('matches the stored site by %s as SQL Server equality does', async (_label, siteId, expected) => {
+    expect((await inTenant((tx) => repository.matchSite(tx, siteId)))?.siteid ?? null).toBe(expected);
+    expect(await inTenant((tx) => repository.matchSite(tx, siteId), otherTenantId)).toBeNull();
+  });
+
+  it('matches the first of two stored ids that differ only in case, in list order, as a whole row', async () => {
+    await gated(async (tx) => {
+      await repository.insert(tx, SITE.table, siteRow('Dup', 5));
+      await repository.insert(tx, SITE.table, siteRow('DUP', 3));
+    });
+
+    expect(await inTenant((tx) => repository.matchSite(tx, 'dup'))).toEqual(await inTenant((tx) => repository.readSite(tx, 'DUP')));
+  });
+
   it('rolls the site write and its changelog row back together', async () => {
     const logged = (await changelog()).length;
     const failed = gated(async (tx) => {
@@ -147,6 +179,9 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
     await setGates('closed', phase);
 
     await expect(gated((tx) => repository.listSites(tx))).rejects.toBeInstanceOf(UnitReadBlockedError);
+    await expect(gated((tx) => repository.listSiteSelectorRows(tx))).rejects.toBeInstanceOf(UnitReadBlockedError);
+    await expect(gated((tx) => repository.listSiteDomains(tx))).rejects.toBeInstanceOf(UnitReadBlockedError);
+    await expect(gated((tx) => repository.matchSite(tx, 'ZETA'))).rejects.toBeInstanceOf(UnitReadBlockedError);
     await expect(gated((tx) => repository.readSite(tx, 'zeta'))).rejects.toBeInstanceOf(UnitReadBlockedError);
     await expect(gated((tx) => repository.listImageSizes(tx, 'alpha'))).rejects.toBeInstanceOf(UnitReadBlockedError);
   });
@@ -187,6 +222,43 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
   ])('finds an image size by a name differing by %s only as SQL Server nvarchar equality does', async (_label, stored, name, matches) => {
     await gated((tx) => repository.saveImageSize(tx, { sizeid: SIZE_ID, siteid: 'alpha', name: stored, height: '100', width: 'AUTO' }));
     expect((await inTenant((tx) => repository.findImageSize(tx, { name, siteId: 'alpha' })))?.name).toBe(matches ? stored : undefined);
+  });
+
+  it('pages the image sizes of one site by sizeid after a cursor compared as SQL Server does, confined to the tenant', async () => {
+    const ids = ['A0000000-0000-0000-0000000000000003', 'A0000000-0000-0000-0000000000000001', 'A0000000-0000-0000-0000000000000002'];
+    await gated(async (tx) => {
+      for (const sizeid of ids) await repository.saveImageSize(tx, { sizeid, siteid: 'alpha', name: sizeid.slice(-1), height: 'AUTO', width: '1' });
+      await repository.saveImageSize(tx, { sizeid: SIZE_ID, siteid: 'zeta', name: 'other', height: 'AUTO', width: '1' });
+    });
+    const page = (after: string | null, limit: number, tenant = tenantId) =>
+      inTenant(async (tx) => (await repository.listImageSizePage(tx, 'ALPHA', { after, limit })).map((row) => row.sizeid), tenant);
+    const sorted = [...ids].sort();
+
+    expect(await page(null, 2)).toEqual(sorted.slice(0, 2));
+    expect(await page(sorted[1] ?? '', 2)).toEqual(sorted.slice(2));
+    expect(await page((sorted[0] ?? '').toLowerCase(), 5)).toEqual(sorted.slice(1));
+    expect(await page(sorted[2] ?? '', 2)).toEqual([]);
+    expect(await page(null, 2, otherTenantId)).toEqual([]);
+  });
+
+  it('pages the registered sites by site id after a cursor in a metadata transaction, skipping deleted ones', async () => {
+    const prefix = `registry-page-${tenants}`;
+    const siteIds = ['b', 'a', 'c'].map((suffix) => `${prefix}-${suffix}`);
+    await withMetadata(handle.app, async (tx) => {
+      for (const [siteId, deleted] of [...siteIds.map((id) => [id, false] as const), [`${prefix}-aa`, true] as const]) {
+        await tx.query(
+          `INSERT INTO ${handle.schema}.tenant_registry (site_id, tenant_id, aggregate_version, updated_at, deleted) VALUES ($1, $2, 1, $3, $4)`,
+          [siteId, tenantIdForSite(siteId), new Date(2026, 5, 30), deleted],
+        );
+      }
+    });
+    const page = (after: string | null, limit: number) =>
+      withMetadata(handle.app, (tx) => repository.listRegisteredSitePage(tx, { after, limit }));
+    const expected = [...siteIds].sort().map((siteId) => ({ siteId, tenantId: tenantIdForSite(siteId) }));
+
+    expect(await page(`${prefix}-`, 2)).toEqual(expected.slice(0, 2));
+    expect(await page(`${prefix}-b`, 5)).toEqual(expected.slice(2));
+    expect((await page(null, 1000)).filter(({ siteId }) => siteId.startsWith(prefix))).toEqual(expected);
   });
 
   it('saves, lists and deletes an image size by a lower-cased sizeid and differently cased siteid, keeping the stored case', async () => {

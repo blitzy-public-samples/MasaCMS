@@ -1,5 +1,6 @@
 // Tests createSiteRegistry: the first load, case-insensitive lookups, the refresh loop and its failure handling.
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
+import { MemorySpanExporter, SpanKind, activeSpanIds, flushTracing, shutdownTracing, startSpan, startTracing } from '@opt2/platform/tracing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { REFRESH_INTERVAL_MS } from '../../src/cutover/state.js';
 import { createSiteRegistry, type SiteRegistry } from '../../src/dispatcher/site-registry.js';
@@ -179,5 +180,37 @@ describe('createSiteRegistry', () => {
 
     expect(list).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('refreshes in a fresh unsampled trace each time, exporting none of the spans the refresh starts', async () => {
+    vi.useRealTimers();
+    const exporter = new MemorySpanExporter();
+    await startTracing({ serviceName: 'site-registry-test', version: '1.0.0', exporter });
+    vi.useFakeTimers();
+    try {
+      // The active span of each load, which starts a client span as the bridge call does.
+      const loads: ReturnType<typeof activeSpanIds>[] = [];
+      const { registry } = track(
+        registryOf(() =>
+          startSpan('GET legacy-bridge', SpanKind.CLIENT, () => {
+            loads.push(activeSpanIds());
+            return ['default'];
+          }),
+        ),
+      );
+
+      await registry.start();
+      await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS * 2);
+      registry.stop();
+      await flushTracing();
+      const [startup, ...refreshes] = loads;
+
+      expect(exporter.getFinishedSpans().map((span) => span.spanContext().spanId)).toStrictEqual([startup?.spanId]);
+      expect(refreshes.map((ids) => ids?.traceSampled)).toStrictEqual([false, false]);
+      expect(new Set(refreshes.map((ids) => ids?.traceId)).size).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      await shutdownTracing();
+    }
   });
 });

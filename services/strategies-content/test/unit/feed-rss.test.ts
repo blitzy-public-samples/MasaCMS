@@ -1,11 +1,16 @@
-/** `/_api/feed/v1` and `/tasks/feed` (feedApiUtility.cfc:74-446): dispatch, error packets, the RSS writers against literal documents, and the routes through the service's composition root. */
+/** `/_api/feed/v1` and `/tasks/feed` (feedApiUtility.cfc:74-446): dispatch, error packets, the RSS writers against literal documents, and the routes through the service's composition root with a programs-sites double. */
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
-import { TENANT_A, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { subscriptionName } from '@opt2/platform/events';
+import { fixedClock } from '@opt2/platform/service-kit';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { TENANT_A, assertResponseMatchesOpenApi, pushTo, testEnvelope } from '@opt2/platform/testing';
+import { SITE_CHANGED_TOPIC } from '../../src/events/consumers.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
 import {
+  RSS_CONTENT_TYPE,
   cfXmlFormat,
   feedContentType,
   feedErrorPacket,
@@ -25,7 +30,7 @@ import {
   type RssItemView,
 } from '../../src/legacy/rss.js';
 import { FEED_PATHS } from '../../src/routes/feed.js';
-import { buildTestApp, createRecordingDb, userHeaders, type TestApp } from '../helpers/app.js';
+import { SERVICE, buildTestApp, createRecordingDb, userHeaders, type ClientHandlers, type TestApp } from '../helpers/app.js';
 import { IDS, contentRow, feedRow, seedRecordingDb, type ContentSeedRow } from '../helpers/seed.js';
 import { contentHeaders } from '../helpers/tokens.js';
 
@@ -351,7 +356,7 @@ describe('feed routes through the composition root', () => {
       if (ids.includes(FAILING_FEED_ID.toLowerCase())) throw new Error('feed read failed');
       return tenantId === TENANT_A.tenantId ? [FEED, RESTRICTED_FEED].filter((row) => ids.includes(row.feedid.toLowerCase())) : [];
     });
-    t = await buildTestApp({ db });
+    t = await buildTestApp({ db, clientHandlers: SITES_HANDLERS });
   });
 
   afterAll(async () => {
@@ -429,15 +434,110 @@ describe('feed routes through the composition root', () => {
     expect((await get(url, await headers())).statusCode).toBe(403);
   });
 
-  // The composition root registers the feed routes without a site settings source: contact, JavaLocale and the site URL
-  // settings are programs-sites data this service does not hold, so a feed that reaches rendering fails closed.
-  it('fails closed with the legacy 503 where a stored feed reaches rendering, read in the token tenant, on both families', async () => {
+  it.each([
+    ['answers non-200', () => t.client.on(SITES_SERVICE, 'POST', FEED_SETTINGS_PATH, () => ({ status: 503, headers: {}, body: {} }))],
+    // One unreachable call per family.
+    ['is unreachable', () => {
+      t.client.failNext(SITES_SERVICE);
+      t.client.failNext(SITES_SERVICE);
+    }],
+  ])('answers the legacy 503 on both families when programs-sites %s, the feed read in the token tenant', async (_label, arrange) => {
+    arrange();
     t.db.clear();
+    t.client.clear();
     const api = await get(`/_api/feed/v1/tenant-a/?feedid=${FEED_ID}`, await member());
     const tasks = await get(`/tasks/feed/?feedid=${FEED_ID}&siteid=tenant-a`, await member(), CURL);
     expect([api.statusCode, tasks.statusCode]).toEqual([503, 503]);
     expect(tasks.body).toBe(api.body);
     expect(t.db.statements.filter((statement) => FEED_BY_ID.test(statement.sql)).map((statement) => statement.tenantId)).toEqual([TENANT_A.tenantId, TENANT_A.tenantId]);
+    expect(t.client.requests.filter((req) => req.service === SITES_SERVICE)).toHaveLength(2);
+  });
+});
+
+/** feedID of the RSS 2.0 and 0.92 feeds of site `default` whose bodies test/fixtures/legacy-feed holds as legacy answered them. */
+const CAPTURED = [
+  { fixture: 'rss20-empty', feedid: '15A1B276-ACD4-B50B-1BB45E4CD40D5435', name: 'Empty 20', version: 'RSS 2.0' },
+  { fixture: 'rss092-empty', feedid: '15A1B3C2-C82D-06B6-EE63DA7D8CA53B05', name: 'Empty 092', version: 'RSS 0.920' },
+] as const;
+
+/** The channel `<pubDate>` legacy printed into the captured RSS 2.0 body. */
+const CAPTURED_NOW = new Date('2026-11-12T08:54:02Z');
+
+const SITES_SERVICE = 'programs-sites';
+const FEED_SETTINGS_PATH = '/internal/v1/sites/feed-settings:lookup';
+
+/** programs-sites' answer for the captured server's site `default`: settings as Masa installs them. */
+function capturedSiteSettings(siteIds: readonly string[]): Array<Record<string, unknown>> {
+  return siteIds.map(() => ({
+    siteID: 'default',
+    contact: 'admin@example.com',
+    javaLocale: 'en_US',
+    domain: 'localhost',
+    domainAliases: [],
+    enforcePrimaryDomain: false,
+    useSSL: false,
+    remote: null,
+  }));
+}
+
+/** programs-sites answering every feed settings lookup with {@link capturedSiteSettings}. */
+const SITES_HANDLERS: ClientHandlers = {
+  [SITES_SERVICE]: {
+    [`POST ${FEED_SETTINGS_PATH}`]: (req) => ({
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: { items: capturedSiteSettings((req.json as { siteIds: string[] }).siteIds) },
+    }),
+  },
+};
+
+describe('rendered feeds through the composition root and a programs-sites double', () => {
+  const DEFAULT_TENANT = tenantIdForSite('default');
+  let t: TestApp;
+
+  beforeAll(async () => {
+    // The captured server named neither a port nor a context, so configBean takes the request's port.
+    vi.stubEnv('MURA_PORT', undefined);
+    vi.stubEnv('MURA_CONTEXT', undefined);
+    const db = createRecordingDb();
+    db.respond(FEED_BY_ID, (params, _sql, { tenantId }) => {
+      const ids = (params[0] as string[]).map((id) => id.toLowerCase());
+      const rows = CAPTURED.map(({ feedid, name, version }) => feedRow({ tenant_id: DEFAULT_TENANT, siteid: 'default', feedid, name, version }));
+      return tenantId === DEFAULT_TENANT ? rows.filter((row) => ids.includes(row.feedid.toLowerCase())) : [];
+    });
+    t = await buildTestApp({
+      db,
+      clock: fixedClock(CAPTURED_NOW),
+      clientHandlers: SITES_HANDLERS,
+    });
+    vi.unstubAllEnvs();
+    // Site `default` reaches the registry as every site does, through its programs-sites state event.
+    const payload = { siteId: 'default', publicUserPoolId: 'default', privateUserPoolId: 'default', categoryPoolId: 'default', filePoolId: 'default', displayPoolId: 'default', contentPoolIds: ['default'], domains: ['localhost'] };
+    const envelope = testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: DEFAULT_TENANT, aggregateType: 'site', aggregateId: 'default', aggregateVersion: 1, payload });
+    expect((await pushTo(t.app, subscriptionName(SERVICE, SITE_CHANGED_TOPIC), envelope)).statusCode).toBe(204);
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it.each(CAPTURED.flatMap(({ fixture, feedid }) => [
+    [fixture, `/_api/feed/v1/default/?feedID=${feedid}`],
+    [fixture, `/tasks/feed/?siteid=default&feedID=${feedid}`],
+  ]))('renders %s byte for byte as legacy answered it for %s, with one programs-sites lookup as the service itself', async (fixture, url) => {
+    t.client.clear();
+    const headers = { ...(await contentHeaders('member', { site: 'default' })), host: 'localhost:21080', 'user-agent': MOZILLA };
+    const res = await t.app.inject({ method: 'GET', url, headers });
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: contractPath(url), status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    expect({ status: res.statusCode, type: res.headers['content-type'], language: res.headers['content-language'], body: res.body }).toEqual({
+      status: 200,
+      type: RSS_CONTENT_TYPE,
+      language: 'en-US',
+      body: readFileSync(new URL(`../fixtures/legacy-feed/${fixture}.xml`, import.meta.url), 'utf8'),
+    });
+    expect(t.client.requests.map(({ service, method, path, json, userToken }) => ({ service, method, path, json, userToken }))).toEqual([
+      { service: SITES_SERVICE, method: 'POST', path: FEED_SETTINGS_PATH, json: { siteIds: ['default'] }, userToken: null },
+    ]);
   });
 });
 

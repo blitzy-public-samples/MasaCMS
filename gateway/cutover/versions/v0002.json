@@ -17,7 +17,7 @@
     "grp:communications.mailing_list_member": "legacy",
     "grp:communications.message_template": "target",
     "grp:communications.trash": "legacy",
-    "grp:content.approval_action": "legacy",
+    "grp:content.approval_action": "target",
     "grp:content.approval_assignment": "legacy",
     "grp:content.changeset_rollback": "legacy",
     "grp:content.commenter": "legacy",
@@ -42,14 +42,14 @@
     "grp:finance.extend_subtype": "legacy",
     "grp:finance.record": "target",
     "grp:finance.trash": "legacy",
-    "grp:identity.credential": "legacy",
+    "grp:identity.credential": "target",
     "grp:identity.extend_attribute": "legacy",
     "grp:identity.extend_data": "legacy",
     "grp:identity.extend_data_user_activity": "legacy",
     "grp:identity.extend_rc_set": "legacy",
     "grp:identity.extend_set": "legacy",
     "grp:identity.extend_subtype": "legacy",
-    "grp:identity.permission": "legacy",
+    "grp:identity.permission": "target",
     "grp:identity.remote_session": "legacy",
     "grp:identity.trash": "legacy",
     "grp:identity.user_favorite": "legacy",
@@ -61,7 +61,7 @@
     "grp:people.extend_subtype": "legacy",
     "grp:people.person_archive": "target",
     "grp:people.trash": "legacy",
-    "grp:people.user_favorite": "legacy",
+    "grp:people.user_favorite": "target",
     "grp:programs_sites.directory": "legacy",
     "grp:programs_sites.extend_attribute": "legacy",
     "grp:programs_sites.extend_data": "legacy",
@@ -69,7 +69,7 @@
     "grp:programs_sites.extend_set": "legacy",
     "grp:programs_sites.extend_subtype": "legacy",
     "grp:programs_sites.image_size": "legacy",
-    "grp:programs_sites.site": "legacy",
+    "grp:programs_sites.site": "target",
     "grp:programs_sites.system_object": "legacy",
     "grp:programs_sites.trash": "legacy",
     "grp:reporting.export_definition": "legacy",
@@ -104,8 +104,8 @@
     {
       "route": "admin:carch.approvalaction",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -117,8 +117,8 @@
     {
       "route": "admin:carch.approvalaction{action=approve}",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -330,8 +330,8 @@
     {
       "route": "admin:carch.datamanager",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -545,8 +545,8 @@
     {
       "route": "admin:carch.edit",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -1202,8 +1202,8 @@
     {
       "route": "admin:carch.list",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -1564,8 +1564,8 @@
     {
       "route": "admin:carch.loadfilemetadata",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -2126,8 +2126,8 @@
     {
       "route": "admin:carch.lockfile",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -2750,8 +2750,8 @@
     {
       "route": "admin:carch.unlockfile",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -2762,8 +2762,8 @@
     {
       "route": "admin:carch.unlocknode",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -2774,8 +2774,8 @@
     {
       "route": "admin:carch.update",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -2805,8 +2805,8 @@
     {
       "route": "admin:carch.updateobjectparams",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -2960,8 +2960,8 @@
     {
       "route": "admin:carch.variationtargeting",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3119,8 +3119,8 @@
     {
       "route": "admin:ccategory.update",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3133,8 +3133,8 @@
     {
       "route": "admin:cchain.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3248,8 +3248,8 @@
     {
       "route": "admin:cchain.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3363,8 +3363,8 @@
     {
       "route": "admin:cchangesets.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3558,8 +3558,8 @@
     {
       "route": "admin:cchangesets.removeitem",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3570,8 +3570,8 @@
     {
       "route": "admin:cchangesets.rollback",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3584,8 +3584,8 @@
     {
       "route": "admin:cchangesets.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3648,8 +3648,8 @@
     {
       "route": "admin:ccomments.approve",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3661,8 +3661,8 @@
     {
       "route": "admin:ccomments.bulkedit",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3724,8 +3724,8 @@
     {
       "route": "admin:ccomments.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3837,8 +3837,8 @@
     {
       "route": "admin:ccomments.markasspam",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3850,8 +3850,8 @@
     {
       "route": "admin:ccomments.purgedeletedcomments",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3862,8 +3862,8 @@
     {
       "route": "admin:ccomments.singleedit",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -3875,8 +3875,8 @@
     {
       "route": "admin:ccomments.unapprove",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -4098,8 +4098,8 @@
     {
       "route": "admin:ceditprofile.edit",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -5012,8 +5012,8 @@
     {
       "route": "admin:cfeed.update",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -5428,8 +5428,8 @@
     {
       "route": "admin:cform.importform",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -5457,8 +5457,8 @@
     {
       "route": "admin:clogin.login",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -5507,8 +5507,8 @@
     {
       "route": "admin:clogin.main",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -5790,8 +5790,8 @@
     {
       "route": "admin:cperm.updatemodule",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.permission",
       "units": [
@@ -5988,8 +5988,8 @@
     {
       "route": "admin:csettings.list",
       "owningService": "programs-sites",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:programs_sites.site",
       "units": [
@@ -6976,8 +6976,8 @@
     {
       "route": "admin:cusers.updateaddress",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7079,8 +7079,8 @@
     {
       "route": "admin:cusers.update{type=1}",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7117,8 +7117,8 @@
     {
       "route": "admin:cusers.update{type=2,action=add}",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7177,8 +7177,8 @@
     {
       "route": "admin:cusers.update{type=2,action=update}",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7197,8 +7197,8 @@
     {
       "route": "admin:cwebservice.delete",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7244,8 +7244,8 @@
     {
       "route": "admin:cwebservice.save",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7755,8 +7755,8 @@
     {
       "route": "api:address.save",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -7805,8 +7805,8 @@
     {
       "route": "api:category.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -8168,8 +8168,8 @@
     {
       "route": "api:category.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -8231,8 +8231,8 @@
     {
       "route": "api:changeset.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -8596,8 +8596,8 @@
     {
       "route": "api:changeset.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -8660,8 +8660,8 @@
     {
       "route": "api:changesetcategoryassignment.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9022,8 +9022,8 @@
     {
       "route": "api:changesetcategoryassignment.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9094,8 +9094,8 @@
     {
       "route": "api:comment.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9457,8 +9457,8 @@
     {
       "route": "api:comment.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9520,8 +9520,8 @@
     {
       "route": "api:comment.~delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9533,8 +9533,8 @@
     {
       "route": "api:comment.~flag",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9546,8 +9546,8 @@
     {
       "route": "api:comment.~markasspam",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9559,8 +9559,8 @@
     {
       "route": "api:comment.~undelete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9572,8 +9572,8 @@
     {
       "route": "api:comment.~unmarkasspam",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9585,8 +9585,8 @@
     {
       "route": "api:content.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -9959,8 +9959,8 @@
     {
       "route": "api:content.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -10098,8 +10098,8 @@
     {
       "route": "api:contentcategoryassign.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -10460,8 +10460,8 @@
     {
       "route": "api:contentcategoryassign.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -10522,8 +10522,8 @@
     {
       "route": "api:contentnav.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -10896,8 +10896,8 @@
     {
       "route": "api:contentnav.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -11045,8 +11045,8 @@
     {
       "route": "api:feed.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -11408,8 +11408,8 @@
     {
       "route": "api:feed.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -11472,8 +11472,8 @@
     {
       "route": "api:file.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -11834,8 +11834,8 @@
     {
       "route": "api:file.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -12608,8 +12608,8 @@
     {
       "route": "api:filemetadata.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -12970,8 +12970,8 @@
     {
       "route": "api:filemetadata.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -13606,8 +13606,8 @@
     {
       "route": "api:group.save",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -14105,8 +14105,8 @@
     {
       "route": "api:stats.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -14467,8 +14467,8 @@
     {
       "route": "api:stats.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -14787,8 +14787,8 @@
     {
       "route": "api:user.save",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -15431,8 +15431,8 @@
     {
       "route": "cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -15594,8 +15594,8 @@
     {
       "route": "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:people.user_favorite",
       "units": [
@@ -15606,8 +15606,8 @@
     {
       "route": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:people.user_favorite",
       "units": [
@@ -15618,8 +15618,8 @@
     {
       "route": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:people.user_favorite",
       "units": [
@@ -15630,8 +15630,8 @@
     {
       "route": "cfm:/core/modules/v1/rater/ajax/saverate.cfm",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -16564,8 +16564,8 @@
     {
       "route": "opt2:/opt2/files/content-files/**",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "read",
       "group": null,
       "units": [
@@ -16926,8 +16926,8 @@
       "owningService": "strategies-content",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:content.approval_action",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "content.file"
       ],
@@ -17220,8 +17220,8 @@
     {
       "route": "rest:address.save",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -17270,8 +17270,8 @@
     {
       "route": "rest:category.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -17633,8 +17633,8 @@
     {
       "route": "rest:category.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -17696,8 +17696,8 @@
     {
       "route": "rest:changeset.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18061,8 +18061,8 @@
     {
       "route": "rest:changeset.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18125,8 +18125,8 @@
     {
       "route": "rest:changesetcategoryassignment.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18487,8 +18487,8 @@
     {
       "route": "rest:changesetcategoryassignment.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18559,8 +18559,8 @@
     {
       "route": "rest:comment.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18922,8 +18922,8 @@
     {
       "route": "rest:comment.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18985,8 +18985,8 @@
     {
       "route": "rest:comment.~delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -18998,8 +18998,8 @@
     {
       "route": "rest:comment.~flag",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19011,8 +19011,8 @@
     {
       "route": "rest:comment.~markasspam",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19024,8 +19024,8 @@
     {
       "route": "rest:comment.~undelete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19037,8 +19037,8 @@
     {
       "route": "rest:comment.~unmarkasspam",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19050,8 +19050,8 @@
     {
       "route": "rest:content.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19424,8 +19424,8 @@
     {
       "route": "rest:content.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19563,8 +19563,8 @@
     {
       "route": "rest:contentcategoryassign.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19925,8 +19925,8 @@
     {
       "route": "rest:contentcategoryassign.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -19987,8 +19987,8 @@
     {
       "route": "rest:contentnav.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -20361,8 +20361,8 @@
     {
       "route": "rest:contentnav.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -20510,8 +20510,8 @@
     {
       "route": "rest:feed.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -20873,8 +20873,8 @@
     {
       "route": "rest:feed.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -20937,8 +20937,8 @@
     {
       "route": "rest:file.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -21299,8 +21299,8 @@
     {
       "route": "rest:file.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -22073,8 +22073,8 @@
     {
       "route": "rest:filemetadata.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -22435,8 +22435,8 @@
     {
       "route": "rest:filemetadata.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -23071,8 +23071,8 @@
     {
       "route": "rest:group.save",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -23163,8 +23163,8 @@
     {
       "route": "rest:login",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -23211,8 +23211,8 @@
     {
       "route": "rest:oauth",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -23225,8 +23225,8 @@
     {
       "route": "rest:oauth2",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -23587,8 +23587,8 @@
     {
       "route": "rest:stats.delete",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -23949,8 +23949,8 @@
     {
       "route": "rest:stats.save",
       "owningService": "strategies-content",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
       "units": [
@@ -24071,8 +24071,8 @@
     {
       "route": "rest:tokeninfo",
       "owningService": "identity",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [
@@ -24281,8 +24281,8 @@
     {
       "route": "rest:user.save",
       "owningService": "people",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": "grp:identity.credential",
       "units": [

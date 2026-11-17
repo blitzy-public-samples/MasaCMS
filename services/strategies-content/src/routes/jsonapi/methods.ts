@@ -32,6 +32,9 @@ import { contentUrl, imageUrl } from '../../legacy/content-urls.js';
 import { CONTENT_ENTITIES, getContentEntityConfig } from '../../legacy/jsonapi-entities.js';
 import {
   iteratorPage,
+  iteratorRows,
+  pageQueryMisses,
+  readRecords,
   serializeCrumbs,
   serializeRelatedContent,
   serializeVersionHistory,
@@ -39,7 +42,9 @@ import {
   type ApiEntityView,
   type CollectionPage,
   type EntityCollectionSource,
+  type ExpansionOptions,
   type ExpansionResolver,
+  type IteratorRows,
   type JsonApiRequestContext,
   type RelatedContentSetSource,
 } from '../../legacy/jsonapi-serializers.js';
@@ -49,6 +54,7 @@ import {
   authorizationDenied,
   entityAccessAllowed,
   jsonApiResultOf,
+  relatedResolver,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
@@ -131,6 +137,12 @@ function idOf(call: JsonApiCall): string {
   return call.id ?? call.params.string('id');
 }
 
+/** The `id` of a method declaring it without a default; a call passing none fails reading `arguments.id`, as legacy does. */
+function requiredIdOf(call: JsonApiCall): string {
+  if (call.id === undefined && !call.params.has('id')) throw new LegacyApiError('server_error');
+  return idOf(call);
+}
+
 /** The request's `expand` list. */
 function expandOf(call: JsonApiCall): string {
   return call.params.string('expand');
@@ -187,8 +199,21 @@ function onePage<T>(items: readonly T[], entityName: string): { items: readonly 
   return { items, page: iteratorPage({ recordCount: items.length, maxRecordsPerPage: items.length, entityName }) };
 }
 
-/** The slice bounds and page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a queryIterator of `recordCount` rows set without a page size. */
-function urlPageBounds(recordCount: number, ctx: JsonApiRequestContext, entityName: string): { start: number; end: number; page: CollectionPage } {
+/** `count` rows holding '' in every column of `row`, as queryRowToStruct reads a row at or before index 0. */
+function blankRows(row: object | undefined, count: number): Row[] {
+  if (row === undefined || count === 0) return [];
+  const blank: Row = Object.freeze(Object.fromEntries(Object.keys(row).map((column) => [column, ''])));
+  return Array.from({ length: count }, () => blank);
+}
+
+/** pageQueryMisses of a contentIterator `page` over rows like `row`, which contentNavBean reads by `contentid` when they hold no `contenthistid`. */
+function contentPageMisses(read: IteratorRows, page: CollectionPage, row: object | undefined): ReadonlySet<number> {
+  const byContentId = row === undefined || !Object.keys(row).some((column) => column.toLowerCase() === 'contenthistid');
+  return pageQueryMisses(read, { recordCount: page.recordCount, pageIndex: page.pageIndex, perPage: page.nextN }, byContentId);
+}
+
+/** The rows and page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a queryIterator of `recordCount` rows set without a page size. */
+function urlPageBounds(recordCount: number, ctx: JsonApiRequestContext, entityName: string): { rows: IteratorRows; page: CollectionPage } {
   const nextN = (n: unknown): number => (cfIsNumeric(n) && cfToNumber(n) !== 0 ? cfToNumber(n) : recordCount);
   let perPage = recordCount;
   let pageIndex = 1;
@@ -221,39 +246,29 @@ function urlPageBounds(recordCount: number, ctx: JsonApiRequestContext, entityNa
   // setIteratorProps calls setMaxItems on a `feed` it never defines, so a numeric offset fails the request.
   if (cfIsNumeric(urlParam(ctx, 'offset'))) throw new LegacyApiError('server_error');
   const end = Math.min(recordCount, pageIndex * perPage);
-  if (recordIndex < 0 && recordIndex < end) throw new LegacyApiError('server_error');
-  return { start: recordIndex, end, page: iteratorPage({ recordCount, maxRecordsPerPage: perPage, pageIndex, entityName }) };
+  return { rows: iteratorRows(recordCount, recordIndex, end, entityName), page: iteratorPage({ recordCount, maxRecordsPerPage: perPage, pageIndex, entityName }) };
 }
 
-/** The page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a queryIterator over `rows` set without a page size. */
-function urlPageOf<R>(rows: readonly R[], ctx: JsonApiRequestContext, entityName: string): { items: R[]; page: CollectionPage } {
-  const { start, end, page } = urlPageBounds(rows.length, ctx, entityName);
-  return { items: rows.slice(start, end), page };
-}
-
-/** The rows `slice(start, end)` takes from `length` rows, as an integer offset and row count. */
-function sliceWindow(start: number, end: number, length: number): { offset: number; limit: number } {
-  const index = (bound: number): number => {
-    const whole = Math.trunc(bound) || 0;
-    return whole < 0 ? Math.max(length + whole, 0) : Math.min(whole, length);
+/**
+ * The page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a contentIterator over `rows` without a page
+ * size: its rows between their blank rows, and the positions whose content bean misses contentDAO's page query.
+ */
+function urlPageOf<R extends object>(
+  rows: readonly R[],
+  ctx: JsonApiRequestContext,
+  entityName: string,
+): { blank: Row[]; items: R[]; blankAfter: Row[]; page: CollectionPage; misses: ReadonlySet<number> } {
+  const { rows: read, page } = urlPageBounds(rows.length, ctx, entityName);
+  return {
+    blank: blankRows(rows[0], read.blank),
+    items: readRecords(read, rows.slice(read.from, read.from + read.count)),
+    blankAfter: blankRows(rows[0], read.blankAfter),
+    page,
+    misses: contentPageMisses(read, page, rows[0]),
   };
-  const offset = index(start);
-  return { offset, limit: Math.max(index(end) - offset, 0) };
 }
 
 // ---- findCrumbArray ----
-
-/** The expansion resolver of category crumbs; their relations are served by the category finders. */
-function categoryCrumbRelations(): ExpansionResolver {
-  const reject = (name: string): Promise<never> =>
-    Promise.reject(unavailable(`The ${name} relation of a category crumb is served by the category finders`, `category-crumbs-expand-${name.toLowerCase()}`));
-  return {
-    hasMany: (prop) => reject(prop.name),
-    hasOne: (prop) => reject(prop.name),
-    crumbs: () => reject('crumbs'),
-    relatedContent: () => reject('relatedcontent'),
-  };
-}
 
 /** The crumbs getCrumbArray reads for `bean` (contentBean.cfc:1270-1275); a new bean walks from its empty parent id, which has none. */
 async function beanCrumbs(ctx: Ctx, reader: Actor, bean: ContentBean): Promise<Awaited<ReturnType<typeof getCrumbList>>> {
@@ -311,7 +326,7 @@ async function categoryCrumbsOf(ctx: Ctx, call: JsonApiCall, id: string): Promis
     return categoryView(values, call);
   });
   const opts = { entityName: CATEGORY.name, expand: expandOf(call), expanded: 0 };
-  const data = await serializeCrumbs(onePage(views, 'categoryBean'), call.apiContext, opts, categoryCrumbRelations());
+  const data = await serializeCrumbs(onePage(views, 'categoryBean'), call.apiContext, opts, relatedResolver(call));
   return jsonApiResultOf(data, CATEGORY.name);
 }
 
@@ -324,7 +339,7 @@ const findCrumbArray: MethodHandler = async (ctx, call) => {
   // `$.getBean` of a name this service holds no bean for fails before any access check.
   if (!('moduleId' in config)) throw new LegacyApiError('server_error');
   if (!entityAccessAllowed(call.actor, config)) return authorizationDenied();
-  const id = idOf(call);
+  const id = requiredIdOf(call);
   if (cfEq(entityName, 'content')) return contentCrumbs(ctx, call, id);
   if (cfEq(entityName, 'category')) return categoryCrumbsOf(ctx, call, id);
   // contentCommentIterator defines no getEntityName, which packageIteratorArray calls for every iterator
@@ -340,12 +355,19 @@ async function versionPage(
   call: JsonApiCall,
   reader: Actor,
   item: { contentId: string; siteId: string },
-): Promise<{ items: Row[]; page: CollectionPage }> {
+): Promise<{ items: Row[]; page: CollectionPage; misses: ReadonlySet<number> }> {
   const { items, window } = await getHistoryWindow(ctx.domain, reader, item, (recordCount) => {
-    const { start, end, page } = urlPageBounds(recordCount, call.apiContext, 'content');
-    return { ...sliceWindow(start, end, recordCount), page };
+    const { rows, page } = urlPageBounds(recordCount, call.apiContext, 'content');
+    // A page of blank rows alone still reads the first row, whose columns they hold.
+    const read = rows.count === 0 && rows.blank > 0 ? { offset: 0, limit: 1 } : { offset: rows.from, limit: rows.count };
+    return { ...read, rows, page };
   });
-  return { items, page: window.page };
+  const read = window.rows.count > 0 ? readRecords(window.rows, items) : [];
+  return {
+    items: [...blankRows(items[0], window.rows.blank), ...read, ...blankRows(items[0], window.rows.blankAfter)],
+    page: window.page,
+    misses: contentPageMisses(window.rows, window.page, items[0]),
+  };
 }
 
 /** findVersionHistory (jsonApiUtility.cfc:3236-3256): a content item's versions for its authors and editors, each self link naming its version. */
@@ -353,12 +375,12 @@ const findVersionHistory: MethodHandler = async (ctx, call) => {
   applyPathRouteUrl(call, 'history', 'content');
   if (!entityAccessAllowed(call.actor, CONTENT)) return authorizationDenied();
   const reader = readerOf(call);
-  const item = { contentId: idOf(call), siteId: call.siteId };
+  const item = { contentId: requiredIdOf(call), siteId: call.siteId };
   const perm = await getNodePerm(ctx.domain, reader, await getCrumbList(ctx.domain, reader, item));
   if (perm !== 'author' && perm !== 'editor') return authorizationDenied();
-  const { items, page } = await versionPage(ctx, call, reader, item);
+  const { items, page, misses } = await versionPage(ctx, call, reader, item);
   const expand = expandOf(call);
-  const views = await contentNavViews(ctx, call, items, { expand, expanded: 0 });
+  const views = await contentNavViews(ctx, call, items, { expand, expanded: 0 }, misses);
   const opts = { expand, expanded: 0 };
   const data = await serializeVersionHistory({ items: views, page }, contentApiContext(ctx, call), opts, contentExpansionResolver(ctx, call));
   return jsonApiResultOf(data, 'content');
@@ -489,12 +511,26 @@ async function withPooledFileColumns(ctx: Ctx, sites: readonly PoolSite[], rows:
   return filled.size === 0 ? rows : rows.map((row) => filled.get(row) ?? row);
 }
 
-/** One set's getRelatedContentIterator after setIteratorProps, its page's items as contentnav views. */
+/** The stored content item a related-content read starts from, with its site's content pool. */
+interface RelatedItem {
+  siteId: string;
+  contentHistId: string;
+  contentId: string;
+  sites: readonly PoolSite[];
+}
+
+/** The related item of a stored version. */
+function relatedItemOf(version: StoredVersion, call: JsonApiCall, sites: readonly PoolSite[]): RelatedItem {
+  return { siteId: version.siteid ?? call.siteId, contentHistId: version.contenthistid ?? '', contentId: version.contentid ?? '', sites };
+}
+
+/** One set's getRelatedContentIterator after setIteratorProps, its page's items as contentnav views serialized under `opts`. */
 async function relatedSource(
   ctx: Ctx,
   call: JsonApiCall,
-  item: { version: StoredVersion; sites: readonly PoolSite[] } | null,
+  item: RelatedItem | null,
   args: RelatedIteratorArgs,
+  opts: ExpansionOptions,
 ): Promise<EntityCollectionSource> {
   const sites = item?.sites ?? [];
   // A new bean's getContentHistID and getContentID are fresh ids, which no link names.
@@ -503,9 +539,9 @@ async function relatedSource(
       ? []
       : await relatedRows(ctx, call, sites, {
           ...args,
-          siteId: item.version.siteid ?? call.siteId,
-          contentHistId: item.version.contenthistid ?? '',
-          reverseContentId: item.version.contentid ?? '',
+          siteId: item.siteId,
+          contentHistId: item.contentHistId,
+          reverseContentId: item.contentId,
           today: ctx.domain.clock.now(),
           contentPoolSiteIds: sites.map((site) => site.siteId),
         });
@@ -513,9 +549,45 @@ async function relatedSource(
   if (rows.some(intervalApplies)) {
     throw unavailable('Related content with a repeating display interval needs contentIntervalManager.apply', 'related-content-intervals');
   }
-  const { items, page } = urlPageOf(rows, call.apiContext, 'content');
-  const views = await contentNavViews(ctx, call, (await withPooledFileColumns(ctx, sites, items)).map(rowOf), { expand: expandOf(call), expanded: 0 });
+  const { blank, items, blankAfter, page, misses } = urlPageOf(rows, call.apiContext, 'content');
+  const pageRows = [...blank, ...(await withPooledFileColumns(ctx, sites, items)).map(rowOf), ...blankAfter];
+  const views = await contentNavViews(ctx, call, pageRows, opts, misses);
   return { items: views, page };
+}
+
+/** Every related-content set of `type`/`subType` for `item`, each with its iterator page. */
+async function relatedSetSources(
+  ctx: Ctx,
+  call: JsonApiCall,
+  item: RelatedItem | null,
+  subtype: { type: string; subType: string },
+  args: RelatedIteratorArgs,
+  opts: ExpansionOptions,
+): Promise<RelatedContentSetSource[]> {
+  const sets = await relatedContentSets(ctx, call, subtype.type, subtype.subType);
+  for (const set of sets) assertContentSet(set.entityType);
+  const sources: RelatedContentSetSource[] = [];
+  for (const set of sets) {
+    throwIfRequestAborted();
+    const source = await relatedSource(ctx, call, item, { ...args, relatedContentSetId: set.relatedContentSetId, name: set.name }, opts);
+    sources.push({ ...source, name: set.name, entityType: set.entityType, relatedContentSetId: set.relatedContentSetId });
+  }
+  return sources;
+}
+
+/**
+ * expandEntity's `relatedcontent` (findRelatedContent with the entity, 3474-3540): every set of the view's subtype,
+ * iterated without the URL's sort or name arguments and serialized without an expand list.
+ */
+export async function relatedContentOfView(ctx: Ctx, call: JsonApiCall, view: ApiEntityView, opts: ExpansionOptions): Promise<RelatedContentSetSource[]> {
+  if (!entityAccessAllowed(call.actor, CONTENT)) throw new LegacyApiError('authorization');
+  const value = (key: string): string => cfText(heldValue(view, key));
+  const stored = value('isnew') === '0';
+  const item = stored
+    ? { siteId: value('siteid'), contentHistId: value('contenthistid'), contentId: value('contentid'), sites: await contentPoolSites(ctx.domain.db, call.tenantId) }
+    : null;
+  const subtype = { type: stored ? value('type') : 'Page', subType: stored ? value('subtype') : 'Default' };
+  return relatedSetSources(ctx, call, item, subtype, {}, opts);
 }
 
 /** findRelatedContent (jsonApiUtility.cfc:3474-3564): every related-content set for '', `*` or `all`, else one set named by the id. */
@@ -524,7 +596,7 @@ const findRelatedContent: MethodHandler = async (ctx, call) => {
   if (!entityAccessAllowed(call.actor, CONTENT)) return authorizationDenied();
   const bean = await readContent(ctx.domain, readerOf(call), { contentId: idOf(call), siteId: call.siteId });
   const version = bean.isNew === 0 ? bean.version : null;
-  const item = version === null ? null : { version, sites: await contentPoolSites(ctx.domain.db, call.tenantId) };
+  const item = version === null ? null : relatedItemOf(version, call, await contentPoolSites(ctx.domain.db, call.tenantId));
   // The path segment, else the `relatedcontentsetid` param, else globalConfig's `relatedcontentsetid` default `*`.
   const setId = call.relatedContentSetId ?? (call.params.has('relatedcontentsetid') ? call.params.string('relatedcontentsetid') : '*');
   const args = relatedIteratorArgs(call);
@@ -532,19 +604,13 @@ const findRelatedContent: MethodHandler = async (ctx, call) => {
   const apiContext = contentApiContext(ctx, call);
   const resolver = contentExpansionResolver(ctx, call);
   if (setId === '' || setId === '*' || cfEq(setId, 'all')) {
-    const sets = await relatedContentSets(ctx, call, version?.type ?? 'Page', version?.subtype ?? 'Default');
-    for (const set of sets) assertContentSet(set.entityType);
-    const sources: RelatedContentSetSource[] = [];
-    for (const set of sets) {
-      throwIfRequestAborted();
-      const source = await relatedSource(ctx, call, item, { ...args, relatedContentSetId: set.relatedContentSetId, name: set.name });
-      sources.push({ ...source, name: set.name, entityType: set.entityType, relatedContentSetId: set.relatedContentSetId });
-    }
+    const subtype = { type: version?.type ?? 'Page', subType: version?.subtype ?? 'Default' };
+    const sources = await relatedSetSources(ctx, call, item, subtype, args, opts);
     return jsonApiResultOf(await serializeRelatedContent({ kind: 'sets', sets: sources }, apiContext, opts, resolver), 'content');
   }
   // Only the URL's `relatedContentSetID` filters this branch; the requested id names the result.
   assertContentSet(await namedSetEntityType(ctx, call, args.relatedContentSetId ?? ''));
-  const source = await relatedSource(ctx, call, item, args);
+  const source = await relatedSource(ctx, call, item, args, opts);
   return jsonApiResultOf(await serializeRelatedContent({ kind: 'set', relatedContentSetId: setId, ...source }, apiContext, opts, resolver), 'content');
 };
 

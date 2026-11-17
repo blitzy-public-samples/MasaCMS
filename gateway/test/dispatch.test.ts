@@ -1,4 +1,4 @@
-// Token site of OPT-2 and fixture requests through the real matcher and edge dispatcher, against stand-in web, stub and people services.
+// Token site of OPT-2, fixture and template requests through the real matcher and edge dispatcher, against stand-in services.
 import { Buffer } from 'node:buffer';
 import replyFrom from '@fastify/reply-from';
 import { createLogger } from '@opt2/platform/logging';
@@ -28,6 +28,8 @@ const SESSION_ID = 'S1';
 const EPOCH = 3;
 const URLENCODED = 'application/x-www-form-urlencoded';
 const ARCHIVE = '/legacy-fixtures/cfml/api.cfm/people/persons/00532E14-B51F-226C-36938FA3E4A6396C/archive';
+const RATER = '/core/modules/v1/rater/ajax/saveRate.cfm';
+const FAVORITES = '/core/modules/v1/favorites/ajax';
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 const NO_FACTS: InventoryFacts = { get: () => undefined, routes: () => [] };
 const TOKEN_CLAIMS: SessionToken['claims'] = {
@@ -61,6 +63,10 @@ const INDEX: RoutingIndex = buildRoutingIndex(
       entry('opt2:/opt2/admin-actions/reporting/**', 'web', 'write'),
       entry('opt2:/opt2/stub/**', 'stub', 'read'),
       entry('fixture:people/persons/{id}/archive@post', 'people', 'write'),
+      entry('cfm:/core/modules/v1/rater/ajax/saverate.cfm', 'strategies-content', 'write'),
+      entry('cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm', 'people', 'write'),
+      entry('cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm', 'people', 'write'),
+      entry('cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm', 'people', 'write'),
     ],
   },
   { sourceSha: SHA, variants: [] },
@@ -77,6 +83,7 @@ interface Harness {
   web: HttpDouble;
   stub: HttpDouble;
   people: HttpDouble;
+  content: HttpDouble;
   deps: DispatcherDeps;
 }
 
@@ -91,7 +98,8 @@ async function harness(): Promise<Harness> {
   const web = await startHttpDouble((_req, res) => sendBytes(res, 200, 'web-body', { 'content-type': 'text/html' }));
   const stub = await startHttpDouble((_req, res) => sendBytes(res, 200, 'stub-body', { 'content-type': 'text/plain' }));
   const people = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
-  const urls = { web: web.url, stub: stub.url, people: people.url };
+  const content = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'text/html' }));
+  const urls = { web: web.url, stub: stub.url, people: people.url, 'strategies-content': content.url };
   const app = await createService({
     name: 'gateway',
     version: '1.0.0',
@@ -129,7 +137,7 @@ async function harness(): Promise<Harness> {
       isFrozen: () => false,
       waitUnfrozen: async () => true,
     },
-    inflight: { register: async () => undefined, remove: async () => true },
+    inflight: { register: async () => undefined, remove: async () => true, abandon: async () => true },
     windows: {
       open: async () => ({ windowId: 'W1' }),
       complete: async () => ({ state: 'import-pending' as const }),
@@ -162,7 +170,7 @@ async function harness(): Promise<Harness> {
       beforeLegacyLogout: async () => undefined,
       afterLegacyLogout: async () => undefined,
       afterLegacyLogin: async () => undefined,
-      completePending: async () => undefined,
+      completePending: async () => 'logged-out' as const,
     },
     facts: NO_FACTS,
     auth: app.opt2.auth,
@@ -192,9 +200,9 @@ async function harness(): Promise<Harness> {
   await app.ready();
   closers.push(async () => {
     await app.opt2.shutdown();
-    await Promise.all([web.close(), stub.close(), people.close()]);
+    await Promise.all([web.close(), stub.close(), people.close(), content.close()]);
   });
-  return { app, web, stub, people, deps };
+  return { app, web, stub, people, content, deps };
 }
 
 /** Identity's snapshot of the session, its user's `siteID` as given. */
@@ -323,5 +331,54 @@ describe('fixture user token site', () => {
     expect(res.body).toBe('{"apiversion":"v1","method":"people.persons.archive","error":{"code":"server_error","message":"Unhandled Exception"}}');
     expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
     expect(h.people.requests).toHaveLength(0);
+  });
+});
+
+describe('template user token site', () => {
+  const RATING = 'contentID=C&siteID=tenant-a&userID=U&rate=5';
+  it.each<[string, string, string | undefined, string | undefined, string, 'content' | 'people']>([
+    ['a rating, for its form siteID', RATER, RATING, undefined, 'tenant-a', 'content'],
+    ['a rating on the default site host, for its form siteID', RATER, RATING, 'localhost:8100', 'tenant-a', 'content'],
+    ['a rating, for its form siteID over the query one', `${RATER}?siteid=default`, RATING, 'tenant-b.localhost', 'tenant-a', 'content'],
+    ['a rating without a form siteID, for default', `${RATER}?siteid=tenant-a`, 'rate=5', undefined, 'default', 'content'],
+    [
+      'a favorite, for its query siteID over the form one',
+      `${FAVORITES}/saveFavorite.cfm?siteID=tenant-b&userID=U`,
+      'siteid=tenant-a',
+      undefined,
+      'tenant-b',
+      'people',
+    ],
+    [
+      'an RSS favorite delete, for its query siteID',
+      `${FAVORITES}/deleteRSSFavorite.cfm?userID=U&siteID=tenant-b`,
+      undefined,
+      undefined,
+      'tenant-b',
+      'people',
+    ],
+    [
+      'a favorite delete, which binds no site, for default',
+      `${FAVORITES}/deleteFavorite.cfm?favoriteID=F&siteid=tenant-a`,
+      undefined,
+      undefined,
+      'default',
+      'people',
+    ],
+  ])('mints the token of %s', async (_label, url, form, host, site, served) => {
+    const h = await harness();
+    const headers = host === undefined ? {} : { host };
+    const res = await h.app.inject(
+      form === undefined
+        ? { method: 'GET', url, headers }
+        : { method: 'POST', url, headers: { ...headers, 'content-type': URLENCODED }, payload: form },
+    );
+    expect(res.statusCode).toBe(200);
+    expect(h.deps.tokenCache.get).toHaveBeenCalledExactlyOnceWith(SESSION_ID, site, EPOCH);
+    expect(h.deps.identity.adminSite).not.toHaveBeenCalled();
+    expect(h.deps.identity.snapshot).not.toHaveBeenCalled();
+    const [target, other] = served === 'content' ? [h.content, h.people] : [h.people, h.content];
+    expect(target.requests.map((r) => r.headers.authorization)).toEqual([`Bearer tok:${site}`]);
+    expect(other.requests).toHaveLength(0);
   });
 });

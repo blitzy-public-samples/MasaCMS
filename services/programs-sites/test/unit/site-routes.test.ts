@@ -34,6 +34,7 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 };
 const SITE_PATHS = [
   '/v1/sites',
+  '/v2/sites',
   '/v1/sites/order',
   '/v1/sites/{siteId}',
   '/v1/sites/{siteId}/shell',
@@ -64,6 +65,44 @@ const MAIL_SETTINGS: components['schemas']['SiteMailSettings'] = {
   remote: null,
 };
 const MAIL_SETTINGS_URL = '/internal/v1/sites/mail-settings:lookup';
+/** The tenant read of the Sites screen, its six columns only. */
+const LIST_SITES_SQL_PREFIX = 'SELECT siteid, site, domain, orderno, deploy, lastdeployment FROM "programs_sites"."site"';
+const FEED_SETTINGS: components['schemas']['SiteFeedSettings'] = {
+  siteID: 'tenant-a',
+  contact: 'contact@tenant-a.example.test',
+  javaLocale: 'en_US',
+  domain: 'tenant-a.example.test',
+  domainAliases: [],
+  enforcePrimaryDomain: false,
+  useSSL: false,
+  remote: null,
+};
+const FEED_SETTINGS_URL = '/internal/v1/sites/feed-settings:lookup';
+const CONFIG_FLAGS: components['schemas']['SiteConfigFlags'] = {
+  siteID: 'tenant-a',
+  hasLockableNodes: 0,
+  hasChangesets: 1,
+  dataCollection: 1,
+  hasComments: 1,
+  scaffolding: 1,
+};
+const CONFIG_FLAGS_URL = '/internal/v1/sites/config-flags:lookup';
+const JSON_API_BASE_URL = 'http://localhost/index.cfm/_api/json/v1/tenant-a';
+const JSON_API_VALUES = {
+  links: {
+    entities: JSON_API_BASE_URL,
+    all: `${JSON_API_BASE_URL}/site`,
+    properties: `${JSON_API_BASE_URL}/site/properties`,
+    self: `${JSON_API_BASE_URL}/site`,
+    permissions: `${JSON_API_BASE_URL}/site/tenant-a/permissions`,
+  },
+  domain: 'tenant-a.example.test',
+  siteid: 'tenant-a',
+  isnew: 0,
+  id: 'tenant-a',
+  entityname: 'site',
+} as const;
+const JSON_API_VALUES_URL = '/internal/v1/sites/json-api-values:lookup';
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const JSON_BODY = { 'content-type': 'application/json' };
 const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
@@ -131,12 +170,16 @@ beforeEach(async () => {
   logLines = [];
   sites = {
     listSites: vi.fn<SitesDomain['listSites']>(async () => [SITE_ROW]),
+    listSitePage: vi.fn<SitesDomain['listSitePage']>(async () => ({ items: [SITE_ROW], next: 'tenant-a' })),
     readSite: vi.fn<SitesDomain['readSite']>(async () => ({ site: SITE, isNew: 0, extendSets: [], imageSizes: [] })),
     readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: SHELL_SITE, isNew: 0 })),
     readUserPoolSites: vi.fn<SitesDomain['readUserPoolSites']>(async () => ({ sites: [SHELL_SITE] })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [SITE_ROW] })),
     hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => DOMAINS),
     readMailSettings: vi.fn<SitesDomain['readMailSettings']>(async (_db, siteIds) => siteIds.map(() => MAIL_SETTINGS)),
+    readFeedSettings: vi.fn<SitesDomain['readFeedSettings']>(async (_db, siteIds) => siteIds.map(() => FEED_SETTINGS)),
+    readConfigFlags: vi.fn<SitesDomain['readConfigFlags']>(async (_db, siteIds) => siteIds.map(() => CONFIG_FLAGS)),
+    readJsonApiValues: vi.fn<SitesDomain['readJsonApiValues']>(async (_db, _baseUrl, siteIds) => siteIds.map(() => JSON_API_VALUES)),
   };
   const verifier = testVerifier('programs-sites');
   const { authenticate } = verifier.transports.service;
@@ -175,7 +218,16 @@ afterEach(async () => {
   await app.opt2.shutdown();
 });
 
-type SubjectName = 's2' | 'site-admin' | 'editor' | 'member' | 'anonymous' | 'service:gateway' | 'service:people' | 'service:identity';
+type SubjectName =
+  | 's2'
+  | 'site-admin'
+  | 'editor'
+  | 'member'
+  | 'anonymous'
+  | 'service:gateway'
+  | 'service:people'
+  | 'service:identity'
+  | 'service:strategies-content';
 
 async function headersAs(name: SubjectName, { site = 'tenant-a', sub }: { site?: string; sub?: string } = {}) {
   const subject = ROLE_SET.find((candidate) => candidate.name === name);
@@ -216,10 +268,10 @@ describe('route declarations', () => {
           siteCheck: true,
         })),
     );
-    const routes = declared.filter((route) => route.url.startsWith('/v1/'));
-    expect(expected).toHaveLength(7);
+    const routes = declared.filter((route) => /^\/v[12]\//.test(route.url));
+    expect(expected).toHaveLength(8);
     expect(routes).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
-    expect(routes).toHaveLength(7);
+    expect(routes).toHaveLength(8);
   });
 });
 
@@ -311,7 +363,7 @@ describe('GET /v1/sites', () => {
     const siteIds = Array.from({ length: 74 }, (_, n) => `site-${n}`);
     const recording = createRecordingDb();
     recording.respond(
-      'SELECT tenant_id, site_id FROM programs_sites.tenant_registry ORDER BY site_id',
+      'SELECT tenant_id, site_id FROM programs_sites.tenant_registry WHERE NOT deleted ORDER BY site_id',
       siteIds.map((siteId) => ({ tenant_id: tenantIdForSite(siteId), site_id: siteId })),
     );
     const domain = createSitesDomain({ repo: createProgramsSitesRepository({ clock: TEST_CLOCK }) });
@@ -354,7 +406,7 @@ describe('GET /v1/sites', () => {
     const siteReads = () =>
       recording
         .statements()
-        .filter((statement) => statement.kind === 'tenant' && statement.sql.startsWith('SELECT * FROM "programs_sites"."site"'));
+        .filter((statement) => statement.kind === 'tenant' && statement.sql.startsWith(LIST_SITES_SQL_PREFIX));
 
     if (disconnect) {
       answered.catch(() => undefined);
@@ -380,6 +432,67 @@ describe('GET /v1/sites', () => {
       expect(new Set(siteReads().map((statement) => statement.tenantId))).toEqual(new Set(siteIds.map((siteId) => tenantIdForSite(siteId))));
     }
     expect(siteReads()).toHaveLength(disconnect ? 0 : siteIds.length);
+    expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
+  });
+});
+
+describe('GET /v2/sites', () => {
+  it.each([
+    ['', { limit: 50, after: undefined }],
+    ['?limit=1000&after=tenant-a', { limit: 1000, after: 'tenant-a' }],
+    [`?limit=1&after=${'x'.repeat(25)}`, { limit: 1, after: 'x'.repeat(25) }],
+  ])('passes the page of %j to the domain and answers it', async (query, page) => {
+    const res = await send('GET', `/v2/sites${query}`, 's2');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [SITE_ROW], next: 'tenant-a' });
+    expect(sites.listSitePage).toHaveBeenCalledExactlyOnceWith(db, expect.objectContaining({ site: 'tenant-a', s2: true }), {
+      ...page,
+      signal: expect.any(AbortSignal),
+    });
+    expect(sites.listSitePage.mock.calls[0]?.[2].signal?.aborted).toBe(false);
+  });
+
+  it.each(['?limit=0', '?limit=1001', '?limit=ten', '?after=', `?after=${'x'.repeat(26)}`, '?limit=1&limit=2'])(
+    'answers invalidParameters for %s without listing',
+    async (query) => {
+      const res = await send('GET', `/v2/sites${query}`, 's2');
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: { code: 'invalid_request' } });
+      expect(sites.listSitePage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each<[SubjectName, number]>([
+    ['anonymous', 401],
+    ['site-admin', 403],
+  ])('refuses %s with %i before listing', async (as, status) => {
+    const res = await send('GET', '/v2/sites?limit=0', as);
+    expect(res.statusCode).toBe(status);
+    expect(sites.listSitePage).not.toHaveBeenCalled();
+  });
+
+  it('logs a page abandoned by a disconnected client instead of answering it', async () => {
+    let entered!: () => void;
+    const listing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    sites.listSitePage.mockImplementation(
+      (_db, _claims, options) =>
+        new Promise((_resolve, reject) => {
+          entered();
+          options.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+        }),
+    );
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    const req = request({ host: '127.0.0.1', port, path: '/v2/sites', headers: await headersAs('s2') });
+    req.on('error', () => undefined);
+    req.end();
+    await listing;
+    req.destroy();
+
+    await vi.waitFor(() => expect(logLines.map((line) => line.message)).toContain('client closed the request'));
+    expect(logLines.find((line) => line.message === 'client closed the request')).toMatchObject({ severity: 'INFO', route: '/v2/sites' });
     expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
   });
 });
@@ -593,17 +706,21 @@ describe('GET /v1/href-domains', () => {
   });
 });
 
-describe('POST /internal/v1/sites/mail-settings:lookup', () => {
-  it('declares the service transport for identity alone', () => {
-    const route = collectRouteMatrix(app).routes.find((entry) => entry.url === '/internal/v1/sites/mail-settings::lookup');
-    expect(route).toMatchObject({ method: 'POST', transport: 'service', requires: ['service:identity'] });
+describe.each([
+  { url: MAIL_SETTINGS_URL, caller: 'service:identity', read: 'readMailSettings', item: MAIL_SETTINGS },
+  { url: FEED_SETTINGS_URL, caller: 'service:strategies-content', read: 'readFeedSettings', item: FEED_SETTINGS },
+  { url: CONFIG_FLAGS_URL, caller: 'service:strategies-content', read: 'readConfigFlags', item: CONFIG_FLAGS },
+] as const)('POST $url', ({ url, caller, read, item }) => {
+  it(`declares the service transport for ${caller} alone`, () => {
+    const route = collectRouteMatrix(app).routes.find((entry) => entry.url === url.replace(':lookup', '::lookup'));
+    expect(route).toMatchObject({ method: 'POST', transport: 'service', requires: [caller] });
   });
 
-  it("answers identity's lookup with one entry per listed id", async () => {
-    const res = await send('POST', MAIL_SETTINGS_URL, 'service:identity', JSON_BODY, { siteIds: ['tenant-a', ''] });
+  it("answers the caller's lookup with one entry per listed id", async () => {
+    const res = await send('POST', url, caller, JSON_BODY, { siteIds: ['tenant-a', ''] });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ items: [MAIL_SETTINGS, MAIL_SETTINGS] });
-    expect(sites.readMailSettings).toHaveBeenCalledExactlyOnceWith(db, ['tenant-a', '']);
+    expect(res.json()).toEqual({ items: [item, item] });
+    expect(sites[read]).toHaveBeenCalledExactlyOnceWith(db, ['tenant-a', '']);
   });
 
   it.each([
@@ -612,8 +729,33 @@ describe('POST /internal/v1/sites/mail-settings:lookup', () => {
     ['a field the contract does not declare', { siteIds: ['tenant-a'], siteId: 'tenant-a' }],
     ['no body fields', {}],
   ])('refuses a body with %s as badRequest', async (_label, payload) => {
-    const res = await send('POST', MAIL_SETTINGS_URL, 'service:identity', JSON_BODY, payload);
+    const res = await send('POST', url, caller, JSON_BODY, payload);
     expect(res.statusCode).toBe(400);
-    expect(sites.readMailSettings).not.toHaveBeenCalled();
+    expect(sites[read]).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /internal/v1/sites/json-api-values:lookup', () => {
+  it('declares the service transport for strategies-content alone', () => {
+    const route = collectRouteMatrix(app).routes.find((entry) => entry.url === '/internal/v1/sites/json-api-values::lookup');
+    expect(route).toMatchObject({ method: 'POST', transport: 'service', requires: ['service:strategies-content'] });
+  });
+
+  it("answers strategies-content's lookup with one entry per listed id under its endpoint", async () => {
+    const res = await send('POST', JSON_API_VALUES_URL, 'service:strategies-content', JSON_BODY, { baseUrl: JSON_API_BASE_URL, siteIds: ['tenant-a', 'Tenant-A'] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [JSON_API_VALUES, JSON_API_VALUES] });
+    expect(sites.readJsonApiValues).toHaveBeenCalledExactlyOnceWith(db, JSON_API_BASE_URL, ['tenant-a', 'Tenant-A']);
+  });
+
+  it.each([
+    ['no site ids', { baseUrl: JSON_API_BASE_URL, siteIds: [] }],
+    ['no base URL', { siteIds: ['tenant-a'] }],
+    ['a base URL that is not text', { baseUrl: 7, siteIds: ['tenant-a'] }],
+    ['a field the contract does not declare', { baseUrl: JSON_API_BASE_URL, siteIds: ['tenant-a'], siteId: 'tenant-a' }],
+  ])('refuses a body with %s as badRequest', async (_label, payload) => {
+    const res = await send('POST', JSON_API_VALUES_URL, 'service:strategies-content', JSON_BODY, payload);
+    expect(res.statusCode).toBe(400);
+    expect(sites.readJsonApiValues).not.toHaveBeenCalled();
   });
 });

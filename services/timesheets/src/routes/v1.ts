@@ -29,7 +29,13 @@ import { TIMESHEET_ACTIONS, timesheetsLifecycle, type TimesheetAction, type Time
 import { deriveSheetStatus, type SheetStatusResult } from '../domain/sheet-status.js';
 import type { components } from '../generated/openapi.js';
 import { fixtureOutcomeReason } from '../legacy/envelope.js';
-import { MAX_SHEETS_PER_PAGE, type DayWithBlackout, type SheetWithDayStates, type TimesheetsRepository } from '../repo/repository.js';
+import {
+  MAX_SHEETS_PER_PAGE,
+  type DayWithBlackout,
+  type SheetFilter,
+  type SheetWithDayStates,
+  type TimesheetsRepository,
+} from '../repo/repository.js';
 import type { TimesheetRow } from '../repo/tables.js';
 import { listedSheetStatus, parseFixtureAsOf, sheetsWithDays } from './fixture.js';
 
@@ -242,11 +248,11 @@ function statusRowOf(read: SheetWithDayStates, asOf: string): SheetStatusRow {
   };
 }
 
-/** One page of the tenant's sheet status rows as of `asOf`, in the repository's sheet order, with the count of every sheet. */
+/** One page of the tenant's sheet status rows as of `asOf`, in the repository's sheet order `paging.order`, with the count of every sheet. */
 export async function sheetStatusPage(
   tx: TenantTx,
   repository: TimesheetsRepository,
-  paging: Pick<SheetListQuery, 'pageIndex' | 'itemsPerPage'>,
+  paging: Pick<SheetFilter, 'pageIndex' | 'itemsPerPage' | 'order'>,
   asOf: string,
 ): Promise<SheetStatusPage> {
   const page = await repository.listSheetsWithDayStates(tx, paging);

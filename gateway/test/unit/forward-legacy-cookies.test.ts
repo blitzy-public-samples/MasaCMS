@@ -125,7 +125,7 @@ describe('forwardToLegacy Set-Cookie mapping', () => {
     expect(onBuffered).toHaveBeenCalledOnce();
     const buffered = onBuffered.mock.calls[0]?.[0];
     expect(buffered?.statusCode).toBe(LEGACY_STATUS);
-    expect(buffered?.body.equals(LEGACY_BODY)).toBe(true);
+    expect(buffered?.bytes).toBe(LEGACY_BODY.length);
     expect(buffered?.headers['set-cookie']).toEqual(legacySetCookies);
   });
 });

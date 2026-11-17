@@ -322,6 +322,10 @@ function expectations(): Readonly<Record<string, Expectation>> {
       url: `/internal/v1/migration/export?unit=reporting.export_job&tenantId=${TENANT_A.tenantId}`,
     }),
     'POST /internal/v1/migration/gate': migrationRoute({ method: 'POST', url: '/internal/v1/migration/gate', payload: { op: 'status' } }),
+    'GET /internal/v1/migration/objects': {
+      ...migrationRoute({ method: 'GET', url: '/internal/v1/migration/objects' }),
+      request: () => ({ method: 'GET', url: `/internal/v1/migration/objects?tenantId=${TENANT_A.tenantId}&jobId=${doneA.job_id}` }),
+    },
     'GET /internal/v1/migration/position': migrationRoute({ method: 'GET', url: '/internal/v1/migration/position' }),
     'GET /internal/v1/migration/watermark': migrationRoute({ method: 'GET', url: '/internal/v1/migration/watermark' }),
     'POST /internal/v1/migration/watermark': migrationRoute({ method: 'POST', url: '/internal/v1/migration/watermark', payload: {} }),

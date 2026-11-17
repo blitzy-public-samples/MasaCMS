@@ -160,6 +160,7 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'GET', url: '/internal/v1/users/current', transport: 'service', requires: [serviceRole('identity')], siteCheck: true },
   { method: 'GET', url: '/internal/v1/users/pool-user', transport: 'service', requires: [serviceRole('e-signature')], siteCheck: true },
+  { method: 'GET', url: '/internal/v2/roster-operations/halted', transport: 'service', requires: HALTED_ROSTER_READ, siteCheck: true },
   { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
   { method: 'GET', url: '/v1/profile', transport: 'service', requires: PROFILE, siteCheck: true },
@@ -179,6 +180,7 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'GET', url: '/v2/users', transport: 'service', requires: CUSERS, siteCheck: false },
   { method: 'GET', url: '/v2/users/advanced-search', transport: 'service', requires: CUSERS, siteCheck: true },
   { method: 'POST', url: '/v2/users/advanced-search', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v2/users/groups', transport: 'service', requires: CUSERS, siteCheck: true },
   { method: 'GET', url: '/v2/users/search', transport: 'service', requires: CUSERS, siteCheck: true },
 ];
 
@@ -240,7 +242,7 @@ function registryAnswer(text: string, values: readonly unknown[]): Record<string
   let rows = REGISTRY_ROWS;
   if (/WHERE lower\(site_id\) = lower\(\$1\)/.test(text)) {
     rows = rows.filter((row) => row.site_id.toLowerCase() === String(first).toLowerCase());
-  } else if (/WHERE public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1/.test(text)) {
+  } else if (/WHERE \(public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1\)/.test(text)) {
     rows = rows.filter((row) => row.public_user_pool_tenant === first || row.private_user_pool_tenant === first);
   } else if (/WHERE tenant_id = \$1/.test(text)) {
     rows = rows.filter((row) => row.tenant_id === first);
@@ -552,6 +554,7 @@ const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
   'POST /internal/v1/task-queues/:queue/resume': () => control('resume'),
   'GET /internal/v1/users/current': () => get(CURRENT_USER_URL),
   'GET /internal/v1/users/pool-user': () => get(`/internal/v1/users/pool-user?${ON_SITE_A}&userid=${STRANGER_ID}`),
+  'GET /internal/v2/roster-operations/halted': () => get('/internal/v2/roster-operations/halted', false),
   'GET /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
     get(`/legacy-fixtures/cfml/api.cfm/people/persons/${STRANGER_ID}/archive?siteid=notasite`, false),
   'POST /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
@@ -574,6 +577,7 @@ const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
   'GET /v1/users/route': () => get(`/v1/users/route?${ON_SITE_A}&ispublic=0`),
   'GET /v1/users/search': () => get(`/v1/users/search?${ON_SITE_A}&ispublic=0&search=Target`),
   'GET /v2/users': () => get(`/v2/users?${ON_SITE_A}&ispublic=0`),
+  'GET /v2/users/groups': () => get(`/v2/users/groups?${ON_SITE_A}&ispublic=0`),
   'GET /v2/users/advanced-search': () => get(`/v2/users/advanced-search?${ON_SITE_A}&ispublic=0`),
   'POST /v2/users/advanced-search': () => postForm(`/v2/users/advanced-search?${ON_SITE_A}&ispublic=0`, ADVANCED_SEARCH_FORM),
   'GET /v2/users/search': () => get(`/v2/users/search?${ON_SITE_A}&ispublic=0&search=Target`),

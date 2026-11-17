@@ -487,7 +487,10 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     expect(logs.filter((line) => line.severity === 'ERROR').map((line) => line.tenantId)).toEqual([TENANT_A.tenantId, unregistered]);
   });
 
-  it('repairs side effects left unstamped longer than the recovery age while the unit gate is open', async () => {
+  it.each([
+    ['registered', false],
+    ['deleted from the registry', true],
+  ])('repairs side effects left unstamped longer than the recovery age while the unit gate is open, with the site %s', async (_label, deleted) => {
     port.failCreate = true;
     await consume(envelope(schedule(survey, 1, [60])));
     port.failDelete = true;
@@ -500,11 +503,18 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
 
     expect(hook.name).toBe(SCHEDULED_TASK_RECOVERY_HOOK);
     expect(await unstamped()).toBe(3);
-    await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS - 1));
-    expect(await unstamped()).toBe(3);
-    expect(port.deletes).toEqual([]);
+    if (deleted) {
+      await withMetadata(handle.app, (tx) => tx.query(`UPDATE ${handle.schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT_A.tenantId]));
+    }
+    try {
+      await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS - 1));
+      expect(await unstamped()).toBe(3);
+      expect(port.deletes).toEqual([]);
 
-    await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+      await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+    } finally {
+      await seedRegistry(handle.app);
+    }
 
     expect(await unstamped()).toBe(0);
     expect(port.creates.map((task) => [task.name, task.tenantId, task.body])).toEqual([

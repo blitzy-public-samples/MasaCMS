@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { GoldenConfigError } from '../../../src/golden/errors.js';
 import {
   csvModel,
   exportKindFor,
@@ -174,6 +175,64 @@ describe('csvModel', () => {
       ['asOf', 'DUE_DATE', 'shippedOn'],
       ['2026-06-30', '2026-07-01', normaliseTimestamp('2026-07-02', rules)],
     ]);
+  });
+});
+
+describe('csvModel key ties', () => {
+  const ADMIN = 'B0B0B0B0-0000-4B00-8B0000000000B000';
+  const uid = (n: number): string => `A1B2C3D4-00${String(n).padStart(2, '0')}-4A01-9F0000000000A0${String(n).padStart(2, '0')}`;
+  const HEADER = ['LNAME', 'FNAME', 'CREATED', 'LASTUPDATEBYID', 'USERID'];
+  // Legacy key order on LNAME: runs Abbott (one cased ABBOTT, one padded), Adams (twins apart from USERID), then Zed.
+  const ROWS = [
+    ['Abbott ', 'Montana ', '2026-05-04 10:00:00.0 ', `${ADMIN} `, `${uid(1)} `],
+    ['ABBOTT ', 'Keshawn ', '2026-05-05 10:00:00.0 ', `${ADMIN} `, `${uid(2)} `],
+    ['Abbott  ', 'Annabelle ', '2026-05-06 10:00:00.0 ', `${ADMIN} `, `${uid(3)} `],
+    ['Adams ', 'Rossie ', '2026-05-07 10:00:00.0 ', `${ADMIN} `, `${uid(5)} `],
+    ['Adams ', 'Rossie ', '2026-05-07 10:00:00.0 ', `${ADMIN} `, `${uid(4)} `],
+    ['Zed ', 'Lev ', '2026-05-08 10:00:00.0 ', `${ADMIN} `, `${uid(6)} `],
+  ];
+  const text = (rows: readonly (readonly string[])[]): string =>
+    `${[HEADER, ...rows].map((row) => row.map((cell) => `"${cell}"`).join(',')).join('\n')}\n`;
+  const model = (rows: readonly (readonly string[])[], keys: readonly string[] = ['LNAME']): CsvModel =>
+    csvModel(text(rows), createIdOrdinals(), rules, keys);
+  const at = (...order: number[]): string[][] => order.map((i) => ROWS[i] as string[]);
+
+  it.each([
+    { label: 'reversed', order: [2, 1, 0, 4, 3, 5] },
+    { label: 'rotated', order: [1, 2, 0, 3, 4, 5] },
+    { label: 'as listed', order: [0, 1, 2, 3, 4, 5] },
+  ])('gives tie runs $label the same model, numbering ids in the canonical order', ({ order }) => {
+    const ordered = model(at(...order));
+
+    expect(ordered).toStrictEqual(model(ROWS));
+    expect(column(ordered, 'FNAME')).toStrictEqual(['Keshawn ', 'Annabelle ', 'Montana ', 'Rossie ', 'Rossie ', 'Lev ']);
+    expect(column(ordered, 'LASTUPDATEBYID')).toStrictEqual(Array<string>(6).fill('<id:1> '));
+    expect(column(ordered, 'USERID')).toStrictEqual(['<id:2> ', '<id:3> ', '<id:4> ', '<id:5> ', '<id:6> ', '<id:7> ']);
+    expect(column(model(at(...order), []), 'FNAME')).toStrictEqual(at(...order).map((row) => row[1]));
+  });
+
+  it('orders rows tied apart from their ids by their raw cells, so each id keeps its ordinal', () => {
+    const ordinals = (order: number[]): (number | undefined)[] => {
+      const state = createIdOrdinals();
+      csvModel(text(at(...order)), state, rules, ['LNAME']);
+      return [uid(4), uid(5)].map((id) => state.byId.get(id));
+    };
+
+    expect(ordinals([0, 1, 2, 3, 4, 5])).toStrictEqual([5, 6]);
+    expect(ordinals([0, 1, 2, 4, 3, 5])).toStrictEqual([5, 6]);
+  });
+
+  it('keeps a row out of key order a difference, and ties on every declared column only', () => {
+    expect(model(at(3, 0, 1, 2, 4, 5))).not.toStrictEqual(model(ROWS));
+    expect(model(at(0, 1, 2, 5, 3, 4))).not.toStrictEqual(model(ROWS));
+    expect(model(at(2, 1, 0, 3, 4, 5), ['LNAME', 'FNAME'])).not.toStrictEqual(model(ROWS, ['LNAME', 'FNAME']));
+    expect(model(at(0, 1, 2, 4, 3, 5), ['LNAME', 'FNAME'])).toStrictEqual(model(ROWS, ['LNAME', 'FNAME']));
+  });
+
+  it('throws GoldenConfigError for a key column the header lacks, and models an empty body', () => {
+    expect(() => model(ROWS, ['LASTNAME'])).toThrow(GoldenConfigError);
+    expect(() => model(ROWS, ['LASTNAME'])).toThrow('csvKeyOrder column LASTNAME is not a header of the CSV');
+    expect(csvModel('', createIdOrdinals(), rules, ['LNAME'])).toStrictEqual({ kind: 'csv', rows: [] });
   });
 });
 

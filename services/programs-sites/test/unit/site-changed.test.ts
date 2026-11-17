@@ -3,7 +3,7 @@ import type { EventEnvelope } from '@opt2/platform/events';
 import { writeOutbox, type OutboxOrigin } from '@opt2/platform/outbox';
 import { SITE_CHANGED_TOPIC, tenantIdForSite, tenantRegistryConsumer, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TOPIC, writeSiteChanged, type SiteChangedArgs } from '../../src/events/site-changed.js';
+import { TOPIC, lastAnnouncedVersion, writeSiteChanged, type SiteChangedArgs } from '../../src/events/site-changed.js';
 
 vi.mock('@opt2/platform/outbox', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opt2/platform/outbox')>();
@@ -112,5 +112,22 @@ describe('site.changed producer', () => {
     await writeSiteChanged(tenantTx(), siteArgs(variant));
 
     expect(writtenInput().origin).toBe(variant.origin);
+  });
+});
+
+describe('lastAnnouncedVersion', () => {
+  it.each<{ version: string | null; expected: bigint }>([
+    { version: '57', expected: 57n },
+    { version: null, expected: 0n },
+  ])('reads $version, the highest site version in the tenant outbox in any letter case, as $expected', async ({ version, expected }) => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ version }] });
+    const tx = { ...tenantTx(), query } as unknown as TenantTx;
+
+    await expect(lastAnnouncedVersion(tx, 'Tenant-A')).resolves.toBe(expected);
+    expect(query).toHaveBeenCalledExactlyOnceWith(
+      `SELECT max((envelope->>'aggregateVersion')::bigint)::text AS version FROM "programs_sites".outbox` +
+        ' WHERE tenant_id = $1 AND topic = $2 AND lower(ordering_key) = lower($3)',
+      [tenantIdForSite('tenant-a'), 'programs-sites.site.changed.v1', 'Tenant-A'],
+    );
   });
 });

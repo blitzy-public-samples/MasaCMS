@@ -1,4 +1,4 @@
-// Unit tests for binding finance attachment bytes into projected finance_attachment changes through a fake finance owner.
+// Unit tests for binding owner object bytes into projected finance_attachment and export_job changes through fake owners.
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -8,7 +8,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { OwnerCallError, type OwnersClient } from '../../src/owners/client.js';
 import type { LegacyChange } from '../../src/reverse/apply-legacy.js';
-import { ATTACHMENT_CONTENT_COLUMN, AttachmentContentMismatchError, FINANCE_ATTACHMENT_UNIT, bindAttachmentContent } from '../../src/reverse/attachments.js';
+import {
+  ATTACHMENT_CONTENT_COLUMN,
+  AttachmentContentMismatchError,
+  EXPORT_JOB_UNIT,
+  EXPORT_OUTPUT_COLUMN,
+  FINANCE_ATTACHMENT_UNIT,
+  bindAttachmentContent,
+} from '../../src/reverse/attachments.js';
 
 const TENANT = tenantIdForSite('tenant-a');
 const ATTACHMENT_ID = 'C1D2E3F4-0001-4A5B-8C7D9E0F1A2B3C4D';
@@ -154,3 +161,122 @@ describe('bindAttachmentContent', () => {
     expect(h.getAttachmentObject).not.toHaveBeenCalled();
   });
 });
+
+describe('bindAttachmentContent of reporting export jobs', () => {
+  const JOB_ID = 'D1E2F3A4-0001-4B5C-8D7E9F0A1B2C3D4E';
+  const OUTPUT = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x0d, 0x0a, 0x80]);
+  const JOB_COLUMNS: LegacyChange['columns'] = [
+    { name: 'job_id', type: 's' },
+    { name: 'siteID', type: 's' },
+    { name: 'state', type: 's' },
+    { name: 'finished_at', type: 't' },
+    { name: 'file_name', type: 's' },
+    { name: 'content_type', type: 's' },
+    { name: 'output_sha256', type: 's' },
+  ];
+
+  /** A legacy image of the job in `state`, recording `output` once done. */
+  const jobImage = (state: string, output: Buffer | null): Record<string, string | null> => ({
+    job_id: JOB_ID,
+    siteID: 'tenant-a',
+    state,
+    finished_at: output === null ? null : '2026-06-30 12:00:00.000',
+    file_name: output === null ? null : `export-${JOB_ID}.xlsx`,
+    content_type: output === null ? null : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    output_sha256: output === null ? null : sha(output),
+  });
+
+  /** A decoded `synthetic.export_job` change. */
+  const jobChange = (op: LegacyChange['op'], images: Pick<LegacyChange, 'before' | 'after' | 'changedColumns'>): LegacyChange => ({
+    owner: 'reporting',
+    tenantId: TENANT,
+    unit: EXPORT_JOB_UNIT,
+    xid: '800',
+    seq: '1',
+    op,
+    legacyTable: 'synthetic.export_job',
+    physicalTable: { schema: 'synthetic', table: 'export_job', qualified: 'synthetic.export_job' },
+    columns: JOB_COLUMNS,
+    key: `["${JOB_ID}"]`,
+    ...images,
+  });
+
+  const DONE_COLUMNS = ['state', 'finished_at', 'file_name', 'content_type', 'output_sha256'];
+
+  /** A reporting owner serving `stream` for every export output read. */
+  function reporting(stream: () => Readable) {
+    const getExportObject = vi.fn((_params: { tenantId: string; jobId: string }) => Promise.resolve(stream()));
+    return { deps: { owners: { getExportObject } as unknown as OwnersClient }, getExportObject };
+  }
+
+  it.each<[string, () => LegacyChange, string[] | undefined]>([
+    ['an insert recording output_sha256', () => jobChange('insert', { after: jobImage('done', OUTPUT) }), undefined],
+    [
+      'the done update',
+      () => jobChange('update', { before: jobImage('running', null), after: jobImage('done', OUTPUT), changedColumns: DONE_COLUMNS }),
+      [...DONE_COLUMNS, 'output'],
+    ],
+  ])('binds the verified output of %s, read whole in chunks from reporting by tenant and job id', async (_label, make, changedColumns) => {
+    let source: Readable | undefined;
+    const h = reporting(() => (source = Readable.from([OUTPUT.subarray(0, 4), OUTPUT.subarray(4)])));
+    const projected = make();
+
+    const bound = await bindAttachmentContent(h.deps, projected);
+
+    expect(h.getExportObject).toHaveBeenCalledWith({ tenantId: TENANT, jobId: JOB_ID });
+    expect((bound.after?.[EXPORT_OUTPUT_COLUMN] as Buffer).equals(OUTPUT)).toBe(true);
+    expect(bound.after).toMatchObject(jobImage('done', OUTPUT));
+    expect(bound.columns).toEqual([...JOB_COLUMNS, { name: 'output', type: 'b' }]);
+    expect(bound.changedColumns).toEqual(changedColumns);
+    expect(projected.after).not.toHaveProperty(EXPORT_OUTPUT_COLUMN);
+    expect(source?.destroyed).toBe(true);
+  });
+
+  it('binds NULL output, reading nothing, for an update setting output_sha256 NULL', async () => {
+    const h = reporting(() => Readable.from([OUTPUT]));
+    const update = jobChange('update', { before: jobImage('done', OUTPUT), after: jobImage('failed', null), changedColumns: DONE_COLUMNS });
+
+    const bound = await bindAttachmentContent(h.deps, update);
+
+    expect(bound.after?.[EXPORT_OUTPUT_COLUMN]).toBeNull();
+    expect(bound.changedColumns).toEqual([...DONE_COLUMNS, 'output']);
+    expect(h.getExportObject).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, LegacyChange]>([
+    ['an insert of a queued job without output_sha256', jobChange('insert', { after: jobImage('queued', null) })],
+    [
+      'an update leaving output_sha256 unchanged',
+      jobChange('update', { before: jobImage('queued', null), after: jobImage('running', null), changedColumns: ['state', 'started_at'] }),
+    ],
+    ['a delete', jobChange('delete', { before: jobImage('done', OUTPUT) })],
+  ])('passes %s through without reading reporting', async (_label, unchanged) => {
+    const h = reporting(() => Readable.from([OUTPUT]));
+    expect(await bindAttachmentContent(h.deps, unchanged)).toBe(unchanged);
+    expect(h.getExportObject).not.toHaveBeenCalled();
+  });
+
+  it('throws AttachmentContentMismatchError for output whose SHA-256 differs from output_sha256 and destroys the stream', async () => {
+    let source: Readable | undefined;
+    const served = Buffer.concat([OUTPUT, Buffer.from('tail')]);
+    const error = await bindAttachmentContent(
+      reporting(() => (source = Readable.from([served]))).deps,
+      jobChange('update', { before: jobImage('running', null), after: jobImage('done', OUTPUT), changedColumns: DONE_COLUMNS }),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AttachmentContentMismatchError);
+    expect(error).toMatchObject({ key: JOB_ID, expected: { sha256: sha(OUTPUT) }, actual: { size: served.byteLength, sha256: sha(served) }, exceeded: false });
+    expect((error as AttachmentContentMismatchError).expected).not.toHaveProperty('size');
+    expect((error as Error).message).toBe(
+      `Reporting export output ${JOB_ID} has ${String(served.byteLength)} bytes hashing to ${sha(served)}, not the change row's SHA-256 ${sha(OUTPUT)}`,
+    );
+    expect(source?.destroyed).toBe(true);
+  });
+
+  it('propagates reporting answering 404 for the job output', async () => {
+    const absent = new OwnerCallError('reporting', 'GET', '/internal/v1/migration/objects', 404, { error: { message: 'Invalid method call' } });
+    const deps = { owners: { getExportObject: () => Promise.reject(absent) } as unknown as OwnersClient };
+    await expect(bindAttachmentContent(deps, jobChange('insert', { after: jobImage('done', OUTPUT) }))).rejects.toBe(absent);
+  });
+});
+

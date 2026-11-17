@@ -1,10 +1,13 @@
 // Edge dispatcher orchestration over stand-in legacy and service servers and recorded fakes of every collaborator.
 import { Buffer } from 'node:buffer';
-import replyFrom from '@fastify/reply-from';
+import { request as httpRequest, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import replyFrom, { type FastifyReplyFromOptions } from '@fastify/reply-from';
 import { INVOCATION_HEADER, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { apiUnavailableResponse, adminUnavailableResponse, type RouteKeyResult } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord, type Logger } from '@opt2/platform/logging';
 import {
+  Agent,
   IDENTITY_SERVICE,
   LEGACY_POST_LIMIT_BYTES,
   ServiceUnavailableError,
@@ -20,12 +23,13 @@ import type { CutoverEntry, EntryKind, RouteFacts, RoutingIndex } from '../../sr
 import { BarrierTimeoutError } from '../../src/dispatcher/barrier.js';
 import { EDGE_METHODS, EDGE_ROUTE_URL, RELAY_ALIAS_ROUTE, registerEdgeRoute, type DispatcherDeps } from '../../src/dispatcher/dispatch.js';
 import { routedFailContext, type Destination, type MatchOutcome } from '../../src/dispatcher/match.js';
+import { sendRequestTarget } from '../../src/dispatcher/request-target.js';
 import { WindowOpenError } from '../../src/dispatcher/write-window.js';
 import type { BridgeClient } from '../../src/session/bridge-client.js';
 import { createCsrfContinuity, type CsrfHandle } from '../../src/session/csrf.js';
 import type { IdentityClient, LegacyDescribe, SettleInput } from '../../src/session/identity-client.js';
-import { createInvalidation } from '../../src/session/invalidation.js';
-import type { JarCookies, JarRow, LegacyJar } from '../../src/session/jar.js';
+import { createInvalidation, type LegacyLogoutOutcome } from '../../src/session/invalidation.js';
+import type { JarCookies, JarRow, JarUpsert, LegacyJar } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
 import { createSessionResolver, type SessionResolution } from '../../src/session/resolve.js';
 import { createSessionStateChecker } from '../../src/session/state-check.js';
@@ -212,6 +216,10 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
         calls.push('remove');
         return true;
       }),
+      abandon: vi.fn(async () => {
+        calls.push('abandon');
+        return true;
+      }),
     },
     windows: {
       open: vi.fn(async () => {
@@ -279,6 +287,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       }),
       completePending: vi.fn(async (sessionId) => {
         calls.push(`completePending:${sessionId}`);
+        return 'logged-out' as const;
       }),
     },
     facts: { get: (route) => facts[route], routes: () => Object.keys(facts) },
@@ -299,7 +308,9 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
     clock: systemClock,
   };
 
-  await app.register(replyFrom);
+  // reply-from's own agent plus the gateway's request target, so legacy receives each path as sent.
+  const undici = new Agent().compose(sendRequestTarget) as FastifyReplyFromOptions['undici'];
+  await app.register(replyFrom, { undici, destroyAgent: true });
   await app.register(async (edge) => {
     edge.removeAllContentTypeParsers();
     edge.addContentTypeParser<Buffer>('*', { parseAs: 'buffer', bodyLimit: LEGACY_POST_LIMIT_BYTES }, (_request, body, done) =>
@@ -328,7 +339,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
 
 /** The register, epoch, window and removal calls in order. */
 const rowCalls = (calls: readonly string[]): string[] =>
-  calls.filter((call) => /^(register|readEpoch|remove|window\.)/.test(call));
+  calls.filter((call) => /^(register|readEpoch|remove|abandon|window\.)/.test(call));
 
 describe('registerEdgeRoute', () => {
   it('declares every edge method on the catch-all as a public edge route', async () => {
@@ -577,17 +588,30 @@ describe('forwarding', () => {
     expect(h.svc.requests).toHaveLength(1);
   });
 
-  it('completes a pending identity end before forwarding the session anonymously to the target', async () => {
-    const h = await harness();
-    h.setScript(() => ({ entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' }));
-    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(pendingSession('legacy-primary'));
-    const res = await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x' });
-    expect(res.statusCode).toBe(200);
-    expect(h.calls).toContain(`completePending:${SESSION_ID}`);
-    expect(h.deps.stateCheck.check).not.toHaveBeenCalled();
-    expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
-    expect(h.svc.requests[0]?.headers.authorization).toBeUndefined();
-  });
+  it.each<[LegacyLogoutOutcome, boolean]>([
+    ['logged-out', false],
+    ['unknown', false],
+    ['kept', true],
+  ])(
+    'judges a pending identity end from the browser legacy cookies before the target: %s forwards the session: %s',
+    async (outcome, withSession) => {
+      const h = await harness();
+      h.setScript(() => ({ entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' }));
+      vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(pendingSession('legacy-primary'));
+      vi.mocked(h.deps.invalidation.completePending).mockResolvedValueOnce(outcome);
+      const headers = { cookie: 'CFID=B1; CFTOKEN=B2; z=9', 'user-agent': 'OPT2-browser' };
+      const res = await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers });
+      expect(res.statusCode).toBe(200);
+      const [pendingId, held] = vi.mocked(h.deps.invalidation.completePending).mock.calls[0] ?? [];
+      expect([pendingId, held?.userAgent]).toEqual([SESSION_ID, 'OPT2-browser']);
+      expect(Object.fromEntries(Object.entries(held?.cookies ?? {}).map(([key, entry]) => [key, entry.value]))).toEqual({
+        CFID: 'B1',
+        CFTOKEN: 'B2',
+      });
+      expect(vi.mocked(h.deps.stateCheck.check).mock.calls.length > 0).toBe(withSession);
+      expect(h.svc.requests[0]?.headers.authorization).toBe(withSession ? 'Bearer user-token-1' : undefined);
+    },
+  );
 
   it.each(['target', 'legacy'] as const)(
     'answers the legacy 503 and forwards nothing to %s when a pending identity end cannot complete',
@@ -1028,6 +1052,25 @@ describe('write entries', () => {
     expect(rowCalls(h.calls)).toEqual(['register:admin:cusers.update:target:-', 'readEpoch', 'remove']);
   });
 
+  it.each<[string, (res: ServerResponse) => void]>([
+    ['drops the connection after receiving the request', (res) => res.socket?.destroy()],
+    [
+      'breaks its response off mid-body',
+      (res) => {
+        res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '100' });
+        res.write('partial', () => res.socket?.destroy());
+      },
+    ],
+  ])('marks the row abandoned, never removing it, when the target %s', async (_case, answer) => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'admin:cusers.update', kind: 'write', state: 'target' }, destination: 'target' }));
+    h.svc.setHandler((_req, res) => answer(res));
+    await h.app.inject({ method: 'POST', url: '/admin/?muraAction=cusers.update' }).catch(() => undefined);
+    await settle();
+    expect(rowCalls(h.calls)).toEqual(['register:admin:cusers.update:target:-', 'readEpoch', 'abandon']);
+    expect(h.deps.inflight.abandon).toHaveBeenCalledOnce();
+  });
+
   it('removes the row and answers 503 when the fresh version is unavailable', async () => {
     const h = await harness();
     h.setScript((_url, call) => ({ entry: { route: 'admin:w', kind: 'write' }, destination: call === 0 ? 'legacy' : 'unavailable' }));
@@ -1129,6 +1172,46 @@ describe('write windows', () => {
     expect(h.legacy.requests).toHaveLength(1);
   });
 
+  it.each([
+    { name: 'the client goes before legacy answers', status: 201, leave: true, reported: '201' },
+    { name: 'legacy answers a status Fastify rejects', status: 600, leave: false, reported: '-' },
+  ])('completes the window once as forwarded after legacy completed when $name', async ({ status, leave, reported }) => {
+    const h = await harness({ active: indexOf('v0002', [RATING_UNIT]) });
+    h.setScript(saveRate);
+    let received: () => void = () => undefined;
+    const atLegacy = new Promise<void>((resolve) => {
+      received = resolve;
+    });
+    h.legacy.setHandler(async (_req, res) => {
+      received();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      sendBytes(res, status, 'saved');
+    });
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    const { port } = h.app.server.address() as AddressInfo;
+
+    const answered = new Promise<number | undefined>((resolve) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/?doaction=saveRate', method: 'POST', agent: false }, (res) => {
+        res.resume();
+        res.once('end', () => resolve(res.statusCode));
+      });
+      req.once('error', () => resolve(undefined));
+      req.end();
+      if (leave) void atLegacy.then(() => req.destroy());
+    });
+
+    expect(await answered).toBe(leave ? undefined : 503);
+    await vi.waitFor(() => expect(h.calls).toContain(`window.complete:W1:true:${reported}`));
+    await settle();
+    expect(rowCalls(h.calls).slice(4)).toEqual([
+      'register:page:saverate:legacy:W1',
+      'readEpoch',
+      'remove',
+      `window.complete:W1:true:${reported}`,
+    ]);
+    expect(h.legacy.requests).toHaveLength(1);
+  });
+
   it("scopes a reload's window by the reload key, and closes it and routes again when a route it is held by froze meanwhile", async () => {
     const h = await harness({ active: indexOf('v0002', [RATING_UNIT]) });
     h.setScript(() => ({ ...saveRate(), family: 'reload', holdRoutes: [RELOAD_KEY] }));
@@ -1184,6 +1267,56 @@ describe('sessions of legacy-bound requests', () => {
     vi.mocked(h.deps.barrier.awaitForSession).mockRejectedValueOnce(new BarrierTimeoutError('identity=1', new Error('timeout')));
     expect((await h.app.inject({ method: 'GET', url: '/admin/' })).statusCode).toBe(503);
     expect(h.legacy.requests).toHaveLength(1);
+  });
+
+  /** A handle of a token claimed pending-legacy for S1. */
+  const claimed = (): CsrfHandle => ({
+    sessionId: SESSION_ID,
+    legacySessionId: 'L-1',
+    legacyCookies: {},
+    claimedTokens: ['TOKEN-9'],
+    since: '2026-06-30 12:00:00.000',
+    setCookies: [],
+  });
+
+  it('takes the legacy-primary CSRF claim while the session barrier is awaited', async () => {
+    const h = await harness();
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session('legacy-primary'));
+    let claimStarted!: () => void;
+    const started = new Promise<void>((resolve) => (claimStarted = resolve));
+    vi.mocked(h.deps.barrier.awaitForSession).mockImplementationOnce(async (sessionId) => {
+      h.calls.push(`barrier:${sessionId}`);
+      // A barrier awaited before the claim starts would never return.
+      await started;
+      h.calls.push('barrier.done');
+    });
+    vi.mocked(h.deps.csrf.beforeLegacy).mockImplementationOnce(async () => {
+      h.calls.push('csrf.before');
+      claimStarted();
+      return claimed();
+    });
+    const res = await h.app.inject({ method: 'POST', url: '/admin/', headers: { 'x-csrf_token': 'TOKEN-9' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(h.calls.filter((call) => /^(barrier|csrf)/.test(call))).toEqual([
+      `barrier:${SESSION_ID}`,
+      'csrf.before',
+      'barrier.done',
+      'csrf.after',
+    ]);
+    expect(h.deps.csrf.afterLegacy).toHaveBeenCalledWith(claimed(), expect.any(Date));
+  });
+
+  it('releases the claim taken beside a legacy-primary barrier that times out, forwarding nothing', async () => {
+    const h = await harness();
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session('legacy-primary'));
+    vi.mocked(h.deps.barrier.awaitForSession).mockRejectedValueOnce(new BarrierTimeoutError('people=9', new Error('timeout')));
+    vi.mocked(h.deps.csrf.beforeLegacy).mockResolvedValueOnce(claimed());
+    const res = await h.app.inject({ method: 'POST', url: '/admin/', headers: { 'x-csrf_token': 'TOKEN-9' } });
+
+    expect([res.statusCode, res.body]).toEqual([503, adminUnavailableResponse().body]);
+    expect(h.legacy.requests).toHaveLength(0);
+    expect(h.deps.csrf.afterLegacy).toHaveBeenCalledWith(claimed(), undefined);
   });
 
   it('answers a resolution response verbatim', async () => {
@@ -1243,25 +1376,45 @@ describe('sessions of legacy-bound requests', () => {
     expect(res.headers['set-cookie']).toEqual(['CFID=R1;path=/;', 'o=1']);
   });
 
-  it.each<SessionMode>(['legacy-primary', 'target-primary'])(
-    'marks the identity end pending before legacy logs a %s session out, and ends identity after',
-    async (mode) => {
+  /** Logouts legacy serves: a page logout, and identity's logout keys while their units are not all target-authoritative, as in v0002. */
+  const LEGACY_SERVED_LOGOUTS: ReadonlyArray<{ route: string; kind: EntryKind; family: RouteKeyResult['family']; url: string }> = [
+    { route: 'page:logout', kind: 'legacy-write', family: 'page', url: '/?doaction=logout' },
+    { route: 'admin:clogin.logout', kind: 'read', family: 'admin', url: '/admin/?muraAction=cLogin.logout' },
+    { route: 'api:logout', kind: 'read', family: 'api', url: '/_api/json/v1/default/logout' },
+  ];
+  const LOGOUT_SESSIONS: ReadonlyArray<{ mode: SessionMode; cookie: string; jar: JarCookies; held: Record<string, string> }> = [
+    { mode: 'legacy-primary', cookie: 'CFID=B1; CFTOKEN=B2; z=9', jar: {}, held: { CFID: 'B1', CFTOKEN: 'N2' } },
+    {
+      mode: 'target-primary',
+      cookie: `JSESSIONID=${SESSION_ID}; CFID=T1; z=9`,
+      jar: { CFID: { name: 'CFID', value: 'L1', attributes: 'path=/;' } },
+      held: { CFID: 'L1', CFTOKEN: 'N2' },
+    },
+  ];
+
+  it.each(LEGACY_SERVED_LOGOUTS.flatMap((logout) => LOGOUT_SESSIONS.map((held) => ({ ...logout, ...held }))))(
+    'marks the identity end pending before legacy logs a $mode session out at $route, then hands the end the cookies legacy holds',
+    async ({ route, kind, family, url, mode, cookie, jar, held }) => {
       const h = await harness(mode === 'target-primary' ? { active: indexOf('v0002', [], 'target') } : {});
-      h.setScript(() => ({ entry: { route: 'page:logout', kind: 'legacy-write' }, destination: 'legacy', family: 'page' }));
+      h.setScript(() => ({ entry: { route, kind }, destination: 'legacy', family }));
       vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session(mode));
-      vi.mocked(h.deps.hydrator.ensureHydrated).mockResolvedValue(jarRow({}));
+      vi.mocked(h.deps.hydrator.ensureHydrated).mockResolvedValue(jarRow(jar));
       h.legacy.setHandler((_req, res) => {
         h.calls.push('legacy');
-        sendBytes(res, 200, 'logged out');
+        sendBytes(res, 200, 'logged out', { 'set-cookie': ['CFTOKEN=N2;path=/;HttpOnly'] });
       });
-      expect((await h.app.inject({ method: 'GET', url: '/?doaction=logout' })).statusCode).toBe(200);
+      const res = await h.app.inject({ method: 'GET', url, headers: { cookie, 'user-agent': 'OPT2-browser' } });
+      expect(res.statusCode).toBe(200);
       expect(h.calls.filter((call) => call === 'legacy' || call.includes('Logout:'))).toEqual([
         `beforeLegacyLogout:${SESSION_ID}`,
         'legacy',
         `afterLegacyLogout:${SESSION_ID}`,
       ]);
       expect(h.deps.invalidation.beforeLegacyLogout).toHaveBeenCalledWith(SESSION_ID, mode);
-      expect(h.deps.invalidation.afterLegacyLogout).toHaveBeenCalledWith(SESSION_ID);
+      const [endedId, facts] = vi.mocked(h.deps.invalidation.afterLegacyLogout).mock.calls[0] ?? [];
+      expect(endedId).toBe(SESSION_ID);
+      expect([facts?.userAgent, facts?.mode]).toEqual(['OPT2-browser', mode]);
+      expect(Object.fromEntries(Object.entries(facts?.cookies ?? {}).map(([key, entry]) => [key, entry.value]))).toEqual(held);
     },
   );
 
@@ -1284,27 +1437,47 @@ describe('sessions of legacy-bound requests', () => {
   describe('a target-primary legacy logout over the session invalidation and an in-memory jar', () => {
     const LIVE: JarCookies = { CFID: { name: 'CFID', value: 'L1', attributes: 'path=/;' } };
 
-    /** Identity's end refuses while `identity.down`; the jar's mark is refused with `markFails`. */
+    const SECRET = 'CSRF-SECRET-S1';
+
+    /**
+     * Identity's end refuses while `identity.down`; the jar's mark is refused with `markFails`. Legacy describes the
+     * session logged in under identity's secret while `legacy.loggedIn`, and refuses every describe while `legacy.unreadable`.
+     */
     async function logoutHarness(opts: { markFails?: boolean } = {}) {
       const h = await harness({ active: indexOf('v0002', [], 'target') });
       const initial = jarRow(LIVE);
       const rows = new Map<string, JarRow>([[SESSION_ID, initial]]);
-      const identity = { down: true };
+      const identity = { down: true, ended: false };
+      const legacy = { loggedIn: false, unreadable: false };
       h.deps.invalidation = createInvalidation({
         identity: {
           adopt: () => Promise.reject(new Error('a logout adopts no session')),
           end: (sessionId) => {
             h.calls.push(`identity.end:${sessionId}`);
             if (identity.down) return Promise.reject(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
+            identity.ended = true;
             return Promise.resolve({ ended: true, epoch: 4 });
           },
+          snapshot: (sessionId) =>
+            Promise.resolve(
+              identity.ended
+                ? undefined
+                : { sessionId, epoch: 3, loginSnapshot: { user: { userID: 'U' }, roles: [] }, csrfSecretKey: SECRET, usedTokens: [] },
+            ),
         },
         bridge: {
-          describe: () => Promise.reject(new Error('a legacy logout describes no session')),
+          describe: (cookies, call) => {
+            const values = Object.values(cookies).map((held) => (typeof held === 'string' ? held : held.value));
+            h.calls.push(`describe:${values.join(',')}:${call?.userAgent ?? '-'}`);
+            if (legacy.unreadable) return Promise.reject(new ServiceUnavailableError('legacy-bridge', new Error('describe refused')));
+            const body = { sessionId: 'L-1', isLoggedIn: legacy.loggedIn, csrfSecretKey: legacy.loggedIn ? SECRET : 'NEW' };
+            return Promise.resolve({ body: body as LegacyDescribe, setCookies: [] });
+          },
           end: () => Promise.reject(new Error('a legacy logout ends no legacy session')),
         },
         jar: {
           withSessionLock: () => Promise.reject(new Error('a legacy logout takes no jar lock')),
+          get: (sessionId) => Promise.resolve(rows.get(sessionId)),
           drop: (sessionId) => Promise.resolve(rows.delete(sessionId)),
           markIdentityEndPending: (sessionId) => {
             h.calls.push(`mark:${sessionId}`);
@@ -1313,6 +1486,15 @@ describe('sessions of legacy-bound requests', () => {
             }
             const row = rows.get(sessionId);
             if (row !== undefined) rows.set(sessionId, { ...row, identityEndPendingAt: row.identityEndPendingAt ?? new Date() });
+            return Promise.resolve();
+          },
+          clearIdentityEndPending: (sessionId, updatedAt) => {
+            h.calls.push(`clear:${sessionId}`);
+            const row = rows.get(sessionId);
+            if (row !== undefined && (updatedAt === undefined || row.updatedAt.getTime() === updatedAt.getTime())) {
+              const { identityEndPendingAt: _cleared, ...kept } = row;
+              rows.set(sessionId, kept);
+            }
             return Promise.resolve();
           },
         },
@@ -1329,16 +1511,18 @@ describe('sessions of legacy-bound requests', () => {
       vi.mocked(h.deps.resolver.resolveSession).mockImplementation(resolved);
       vi.mocked(h.deps.resolver.resolveLegacyBound).mockImplementation(resolved);
       vi.mocked(h.deps.hydrator.ensureHydrated).mockImplementation(() => Promise.resolve(rows.get(SESSION_ID)));
-      h.setScript((url) =>
-        url.includes('doaction=logout')
-          ? { entry: { route: 'page:logout', kind: 'legacy-write' }, destination: 'legacy', family: 'page' }
-          : { entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' },
-      );
+      h.setScript((url) => {
+        if (url.includes('doaction=logout')) {
+          return { entry: { route: 'page:logout', kind: 'legacy-write' }, destination: 'legacy', family: 'page' };
+        }
+        if (url.startsWith('/admin/')) return { entry: { route: 'admin:cdashboard.main', kind: 'read' }, destination: 'legacy', family: 'admin' };
+        return { entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' };
+      });
       h.legacy.setHandler((_req, res) => {
         h.calls.push('legacy');
         sendBytes(res, 200, 'logged out');
       });
-      return { h, rows, initial, identity };
+      return { h, rows, initial, identity, legacy };
     }
 
     it('answers the legacy 503 and releases the exchange without legacy or identity when the mark fails', async () => {
@@ -1374,6 +1558,80 @@ describe('sessions of legacy-bound requests', () => {
       expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
       expect(rows.has(SESSION_ID)).toBe(false);
     });
+
+    it.each<{ name: string; loggedIn: boolean; status: number; ended: boolean }>([
+      { name: 'a redirect that left legacy logged in keeps both sessions and the jar', loggedIn: true, status: 302, ended: false },
+      { name: 'a logout legacy performed ends identity and drops the jar', loggedIn: false, status: 200, ended: true },
+    ])('judges the logout by describing the jar cookies legacy holds: $name', async ({ loggedIn, status, ended }) => {
+      const { h, rows, initial, identity, legacy } = await logoutHarness();
+      identity.down = false;
+      legacy.loggedIn = loggedIn;
+      h.legacy.setHandler((_req, res) => {
+        h.calls.push('legacy');
+        sendBytes(res, status, '', status === 302 ? { location: '/tenant-a/' } : {});
+      });
+      const headers = { cookie: `JSESSIONID=${SESSION_ID}; CFID=T1`, 'user-agent': 'OPT2-browser' };
+      const res = await h.app.inject({ method: 'GET', url: '/tenant-a/?doaction=logout', headers });
+      expect([res.statusCode, res.headers.location]).toEqual([status, status === 302 ? '/tenant-a/' : undefined]);
+      expect(h.legacy.requests[0]?.headers.cookie).toBe('CFID=L1');
+      expect(h.calls.filter((call) => /^(mark|legacy$|describe|clear|identity\.end)/.test(call))).toEqual([
+        `mark:${SESSION_ID}`,
+        'legacy',
+        'describe:L1:OPT2-browser',
+        ended ? `identity.end:${SESSION_ID}` : `clear:${SESSION_ID}`,
+      ]);
+      expect(rows.get(SESSION_ID)).toEqual(ended ? undefined : initial);
+
+      expect((await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers })).statusCode).toBe(200);
+      expect(h.svc.requests[0]?.headers.authorization === undefined).toBe(ended);
+    });
+
+    it.each<{ name: string; unreadable: boolean }>([
+      { name: 'serves them with the session while legacy still holds the login', unreadable: false },
+      { name: 'serves them anonymously while legacy cannot be described', unreadable: true },
+    ])('for a target-bound and a legacy-bound request during a pending logout, $name, ending nothing', async ({ unreadable }) => {
+      const { h, rows, identity, legacy } = await logoutHarness();
+      identity.down = false;
+      legacy.loggedIn = true;
+      legacy.unreadable = unreadable;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let arrived!: () => void;
+      const logoutArrived = new Promise<void>((resolve) => {
+        arrived = resolve;
+      });
+      h.legacy.setHandler(async (req, res) => {
+        if (!req.url.includes('doaction=logout')) {
+          sendBytes(res, 200, 'legacy-body');
+          return;
+        }
+        // Masa's site-domain redirect, answered before the doaction runs, so legacy keeps the login.
+        arrived();
+        await held;
+        sendBytes(res, 302, '', { location: '/tenant-a/' });
+      });
+      const headers = { cookie: `JSESSIONID=${SESSION_ID}; CFID=T1; z=9`, 'user-agent': 'OPT2-browser' };
+      const logout = h.app.inject({ method: 'GET', url: '/tenant-a/?doaction=logout', headers });
+      await logoutArrived;
+      expect(rows.get(SESSION_ID)?.identityEndPendingAt).toBeInstanceOf(Date);
+
+      const [target, page] = await Promise.all([
+        h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers }),
+        h.app.inject({ method: 'GET', url: '/admin/', headers }),
+      ]);
+      release();
+      expect([target.statusCode, page.statusCode, (await logout).statusCode]).toEqual([200, 200, 302]);
+
+      expect(h.svc.requests[0]?.headers.authorization).toBe(unreadable ? undefined : 'Bearer user-token-1');
+      expect(h.legacy.requests.find((request) => request.url === '/admin/')?.headers.cookie).toBe(unreadable ? 'z=9' : 'CFID=L1; z=9');
+      expect(h.calls.filter((call) => call.startsWith('identity.end'))).toEqual([]);
+      expect(identity.ended).toBe(false);
+      // A kept logout clears its mark; an unknown one keeps the session marked for the next request to judge.
+      expect(rows.get(SESSION_ID)).toMatchObject({ cookies: LIVE });
+      expect(rows.get(SESSION_ID)?.identityEndPendingAt !== undefined).toBe(unreadable);
+    });
   });
 
   it('completes a pending identity end before legacy sees the target-primary request without session cookies', async () => {
@@ -1382,6 +1640,8 @@ describe('sessions of legacy-bound requests', () => {
     vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValueOnce(pendingSession('target-primary', jar));
     await h.app.inject({ method: 'GET', url: '/admin/', headers: { cookie: 'CFID=T1; z=9' } });
     expect(h.calls.indexOf(`completePending:${SESSION_ID}`)).toBeLessThan(h.calls.indexOf(`barrier:${SESSION_ID}`));
+    // The browser's CFID carries identity's value, so the logout is judged by the jar's legacy cookies.
+    expect(vi.mocked(h.deps.invalidation.completePending).mock.calls[0]?.[1].cookies).toEqual(jar);
     expect(h.legacy.requests[0]?.headers.cookie).toBe('z=9');
     expect(h.deps.hydrator.ensureHydrated).not.toHaveBeenCalled();
     expect(h.deps.invalidation.afterTargetLogout).not.toHaveBeenCalled();
@@ -1745,3 +2005,41 @@ describe('legacy-primary legacy-bound requests while identity is unavailable', (
     expect(h.svc.requests).toHaveLength(0);
   });
 });
+
+describe('Set-Cookie of legacy-primary target-served responses', () => {
+  const TRACKING = 'MXP_TRACKINGID=TRACK-1; path=/; HttpOnly';
+  const MOBILE = 'mobileFormat=false; path=/; HttpOnly';
+
+  it.each<[string, string | undefined, string[] | undefined]>([
+    ['an established session', 'CFID=1001; CFTOKEN=T1; MXP_TRACKINGID=TRACK-0; mobileFormat=false', undefined],
+    ['a cookieless first contact', undefined, [TRACKING, MOBILE]],
+  ])('carry for %s only the describe cookies legacy itself would set', async (_label, cookie, expected) => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' }));
+    const rows = new Map<string, JarRow>();
+    h.deps.resolver = createSessionResolver({
+      identity: { adopt: async () => ({ sessionId: SESSION_ID, epoch: 3, setCookie: [] }) } as unknown as IdentityClient,
+      bridge: {
+        describe: async () => ({ body: { sessionId: 'L-1' } as LegacyDescribe, setCookies: [TRACKING, MOBILE] }),
+      } as unknown as BridgeClient,
+      jar: {
+        findByLegacySessionId: async () => undefined,
+        rebind: async (input: JarUpsert) => {
+          const row: JarRow = { ...input, updatedAt: new Date() };
+          rows.set(input.sessionId, row);
+          return row;
+        },
+      } as unknown as LegacyJar,
+      state: {
+        check: async () => ({ state: 'active' as const, epoch: 3, userId: 'U', siteId: 'default', epochChanged: false }),
+        forget: () => undefined,
+      },
+    });
+    const res = await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers: cookie === undefined ? {} : { cookie } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['set-cookie']).toEqual(expected);
+    expect(rows.get(SESSION_ID)?.legacySessionId).toBe('L-1');
+  });
+});
+

@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
+import { SAFE_ERROR_TEXT } from '@opt2/platform/logging';
+
 import { OPT2_SYNC_SQL_PATH } from '../paths.js';
 import type { LegacyDb } from './legacy-db.js';
 
@@ -21,6 +23,8 @@ const PERMISSION_ERROR_NUMBERS: ReadonlySet<number> = new Set([229, 230, 262, 27
 const READY_QUERY =
   "select count(*) as n from sys.tables t join sys.schemas s on s.schema_id = t.schema_id where s.name = 'opt2_sync' and t.name = 'projector_checkpoint'";
 
+const UNAVAILABLE_PHRASE = 'Schema opt2_sync could not be created in the legacy database, so no unit may become target-authoritative';
+
 /** Raised when the legacy database account may not create `opt2_sync`; the original driver error is its `cause`. */
 export class Opt2SyncUnavailableError extends Error {
   override readonly name = 'Opt2SyncUnavailableError';
@@ -30,12 +34,15 @@ export class Opt2SyncUnavailableError extends Error {
   readonly sqlErrorNumber?: number;
 
   constructor(reason: string, sqlErrorNumber: number | undefined, options?: ErrorOptions) {
-    super(
-      `Schema opt2_sync could not be created in the legacy database, so no unit may become target-authoritative: ${reason}`,
-      options,
-    );
+    super(`${UNAVAILABLE_PHRASE}: ${reason}`, options);
     this.reason = reason;
     this.sqlErrorNumber = sqlErrorNumber;
+  }
+
+  /** The message with SQL Server's text replaced by its error number, for logs and spans; a reason the platform allowlist rejects stays redacted. */
+  get [SAFE_ERROR_TEXT](): string {
+    const reason = this.sqlErrorNumber === undefined ? this.reason : `SQL Server error ${String(this.sqlErrorNumber)}`;
+    return `${UNAVAILABLE_PHRASE}: ${reason}`;
   }
 }
 

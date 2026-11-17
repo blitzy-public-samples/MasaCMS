@@ -8,7 +8,7 @@ import { businessClock } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import type { CutoverStatus, GatewayClient } from '../../src/cutover/gateway-client.js';
+import type { GatewayClient, InflightStatus } from '../../src/cutover/gateway-client.js';
 import type { MigrationEnv } from '../../src/env.js';
 import type { DataOwner, OwnersClient, PositionParams } from '../../src/owners/index.js';
 import { defaultBackgroundRecord, type BackgroundRecord, type BackgroundStateApi } from '../../src/quiesce/background.js';
@@ -275,7 +275,7 @@ async function world(monitor: SiteMonitorRecord | null = null) {
   const ports = (extra: ResumeOptions = {}): ResumeOptions => ({ background: backgroundApi, pubsub, scheduler, ...extra });
   // No gateway write is in flight.
   const gateway = {
-    status: () => Promise.resolve({ instances: [], inflight: [] } as unknown as CutoverStatus),
+    inflightStatus: (): Promise<InflightStatus> => Promise.resolve({ instances: [], inflight: [] }),
   } as unknown as GatewayClient;
   const suspend = () => drainAndSuspend({ ...context(), gateway }, { background: backgroundApi, pubsub, scheduler });
   return { log, subscriptions, subscription, pubsub, requests, settings, background, clear, scheduler, context, ports, suspend };

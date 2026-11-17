@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { normaliseRouteKey, routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
+import { SYNTHETIC_V1_PREFIXES, normaliseRouteKey, routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
 import { baseEnvSchema, optionalEnvString } from '@opt2/platform/service-kit';
 import { carryWriteEntries, createWriteClosure, legacyWriteExceptionKeys, lineDiff, type WriteClosure } from './build-groups.js';
 import { CutoverSchemaError, FILE_STORE_TABLE, loadVersion } from './loader.js';
@@ -71,20 +71,21 @@ const OWNING_SERVICES: ReadonlySet<string> = new Set<OwningService>([
   'none',
 ]);
 
-/** A synthetic module: its service, fixture module prefix and web module path segment. */
+/** A synthetic module: its service, fixture module prefix, web module path segment and own `/v1/` resource prefixes. */
 interface SyntheticModule {
   readonly service: OwningService;
   readonly fixture: string;
   readonly web: string;
+  readonly v1: readonly string[];
 }
 
 const SYNTHETIC_MODULES: readonly SyntheticModule[] = [
-  { service: 'communications', fixture: 'communications', web: 'communications' },
-  { service: 'e-signature', fixture: 'esignature', web: 'e-signature' },
-  { service: 'finance', fixture: 'finance', web: 'finance' },
-  { service: 'reporting', fixture: 'reporting', web: 'reporting' },
-  { service: 'surveys', fixture: 'surveys', web: 'surveys' },
-  { service: 'timesheets', fixture: 'timesheets', web: 'timesheets' },
+  { service: 'communications', fixture: 'communications', web: 'communications', v1: SYNTHETIC_V1_PREFIXES.communications },
+  { service: 'e-signature', fixture: 'esignature', web: 'e-signature', v1: SYNTHETIC_V1_PREFIXES['e-signature'] },
+  { service: 'finance', fixture: 'finance', web: 'finance', v1: SYNTHETIC_V1_PREFIXES.finance },
+  { service: 'reporting', fixture: 'reporting', web: 'reporting', v1: SYNTHETIC_V1_PREFIXES.reporting },
+  { service: 'surveys', fixture: 'surveys', web: 'surveys', v1: SYNTHETIC_V1_PREFIXES.surveys },
+  { service: 'timesheets', fixture: 'timesheets', web: 'timesheets', v1: SYNTHETIC_V1_PREFIXES.timesheets },
 ];
 
 /** Bucket owners of the local signed-file routes; `fileStore` buckets hold Masa's file store (the tfiles units). */
@@ -302,28 +303,28 @@ function nativeEntries(ctx: ValidationContext, inventoried: readonly PlannedEntr
 function planEntries(ctx: ValidationContext, fixturesAvailable: boolean): EntryPlan {
   const { entries, groupOf } = inventoriedEntries(ctx);
   const written = new Set(groupOf.values());
-  const synthetic = fixturesAvailable ? [] : SYNTHETIC_MODULES.map((module) => syntheticEntry(ctx, module, written));
+  const synthetic = fixturesAvailable ? [] : SYNTHETIC_MODULES.flatMap((module) => syntheticEntries(ctx, module, written));
   for (const entry of synthetic) if (entry.group !== null) written.add(entry.group);
   return { shared: [...entries, ...nativeEntries(ctx, entries)], synthetic, written };
 }
 
 /**
- * A synthetic service's own `/v1/<fixture module>/**` entry for a fixtures-unavailable build; it names the service's one
- * fixture-backed group no carried entry writes, so those units move too, or no group, and fails when there are several.
+ * A synthetic service's own `<prefix>/**` entry per `/v1/` resource prefix for a fixtures-unavailable build; each names the
+ * service's one fixture-backed group no carried entry writes, so those units move too, or no group, and fails when there are several.
  */
-function syntheticEntry(ctx: ValidationContext, module: SyntheticModule, written: ReadonlySet<string>): PlannedEntry {
+function syntheticEntries(ctx: ValidationContext, module: SyntheticModule, written: ReadonlySet<string>): PlannedEntry[] {
   const owners = new Map(ctx.ownership.units.map((unit) => [unit.unit, unit]));
   const fixtureBacked = (unit: string): boolean => {
     const owned = owners.get(unit);
     return owned?.owner === module.service && owned.legacyTables.length > 0 && owned.legacyTables.every((t) => FIXTURE_TABLE.test(t));
   };
   const unwritten = ctx.groups.groups.filter((group) => !written.has(group.id) && group.units.every(fixtureBacked));
-  const route = globRoute(`/v1/${module.fixture}`);
+  const routes = module.v1.map(globRoute);
   if (unwritten.length > 1) {
-    throw new CutoverBuildError(`${route}: fixture-backed units span groups ${unwritten.map((group) => group.id).join(', ')}`);
+    throw new CutoverBuildError(`${routes.join(', ')}: fixture-backed units span groups ${unwritten.map((group) => group.id).join(', ')}`);
   }
   const [group] = unwritten as [CutoverGroup?];
-  return {
+  return routes.map((route): PlannedEntry => ({
     route,
     owningService: module.service,
     kind: 'write',
@@ -331,7 +332,7 @@ function syntheticEntry(ctx: ValidationContext, module: SyntheticModule, written
     units: group?.units ?? [],
     disposition: 'carry',
     rule: group === undefined ? { type: 'fixed', state: 'target' } : { type: 'group', group: group.id },
-  };
+  }));
 }
 
 /** Authority of every group, keys sorted. */

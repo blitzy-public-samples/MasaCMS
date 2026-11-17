@@ -530,8 +530,11 @@ export type RosterOperationRow = Override<
   RowOf<typeof ROSTER_OPERATION_CATALOG, 'tenant_id' | 'operation_id' | 'kind' | 'user_id' | 'payload' | 'state' | 'started_at' | 'updated_at'>,
   { state: RosterState }
 >;
-/** A `roster_operation` row of an operation recovery once halted, whatever its state now. */
-export type HaltedRosterOperationRow = RosterOperationRow & { halted_at: Date };
+/** The summary columns of a `roster_operation` row of an operation recovery once halted, whatever its state now. */
+export type HaltedRosterOperationRow = Pick<
+  RosterOperationRow,
+  'operation_id' | 'kind' | 'user_id' | 'state' | 'started_at' | 'updated_at' | 'identity_unreachable_since'
+> & { halted_at: Date };
 /** A `group_name` row; pg returns `deleted` as a boolean and the int8 `aggregate_version` as a decimal string. */
 export type GroupNameRow = Override<
   RowOf<typeof GROUP_NAME_CATALOG, 'tenant_id' | 'group_id' | 'deleted' | 'aggregate_version'>,

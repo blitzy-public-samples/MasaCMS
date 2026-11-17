@@ -84,7 +84,7 @@ const MEMORY_REGISTRY = [
   aggregate_version: 1,
   updated_at: NOW,
 }));
-const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM identity\.tenant_registry ORDER BY site_id$/;
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM identity\.tenant_registry WHERE NOT deleted ORDER BY site_id$/;
 
 describe('JSON API over an in-memory registry', () => {
   const people = recordingPeople();
@@ -96,7 +96,7 @@ describe('JSON API over an in-memory registry', () => {
   };
   const db = createRecordingDb({
     responses: [
-      [/SELECT tenant_id, site_id FROM identity\.tenant_registry ORDER BY site_id/, () => registryRows(MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id })))],
+      [/SELECT tenant_id, site_id FROM identity\.tenant_registry WHERE NOT deleted ORDER BY site_id/, () => registryRows(MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id })))],
       [REGISTRY_ENTRIES, () => registryRows(MEMORY_REGISTRY)],
       [/FROM identity\.tenant_registry WHERE tenant_id = \$1/, (_sql, values) => registryRows(MEMORY_REGISTRY.filter((row) => row.tenant_id === values[0]))],
     ],
@@ -597,6 +597,8 @@ describe('JSON API over an in-memory registry', () => {
     ['MURA_APPRELOADKEY', 're load', 'must not contain whitespace or control characters'],
     ['MURA_STRICTHTML', 'maybe', 'must be a CFML boolean'],
     ['MURA_SESSIONBASEDLOCKDOWN', 'maybe', 'must be a CFML boolean'],
+    ['MURA_SESSIONTIMEOUT', 'soon', 'must be blank or a number of minutes'],
+    ['MURA_SESSIONTIMEOUT', 'Infinity', 'must be blank or a number of minutes'],
   ])('refuses to register with a malformed %s as an EnvValidationError naming it', async (name, value, message) => {
     for (const [setting, valid] of Object.entries(VALID_MURA_ENV)) vi.stubEnv(setting, valid);
     vi.stubEnv(name, value);
@@ -615,7 +617,7 @@ describe('JSON API path forms', () => {
   const origin = 'http://localhost';
   const db = createRecordingDb({
     responses: [
-      [/SELECT tenant_id, site_id FROM identity\.tenant_registry ORDER BY site_id/, () => MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id }))],
+      [/SELECT tenant_id, site_id FROM identity\.tenant_registry WHERE NOT deleted ORDER BY site_id/, () => MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id }))],
       [REGISTRY_ENTRIES, () => MEMORY_REGISTRY],
       [/FROM identity\.tenant_registry WHERE tenant_id = \$1/, (_sql, values) => MEMORY_REGISTRY.filter((row) => row.tenant_id === values[0])],
     ],
@@ -674,7 +676,7 @@ describe('JSON API path forms', () => {
 describe('JSON API URLs from the MURA environment', () => {
   const people = recordingPeople();
   const db = createRecordingDb({
-    responses: [[/SELECT tenant_id, site_id FROM identity\.tenant_registry ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
+    responses: [[/SELECT tenant_id, site_id FROM identity\.tenant_registry WHERE NOT deleted ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
   });
   let app: FastifyInstance;
 
@@ -746,7 +748,7 @@ describe('JSON API unhandled-exception log', () => {
     close: () => Promise.resolve(),
   };
   const db = createRecordingDb({
-    responses: [[/FROM identity\.tenant_registry ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
+    responses: [[/FROM identity\.tenant_registry WHERE NOT deleted ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
   });
   let app: FastifyInstance;
 

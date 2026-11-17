@@ -40,7 +40,7 @@ import {
   type WriteContext,
 } from '../../src/migration-kit/repository.js';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '../../src/migration-kit/write-position.js';
-import { outboxSql } from '../../src/outbox/index.js';
+import { OutboxPayloadError, outboxSql } from '../../src/outbox/index.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
 import { rlsSql, tenantIdForSite, tenantRegistrySql, withMetadata, type TenantDb } from '../../src/tenancy/index.js';
@@ -310,6 +310,12 @@ function bindPrograms(site: string, ...programIds: number[]): void {
   for (const programId of programIds) programSites.set(programId, site);
 }
 
+/** Item names on which the shared state emitter fails: with its topic contract's rejection, or with any other error. */
+const UNCONTRACTED_NAME = 'Uncontracted';
+const EMITTER_FAILURE_NAME = 'Emitter failure';
+const ITEM_TOPIC = 'mk.item.changed.v1';
+const UNCONTRACTED_ERROR = '/itemId must match format "cfUuid"';
+
 /** Handler options every test app shares. */
 const BASE_OPTIONS = { owner: OWNER, mappings: MAPPINGS, units: UNITS, programSiteId: (programId: number) => programSites.get(programId) };
 
@@ -472,6 +478,9 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
       emitStateEvents: (_tx, change, write) => {
         emitted.push(change);
         emitContexts.push(write);
+        const name = change.after?.name;
+        if (name === UNCONTRACTED_NAME) return Promise.reject(new OutboxPayloadError(ITEM_TOPIC, [UNCONTRACTED_ERROR]));
+        if (name === EMITTER_FAILURE_NAME) return Promise.reject(new Error('state emitter unavailable'));
         return Promise.resolve();
       },
       operationStatus: (_db, ids) => {
@@ -645,6 +654,61 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
       ['update', 'migration-feed', `${site}-b2`],
       ['delete', 'migration-feed', `${site}-b2`],
     ]);
+  });
+
+  it('keeps a row applied and withholds, with a warning, the state event its topic contract rejects, then applies the rest', async () => {
+    const site = freshSite();
+    const tenantId = tenantIdForSite(site);
+    logLines.length = 0;
+    const res = await post('/apply', {
+      batchId: `${site}-uncontracted`,
+      origin: 'migration-feed',
+      legacyTable: 'tItems',
+      siteId: site,
+      columns: ITEM_LEGACY,
+      rows: rowsOf(ITEM_LEGACY, [
+        ['upsert', item('i1', site, 'One', 1)],
+        ['upsert', item('i2', site, UNCONTRACTED_NAME, 2)],
+        ['upsert', item('i3', site, 'Three', 3)],
+      ]),
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toEqual({ batchId: `${site}-uncontracted`, duplicate: false, applied: 3, skipped: 0 });
+    expect((await stored(site, 'item', 'item_id')).map((row) => [row.item_id, row.name])).toEqual([
+      ['i1', 'One'],
+      ['i2', UNCONTRACTED_NAME],
+      ['i3', 'Three'],
+    ]);
+    expect(emitted.map((change) => change.after?.item_id)).toEqual(['i1', 'i2', 'i3']);
+    expect(await batches(site)).toEqual([{ batch_id: `${site}-uncontracted`, legacy_table: 'tItems', origin: 'migration-feed', row_count: 3 }]);
+    expect(logLines).toContainEqual(
+      expect.objectContaining({
+        severity: 'WARNING',
+        tenantId,
+        message: `migration apply withheld the ${ITEM_TOPIC} state event of a mk.item row of tItems: ${UNCONTRACTED_ERROR}`,
+      }),
+    );
+    expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
+  });
+
+  it('fails the whole batch when the state emitter fails otherwise', async () => {
+    const site = freshSite();
+    const res = await post('/apply', {
+      batchId: `${site}-emitter-down`,
+      origin: 'migration-feed',
+      legacyTable: 'tItems',
+      siteId: site,
+      columns: ITEM_LEGACY,
+      rows: rowsOf(ITEM_LEGACY, [
+        ['upsert', item('i1', site, 'One', 1)],
+        ['upsert', item('i2', site, EMITTER_FAILURE_NAME, 2)],
+      ]),
+    });
+
+    expect(res.statusCode, res.body).toBe(500);
+    expect(await stored(site, 'item', 'item_id')).toEqual([]);
+    expect(await batches(site)).toEqual([]);
   });
 
   it('answers a repeated batchId as a duplicate without applying its rows or its watermark', async () => {

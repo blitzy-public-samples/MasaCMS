@@ -177,7 +177,7 @@ function registryAnswer(sql: string, values: readonly unknown[]): Array<Record<s
   const [first] = values;
   let rows = REGISTRY_ROWS;
   if (/WHERE lower\(site_id\) = lower\(\$1\)/.test(sql)) rows = rows.filter((row) => row.site_id.toLowerCase() === String(first).toLowerCase());
-  else if (/WHERE public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1/.test(sql)) {
+  else if (/WHERE \(public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1\)/.test(sql)) {
     rows = rows.filter((row) => row.public_user_pool_tenant === first || row.private_user_pool_tenant === first);
   } else if (/WHERE tenant_id = \$1/.test(sql)) rows = rows.filter((row) => row.tenant_id === first);
   const pooled = /SELECT (\w+) AS pool_tenant/.exec(sql)?.[1];

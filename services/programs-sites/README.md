@@ -18,6 +18,9 @@ Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/event
 | JSON API entity `site` | Public entity [core/mura/client/api/json/v1/jsonApiUtility.cfc:69-73]; an unknown `siteid` falls back to `default` [core/mura/content/contentServer.cfc:610-622] | Every `/_api/{json,ajax,rest}/v1` path, also behind `/index.cfm` and in any letter case, under every verb: `findOne`, `findAll`, `findMany`, `findQuery`, `findNew`, `findProperties`, `findPermissions`, `validate` and `delete`; the withheld `save` answers the legacy-shaped 503 ([below](#json-api-site)) |
 | Admin layout site data, a user's sites, href domains | `settingsManager.getUserSites`, `contentServer.bindToDomain(isAdmin=true)`, `utility.sanitizeHref` | `GET /v1/sites/{siteId}/shell`, `GET /v1/sites/{siteId}/user-pool-sites`, `GET /v1/user-sites` (for `web/`), `GET /v1/href-domains` (for the gateway) |
 | Site login-mail settings | `settingsManager.getSite` [core/mura/settings/settingsManager.cfc:537-567]; `getUseSSL`, `getEditProfileURL`, `getServerPort`, `getContext` [core/mura/settings/settingsBean.cfc:396-402,559-569,1395-1414] | `POST /internal/v1/sites/mail-settings:lookup` (for identity's login mail) |
+| Site RSS settings | `settingsManager.getSite` [core/mura/settings/settingsManager.cfc:537-567] as the RSS writers read it [core/mura/client/api/feed/v1/feedApiUtility.cfc:257-446]; `getContact`, `getJavaLocale`, `getDomain`, `isValidDomain`, `getUseSSL`, `getServerPort`, `getContext` [core/mura/settings/settingsBean.cfc:376-387,396-402,647-654,1189-1221,1395-1414] | `POST /internal/v1/sites/feed-settings:lookup` (for strategies-content's `/_api/feed/v1`) |
+| Site Manager `$.siteConfig` flags | `MasaScope.siteConfig` [core/mura/MasaScope.cfc:304-330] over `settingsManager.getSite` [core/mura/settings/settingsManager.cfc:537-567]; `setScaffolding`, `getDataCollection`, `setHasComments`, `setHasLockableNodes` [core/mura/settings/settingsBean.cfc:360-364,427-433,576-581,1336-1341] | `POST /internal/v1/sites/config-flags:lookup` (for strategies-content's `carch` views) |
+| JSON API `site` relations of other entities | `expandEntity` and relation paths read `findOne('site')` under the request site [core/mura/client/api/json/v1/jsonApiUtility.cfc:1086-1150,2292-2384,2424-2497] | `POST /internal/v1/sites/json-api-values:lookup` (for strategies-content's `expand=site` and `<entity>/<id>/site`) |
 | In-memory site registry rebuild | `settingsManager.setSites` [core/mura/settings/settingsManager.cfc:440-486] | `programs-sites.site.changed.v1` into every service's `tenant_registry`; legacy is refreshed by the migration projector through `gateway/legacy-bridge/cfml/site.cfm?op=refresh` |
 | Site monitor | `/_api/sitemonitor` [core/mura/content/contentServer.cfc:669-747]; ACF task registration [core/appcfc/onApplicationStart_include.cfm:549-579] | `src/jobs/sitemonitor.ts` ([below](#site-monitor)) |
 
@@ -40,6 +43,8 @@ Each step is routed by its own write set, read from migration `GET /internal/v1/
 A legacy step goes to migration `POST /internal/v1/legacy-steps`, which calls `gateway/legacy-bridge/cfml/jobs.cfm?job=<step>` with the orchestrator's `theTime` and `lastMonitored`, inside a write window when the step writes `target`-authoritative units. The last step, `setCursor`, aligns `application.lastMonitored`.
 
 `/_api/sitemonitor` is public, as in legacy, in any letter case and behind `/index.cfm`, and runs for any method the gateway forwards (GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS), as legacy does. Legacy also runs the monitor for QUERY, the WebDAV verbs, CONNECT and non-standard tokens (only TRACE gets a server 405); the platform declares and serves only those seven methods (OpenAPI 3.1.0 contracts and the gateway edge), so the target answers the others with a 4xx and does not run the monitor. The recurring trigger is the self-rescheduling Cloud Task chain on `programs-sites-sitemonitor` (900 s interval, 600 s deadline) calling `/internal/v1/jobs/sitemonitor`. Service start-up never creates it. Only `opt2-tasks reconcile --with-sitemonitor` does, which the scheduler hand-off (`migration/src/scheduler/`) runs only when a native ACF task existed, so a legacy `ping=false` monitor never runs. The hand-off seeds the cursor through `PUT /internal/v1/sitemonitor/state`.
+
+Callers never queue behind a pass, where legacy runs one per caller. A caller that arrives while a pass runs in the process gets that pass's outcome. One that finds another instance's run lease waits for it: once that holder's pass has moved the cursor, the caller is answered as covered by it; when the holder ended without moving it, the caller runs its own pass. A public caller waits at most `PUBLIC_RUN_BUDGET_MS`, the 10 s service-call timeout less `PUBLIC_RUN_MARGIN_MS` (1 s), and a pass it starts ends then, so the gateway always receives the empty `200` or the legacy 503 before its own timeout. The task route keeps the 600 s queue deadline and answers the result of the pass it ran or joined.
 
 ### JSON API site
 
@@ -90,7 +95,7 @@ Route keys are those of `platform/src/legacy-compat/route-key.ts`; the state is 
 
 | Route key | Legacy entry | Served by | Committed state |
 |---|---|---|---|
-| `admin:csettings.list` | Sites screen, with its order and deploy save | `web/` → `GET /v1/sites`, `POST /v1/sites/order` | `legacy` |
+| `admin:csettings.list` | Sites screen, with its order and deploy save | `web/` → `GET /v1/sites`, `POST /v1/sites/order` | `target` from `v0002`; `legacy` in `v0001` |
 | `admin:csettings.editsite` | Edit Site | `web/` → `GET /v1/sites/{siteId}` | `legacy` |
 | `admin:csettings.updatesite{action=update}` | Edit Site save | Legacy; `POST /v1/sites/{siteId}/update` answers the legacy-shaped 503 | `legacy-write`, decision |
 | `admin:csettings.loadcustomimage` | Image size dialog | `web/` → `GET /v1/sites/{siteId}/image-sizes/{sizeId}` | `legacy` |
@@ -100,27 +105,30 @@ Route keys are those of `platform/src/legacy-compat/route-key.ts`; the state is 
 | `api:site.http-head`, `http-options`, `http-patch`, and their `rest:` keys | HEAD, OPTIONS and PATCH of the bare entity path | `/_api/{json,ajax,rest}/v1*`, also behind `/index.cfm` | no entry: legacy |
 | `sitemonitor:run` | `/_api/sitemonitor` | `/_api/sitemonitor` | `target` from `v0002` |
 
-Why the site routes stay on legacy in this run:
+Why the other site routes stay on legacy in this run:
 
-- The site and image-size groups have carry write entries (`admin:csettings.list`, `admin:csettings.loadcustomimages`), but `tsettings`, `timagesizes` and `tsystemobjects` also have application-start writers in the inventory that are not on the prevented-writer list (`gateway/src/cutover/prevented-writers.ts`). `gateway/src/cutover/build-versions.ts` therefore keeps every `programs_sites` group `legacy`-authoritative, and the read entries follow their units. The other units have no carry write entry.
+- Only the site and image-size groups have carry write entries (`admin:csettings.list`, `admin:csettings.loadcustomimages`). `grp:programs_sites.site` is `target`-authoritative from `v0002`: `gateway/src/cutover/prevented-writers.ts` closes the application-start writers of `tsettings` (Masa's start-up bundle deploy, project-site creation and DB updates, and the theme-config site save). `grp:programs_sites.image_size` stays `legacy`-authoritative in every version: the theme-config image-size upsert (`settingsImageSizeBean.save` through `core/mura/extend/extendManager.cfc:1998-2012`, called at `core/appcfc/onApplicationStart_include.cfm:844`) writes `timagesizes` on every start-up, reload and re-initialisation, and nothing closes it. The other units have no carry write entry, and every read entry's units are all ten `programs_sites` units, so the reads stay `legacy`.
 - The Edit Site save and JSON API `site.save` write `trazunasettings` on every save [core/mura/settings/settingsManager.cfc:271], a decision-list table, plus strategies-content and people extension definitions and `tfiles`. They stay `legacy-write` entries, run on legacy inside write windows.
 
 The service implements the other routes in full, so a later version can move them once those blockers are settled. The two withheld saves are not built.
 
-### `/v1` APIs
+### `/v1` and `/v2` APIs
 
 | Method and path | Requires | Does |
 |---|---|---|
 | `GET /v1/sites` | `s2` | Sites screen rows, sorted as legacy sorts them |
+| `GET /v2/sites` | `s2` | One keyset page of the Sites screen rows in site-id order: `limit` 1 to 1000 (default 50), `after` the previous page's `next`; answers `{items: SiteListItem[], next}`, `next` null after the last page |
 | `POST /v1/sites/order` | `s2` | Saves bind order and batch-deploy flags, then returns the rows |
 | `GET /v1/sites/{siteId}` | `s2`, `site-admin` | One site's Edit Site data: stored settings, `tsettings` extend sets with their values, custom image sizes. Stored Razuna settings stay on legacy and are not returned ([`web/README.md`](../../web/README.md#known-limitations)) |
 | `GET /v1/sites/{siteId}/shell` | `s2`, `site-admin`, `system-user` | Site settings the admin layout reads |
 | `GET /v1/sites/{siteId}/user-pool-sites` | `s2`, `site-admin`, `system-user` | The same settings of the site's registered private, then public, user pool sites, each once; the user form's photo URL reads a pooled user's site |
 | `POST /v1/sites/{siteId}/update` | `s2`, `site-admin` | Refuses the Edit Site save: `invalidParameters` 400 for any action but `Update`, the legacy-shaped 503 for the withheld `Update`; it consumes no CSRF token and writes nothing |
 | `GET /v1/sites/{siteId}/image-sizes` | `s2`, `site-admin` | The site's custom image sizes |
+| `GET /v2/sites/{siteId}/image-sizes` | `s2`, `site-admin` | One keyset page of the site's custom image sizes by `sizeid`, paged as `GET /v2/sites` |
 | `GET`, `PUT`, `DELETE /v1/sites/{siteId}/image-sizes/{sizeId}` | `s2`, `site-admin` | Read (defaulted new size for an unknown id), create or update, delete |
 | `GET /v1/href-domains` | `service:gateway` | Registered domains and the site domain an absolute href is checked against |
 | `GET /v1/user-sites` | `s2`, `site-admin`, `system-user` | Sites the token's user administers, and the site the given host binds to |
+| `GET /v2/user-sites` | `s2`, `site-admin`, `system-user` | One keyset page of those sites in site-id order, paged as `GET /v2/sites`: the registry's page for `s2`, else the session's site ids in code-point order; answers `{items: UserSite[], next}` and binds no host |
 
 ### Internal and managed routes
 
@@ -129,6 +137,9 @@ The service implements the other routes in full, so a later version can move the
 | `POST /internal/v1/migration/apply`; `GET /internal/v1/migration/export`, `changes`, `position`; `GET`, `POST /internal/v1/migration/watermark`; `POST /internal/v1/migration/gate` | service | `platform.migration` |
 | `GET`, `PUT /internal/v1/sitemonitor/state` | service | `platform.migration` |
 | `POST /internal/v1/sites/mail-settings:lookup` | service | `service:identity`: the mail settings `getSite` resolves for each listed id, in order |
+| `POST /internal/v1/sites/feed-settings:lookup` | service | `service:strategies-content`: the contact, Java locale, domains, SSL and remote port and context `getSite` resolves for each listed id, in order |
+| `POST /internal/v1/sites/config-flags:lookup` | service | `service:strategies-content`: the hasLockableNodes, hasChangesets, dataCollection, hasComments and scaffolding flags `getSite` resolves for each listed id, in order |
+| `POST /internal/v1/sites/json-api-values:lookup` | service | `service:strategies-content`: the values the JSON API's `site` findOne answers for each listed id under the given endpoint, in order; an unregistered id answers the new bean |
 | `GET /internal/v1/sites/{siteId}/image-sizes` | service | `service:strategies-content`: the custom image sizes of the site `getSite` resolves (an unknown id resolves to `default`), by `sizeid` |
 | `POST /internal/v1/task-queues/{queue}/pause`, `resume`, `ensure` | service | `platform.migration`, `platform.operator` |
 | `POST /internal/v1/events/programs-sites.programs-sites.site.changed.v1` | Pub/Sub push | `service:pubsub-invoker` |
@@ -150,11 +161,11 @@ Produces `programs-sites.site.changed.v1`, kind `state`:
 | Envelope field | Value |
 |---|---|
 | `aggregateType`, `aggregateId` | `site`, the legacy site id; `aggregateId` is the ordering key |
-| `aggregateVersion` | The site's `row_version`, incremented in the same transaction |
+| `aggregateVersion` | The site's `row_version`, incremented in the same transaction. A deletion, and a later creation of the same site id, continue above the highest version in the site's outbox rows |
 | `tenantId` | The site's tenant |
-| `payload` | `siteId`, `publicUserPoolId`, `privateUserPoolId`, `categoryPoolId`, `filePoolId`, `displayPoolId`, `contentPoolIds`, `domains` |
+| `payload` | `siteId`, `publicUserPoolId`, `privateUserPoolId`, `categoryPoolId`, `filePoolId`, `displayPoolId`, `contentPoolIds`, `domains`; `deleted: true` when the site was deleted, the other fields then carrying its last stored state |
 
-Every other service consumes it, and so does programs-sites itself, into `<schema>.tenant_registry`. Pool ids arrive as legacy site ids after Masa's defaults, and consumers store each with its tenant UUID. Migration applies emit it too, as a state event.
+Every other service consumes it, and so does programs-sites itself, into `<schema>.tenant_registry`. Pool ids arrive as legacy site ids after Masa's defaults, and consumers store each with its tenant UUID; a `deleted` event marks the site's entry deleted, so the site is unknown to tokens and routes while outbox sweeps and task scans still reach its tenant. Migration applies emit it too, as a state event, for each `tsettings` insert, update and delete.
 
 ## How to run
 
@@ -168,5 +179,5 @@ npm run test:security
 
 `test/unit` and `test/contract` need nothing external. The isolation and event suites need PostgreSQL 16 through `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, plus `PUBSUB_EMULATOR_HOST` where they publish, and create a throwaway schema and roles per run through `@opt2/platform/testing`.
 
-- **Local.** `harness/repro/up.sh` starts the service natively with `PORT=8113` and `PG_USER=programs_sites_app`. It reads `baseEnvSchema` of `@opt2/platform/service-kit` (details in [`platform/README.md`](../../platform/README.md#configuration)): `PORT`, `OPT2_SERVICE_NAME`, `OPT2_ENV`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`, `OPT2_DB_AUTH`, `CLOUD_SQL_INSTANCE`, `PUBSUB_EMULATOR_HOST`, `GOOGLE_CLOUD_PROJECT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OPT2_JWKS_URL`, `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, `OPT2_SERVICE_URLS`, `OPT2_STATE_DIR`, `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER`, `TZ`. The service calls identity (CSRF) and migration (authority, legacy steps), and creates tasks for itself and strategies-content, so those must resolve through `OPT2_SERVICE_URLS` or `OPT2_MIGRATION_URL`.
+- **Local.** `harness/repro/up.sh` starts the service natively with `PORT=8113` and `PG_USER=programs_sites_app`. It reads `baseEnvSchema` of `@opt2/platform/service-kit` (details in [`platform/README.md`](../../platform/README.md#configuration)): `PORT`, `OPT2_SERVICE_NAME`, `OPT2_ENV`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`, `OPT2_DB_AUTH`, `CLOUD_SQL_INSTANCE`, `PUBSUB_EMULATOR_HOST`, `GOOGLE_CLOUD_PROJECT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_LOG_LEVEL`, `OPT2_JWKS_URL`, `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, `OPT2_SERVICE_URLS`, `OPT2_STATE_DIR`, `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER`, `TZ`. It also reads Masa settings from `MURA_<KEY>` variables, as Masa start-up does [core/appcfc/onApplicationStart_include.cfm:136-150,167-181], and refuses to start on a malformed one: `MURA_LOCALE`, configBean's locale and so the RSS Java locale of a site without a siteLocale (`Server` when unset, empty or a `${…}`/`{{…}}` expression, which only CFML evaluates); `MURA_ADMINSSL`, `MURA_PORT`, `MURA_CONTEXT`, `MURA_ADMINDOMAIN` and `MURA_APPRELOADKEY`, for the JSON API `site` links, route key and CORS allow-list and a user's sites. The service calls identity (CSRF) and migration (authority, legacy steps), and creates tasks for itself and strategies-content, so those must resolve through `OPT2_SERVICE_URLS` or `OPT2_MIGRATION_URL`.
 - **Cloud.** Cloud Run with `min_instance_count = 0`, internal-only ingress, Cloud SQL IAM database authentication (`OPT2_DB_AUTH=iam`) as a member of `programs_sites_app`, and the OpenTelemetry Collector sidecar (`infra/terraform/`, plan only).

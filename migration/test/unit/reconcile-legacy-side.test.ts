@@ -54,8 +54,10 @@ interface FakeTable {
 
 const FROM_TABLE = / FROM \[([^\]]+)\]\.\[([^\]]+)\]/;
 const SITES_SQL = 'SELECT DISTINCT [SiteID] FROM [dbo].[tsettings] ORDER BY [SiteID];';
-const OWNERS_SQL = 'SELECT [fileID], [siteID] FROM [dbo].[tfiles];';
-const TYPES_SQL = 'SELECT [fileID], [contentType], [contentSubType], [fileExt] FROM [dbo].[tfiles];';
+/** Start of the batched tfiles lookup; the fake answers it from the rows its raw answers hold under this text. */
+const TFILES_LOOKUP = 'SELECT [fileID], [siteID], [contentType], [contentSubType], [fileExt] FROM [dbo].[tfiles] WHERE [fileID] IN (';
+/** File ids each tfiles lookup bound, in lookup order. */
+const tfilesLookups: unknown[][] = [];
 const SNAPSHOT_SQL = 'SELECT state, manifest_complete FROM migration.snapshot WHERE seq = $1';
 const MANIFEST_PAGE_SQL =
   'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan FROM migration.file_manifest WHERE snapshot_seq = $1 ORDER BY site_id COLLATE "C", path COLLATE "C" LIMIT $2';
@@ -113,6 +115,12 @@ class FakeRequest extends EventEmitter {
       return Promise.resolve({
         recordset: Object.keys(this.tables).map((name) => ({ schema_name: name.slice(0, name.indexOf('.')), table_name: name.slice(name.indexOf('.') + 1) })),
       });
+    }
+    if (text.startsWith(TFILES_LOOKUP)) {
+      // The legacy collation compares char(35) ids case-insensitively and without trailing spaces.
+      const wanted = new Set(Object.values(this.inputs).map((value) => String(value).trim().toUpperCase()));
+      tfilesLookups.push(Object.values(this.inputs));
+      return Promise.resolve({ recordset: (this.raw[TFILES_LOOKUP] ?? []).filter((row) => wanted.has(String(row.fileID).trim().toUpperCase())) });
     }
     if (!this.stream) {
       const rows = this.raw[text];
@@ -473,13 +481,9 @@ const TABLES: Record<string, FakeTable> = {
 
 const RAW: Record<string, readonly Row[]> = {
   [SITES_SQL]: ['default', 'tenant-a', 'tenant-b', 'umbrella'].map((SiteID) => ({ SiteID })),
-  [OWNERS_SQL]: [
-    { fileID: FILE_A, siteID: 'tenant-a' },
-    { fileID: FILE_N, siteID: null },
-  ],
-  [TYPES_SQL]: [
-    { fileID: FILE_A, contentType: 'image', contentSubType: 'jpeg', fileExt: 'jpg' },
-    { fileID: FILE_N, contentType: 'image', contentSubType: 'png', fileExt: 'png' },
+  [TFILES_LOOKUP]: [
+    { fileID: FILE_A, siteID: 'tenant-a', contentType: 'image', contentSubType: 'jpeg', fileExt: 'jpg' },
+    { fileID: FILE_N, siteID: null, contentType: 'image', contentSubType: 'png', fileExt: 'png' },
   ],
 };
 
@@ -918,14 +922,22 @@ const listing = (files: { name: string; size?: number; sha256?: string }[], file
 describe('readLegacyObjects', () => {
   it('lists the live store per site and keys each object under the tenant of its tfiles row', async () => {
     const listings: Record<string, FileListing> = {
-      'tenant-a': listing([{ name: `${FILE_A}.jpg`, size: 5 }, { name: `${FILE_A}_small.jpg` }, { name: `${FILE_X}.pdf` }, { name: 'readme.txt' }]),
+      'tenant-a': listing([
+        { name: `${FILE_A}.jpg`, size: 5 },
+        { name: `${FILE_A}_small.jpg` },
+        { name: `${FILE_X}.pdf` },
+        { name: 'readme.txt' },
+        { name: 'QAORPHAN-FILE-0000-0000000000000058.txt' },
+      ]),
       'tenant-b': listing([{ name: `${FILE_A}.jpg` }]),
       default: listing([]),
       umbrella: listing([{ name: `${FILE_N}.png` }]),
     };
     const filesList = vi.fn((siteId: string) => Promise.resolve(listings[siteId] as FileListing));
     const { deps, database } = setup({ bridge: { filesList } as unknown as BridgeClient });
+    tfilesLookups.length = 0;
     const objects = await readLegacyObjects(deps, { legacySource: 'live', database });
+    expect(tfilesLookups).toEqual([[FILE_A, FILE_X], [FILE_A], [FILE_N]]);
     const hash = 'ab'.repeat(32);
     expect(objects).toEqual({
       status: 'compared',

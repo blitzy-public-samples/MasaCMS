@@ -4,7 +4,7 @@ import { z } from '@opt2/platform/service-kit';
 
 import { runBackfill, runFeed, type BackfillResult, type FeedResult } from '../../apply/index.js';
 import { createMigrationContext, type MigrationContext } from '../../context.js';
-import type { ApplyResult, DataOwner, OwnersClient } from '../../owners/index.js';
+import type { DataOwner, OwnersClient } from '../../owners/index.js';
 import { getSnapshot, latestSnapshot } from '../../snapshot/index.js';
 import { ProcessControlError, type ProcessControlStep, type ProcessRestartResult } from '../process-control.js';
 import { fail, pass, skipped, type FaultAssertion, type FaultEnv, type FaultRunOutput, type FaultScript } from './types.js';
@@ -16,9 +16,16 @@ const RESTORED = 'owner-restored';
 const RERUN = 'rerun-idempotent';
 const RESTORE_STEP = 'restore-owner';
 const WORKLOAD_REASON = "run the deterministic legacy workload before this fault or pass {command:'backfill'}";
-const NO_APPLY_REASON = 'no apply reached the restarting owner';
+const NO_CALL_REASON = 'no call to the restarting owner failed after its restart started';
 const NO_SNAPSHOT_REASON = 'no ready snapshot to backfill from';
 const NOT_RESTORED_REASON = 'the owner was not restored, so the apply was not re-run';
+
+// Owners of the OwnersClient endpoints that take no owner argument.
+const CONTENT: DataOwner = 'strategies-content';
+const FINANCE: DataOwner = 'finance';
+const REPORTING: DataOwner = 'reporting';
+const PROGRAMS_SITES: DataOwner = 'programs-sites';
+const COMMUNICATIONS: DataOwner = 'communications';
 
 const commandSchema = z.enum(['feed', 'backfill']);
 
@@ -66,7 +73,7 @@ type RunOutcome = { ok: true; result: FeedResult | BackfillResult } | { ok: fals
 
 type RestartOutcome = { ok: true; result: ProcessRestartResult } | { ok: false; error: unknown };
 
-/** Batches the restarting owner acknowledged, whether its restart started, and the first apply to it that failed afterwards. */
+/** Batches the restarting owner acknowledged, whether its restart started, and its first call failing afterwards as `<method>: <message>`. */
 interface RestartStats {
   acknowledged: number;
   restartStarted: boolean;
@@ -104,7 +111,7 @@ function entryProblem(processControl: FaultEnv['processControl'], owner: DataOwn
   }
 }
 
-/** `owners` whose `apply` counts `owner`'s acknowledged batches and calls `startRestart` once, after the `afterBatches`-th. */
+/** `owners` recording the first call to `owner` failing after `startRestart`, which `apply` calls once, after the `afterBatches`-th acknowledged batch. */
 function wrapOwners(
   owners: OwnersClient,
   owner: DataOwner,
@@ -112,24 +119,57 @@ function wrapOwners(
   startRestart: () => void,
 ): { client: OwnersClient; stats: RestartStats } {
   const stats: RestartStats = { acknowledged: 0, restartStarted: false };
-  const apply: OwnersClient['apply'] = async (target, request) => {
-    let result: ApplyResult;
+  const record = (method: keyof OwnersClient, target: DataOwner, error: unknown): void => {
+    if (target === owner && stats.restartStarted) stats.failedAfterRestart ??= `${method}: ${messageOf(error)}`;
+  };
+  /** Runs `call`, addressed to `target`, recording its failure. */
+  const watched = async <T>(method: keyof OwnersClient, target: DataOwner, call: () => Promise<T>): Promise<T> => {
     try {
-      result = await owners.apply(target, request);
+      return await call();
     } catch (error) {
-      if (target === owner && stats.restartStarted) stats.failedAfterRestart ??= messageOf(error);
+      record(method, target, error);
       throw error;
     }
-    if (target === owner) {
-      stats.acknowledged += 1;
-      if (stats.acknowledged >= afterBatches && !stats.restartStarted) {
-        stats.restartStarted = true;
-        startRestart();
-      }
-    }
-    return result;
   };
-  return { client: { ...owners, apply }, stats };
+  const client: OwnersClient = {
+    async apply(target, request) {
+      const result = await watched('apply', target, () => owners.apply(target, request));
+      if (target === owner) {
+        stats.acknowledged += 1;
+        if (stats.acknowledged >= afterBatches && !stats.restartStarted) {
+          stats.restartStarted = true;
+          startRestart();
+        }
+      }
+      return result;
+    },
+    export: (...args) => watched('export', args[0], () => owners.export(...args)),
+    async *exportPages(...args) {
+      try {
+        yield* owners.exportPages(...args);
+      } catch (error) {
+        record('exportPages', args[0], error);
+        throw error;
+      }
+    },
+    changes: (...args) => watched('changes', args[0], () => owners.changes(...args)),
+    position: (...args) => watched('position', args[0], () => owners.position(...args)),
+    watermark: (...args) => watched('watermark', args[0], () => owners.watermark(...args)),
+    putWatermark: (...args) => watched('putWatermark', args[0], () => owners.putWatermark(...args)),
+    gate: (...args) => watched('gate', args[0], () => owners.gate(...args)),
+    putObject: (...args) => watched('putObject', CONTENT, () => owners.putObject(...args)),
+    getObject: (...args) => watched('getObject', CONTENT, () => owners.getObject(...args)),
+    deleteObject: (...args) => watched('deleteObject', CONTENT, () => owners.deleteObject(...args)),
+    getAttachmentObject: (...args) => watched('getAttachmentObject', FINANCE, () => owners.getAttachmentObject(...args)),
+    getExportObject: (...args) => watched('getExportObject', REPORTING, () => owners.getExportObject(...args)),
+    siteMonitorState: () => watched('siteMonitorState', PROGRAMS_SITES, () => owners.siteMonitorState()),
+    putSiteMonitorState: (...args) => watched('putSiteMonitorState', PROGRAMS_SITES, () => owners.putSiteMonitorState(...args)),
+    adoptScheduledTasks: (...args) => watched('adoptScheduledTasks', COMMUNICATIONS, () => owners.adoptScheduledTasks(...args)),
+    cancelAdoptedScheduledTasks: (...args) =>
+      watched('cancelAdoptedScheduledTasks', COMMUNICATIONS, () => owners.cancelAdoptedScheduledTasks(...args)),
+    queueControl: (...args) => watched('queueControl', args[0], () => owners.queueControl(...args)),
+  };
+  return { client, stats };
 }
 
 /** Sequence of the ready snapshot with the lowest sequence, or undefined when none is ready. */
@@ -154,7 +194,7 @@ function runPlan(ctx: MigrationContext, plan: Plan): Promise<FeedResult | Backfi
   return runFeed(ctx, plan.snapshotSeq === undefined ? {} : { snapshotSeq: plan.snapshotSeq });
 }
 
-/** `apply-interrupted`: passes only when an apply to the owner failed after its restart started and the run did not succeed. */
+/** `apply-interrupted`: passes only when a call to the owner failed after its restart started and the run did not succeed. */
 function interruptedAssertion(stats: RestartStats, afterBatches: number, outcome: RunOutcome): FaultAssertion {
   const { acknowledged, restartStarted, failedAfterRestart } = stats;
   const ended = outcome.ok ? { exitCode: outcome.result.exitCode } : { error: messageOf(outcome.error) };
@@ -163,9 +203,9 @@ function interruptedAssertion(stats: RestartStats, afterBatches: number, outcome
       ? fail(INTERRUPTED, { acknowledged, afterBatches, ...ended }, WORKLOAD_REASON)
       : fail(INTERRUPTED, { acknowledged, afterBatches, ...ended });
   }
-  if (failedAfterRestart === undefined) return fail(INTERRUPTED, { acknowledged, ...ended }, NO_APPLY_REASON);
+  if (failedAfterRestart === undefined) return fail(INTERRUPTED, { acknowledged, ...ended }, NO_CALL_REASON);
   if (!outcome.ok || outcome.result.exitCode !== 0) return pass(INTERRUPTED, { acknowledged, failedAfterRestart });
-  return fail(INTERRUPTED, { acknowledged, failedAfterRestart, ...ended }, 'the run succeeded although an apply to the restarting owner failed');
+  return fail(INTERRUPTED, { acknowledged, failedAfterRestart, ...ended }, 'the run succeeded although a call to the restarting owner failed');
 }
 
 /** `owner-healthy` once the started restart settled, with the progress `resume` restores from; `oldPid` was recorded at its start. */

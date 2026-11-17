@@ -62,6 +62,7 @@ const entryOf = (table: CutoverTable, route: string): CutoverEntry | undefined =
 const targetRoutes = (table: CutoverTable): string[] => table.entries.filter((e) => e.state === 'target').map((e) => e.route);
 const withoutState = (table: CutoverTable) => table.entries.map(({ tableVersion: _v, state: _s, ...rest }) => rest);
 const NATIVE_TARGETS = ['bridge:/gateway/legacy-bridge/**', 'opt2:/opt2/stub/**', 'static:/_next/**'];
+const HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 
 // ---- Committed inputs ----
 
@@ -187,16 +188,50 @@ describe('committed inputs', () => {
     expect(serialiseVersion(unavailable[0] as CutoverTable)).toBe(serialiseVersion(available[0] as CutoverTable));
     const added = (unavailable[1] as CutoverTable).entries.filter((entry) => !entryOf(available[1] as CutoverTable, entry.route));
     expect(added.map((entry) => [entry.route, entry.owningService, entry.state, entry.kind])).toEqual([
-      ['static:/v1/communications/**', 'communications', 'target', 'write'],
-      ['static:/v1/esignature/**', 'e-signature', 'target', 'write'],
-      ['static:/v1/finance/**', 'finance', 'target', 'write'],
-      ['static:/v1/reporting/**', 'reporting', 'target', 'write'],
-      ['static:/v1/surveys/**', 'surveys', 'target', 'write'],
-      ['static:/v1/timesheets/**', 'timesheets', 'target', 'write'],
+      ['opt2:/v1/esignature/**', 'e-signature', 'target', 'write'],
+      ['opt2:/v1/finance/**', 'finance', 'target', 'write'],
+      ['opt2:/v1/messages/**', 'communications', 'target', 'write'],
+      ['opt2:/v1/reporting/**', 'reporting', 'target', 'write'],
+      ['opt2:/v1/surveys/**', 'surveys', 'target', 'write'],
+      ['opt2:/v1/templates/**', 'communications', 'target', 'write'],
+      ['opt2:/v1/timesheets/**', 'timesheets', 'target', 'write'],
     ]);
+    const [messages, templates] = ['opt2:/v1/messages/**', 'opt2:/v1/templates/**'].map((route) => entryOf(unavailable[1] as CutoverTable, route));
+    expect([templates?.group, templates?.units]).toEqual([messages?.group, messages?.units]);
     expect(servesSyntheticRoutes(unavailable[1] as CutoverTable)).toBe(true);
     expect(available.some(servesSyntheticRoutes)).toBe(false);
   });
+
+  it.each(['communications', 'e-signature', 'finance', 'reporting', 'surveys', 'timesheets'])(
+    "routes every /v1/ path of %s's contract to its own entry only when fixtures are unavailable",
+    async (service) => {
+      const contract = parse(await readFile(join(committed.repoRoot, `services/${service}/contracts/openapi.yaml`), 'utf8')) as {
+        paths: Record<string, Record<string, unknown>>;
+      };
+      const calls = Object.entries(contract.paths)
+        .filter(([path]) => path.startsWith('/v1/'))
+        .flatMap(([path, item]) =>
+          Object.keys(item)
+            .filter((method) => HTTP_METHODS.has(method))
+            .map((method) => [method.toUpperCase(), path.replaceAll(/\{[^}]+\}/g, 'x')]),
+        );
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [table, owner] of [
+        [unavailable[1] as CutoverTable, service],
+        [available[1] as CutoverTable, undefined],
+      ] as const) {
+        const routes = table.entries.map((entry) => entry.route);
+        for (const [method = '', path = ''] of calls) {
+          const result = routeKeyForRequest({ method, path, query: { siteid: 'tenant-a' }, headers: {} });
+          const routed = entryOf(table, matchRouteKey(result, routes) ?? '');
+          expect([result.family, result.siteId], `${method} ${path}`).toEqual(['opt2', 'tenant-a']);
+          expect(routed === undefined ? undefined : [routed.owningService, routed.state], `${table.tableVersion} ${method} ${path}`).toEqual(
+            owner === undefined ? undefined : [owner, 'target'],
+          );
+        }
+      }
+    },
+  );
 
   it('keys each OPT-2 glob so live requests under it resolve to it', async () => {
     const v0002 = available[1] as CutoverTable;
@@ -221,7 +256,8 @@ describe('committed inputs', () => {
   it.each([
     ['/opt2/stub', 'opt2:/opt2/stub/**'],
     ['/core/vendor', 'static:/core/vendor/**'],
-    ['/v1/finance', 'static:/v1/finance/**'],
+    ['/v1/finance', 'opt2:/v1/finance/**'],
+    ['/v1/messages', 'opt2:/v1/messages/**'],
   ])('derives the glob of %s from the route-key family', (prefix, key) => {
     expect(globRoute(prefix)).toBe(key);
   });
@@ -487,17 +523,17 @@ describe('buildVersions on fixture inventories', () => {
 
   it('names the uncarried fixture-backed group of a synthetic service when fixtures are unavailable', () => {
     const ctx = fixtureContext({ units: { ...UNITS, 'reporting.session_tracking': ['synthetic.session_tracking'] } });
-    expect(() => buildVersions(ctx, { available: false })).toThrow(/static:\/v1\/reporting\/\*\*: fixture-backed units span groups/);
+    expect(() => buildVersions(ctx, { available: false })).toThrow(/opt2:\/v1\/reporting\/\*\*: fixture-backed units span groups/);
     const single = fixtureContext();
     const v0002 = buildVersions(single, { available: false })[1] as CutoverTable;
-    expect(entryOf(v0002, 'static:/v1/reporting/**')).toMatchObject({
+    expect(entryOf(v0002, 'opt2:/v1/reporting/**')).toMatchObject({
       kind: 'write',
       group: 'grp:reporting.export_definition',
       units: ['reporting.export_definition'],
       state: 'target',
     });
-    expect(entryOf(v0002, 'static:/v1/timesheets/**')).toMatchObject({ group: 'grp:timesheets.timesheet', state: 'target' });
-    expect(entryOf(v0002, 'static:/v1/finance/**')).toMatchObject({ group: null, units: [], state: 'target' });
+    expect(entryOf(v0002, 'opt2:/v1/timesheets/**')).toMatchObject({ group: 'grp:timesheets.timesheet', state: 'target' });
+    expect(entryOf(v0002, 'opt2:/v1/finance/**')).toMatchObject({ group: null, units: [], state: 'target' });
     expect(v0002.groupAuthority['grp:reporting.export_definition']).toBe('target');
   });
 
@@ -578,7 +614,7 @@ describe('main', () => {
     const { code, stdout, stderr } = await run(['--fixtures', 'auto'], { OPT2_STATE_DIR: state });
     expect(code).toBe(1);
     expect(stdout).toContain(`build-versions: ${file('v0001')} is up to date`);
-    expect(stdout.some((line) => line.includes('"route": "static:/v1/finance/**"'))).toBe(true);
+    expect(stdout.some((line) => line.includes('"route": "opt2:/v1/finance/**"'))).toBe(true);
     expect(stderr).toEqual(['v0002', 'v0003'].map((id) => `build-versions: ${file(id)} differs from the build; run with --write`));
   });
 

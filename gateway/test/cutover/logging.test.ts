@@ -9,7 +9,8 @@ import type { InflightClearInput, InflightClearResult, InflightStore } from '../
 import { loadGroups, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import { registerCutoverRoutes } from '../../src/cutover/routes.js';
-import { createCutoverState, type CutoverState, type CutoverStatus } from '../../src/cutover/state.js';
+import { createCutoverState, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
+import { pagesOf } from '../helpers/versions.js';
 
 type LogLine = Record<string, unknown>;
 
@@ -181,34 +182,47 @@ describe('orphan-clear log line', () => {
 
 describe('status request lines', () => {
   const apps: FastifyInstance[] = [];
-  const STATUS_ROUTE = '/internal/v1/cutover/status';
-  const STATUS = { tableVersion: 'v0002', previous: 'v0001', epoch: 4 } as unknown as CutoverStatus;
+  const STATUS: CutoverStatus = {
+    tableVersion: 'v0002',
+    previous: 'v0001',
+    epoch: 4,
+    groupAuthority: {},
+    frozen: [],
+    instances: [{ instanceId: 'gw-1', seenEpoch: 4, heartbeatAt: AT, live: true }],
+    acknowledgedEpoch: 4,
+    inflight: [],
+    sessionMode: 'legacy-primary',
+  };
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map((app) => app.opt2.shutdown()));
   });
 
-  it.each<[string, string | null, number, string[][]]>([
-    ['a migration poll', 'migration', 200, [['DEBUG', 'request completed']]],
-    [
-      'a poll without a credential',
-      null,
-      401,
+  it.each<[string, string, string | null, number, string[][]]>(
+    ['/internal/v1/cutover/status', '/internal/v2/cutover/status'].flatMap((url) => [
+      ['a migration poll', url, 'migration', 200, [['DEBUG', 'request completed']]],
       [
-        ['WARNING', 'request denied: missing-credential'],
-        ['INFO', 'request completed'],
+        'a poll without a credential',
+        url,
+        null,
+        401,
+        [
+          ['WARNING', 'request denied: missing-credential'],
+          ['INFO', 'request completed'],
+        ],
       ],
-    ],
-    [
-      'a poll by a caller without the role',
-      'identity',
-      403,
       [
-        ['WARNING', 'request denied: forbidden'],
-        ['INFO', 'request completed'],
+        'a poll by a caller without the role',
+        url,
+        'identity',
+        403,
+        [
+          ['WARNING', 'request denied: forbidden'],
+          ['INFO', 'request completed'],
+        ],
       ],
-    ],
-  ])('logs %s at debug only when it succeeds', async (_label, caller, status, expected) => {
+    ]),
+  )('logs %s of %s at debug only when it succeeds', async (_label, url, caller, status, expected) => {
     const { logger, lines } = captureLogger('debug');
     const app = await createService({
       name: 'gateway',
@@ -226,17 +240,21 @@ describe('status request lines', () => {
       logger,
     });
     apps.push(app);
-    await registerCutoverRoutes(app, { state: only<CutoverState>({ status: () => Promise.resolve(STATUS) }), inflight: only<InflightStore>({}) });
+    const state = only<CutoverState>({
+      statusPages: () => Promise.resolve(pagesOf(STATUS)),
+      statusV2Pages: () => Promise.resolve(pagesOf<CutoverStatusV2['inflight'][number]>({ ...STATUS, inflight: [] })),
+    });
+    await registerCutoverRoutes(app, { state, inflight: only<InflightStore>({}) });
     await app.ready();
 
     const headers =
       caller === null ? {} : { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller, audience: 'gateway', roles: rolesForService(caller) })}` };
-    const res = await app.inject({ method: 'GET', url: STATUS_ROUTE, headers });
+    const res = await app.inject({ method: 'GET', url, headers });
 
     expect(res.statusCode).toBe(status);
     expectConforming(lines());
     const requestLines = lines().filter((line) => line.requestId !== undefined);
     expect(requestLines.map((line) => [line.severity, line.message])).toStrictEqual(expected);
-    for (const line of requestLines) expect(line).toMatchObject({ route: STATUS_ROUTE, httpMethod: 'GET', statusCode: status });
+    for (const line of requestLines) expect(line).toMatchObject({ route: url, httpMethod: 'GET', statusCode: status });
   });
 });

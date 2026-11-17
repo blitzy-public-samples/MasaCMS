@@ -116,7 +116,7 @@ function failingCommitIdentity(accounts: ReadonlyMap<string, AccountView>): { cl
     lookupMemberships: unused('lookupMemberships'),
     userMemberships: unused('userMemberships'),
     siteGroups: unused('siteGroups'),
-    userGroups: unused('userGroups'),
+    userGroupsPage: unused('userGroupsPage'),
     actingUser: unused('actingUser'),
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),

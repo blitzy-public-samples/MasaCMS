@@ -251,6 +251,8 @@ describe.skipIf(!(await pgAvailable()))('search over the content schema', () => 
       [{ itemsPerPage: '1', startIndex: '2' }, ['Orchid leaflet'], { recordCount: 2, nextN: 1, pageIndex: 2 }],
       [{ itemsPerPage: '2', startIndex: '2' }, ['Orchid leaflet'], { recordCount: 2, nextN: 2, pageIndex: 1 }],
       [{ pageIndex: '9' }, ['Orchid', 'Orchid leaflet'], { recordCount: 2, nextN: 20, pageIndex: 1 }],
+      [{ itemsPerPage: '1', pageIndex: '0' }, [''], { recordCount: 2, nextN: 1, pageIndex: 0 }],
+      [{ itemsPerPage: '-1' }, [], { recordCount: 2, nextN: -1, pageIndex: 1 }],
     ])('pages by the URL scope %j', async (url, expected, paging) => {
       const result = await query(filtered, filteredQuery, { url });
       expect('rows' in result && [titles(result.rows), result.paging]).toEqual([expected, paging]);
@@ -261,9 +263,27 @@ describe.skipIf(!(await pgAvailable()))('search over the content schema', () => 
       expect('rows' in result && result.paging).toEqual({ recordCount: 0, nextN: 20, pageIndex: 1 });
     });
 
-    it.each([[{ offset: '1' }], [{ pageIndex: '0' }]])('answers server_error for the URL scope %j', async (url) => {
+    it('answers server_error for a numeric offset', async () => {
+      const url = { offset: '1' };
       await expect(query(filtered, filteredQuery, { url })).rejects.toMatchObject({ type: 'server_error' });
       await expect(query(filtered, filteredQuery, { url })).rejects.toBeInstanceOf(LegacyApiError);
+    });
+
+    it('reads every column of a row before the first record as blank', async () => {
+      const first = await query(filtered, filteredQuery);
+      const blank = await query(filtered, filteredQuery, { url: { itemsPerPage: '1', pageIndex: '-1' } });
+      if (!('rows' in first) || !('rows' in blank)) throw new Error('expected pages');
+      expect(blank.rows).toEqual([Object.fromEntries(Object.keys(first.rows[0] ?? {}).map((column) => [column, '']))]);
+      expect(blank.paging).toEqual({ recordCount: 2, nextN: 1, pageIndex: -1 });
+    });
+
+    it('pages the rows of a fields query, which hold its fields and contentid, and counts it as any query', async () => {
+      const result = await query({ ...filtered, fields: 'title' }, `${filteredQuery}&fields=title`, { url: { itemsPerPage: '1', pageIndex: '2' } });
+      expect('rows' in result && [result.rows.map((row) => [row['title'], typeof row['contentid'], 'contenthistid' in row]), result.paging]).toEqual([
+        [['Orchid leaflet', 'string', false]],
+        { recordCount: 2, nextN: 1, pageIndex: 2 },
+      ]);
+      expect(await query({ countOnly: 'true', title: 'Rose', fields: 'title' }, 'title=Rose&fields=title')).toEqual({ count: 1 });
     });
 
     it('counts without paging, a countOnly query key filtering as an extended attribute', async () => {

@@ -15,10 +15,14 @@ export type CutoverActivateResponse = operations['cutoverActivate']['responses']
 export type CutoverRoutesRequest = Schemas['CutoverRoutesRequest'];
 /** Active version (null before `v0001`), epoch, freezes, instance acknowledgements and in-flight writes. */
 export type CutoverStatus = Schemas['CutoverStatus'];
+/** `CutoverStatus` whose in-flight groups are also split and marked by `orphaned`. */
+export type CutoverStatusV2 = Schemas['CutoverStatusV2'];
 /** One gateway instance, the epoch it has seen and whether it is live. */
 export type GatewayInstance = CutoverStatus['instances'][number];
-/** In-flight writes of one gateway instance on one route and side. */
-export type InflightRow = CutoverStatus['inflight'][number];
+/** In-flight writes of one gateway instance on one route and side, and whether they are orphans. */
+export type InflightRow = CutoverStatusV2['inflight'][number];
+/** The gateway's instances and in-flight groups, each group marked `orphaned` or not. */
+export type InflightStatus = Pick<CutoverStatusV2, 'instances' | 'inflight'>;
 /** Body of `inflightClearOrphans`. */
 export type InflightClearRequest = Schemas['InflightClearRequest'];
 /** Number of orphan rows `inflightClearOrphans` deleted. */
@@ -42,7 +46,7 @@ export interface WaitBudget {
 
 /** Outcome of {@link GatewayClient.awaitInflightDrained}. */
 export interface InflightDrainResult {
-  /** Rows on the awaited routes whose instance is not live; they block nothing here and leave only with evidence. */
+  /** Orphaned rows on the awaited routes (instance dead, or exchange abandoned); they block nothing and leave only with evidence. */
   orphans: InflightRow[];
 }
 
@@ -58,9 +62,14 @@ export interface GatewayClient {
   unfreeze(routes: readonly string[]): Promise<CutoverStatus>;
   /** Resolves with the first status in which every live instance has seen `epoch`; throws {@link GatewayWaitTimeoutError}. */
   awaitEpoch(epoch: number, budget: WaitBudget): Promise<CutoverStatus>;
-  /** Resolves once no live instance holds an in-flight write on `routes`; throws {@link GatewayWaitTimeoutError}. */
+  /**
+   * `cutoverStatusV2`'s instances and in-flight groups. A gateway older than that operation answers its path 404 or with legacy's
+   * redirect, and then `cutoverStatus` is read with the rows of instances not live as orphans, the only ones such a gateway has.
+   */
+  inflightStatus(): Promise<InflightStatus>;
+  /** Resolves once `routes` hold no in-flight write `inflightStatus` reports not orphaned; throws {@link GatewayWaitTimeoutError}. */
   awaitInflightDrained(routes: readonly string[], budget: WaitBudget): Promise<InflightDrainResult>;
-  /** `inflightClearOrphans`: deletes dead instances' rows that the evidence covers. */
+  /** `inflightClearOrphans`: deletes the orphaned rows that the evidence covers. */
   clearOrphans(request: InflightClearRequest): Promise<InflightClearResponse>;
 }
 
@@ -93,7 +102,7 @@ export interface GatewayWaitTimeoutDetails {
   epoch?: number;
   /** Live instances that had not seen `epoch`. */
   lagging?: GatewayInstance[];
-  /** In-flight rows of live instances still on the awaited routes. */
+  /** In-flight rows still on the awaited routes that are not orphaned. */
   pending?: InflightRow[];
 }
 
@@ -130,6 +139,7 @@ interface GatewayOperation {
 
 const OPERATIONS = Object.freeze({
   status: { operationId: 'cutoverStatus', method: 'GET', path: '/internal/v1/cutover/status' },
+  statusV2: { operationId: 'cutoverStatusV2', method: 'GET', path: '/internal/v2/cutover/status' },
   activate: { operationId: 'cutoverActivate', method: 'POST', path: '/internal/v1/cutover/activate' },
   freeze: { operationId: 'cutoverFreeze', method: 'POST', path: '/internal/v1/cutover/freeze' },
   unfreeze: { operationId: 'cutoverUnfreeze', method: 'POST', path: '/internal/v1/cutover/unfreeze' },
@@ -144,15 +154,25 @@ function laggingInstances(status: CutoverStatus, epoch: number): GatewayInstance
   return status.instances.filter((instance) => instance.live && instance.seenEpoch < epoch);
 }
 
-/** The awaited routes' in-flight rows, split by whether their instance is live in the same status. */
-function partitionInflight(status: CutoverStatus, routes: ReadonlySet<string>): { pending: InflightRow[]; orphans: InflightRow[] } {
-  const live = new Set(status.instances.filter((instance) => instance.live).map((instance) => instance.instanceId));
+/** The awaited routes' in-flight rows, split by whether they are orphaned. */
+function partitionInflight(status: InflightStatus, routes: ReadonlySet<string>): { pending: InflightRow[]; orphans: InflightRow[] } {
   const pending: InflightRow[] = [];
   const orphans: InflightRow[] = [];
   for (const row of status.inflight) {
-    if (routes.has(row.route)) (live.has(row.instanceId) ? pending : orphans).push(row);
+    if (routes.has(row.route)) (row.orphaned ? orphans : pending).push(row);
   }
   return { pending, orphans };
+}
+
+/** The gateway does not serve the operation: a 404, or the redirect legacy answers for a path an older gateway forwarded to it. */
+function notServed(error: unknown): boolean {
+  return error instanceof GatewayCallError && (error.status === 404 || (error.status >= 300 && error.status <= 399));
+}
+
+/** A v1 status's in-flight groups, orphaned exactly when their instance is not live. */
+function orphanedByLiveness({ instances, inflight }: CutoverStatus): InflightStatus {
+  const live = new Set(instances.filter((instance) => instance.live).map((instance) => instance.instanceId));
+  return { instances, inflight: inflight.map((row) => ({ ...row, orphaned: !live.has(row.instanceId) })) };
 }
 
 /** Creates the gateway client over the migration and operator service clients. */
@@ -178,15 +198,26 @@ export function createGatewayClient(deps: GatewayClientDeps): GatewayClient {
   const status = (options: { timeoutMs?: number } = {}): Promise<CutoverStatus> =>
     call<CutoverStatus>(migrationClient, OPERATIONS.status, undefined, options.timeoutMs);
 
-  /** Polls the status until `settle` yields a result; after the deadline the last unsettled status builds the error. */
-  async function poll<R>(
+  async function inflightStatus(): Promise<InflightStatus> {
+    try {
+      const { instances, inflight } = await call<CutoverStatusV2>(migrationClient, OPERATIONS.statusV2);
+      return { instances, inflight };
+    } catch (error) {
+      if (!notServed(error)) throw error;
+    }
+    return orphanedByLiveness(await status());
+  }
+
+  /** Polls `read` until `settle` yields a result; after the deadline the last unsettled read builds the error. */
+  async function poll<S, R>(
     budget: WaitBudget,
-    settle: (current: CutoverStatus) => R | undefined,
-    timeout: (current: CutoverStatus) => GatewayWaitTimeoutError,
+    read: () => Promise<S>,
+    settle: (current: S) => R | undefined,
+    timeout: (current: S) => GatewayWaitTimeoutError,
   ): Promise<R> {
     const deadline = clock.now().getTime() + budget.timeoutMs;
     for (;;) {
-      const current = await status();
+      const current = await read();
       const result = settle(current);
       if (result !== undefined) return result;
       if (clock.now().getTime() >= deadline) throw timeout(current);
@@ -196,6 +227,8 @@ export function createGatewayClient(deps: GatewayClientDeps): GatewayClient {
 
   return {
     status,
+
+    inflightStatus,
 
     // Cloud transitions need an operator invocation credential; only the local signer mints one in this run.
     activate: (tableVersion) =>
@@ -210,6 +243,7 @@ export function createGatewayClient(deps: GatewayClientDeps): GatewayClient {
     awaitEpoch: (epoch, budget) =>
       poll(
         budget,
+        () => status(),
         (current) => (laggingInstances(current, epoch).length === 0 ? current : undefined),
         (current) => new GatewayWaitTimeoutError({ kind: 'epoch', epoch, lagging: laggingInstances(current, epoch) }),
       ),
@@ -218,6 +252,7 @@ export function createGatewayClient(deps: GatewayClientDeps): GatewayClient {
       const awaited: ReadonlySet<string> = new Set(routes);
       return poll(
         budget,
+        inflightStatus,
         (current) => {
           const { pending, orphans } = partitionInflight(current, awaited);
           return pending.length === 0 ? { orphans } : undefined;

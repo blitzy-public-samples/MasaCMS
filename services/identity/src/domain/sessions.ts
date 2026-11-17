@@ -32,6 +32,23 @@ export interface SessionDeps {
   db: TenantDb;
   repo: IdentityRepository;
   clock: Clock;
+  /** Masa `sessionTimeout` in minutes: a session idle longer, plus one activity interval, ends and is purged. Absent, sessions never expire. */
+  sessionTimeoutMinutes?: number;
+}
+
+/** Masa's `sessionTimeout` in minutes when unset [legacy: core/appcfc/applicationSettings.cfm:310-311]. */
+export const DEFAULT_SESSION_TIMEOUT_MINUTES = 180;
+
+/** Least time between two activity writes of one session; expiry waits one interval past the timeout, so a skipped write never ends a session early. */
+export const SESSION_ACTIVITY_INTERVAL_MS = 60_000;
+
+/** Most idle sessions the insert of one new session purges. */
+export const SESSION_PURGE_BATCH = 100;
+
+/** Masa's `sessionTimeout` minutes from its setting: unset, blank, or below 1 gives 180 [legacy: core/appcfc/applicationSettings.cfm:310-311]. */
+export function sessionTimeoutMinutes(setting: string | undefined): number {
+  const minutes = setting === undefined || setting.trim() === '' ? Number.NaN : Number(setting);
+  return minutes >= 1 ? minutes : DEFAULT_SESSION_TIMEOUT_MINUTES;
 }
 
 /** The bridge's `op=describe` output for one legacy session, as the contract's `LegacySessionDescription` carries it. */
@@ -260,6 +277,45 @@ function anonymousValues(mode: SessionMode, epoch: number, jarRef: string | null
   };
 }
 
+/** How long a session may stay idle before it expires; undefined when sessions never expire. */
+function idleLimitMs(deps: SessionDeps): number | undefined {
+  const minutes = deps.sessionTimeoutMinutes;
+  return minutes === undefined ? undefined : minutes * 60_000 + SESSION_ACTIVITY_INTERVAL_MS;
+}
+
+/** True when `row` is active but idle past the limit at `now`. */
+function isExpired(deps: SessionDeps, row: SessionRow, now: Date): boolean {
+  const limit = idleLimitMs(deps);
+  return limit !== undefined && row.state === 'active' && now.getTime() - row.last_active_at.getTime() > limit;
+}
+
+/** The values of `prior` ended as logout clears its scope: anonymous at the next epoch, without jar or admin state [legacy: core/mura/login/loginManager.cfc:476-516]. */
+function endedValues(prior: SessionRow, now: Date): SessionValues {
+  return { ...anonymousValues(prior.mode, nextEpoch(prior), null), state: 'ended', ended_at: now };
+}
+
+/** The locked `prior`, first ended when it expired, as legacy's session would have; the end keeps its idle time, so the purge still takes it. */
+async function expireIdle(deps: SessionDeps, tx: TenantTx, prior: SessionRow): Promise<SessionRow> {
+  const now = deps.clock.now();
+  if (!isExpired(deps, prior, now)) return prior;
+  await clearClaims(deps.repo, tx, prior.session_id);
+  const ended = await deps.repo.updateSession(tx, prior.session_id, { ...endedValues(prior, now), last_active_at: prior.last_active_at });
+  // The caller holds the row FOR UPDATE, so the update finds it.
+  return ended as SessionRow;
+}
+
+/** True when no timeout is set or `row`'s activity was recorded less than an interval before `now`. */
+function activityCurrent(deps: SessionDeps, row: SessionRow, now: Date): boolean {
+  return idleLimitMs(deps) === undefined || row.last_active_at.getTime() > now.getTime() - SESSION_ACTIVITY_INTERVAL_MS;
+}
+
+/** Records the active session's activity at `now` once its last record is an interval old; a row locked elsewhere is left to a later read. */
+async function recordActivity(deps: SessionDeps, { tenantId, row }: LocatedSession, now: Date): Promise<void> {
+  if (row.state !== 'active' || activityCurrent(deps, row, now)) return;
+  const staleBefore = new Date(now.getTime() - SESSION_ACTIVITY_INTERVAL_MS);
+  await withTenant(deps.db, tenantId, (tx) => deps.repo.touchSession(tx, row.session_id, now, staleBefore));
+}
+
 /** The ensured view of a stored session of `tenantId`. */
 function ensuredFrom(row: SessionRow, tenantId: string): EnsuredSession {
   return { sessionId: row.session_id, tenantId, csrfSecret: row.csrf_secret, epoch: Number(row.epoch), created: false };
@@ -315,9 +371,11 @@ async function sessionEffect<T>(deps: SessionDeps, sessionId: string, effect: Se
   }
 }
 
-/** Inserts the session under `SYSTEM_TENANT_ID` with `values`; `after` runs in the same transaction. */
+/** Inserts the session under `SYSTEM_TENANT_ID` with `values`, first purging a batch of that tenant's expired sessions; `after` runs in the same transaction. */
 async function insertSession(deps: SessionDeps, sessionId: string, values: SessionValues, after?: (tx: TenantTx) => Promise<unknown>): Promise<void> {
+  const limit = idleLimitMs(deps);
   await withTenant(deps.db, SYSTEM_TENANT_ID, async (tx) => {
+    if (limit !== undefined) await deps.repo.purgeIdleSessions(tx, new Date(deps.clock.now().getTime() - limit), SESSION_PURGE_BATCH);
     await deps.repo.insertSession(tx, { session_id: sessionId, ...values });
     if (after !== undefined) await after(tx);
   });
@@ -345,7 +403,7 @@ function rebuildSession(
 ): Promise<RebuiltSession> {
   return sessionEffect(deps, sessionId, {
     async locked(tx, prior) {
-      const values = build(prior);
+      const values = build(await expireIdle(deps, tx, prior));
       await rewriteSession(deps.repo, tx, sessionId, values, after);
       return { tenantId: tx.tenantId, values };
     },
@@ -369,7 +427,7 @@ export function newSessionTokens(sessionId: string): SessionTokens {
   return { cfid: randomUUID(), cftoken: '0', jsessionid: jsessionidForSessionId(sessionId) };
 }
 
-/** The active session `sessionId`, created anonymous when absent and reactivated anonymous when ended; the id never changes. */
+/** The active session `sessionId`, created anonymous when absent and reactivated anonymous when ended or expired; the id never changes. */
 export async function ensureSession(deps: SessionDeps, request: EnsureSessionRequest): Promise<EnsuredSession> {
   if (request.sessionId === undefined) {
     const sessionId = cfUuid();
@@ -377,8 +435,9 @@ export async function ensureSession(deps: SessionDeps, request: EnsureSessionReq
   }
   const { sessionId, mode } = request;
   return sessionEffect(deps, sessionId, {
-    known: ({ row, tenantId }) => (row.state === 'active' ? ensuredFrom(row, tenantId) : undefined),
-    async locked(tx, prior) {
+    known: ({ row, tenantId }) => (row.state === 'active' && !isExpired(deps, row, deps.clock.now()) ? ensuredFrom(row, tenantId) : undefined),
+    async locked(tx, locked) {
+      const prior = await expireIdle(deps, tx, locked);
       // A concurrent request may have reactivated the row since it was located ended.
       if (prior.state === 'active') return ensuredFrom(prior, tx.tenantId);
       const values = anonymousValues(mode, nextEpoch(prior), prior.jar_ref);
@@ -400,7 +459,8 @@ export async function applyLogin(deps: SessionDeps, login: LoginApplication): Pr
 export function applyRelogin(deps: SessionDeps, relogin: Pick<LoginApplication, 'sessionId' | 'snapshot'> & { epoch: number }): Promise<AppliedSession | undefined> {
   const { sessionId, snapshot, epoch } = relogin;
   return sessionEffect<AppliedSession | undefined>(deps, sessionId, {
-    async locked(tx, prior) {
+    async locked(tx, locked) {
+      const prior = await expireIdle(deps, tx, locked);
       if (prior.state !== 'active' || Number(prior.epoch) !== epoch) return undefined;
       const values = loginValues(prior, snapshot, prior.site_id, prior.mode);
       await rewriteSession(deps.repo, tx, sessionId, values);
@@ -435,7 +495,9 @@ export async function adoptLegacySession(deps: SessionDeps, describe: LegacyDesc
   });
   const adopted = (tenantId: string, epoch: number): AdoptedSession => ({ sessionId, tenantId, epoch, mode: opts.mode });
   const sameSecret = (row: SessionRow): boolean => row.state === 'active' && row.csrf_secret === description.csrfSecretKey;
-  const unchanged = (row: SessionRow): boolean => sameSecret(row) && row.mode === opts.mode && jarRefOf(row) === row.jar_ref;
+  // Stale activity counts as a change: the locked write records it, since an adoption shows legacy holds the session.
+  const unchanged = (row: SessionRow): boolean =>
+    sameSecret(row) && row.mode === opts.mode && jarRefOf(row) === row.jar_ref && activityCurrent(deps, row, clock.now());
 
   return sessionEffect(deps, sessionId, {
     shared: {
@@ -447,7 +509,7 @@ export async function adoptLegacySession(deps: SessionDeps, describe: LegacyDesc
     },
     async locked(tx, prior) {
       if (sameSecret(prior)) {
-        // A concurrent adoption may have set the same mode and jar since the row was located.
+        // A concurrent adoption may have set the same mode and jar, and recorded activity, since the row was located.
         if (!unchanged(prior)) await repo.updateSession(tx, sessionId, { mode: opts.mode, jar_ref: jarRefOf(prior) });
         await importTokens(tx);
         return adopted(tx.tenantId, Number(prior.epoch));
@@ -464,23 +526,43 @@ export async function adoptLegacySession(deps: SessionDeps, describe: LegacyDesc
   });
 }
 
-/** The session's state, epoch, mode, user and site; an unknown session reads as ended with epoch 0. */
-export async function sessionState(deps: SessionDeps, sessionId: string): Promise<SessionStatus> {
-  const located = await locateSession(deps, sessionId);
-  if (located === undefined) return { epoch: 0, state: 'ended', mode: null, userId: '', siteId: '' };
-  const { row } = located;
+/** The state of an unknown session: ended at epoch 0, without mode, user or site. */
+function unknownStatus(): SessionStatus {
+  return { epoch: 0, state: 'ended', mode: null, userId: '', siteId: '' };
+}
+
+/** The state a stored session row reads as. */
+function statusOf(row: SessionRow): SessionStatus {
   return { epoch: Number(row.epoch), state: row.state, mode: row.mode, userId: row.user_id ?? '', siteId: row.site_id ?? '' };
 }
 
-/** The admin site the session selected (`session.siteid` in its admin state); empty when none is stored or the session is unknown or ended. */
+/**
+ * The session's state, epoch, mode, user and site; an unknown session reads as ended with epoch 0. The read is the
+ * session's activity, recorded at most once per interval; an expired session is ended first and reads as ended.
+ */
+export async function sessionState(deps: SessionDeps, sessionId: string): Promise<SessionStatus> {
+  const located = await locateSession(deps, sessionId);
+  if (located === undefined) return unknownStatus();
+  const now = deps.clock.now();
+  if (isExpired(deps, located.row, now)) {
+    return sessionEffect(deps, sessionId, {
+      locked: async (tx, prior) => statusOf(await expireIdle(deps, tx, prior)),
+      absent: async () => unknownStatus(),
+    });
+  }
+  await recordActivity(deps, located, now);
+  return statusOf(located.row);
+}
+
+/** The admin site the session selected (`session.siteid` in its admin state); empty when none is stored or the session is unknown, ended or expired. */
 export async function sessionAdminSite(deps: SessionDeps, sessionId: string): Promise<string> {
   const row = (await locateSession(deps, sessionId))?.row;
-  if (row === undefined || row.state !== 'active' || row.admin_state === null) return '';
+  if (row === undefined || row.state !== 'active' || isExpired(deps, row, deps.clock.now()) || row.admin_state === null) return '';
   const { siteid } = JSON.parse(row.admin_state) as Record<string, unknown>;
   return typeof siteid === 'string' ? siteid : '';
 }
 
-/** The login-time snapshot, CSRF secret and used tokens `op=hydrate` installs; undefined when the session is unknown or ended. */
+/** The login-time snapshot, CSRF secret and used tokens `op=hydrate` installs; undefined when the session is unknown, ended or expired. */
 export async function sessionSnapshot(deps: SessionDeps, sessionId: string): Promise<SessionSnapshot | undefined> {
   const { db, repo, clock } = deps;
   const located = await locateSession(deps, sessionId);
@@ -488,7 +570,8 @@ export async function sessionSnapshot(deps: SessionDeps, sessionId: string): Pro
   // The shared lock holds off session effects, so the row and its used tokens come from one epoch.
   const read = await withTenant(db, located.tenantId, async (tx) => {
     const row = await repo.lockSession(tx, sessionId, 'share');
-    return row === null || row.state !== 'active' ? undefined : { row, usedTokens: await usedTokensFor(repo, tx, sessionId, clock.now()) };
+    const now = clock.now();
+    return row === null || row.state !== 'active' || isExpired(deps, row, now) ? undefined : { row, usedTokens: await usedTokensFor(repo, tx, sessionId, now) };
   });
   if (read === undefined) return undefined;
   const { row, usedTokens } = read;
@@ -507,10 +590,11 @@ export async function sessionSnapshot(deps: SessionDeps, sessionId: string): Pro
 /** Ends the session as logout clears its scope, keeping the id; an ended session is unchanged [legacy: core/mura/login/loginManager.cfc:476-516]. */
 export function endSession(deps: SessionDeps, sessionId: string): Promise<EndedSession> {
   return sessionEffect(deps, sessionId, {
-    async locked(tx, prior) {
+    async locked(tx, locked) {
+      const prior = await expireIdle(deps, tx, locked);
       if (prior.state === 'ended') return { epoch: Number(prior.epoch) };
       // The gateway drops the legacy cookie jar after ending, so its reference goes too.
-      const values: SessionValues = { ...anonymousValues(prior.mode, nextEpoch(prior), null), state: 'ended', ended_at: deps.clock.now() };
+      const values = endedValues(prior, deps.clock.now());
       await rewriteSession(deps.repo, tx, sessionId, values);
       return { epoch: values.epoch };
     },

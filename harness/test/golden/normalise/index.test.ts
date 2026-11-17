@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { LEGACY_JSON_CONTENT_TYPE, cfHash, cfUuid, legacyHeaders } from '@opt2/platform/legacy-compat';
 import { encodeRow, type CanonicalColumn } from '@opt2/platform/migration-kit';
+import { parse as parseCsv } from 'csv-parse/sync';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { goldenRun, readGoldenSet, type GoldenSet } from '../../../src/golden/capture.js';
 import {
@@ -310,6 +311,42 @@ describe('scenario normalisationOverrides', () => {
       expect.objectContaining({ contenthistid: '8A9B0C1D-2E3F-4A5B-9C6D7E8F9A0B1C2D', contentid: expect.stringMatching(/^<id:\d+>$/) }),
     );
     expect(compareNormalised(run([golden]), run([replay]), { rules, scenario })).toStrictEqual([]);
+  });
+
+  it("compares GS-PE-05's exports whatever order legacy gives rows tying on their declared keys", async () => {
+    const userExports = scenarioById(await loadCatalogue(), 'GS-PE-05');
+    const { records } = JSON.parse(readFixture('golden/gs-pe-05-exports.json')) as { records: StepRecord[] };
+    const keyed = new Map([
+      ['advanced-csv', ['LNAME']],
+      ['download', ['LNAME', 'FNAME']],
+      ['group-members', ['LNAME']],
+    ]);
+    // Each run of rows tying on the step's keys reversed, as another plan or parallel sort may return it.
+    const reversedTies = (record: StepRecord): StepRecord => {
+      // The fixture holds one record per line, so lines move whole and keep legacy's quoting.
+      const lines = ('text' in record.response ? record.response.text : '').trimEnd().split('\n');
+      const cells = (line: string): string[] => parseCsv(line)[0] ?? [];
+      const at = (keyed.get(record.name) ?? []).map((name) => cells(lines[0] ?? '').indexOf(name));
+      const key = (line: string): string => at.map((i) => cells(line)[i]).join('\u0000');
+      const rows: string[] = [];
+      for (let start = 1, end = 2; start < lines.length; start = end, end = start + 1) {
+        while (end < lines.length && key(lines[end] as string) === key(lines[start] as string)) end += 1;
+        rows.push(...lines.slice(start, end).reverse());
+      }
+      return { ...record, response: { ...record.response, text: `${[lines[0], ...rows].join('\n')}\n` } };
+    };
+    const shuffled = records.map(reversedTies);
+    const unordered = { ...userExports, normalisationOverrides: {} };
+
+    expect(shuffled.map((r) => ('text' in r.response ? r.response.text : ''))).not.toStrictEqual(
+      records.map((r) => ('text' in r.response ? r.response.text : '')),
+    );
+    const differences = async (scenario: Scenario): Promise<Difference[]> =>
+      compareNormalised(run(await normalise(records, scenario)), run(await normalise(shuffled, scenario)), { rules, scenario });
+    expect(await differences(userExports)).toStrictEqual([]);
+    const without = await differences(unordered);
+    expect(new Set(without.map((d) => d.step))).toStrictEqual(new Set(keyed.keys()));
+    expect(without.every((d) => d.path.startsWith('export.rows['))).toBe(true);
   });
 
   it('drops the error stack trace only when the scenario applies error-stacktrace', async () => {

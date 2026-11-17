@@ -184,24 +184,35 @@ describe.skipIf(!available)('export output through runExport', () => {
     if (format === 'csv') expect(parse(bytes.toString('utf8'))).toHaveLength(RECORD_COUNT + 1);
   });
 
-  it.each(FORMATS)('fails a %s export source-unavailable when a later page cannot be read, storing nothing', async (format) => {
-    const job = await queuedJob(format);
-    const { client } = financeClient(job.siteId, { page: 2, failure: { status: 503, headers: {}, body: undefined } });
+  it.each(FORMATS)(
+    'rejects a %s export with the legacy 503 when a later page is unavailable, storing nothing, and a redelivery after it recovers runs it to done',
+    async (format) => {
+      const job = await queuedJob(format);
+      const { client, calls } = financeClient(job.siteId, { page: 2, failure: { status: 503, headers: {}, body: undefined } });
 
-    await expect(run(job, local, client)).resolves.toEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
+      await expect(run(job, local, client)).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
 
-    expect(await storedRow(job)).toMatchObject({ state: 'failed', error: 'source-unavailable', object_key: null, output_sha256: null });
-    expect(await objectFiles(job)).toEqual([]);
-  });
+      expect(calls.map((call) => call.query?.page)).toEqual(['1', '2']);
+      expect(await storedRow(job)).toMatchObject({ state: 'running', error: null, object_key: null, output_sha256: null });
+      expect(await objectFiles(job)).toEqual([]);
 
-  it('fails an export source-unavailable when the producer refuses a later page\'s export scope, reading no further page', async () => {
+      await expect(run(job, local, financeClient(job.siteId).client)).resolves.toEqual({ outcome: 'done', state: 'done' });
+
+      const row = await storedRow(job);
+      expect(row).toMatchObject({ state: 'done', error: null });
+      expect(sha256(await local.get(EXPORT_BUCKET, row.object_key ?? ''))).toBe(row.output_sha256);
+      expect(await objectFiles(job)).toHaveLength(1);
+    },
+  );
+
+  it('fails an export export-failed when the producer refuses a later page\'s export scope, reading no further page', async () => {
     const job = await queuedJob('csv');
     const { client, calls } = financeClient(job.siteId, { page: 2, failure: { status: 403, headers: {}, body: undefined } });
 
-    await expect(run(job, local, client)).resolves.toEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
+    await expect(run(job, local, client)).resolves.toEqual({ outcome: 'failed', state: 'failed', error: 'export-failed' });
 
     expect(calls.map((call) => call.query?.page)).toEqual(['1', '2']);
-    expect(await storedRow(job)).toMatchObject({ state: 'failed', error: 'source-unavailable', object_key: null, output_sha256: null });
+    expect(await storedRow(job)).toMatchObject({ state: 'failed', error: 'export-failed', object_key: null, output_sha256: null });
     expect(await objectFiles(job)).toEqual([]);
   });
 

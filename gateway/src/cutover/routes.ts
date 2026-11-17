@@ -1,10 +1,12 @@
-// Internal cut-over endpoints of the gateway contract: activate, freeze, unfreeze, status and evidence-backed orphan clearing.
+// Internal cut-over endpoints of the gateway contract: activate, freeze, unfreeze, status (v1 and v2) and evidence-backed orphan clearing.
+import { Readable } from 'node:stream';
 import { AuthDenial, Roles, type Opt2AuthContext } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
 import type { components } from '../generated/openapi.js';
 import type { InflightStore } from './inflight.js';
-import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus } from './state.js';
+import { ActivationRejected, CutoverConflict, type CutoverState } from './state.js';
+import { STATUS_CONTENT_TYPE, statusJson, type CutoverStatusPages } from './status-pages.js';
 
 type CutoverActivateRequest = components['schemas']['CutoverActivateRequest'];
 type CutoverRoutesRequest = components['schemas']['CutoverRoutesRequest'];
@@ -99,7 +101,15 @@ function sendFindings(reply: FastifyReply, error: unknown): FastifyReply {
   throw error;
 }
 
-/** Registers `cutoverActivate`, `cutoverFreeze`, `cutoverUnfreeze`, `cutoverStatus` and `inflightClearOrphans` of the gateway contract. */
+/** Answers `CutoverStatus` or `CutoverStatusV2` streamed a page at a time, so the body never has to be held whole. */
+function sendStatus(reply: FastifyReply, pages: CutoverStatusPages): FastifyReply {
+  return reply.type(STATUS_CONTENT_TYPE).send(Readable.from(statusJson(pages)));
+}
+
+/**
+ * Registers `cutoverActivate`, `cutoverFreeze`, `cutoverUnfreeze`, `cutoverStatus`, `cutoverStatusV2` and `inflightClearOrphans`
+ * of the gateway contract.
+ */
 export async function registerCutoverRoutes(app: FastifyInstance, { state, inflight }: CutoverRouteDeps): Promise<void> {
   app.post<{ Body: CutoverActivateRequest }>(
     '/internal/v1/cutover/activate',
@@ -114,22 +124,24 @@ export async function registerCutoverRoutes(app: FastifyInstance, { state, infli
     },
   );
 
-  const freezeRoute = (url: string, change: CutoverState['freeze']): void => {
+  const freezeRoute = (url: string, change: CutoverState['freezePages']): void => {
     app.post<{ Body: CutoverRoutesRequest }>(
       url,
       { schema: { body: ROUTES_BODY }, preValidation: requireJsonBody, config: { opt2: { transport: 'service', requires: OPERATOR } } },
       async (request, reply) => {
         const actor = actorOf(request.opt2Auth);
+        let pages: CutoverStatusPages;
         try {
-          return await change(request.body.routes, actor);
+          pages = await change(request.body.routes, actor);
         } catch (error) {
           return sendFindings(reply, error);
         }
+        return sendStatus(reply, pages);
       },
     );
   };
-  freezeRoute('/internal/v1/cutover/freeze', (routes, actor) => state.freeze(routes, actor));
-  freezeRoute('/internal/v1/cutover/unfreeze', (routes, actor) => state.unfreeze(routes, actor));
+  freezeRoute('/internal/v1/cutover/freeze', (routes, actor) => state.freezePages(routes, actor));
+  freezeRoute('/internal/v1/cutover/unfreeze', (routes, actor) => state.unfreezePages(routes, actor));
 
   // The contract declares no HEAD operation, so Fastify's automatic HEAD sibling is not registered.
   // Migration polls the status, so its successful requests log at debug.
@@ -139,7 +151,15 @@ export async function registerCutoverRoutes(app: FastifyInstance, { state, infli
       exposeHeadRoute: false,
       config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION }, opt2Log: { successLevel: 'debug' } },
     },
-    async (): Promise<CutoverStatus> => state.status(),
+    async (_request, reply) => sendStatus(reply, await state.statusPages()),
+  );
+  app.get(
+    '/internal/v2/cutover/status',
+    {
+      exposeHeadRoute: false,
+      config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION }, opt2Log: { successLevel: 'debug' } },
+    },
+    async (_request, reply) => sendStatus(reply, await state.statusV2Pages()),
   );
 
   // `::` is the router's literal colon, so the contract's `inflight:clear-orphans` is not read as a path parameter.

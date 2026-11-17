@@ -7,11 +7,12 @@ import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, rolesForService, verifyLocalServiceToken } from '../../src/auth/index.js';
 import type { EventPublisher } from '../../src/events/index.js';
-import { createLogger, setDiagnosticLogger } from '../../src/logging/index.js';
-import { UsageError, main, parseArgs, runReplay, serviceSchema } from '../../src/outbox/cli.js';
+import { REDACTED, createLogger, setDiagnosticLogger, validateLogRecord } from '../../src/logging/index.js';
+import { UsageError, loadReplayEnv, main, parseArgs, runReplay, serviceSchema } from '../../src/outbox/cli.js';
 import { localTimestamp } from '../../src/outbox/ddl.js';
 import { resetOutboxRuntimes, type OutboxRuntime } from '../../src/outbox/flush.js';
 import {
+  EnvValidationError,
   baseEnvSchema,
   fixedClock,
   type ServiceClientOptions,
@@ -63,6 +64,10 @@ vi.mock('../../src/service-kit/index.js', async (importOriginal) => ({
 
 const USAGE = 'usage: opt2-outbox replay --since <ISO-8601 timestamp> [--tenant <uuid>] [--schema <name>]';
 const SINCE_FORMAT = '--since must be an ISO-8601 timestamp with a date, time and zone, such as 2026-06-30T00:00:00Z';
+const SCHEMA_FORMAT = '--schema must be lower-case letters, digits and _, not starting with a digit';
+const OPTION_VALUE = 'an option is missing its value or was given one it does not take';
+// Assembled at run time, so no literal credential appears in source.
+const SECRET = ['s3cr3t', 'outbox', 'cli', 'value'].join('-');
 /** Every variable opt2-outbox reads, as its help lists them. */
 const REPLAY_VARIABLES = [
   'OPT2_SERVICE_NAME',
@@ -319,6 +324,22 @@ function stderrLines(): LogLine[] {
     .map((line) => JSON.parse(line) as LogLine);
 }
 
+/** The one line opt2-outbox wrote to stderr, checked against log-record.v1 and the CLI's service. */
+function outboxDiagnostic(): LogLine {
+  expect(stderr.endsWith('\n')).toBe(true);
+  const lines = stderr.slice(0, -1).split('\n');
+  expect(lines).toHaveLength(1);
+  const record = JSON.parse(lines[0] as string) as LogLine;
+  expect(validateLogRecord(record)).toStrictEqual({ valid: true, errors: [] });
+  expect(record).toMatchObject({ service: 'opt2-outbox' });
+  return record;
+}
+
+/** Asserts stderr holds one CRITICAL `replay failed` line with the failure's safe record. */
+function expectReplayFailed(error: { type: string; message: string }): void {
+  expect(outboxDiagnostic()).toMatchObject({ severity: 'CRITICAL', message: 'opt2-outbox: replay failed', error });
+}
+
 beforeEach(() => {
   stdout = '';
   stderr = '';
@@ -375,28 +396,26 @@ describe('opt2-outbox parseArgs', () => {
     '2026-06-30T12:00:60Z',
     '2026-06-30T12:00:00+24:00',
   ])('rejects --since %j, which is not an ISO-8601 date-time with a zone that exists', (since) => {
-    expect(usageErrorOf(['replay', '--since', since]).message).toBe(`${SINCE_FORMAT}, got ${JSON.stringify(since)}`);
+    expect(usageErrorOf(['replay', '--since', since]).message).toBe(SINCE_FORMAT);
   });
 
   it.each([
-    { argv: [], message: /^missing subcommand$/ },
-    { argv: ['--since', SINCE_ISO], message: /^missing subcommand$/ },
-    { argv: ['sweep', '--since', SINCE_ISO], message: /^unknown subcommand "sweep"$/ },
-    { argv: ['replay', 'extra', '--since', SINCE_ISO], message: /^unknown subcommand "replay extra"$/ },
-    { argv: ['replay', '--since', SINCE_ISO, '--verbose'], message: /^Unknown option '--verbose'/ },
-    { argv: ['replay', '--since'], message: /^Option '--since <value>' argument missing/ },
-    { argv: ['replay'], message: /^missing --since$/ },
-    {
-      argv: ['replay', '--since', SINCE_ISO, '--tenant', 'tenant-a'],
-      message: /^--tenant must be a tenant UUID, got "tenant-a"$/,
-    },
-    {
-      argv: ['replay', '--since', SINCE_ISO, '--schema', 'Programs-Sites'],
-      message: /^--schema: Invalid schema identifier: "Programs-Sites"$/,
-    },
-    { argv: ['replay', '--since', SINCE_ISO, '--schema', 'x".outbox'], message: /^--schema: Invalid schema identifier: / },
-  ])('rejects $argv with a UsageError', ({ argv, message }) => {
-    expect(usageErrorOf(argv).message).toMatch(message);
+    { argv: [], message: 'missing subcommand' },
+    { argv: ['--since', SINCE_ISO], message: 'missing subcommand' },
+    { argv: ['sweep', '--since', SINCE_ISO], message: 'unknown subcommand' },
+    { argv: ['replay', 'extra', '--since', SINCE_ISO], message: 'unknown subcommand' },
+    { argv: ['replay', '--since', SINCE_ISO, '--verbose'], message: 'unknown option' },
+    { argv: ['replay', '--since', SINCE_ISO, `--${SECRET}`], message: 'unknown option' },
+    { argv: ['replay', '--since'], message: OPTION_VALUE },
+    { argv: ['replay', `--help=${SECRET}`], message: OPTION_VALUE },
+    { argv: ['replay'], message: 'missing --since' },
+    { argv: ['replay', '--since', SECRET], message: SINCE_FORMAT },
+    { argv: ['replay', '--since', SINCE_ISO, '--tenant', 'tenant-a'], message: '--tenant must be a tenant UUID' },
+    { argv: ['replay', '--since', SINCE_ISO, '--tenant', SECRET], message: '--tenant must be a tenant UUID' },
+    { argv: ['replay', '--since', SINCE_ISO, '--schema', 'Programs-Sites'], message: SCHEMA_FORMAT },
+    { argv: ['replay', '--since', SINCE_ISO, '--schema', 'x".outbox'], message: SCHEMA_FORMAT },
+  ])('rejects $argv with a UsageError whose fixed message quotes no argument', ({ argv, message }) => {
+    expect(usageErrorOf(argv).message).toBe(message);
   });
 });
 
@@ -723,13 +742,20 @@ describe('opt2-outbox main', () => {
     expect(stderrLines()).toMatchObject([{ severity: 'ERROR', message: 'database pool error', error: { type: 'Error' } }]);
   });
 
-  it('exits 1 without a publisher when the pool cannot open', async () => {
+  it('exits 1 without a publisher when the pool cannot open, logging only the error identifiers', async () => {
     stubEnv();
-    state.createPool.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:5432'));
+    const refused = Object.assign(new Error(`connect ECONNREFUSED 127.0.0.1:5432 for postgres://svc:${SECRET}@db`), {
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 5432,
+    });
+    state.createPool.mockRejectedValue(refused);
 
     expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
 
-    expect(stderr).toBe('opt2-outbox: connect ECONNREFUSED 127.0.0.1:5432\n');
+    expectReplayFailed({ type: 'Error', message: 'connect ECONNREFUSED' });
+    expect(stderr).not.toMatch(new RegExp(`127\\.0\\.0\\.1|${SECRET}`));
     expect(stdout).toBe('');
     expect(state.createPublisher).not.toHaveBeenCalled();
   });
@@ -745,7 +771,8 @@ describe('opt2-outbox main', () => {
 
     expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
 
-    expect(stderr).toBe('opt2-outbox: invalid project\n');
+    expectReplayFailed({ type: 'Error', message: REDACTED });
+    expect(stderr).not.toContain('invalid project');
     expect(order).toEqual(['db.end']);
     expect(db.tenants).toEqual([]);
   });
@@ -763,7 +790,8 @@ describe('opt2-outbox main', () => {
 
     expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
 
-    expect(stderr).toBe('opt2-outbox: close timed out\n');
+    expectReplayFailed({ type: 'Error', message: REDACTED });
+    expect(stderr).not.toContain('close timed out');
     expect(stdout).toBe('');
     expect(order).toEqual(['publisher.close', 'db.end']);
   });
@@ -776,20 +804,26 @@ describe('opt2-outbox main', () => {
 
     expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
 
-    expect(stderr).toBe('opt2-outbox: write EPIPE\n');
+    expectReplayFailed({ type: 'Error', message: REDACTED });
   });
 
   it.each([
     { argv: [], message: 'missing subcommand' },
     { argv: ['replay'], message: 'missing --since' },
-    { argv: ['replay', '--since', 'soon'], message: `${SINCE_FORMAT}, got "soon"` },
-    { argv: ['replay', '--since', SINCE_ISO, '--tenant', 'default'], message: '--tenant must be a tenant UUID, got "default"' },
-  ])('exits 2 with the usage line on stderr for $argv before reading the environment', async ({ argv, message }) => {
+    { argv: ['replay', '--since', 'soon'], message: SINCE_FORMAT },
+    { argv: ['replay', '--since', SINCE_ISO, '--tenant', 'default'], message: '--tenant must be a tenant UUID' },
+    { argv: ['replay', '--since', SINCE_ISO, '--schema', SECRET.toUpperCase()], message: SCHEMA_FORMAT },
+    { argv: [`replay-${SECRET}`, '--since', SINCE_ISO], message: 'unknown subcommand' },
+  ])('exits 2 with a usage line quoting no argument on stderr for $argv before reading the environment', async ({ argv, message }) => {
     stubEnv({ OPT2_SERVICE_NAME: undefined });
 
     expect(await main(argv)).toBe(2);
 
-    expect(stderr).toBe(`opt2-outbox: ${message}; ${USAGE}\n`);
+    const record = outboxDiagnostic();
+    expect(record).toMatchObject({ severity: 'ERROR', message: `opt2-outbox: ${message}; ${USAGE}` });
+    expect(record).not.toHaveProperty('error');
+    expect(stderr.toLowerCase()).not.toContain(SECRET);
+    expect(stderr).not.toMatch(/soon|default/);
     expect(stdout).toBe('');
     expect(state.createPool).not.toHaveBeenCalled();
   });
@@ -867,14 +901,36 @@ describe('opt2-outbox main', () => {
       env: { OPT2_ENV: 'cloud', OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: IAM_INSTANCE, PG_PASSWORD: undefined, PUBSUB_EMULATOR_HOST: 'localhost:99999' },
       issues: ['PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
     },
-  ])('exits 2 with one error listing every issue when $label', async ({ env, issues }) => {
+  ])('exits 2 with one error listing every issue, logging only the variable names and their reasons, when $label', async ({ env, issues }) => {
     stubEnv(env);
 
     expect(await main(['replay', '--since', SINCE_ISO])).toBe(2);
 
-    expect(stderr).toBe(`opt2-outbox: invalid environment\n${issues.map((issue) => `  ${issue}\n`).join('')}`);
+    // Each variable keeps a value-free reason: a rule's own wording, or the form a zod or fixed message expects.
+    const reasons: Readonly<Record<string, string>> = {
+      'Invalid option: expected one of "password"|"iam"': 'expected one of password|iam',
+      'port must be from 1 to 65535': 'must be a port from 1 to 65535',
+    };
+    const entries = issues.map((issue) => {
+      const text = issue.slice(issue.indexOf(':') + 2);
+      return `${issue.slice(0, issue.indexOf(':'))}: ${reasons[text] ?? text}`;
+    });
+    expect(outboxDiagnostic()).toMatchObject({
+      severity: 'ERROR',
+      message: 'opt2-outbox: invalid environment',
+      error: { type: 'EnvValidationError', message: `opt2-outbox: invalid environment (${entries.join('; ')})` },
+    });
+    expect(stderr).not.toMatch(/Invalid option|port must|"password"/);
     expect(stdout).toBe('');
     expect(state.createPool).not.toHaveBeenCalled();
+    let thrown: unknown;
+    try {
+      loadReplayEnv(process.env);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(EnvValidationError);
+    expect((thrown as EnvValidationError).issues).toEqual(issues);
   });
 
   it.each([
@@ -917,7 +973,7 @@ describe('opt2-outbox main', () => {
     }
 
     expect(exit).toHaveBeenCalledWith(2);
-    expect(stderr).toBe(`opt2-outbox: missing --since; ${USAGE}\n`);
+    expect(outboxDiagnostic()).toMatchObject({ severity: 'ERROR', message: `opt2-outbox: missing --since; ${USAGE}` });
   });
 });
 
@@ -978,12 +1034,16 @@ function stdoutLines(): unknown[] {
     .map((line) => JSON.parse(line) as unknown);
 }
 
-/** The message of a usage error on stderr, between its `opt2-tasks: ` prefix and usage suffix. */
-function tasksUsageMessage(text: string): string {
-  const prefix = 'opt2-tasks: ';
-  const suffix = `; ${TASKS_USAGE}\n`;
-  expect(text.startsWith(prefix) && text.endsWith(suffix)).toBe(true);
-  return text.slice(prefix.length, -suffix.length);
+/** Asserts stderr holds one log-record.v1 ERROR line of opt2-tasks, `problem` and the usage line, quoting no rejected input. */
+function expectTasksUsage(problem: string, rejected: readonly string[]): void {
+  expect(stderr.endsWith('\n')).toBe(true);
+  const lines = stderr.slice(0, -1).split('\n');
+  expect(lines).toHaveLength(1);
+  const record = JSON.parse(lines[0] as string) as LogLine;
+  expect(validateLogRecord(record)).toStrictEqual({ valid: true, errors: [] });
+  expect(record).toMatchObject({ severity: 'ERROR', service: 'opt2-tasks', message: `opt2-tasks: ${problem}; ${TASKS_USAGE}` });
+  expect(record).not.toHaveProperty('error');
+  for (const text of rejected) expect(stderr).not.toContain(text);
 }
 
 describe('opt2-tasks reconcile', () => {
@@ -1018,18 +1078,21 @@ describe('opt2-tasks reconcile', () => {
   }
 
   it.each([
-    { argv: [], message: /^missing subcommand$/ },
-    { argv: ['sync'], message: /^unknown subcommand "sync"$/ },
-    { argv: ['reconcile', 'all'], message: /^unknown subcommand "reconcile all"$/ },
-    { argv: ['reconcile', '--as', 'admin'], message: /^--as must be one of operator, migration, got "admin"$/ },
-    { argv: ['reconcile', '--queue'], message: /^Option '--queue <value>' argument missing/ },
-    { argv: ['reconcile', '--dry-run'], message: /^Unknown option '--dry-run'/ },
-  ])('exits 2 with the usage line for $argv before reading the environment or creating a client', async ({ argv, message }) => {
+    { argv: [], problem: 'missing subcommand', rejected: [] },
+    { argv: [`sync-${SECRET}`], problem: 'unknown subcommand', rejected: [SECRET] },
+    { argv: ['reconcile', SECRET], problem: 'unknown subcommand', rejected: [SECRET] },
+    { argv: ['reconcile', '--as', SECRET], problem: '--as must be one of operator, migration', rejected: [SECRET] },
+    { argv: ['reconcile', `--as=${SECRET}`], problem: '--as must be one of operator, migration', rejected: [SECRET] },
+    { argv: ['reconcile', '--queue'], problem: OPTION_VALUE, rejected: ['<value>'] },
+    { argv: ['reconcile', `--with-sitemonitor=${SECRET}`], problem: OPTION_VALUE, rejected: [SECRET] },
+    { argv: ['reconcile', `--nope=${SECRET}`], problem: 'unknown option', rejected: [SECRET, '--nope'] },
+    { argv: ['reconcile', `--${SECRET}`], problem: 'unknown option', rejected: [SECRET] },
+  ])('exits 2 with a usage line quoting no argument for $argv before reading the environment or creating a client', async ({ argv, problem, rejected }) => {
     stubTasksEnv({ urls: null });
 
     expect(await tasksMain(argv)).toBe(2);
 
-    expect(tasksUsageMessage(stderr)).toMatch(message);
+    expectTasksUsage(problem, rejected);
     expect(stdout).toBe('');
     expect(state.createServiceClient).not.toHaveBeenCalled();
   });
@@ -1057,16 +1120,16 @@ describe('opt2-tasks reconcile', () => {
   );
 
   it.each([
-    { queues: ['surveys-launch'], message: 'Not a recurring task queue: surveys-launch' },
-    { queues: ['people-outbox-sweep', 'nope'], message: 'Not a recurring task queue: nope' },
-    { queues: [SITEMONITOR], message: `${SITEMONITOR} is reconciled only with withSiteMonitor` },
-  ])('exits 2 with the usage line and closes the client without a call when --queue names $queues', async ({ queues, message }) => {
+    { queues: ['surveys-launch'], rejected: ['surveys-launch', 'Not a recurring'] },
+    { queues: ['people-outbox-sweep', SECRET], rejected: [SECRET, 'people-outbox-sweep'] },
+    { queues: [SITEMONITOR], rejected: ['withSiteMonitor'] },
+  ])('exits 2 with the fixed queue usage line and closes the client without a call when --queue names $queues', async ({ queues, rejected }) => {
     stubTasksEnv();
     const { request, close } = fakeServiceClient();
 
     expect(await tasksMain(['reconcile', ...queues.flatMap((queue) => ['--queue', queue])])).toBe(2);
 
-    expect(stderr).toBe(`opt2-tasks: ${message}; ${TASKS_USAGE}\n`);
+    expectTasksUsage(`--queue must name recurring queues, and ${SITEMONITOR} only with --with-sitemonitor`, rejected);
     expect(stdout).toBe('');
     expect(request).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();

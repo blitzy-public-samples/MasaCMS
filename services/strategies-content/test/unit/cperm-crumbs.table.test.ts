@@ -25,6 +25,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, registerCarchRoutes } from '../../src/routes/v1/carch.js';
+import { SITE_CONFIG_FLAGS_PATH, siteConfigFlagsAnswer } from '../helpers/app.js';
 
 type Row = Record<string, unknown>;
 
@@ -136,8 +137,9 @@ describe.skipIf(!(await pgAvailable()))('cperm crumbs of a node whose stored his
     } as Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'> as ContentRouteContext;
     await registerCarchRoutes(app, ctx);
     await app.ready();
-    // identity's admin session store, which carch before() reads for the history screen.
+    // identity's admin session store, which carch before() reads for the history screen, and programs-sites' site flags.
     const request = async (req: ServiceRequest) => {
+      if (req.service === 'programs-sites' && req.method === 'POST' && req.path === SITE_CONFIG_FLAGS_PATH) return siteConfigFlagsAnswer()(req);
       identityCalls.push(req);
       if (req.service !== 'identity' || req.method !== 'GET' || req.path !== ADMIN_STATE_PATH) throw new Error(`unexpected call ${req.service} ${req.method} ${req.path}`);
       return { status: 200, headers: {}, body: {} };

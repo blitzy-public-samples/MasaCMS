@@ -405,23 +405,52 @@ export function defineExportRunnerCases(mode: TestDbMode): ExportRunner {
   it.each([
     ['refuses its export scope with 403', 403],
     ['answers 404', 404],
-    ['answers 503', 503],
-  ])('fails a job terminally with source-unavailable when the source %s, and a redelivery changes nothing', async (_case, status) => {
+    ['answers 500', 500],
+  ])('fails a job terminally with export-failed when the source %s, and a redelivery changes nothing', async (_case, status) => {
     const queued = await queuedJob();
     const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)], undefined, status);
 
-    expect(await deliver(runnerDeps(client), queued)).toStrictEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
+    expect(await deliver(runnerDeps(client), queued)).toStrictEqual({ outcome: 'failed', state: 'failed', error: 'export-failed' });
     const failed = await read(queued.job);
     expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toStrictEqual({ outcome: 'skipped', state: 'failed' });
 
     expect(reads).toHaveLength(1);
-    expect(failed).toMatchObject({ state: 'failed', error: 'source-unavailable', finished_at: RUN_AT, object_key: null });
+    expect(failed).toMatchObject({ state: 'failed', error: 'export-failed', finished_at: RUN_AT, object_key: null });
     expect(await read(queued.job)).toStrictEqual(failed);
   });
 
+  it.each<[string, () => Promise<void>, number]>([
+    ['answers 502', () => Promise.resolve(), 502],
+    ['answers 503', () => Promise.resolve(), 503],
+    ['answers 504', () => Promise.resolve(), 504],
+    [
+      'refuses the connection',
+      () => Promise.reject(new ServiceUnavailableError('timesheets', Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8118'), { code: 'ECONNREFUSED' }))),
+      200,
+    ],
+  ])(
+    'rejects with the legacy 503 when the source %s, leaving the job running with no object, then a redelivery after it recovers runs the job to done',
+    async (_case, beforeAnswer, status) => {
+      const queued = await queuedJob();
+      const { client: unavailable } = sheetsClient([sheetRow('T1', queued.siteId)], beforeAnswer, status);
+
+      const refused: unknown = await deliver(runnerDeps(unavailable), queued).catch((thrown: unknown) => thrown);
+
+      expect(refused).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect(await read(queued.job)).toMatchObject({ state: 'running', error: null, started_at: RUN_AT, finished_at: null, object_key: null, row_version: '2' });
+      expect(await storage.head(EXPORT_BUCKET, attemptKey(queued.job, 2))).toBeNull();
+
+      const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)]);
+      expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toStrictEqual({ outcome: 'done', state: 'done' });
+
+      expect(reads.map((sent) => sent.query)).toStrictEqual([scopeQuery(queued, '3')]);
+      await expectDoneAt(queued.job, attemptKey(queued.job, 3), { started_at: RERUN_AT, finished_at: RERUN_AT, row_version: '4' });
+    },
+  );
+
   it.each<[string, number, (queued: QueuedJob) => Partial<ExportJobRow>]>([
     ['done', 200, (queued) => ({ state: 'done', object_key: attemptKey(queued.job, 3) })],
-    ['failed', 403, () => ({ state: 'failed', error: 'source-unavailable', object_key: null })],
+    ['failed', 403, () => ({ state: 'failed', error: 'export-failed', object_key: null })],
   ])(
     'deletes the outputs an interrupted claim and both slots hold when the next delivery finishes the job %s',
     async (state, status, fields) => {
@@ -594,16 +623,32 @@ export function defineExportRunTaskCases(mode: TestDbMode): void {
       },
     ],
     ['answers 503', () => ({ status: 503, headers: {}, body: undefined })],
-  ])('fails a queued export source-unavailable through its run task, storing no object, when the producer %s', async (_case, reply) => {
-    const jobId = await createExport('timesheets.sheets', 'csv');
-    t.client.answer('timesheets', SOURCE_PATHS.timesheets, reply);
+  ])(
+    'answers the legacy 503 through its run task while the producer %s, leaving the job running with no object, then runs it to done once the producer recovers',
+    async (_case, reply) => {
+      const jobId = await createExport('timesheets.sheets', 'csv');
+      t.client.answer('timesheets', SOURCE_PATHS.timesheets, reply);
 
-    const run = await deliver(jobId);
+      const refused = await deliver(jobId);
 
-    expect({ status: run.statusCode, body: run.json<unknown>() }).toStrictEqual({ status: 200, body: { jobId, state: 'failed' } });
-    expect(await storedJob(jobId)).toMatchObject({ state: 'failed', error: 'source-unavailable', object_key: null, output_sha256: null });
-    expect(await t.storage.head(EXPORT_BUCKET, firstAttemptKey(jobId, 'csv'))).toBeNull();
-  });
+      expect(refused.statusCode).toBe(503);
+      assertResponseMatchesOpenApi(OPENAPI, {
+        method: 'POST',
+        path: QUEUE.targetPath.replace('{exportId}', jobId),
+        status: refused.statusCode,
+        contentType: refused.headers['content-type'] as string | undefined,
+        body: refused.payload,
+      });
+      expect(await storedJob(jobId)).toMatchObject({ state: 'running', error: null, object_key: null, output_sha256: null, row_version: '2' });
+      expect(await t.storage.head(EXPORT_BUCKET, firstAttemptKey(jobId, 'csv'))).toBeNull();
+
+      t.client.reset();
+      const retried = await deliver(jobId);
+
+      expect({ status: retried.statusCode, body: retried.json<unknown>() }).toStrictEqual({ status: 200, body: { jobId, state: 'done' } });
+      expect(await storedJob(jobId)).toMatchObject({ state: 'done', object_key: exportAttemptKey(TENANT_A.tenantId, jobId, 'csv', '3') });
+    },
+  );
 
   it('answers the legacy 503 while the job unit is closed, leaving the job queued and its source unread, then runs it to done once it reopens', async () => {
     const jobId = await createExport('timesheets.sheets', 'csv');

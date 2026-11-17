@@ -21,6 +21,7 @@ import {
   feedTypeCount,
   feedsByCategoryId,
   listFeeds,
+  UNORDERED_SORT_REASON,
   type FeedCriteria,
   type FeedParamInput,
 } from '../../src/repo/feed-queries.js';
@@ -353,6 +354,31 @@ describe.skipIf(!(await pgAvailable()))('repo/feed-queries', () => {
     expect(stats).toEqual({ avg_orderno: 2, min_title: 'Alpha', max_rating: 4.5, count_credits: 2 });
   });
 
+
+  it.each([
+    ['a TOP of several rows', { maxItems: 2 }],
+    ['a TOP of one row', { maxItems: 1 }],
+    ['a re-sorted TOP dropping rows', { maxItems: 3, resorted: true }],
+  ] satisfies Array<[string, Partial<FeedCriteria>]>)('fails closed on a sortBy no extended attribute backs under %s', async (_label, criteria) => {
+    await expect(inA((tx) => feedContent(tx, { ...base, sortBy: 'nosuchattr', ...criteria }))).rejects.toMatchObject({
+      name: 'LegacyServiceUnavailableError',
+      reason: UNORDERED_SORT_REASON,
+    });
+  });
+
+  it.each([
+    ['without a TOP', { maxItems: 0 }],
+    ['over a single row', { maxItems: 5, tag: 'RED' }],
+    ['re-sorted under a TOP keeping every row', { maxItems: 4, resorted: true }],
+  ] satisfies Array<[string, Partial<FeedCriteria>]>)('serves a sortBy no extended attribute backs %s in clustered order', async (_label, criteria) => {
+    const unsorted = titles(await inA((tx) => feedContent(tx, { ...base, sortBy: '', ...criteria })));
+    expect(titles(await inA((tx) => feedContent(tx, { ...base, sortBy: 'nosuchattr', ...criteria })))).toEqual(unsorted);
+  });
+
+  it('keeps a TOP feed sorted by a stored extended attribute, and DISTINCT failing on any extended sort', async () => {
+    expect(titles(await inA((tx) => feedContent(tx, { ...base, sortBy: 'priority', sortDirection: 'desc', maxItems: 2 })))).toEqual(['Alpha', 'beta']);
+    await expect(inA((tx) => feedContent(tx, { ...base, distinct: true, sortBy: 'nosuchattr', maxItems: 2 }))).rejects.toThrow(/DISTINCT/);
+  });
 
   it('covers the remaining sort, type and grouping paths', async () => {
     expect(titles(await inA((tx) => feedContent(tx, { ...base, sortBy: 'comment' })))).toEqual(['Alpha', 'beta', 'Gamma', 'Events']);

@@ -1,7 +1,14 @@
 // Session resolution: the identity session a gateway request acts in, legacy-session adoption and the jar mapping.
-import { parseCookieHeader, sessionIdForJsessionid, type RouteFamily } from '@opt2/platform/legacy-compat';
-import { IDENTITY_SERVICE, ServiceUnavailableError } from '@opt2/platform/service-kit';
-import type { BridgeClient } from './bridge-client.js';
+import {
+  isLegacySessionCookie,
+  parseCookieHeader,
+  parseSetCookie,
+  sessionIdForJsessionid,
+  type RouteFamily,
+} from '@opt2/platform/legacy-compat';
+import { IDENTITY_SERVICE, ServiceUnavailableError, systemClock, type Clock } from '@opt2/platform/service-kit';
+import { DEFAULT_SESSION_TIMEOUT_MINUTES } from './activity.js';
+import type { BridgeClient, BridgeResult } from './bridge-client.js';
 import type { AdoptedSession, IdentityClient, LegacyDescribe, RestAuthOutcome } from './identity-client.js';
 import {
   absorbLegacySetCookies,
@@ -52,7 +59,7 @@ export type SessionResolution =
        */
       legacyCookies: Record<string, JarCookie>;
       setCookies: string[];
-      /** Set once a legacy logout of the session began and identity has not confirmed its end, which must complete before any use. */
+      /** Set once a legacy logout of the session began and its outcome is not settled, which must be judged before any use. */
       identityEndPending?: true;
       /** Request parameter names REST credential handling consumed, which the owning service's route key removes from params. */
       consumedParams?: string[];
@@ -67,7 +74,7 @@ export type LegacyBoundResolution =
       kind: 'unverified';
       sessionId: string;
       setCookies: string[];
-      /** Set when the jar marks a legacy logout whose identity end must complete before any use. */
+      /** Set when the jar marks a legacy logout whose outcome must be judged before any use. */
       identityEndPending?: true;
     };
 
@@ -116,6 +123,20 @@ export interface SessionResolverOptions {
   bridge: BridgeClient;
   jar: LegacyJar;
   state: SessionStateChecker;
+  /** Ages the memo of which legacy session cookies attach; defaults to the system clock. */
+  clock?: Clock;
+  /**
+   * Idle time after which cookies are described again: legacy's session timeout, which no session they attach outlives
+   * idle; defaults to Masa's 180 minutes.
+   */
+  attachmentIdleMs?: number;
+}
+
+/** The legacy session a set of cookies attached when last described or used. */
+interface Attachment {
+  legacySessionId: string;
+  /** When those cookies last reached legacy, in epoch milliseconds. */
+  usedAt: number;
 }
 
 /** An active identity session named by the browser's target cookies, with its jar row. */
@@ -192,6 +213,27 @@ function isEmpty(cookies: JarCookies): boolean {
   return Object.keys(cookies).length === 0;
 }
 
+/**
+ * The `Set-Cookie` values ColdFusion sent the bridge that legacy would also send this browser: a session cookie it
+ * lacks or holds at another value, and any other cookie it lacks, by name in any case as the cookie scope reads it.
+ */
+function owedSetCookies(request: SessionRequestInput, setCookies: readonly string[]): string[] {
+  const held = parseCookieHeader(headerValue(request.headers, 'cookie'));
+  return setCookies.filter((setCookie) => {
+    const { name, value } = parseSetCookie(setCookie);
+    const current = held.get(name);
+    return current === undefined || (isLegacySessionCookie(name) && current !== value);
+  });
+}
+
+/** The memo key of session cookies: their upper-case names and values, sorted. */
+function attachmentKey(cookies: JarCookies): string {
+  return Object.entries(cookies)
+    .map(([key, cookie]) => `${key}=${cookie.value}`)
+    .sort()
+    .join('; ');
+}
+
 function none(setCookies: string[] = []): SessionResolution {
   return { kind: 'none', setCookies };
 }
@@ -244,6 +286,84 @@ function reissue(jarCookies: JarCookies, issuedSetCookies: readonly string[]): s
 /** Creates the session resolver over identity, the legacy bridge, the jar and the session-state checker. */
 export function createSessionResolver(opts: SessionResolverOptions): SessionResolver {
   const { identity, bridge, jar, state } = opts;
+  const clock = opts.clock ?? systemClock;
+  const idleMs = opts.attachmentIdleMs ?? DEFAULT_SESSION_TIMEOUT_MINUTES * 60_000;
+  // A use re-inserts the key, so the least recently used cookies sit at the head of the map.
+  const attachments = new Map<string, Attachment>();
+
+  /** Removes cookies unused for the idle bound, whose legacy session may have timed out since. */
+  function pruneAttachments(now: number): void {
+    for (const [key, entry] of attachments) {
+      if (now - entry.usedAt < idleMs) return;
+      attachments.delete(key);
+    }
+  }
+
+  /** The legacy session `sent` attached within the idle bound, now used again; undefined when unknown. */
+  function knownAttachment(sent: JarCookies): string | undefined {
+    const now = clock.now().getTime();
+    pruneAttachments(now);
+    const key = attachmentKey(sent);
+    const entry = attachments.get(key);
+    if (entry === undefined) return undefined;
+    attachments.delete(key);
+    const age = now - entry.usedAt;
+    // A clock stepped back never extends the memo.
+    if (age < 0 || age >= idleMs) return undefined;
+    attachments.set(key, { legacySessionId: entry.legacySessionId, usedAt: now });
+    return entry.legacySessionId;
+  }
+
+  /** Forgets every set of cookies known to attach `legacySessionId`. */
+  function forgetAttachments(legacySessionId: string): void {
+    for (const [key, entry] of attachments) if (entry.legacySessionId === legacySessionId) attachments.delete(key);
+  }
+
+  /** `op=describe` of `sent`, recording the legacy session they attach, or none when ColdFusion replaced them. */
+  async function describeNoted(request: SessionRequestInput, sent: JarCookies): Promise<BridgeResult<LegacyDescribe>> {
+    const issuedAt = clock.now().getTime();
+    const described = await describeSession(request, sent);
+    const key = attachmentKey(sent);
+    attachments.delete(key);
+    if (keptSession(sent, absorbLegacySetCookies(described.setCookies).sessionCookies)) {
+      attachments.set(key, { legacySessionId: described.body.sessionId, usedAt: issuedAt });
+    }
+    return described;
+  }
+
+  /** Describes by request object, so the legacy-bound resolutions of one request share it; a failed one is not kept. */
+  const describes = new WeakMap<SessionRequestInput, Promise<BridgeResult<LegacyDescribe>>>();
+
+  /** The request's one `op=describe` of its own cookies `sent`. */
+  function describeOnce(request: SessionRequestInput, sent: JarCookies): Promise<BridgeResult<LegacyDescribe>> {
+    const known = describes.get(request);
+    if (known !== undefined) return known;
+    const pending = describeNoted(request, sent);
+    describes.set(request, pending);
+    pending.catch(() => {
+      if (describes.get(request) === pending) describes.delete(request);
+    });
+    return pending;
+  }
+
+  /**
+   * The active identity session the jar maps to `legacySessionId`; `unverified` while identity cannot report its state.
+   * An epoch change forgets the cookies known to attach it, so the next request describes them again.
+   */
+  async function mappedSession(legacySessionId: string): Promise<LegacyBoundResolution | undefined> {
+    const mapped = await jar.findByLegacySessionId(legacySessionId);
+    if (mapped === undefined) return undefined;
+    const check = await state.check(mapped.sessionId).catch((error: unknown) => {
+      if (isIdentityUnavailable(error)) return undefined;
+      throw error;
+    });
+    // Legacy owns a legacy-primary session, so the gateway's own mapping still keys its barrier.
+    if (check === undefined) {
+      return { kind: 'unverified', sessionId: mapped.sessionId, setCookies: [], ...pendingEnd(mapped) };
+    }
+    if (check.epochChanged) forgetAttachments(legacySessionId);
+    return check.state === 'active' ? session(mapped.sessionId, check.epoch, 'legacy-primary', mapped, []) : undefined;
+  }
 
   /** The active identity session the browser's target cookies name; an ended or unknown one names none. */
   async function targetSession(request: SessionRequestInput): Promise<TargetSession | undefined> {
@@ -294,7 +414,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     }
     // A target-primary holder may be hydrating or ending that legacy session, so it is described again under its lock.
     return jar.withNativeLock(described.sessionId, async (locked) => {
-      const fresh = (await describeSession(request, sent)).body;
+      const fresh = (await describeNoted(request, sent)).body;
       if (fresh.sessionId !== described.sessionId) return undefined;
       const adopted = await adoptInIdentity(fresh, siteId);
       return { adopted, row: await locked.rebind(adoptedJar(adopted, fresh.sessionId, cookies, mode)) };
@@ -386,7 +506,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
         adoptedJar(adopted, described.body.sessionId, cookies, 'legacy-primary'),
         targetRow.sessionId,
       );
-      const setCookies = [...legacySetCookiesFrom(stored.cookies), ...absorbed.otherSetCookies];
+      const setCookies = [...legacySetCookiesFrom(stored.cookies), ...owedSetCookies(request, absorbed.otherSetCookies)];
       // The browser still sends the target values on this request, so legacy receives the restored jar's.
       return {
         kind: 'session',
@@ -402,7 +522,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
 
   /**
    * The switch back of the target-primary jar the request's target cookie names; undefined when it names none or its
-   * session ended. A jar marked pending-end resolves to its own flagged session instead, whose end completes first.
+   * session ended. A jar marked pending-end resolves to its own flagged session instead, whose logout is judged first.
    */
   async function restoreTargetJar(request: SessionRequestInput, siteId: string | undefined) {
     const candidate = sessionIdFromTargetCookies(parseCookieHeader(headerValue(request.headers, 'cookie')));
@@ -437,14 +557,14 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     const restored = await restoredSession(request, siteId);
     if (restored !== undefined) return restored;
     const sent = requestCookies(request);
-    const described = await describeSession(request, sent);
+    const described = await describeNoted(request, sent);
     const absorbed = absorbLegacySetCookies(described.setCookies);
     const cookies = { ...requestCookies(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
     const adoption = await adopt(request, sent, described.body, cookies, 'legacy-primary', siteId);
     if (adoption === undefined) return none();
     const { adopted, row } = adoption;
-    // ColdFusion's own Set-Cookie values reach the browser as legacy would have set them.
-    return session(adopted.sessionId, adopted.epoch, 'legacy-primary', row, [...described.setCookies]);
+    // The bridge sends only session cookies, so ColdFusion re-sets cookies the browser already holds.
+    return session(adopted.sessionId, adopted.epoch, 'legacy-primary', row, owedSetCookies(request, described.setCookies));
   }
 
   /**
@@ -529,18 +649,16 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
       if (restored !== undefined) return restored;
       const sent = requestCookies(request);
       if (isEmpty(sent)) return none();
-      const described = await describeSession(request, sent);
-      const mapped = await jar.findByLegacySessionId(described.body.sessionId);
-      if (mapped !== undefined) {
-        const check = await state.check(mapped.sessionId).catch((error: unknown) => {
-          if (isIdentityUnavailable(error)) return undefined;
-          throw error;
-        });
-        // Legacy owns a legacy-primary session, so the gateway's own mapping still keys its barrier.
-        if (check === undefined) {
-          return { kind: 'unverified', sessionId: mapped.sessionId, setCookies: [], ...pendingEnd(mapped) };
-        }
-        if (check.state === 'active') return session(mapped.sessionId, check.epoch, 'legacy-primary', mapped, []);
+      // Cookies known to attach a legacy session map without a describe; only an adoption needs describe's answer.
+      const known = knownAttachment(sent);
+      if (known !== undefined) {
+        const found = await mappedSession(known);
+        if (found !== undefined || !adoptUnmapped) return found ?? none();
+      }
+      const described = await describeOnce(request, sent);
+      if (described.body.sessionId !== known) {
+        const found = await mappedSession(described.body.sessionId);
+        if (found !== undefined) return found;
       }
       if (!adoptUnmapped) return none();
       const observed = absorbLegacySetCookies(described.setCookies).sessionCookies;

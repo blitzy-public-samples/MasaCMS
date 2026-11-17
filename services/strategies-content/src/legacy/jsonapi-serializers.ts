@@ -14,6 +14,7 @@ import {
   cfToNumber,
   cfUuid,
   createApiSerializer,
+  LegacyServiceUnavailableError,
   type LegacyJsonSerializer,
 } from '@opt2/platform/legacy-compat';
 import { contentImageUrl, contentUrl, hasImage, type ImageUrlOptions, type LegacySiteUrlConfig } from './content-urls.js';
@@ -121,8 +122,8 @@ export interface ExpansionResolver {
   hasOne: (prop: RelationProp, id: unknown, opts: ExpansionOptions) => Promise<unknown>;
   /** The bean's getCrumbIterator(); access is checked as findCrumbArray does. */
   crumbs: (view: ApiEntityView) => Promise<EntityCollectionSource>;
-  /** The subtype's related content sets, inherited ones included, each with its iterator. */
-  relatedContent: (view: ApiEntityView) => Promise<readonly RelatedContentSetSource[]>;
+  /** The subtype's related content sets, inherited ones included, each with its iterator; `opts` are the items' expansion. */
+  relatedContent: (view: ApiEntityView, opts: ExpansionOptions) => Promise<readonly RelatedContentSetSource[]>;
 }
 
 /** getFilteredValues arguments besides the entity. */
@@ -280,6 +281,12 @@ function siteOf(view: ApiEntityView, ctx: JsonApiRequestContext): LegacySiteUrlC
 /** Primary key application.objectMappings registers for an entity; '' when it has none. */
 function registeredPrimaryKey(entityName: string): string {
   const config = getContentEntityConfig(entityName);
+  return 'mappedPrimaryKey' in config ? config.mappedPrimaryKey : '';
+}
+
+/** The entity bean's getPrimaryKey(); '' for an unregistered entity. */
+function beanPrimaryKey(entityName: string): string {
+  const config = getContentEntityConfig(entityName);
   return 'primaryKey' in config ? config.primaryKey : '';
 }
 
@@ -320,8 +327,9 @@ export function iteratorPage(a: {
   const first = (pageIndex - 1) * maxRecordsPerPage;
   return {
     recordCount,
-    // Legacy divides only for a non-empty iterator, which never has zero records per page.
-    pageCount: maxRecordsPerPage > 0 ? Math.ceil(recordCount / maxRecordsPerPage) : 0,
+    // Legacy divides only for a non-empty iterator, which never has zero records per page; a negative page size
+    // gives a negative count, and Ceiling's -0 prints as 0.
+    pageCount: maxRecordsPerPage !== 0 ? Math.ceil(recordCount / maxRecordsPerPage) || 0 : 0,
     pageIndex,
     firstOnPage: first > recordCount ? 1 : first + 1,
     lastOnPage: Math.min(first + maxRecordsPerPage, recordCount),
@@ -329,6 +337,80 @@ export function iteratorPage(a: {
     entityName,
   };
 }
+
+/**
+ * The rows a queryIterator page reads: `blank` rows before the first record, the 0-based `records`, then `blankAfter`
+ * rows past the last; `from` and `count` span the records a caller fetches for {@link readRecords}.
+ */
+export interface IteratorRows {
+  blank: number;
+  records: readonly number[];
+  blankAfter: number;
+  from: number;
+  count: number;
+}
+
+/** The most blank rows a page serializes before it answers the legacy request-timeout 503. */
+export const ITERATOR_BLANK_ROW_LIMIT = 1000;
+
+/**
+ * The rows next() reads from `recordIndex` while below `end` (queryIterator.cfc:145-156), blank outside 1..recordCount;
+ * throws the legacy 503 past {@link ITERATOR_BLANK_ROW_LIMIT} leading blank rows.
+ */
+export function iteratorRows(recordCount: number, recordIndex: number, end: number, entityName: string): IteratorRows {
+  let blank = 0;
+  let blankAfter = 0;
+  const records: number[] = [];
+  for (let index = recordIndex; recordCount > 0 && index < end; ) {
+    index += 1;
+    const row = Math.trunc(index);
+    if (row > recordCount) {
+      blankAfter += 1;
+    } else if (row >= 1) {
+      records.push(row - 1);
+    } else if (++blank > ITERATOR_BLANK_ROW_LIMIT) {
+      throw new LegacyServiceUnavailableError(`A ${entityName} page of more than ${ITERATOR_BLANK_ROW_LIMIT} rows before the first record outlasts the legacy request timeout`, 'auto', 'iterator-blank-rows-timeout');
+    }
+  }
+  const from = records[0] ?? 0;
+  const last = records.at(-1);
+  return { blank, records, blankAfter, from, count: last === undefined ? 0 : last - from + 1 };
+}
+
+/** The rows of `read.records` in `span`, the rows fetched from its `from`. */
+export function readRecords<R>(read: IteratorRows, span: readonly R[]): R[] {
+  return read.records.flatMap((record) => {
+    const row = span[record - read.from];
+    return row === undefined ? [] : [row];
+  });
+}
+
+/** The most records per page contentDAO reads from one page query (contentDAO.cfc:115-121). */
+const PAGE_QUERY_LIMIT = 2000;
+
+/**
+ * Positions, among a contentIterator page's blank rows then `read.records`, of the records contentDAO's page query
+ * misses (contentDAO.cfc:115-138), read as new beans; `byContentId` after a blank row, the query holds none.
+ */
+export function pageQueryMisses(read: IteratorRows, page: { recordCount: number; pageIndex: number; perPage: number }, byContentId: boolean): ReadonlySet<number> {
+  const { recordCount, pageIndex, perPage } = page;
+  const misses = new Set<number>();
+  if (read.records.length === 0 || !(perPage <= PAGE_QUERY_LIMIT || (perPage === 0 && recordCount <= PAGE_QUERY_LIMIT))) return misses;
+  const held = new Set<number>();
+  if (!(byContentId && read.blank > 0)) {
+    const first = (pageIndex - 1) * perPage;
+    const last = Math.min(first + perPage, recordCount);
+    for (let index = first > recordCount ? 1 : first + 1; index <= last; index += 1) {
+      const row = Math.trunc(index);
+      if (row >= 1) held.add(row - 1);
+    }
+  }
+  read.records.forEach((record, k) => {
+    if (!held.has(record)) misses.add(read.blank + k);
+  });
+  return misses;
+}
+
 
 /** The field list getFilteredValues settles (2084-2131); `allFields` when it is empty or holds `*` or `all`. */
 export function selectFields(
@@ -495,7 +577,7 @@ async function expandEntity(
   }
 
   if (listFindNoCase(CONTENT_ENTITY_NAMES, view.entityName) && wanted('relatedcontent')) {
-    const sets = await source().relatedContent(view);
+    const sets = await source().relatedContent(view, { expand: '', expanded: opts.expanded });
     setNoCase(vals, 'relatedcontent', await serializeRelatedContent({ kind: 'sets', sets }, ctx, { expanded: opts.expanded }, resolver));
   }
 }
@@ -654,19 +736,24 @@ export function serializeCollection(
   return result;
 }
 
-/** iteratorToArray (2920-2953): each bean of an iterator over `opts.entityName`, under the iterator's entity config. */
+/**
+ * iteratorToArray (2920-2953): each bean of an iterator over `opts.entityName`, under the iterator's entity config.
+ * `opts.pk` replaces its primary key, as findAll and findMany read getPrimaryKey() (2597-2603, 2655-2661).
+ */
 export async function serializeEntityList(
   views: readonly ApiEntityView[],
   ctx: JsonApiRequestContext,
-  opts: IteratorOptions & { entityName: string },
+  opts: IteratorOptions & { entityName: string; pk?: string },
   resolver?: ExpansionResolver,
 ): Promise<Record<string, unknown>[]> {
   const { entityName } = opts;
-  const pk = listFindNoCase(CONTENT_ENTITY_NAMES, entityName)
-    ? 'contentid'
-    : cfEq(entityName, 'feed')
-      ? 'feedid'
-      : registeredPrimaryKey(entityName);
+  const pk =
+    opts.pk ??
+    (listFindNoCase(CONTENT_ENTITY_NAMES, entityName)
+      ? 'contentid'
+      : cfEq(entityName, 'feed')
+        ? 'feedid'
+        : registeredPrimaryKey(entityName));
   const configName = cfEq(entityName, 'content') ? 'contentnav' : entityName;
   const items: Record<string, unknown>[] = [];
   for (const view of views) {
@@ -690,7 +777,7 @@ export async function serializeCrumbs(
 ): Promise<Record<string, unknown>> {
   const entityName = cfEq(opts.entityName, 'contentnav') ? 'content' : opts.entityName;
   const isContent = cfEq(entityName, 'content');
-  const pk = isContent ? 'contentid' : registeredPrimaryKey(entityName);
+  const pk = isContent ? 'contentid' : beanPrimaryKey(entityName);
   const configName = isContent ? 'contentnav' : entityName;
   const items: Record<string, unknown>[] = [];
   for (const view of source.items) {

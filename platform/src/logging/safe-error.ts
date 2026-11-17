@@ -81,6 +81,28 @@ const SLOT = '(?:[a-z][a-z0-9]*-)+[0-9]+';
 /** Supplied text of a RecurringSlotsTombstonedError, naming only its queue and probed chain task names. */
 const RECURRING_TEXT = `No live chain task on queue ${QUEUE}: tombstoned slots ${SLOT}(?:, ${SLOT})*`;
 
+/** SQL Server error number text. */
+const SQL_SERVER_ERROR = 'SQL Server error [0-9]+';
+
+/** mssql driver error classes, by name, and what each reports failed. */
+const MSSQL_ERRORS: ReadonlyMap<string, string> = new Map([
+  ['RequestError', 'request'],
+  ['ConnectionError', 'connection'],
+  ['TransactionError', 'transaction'],
+]);
+
+/** Text of an mssql driver error: its SQL Server error number, else what failed and the driver code. */
+const MSSQL_TEXT = `(?:${SQL_SERVER_ERROR}|SQL Server (?:${[...MSSQL_ERRORS.values()].join('|')}) E[A-Z0-9_]+)`;
+
+/** Supplied text of migration's Opt2SyncUnavailableError: its fixed phrase, then an SQL Server error number or the missing checkpoint table. */
+const OPT2_SYNC_TEXT = String.raw`Schema opt2_sync could not be created in the legacy database, so no unit may become target-authoritative: (?:${SQL_SERVER_ERROR}|opt2_sync\.projector_checkpoint does not exist in the live legacy database)`;
+
+/** Write position entry `<owner>=<xid>`. */
+const POSITION = '[a-z][a-z0-9-]*=[0-9]+';
+
+/** Supplied text of migration's ProjectionTimeoutError: the awaited positions, joined by `,`, and the budget in ms. */
+const PROJECTION_TIMEOUT_TEXT = `Projection of (?:${POSITION}(?:,${POSITION})*)? was not applied in legacy within [0-9]+ ms`;
+
 /** Environment variable name. */
 const ENV_KEY = '[A-Z][A-Z0-9_]*';
 
@@ -108,9 +130,9 @@ const ENV_FILE_TEXT = String.raw`(?:[a-z][a-z0-9-]*: )?cannot read ${ENV_KEY} fi
 /** Supplied text of an UnpublishedEventsError, naming only its event count. */
 const UNPUBLISHED_TEXT = String.raw`Outbox publish of [1-9][0-9]* committed event\(s\) incomplete before the answer; left to the sweep`;
 
-/** Every text `safeErrorMessage` produces besides REDACTED, platform errors' supplied texts included, plus the sanitized message of @opentelemetry/instrumentation-pg. */
+/** Every text `safeErrorMessage` produces besides REDACTED, platform and migration errors' supplied texts included, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \(${ENV_ENTRY}(?:; ${ENV_ENTRY})*\))?|${ENV_FILE_TEXT}|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT}|${UNPUBLISHED_TEXT})$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \(${ENV_ENTRY}(?:; ${ENV_ENTRY})*\))?|${ENV_FILE_TEXT}|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT}|${MSSQL_TEXT}|${OPT2_SYNC_TEXT}|${PROJECTION_TIMEOUT_TEXT}|${UNPUBLISHED_TEXT})$`,
 );
 
 /** Text that is exactly one RULE_REASON. */
@@ -215,6 +237,13 @@ function grpcStatusText(err: Error): string | undefined {
   return serviceError || GRPC_ERROR_CLASSES.has(err.constructor?.name ?? '') ? `gRPC status ${String(code)} ${name}` : undefined;
 }
 
+/** `SQL Server error <number>` of an mssql RequestError carrying SQL Server's error number, else `SQL Server <failed> <code>`. */
+function mssqlText(err: unknown, failed: string, code: string): string {
+  const { number } = err as { number?: unknown };
+  const known = failed === 'request' && typeof number === 'number' && Number.isSafeInteger(number) && number >= 0;
+  return known ? `SQL Server error ${String(number)}` : `SQL Server ${failed} ${code}`;
+}
+
 /** Message from `err`'s own supplied safe text or diagnostic identifiers alone; otherwise REDACTED. */
 function ownSafeMessage(err: unknown): string {
   const supplied = stringProperty(err, SAFE_ERROR_TEXT);
@@ -231,10 +260,13 @@ function ownSafeMessage(err: unknown): string {
   // A nodemailer error's message and response may echo server replies and addresses; its code and command never do.
   const command = stringProperty(err, 'command');
   if (SYSTEM_CODE.test(code) && command !== undefined && SMTP_COMMAND_TEXT.test(command)) return `SMTP ${command} ${code}`;
+  // An mssql error's message may echo SQL Server's text and query values; its class, code and error number never do.
+  const failed = MSSQL_ERRORS.get(stringProperty(err, 'name') ?? '');
+  if (SYSTEM_CODE.test(code) && failed !== undefined) return mssqlText(err, failed, code);
   return NAMED_CODE.test(code) ? code : REDACTED;
 }
 
-/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, SMTP command and code, Node or Fastify code, gRPC status, Node's abort text), else from its nearest cause's; otherwise REDACTED. */
+/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, SMTP command and code, mssql error number or class and code, Node or Fastify code, gRPC status, Node's abort text), else from its nearest cause's; otherwise REDACTED. */
 export function safeErrorMessage(err: unknown): string {
   let message = ownSafeMessage(err);
   let link = err;

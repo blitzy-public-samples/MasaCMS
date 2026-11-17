@@ -287,6 +287,7 @@ describe('route registrations against the contract', () => {
         ['GET', 'watermark'],
         ['POST', 'watermark'],
         ['POST', 'gate'],
+        ['GET', 'objects'],
       ] as const
     ).map(([method, name]) => keyOf(method, `${MIGRATION_PATH_PREFIX}/${name}`)),
     keyOf('GET', '/healthz'),
@@ -394,6 +395,8 @@ const cases: Record<string, () => Promise<CaseResult>> = {
   migrationWatermarkGet: async () => call(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/watermark`),
   migrationWatermarkPost: async () => call(await migrationHeaders(), 'POST', `${MIGRATION_PATH_PREFIX}/watermark`, { payload: { ...WATERMARK } }),
   migrationGate: async () => call(await migrationHeaders(), 'POST', `${MIGRATION_PATH_PREFIX}/gate`, { payload: { op: 'status' } }),
+  migrationGetExportObject: async () =>
+    call(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/objects?tenantId=${TENANT_A.tenantId}&jobId=${done.job_id}`),
   healthz: () => call({}, 'GET', '/healthz'),
 };
 
@@ -615,15 +618,18 @@ describe('export run task', () => {
     expect({ body: res.json<unknown>(), calls: callTrail(before) }).toEqual({ body: { jobId: done.job_id, state: 'done' }, calls: [] });
   });
 
-  it('answers the failed state when the source producer is unavailable', async () => {
+  it('answers the legacy 503 while the source producer is unavailable, leaving the job running for a retry', async () => {
     const job = await seedJob(t, financeDefinition, 'queued');
     const wire = await queueRun(t, job);
     t.client.answer('finance', '/internal/v1/finance/records', () => ({ status: 503, headers: {}, body: undefined }));
     const before = t.client.requests.length;
     const res = await send(await tasksHeaders(), 'POST', RUN_URL, { payload: { ...wire } });
-    expect({ body: res.json<unknown>(), calls: callTrail(before) }).toEqual({
-      body: { jobId: job.job_id, state: 'failed' },
+    const calls = callTrail(before);
+    const stored = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${job.job_id}?${ON_SITE_A}`);
+    expect({ status: res.statusCode, calls, state: stored.json<{ data: { state: string } }>().data.state }).toEqual({
+      status: 503,
       calls: ['finance /internal/v1/finance/records with no user token'],
+      state: 'running',
     });
   });
 

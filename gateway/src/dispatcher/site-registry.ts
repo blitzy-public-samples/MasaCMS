@@ -1,5 +1,6 @@
 // Legacy site registry for route keys: the ids Masa's settingsManager holds, as the legacy bridge lists them.
 import { serializeError } from '@opt2/platform/logging';
+import { withUnsampledTrace } from '@opt2/platform/tracing';
 import { REFRESH_INTERVAL_MS } from '../cutover/state.js';
 
 /** Logger method the registry uses; Fastify's `app.log` satisfies it. */
@@ -18,7 +19,7 @@ export interface SiteRegistryDeps {
 export interface SiteRegistry {
   /** `settingsManager.siteExists` over the snapshot: ids match without case, as struct keys do; `''` never exists. */
   siteExists(siteId: string): boolean;
-  /** Loads the snapshot, rejecting when that fails, then refreshes it every `REFRESH_INTERVAL_MS` until `stop`. */
+  /** Loads the snapshot, rejecting when that fails, then refreshes it, untraced, every `REFRESH_INTERVAL_MS` until `stop`. */
   start(): Promise<void>;
   stop(): void;
   /** Reloads the snapshot now; a failure rejects and keeps the previous snapshot. */
@@ -46,7 +47,7 @@ export function createSiteRegistry(deps: SiteRegistryDeps): SiteRegistry {
   // A tick still running across stop() and start() belongs to the old loop and must not reschedule beside the new one.
   const scheduleRefresh = (loop: number): void => {
     timer = setTimeout(() => {
-      void refresh()
+      void withUnsampledTrace(refresh)
         .catch((error: unknown) => {
           deps.logger.error({ error: serializeError(error) }, 'legacy site registry refresh failed; keeping the last snapshot');
         })

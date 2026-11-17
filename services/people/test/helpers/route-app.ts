@@ -188,9 +188,9 @@ export function createIdentityDouble(registry: TenantDb): IdentityDouble {
       called('siteGroups');
       return [];
     },
-    async userGroups() {
-      called('userGroups');
-      return [];
+    async userGroupsPage() {
+      called('userGroupsPage');
+      return { rows: [], total: 0, nextOffset: null };
     },
     async actingUser() {
       called('actingUser');
@@ -293,7 +293,7 @@ export async function buildPeopleRouteApp(): Promise<PeopleRouteApp> {
   const searchCriteria: SearchCriteriaReader = { read: () => Promise.resolve(undefined) };
 
   registerWritePositionHeader(app);
-  await registerAdminUserRoutes(app, { db, repository, identity, clock });
+  await registerAdminUserRoutes(app, { db, repository, identity, clock, expirePasswords: 0 });
   await registerAdminDownloadRoutes(app, { search: { db, repo: repository, identity }, searchCriteria });
   await registerAdminProfileRoutes(app, { roster });
   registerConsumers(app, { service: PEOPLE_SERVICE, consumers: peopleConsumerRegistrations(repository), publisher, db });

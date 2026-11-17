@@ -2,9 +2,8 @@
 import { cfDateAdd, cfIsDate, cfIsNumeric, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
 import type { UserValues } from './person.js';
 
-/** configBean `expirePasswords` from `MURA_EXPIREPASSWORDS`; unset, an unevaluable `${…}` or `{{…}}` expression, or other non-numeric text is 0. */
-export function expirePasswordsSetting(env: Readonly<Record<string, string | undefined>>): number {
-  const value = env.MURA_EXPIREPASSWORDS;
+/** configBean `expirePasswords` from a `MURA_EXPIREPASSWORDS` value; unset, an unevaluable `${…}` or `{{…}}` expression, or other non-numeric text is 0. */
+export function expirePasswordsSetting(value: string | undefined): number {
   return value !== undefined && cfIsNumeric(value) ? cfToNumber(value) : 0;
 }
 

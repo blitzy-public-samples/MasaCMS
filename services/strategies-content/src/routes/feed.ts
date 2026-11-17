@@ -17,6 +17,7 @@ import { poolTenantFor, tenantForRegisteredSite, withTenant, type TenantDb, type
 import { actorFromClaims, type Actor, type DomainDeps } from '../domain/context.js';
 import { FeedContentUnsupportedError, allowFeed, feedContent, readFeed, type FeedBean, type FeedMemberLookup } from '../domain/feeds.js';
 import type { LegacySiteUrlConfig } from '../legacy/content-urls.js';
+import { UNORDERED_SORT_REASON } from '../repo/feed-queries.js';
 import {
   decideFeed,
   feedArguments,
@@ -43,18 +44,22 @@ export interface FeedRenderSite {
   javaLocale: string;
 }
 
-/** Source of the tsettings and configBean values a rendered feed prints; programs-sites owns them. */
+/** Source of the tsettings and configBean values a rendered feed prints; programs-sites owns the tsettings ones. */
 export interface FeedSiteSource {
-  /** configBean `getServerPort()`, `getContext()` and `getIndexPath()`. */
-  server: RssServerConfig;
-  site(siteId: string, request: FastifyRequest): Promise<FeedRenderSite>;
+  /** configBean `getServerPort()`, `getContext()` and `getIndexPath()` for the request. */
+  server(request: FastifyRequest): RssServerConfig;
+  /**
+   * The settings `getSite` resolves for each listed site id, keyed by the lower-cased id, in one lookup.
+   * @throws LegacyServiceUnavailableError when the settings owner is unavailable, which renders the legacy 503.
+   */
+  sites(siteIds: readonly string[], request: FastifyRequest): Promise<ReadonlyMap<string, FeedRenderSite>>;
 }
 
 /** The route context these routes read: a structural subset of `ContentRouteContext`, so this module needs nothing from the `routes/index.ts` that registers it. */
 export interface FeedRouteContext {
   domain: Pick<DomainDeps, 'db' | 'repository' | 'clock'>;
-  /** Site settings of rendered feeds; without a source, a feed that reaches rendering answers the legacy 503. */
-  feedSites?: FeedSiteSource;
+  /** Site settings of rendered feeds. */
+  feedSites: FeedSiteSource;
 }
 
 /** handleAPIRequest's feed endpoints. */
@@ -315,41 +320,42 @@ async function itemViews(deps: FeedRouteContext['domain'], rows: readonly FeedIt
   }));
 }
 
-/** feed()'s render (feedApiUtility.cfc:257-275): the feed in its site's locale through the RSS writers, or an empty page for another version. */
+/** The settings `sites` holds for `siteId`. */
+function siteOf(sites: ReadonlyMap<string, FeedRenderSite>, siteId: string): FeedRenderSite {
+  const site = sites.get(siteId.toLowerCase());
+  if (site === undefined) throw new TypeError(`No site settings for site '${siteId}'`);
+  return site;
+}
+
+/**
+ * feed()'s render (feedApiUtility.cfc:257-275): the feed in its site's locale through the RSS writers, or an empty page
+ * for another version; `feedSites` holds the feed site's settings.
+ */
 async function renderedFeed(
   ctx: FeedRouteContext,
   request: FastifyRequest,
   feedRequest: FeedRequest,
   bean: FeedBean,
   rows: readonly FeedItemRow[],
+  feedSites: ReadonlyMap<string, FeedRenderSite>,
 ): Promise<LegacyResponse> {
   const source = ctx.feedSites;
-  // Contact, JavaLocale and the site URL settings are tsettings columns of programs-sites, which neither the site events
-  // this service consumes nor any operation open to it carry; rendering with made-up values would diverge silently.
-  if (source === undefined) {
-    throw new LegacyServiceUnavailableError('Rendered feeds print site settings this service does not hold', 'auto', 'feed-site-settings');
-  }
   const feed = feedView(bean);
   const version = (feed.version ?? '').toLowerCase();
   const renderContent = feedRenderContent(feedRequest.url);
-  const items =
-    version === 'rss 2.0' || version === 'rss 0.920' ? await itemViews(ctx.domain, rows, { version, allowHtml: feed.allowhtml, renderContent }) : [];
-  const site = await source.site(feed.siteid ?? '', request);
-  const itemSites = new Map<string, LegacySiteUrlConfig>();
-  for (const item of items) {
-    const siteId = item.siteid ?? '';
-    if (!itemSites.has(siteId.toLowerCase())) itemSites.set(siteId.toLowerCase(), (await source.site(siteId, request)).urls);
-  }
+  const writesItems = version === 'rss 2.0' || version === 'rss 0.920';
+  const feedSiteId = feed.siteid ?? '';
+  // Item sites `feedSites` lacks, in one lookup before the item reads.
+  const otherSiteIds = writesItems ? rows.map((row) => row.siteid ?? '').filter((siteId) => !feedSites.has(siteId.toLowerCase())) : [];
+  const sites = otherSiteIds.length === 0 ? feedSites : new Map([...feedSites, ...(await source.sites(otherSiteIds, request))]);
+  const site = siteOf(sites, feedSiteId);
+  const items = writesItems ? await itemViews(ctx.domain, rows, { version, allowHtml: feed.allowhtml, renderContent }) : [];
   return packet(
     renderFeed(feed, items, {
       site: site.urls,
-      siteFor: (siteId) => {
-        const urls = itemSites.get(siteId.toLowerCase());
-        if (urls === undefined) throw new TypeError(`No URL settings for site '${siteId}'`);
-        return urls;
-      },
+      siteFor: (siteId) => siteOf(sites, siteId).urls,
       contact: site.contact,
-      config: source.server,
+      config: source.server(request),
       now: ctx.domain.clock.now(),
       renderContent,
       requestHost: requestHost(request),
@@ -373,9 +379,12 @@ async function processFeedRequest(ctx: FeedRouteContext, request: FastifyRequest
   const args = feedArguments(dispatch.params);
   const stored = await storedFeed(ctx.domain, request, args.feedId);
   if (stored === null) return NOT_FOUND;
+  // Read before the feed query, so an unavailable settings owner answers the legacy 503 before it runs.
+  const feedSites = await ctx.feedSites.sites([stored.bean.text('siteid')], request);
   // getFeed runs before allowFeed: a listing this service cannot reproduce is refused only where legacy would render it.
   const rows = await feedContent(ctx.domain, stored.actor, stored.bean, { tag: args.tag }).catch((err: unknown) => {
     if (err instanceof FeedContentUnsupportedError) return err;
+    if (err instanceof LegacyServiceUnavailableError && err.reason === UNORDERED_SORT_REASON) return err;
     throw err;
   });
   const decision = decideFeed({
@@ -395,7 +404,8 @@ async function processFeedRequest(ctx: FeedRouteContext, request: FastifyRequest
       return packet(feedErrorPacket(decision.kind, userAgent));
     case 'render':
       if (rows instanceof FeedContentUnsupportedError) throw new LegacyServiceUnavailableError(rows.message, 'auto', 'feed-content-unsupported');
-      return renderedFeed(ctx, request, feedRequest, stored.bean, rows);
+      if (rows instanceof LegacyServiceUnavailableError) throw rows;
+      return renderedFeed(ctx, request, feedRequest, stored.bean, rows, feedSites);
   }
 }
 

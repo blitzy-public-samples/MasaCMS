@@ -114,7 +114,7 @@ const REGISTRY_ROWS = [
 }));
 
 /** The single statement that reads every registry entry. */
-const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM identity\.tenant_registry ORDER BY site_id$/;
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM identity\.tenant_registry WHERE NOT deleted ORDER BY site_id$/;
 
 /** A registry-only store: the site registry answers, every other read finds nothing. */
 const REGISTRY_DB = createRecordingDb({ responses: [[REGISTRY_ENTRIES, () => REGISTRY_ROWS]] });

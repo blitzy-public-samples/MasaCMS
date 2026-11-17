@@ -2,6 +2,8 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -17,7 +19,8 @@ import {
   type ProjectedChangeRow,
 } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { MemorySpanExporter, SpanKind, flushTracing, shutdownTracing, startTracing } from '@opt2/platform/tracing';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
 import type { MigrationContext } from '../../src/context.js';
@@ -379,6 +382,7 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
     },
     getObject: async () => Readable.from([Buffer.from('hel'), Buffer.from('lo')]),
     getAttachmentObject: vi.fn((_params: { tenantId: string; attachmentId: string }) => Promise.resolve(Readable.from([Buffer.from('%PDF'), Buffer.from('-1')]))),
+    getExportObject: vi.fn((_params: { tenantId: string; jobId: string }) => Promise.resolve(Readable.from([Buffer.from('job,'), Buffer.from('done\r\n')]))),
     async putWatermark(owner: string, record: { legacyTable: string; direction: string }) {
       watermarks.push({ owner, legacyTable: record.legacyTable, direction: record.direction });
       return record;
@@ -759,6 +763,89 @@ describe('runProjectorCycle streams', () => {
       expect(legacy.statements.filter((statement) => attachmentWrites.test(statement.sql))).toEqual([]);
       expect(legacy.checkpoint('finance')).toBeUndefined();
       expect(owners.watermarks).toEqual([]);
+    });
+  });
+
+  catalogs['synthetic.export_job'] = {
+    ...table(
+      'export_job',
+      [
+        column('job_id', 'char'),
+        column('siteID', 'nvarchar'),
+        column('state', 'varchar'),
+        column('finished_at', 'datetime', 't'),
+        column('file_name', 'nvarchar'),
+        column('content_type', 'varchar'),
+        column('output', 'varbinary', 'b'),
+        column('output_sha256', 'char'),
+      ],
+      ['job_id'],
+    ),
+    schema: 'synthetic',
+    qualified: 'synthetic.export_job',
+  };
+  UNITS['reporting.export_job'] = {
+    legacyTable: 'synthetic.export_job',
+    columns: [
+      { name: 'job_id', type: 's' },
+      { name: 'siteID', type: 's' },
+      { name: 'state', type: 's' },
+      { name: 'finished_at', type: 't' },
+      { name: 'file_name', type: 's' },
+      { name: 'content_type', type: 's' },
+      { name: 'output_sha256', type: 's' },
+    ],
+  };
+
+  describe('reporting export output bytes', () => {
+    const jobId = 'D1E2F3A4-0001-4B5C-8D7E9F0A1B2C3D4E';
+    const served = Buffer.from('job,done\r\n');
+    const running = { job_id: jobId, siteID: SITE, state: 'running', finished_at: null, file_name: null, content_type: null, output_sha256: null };
+    /** The target's done move of the job recording `recorded`, as reporting's change feed projects it. */
+    const doneUpdate = (recorded: Buffer): ProjectedChangeRow =>
+      changeRow(
+        [140, 1],
+        'export_job',
+        'reporting.export_job',
+        'update',
+        {
+          before: running,
+          after: {
+            ...running,
+            state: 'done',
+            finished_at: '2026-06-30 12:00:00.000',
+            file_name: `export-${jobId}.csv`,
+            content_type: 'text/csv',
+            output_sha256: createHash('sha256').update(recorded).digest('hex'),
+          },
+        },
+        { changed: ['state', 'finished_at', 'file_name', 'content_type', 'output_sha256'] },
+      );
+
+    it('binds the verified output into the done UPDATE, committed in the transaction of its checkpoint', async () => {
+      const legacy = fakeLegacy();
+      const owners = fakeOwners({ pages: { [`reporting|${CURSOR_START}`]: page([doneUpdate(served)], '141', CURSOR_START) } });
+      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
+
+      expect(result).toMatchObject({ rowsApplied: 1, errors: [] });
+      expect(owners.owners.getExportObject).toHaveBeenCalledWith({ tenantId: TENANT, jobId });
+      const [updated, ...others] = legacy.applied(/^UPDATE \[synthetic\]\.\[export_job\]/);
+      expect(others).toEqual([]);
+      expect(updated?.sql).toMatch(/\[output\] = /);
+      expect(Object.values(updated?.params ?? {}).filter((value) => Buffer.isBuffer(value))).toEqual([served]);
+      const checkpoint = legacy.applied(/^UPDATE opt2_sync\.projector_checkpoint/).find((statement) => statement.params.owner === 'reporting');
+      expect(checkpoint?.tx).toBe(updated?.tx);
+      expect(legacy.checkpoint('reporting')).toMatchObject({ cursor_xid: '140', cursor_seq: '1', applied_horizon: '141', rows_applied: 1 });
+    });
+
+    it('stops the stream with nothing written when reporting serves other output than the change recorded', async () => {
+      const legacy = fakeLegacy();
+      const owners = fakeOwners({ pages: { [`reporting|${CURSOR_START}`]: page([doneUpdate(Buffer.from('job,other\r\n'))], '141', CURSOR_START) } });
+      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
+
+      expect(result.errors.map((error) => [error.owner, error.cursor, error.error.name])).toEqual([['reporting', CURSOR_START, 'AttachmentContentMismatchError']]);
+      expect(legacy.statements.filter((statement) => /^(INSERT INTO|UPDATE|DELETE FROM) \[synthetic\]\.\[export_job\]/.test(statement.sql))).toEqual([]);
+      expect(legacy.checkpoint('reporting')).toBeUndefined();
     });
   });
 
@@ -1488,6 +1575,85 @@ describe('createProjectorLoop', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('createProjectorLoop tracing', () => {
+  const exporter = new MemorySpanExporter();
+  /** `traceparent` of each request the owner double received. */
+  const received: (string | undefined)[] = [];
+  const server = createServer((request, response) => {
+    received.push(request.headers.traceparent as string | undefined);
+    request.resume();
+    response.end('ok');
+  });
+  let base = '';
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    await startTracing({ serviceName: 'reverse-projector-test', version: '1.0.0', exporter });
+  });
+
+  beforeEach(async () => {
+    await flushTracing();
+    exporter.reset();
+    received.length = 0;
+  });
+
+  afterAll(async () => {
+    await shutdownTracing();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  /** A harness whose owners call the double over HTTP on every changes read and watermark write, as the real client does. */
+  function tracedHarness(pages: OwnersOptions['pages'] = {}) {
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const { changes, putWatermark } = h.owners.owners;
+    const call = async (path: string): Promise<void> => {
+      await (await fetch(`${base}${path}`)).text();
+    };
+    h.owners.owners.changes = async (owner, params) => {
+      await call('/internal/v1/migration/changes');
+      return changes(owner, params);
+    };
+    h.owners.owners.putWatermark = async (owner, record) => {
+      await call('/internal/v1/migration/watermarks');
+      return putWatermark(owner, record);
+    };
+    return h;
+  }
+
+  it('exports no span for an idle cycle, whose owner calls carry one unsampled trace', async () => {
+    const h = tracedHarness();
+
+    const result = await createProjectorLoop(h.ctx, { startupGuard: refuseGuard }).runOnce();
+    await flushTracing();
+
+    expect(result).toMatchObject({ ran: true, rowsApplied: 0, batches: config.dataOwners.length });
+    expect(exporter.getFinishedSpans()).toEqual([]);
+    expect(received).toHaveLength(config.dataOwners.length);
+    expect(new Set(received.map((traceparent) => traceparent?.split('-')[3]))).toStrictEqual(new Set(['00']));
+    expect(new Set(received.map((traceparent) => traceparent?.split('-')[1])).size).toBe(1);
+  });
+
+  it('exports a batch that applies rows as one root span linked to the cycle, with its calls as children', async () => {
+    const pages = { [`people|${CURSOR_START}`]: page([person('Grace')], '101', CURSOR_START) };
+    const h = tracedHarness(pages);
+
+    const result = await createProjectorLoop(h.ctx, { startupGuard: refuseGuard }).runOnce();
+    await flushTracing();
+    const spans = exporter.getFinishedSpans();
+    const roots = spans.filter((span) => span.parentSpanContext === undefined);
+    const cycleTrace = received[0]?.split('-')[1];
+
+    expect(result).toMatchObject({ rowsApplied: 1, errors: [] });
+    expect(roots.map((span) => span.name)).toStrictEqual(['projector.batch people']);
+    expect(roots[0]?.links.map((link) => link.context.traceId)).toStrictEqual([cycleTrace]);
+    expect(spans.filter((span) => span !== roots[0]).map((span) => [span.kind, span.parentSpanContext?.spanId])).toStrictEqual([
+      [SpanKind.CLIENT, roots[0]?.spanContext().spanId],
+    ]);
   });
 });
 

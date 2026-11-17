@@ -2,7 +2,7 @@
 import { cfUuid, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { BucketName, ObjectHead } from '@opt2/platform/storage';
-import { registeredTenants, type TenantTx } from '@opt2/platform/tenancy';
+import { knownTenants, type TenantTx } from '@opt2/platform/tenancy';
 import {
   claimStagedObject,
   listStaleStagedObjects,
@@ -113,7 +113,7 @@ export async function recoverStagedObjects(deps: StoreObjectDeps, tenantId: stri
   }
 }
 
-/** Recovers registered tenants before accepting requests. */
+/** Recovers every tenant the registry has known before accepting requests. */
 export async function recoverAllStagedObjects(deps: StoreObjectDeps): Promise<void> {
-  for (const { tenantId } of await registeredTenants(deps.db)) await recoverStagedObjects(deps, tenantId);
+  for (const { tenantId } of await knownTenants(deps.db)) await recoverStagedObjects(deps, tenantId);
 }

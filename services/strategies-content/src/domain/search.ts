@@ -21,9 +21,10 @@ import {
   type PrivateSearchRow,
   type PublicSearchRow,
 } from '../repo/content-queries.js';
-import type { FeedContentRow, FeedCount } from '../repo/feed-queries.js';
+import { iteratorRows, pageQueryMisses, readRecords } from '../legacy/jsonapi-serializers.js';
+import type { FeedCount } from '../repo/feed-queries.js';
 import type { Actor, DomainDeps } from './context.js';
-import { FeedBean, FeedContentUnsupportedError, feedContent, readFeed, type FeedContentOptions } from './feeds.js';
+import { FeedBean, FeedContentUnsupportedError, feedListContent, readFeed, type FeedContentOptions, type FeedListRow } from './feeds.js';
 import { getModulePerm } from './permissions.js';
 import { UnregisteredTenantError, withPoolTenant } from './pools.js';
 
@@ -554,8 +555,18 @@ export interface ContentQueryPaging {
   pageIndex: number;
 }
 
+/** A row at or before index 0, which queryRowToStruct reads as '' in every column of the query. */
+export type BlankContentRow = Readonly<Record<string, ''>>;
+
+/** A contentIterator page: its rows, its paging, and the positions of the rows whose content bean contentDAO does not find. */
+export interface ContentIteratorPage {
+  rows: Array<FeedListRow | BlankContentRow>;
+  paging: ContentQueryPaging;
+  misses: ReadonlySet<number>;
+}
+
 /** One page of findQuery rows with its paging and base URL query, or the `countOnly` count. */
-export type ContentQueryResult = FeedCount | { rows: FeedContentRow[]; paging: ContentQueryPaging; baseQuery: string };
+export type ContentQueryResult = FeedCount | (ContentIteratorPage & { baseQuery: string });
 
 /** The feed bean findQuery starts from; a feed that is not found keeps the request site `$.getBean('feed')` gave it. */
 async function sourceFeed(deps: SearchDeps, actor: Actor, siteId: string, source: ContentFeedSource): Promise<FeedBean> {
@@ -569,8 +580,34 @@ async function sourceFeed(deps: SearchDeps, actor: Actor, siteId: string, source
   return feed;
 }
 
+/**
+ * The rows hasNext and next visit (queryIterator.cfc:145-156) from `recordIndex` while it is below `end`, a row at or
+ * below 0 or past the last record blank, and the positions of those whose content bean misses contentDAO's page query.
+ */
+function iteratedRows<R extends Readonly<Record<string, unknown>>>(
+  rows: readonly R[],
+  recordIndex: number,
+  end: number,
+  page: { pageIndex: number; perPage: number },
+): { rows: Array<R | BlankContentRow>; misses: ReadonlySet<number> } {
+  const first = rows[0];
+  if (first === undefined) return { rows: [], misses: new Set() };
+  const read = iteratorRows(rows.length, recordIndex, end, 'content');
+  const columns = Object.keys(first);
+  const blank: BlankContentRow = Object.freeze(Object.fromEntries(columns.map((column): [string, ''] => [column, ''])));
+  const byContentId = !columns.some((column) => column.toLowerCase() === 'contenthistid');
+  return {
+    rows: [
+      ...Array.from({ length: read.blank }, () => blank),
+      ...readRecords(read, rows.slice(read.from, read.from + read.count)),
+      ...Array.from({ length: read.blankAfter }, () => blank),
+    ],
+    misses: pageQueryMisses(read, { recordCount: rows.length, ...page }, byContentId),
+  };
+}
+
 /** contentIterator's page over `rows`: setQuery with the feed's nextN, then setIteratorProps over the URL scope (3160-3183). */
-function contentIteratorPage(rows: readonly FeedContentRow[], feedNextN: unknown, url: CfStruct): { rows: FeedContentRow[]; paging: ContentQueryPaging } {
+function contentIteratorPage(rows: readonly FeedListRow[], feedNextN: unknown, url: CfStruct): ContentIteratorPage {
   const recordCount = rows.length;
   const perPageOf = (n: unknown): number => (cfIsNumeric(n) && cfToNumber(n) !== 0 ? cfToNumber(n) : recordCount);
   let perPage = perPageOf(feedNextN);
@@ -604,9 +641,7 @@ function contentIteratorPage(rows: readonly FeedContentRow[], feedNextN: unknown
   // setIteratorProps calls setMaxItems on a `feed` it never defines, so a numeric offset fails the request.
   if (url.has('offset') && cfIsNumeric(url.get('offset'))) throw new LegacyApiError('server_error');
   const end = Math.min(recordCount, pageIndex * perPage);
-  // packageRecord has no row at or below 0.
-  if (recordIndex < 0 && recordIndex < end) throw new LegacyApiError('server_error');
-  return { rows: rows.slice(recordIndex, end), paging: { recordCount, nextN: perPage, pageIndex } };
+  return { ...iteratedRows(rows, recordIndex, end, { pageIndex, perPage }), paging: { recordCount, nextN: perPage, pageIndex } };
 }
 
 /** JSON API findQuery for `content` (jsonApiUtility.cfc:2711-2918): one content-iterator page, or the unfiltered `countOnly` count. */
@@ -624,8 +659,8 @@ export async function findContentQuery(deps: SearchDeps, actor: Actor, request: 
     else feed.setValue(step.key, step.value);
   }
   const options = request.feedOptions ?? {};
-  if (criteria.countOnly) return feedContent(deps, actor, feed, { ...options, countOnly: true });
-  const rows = await feedContent(deps, actor, feed, { ...options, applyPermFilter: request.extranet });
+  if (criteria.countOnly) return feedListContent(deps, actor, feed, { ...options, countOnly: true });
+  const rows = await feedListContent(deps, actor, feed, { ...options, applyPermFilter: request.extranet });
   const page = contentIteratorPage(rows, feed.get('nextn'), new CfStruct(request.url ?? request.params));
   return { ...page, baseQuery: criteria.baseQuery };
 }

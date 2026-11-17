@@ -293,6 +293,24 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
       legacyError(await send(ctx.app, 'GET', apiPath('json', `/${entity}?isPublic=0&${query}`), await headers()), 'server_error', status);
     });
 
+    it("lists each user's groups as findOne reads them, in readMembershipIDs' group-name order without a dangling id", async () => {
+      const mike: DoubleGroup = { ...ZULU_GROUP, UserID: '5A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9', GroupName: 'Mike' };
+      ctx.identity.seedGroups(ZULU_GROUP, ALPHA_GROUP, mike);
+      const held: Array<[string, string[], string]> = [
+        [owner.userid, [ZULU_GROUP.UserID, GROUP_ID, ALPHA_GROUP.UserID, mike.UserID], `${ALPHA_GROUP.UserID},${mike.UserID},${ZULU_GROUP.UserID}`],
+        [SITE_ADMIN_A.sub, [mike.UserID, ZULU_GROUP.UserID], `${mike.UserID},${ZULU_GROUP.UserID}`],
+        [MODULE_USER_A.sub, [GROUP_ID], ''],
+      ];
+      for (const [userId, groupIds] of held) ctx.identity.seedMemberships(userId, groupIds);
+      const page = dataOf(await send(ctx.app, 'GET', apiPath('json', '/user?isPublic=0&itemsPerPage=*'), await headers())) as unknown as Collection;
+
+      expect(operationIds(ctx.identity)).toContain('lookupMemberships');
+      for (const [userId, , groupId] of held) {
+        expect(page.items.find((item) => item.userid === userId)?.groupid).toBe(groupId);
+        expect(dataOf(await send(ctx.app, 'GET', apiPath('json', `/user/${userId}`), await headers())).groupid).toBe(groupId);
+      }
+    });
+
     it("queries the members of a group through identity's memberships", async () => {
       ctx.identity.seedMemberships(owner.userid, [GROUP_ID]);
       const page = dataOf(await send(ctx.app, 'GET', apiPath('json', `/user?isPublic=0&groupid=${GROUP_ID}`), await headers())) as unknown as Collection;

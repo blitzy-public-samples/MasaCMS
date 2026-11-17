@@ -22,6 +22,7 @@ import { GoldenConfigError } from '../../src/golden/errors.js';
 import type { DomModel } from '../../src/golden/normalise/dom-model.js';
 import type { NormalisedStep } from '../../src/golden/normalise/index.js';
 import { loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
+import { browserBaseUrl } from '../../src/golden/session.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 
 const CATALOGUE_FIXTURE = fileURLToPath(new URL('../fixtures/golden/catalogue.valid.yaml', import.meta.url));
@@ -421,41 +422,52 @@ describe('main over browser records', () => {
     });
   });
 
-  it.each<[string, Record<string, string>, (golden: GoldenSet) => Record<string, unknown>, string]>([
-    [
-      'a record omitting a captured XHR',
-      {},
-      (golden) => recordOf(golden, { steps: finalDomOnly(golden.steps) }),
-      disagreement(0, 1),
-    ],
-    [
-      'an XHR off the gateway origin the environment names',
-      { OPT2_GATEWAY_URL: 'http://127.0.0.1:20100/' },
-      (golden) =>
-        recordOf(golden, {
-          foreignOrigins: [{ step: 'xhr-0', origin: STRAY_ORIGIN }],
-          differences: [
-            {
-              step: 'xhr-0',
-              path: 'request.origin',
-              kind: 'changed',
-              expected: 'http://127.0.0.1:20100',
-              actual: STRAY_ORIGIN,
-              classification: 'difference',
-            },
-          ],
-        }),
-      '1 unlisted difference',
-    ],
-  ])('exits 1 on %s', async (_title, extraEnv, build, reason) => {
+  it('exits 1 on a record omitting a captured XHR', async () => {
     const flags = await writeInputs([ID]);
     const golden = goldenOf();
-    await writeJson(browserResultPath(ID, env), build(golden));
+    await writeJson(browserResultPath(ID, env), recordOf(golden, { steps: finalDomOnly(golden.steps) }));
 
-    const outcome = await main(flags, { ...env, ...extraEnv }, { readGolden: async () => golden });
+    const outcome = await main(flags, env, { readGolden: async () => golden });
 
     expect(outcome.code).toBe(1);
     expect(outcome.summary).toMatchObject({ total: 1, pass: 0, fail: 1 });
+    const reason = disagreement(0, 1);
     expect((await readReport()).scenarios).toEqual([expect.objectContaining({ id: ID, result: 'fail', reason })]);
+  });
+
+  it.each<[string, Record<string, unknown>, 0 | 1, 'pass' | 'fail', string | null]>([
+    ['without off-origin XHRs', {}, 0, 'pass', null],
+    [
+      'with an XHR off the browser origin',
+      {
+        foreignOrigins: [{ step: 'xhr-0', origin: STRAY_ORIGIN }],
+        differences: [
+          {
+            step: 'xhr-0',
+            path: 'request.origin',
+            kind: 'changed',
+            expected: 'http://localhost:20100',
+            actual: STRAY_ORIGIN,
+            classification: 'difference',
+          },
+        ],
+      },
+      1,
+      'fail',
+      '1 unlisted difference',
+    ],
+  ])('classifies a record %s alike in the CLI and the e2e verdict', async (_title, over, code, result, reason) => {
+    const gatewayEnv = { ...env, OPT2_GATEWAY_URL: 'http://127.0.0.1:20100/' };
+    const flags = await writeInputs([ID]);
+    const golden = goldenOf();
+    const record = recordOf(golden, over);
+    await writeJson(browserResultPath(ID, env), record);
+
+    const outcome = await main(flags, gatewayEnv, { readGolden: async () => golden });
+    const e2e = classify(golden, record, { gatewayOrigin: new URL(browserBaseUrl('gateway', gatewayEnv)).origin });
+
+    expect(outcome.code).toBe(code);
+    expect((await readReport()).scenarios).toEqual([expect.objectContaining({ id: ID, result, reason })]);
+    expect(e2e).toMatchObject({ result, reason });
   });
 });

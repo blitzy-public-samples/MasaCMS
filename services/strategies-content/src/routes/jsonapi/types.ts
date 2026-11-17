@@ -7,6 +7,7 @@ import { hash } from 'node:crypto';
 import { serialize } from 'node:v8';
 import { Roles } from '@opt2/platform/auth';
 import {
+  acfKeyOrder,
   cfEq,
   cfIsBoolean,
   cfIsNumeric,
@@ -20,6 +21,7 @@ import {
   javaTrim,
   LegacyApiError,
   type LegacyApiErrorType,
+  type StructOp,
 } from '@opt2/platform/legacy-compat';
 import type { Actor, SiteContentSettings } from '../../domain/context.js';
 import type { UploadedFile } from '../../domain/files.js';
@@ -42,12 +44,21 @@ import type {
   EntityPropertyHint,
   RelationProp,
 } from '../../legacy/jsonapi-entities.js';
+import { ENTITY_PROPERTIES } from '../../legacy/jsonapi-properties.js';
 import {
   iteratorPage,
+  iteratorRows,
   paramUrl,
+  readRecords,
   urlParam,
+  type ApiEntityView,
   type CollectionPage,
+  type EntityCollectionSource,
+  type ExpansionOptions,
+  type ExpansionResolver,
+  type IteratorRows,
   type JsonApiRequestContext,
+  type RelatedContentSetSource,
 } from '../../legacy/jsonapi-serializers.js';
 // Type-only: ../index.ts imports ../jsonapi.ts, which imports this folder.
 import type { ContentRouteContext } from '../index.js';
@@ -127,6 +138,8 @@ export interface JsonApiCall {
   actor: Actor;
   /** Site values, URL settings included, built by ../jsonapi.ts. */
   site: SiteContentSettings;
+  /** URL settings of the `default` site, which settingsManager.getSite answers for site id ''; absent when it is not registered. */
+  defaultSiteUrls?: SiteContentSettings['urls'];
   /** Request context passed unchanged to every serializer call. */
   apiContext: JsonApiRequestContext;
   /** HTTP method after `X-HTTP-Method-Override`. */
@@ -140,7 +153,44 @@ export interface JsonApiCall {
    * consuming a token in REST mode. Call it only where legacy validates, since a validation consumes the token.
    */
   validateCsrf(): Promise<boolean>;
+  /** The arguments of a finder another entity's expansion or relation path calls. */
+  finder?: RelatedFinder;
+  /** The request's reader of related entities, set by ../jsonapi.ts. */
+  related?: RelatedEntityReader;
 }
+
+/** findOne and findQuery arguments of a related read (jsonApiUtility.cfc:1086-1150, 2424-2497). */
+export interface RelatedFinder {
+  /** The `expand` list the related entity is serialized with; '' on a relation path. */
+  expand: string;
+  /** The depth reached: expandEntity's incremented depth, 0 on a relation path. */
+  expanded: number;
+  /** findQuery's `params` where they are not the URL scope: expandEntity's built params, or a relation path's request params. */
+  params?: Record<string, unknown>;
+}
+
+/** Reads of other entities for one request, each through that entity's own handler and access rules. */
+export interface RelatedEntityReader {
+  /** findOne(entityName, id); `site` answers programs-sites' values of the request site. */
+  findOne(call: JsonApiCall, entityName: string, id: string, finder: RelatedFinder): Promise<unknown>;
+  /** findQuery(entityName, params); `queryString` replaces the request's on a relation path. */
+  findQuery(
+    call: JsonApiCall,
+    entityName: string,
+    finder: RelatedFinder & { params: Record<string, unknown> },
+    queryString?: string,
+  ): Promise<unknown>;
+  /** The view's getCrumbIterator, as findCrumbArray reads it. */
+  crumbs(call: JsonApiCall, view: ApiEntityView): Promise<EntityCollectionSource>;
+  /** findRelatedContent(entity=view): every related-content set of the view's subtype, its items serialized under `opts`. */
+  relatedContent(call: JsonApiCall, view: ApiEntityView, opts: ExpansionOptions): Promise<readonly RelatedContentSetSource[]>;
+}
+
+/** A relation path's source loadBy (jsonApiUtility.cfc:1093-1146): by `contentid` for a content relation, else by the bean's primary key. */
+export type RelationSourceKey = { contentid: string } | { primaryKey: string };
+
+/** `bean.get(bean.translatePropKey(name))` of a loaded source bean; `primaryKey` names its primary key. */
+export type SourceBeanGetter = (name: string) => unknown;
 
 /** A handler's answer: `data` for the envelope, `rawJson` as the whole body, or `error` for the legacy error response. */
 export interface JsonApiResult {
@@ -156,6 +206,9 @@ export interface JsonApiResult {
 /** Handles one resolved call. */
 export type JsonApiHandlerFn = (ctx: ContentRouteContext, call: JsonApiCall) => Promise<JsonApiResult>;
 
+/** An entity bean's `access="remote"` function, run on the bean `loadBy` loaded under `beanId`, or on a new bean when it is undefined. */
+export type RemoteFunctionFn = (ctx: ContentRouteContext, call: JsonApiCall, beanId: string | undefined) => Promise<void>;
+
 /** The generic-method handlers of one entity; an absent method is not served for it. */
 export interface EntityHandler {
   entity: ContentEntityName;
@@ -170,6 +223,8 @@ export interface EntityHandler {
   save?: JsonApiHandlerFn;
   delete?: JsonApiHandlerFn;
   validate?: JsonApiHandlerFn;
+  /** loadBy of the bean as a relation path's source; absent where the bean has no loadBy (bean.cfc:182). */
+  loadBy?: (ctx: ContentRouteContext, call: JsonApiCall, key: RelationSourceKey) => Promise<SourceBeanGetter>;
 }
 
 /** Handles a public method such as `findCrumbArray`. */
@@ -241,6 +296,35 @@ export function jsonApiResultOf(data: unknown, serializerEntity?: string): JsonA
   return serializerEntity === undefined ? { status, data } : { status, data, serializerEntity };
 }
 
+/** The expand list and depth a finder serializes with: its related caller's, else the request's `expand` at depth 0. */
+export function finderOf(call: JsonApiCall): ExpansionOptions {
+  return call.finder === undefined ? { expand: call.params.string('expand'), expanded: 0 } : { expand: call.finder.expand, expanded: call.finder.expanded };
+}
+
+/** findQuery's `params`: the related caller's, else the URL scope. */
+export function finderParamsOf(call: JsonApiCall): Struct {
+  return call.finder?.params ?? call.apiContext.url;
+}
+
+/** The request's related-entity reader. */
+export function relatedReaderOf(call: JsonApiCall): RelatedEntityReader {
+  if (call.related === undefined) throw new Error(`JSON API call ${call.routeKey} carries no related-entity reader`);
+  return call.related;
+}
+
+/**
+ * expandEntity's data access (jsonApiUtility.cfc:2424-2497) through the request's related-entity reader: hasMany through
+ * findQuery of `prop.cfc`, hasOne through findOne (`site` for the site relation), crumbs and related content as legacy reads them.
+ */
+export function relatedResolver(call: JsonApiCall): ExpansionResolver {
+  return {
+    hasMany: async (prop, params, opts) => relatedReaderOf(call).findQuery(call, prop.cfc, { ...opts, params }),
+    hasOne: async (prop, id, opts) => relatedReaderOf(call).findOne(call, cfEq(prop.name, 'site') ? 'site' : prop.cfc, cfText(id), opts),
+    crumbs: async (view) => relatedReaderOf(call).crumbs(call, view),
+    relatedContent: async (view, opts) => relatedReaderOf(call).relatedContent(call, view, opts),
+  };
+}
+
 /** The `authorization` exception (401 Insufficient Account Permissions). */
 export function authorizationDenied(): JsonApiResult {
   return { error: 'authorization' };
@@ -283,12 +367,20 @@ export function permissionsOf(input: PermissionsInput): { read: boolean; delete:
   };
 }
 
-/** applyPropertyFormat's datatype for a property hint (jsonApiUtility.cfc:1517-1546); `numeric` bean props hint as float. */
-const HINT_DATATYPES: Readonly<Record<EntityPropertyHint, string>> = Object.freeze({
-  integer: 'int',
-  float: 'int',
-  date: 'datetime',
-});
+// Structs built in legacy's iteration order: Masa reaches them through writes, deletes and resizes, or reads them from
+// component metadata, so ACF's order of their final keys alone does not give that order.
+const IN_LEGACY_ORDER = new WeakSet<object>();
+
+/** Marks `struct` as holding its keys in the order legacy iterates it, which the response then keeps. */
+export function inLegacyOrder<T extends object>(struct: T): T {
+  IN_LEGACY_ORDER.add(struct);
+  return struct;
+}
+
+/** Whether {@link inLegacyOrder} marked `struct`. */
+export function isInLegacyOrder(struct: object): boolean {
+  return IN_LEGACY_ORDER.has(struct);
+}
 
 /** CFML listFindNoCase. */
 function listFindNoCase(list: string, value: string): boolean {
@@ -296,54 +388,24 @@ function listFindNoCase(list: string, value: string): boolean {
   return cfListToArray(list).some((item) => item.toLowerCase() === lower);
 }
 
-/** Listed declared properties `config` can describe, keyed by lower-cased name, in primary key, hint, relation order. */
-function describedProperties(config: ContentEntityConfig): Map<string, Struct> {
-  const props = new Map<string, Struct>();
-  const listed = (name: string): boolean =>
-    config.declaredProperties.has(name) && !config.nonPersistentProperties.has(name);
-  const primaryKey = config.primaryKey.toLowerCase();
-  if (listed(primaryKey)) props.set(primaryKey, { fieldtype: 'id', name: primaryKey });
-  for (const [name, hint] of Object.entries(config.hints)) {
-    const lower = name.toLowerCase();
-    if (!listed(lower)) continue;
-    props.set(lower, { fieldtype: props.get(lower)?.['fieldtype'] ?? '', name: lower, datatype: HINT_DATATYPES[hint] });
-  }
-  const relations: [RelationProp, string][] = [
-    ...config.hasMany.map((p): [RelationProp, string] => [p, 'one-to-many']),
-    ...config.hasOne.map((p): [RelationProp, string] => [p, 'many-to-one']),
-  ];
-  for (const [prop, fieldtype] of relations) {
-    // A reference another bean appends (bean.cfc:1065-1086), such as file's fileMetaData, is not a property of this bean.
-    if (!listed(prop.name.toLowerCase())) continue;
-    const entry: Struct = { fieldtype, loadkey: prop.loadkey, fkcolumn: prop.column, name: prop.name.toLowerCase() };
-    // A one-to-many property has no column of its own, so getProperties types it as an untyped (varchar) string.
-    if (fieldtype === 'one-to-many') entry['datatype'] = 'varchar';
-    entry['relatesto'] = prop.cfc;
-    props.set(prop.name.toLowerCase(), entry);
-  }
-  return props;
-}
-
-/**
- * findProperties (jsonApiUtility.cfc:1548-1618) from the registration alone. Entity-level metadata the registration
- * does not hold (orderby, bundleable, historical, dynamic, scaffold, table) takes bean.cfc's defaults, and only the
- * properties the registration describes (primary key, hinted properties, relations) are listed. A requested name the
- * bean does not declare raises server_error, as `props[p]` does.
- */
+/** findProperties (jsonApiUtility.cfc:1548-1618) from the entity's recorded metadata, in legacy key order. */
 export function findPropertiesFor(config: ContentEntityConfig, call: JsonApiCall): Record<string, unknown> {
+  const meta = ENTITY_PROPERTIES[config.name];
   const fields = (config.fields ?? []).join(',');
-  const described = describedProperties(config);
   const requested = cfListToArray(call.params.string('properties')).map((p) => p.toLowerCase());
-  const names = requested.length > 0 ? requested : [...described.keys()];
+  const names = requested.length > 0 ? requested : [...meta.formats.keys()];
   const properties = names
     .filter((name) => fields === '' || listFindNoCase(fields, name))
     .flatMap((name) => {
+      // `props[p]` of an undeclared name raises; a declared name without a format is persistent=false without a cfc.
       if (!config.declaredProperties.has(name)) throw serverError();
-      return described.get(name) ?? [];
+      const format = meta.formats.get(name);
+      return format === undefined ? [] : [inLegacyOrder({ ...format })];
     });
 
   const endpoint = call.apiContext.endpoint;
   const actor = call.actor;
+  // The order ACF iterates formatArray's struct after the entity values, `table` and `properties` are written and `items` deleted.
   const result: Struct = {
     displayname: config.displayName,
     properties,
@@ -357,16 +419,16 @@ export function findPropertiesFor(config: ContentEntityConfig, call: JsonApiCall
     },
     dynamic: false,
   };
-  if (actor.s2 || actor.roles.includes(Roles.s2) || actor.roles.includes(Roles.siteAdmin)) result['table'] = '';
+  if (actor.s2 || actor.roles.includes(Roles.s2) || actor.roles.includes(Roles.siteAdmin)) result['table'] = meta.table;
   Object.assign(result, {
     primarykey: config.primaryKey.toLowerCase(),
     public: config.public,
-    bundleable: false,
-    orderby: '',
+    bundleable: meta.bundleable,
+    orderby: meta.orderby,
     entityname: config.displayName,
     scaffold: false,
   });
-  return result;
+  return inLegacyOrder(result);
 }
 
 /** An entity feed's default sort, e.g. comment feeds sort by `entered asc` (contentCommentFeedBean.cfc:84-85). */
@@ -397,8 +459,11 @@ export interface BeanFeedOptions {
   expandedParams?: Readonly<Record<string, unknown>>;
 }
 
-/** countOnly's count, or one page of the selected rows with the base URL findQuery's paging links use. */
-export type BeanFeedResult<R> = { count: number } | { items: R[]; page: CollectionPage; baseUrl?: string };
+/** countOnly's count, or one page of the selected rows between its blank rows, with the base URL findQuery's paging links use. */
+export type BeanFeedResult<R> = { count: number } | { items: Array<R | BlankFeedRow>; page: CollectionPage; baseUrl?: string };
+
+/** A row before the first or past the last record, which queryRowToStruct reads as '' in every column (queryIterator.cfc:303-331). */
+export type BlankFeedRow = Readonly<Record<string, ''>>;
 
 /**
  * A feed request legacy answers with rows the in-memory feed cannot compute: an aggregate SELECT (sum, avg, count, min,
@@ -1471,6 +1536,16 @@ export function mergedSource<R extends Readonly<Struct>>(sources: readonly BeanF
   };
 }
 
+/** The first row of the source's scope, in its own order, that `test` holds for; read a batch at a time, stopping there. */
+export async function firstScannedRow<R>(source: BeanFeedSource<R>, test: (row: R) => boolean): Promise<R | undefined> {
+  let found: R | undefined;
+  await source.scan({ columns: [], rows: true }, (rows) => {
+    found = rows.find(test);
+    return found === undefined;
+  });
+  return found;
+}
+
 /** findQuery's query-string loop (jsonApiUtility.cfc:2812-2903): filters, keywords and the base URL. */
 function applyQueryString<R extends Readonly<Struct>>(
   feed: BeanFeed<R>,
@@ -1534,8 +1609,10 @@ function applyExpandedParams<R extends Readonly<Struct>>(
 ): string {
   let baseUrl = `${call.apiContext.endpoint}/${call.entityName}/?`;
   let started = false;
-  for (const [key, value] of Object.entries(params)) {
+  // `for (p in params)` walks the struct in ACF's key order, not insertion order.
+  for (const key of acfKeyOrder(Object.keys(params).map((name): StructOp => ['set', name]))) {
     if (EXPANDED_EXCLUDED.has(key.toLowerCase())) continue;
+    const value = params[key];
     feed.addParam(key, cfText(value));
     baseUrl += `${started ? '&' : ''}${key}=${cfText(value)}`;
     started = true;
@@ -1579,21 +1656,14 @@ function requestIsAggregate(ctx: JsonApiRequestContext): boolean {
   return cfText(urlParam(ctx, 'fields')) === '' && ctx.isAggregateQuery;
 }
 
-/** Array.prototype.slice's bound for `index` over `length` items. */
-function sliceIndex(index: number, length: number): number {
-  const relative = Number.isNaN(index) ? 0 : Math.trunc(index);
-  return relative < 0 ? Math.max(length + relative, 0) : Math.min(relative, length);
-}
-
-/** The beanIterator page over `recordCount` rows (jsonApiUtility.cfc:3160-3183), its rows being `slice(from, to)`. */
+/** The beanIterator page over `recordCount` rows (jsonApiUtility.cfc:3160-3183) and the rows it reads. */
 function iteratorPageOf(
   recordCount: number,
   ctx: JsonApiRequestContext,
   feedNextN: number,
   entityName: string,
 ): {
-  from: number;
-  to: number;
+  rows: IteratorRows;
   page: CollectionPage;
 } {
   const nextN = (n: unknown): number => (cfIsNumeric(n) && cfToNumber(n) !== 0 ? cfToNumber(n) : recordCount);
@@ -1628,13 +1698,25 @@ function iteratorPageOf(
   // setIteratorProps calls feed.setMaxItems on an undefined `feed` (3180), so a numeric offset fails the request.
   if (cfIsNumeric(urlParam(ctx, 'offset'))) throw serverError();
   const end = Math.min(recordCount, pageIndex * perPage);
-  // queryRowToStruct has no row at or below 0.
-  if (recordIndex < 0 && recordIndex < end) throw serverError();
   return {
-    from: sliceIndex(recordIndex, recordCount),
-    to: sliceIndex(end, recordCount),
+    rows: iteratorRows(recordCount, recordIndex, end, entityName),
     page: iteratorPage({ recordCount, maxRecordsPerPage: perPage, pageIndex, entityName }),
   };
+}
+
+const BLANK_FEED_ROWS = new WeakSet<object>();
+
+/** Whether `row` is a page's {@link BlankFeedRow}. */
+export function isBlankFeedRow(row: object): row is BlankFeedRow {
+  return BLANK_FEED_ROWS.has(row);
+}
+
+/** `count` rows holding '' in each of `columns`. */
+function blankFeedRows(columns: readonly string[], count: number): BlankFeedRow[] {
+  if (count === 0) return [];
+  const row: BlankFeedRow = Object.freeze(Object.fromEntries(columns.map((column): [string, ''] => [column, ''])));
+  BLANK_FEED_ROWS.add(row);
+  return Array.from({ length: count }, () => row);
 }
 
 /** A source rather than rows. */
@@ -1645,8 +1727,8 @@ function isSource<R>(rows: readonly R[] | BeanFeedSource<R>): rows is BeanFeedSo
 /**
  * findAll, findMany and findQuery (jsonApiUtility.cfc:2542-2918) for a non-content entity over the rows its feed
  * selects before request params apply: site or pool scope, findMany's ids and the entity feed's own defaults.
- * findQuery's filters run for `call.method` findQuery or when `options.expandedParams` is given; findMany never
- * answers `countOnly`; paging always reads the URL scope.
+ * findQuery's filters run for `call.method` findQuery or when `options.expandedParams` or an expanded related finder
+ * gives params; findMany never answers `countOnly`; paging always reads the URL scope.
  */
 export async function beanFeedQuery<R extends Readonly<Record<string, unknown>>>(
   rows: readonly R[] | BeanFeedSource<R>,
@@ -1658,16 +1740,21 @@ export async function beanFeedQuery<R extends Readonly<Record<string, unknown>>>
   const source = isSource(rows) ? rows : rowsSource(rows);
   const columns = options.columns ?? ((await source.isEmpty()) ? undefined : source.columns);
   const feed = new BeanFeed(source, columns, options);
-  const expanded = options.expandedParams;
+  const { finder } = call;
+  const expanded = options.expandedParams ?? (finder !== undefined && finder.expanded > 0 ? finder.params : undefined);
   let baseUrl: string | undefined;
   if (expanded !== undefined) baseUrl = applyExpandedParams(feed, call, expanded);
   else if (cfEq(call.method, 'findQuery')) baseUrl = applyQueryString(feed, call, options.primaryKey);
-  const params: Struct = expanded === undefined ? ctx.url : { ...expanded };
+  const params: Struct = expanded === undefined ? finderParamsOf(call) : { ...expanded };
   applyFeedProps(feed, call, params, options.primaryKey);
   const countOnly = getNoCase(params, 'countOnly');
   if (!cfEq(call.method, 'findMany') && cfIsBoolean(countOnly) && cfToBoolean(countOnly)) return { count: await feed.count() };
   const { query, recordCount } = await feed.select(cfText(urlParam(ctx, 'fields')));
-  const { from, to, page } = iteratorPageOf(recordCount, ctx, feed.nextN, call.entityName);
-  const items = to > from ? await feed.rows(query, from, to - from) : [];
+  const { rows: read, page } = iteratorPageOf(recordCount, ctx, feed.nextN, call.entityName);
+  const items = [
+    ...blankFeedRows(source.columns, read.blank),
+    ...(read.count > 0 ? readRecords(read, await feed.rows(query, read.from, read.count)) : []),
+    ...blankFeedRows(source.columns, read.blankAfter),
+  ];
   return baseUrl === undefined ? { items, page } : { items, page, baseUrl };
 }

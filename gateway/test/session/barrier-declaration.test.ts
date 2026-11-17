@@ -198,7 +198,7 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
         isFrozen: () => false,
         waitUnfrozen: async () => true,
       },
-      inflight: { register: async () => undefined, remove: async () => true },
+      inflight: { register: async () => undefined, remove: async () => true, abandon: async () => true },
       windows: {
         open: async () => ({ windowId: 'W1' }),
         complete: async () => ({ state: 'closed' as const }),

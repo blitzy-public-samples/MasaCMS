@@ -18,6 +18,7 @@ import {
   type ProjectedChangeRow,
 } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { SpanKind, startLinkedRootSpan, withUnsampledTrace } from '@opt2/platform/tracing';
 import type { Transaction } from 'mssql';
 
 import { ownerByName, ownerBySchema } from '../config.js';
@@ -695,13 +696,20 @@ class ProjectorCycle {
     return true;
   }
 
+  /** Projects `parts` as one batch, recorded as its own linked root span when it carries rows; an empty one only advances checkpoints. */
+  #project(parts: readonly BatchPart[]): Promise<void> {
+    if (!parts.some((part) => part.rows.length > 0)) return this.#projectBatch(parts);
+    const owners = [...new Set(parts.map((part) => part.stream.owner))].join(',');
+    return startLinkedRootSpan(`projector.batch ${owners}`, SpanKind.INTERNAL, () => this.#projectBatch(parts));
+  }
+
   /**
    * One batch: file-store operations first, since the bridge may read `tfiles` rows this batch's transaction would lock,
    * and the other owners' parts its split-table rows may merge; then every change in `(xid, seq)` order, an operation's
    * after its `beforeOperationChange` hook, and every part's checkpoint, with the site refreshes and cache purges it owes,
    * in one SQL Server transaction; then the commit hooks, checkpoint mirrors, owed effects and reverse watermarks.
    */
-  async #project(parts: readonly BatchPart[]): Promise<void> {
+  async #projectBatch(parts: readonly BatchPart[]): Promise<void> {
     const { hooks } = this.#deps;
     const decoded: DecodedPart[] = [];
     for (const part of parts) decoded.push(await this.#decode(part));
@@ -779,7 +787,7 @@ class ProjectorCycle {
 
   /**
    * Splits a part's rows into legacy changes and file-store rows; rows whose table has no legacy form count as target-only.
-   * Finance attachment changes carry their bytes, read from finance before the batch transaction opens.
+   * Finance attachment and reporting export job changes carry their bytes, read from the owner before the batch transaction opens.
    */
   async #decode(part: BatchPart): Promise<DecodedPart> {
     const { owner, tenantId } = part.stream;
@@ -1015,14 +1023,17 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
 
   const runOnce = (): Promise<CycleResult> => {
     if (inflight === undefined) {
-      const cycle = runProjectorCycle(ctx, {
-        hooks: options.hooks,
-        startupGuard: options.startupGuard,
-        tracker,
-        onTenants: (next) => {
-          tenants = next;
-        },
-      });
+      // A cycle's polling is untraced; each batch carrying rows records its own linked root span.
+      const cycle = withUnsampledTrace(() =>
+        runProjectorCycle(ctx, {
+          hooks: options.hooks,
+          startupGuard: options.startupGuard,
+          tracker,
+          onTenants: (next) => {
+            tenants = next;
+          },
+        }),
+      );
       inflight = cycle.finally(() => {
         inflight = undefined;
       });

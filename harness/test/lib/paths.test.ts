@@ -7,6 +7,8 @@ import {
   HARNESS_ROOT,
   REPO_ROOT,
   assertOutsideRepo,
+  cutoverDir,
+  cutoverVersionPath,
   isInsideRepo,
   opt2Path,
   pristineDir,
@@ -166,12 +168,31 @@ describe('reportsDir', () => {
   });
 });
 
+describe('cutoverDir and cutoverVersionPath', () => {
+  const committed = path.join(CHECKOUT, 'gateway', 'cutover');
+
+  it.each<[string, EnvLike, string]>([
+    ['gateway/cutover when OPT2_CUTOVER_DIR is unset', {}, committed],
+    ['gateway/cutover when OPT2_CUTOVER_DIR is empty', { OPT2_CUTOVER_DIR: '' }, committed],
+    ['a non-normalised absolute OPT2_CUTOVER_DIR, normalised', { OPT2_CUTOVER_DIR: `${OUTSIDE}/state/../cutover` }, path.join(OUTSIDE, 'cutover')],
+    [
+      'a relative OPT2_CUTOVER_DIR against the working directory, as the gateway resolves it',
+      { OPT2_CUTOVER_DIR: path.relative(process.cwd(), path.join(OUTSIDE, 'cutover')) },
+      path.join(OUTSIDE, 'cutover'),
+    ],
+  ])('resolve %s', (_label, env, expected) => {
+    expect(cutoverDir(env)).toBe(expected);
+    expect(cutoverVersionPath('v0002', env)).toBe(path.join(expected, 'versions', 'v0002.json'));
+  });
+});
+
 describe('default environment', () => {
   it.each([
     ['stateDir', stateDir],
     ['pristineDir', pristineDir],
     ['secretsDir', secretsDir],
     ['reportsDir', reportsDir],
+    ['cutoverDir', cutoverDir],
   ])('%s reads process.env when no environment is passed', (_name, resolve) => {
     expect(outcome(() => resolve())).toEqual(outcome(() => resolve({ ...process.env })));
   });

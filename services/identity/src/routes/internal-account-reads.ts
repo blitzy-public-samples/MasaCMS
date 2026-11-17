@@ -86,7 +86,7 @@ const MEMBERSHIP_BODY = {
   type: 'object',
   additionalProperties: false,
   required: ['userIds'],
-  properties: { userIds: { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: CF_UUID } },
+  properties: { userIds: { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: CF_UUID }, byGroupName: { type: 'boolean' } },
 } as const;
 
 const USER_PARAMS = { type: 'object', required: ['userId'], properties: { userId: CF_UUID } } as const;
@@ -187,7 +187,7 @@ export async function registerAccountReadRoutes(app: FastifyInstance, deps: Acco
     { schema: { body: MEMBERSHIP_BODY }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       userOf(request.opt2Auth);
-      return { items: await accountReads.lookupMemberships(db, request.body.userIds) };
+      return { items: await accountReads.lookupMemberships(db, request.body.userIds, { byGroupName: request.body.byGroupName === true }) };
     },
   );
 

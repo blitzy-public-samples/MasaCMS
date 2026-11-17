@@ -120,7 +120,7 @@ The committed cut-over versions route the day actions `legacy` in `v0001` and `t
 
 | Method | Path | Requires | Does |
 |---|---|---|---|
-| `GET` | `/internal/v1/timesheets/sheet-status` | `service:reporting` | One page of status rows for a running export job, once reporting's `getExportSourceScope` confirms the job's tenant, site and claim |
+| `GET` | `/internal/v1/timesheets/sheet-status` | `service:reporting` | One page of status rows for a running export job, by period start, then sheet id, once reporting's `getExportSourceScope` confirms the job's tenant, site and claim |
 | `POST` | `/internal/v1/events/timesheets.people.person.archived.v1` | `service:pubsub-invoker` (local push key locally) | Seam 1: blackouts of an archived person ([Events](#events)) |
 | `POST` | `/internal/v1/events/timesheets.programs-sites.site.changed.v1` | `service:pubsub-invoker` (local push key locally) | Push delivery into `timesheets.tenant_registry` |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` | `platform.migration` | Backfill, feed, reconciliation, unit gates and the reverse projection's changelog reads |

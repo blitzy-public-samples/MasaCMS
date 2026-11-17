@@ -178,12 +178,11 @@ process_env() {
       # legacy-start.sh, run by migration as OPT2_LEGACY_RESTART_CMD, inherits PORT=<migration port>.
       _opt2_env_line OPT2_LEGACY_PORT "$LEGACY_PORT"
       _opt2_env_line OPT2_BRIDGE_HMAC_KEY "$bridge_key"
+      # The versions up.sh selected for the fixture capability; both must read the same files.
+      _opt2_env_line OPT2_CUTOVER_DIR "${OPT2_CUTOVER_DIR:-$REPO/gateway/cutover}"
       ;;
   esac
   case $name in
-    gateway)
-      _opt2_env_line OPT2_CUTOVER_DIR "$REPO/gateway/cutover"
-      ;;
     migration)
       require_env MURA_DBHOST MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD
       # MURA_DBTYPE, when set, is already among the Masa settings.
@@ -574,11 +573,55 @@ ensure_pubsub_emulator() {
   tooling_record pubsub-emulator started "$pid" "$start"
 }
 
-# Starts otelcol-contrib with otelcol-config.yaml on 127.0.0.1:OPT2_TOOL_PORT_OTLP_HTTP unless that port is open.
+# Prints the pid listening on TCP <port> as ss reports it; nothing when none is visible.
+_opt2_listener_pid() {
+  local out
+  out="$(ss -Hltnp "sport = :${1:?_opt2_listener_pid needs a port}" 2>/dev/null)" || return 0
+  if [[ $out =~ pid=([1-9][0-9]*) ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+}
+
+# True when <pid> runs this checkout's otelcol-config.yaml with this shell's OPT2_STATE_DIR, the root of its file sink.
+_opt2_is_repro_otelcol() {
+  local pid=$1 config="$REPRO_DIR/otelcol-config.yaml" i entry configured=false
+  local -a argv=() environ=()
+  { mapfile -d '' argv <"/proc/$pid/cmdline" && mapfile -d '' environ <"/proc/$pid/environ"; } 2>/dev/null || return 1
+  for ((i = 0; i < ${#argv[@]}; i++)); do
+    if [[ ${argv[i]} == "--config=$config" || (${argv[i]} == --config && ${argv[i + 1]:-} == "$config") ]]; then
+      configured=true
+    fi
+  done
+  [[ $configured == true ]] || return 1
+  for entry in "${environ[@]}"; do
+    if [[ $entry == "OPT2_STATE_DIR=$OPT2_STATE_DIR" ]]; then return 0; fi
+  done
+  return 1
+}
+
+# Prints the pid of this run's collector when it holds OPT2_TOOL_PORT_OTLP_HTTP, nothing when the port is free; dies
+# when any other process holds the port.
+repro_otelcol_pid() {
+  local port=$OPT2_TOOL_PORT_OTLP_HTTP pid cmdline
+  local -a argv=()
+  _opt2_port_open "$port" || return 0
+  require_cmd ss
+  pid="$(_opt2_listener_pid "$port")"
+  if [[ -n $pid ]] && _opt2_is_repro_otelcol "$pid"; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  if [[ -n $pid ]]; then mapfile -d '' argv 2>/dev/null <"/proc/$pid/cmdline" || argv=(); fi
+  cmdline="${argv[*]:-command line unknown}"
+  die "port $port (OPT2_TOOL_PORT_OTLP_HTTP) is held by pid ${pid:-unknown} (${cmdline//[[:cntrl:]]/ })," \
+    "not this checkout's otelcol-config.yaml collector for this OPT2_STATE_DIR, so spans would not reach" \
+    "$OPT2_STATE_DIR/otel/traces.jsonl: stop it, or run harness/repro/down.sh with the OPT2_STATE_DIR that started it"
+}
+
+# Starts otelcol-contrib with otelcol-config.yaml on 127.0.0.1:OPT2_TOOL_PORT_OTLP_HTTP; reuses only this run's own.
 ensure_otelcol() {
   local port=$OPT2_TOOL_PORT_OTLP_HTTP pid start
-  if _opt2_port_open "$port"; then
-    tooling_record otelcol reused
+  pid="$(repro_otelcol_pid)" || exit 1
+  if [[ -n $pid ]]; then
+    tooling_record otelcol reused "$pid"
     return 0
   fi
   require_cmd otelcol-contrib

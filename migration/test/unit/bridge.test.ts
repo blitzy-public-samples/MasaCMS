@@ -1,8 +1,10 @@
 // Unit tests for the legacy-bridge client, using an injected capturing fetch, a local HTTP server for its default transport,
 // or the bridge double, in place of the CFML bridge pages.
 import { createHash } from 'node:crypto';
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { Writable } from 'node:stream';
 
 import { BRIDGE_ASSERTION_HEADER, MemoryNonceStore, verifyBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,6 +38,7 @@ const FILE_ID = '9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F';
 const FILE_NAME = `${FILE_ID}_small.jpg`;
 const FILE_BYTES = Buffer.from('legacy file bytes \u0000\u00ff', 'utf8');
 const FILE_SHA = createHash('sha256').update(FILE_BYTES).digest('hex');
+const EMPTY_SHA = createHash('sha256').digest('hex');
 const ASSERTION_SHAPE = /^[A-Za-z0-9_-]+\.[0-9a-f]{64}$/;
 // The 10 s service-call timeout and the 600 s site-monitor run deadline.
 const CALL_MS = 10_000;
@@ -105,6 +108,18 @@ function hangingFetch() {
         });
       }),
   );
+}
+
+/** A `files.get` sink keeping each chunk it is written; `fail` decides a write's error from the chunks so far. */
+function collectingSink(fail: (chunks: readonly Buffer[]) => Error | undefined = () => undefined) {
+  const chunks: Buffer[] = [];
+  const sink = new Writable({
+    write(chunk: Buffer, _encoding, done) {
+      chunks.push(chunk);
+      done(fail(chunks) ?? null);
+    },
+  });
+  return { sink, chunks, bytes: () => Buffer.concat(chunks) };
 }
 
 /** Awaits a call that must fail and returns its rejection reason. */
@@ -491,7 +506,7 @@ describe('bridge client requests', () => {
     expect(timeout).toHaveBeenCalledExactlyOnceWith(job === 'setCursor' ? CALL_MS : BATCH_MS);
   });
 
-  it('filesGet sends GET without Accept and returns the bytes with their verified SHA-256', async () => {
+  it('filesGet sends GET without Accept and writes the bytes to the sink, returning their verified SHA-256 and size', async () => {
     const fake = capturingFetch(
       () =>
         new Response(FILE_BYTES, {
@@ -501,12 +516,13 @@ describe('bridge client requests', () => {
     );
     const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
     const controller = new AbortController();
+    const { sink, bytes } = collectingSink();
 
-    const file = await client.filesGet('default', FILE_NAME, { signal: controller.signal });
+    const file = await client.filesGet('default', FILE_NAME, sink, { signal: controller.signal });
 
-    expect(file.bytes).toBeInstanceOf(Buffer);
-    expect(file.bytes.equals(FILE_BYTES)).toBe(true);
-    expect(file.sha256).toBe(FILE_SHA);
+    expect(file).toEqual({ sha256: FILE_SHA, size: FILE_BYTES.length });
+    expect(bytes().equals(FILE_BYTES)).toBe(true);
+    expect(sink.writableFinished).toBe(true);
     const request = onlyRequest(fake);
     expect(`${request.url.origin}${request.url.pathname}`).toBe(`${ORIGIN}${BRIDGE_PATH}/files.cfm`);
     expect([...request.url.searchParams]).toEqual([
@@ -528,9 +544,62 @@ describe('bridge client requests', () => {
     );
     const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
 
-    await expect(client.filesGet('default', FILE_NAME)).resolves.toEqual({ bytes: FILE_BYTES, sha256: FILE_SHA });
+    await expect(client.filesGet('default', FILE_NAME, collectingSink().sink)).resolves.toEqual({ sha256: FILE_SHA, size: FILE_BYTES.length });
     expect(timeout).toHaveBeenCalledExactlyOnceWith(CALL_MS);
     expect(onlyRequest(fake).init.signal).toBe(timeout.mock.results[0]?.value);
+  });
+
+  it.each<[string, () => Response]>([
+    ['an empty body', () => new Response(new Uint8Array(0), { status: 200, headers: { 'X-Opt2-Sha256': EMPTY_SHA } })],
+    ['no body', () => new Response(null, { status: 204, headers: { 'X-Opt2-Sha256': EMPTY_SHA } })],
+  ])('filesGet verifies an empty file answered with %s and ends the sink', async (_label, answer) => {
+    const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: capturingFetch(answer).fetch });
+    const { sink, chunks } = collectingSink();
+
+    await expect(client.filesGet('default', FILE_NAME, sink)).resolves.toEqual({ sha256: EMPTY_SHA, size: 0 });
+    expect(chunks).toEqual([]);
+    expect(sink.writableFinished).toBe(true);
+  });
+
+  it('filesGet passes each chunk to the sink as it arrives, reading ahead only a bounded part of the body', async () => {
+    const chunk = Buffer.alloc(16 * 1024, 0x5a);
+    const total = chunk.length * 256;
+    const expectedSha = createHash('sha256').update(Buffer.alloc(total, 0x5a)).digest('hex');
+    let produced = 0;
+    let written = 0;
+    let maxAhead = 0;
+    let producedAtFirstWrite: number | undefined;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (produced === total) {
+            controller.close();
+            return;
+          }
+          produced += chunk.length;
+          maxAhead = Math.max(maxAhead, produced - written);
+          controller.enqueue(new Uint8Array(chunk));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const fake = capturingFetch(() => new Response(body, { status: 200, headers: { 'X-Opt2-Sha256': expectedSha } }));
+    const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
+    // A slow sink, so only backpressure keeps the body from being read ahead of it.
+    const sink = new Writable({
+      highWaterMark: chunk.length,
+      write(data: Buffer, _encoding, done) {
+        producedAtFirstWrite ??= produced;
+        written += data.length;
+        setImmediate(done);
+      },
+    });
+
+    await expect(client.filesGet('default', FILE_NAME, sink)).resolves.toEqual({ sha256: expectedSha, size: total });
+
+    expect(written).toBe(total);
+    expect(producedAtFirstWrite).toBeLessThan(total);
+    expect(maxAhead).toBeLessThan(total / 4);
   });
 
   it('filesPut sends the raw bytes as octet-stream with X-Opt2-Sha256 and returns the bridge answer', async () => {
@@ -693,7 +762,7 @@ describe('bridge client bounds', () => {
     },
     {
       label: 'files.get bytes that miss their hash',
-      invoke: (client) => client.filesGet('default', FILE_NAME, { timeoutMs: 30 }),
+      invoke: (client) => client.filesGet('default', FILE_NAME, collectingSink().sink, { timeoutMs: 30 }),
       status: 200,
       headers: { 'X-Opt2-Sha256': '0'.repeat(64) },
       bytes: FILE_BYTES,
@@ -886,7 +955,7 @@ describe('bridge client errors', () => {
   });
 
   it.each([
-    ['filesGet', 'files.get', (client: BridgeClient) => client.filesGet('default', FILE_NAME)],
+    ['filesGet', 'files.get', (client: BridgeClient) => client.filesGet('default', FILE_NAME, collectingSink().sink)],
     ['filesPut', 'files.put', (client: BridgeClient) => client.filesPut('default', FILE_NAME, FILE_BYTES, FILE_SHA)],
     ['filesDelete', 'files.delete', (client: BridgeClient) => client.filesDelete('default', { fileId: FILE_ID })],
   ])('rejects %s with UnsupportedFileStoreError on 409 unsupportedFileStore', async (_label, op, invoke) => {
@@ -915,9 +984,15 @@ describe('bridge client errors', () => {
     const headers: Record<string, string> = header === undefined ? {} : { 'X-Opt2-Sha256': header };
     const fake = capturingFetch(() => new Response(FILE_BYTES, { status: 200, headers }));
     const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
+    const { sink, bytes } = collectingSink();
 
-    const error = await rejectionOf(client.filesGet('default', FILE_NAME));
+    const error = await rejectionOf(client.filesGet('default', FILE_NAME, sink));
 
+    // The digest is known only after the last byte, so the sink holds the whole body when the mismatch is raised; it is
+    // destroyed, never finished.
+    expect(bytes().equals(FILE_BYTES)).toBe(true);
+    expect(sink.writableFinished).toBe(false);
+    expect(sink.destroyed).toBe(true);
     expect(error).toBeInstanceOf(BridgeHashMismatchError);
     expect(error).toBeInstanceOf(BridgeError);
     expect(error).toMatchObject({
@@ -935,12 +1010,14 @@ describe('bridge client errors', () => {
     const body = { error: 'notFound', message: 'no such file', serverTime: SERVER_TIME };
     const fake = capturingFetch(() => jsonResponse(body, 404));
     const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
+    const { sink, chunks } = collectingSink();
 
-    const error = await rejectionOf(client.filesGet('default', FILE_NAME));
+    const error = await rejectionOf(client.filesGet('default', FILE_NAME, sink));
 
     expect(error).toBeInstanceOf(BridgeError);
     expect(error).not.toBeInstanceOf(BridgeHashMismatchError);
     expect(error).toMatchObject({ name: 'BridgeError', status: 404, op: 'files.get', body });
+    expect(chunks).toEqual([]);
   });
 
   it.each([
@@ -979,10 +1056,16 @@ describe('bridge client default transport', () => {
   }
   const received: Received[] = [];
   const CURSOR_ANSWER = { job: 'getCursor', lastMonitored: null, serverTime: SERVER_TIME };
+  const WHOLE_NAME = `${FILE_ID}.jpg`;
+  /** Settles once the connection of each files.get answer is closed. */
+  const getClosed: Promise<void>[] = [];
+  /** Called once the stand-in has recorded each request, before it answers. */
+  let onReceived = (): void => undefined;
   let server: Server;
   let origin: string;
 
-  // A bridge stand-in: scheduler.describe never answers, site.refresh stalls in its body, files.put echoes what it read.
+  // A bridge stand-in: scheduler.describe never answers, site.refresh and files.get stall in their bodies (files.get of
+  // WHOLE_NAME answers the whole file), files.put echoes what it read.
   beforeAll(async () => {
     server = createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -992,8 +1075,19 @@ describe('bridge client default transport', () => {
         const url = new URL(req.url ?? '/', 'http://bridge.test');
         const body = Buffer.concat(chunks);
         received.push({ url, headers: req.headers, body });
+        onReceived();
         const call = `${url.pathname.slice(url.pathname.lastIndexOf('/') + 1)}?${url.searchParams.get('job') ?? url.searchParams.get('op') ?? ''}`;
         if (call === 'scheduler.cfm?describe') return;
+        if (call === 'files.cfm?get') {
+          getClosed.push(new Promise((resolve) => res.on('close', () => resolve())));
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'X-Opt2-Sha256': FILE_SHA });
+          if (url.searchParams.get('name') === WHOLE_NAME) {
+            res.end(FILE_BYTES);
+            return;
+          }
+          res.write(FILE_BYTES.subarray(0, 4));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if (call === 'site.cfm?refresh') {
           res.write('{"refreshed":');
@@ -1014,6 +1108,8 @@ describe('bridge client default transport', () => {
 
   beforeEach(() => {
     received.length = 0;
+    getClosed.length = 0;
+    onReceived = () => undefined;
   });
 
   async function* streamed(bytes: Buffer): AsyncGenerator<Uint8Array> {
@@ -1061,18 +1157,138 @@ describe('bridge client default transport', () => {
     expect(received).toEqual([]);
   });
 
-  it.each<[string, (client: BridgeClient) => Promise<unknown>, string]>([
-    ['its headers', (client) => client.schedulerDescribe({ timeoutMs: 100 }), 'scheduler.describe'],
-    ['the end of its body', (client) => client.siteRefresh('default', { timeoutMs: 100 }), 'site.refresh'],
-  ])('cuts an answer stalled before %s at the bound as BridgeTimeoutError', async (_label, invoke, op) => {
+  it.each<[string, (client: BridgeClient) => Promise<unknown>, string, 'request' | 'headers']>([
+    ['its headers', (client) => client.schedulerDescribe({ timeoutMs: 100 }), 'scheduler.describe', 'request'],
+    ['the end of its body', (client) => client.siteRefresh('default', { timeoutMs: 100 }), 'site.refresh', 'headers'],
+  ])('cuts an answer stalled before %s at the bound as BridgeTimeoutError', async (_label, invoke, op, expireAfter) => {
+    // The bound's signal, expired by the test once the bridge holds the request or the client has its answer's headers.
+    const bound = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockImplementationOnce(() => bound.signal);
+    const expire = (): void => {
+      bound.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    };
+    // Deferred past the answer's resolution, so the bound cuts the body read.
+    const onHeaders = (): void => {
+      setImmediate(expire);
+    };
+    if (expireAfter === 'request') onReceived = expire;
+    else subscribe('undici:request:headers', onHeaders);
     const started = Date.now();
 
-    const error = await rejectionOf(invoke(createBridgeClient({ origin, key: KEY })));
+    try {
+      const error = await rejectionOf(invoke(createBridgeClient({ origin, key: KEY })));
 
-    expect(error).toBeInstanceOf(BridgeTimeoutError);
-    expect(error).toMatchObject({ op, timeoutMs: 100, cause: { name: 'TimeoutError' } });
-    expect(Date.now() - started).toBeLessThan(1_000);
-    expect(received).toHaveLength(1);
+      expect(error).toBeInstanceOf(BridgeTimeoutError);
+      expect(error).toMatchObject({ op, timeoutMs: 100, cause: { name: 'TimeoutError' } });
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(received).toHaveLength(1);
+    } finally {
+      unsubscribe('undici:request:headers', onHeaders);
+    }
+  });
+
+  const callerReason = new Error('caller cancelled');
+  const sinkFailure = new Error('spool disk full');
+
+  it.each<{ label: string; abortOnWrite: boolean; expireOnWrite?: boolean; failWrite: boolean; timeoutMs?: number; expected: (error: unknown) => void }>([
+    {
+      label: 'the bound expiring as BridgeTimeoutError',
+      abortOnWrite: false,
+      expireOnWrite: true,
+      failWrite: false,
+      timeoutMs: 100,
+      expected: (error) => {
+        expect(error).toBeInstanceOf(BridgeTimeoutError);
+        expect(error).toMatchObject({ op: 'files.get', timeoutMs: 100, cause: { name: 'TimeoutError' } });
+      },
+    },
+    { label: "the caller's abort unchanged", abortOnWrite: true, failWrite: false, expected: (error) => expect(error).toBe(callerReason) },
+    { label: "the sink's failure unchanged", abortOnWrite: false, failWrite: true, expected: (error) => expect(error).toBe(sinkFailure) },
+  ])('stops a files.get body stalled after its first bytes on $label, destroying the sink and closing the connection', async ({ abortOnWrite, expireOnWrite, failWrite, timeoutMs, expected }) => {
+    // The bound's signal, expired by the test once the first bytes reach the sink, as AbortSignal.timeout expires it.
+    const bound = new AbortController();
+    if (expireOnWrite === true) vi.spyOn(AbortSignal, 'timeout').mockImplementationOnce(() => bound.signal);
+    const controller = new AbortController();
+    const { sink, bytes } = collectingSink(() => {
+      if (abortOnWrite) controller.abort(callerReason);
+      if (expireOnWrite === true) bound.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+      return failWrite ? sinkFailure : undefined;
+    });
+    const started = Date.now();
+
+    const error = await rejectionOf(createBridgeClient({ origin, key: KEY }).filesGet('default', FILE_NAME, sink, { signal: controller.signal, timeoutMs }));
+
+    expected(error);
+    expect(bytes().equals(FILE_BYTES.subarray(0, 4))).toBe(true);
+    expect(sink.destroyed).toBe(true);
+    expect(getClosed).toHaveLength(1);
+    await getClosed[0];
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it.each(
+    (['final', 'write'] as const).flatMap((stall) => [
+      {
+        stall,
+        label: 'the bound expiring as BridgeTimeoutError',
+        by: 'bound' as const,
+        expected: (error: unknown) => {
+          expect(error).toBeInstanceOf(BridgeTimeoutError);
+          expect(error).toMatchObject({ op: 'files.get', timeoutMs: 250, cause: { name: 'TimeoutError' } });
+        },
+      },
+      { stall, label: "the caller's abort unchanged", by: 'caller' as const, expected: (error: unknown) => expect(error).toBe(callerReason) },
+    ]),
+  )('stops a whole files.get body whose sink stalls in its $stall on $label, destroying the sink', async ({ stall, by, expected }) => {
+    // The bound's signal, expired by the test once the sink has stalled, as AbortSignal.timeout expires it.
+    const bound = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockImplementationOnce(() => bound.signal);
+    const controller = new AbortController();
+    const chunks: Buffer[] = [];
+    let stalled = false;
+    let onStall = (): void => undefined;
+    const inStall = new Promise<void>((resolve) => {
+      onStall = resolve;
+    });
+    const stallHere = (): void => {
+      stalled = true;
+      onStall();
+    };
+    // Never completes the stalled write or finish.
+    const sink = new Writable({
+      write(chunk: Buffer, _encoding, done) {
+        chunks.push(chunk);
+        if (stall === 'write') stallHere();
+        else done();
+      },
+      final() {
+        stallHere();
+      },
+    });
+    const pending = rejectionOf(createBridgeClient({ origin, key: KEY }).filesGet('default', WHOLE_NAME, sink, { signal: controller.signal, timeoutMs: 250 }));
+    await Promise.race([inStall, pending]);
+    if (by === 'bound') bound.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    else controller.abort(callerReason);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        pending,
+        new Promise((resolve) => {
+          deadline = setTimeout(resolve, 2_000, 'still pending after 2 s');
+        }),
+      ]);
+
+      expected(outcome);
+      expect(stalled).toBe(true);
+      const received = Buffer.concat(chunks);
+      expect(received.length).toBeGreaterThan(0);
+      expect(received.equals(FILE_BYTES.subarray(0, received.length))).toBe(true);
+      expect(sink.destroyed).toBe(true);
+    } finally {
+      clearTimeout(deadline);
+      sink.destroy();
+      await pending.catch(() => undefined);
+    }
   });
 });
 
@@ -1133,15 +1349,16 @@ describe('bridge client against the bridge double', () => {
     expect(double.calls[0]).toMatchObject({ op, status: 200, assertion: { aud: 'legacy-bridge', op, siteId } });
   });
 
-  it('filesGet returns the stored bytes the bridge hashed into X-Opt2-Sha256', async () => {
+  it('filesGet writes the stored bytes the bridge hashed into X-Opt2-Sha256 to the sink', async () => {
     const client = createBridgeClient({ origin: double.origin, key: KEY });
     const bytes = FIXTURE_FILE_BYTES[IMAGE_NAME];
+    const sink = collectingSink();
 
-    const file = await client.filesGet(IMAGE.siteId, IMAGE_NAME);
+    const file = await client.filesGet(IMAGE.siteId, IMAGE_NAME, sink.sink);
 
     expect(bytes).toBeDefined();
-    expect(file.bytes.equals(bytes ?? Buffer.alloc(0))).toBe(true);
-    expect(file.sha256).toBe(createHash('sha256').update(file.bytes).digest('hex'));
+    expect(sink.bytes().equals(bytes ?? Buffer.alloc(0))).toBe(true);
+    expect(file).toEqual({ sha256: createHash('sha256').update(sink.bytes()).digest('hex'), size: sink.bytes().length });
     expect(double.calls[0]?.assertion).toMatchObject({ op: 'files.get', siteId: IMAGE.siteId });
   });
 
@@ -1184,7 +1401,7 @@ describe('bridge client against the bridge double', () => {
   });
 
   it.each<[string, string, (client: BridgeClient) => Promise<unknown>]>([
-    ['filesGet', 'files.get', (client) => client.filesGet(IMAGE.siteId, IMAGE_NAME)],
+    ['filesGet', 'files.get', (client) => client.filesGet(IMAGE.siteId, IMAGE_NAME, collectingSink().sink)],
     ['filesPut', 'files.put', (client) => client.filesPut(IMAGE.siteId, IMAGE_NAME, FILE_BYTES, FILE_SHA)],
     ['filesDelete', 'files.delete', (client) => client.filesDelete(IMAGE.siteId, { fileId: IMAGE.fileId })],
   ])('rejects %s on an s3 store with UnsupportedFileStoreError', async (_label, op, invoke) => {

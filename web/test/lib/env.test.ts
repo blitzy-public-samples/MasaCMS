@@ -5,6 +5,7 @@ import {
   CORE_VERSION,
   GATEWAY_SERVICE_PREFIX,
   legacySettings,
+  legacySettingsEnvSchema,
   resetLegacySettingsForTests,
   setWebEnvForTests,
   webEnv,
@@ -155,6 +156,37 @@ describe('webEnv', () => {
     vi.stubEnv('MURA_TITLE', 'Beta');
     restore();
     expect(legacySettings().title).toBe('Beta');
+  });
+});
+
+describe('legacySettingsEnvSchema', () => {
+  /** Every Masa setting variable web reads, the set web/README.md lists. */
+  const VARIABLES = [
+    'TITLE', 'CONTEXT', 'ADMINDIR', 'ADMINDOMAIN', 'ADMINEMAIL', 'ADMINSSL', 'SESSIONTIMEOUT', 'RENDERMURAALERTS',
+    'SECURECOOKIES', 'SESSIONHISTORY', 'WINDOWDOCUMENTDOMAIN', 'LOCALE', 'ALLOWAUTOUPDATES', 'FILEMANAGERENABLED',
+    'FMSHOWSITEFILES', 'FMSHOWAPPLICATIONROOT', 'MODE', 'DBTYPE', 'PORT', 'HTMLEDITORTYPE', 'FILEDELIM', 'SITEIDINURLS',
+    'INDEXFILEINURLS', 'LEGACYINDEXFILELOCATION', 'KEEPMETAKEYWORDS', 'FORMPOLLS', 'PROXYSERVER', 'PROXYUSER',
+    'SHOWUSAGETABS', 'FILEASSETPATH', 'COREPATH', 'PLUGINSPATH', 'EXPIREPASSWORDS', 'STRONGPASSWORDS', 'WEBROOT',
+    'APPRELOADKEY', 'JAVAENABLED', 'INDEXFILEINAPI', 'SITEDIR', 'ASSETPATH', 'FILEDIR', 'S3ASSETS',
+  ].map((key) => `MURA_${key}`);
+
+  it('declares the 42 MURA_<KEY> variables web reads', () => {
+    expect(Object.keys(legacySettingsEnvSchema.in.shape).sort()).toEqual([...VARIABLES].sort());
+  });
+
+  it.each(['', '  ', '${application.x}', '{{x}}', 'not-a-setting', '-1e999', '\u0000'])(
+    'accepts %j in every variable, as a configBean setter receives any value',
+    (value) => {
+      for (const variable of VARIABLES) expect(legacySettingsEnvSchema.safeParse({ [variable]: value }).success, variable).toBe(true);
+    },
+  );
+
+  it('is what legacySettings() parses process.env with', () => {
+    vi.stubEnv('MURA_TITLE', 'Acme');
+    vi.stubEnv('MURA_INDEXFILEINURLS', 'no');
+    resetLegacySettingsForTests();
+
+    expect(legacySettings()).toStrictEqual(legacySettingsEnvSchema.parse(process.env));
   });
 });
 

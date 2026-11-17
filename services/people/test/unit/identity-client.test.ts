@@ -347,7 +347,9 @@ describe('identity reads', () => {
     const sparse = { UserID: 'G2', GroupName: 'Editors', Counter: null, Perm: 0, isPublic: 0 };
     const reply = { status: 200, body: { items: [full, sparse], total: 2, nextOffset: null } };
     const { identity, requests } = identityWith(reply);
-    await expect(identity.userGroups('tenant-a', 0)).resolves.toEqual([
+    const page = await identity.userGroupsPage('tenant-a', 0, { offset: 0 });
+    expect(page).toMatchObject({ total: 2, nextOffset: null });
+    expect(page.rows).toEqual([
       {
         userId: 'G1',
         email: 'a@example.com',
@@ -375,20 +377,28 @@ describe('identity reads', () => {
         isPublic: 0,
       },
     ]);
+    // Without a limit identity answers its default page size.
     expect(requests).toEqual([
       { service: 'identity', method: 'GET', path: '/v1/groups', query: { siteid: 'tenant-a', ispublic: '0', offset: '0' } },
     ]);
   });
 
   const groupId = (n: number): string => `6A000000-0000-0000-${String(n).padStart(16, '0')}`;
+  it("asks for one page of the window's offset and limit, answering its rows, the listing's total and the next offset", async () => {
+    const row = (n: number) => ({ UserID: groupId(1000 + n), GroupName: `Group ${n}`, Counter: null, Perm: 0, isPublic: 1 });
+    const reply = { status: 200, body: { items: Array.from({ length: 500 }, (_, n) => row(n)), total: 2001, nextOffset: 1500 } };
+    const { identity, requests } = identityWith(reply);
+
+    const page = await identity.userGroupsPage('tenant-a', 1, { offset: 1000, limit: 500 });
+
+    expect(page.rows.map((group) => group.userId)).toEqual(Array.from({ length: 500 }, (_, n) => groupId(1000 + n)));
+    expect(page).toMatchObject({ total: 2001, nextOffset: 1500 });
+    expect(requests.map((req) => req.query)).toEqual([{ siteid: 'tenant-a', ispublic: '1', offset: '1000', limit: '500' }]);
+    assertIdentityReply(requests[0], reply);
+  });
+
   /** The paged group reads: client method, identity operation, the read as group ids, and one contract row of the operation. */
   const pagedGroupReads = [
-    [
-      'userGroups',
-      'listGroups',
-      async (identity: IdentityClient) => (await identity.userGroups('tenant-a', 1)).map((group) => group.userId),
-      (n: number) => ({ UserID: groupId(n), GroupName: `Group ${n}`, Counter: null, Perm: 0, isPublic: 1 }),
-    ],
     [
       'siteGroups',
       'listSiteGroupsV2',
@@ -412,7 +422,7 @@ describe('identity reads', () => {
 
   it.each([403, 503])('fails closed when a read answers %i', async (status) => {
     const { identity } = identityWith({ status });
-    await expect(identity.userGroups('tenant-a', 1)).rejects.toMatchObject(unavailableFrom('listGroups', status));
+    await expect(identity.userGroupsPage('tenant-a', 1, { offset: 0 })).rejects.toMatchObject(unavailableFrom('listGroups', status));
   });
 
   it.each(pagedGroupReads)('%s fails closed when a later page of %s answers 503, returning no partial list', async (_method, operationId, read, row) => {
@@ -630,7 +640,10 @@ describe('account and site-group reads', () => {
     assertIdentityReply(requests[0], reply);
   });
 
-  it('reads many users’ stored group ids in one lookupMemberships call, keyed by the requested id', async () => {
+  it.each([
+    ['stored group ids', undefined, {}],
+    ['group ids by group name', { byGroupName: true }, { byGroupName: true }],
+  ])('reads many users’ %s in one lookupMemberships call, keyed by the requested id', async (_label, options, sent) => {
     const lower = OTHER_ID.toLowerCase();
     const reply = {
       status: 200,
@@ -642,12 +655,12 @@ describe('account and site-group reads', () => {
       },
     };
     const { identity, requests } = identityWith(reply);
-    const memberships = await identity.lookupMemberships([USER_ID, lower, USER_ID]);
+    const memberships = await identity.lookupMemberships([USER_ID, lower, USER_ID], options);
     expect([...memberships]).toEqual([
       [USER_ID, [GROUP_ID, OTHER_GROUP_ID]],
       [lower, []],
     ]);
-    expect(requests).toEqual([{ service: 'identity', method: 'POST', path: '/internal/v1/accounts:memberships', json: { userIds: [USER_ID, lower] } }]);
+    expect(requests).toEqual([{ service: 'identity', method: 'POST', path: '/internal/v1/accounts:memberships', json: { userIds: [USER_ID, lower], ...sent } }]);
     assertIdentityRequestBody(requests[0]);
     assertIdentityReply(requests[0], reply);
   });

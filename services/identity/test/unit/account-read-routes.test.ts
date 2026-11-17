@@ -329,6 +329,7 @@ describe('auth denials', () => {
     ['/internal/v1/accounts:count', 'an unknown scope', { scope: 'site' }],
     ['/internal/v1/accounts:count', 'a pool scope without publicPool', { scope: 'pool' }],
     ['/internal/v1/accounts:count', 'a non-boolean unassigned', { scope: 'tenant', where: { unassigned: 'maybe' } }],
+    ['/internal/v1/accounts:memberships', 'a non-boolean byGroupName', { userIds: [ACTIVE], byGroupName: 'yes' }],
     ['/internal/v1/accounts:username-candidates', 'no pattern', { publicPool: false, limit: 10 }],
     ['/internal/v1/accounts:username-candidates', 'an empty pattern', { ...CANDIDATES, pattern: '' }],
     ['/internal/v1/accounts:username-candidates', 'a pattern over 2000 characters', { ...CANDIDATES, pattern: 'a'.repeat(2001) }],
@@ -559,6 +560,40 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     }
   });
 
+  it('answers lookupMemberships with byGroupName as getAccountMemberships answers each listed user', async () => {
+    // Stored in tenant-b and held in umbrella, its name sorts ahead of `Admin` while its id sorts after GROUP's.
+    const abroad = id(13, 'D');
+    await gated('tenant-b', (tx) => repo.insertGroup(tx, groupInput({ userid: abroad, groupname: 'abroad', siteid: 'tenant-b' }), null));
+    await gated('umbrella', async (tx) => {
+      await repo.addMembership(tx, ACTIVE, abroad);
+      await repo.addMembership(tx, PUBLIC, GROUP);
+    });
+    try {
+      const headers = await headersFor('people');
+      const userIds = [ACTIVE, PUBLIC.toLowerCase(), OTHER_TENANT, MISSING];
+      const res = await send('POST', '/internal/v1/accounts:memberships', headers, { userIds, byGroupName: true });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        items: [
+          { userId: ACTIVE, groupIds: [abroad, GROUP] },
+          { userId: PUBLIC.toLowerCase(), groupIds: [GROUP] },
+          { userId: OTHER_TENANT, groupIds: [] },
+          { userId: MISSING, groupIds: [] },
+        ],
+      });
+      for (const { userId, groupIds } of (res.json() as { items: Array<{ userId: string; groupIds: string[] }> }).items) {
+        expect((await send('GET', `/internal/v1/accounts/${userId}/memberships`, headers)).json()).toEqual({ groupIds });
+      }
+    } finally {
+      await gated('umbrella', async (tx) => {
+        await repo.removeMembership(tx, ACTIVE, abroad);
+        await repo.removeMembership(tx, PUBLIC, GROUP);
+      });
+      await gated('tenant-b', (tx) => repo.delete(tx, GROUP_ACCOUNT.table, { userid: abroad }));
+    }
+  });
+
   it.each([
     ['0', [['Admin', 1, 'tenant-a'], ['Authors', 0, 'tenant-a'], ['editors', 0, 'tenant-a']], 0],
     ['1', [['Members', 0, 'umbrella']], 1],
@@ -600,6 +635,7 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
         ['POST', '/internal/v1/accounts:count', { scope: 'pool', publicPool: false, where: { isPublic: 1 } }],
         ['POST', '/internal/v1/accounts:username-candidates', { ...CANDIDATES, pattern: 'ada' }],
         ['POST', '/internal/v1/accounts:memberships', { userIds: [MISSING, ACTIVE] }],
+        ['POST', '/internal/v1/accounts:memberships', { userIds: [MISSING, ACTIVE], byGroupName: true }],
       ] as const) {
         const res = await send(method, url, headers, payload);
         expect(res.statusCode).toBe(503);
@@ -617,6 +653,7 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     ['identity.group_account', 'GET', '/internal/v1/groups?ispublic=0', undefined],
     ['identity.group_account', 'GET', '/internal/v2/groups?ispublic=0', undefined],
     ['identity.membership', 'POST', '/internal/v1/accounts:memberships', { userIds: [ACTIVE] }],
+    ['identity.group_account', 'POST', '/internal/v1/accounts:memberships', { userIds: [ACTIVE], byGroupName: true }],
     ['identity.login_state', 'POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [ACTIVE] }],
     ['identity.user_account', 'POST', '/internal/v1/accounts:count', { scope: 'tenant' }],
     ['identity.membership', 'POST', '/internal/v1/accounts:count', { scope: 'tenant', where: { unassigned: true } }],

@@ -95,11 +95,29 @@ export const OVERRIDE_OPERATIONS = [
   'applyRules',
   'domExclude',
   'sortArrays',
+  'csvKeyOrder',
 ] as const;
 export type OverrideOperation = (typeof OVERRIDE_OPERATIONS)[number];
 
 /** A scenario's normalisation overrides, by operation. */
 export type NormalisationOverrides = Partial<Record<OverrideOperation, string[]>>;
+
+/** One `csvKeyOrder` entry: the step whose CSV rows legacy orders by `columns` alone. */
+export interface CsvKeyOrder {
+  step: string;
+  columns: string[];
+}
+
+/** A `csvKeyOrder` entry `<step>: <column>[, <column>…]` as its step and key columns; undefined when malformed. */
+export function parseCsvKeyOrder(entry: string): CsvKeyOrder | undefined {
+  const colon = entry.indexOf(':');
+  const step = entry.slice(0, colon).trim();
+  const columns = entry
+    .slice(colon + 1)
+    .split(',')
+    .map((column) => column.trim());
+  return colon < 0 || !NAME_PATTERN.test(step) || columns.includes('') ? undefined : { step, columns };
+}
 
 /** Skip reason recorded for a fixture-dependent scenario when the legacy fixtures are unavailable. */
 export const FIXTURES_UNAVAILABLE = 'skipped: fixtures unavailable';
@@ -377,6 +395,10 @@ const normalisationOverrides = z
       applyRules: overrideList.optional(),
       domExclude: overrideList.optional(),
       sortArrays: overrideList.optional(),
+      csvKeyOrder: z
+        .array(z.string().refine((entry) => parseCsvKeyOrder(entry) !== undefined, 'must be <step>: <column>[, <column>…]'))
+        .min(1)
+        .optional(),
     }) satisfies z.ZodType<NormalisationOverrides>,
     // A bare list of rule ids is shorthand for applyRules.
     z
@@ -467,6 +489,15 @@ export const scenarioSchema = z
         }
       }
       bindingRefs(step, i, ['steps', i]);
+    });
+    const keyed = new Set<string>();
+    (s.normalisationOverrides.csvKeyOrder ?? []).forEach((entry, i) => {
+      const step = parseCsvKeyOrder(entry)?.step;
+      const path = ['normalisationOverrides', 'csvKeyOrder', i];
+      if (step === undefined) return;
+      if (!indexOf.has(step)) issue(`csvKeyOrder ${entry} names no step`, path);
+      else if (keyed.has(step)) issue(`csvKeyOrder names step ${step} more than once`, path);
+      keyed.add(step);
     });
     if (s.rows !== undefined) bindingRefs(s.rows, s.steps.length, ['rows']);
     s.acrossTransition?.forEach((t, i) => {

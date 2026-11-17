@@ -1,6 +1,7 @@
 // Legacy-shaped 503 for every unavailable path: the owner refused, timed out or answered 502/503/504, or the gateway cannot serve.
 import {
   LegacyServiceUnavailableError,
+  SYNTHETIC_V1_PREFIXES,
   buildEnvelope,
   canonicalMethodName,
   errorSpec,
@@ -48,8 +49,13 @@ export interface FailCause {
 const API_FAMILY_LIST: readonly RouteFamily[] = ['api', 'rest', 'fixture', 'sitemonitor'];
 const API_FAMILIES: ReadonlySet<string> = new Set(API_FAMILY_LIST);
 
-/** OPT-2 namespaces answering in the envelope whatever their family: the stub, the web relay alias and the relay. */
-const API_PATH_PREFIXES: readonly string[] = ['/opt2/stub', '/opt2/svc', '/internal/v1/relay'];
+/** OPT-2 namespaces answering in the envelope whatever their family: the stub, the web relay alias, the relay and the synthetic services' `/v1/`. */
+const API_PATH_PREFIXES: readonly string[] = [
+  '/opt2/stub',
+  '/opt2/svc',
+  '/internal/v1/relay',
+  ...Object.values(SYNTHETIC_V1_PREFIXES).flat(),
+];
 
 /** Envelope prefixes when no route key is known, matched after a leading `/index.cfm` is removed. */
 const API_FALLBACK_PREFIXES: readonly string[] = ['/_api/', '/tasks/', '/legacy-fixtures/'];

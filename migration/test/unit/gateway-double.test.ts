@@ -1,4 +1,4 @@
-// Unit tests for the gateway double's orphan clearing, held to the real gateway's gates-closed rule.
+// Unit tests for the gateway double's orphan clearing, held to the real gateway's gates-closed rule, and its two status generations.
 import { fixedClock } from '@opt2/platform/service-kit';
 import { describe, expect, it } from 'vitest';
 
@@ -66,6 +66,19 @@ describe('gateway double clearOrphans with gates-closed evidence', () => {
     expect(requestIds(gateway.inflightRows())).toEqual(KEPT_MIXED);
   });
 
+  it("reports a live instance's abandoned row orphaned and clears it, but not that instance's running row", async () => {
+    const running: GatewayInflightRow = { instance: 'gw-live', requestId: 'live-running', route: ROUTE_GATED, side: 'target', startedAt: STARTED_AT, units: GATED_UNITS };
+    const gateway = createGatewayDouble({ clock: fixedClock(NOW), inflight: [running, { ...running, requestId: 'live-abandoned', abandoned: true }] });
+
+    expect(gateway.snapshot().inflight).toEqual([{ instanceId: 'gw-live', route: ROUTE_GATED, side: 'target', count: 2, oldestStartedAt: expect.any(String) }]);
+    expect(gateway.snapshotV2().inflight.map(({ instanceId, count, orphaned }) => ({ instanceId, count, orphaned }))).toEqual([
+      { instanceId: 'gw-live', count: 1, orphaned: false },
+      { instanceId: 'gw-live', count: 1, orphaned: true },
+    ]);
+    await expect(gateway.clearOrphans(GATES_CLOSED)).resolves.toEqual({ cleared: 1 });
+    expect(requestIds(gateway.inflightRows())).toEqual(['live-running']);
+  });
+
   it('answers the same over POST /internal/v1/inflight:clear-orphans', async () => {
     const gateway = createGatewayDouble({ clock: fixedClock(NOW), inflight: mixedRows() });
     const listener = await gateway.listen();
@@ -81,5 +94,34 @@ describe('gateway double clearOrphans with gates-closed evidence', () => {
       await listener.close();
     }
     expect(requestIds(gateway.inflightRows())).toEqual(KEPT_MIXED);
+  });
+});
+
+describe('gateway double status generations', () => {
+  const running: GatewayInflightRow = { instance: 'gw-live', requestId: 'live-running', route: ROUTE_GATED, side: 'target', startedAt: STARTED_AT };
+  const rows = (): GatewayInflightRow[] => [running, { ...running, requestId: 'live-abandoned', abandoned: true }];
+
+  it.each(['v1', 'v2'] as const)('serves the v1 status without orphaned, and the v2 status only as a %s gateway does', async (generation) => {
+    const gateway = createGatewayDouble({ clock: fixedClock(NOW), generation, inflight: rows() });
+    const listener = await gateway.listen();
+    try {
+      const v1 = await fetch(`${listener.url}/internal/v1/cutover/status`);
+      const v2 = await fetch(`${listener.url}/internal/v2/cutover/status`);
+      expect([v1.status, v2.status]).toEqual([200, generation === 'v2' ? 200 : 404]);
+      expect(await v1.json()).toEqual(gateway.snapshot());
+      expect(await v2.json()).toEqual(generation === 'v2' ? gateway.snapshotV2() : expect.objectContaining({ error: expect.any(Object) }));
+    } finally {
+      await listener.close();
+    }
+    expect(gateway.calls.map((call) => call.op)).toEqual(generation === 'v2' ? ['status', 'inflightStatus'] : ['status']);
+  });
+
+  it.each([
+    ['v2', [false, true]],
+    ['v1', [false]],
+  ] as const)("reports a live instance's abandoned row from inflightStatus as a %s gateway's client does", async (generation, orphaned) => {
+    const gateway = createGatewayDouble({ clock: fixedClock(NOW), generation, inflight: rows() });
+
+    expect((await gateway.inflightStatus()).inflight.map((group) => group.orphaned)).toEqual(orphaned);
   });
 });

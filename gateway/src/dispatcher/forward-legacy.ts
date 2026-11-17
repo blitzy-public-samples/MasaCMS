@@ -1,6 +1,9 @@
 // Forwards a request to the legacy Masa origin; request and response bytes pass unchanged except the session cookie mapping.
 import { channel } from 'node:diagnostics_channel';
+import { mkdtemp, open, rm, type FileHandle } from 'node:fs/promises';
 import type { IncomingHttpHeaders, OutgoingHttpHeaders, ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
 import type { HeaderMap } from '@opt2/platform/auth';
@@ -12,6 +15,7 @@ import type { SessionMode } from '../session/mode.js';
 import { LEGACY_CALLEE, replyFromCallee } from './callee-span.js';
 import { failClosed, neverSent, type FailContext } from './fail-closed.js';
 import { HOP_BY_HOP_HEADERS, forwardedHeaders } from './headers.js';
+import { withRequestTarget } from './request-target.js';
 import { recordResponseHead, writeUpstreamHead, type RawResponseHead, type ResponseHeadSlot } from './response-head.js';
 import { settlingRelay } from './settling-relay.js';
 
@@ -35,9 +39,12 @@ type BeforeSendOutcome = { failed: false; setCookies: string[] | undefined } | {
 /** Fail-closed reason of a legacy response a rejected `beforeSend` withholds. */
 const BEFORE_SEND_FAILED = 'legacy response withheld: beforeSend failed';
 
-/** A complete legacy response held by the gateway. */
+/** Fail-closed reason of a legacy response whose spool file failed; holdBody logged the file error. */
+const SPOOL_LOST = 'legacy response withheld: response spool failed';
+
+/** A complete legacy response held by the gateway: its status, headers and body length. */
 export interface BufferedLegacyResponse extends LegacyUpstream {
-  body: Buffer;
+  bytes: number;
 }
 
 /** Why legacy can no longer commit for an exchange: its response ended, or the request never reached it. */
@@ -53,21 +60,34 @@ export interface LegacyForwardContext {
   cookieHeader?: string;
   /** In `target-primary`, legacy session `Set-Cookie` values reach the client only through `beforeSend`'s `setCookies`. */
   sessionMode: SessionMode;
-  /** `buffer` holds the whole response until `beforeSend` and `onBuffered` have resolved. */
+  /** `buffer` holds the whole response, a body past 1 MiB in a request-owned file, until `beforeSend` and `onBuffered` have resolved. */
   mode: 'stream' | 'buffer';
   beforeSend?: LegacyBeforeSend;
-  /** Buffer mode only; called only for a complete body, after `onSettled` has run, also when `beforeSend` rejected. */
+  /**
+   * Buffer mode only; called once, only for a complete body, after `onSettled` has run, also when `beforeSend` rejected,
+   * the file failed, the client left before legacy's head or a status Fastify rejects answered the 503.
+   */
   onBuffered?: (res: BufferedLegacyResponse) => Promise<void>;
   /** Called at most once, only when legacy can no longer commit for this exchange; never after an uncertain end. */
   onSettled?: (outcome: LegacySettlement) => Promise<void>;
   failContext: FailContext;
+  /** Longest wait for legacy's head, and between its body bytes; defaults to {@link LEGACY_EXCHANGE_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }
+
+/** Masa's longest request time: the 7200 s `requestTimeout` of its site import, export and publish (settingsManager.cfc:701). */
+export const LEGACY_EXCHANGE_TIMEOUT_MS = 7_200_000;
 
 /** Request headers never forwarded: hop-by-hop ones, `expect` (the gateway already answered it) and those set below. */
 const DROPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set([...HOP_BY_HOP_HEADERS, 'expect', 'host', 'content-length']);
 
 /** Only tells reply-from not to re-encode the body; the forwarded `content-type` is the inbound one or none. */
 const RAW_BODY_CONTENT_TYPE = 'application/octet-stream';
+
+/** True when undici refused to build the request, a target such as `*` included, so none of it reached legacy. */
+function refusedBeforeSending(error: unknown): boolean {
+  return (error as { code?: unknown } | null | undefined)?.code === 'UND_ERR_INVALID_ARG';
+}
 
 /** Lower-cased header names a `Connection` value lists. */
 function connectionTokens(value: string | string[] | undefined): Set<string> {
@@ -135,11 +155,78 @@ function replaceSetCookies(
   if (cookies.length > 0) reply.header('set-cookie', [...cookies]);
 }
 
-/** Every byte of `stream`. */
-async function collect(stream: Readable): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-  return Buffer.concat(chunks);
+/** Prefix of the directory that briefly names a buffered legacy body's file. */
+const SPOOL_PREFIX = 'opt2-legacy-response-';
+
+/** Body bytes buffer mode holds in memory; a longer body moves to a request-owned file. */
+const HELD_BODY_MEMORY_BYTES = 1024 * 1024;
+
+/** A legacy body read to its end, `bytes` long: in memory, in a spool file, or `lost` once its spool failed. */
+type HeldBody =
+  | { bytes: number; kind: 'memory'; data: Buffer }
+  | { bytes: number; kind: 'file'; handle: FileHandle }
+  | { bytes: number; kind: 'lost' };
+
+/** Opens a new owner-only file under the OS temporary directory and removes its name, so only the handle holds it. */
+async function openSpool(): Promise<FileHandle> {
+  const dir = await mkdtemp(join(tmpdir(), SPOOL_PREFIX));
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(join(dir, 'body'), 'wx+', 0o600);
+    await rm(dir, { recursive: true });
+    return handle;
+  } catch (error) {
+    await handle?.close();
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** Closes a spool `handle`; a failure is logged, never thrown. */
+async function closeSpool(request: FastifyRequest, handle: FileHandle | undefined): Promise<void> {
+  await guarded(request, 'response spool close', () => handle?.close());
+}
+
+/**
+ * Reads `stream` to its end, in memory up to HELD_BODY_MEMORY_BYTES and in a spool file past it; rejects, with the file
+ * closed, only when `stream` fails. A spool that cannot be opened or written is logged and dropped, and `stream` is
+ * still read to its end, so legacy's completion is reported.
+ */
+async function holdBody(request: FastifyRequest, stream: Readable): Promise<HeldBody> {
+  let chunks: Buffer[] = [];
+  let bytes = 0;
+  let handle: FileHandle | undefined;
+  let lost = false;
+  try {
+    for await (const chunk of stream) {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      bytes += data.length;
+      if (lost) continue;
+      if (handle === undefined && bytes <= HELD_BODY_MEMORY_BYTES) {
+        chunks.push(data);
+        continue;
+      }
+      try {
+        if (handle === undefined) {
+          handle = await openSpool();
+          await handle.writeFile(Buffer.concat(chunks));
+          chunks = [];
+        }
+        await handle.writeFile(data);
+      } catch (error) {
+        request.log.error({ error: serializeError(error) }, 'legacy forward response spool failed');
+        await closeSpool(request, handle);
+        handle = undefined;
+        chunks = [];
+        lost = true;
+      }
+    }
+  } catch (error) {
+    await closeSpool(request, handle);
+    throw error;
+  }
+  if (lost) return { bytes, kind: 'lost' };
+  return handle === undefined ? { bytes, kind: 'memory', data: Buffer.concat(chunks) } : { bytes, kind: 'file', handle };
 }
 
 /** The error Node's stream utilities report for a stream that closed before it ended. */
@@ -216,7 +303,7 @@ async function guarded<T>(request: FastifyRequest, name: string, run: () => Prom
 }
 
 /**
- * Forwards `request` to `ctx.legacyOrigin` with its original path, query and body, without a gateway timeout or retry.
+ * Forwards `request` to `ctx.legacyOrigin` with its original path, query and body, within `ctx.timeoutMs` and without retry.
  * A failure before legacy answers, or a rejected `beforeSend`, sends the legacy-shaped 503 of `ctx.failContext`.
  */
 export async function forwardToLegacy(
@@ -239,6 +326,18 @@ export async function forwardToLegacy(
   let notSentSettlement: Promise<void> | undefined;
   /** Legacy's final response head as sent, recorded by reply-from's dispatcher when it is the gateway's. */
   const legacyHead: ResponseHeadSlot = {};
+  /** Set once `respond` holds legacy's body in buffer mode, so `respond`, not legacy's completion, reports it. */
+  let respondReports = false;
+
+  /**
+   * Settles a completed exchange, then reports legacy's response and the `bytes` it sent when buffer mode's `respond` will
+   * not: reply-from skips it for an aborted client, and it skips a reply already answered for a status Fastify rejects.
+   */
+  async function complete(res: FastifyReplyFromResponse, bytes: number): Promise<void> {
+    await settle('completed');
+    if (ctx.mode !== 'buffer' || respondReports) return;
+    await guarded(request, 'onBuffered', () => ctx.onBuffered?.({ ...upstreamOf(res), bytes }));
+  }
 
   /** Runs `beforeSend`; a rejection is reported, so legacy's response does not leave. */
   async function runBeforeSend(upstream: LegacyUpstream): Promise<BeforeSendOutcome> {
@@ -270,40 +369,61 @@ export async function forwardToLegacy(
       sendAsLegacy(request, reply, res.stream, legacyHead.head, received);
       return;
     }
-    const body = await collect(res.stream);
-    const before = await runBeforeSend(upstream);
-    // Legacy executed whether or not its response may leave, so the buffered response is reported either way.
-    await guarded(request, 'onBuffered', () => ctx.onBuffered?.({ ...upstream, body }));
-    if (before.failed) {
-      failClosed(reply, ctx.failContext, { reason: BEFORE_SEND_FAILED, error: before.error });
-      return;
+    respondReports = true;
+    const held = await holdBody(request, res.stream);
+    let fromFile: Readable | undefined;
+    try {
+      const before = await runBeforeSend(upstream);
+      // Legacy executed whether or not its response may leave, so the buffered response is reported either way.
+      await guarded(request, 'onBuffered', () => ctx.onBuffered?.({ ...upstream, bytes: held.bytes }));
+      if (before.failed) {
+        failClosed(reply, ctx.failContext, { reason: BEFORE_SEND_FAILED, error: before.error });
+        return;
+      }
+      if (held.kind === 'lost') {
+        failClosed(reply, ctx.failContext, { reason: SPOOL_LOST });
+        return;
+      }
+      replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
+      if (held.kind === 'memory') {
+        sendAsLegacy(request, reply, held.data, legacyHead.head, received);
+        return;
+      }
+      // Closes the handle once it ends or is destroyed, whichever side ends the send.
+      fromFile = held.handle.createReadStream({ start: 0 });
+      sendAsLegacy(request, reply, fromFile, legacyHead.head, received);
+    } catch (error) {
+      fromFile?.destroy();
+      throw error;
+    } finally {
+      if (fromFile === undefined && held.kind === 'file') await closeSpool(request, held.handle);
     }
-    replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
-    sendAsLegacy(request, reply, body, legacyHead.head, received);
   }
 
-  const url = request.url;
-  const queryAt = url.indexOf('?');
-  const path = queryAt === -1 ? url : url.slice(0, queryAt);
-  const query = queryAt === -1 ? '' : url.slice(queryAt + 1);
   const body = Buffer.isBuffer(request.body) ? request.body : undefined;
 
   const options: FastifyReplyFromHooks = {
-    // The query bypasses reply-from's URL parsing and traversal check, so it reaches legacy byte for byte.
-    queryString: () => query,
     ...(body === undefined ? {} : { body, contentType: request.headers['content-type'] ?? RAW_BODY_CONTENT_TYPE }),
     rewriteRequestHeaders: () => legacyRequestHeaders(request, ctx, body?.length),
-    // 0 disables undici's headers and body timeouts.
-    timeout: 0,
+    // undici's headers and body timeouts; an expiry ends the exchange uncertainly, so it answers the 503 unsettled.
+    timeout: ctx.timeoutMs ?? LEGACY_EXCHANGE_TIMEOUT_MS,
     retriesCount: 0,
     // Runs once per exchange, before reply-from may destroy the response of an aborted client; null disables retries.
     retryDelay: ({ err, res }) => {
       if (ctx.onSettled === undefined) return null;
       // Typed as the reply, but reply-from passes the upstream response here, or nothing when the exchange failed.
       const upstream = res as unknown as FastifyReplyFromResponse | undefined;
-      // The same object reaches reply-from's abort check and onResponse, so both see only the relay.
-      if (upstream !== undefined) upstream.stream = settlingRelay(upstream.stream, () => settle('completed'), unsettled);
-      else if (neverSent(err)) notSentSettlement = settle('not-sent');
+      if (upstream !== undefined) {
+        let sent = 0;
+        // Buffer mode counts legacy's bytes, which a relay reply-from destroyed for an aborted client no longer carries.
+        if (ctx.mode === 'buffer') {
+          upstream.stream.on('data', (chunk: Buffer) => {
+            sent += chunk.length;
+          });
+        }
+        // The same object reaches reply-from's abort check and onResponse, so both see only the relay.
+        upstream.stream = settlingRelay(upstream.stream, () => complete(upstream, sent), unsettled);
+      } else if (neverSent(err) || refusedBeforeSending(err)) notSentSettlement = settle('not-sent');
       else unsettled(err);
       return null;
     },
@@ -329,11 +449,12 @@ export async function forwardToLegacy(
 
   let forwarded: FastifyReply;
   try {
-    forwarded = recordResponseHead(legacyHead, () =>
-      replyFromCallee(reply, LEGACY_CALLEE, `${ctx.legacyOrigin.replace(/\/+$/, '')}${path}`, options),
+    // reply-from resolves only the origin; the gateway's agent (replyFromOptions) sends request.url as received in its place.
+    forwarded = withRequestTarget(request.url, () =>
+      recordResponseHead(legacyHead, () => replyFromCallee(reply, LEGACY_CALLEE, ctx.legacyOrigin, options)),
     );
   } catch (error) {
-    // reply-from rejects a path it cannot parse before anything is sent to legacy.
+    // A synchronous reply-from rejection comes before anything is sent to legacy.
     await settle('not-sent');
     return failClosed(reply, ctx.failContext, { reason: 'forward to legacy rejected before sending', error, level: 'warn' });
   }

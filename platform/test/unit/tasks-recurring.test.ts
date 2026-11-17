@@ -32,6 +32,7 @@ import {
   type RecurringTaskContext,
 } from '../../src/tasks/recurring.js';
 import {
+  activeSpanIds,
   flushTracing,
   MemorySpanExporter,
   shutdownTracing,
@@ -41,6 +42,7 @@ import {
   startTracing,
   taskHeaders,
   withExtractedContext,
+  withUnsampledTrace,
   type ReadableSpan,
   type TraceCarrier,
 } from '../../src/tracing/index.js';
@@ -748,6 +750,56 @@ describe('recurringHandler tracing', () => {
     expect((error as SuccessorCreationError).cause).toBe(outage);
     expect(successor).toMatchObject({ ended: true, status: { code: SpanStatusCode.ERROR } });
     expect(successor?.events.map((event) => event.name)).toStrictEqual(['exception']);
+  });
+});
+
+describe('ensureRecurring tracing', () => {
+  const clock = fixedClock(NOW);
+  const exporter = new MemorySpanExporter();
+  const ENSURE_SPAN = `tasks.ensure ${SWEEP}`;
+
+  beforeAll(async () => {
+    await startTracing({ serviceName: 'tasks-ensure-test', version: '1.0.0', exporter });
+  });
+
+  beforeEach(async () => {
+    await flushTracing();
+    exporter.reset();
+  });
+
+  afterAll(async () => {
+    await shutdownTracing();
+  });
+
+  it('creates a lost chain under a new root span linked to the unsampled iteration, whose context the task stores', async () => {
+    const port = new TraceRecordingTaskPort();
+
+    const iteration = await withUnsampledTrace(async () => {
+      await ensureRecurring(port, { ...sweepSpec(), clock });
+      return activeSpanIds();
+    });
+    await flushTracing();
+    const spans = exporter.getFinishedSpans();
+    const ensure = spans[0];
+
+    expect(spans.map((span) => span.name)).toStrictEqual([ENSURE_SPAN]);
+    expect(ensure).toMatchObject({ kind: SpanKind.PRODUCER, ended: true });
+    expect(ensure?.parentSpanContext).toBeUndefined();
+    expect(ensure?.links.map((link) => link.context.traceId)).toStrictEqual([iteration?.traceId]);
+    expect(port.headers).toStrictEqual([{ traceparent: `00-${String(ensure?.spanContext().traceId)}-${String(ensure?.spanContext().spanId)}-01` }]);
+  });
+
+  it('records nothing while the chain is live', async () => {
+    const port = new TraceRecordingTaskPort();
+    const spec = sweepSpec();
+    await seed(port, spec, slotName(SWEEP, SWEEP_SLOT_S));
+    port.headers.length = 0;
+
+    await withUnsampledTrace(() => ensureRecurring(port, { ...spec, clock }));
+    await flushTracing();
+
+    expect(exporter.getFinishedSpans()).toStrictEqual([]);
+    expect(port.headers).toStrictEqual([]);
   });
 });
 

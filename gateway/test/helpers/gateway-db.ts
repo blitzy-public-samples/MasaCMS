@@ -18,10 +18,12 @@ const JAR_COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoc
 const JAR_UPSERT_COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
 const INFLIGHT_COLUMNS =
   `i.instance_id, i.request_id, i.route, i.side, i.window_id, to_char(i.started_at::timestamptz, ${ISO_FORMAT}) AS started_at`;
+const ORPHANED =
+  `(i.abandoned_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM instance AS g WHERE g.instance_id = i.instance_id ` +
+  `AND g.heartbeat_at >= now() - interval '${INSTANCE_LIVENESS_SECONDS} seconds'))`;
 const ORPHAN_WHERE =
   `i.side = $1 AND i.started_at < $2::timestamptz AND ($3::text[] IS NULL OR i.route = ANY($3::text[])) ` +
-  `AND ($4::text[] IS NULL OR i.instance_id = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM instance AS g ` +
-  `WHERE g.instance_id = i.instance_id AND g.heartbeat_at >= now() - interval '${INSTANCE_LIVENESS_SECONDS} seconds')`;
+  `AND ($4::text[] IS NULL OR i.instance_id = ANY($4::text[])) AND ${ORPHANED}`;
 const END_DECLARATION =
   `WITH gone AS (DELETE FROM session_barrier WHERE session_id = $1 AND owner = $2 AND pending = 1 AND xid IS NULL RETURNING owner) ` +
   `UPDATE session_barrier SET pending = pending - 1 WHERE session_id = $1 AND owner = $2 AND pending > 0 AND NOT EXISTS (SELECT 1 FROM gone)`;
@@ -59,6 +61,7 @@ export interface InflightRecord {
   side: InflightSide;
   windowId: string | null;
   startedAt: Date;
+  abandonedAt: Date | null;
 }
 
 /** One `gateway.legacy_jar` row; `cookies` is the stored jsonb. */
@@ -70,6 +73,7 @@ export interface JarRecord {
   hydratedEpoch: bigint | null;
   updatedAt: Date;
   identityEndPendingAt: Date | null;
+  lastActiveAt: Date;
 }
 
 /** One `gateway.session_barrier` row. */
@@ -119,6 +123,12 @@ interface Outcome {
 }
 
 type Handler = (values: readonly unknown[], tables: GatewayTables, now: Date) => Outcome;
+
+/** A committed transaction's result and the callbacks it queued. */
+interface Committed<T> {
+  result: T;
+  commits: Array<{ cb: CommitCallback; onError: CommitErrorHandler | undefined }>;
+}
 
 /** One-line SQL without schema qualifiers or spacing around parentheses and commas, so equal statements compare equal. */
 export function normaliseSql(sql: string): string {
@@ -226,7 +236,52 @@ function orphans(values: readonly unknown[], tables: GatewayTables, now: Date): 
       row.startedAt.getTime() < before &&
       (routes === null || routes.includes(row.route)) &&
       (instanceIds === null || instanceIds.includes(row.instanceId)) &&
-      !isLive(tables.instances.get(row.instanceId), now),
+      isOrphaned(row, tables, now),
+  );
+}
+
+/** The orphan test of `inflight.ts`: the row is abandoned or its instance is not live. */
+function isOrphaned(row: InflightRecord, tables: GatewayTables, now: Date): boolean {
+  return row.abandonedAt !== null || !isLive(tables.instances.get(row.instanceId), now);
+}
+
+/** Group key of an in-flight summary row; `orphaned` only in the `CutoverStatusV2` summary. */
+interface SummaryKey {
+  instanceId: string;
+  route: string;
+  side: InflightSide;
+  orphaned?: boolean;
+}
+
+/** The key NUL-joined, `0` before `1` for `orphaned`, so string order is the row comparison's order. */
+function joinedKey({ instanceId, route, side, orphaned }: SummaryKey): string {
+  return [instanceId, route, side, ...(orphaned === undefined ? [] : [orphaned ? '1' : '0'])].join('\u0000');
+}
+
+/** One keyset page of `inflight.ts`'s summaries: rows grouped by `keyOf`, the groups after `after` in key order, at most `limit`. */
+function summaryPage(tables: GatewayTables, keyOf: (row: InflightRecord) => SummaryKey, after: SummaryKey | null, limit: number): Outcome {
+  const from = after === null ? null : joinedKey(after);
+  const groups = new Map<string, { key: SummaryKey; count: number; oldest: Date }>();
+  for (const row of tables.inflight.values()) {
+    const key = keyOf(row);
+    const id = joinedKey(key);
+    if (from !== null && id <= from) continue;
+    const group = groups.get(id);
+    if (group === undefined) groups.set(id, { key, count: 1, oldest: row.startedAt });
+    else groups.set(id, { key, count: group.count + 1, oldest: row.startedAt < group.oldest ? row.startedAt : group.oldest });
+  }
+  return select(
+    [...groups.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .slice(0, limit)
+      .map(([, { key, count, oldest }]) => ({
+        instance_id: key.instanceId,
+        route: key.route,
+        side: key.side,
+        ...(key.orphaned === undefined ? {} : { orphaned: key.orphaned }),
+        count,
+        oldest_started_at: iso(oldest),
+      })),
   );
 }
 
@@ -287,19 +342,28 @@ function statementHandlers(): Map<string, Handler> {
   );
   on(
     `SELECT instance_id, seen_epoch, to_char(heartbeat_at::timestamptz, ${ISO_FORMAT}) AS heartbeat_at, (${LIVE}) AS live ` +
-      'FROM instance ORDER BY instance_id',
-    (_values, t, now) =>
-      select(
+      'FROM instance WHERE $1::text IS NULL OR instance_id > $1 ORDER BY instance_id LIMIT $2',
+    (values, t, now) => {
+      const after = nullableText(values[0]);
+      return select(
         [...t.instances.values()]
+          .filter((instance) => after === null || instance.instanceId > after)
           .sort((a, b) => (a.instanceId < b.instanceId ? -1 : 1))
+          .slice(0, Number(bigintOf(values[1])))
           .map((instance) => ({
             instance_id: instance.instanceId,
             seen_epoch: String(instance.seenEpoch),
             heartbeat_at: iso(instance.heartbeatAt),
             live: isLive(instance, now),
           })),
-      ),
+      );
+    },
   );
+  on(`SELECT min(seen_epoch) AS acknowledged_epoch FROM instance WHERE ${LIVE}`, (_values, t, now) => {
+    const live = [...t.instances.values()].filter((instance) => isLive(instance, now)).map((instance) => instance.seenEpoch);
+    const lowest = live.reduce<bigint | null>((min, epoch) => (min === null || epoch < min ? epoch : min), null);
+    return select([{ acknowledged_epoch: lowest === null ? null : String(lowest) }]);
+  });
   on(`SELECT count(*)::int AS lagging FROM instance WHERE ${LIVE} AND seen_epoch < $1`, (values, t, now) => {
     const epoch = bigintOf(values[0]);
     const lagging = [...t.instances.values()].filter((instance) => isLive(instance, now) && instance.seenEpoch < epoch).length;
@@ -354,6 +418,7 @@ function statementHandlers(): Map<string, Handler> {
         side: text(values[3]) as InflightSide,
         windowId: nullableText(values[4]),
         startedAt: now,
+        abandonedAt: null,
       };
       const key = inflightKey(record.instanceId, record.requestId);
       if (t.inflight.has(key)) {
@@ -366,28 +431,47 @@ function statementHandlers(): Map<string, Handler> {
   on('DELETE FROM inflight WHERE instance_id = $1 AND request_id = $2', (values, t) =>
     changed('DELETE', t.inflight.delete(inflightKey(text(values[0]), text(values[1]))) ? 1 : 0),
   );
+  on('UPDATE inflight SET abandoned_at = now() WHERE instance_id = $1 AND request_id = $2 AND abandoned_at IS NULL', (values, t, now) => {
+    const record = t.inflight.get(inflightKey(text(values[0]), text(values[1])));
+    if (record === undefined || record.abandonedAt !== null) return changed('UPDATE', 0);
+    record.abandonedAt = now;
+    return changed('UPDATE', 1);
+  });
   on(
     `SELECT i.instance_id, i.route, i.side, count(*)::int AS count, to_char(min(i.started_at)::timestamptz, ${ISO_FORMAT}) ` +
-      'AS oldest_started_at FROM inflight AS i GROUP BY i.instance_id, i.route, i.side ORDER BY i.instance_id, i.route, i.side',
-    (_values, t) => {
-      const groups = new Map<string, { row: InflightRecord; count: number; oldest: Date }>();
-      for (const row of t.inflight.values()) {
-        const key = [row.instanceId, row.route, row.side].join('\u0000');
-        const group = groups.get(key);
-        if (group === undefined) groups.set(key, { row, count: 1, oldest: row.startedAt });
-        else groups.set(key, { row, count: group.count + 1, oldest: row.startedAt < group.oldest ? row.startedAt : group.oldest });
-      }
-      return select(
-        [...groups.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([, { row, count, oldest }]) => ({
-            instance_id: row.instanceId,
-            route: row.route,
-            side: row.side,
-            count,
-            oldest_started_at: iso(oldest),
-          })),
-      );
+      'AS oldest_started_at FROM inflight AS i WHERE $1::text IS NULL OR (i.instance_id, i.route, i.side) > ($1::text, $2::text, $3::text) ' +
+      'GROUP BY i.instance_id, i.route, i.side ORDER BY i.instance_id, i.route, i.side LIMIT $4',
+    (values, t) => {
+      const afterInstance = nullableText(values[0]);
+      const after: SummaryKey | null =
+        afterInstance === null ? null : { instanceId: afterInstance, route: text(values[1]), side: text(values[2]) as InflightSide };
+      const keyOf = ({ instanceId, route, side }: InflightRecord): SummaryKey => ({ instanceId, route, side });
+      return summaryPage(t, keyOf, after, Number(bigintOf(values[3])));
+    },
+  );
+  on(
+    `SELECT o.instance_id, o.route, o.side, o.orphaned, count(*)::int AS count, to_char(min(o.started_at)::timestamptz, ${ISO_FORMAT}) ` +
+      `AS oldest_started_at FROM (SELECT i.instance_id, i.route, i.side, i.started_at, ${ORPHANED} AS orphaned FROM inflight AS i) AS o ` +
+      'WHERE $1::text IS NULL OR (o.instance_id, o.route, o.side, o.orphaned) > ($1::text, $2::text, $3::text, $4::boolean) ' +
+      'GROUP BY o.instance_id, o.route, o.side, o.orphaned ORDER BY o.instance_id, o.route, o.side, o.orphaned LIMIT $5',
+    (values, t, now) => {
+      const afterInstance = nullableText(values[0]);
+      const after: SummaryKey | null =
+        afterInstance === null
+          ? null
+          : {
+              instanceId: afterInstance,
+              route: text(values[1]),
+              side: text(values[2]) as InflightSide,
+              orphaned: values[3] === true || values[3] === 'true',
+            };
+      const keyOf = (row: InflightRecord): SummaryKey => ({
+        instanceId: row.instanceId,
+        route: row.route,
+        side: row.side,
+        orphaned: isOrphaned(row, t, now),
+      });
+      return summaryPage(t, keyOf, after, Number(bigintOf(values[4])));
     },
   );
   on(`SELECT DISTINCT i.route FROM inflight AS i WHERE ${ORPHAN_WHERE}`, (values, t, now) =>
@@ -410,9 +494,10 @@ function statementHandlers(): Map<string, Handler> {
     return select([...t.jars.values()].filter((record) => record.legacySessionId === legacySessionId).map(jarRow));
   });
   on(
-    `INSERT INTO legacy_jar AS jar (${JAR_UPSERT_COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now()) ON CONFLICT (session_id) ` +
-      'DO UPDATE SET legacy_session_id = EXCLUDED.legacy_session_id, cookies = jar.cookies || EXCLUDED.cookies, ' +
-      `mode = EXCLUDED.mode, hydrated_epoch = EXCLUDED.hydrated_epoch, updated_at = EXCLUDED.updated_at RETURNING ${JAR_COLUMNS}`,
+    `INSERT INTO legacy_jar AS jar (${JAR_UPSERT_COLUMNS}, last_active_at) VALUES ($1, $2, $3::jsonb, $4, $5, now(), now()) ` +
+      'ON CONFLICT (session_id) DO UPDATE SET legacy_session_id = EXCLUDED.legacy_session_id, cookies = jar.cookies || EXCLUDED.cookies, ' +
+      'mode = EXCLUDED.mode, hydrated_epoch = EXCLUDED.hydrated_epoch, updated_at = EXCLUDED.updated_at, ' +
+      `last_active_at = EXCLUDED.last_active_at RETURNING ${JAR_COLUMNS}, (xmax = 0) AS inserted`,
     (values, t, now) => {
       const sessionId = text(values[0]);
       const legacySessionId = nullableText(values[1]);
@@ -432,9 +517,44 @@ function statementHandlers(): Map<string, Handler> {
         hydratedEpoch: numericOrNull(values[4]),
         updatedAt: now,
         identityEndPendingAt: previous?.identityEndPendingAt ?? null,
+        lastActiveAt: now,
       };
       t.jars.set(sessionId, record);
-      return changed('INSERT', 1, [jarRow(record)]);
+      return changed('INSERT', 1, [{ ...jarRow(record), inserted: previous === undefined }]);
+    },
+  );
+  on('UPDATE legacy_jar SET last_active_at = now() WHERE session_id = $1', (values, t, now) => {
+    const record = t.jars.get(text(values[0]));
+    if (record === undefined) return changed('UPDATE', 0);
+    t.jars.set(record.sessionId, { ...record, lastActiveAt: now });
+    return changed('UPDATE', 1);
+  });
+  // The idle-jar purge; transactions run one at a time, so SKIP LOCKED skips nothing.
+  on(
+    'WITH idle AS (SELECT session_id FROM legacy_jar WHERE ' +
+      'last_active_at < now() - make_interval(secs => $1) ORDER BY last_active_at, session_id LIMIT $2 FOR UPDATE SKIP LOCKED), ' +
+      'purged AS (DELETE FROM legacy_jar AS jar USING idle WHERE jar.session_id = idle.session_id), ' +
+      'positions AS (SELECT session_id, owner FROM session_barrier WHERE session_id IN (SELECT session_id FROM idle) AND pending = 0 ' +
+      'AND recorded_at < now() - make_interval(secs => $1) FOR UPDATE SKIP LOCKED) ' +
+      'DELETE FROM session_barrier AS b USING positions AS p WHERE b.session_id = p.session_id AND b.owner = p.owner',
+    (values, t, now) => {
+      if (typeof values[0] !== 'number' || typeof values[1] !== 'number') {
+        throw new TypeError('gateway db double: expected numeric purge parameters');
+      }
+      const cutoff = now.getTime() - values[0] * 1000;
+      const idle = [...t.jars.values()]
+        .filter((record) => record.lastActiveAt.getTime() < cutoff)
+        .sort((a, b) => a.lastActiveAt.getTime() - b.lastActiveAt.getTime() || (a.sessionId < b.sessionId ? -1 : 1))
+        .slice(0, values[1]);
+      for (const record of idle) t.jars.delete(record.sessionId);
+      let released = 0;
+      for (const [key, row] of [...t.barriers]) {
+        if (!idle.some((record) => record.sessionId === row.sessionId)) continue;
+        if (row.pending !== 0 || row.recordedAt.getTime() >= cutoff) continue;
+        t.barriers.delete(key);
+        released += 1;
+      }
+      return changed('DELETE', released);
     },
   );
   on(
@@ -598,11 +718,11 @@ export function createGatewayDb(opts: { onCommitError?: CommitErrorHandler } = {
   let queue: Promise<unknown> = Promise.resolve();
   let ended = false;
 
-  async function transaction<T>(fn: (tx: MetadataTx) => Promise<T>, options?: TransactionCallOptions): Promise<T> {
+  async function transaction<T>(fn: (tx: MetadataTx) => Promise<T>, options?: TransactionCallOptions): Promise<Committed<T>> {
     if (ended) throw new Error('gateway db double: the pool has ended');
     options?.signal?.throwIfAborted();
     const before = structuredClone(tables);
-    const commits: Array<{ cb: CommitCallback; onError: CommitErrorHandler | undefined }> = [];
+    const commits: Committed<T>['commits'] = [];
     const now = new Date();
     const query = async <R extends QueryResultRow = QueryResultRow>(
       textOrConfig: string | QueryConfig,
@@ -624,14 +744,18 @@ export function createGatewayDb(opts: { onCommitError?: CommitErrorHandler } = {
         commits.push({ cb, onError });
       },
     };
-    let result: T;
     try {
-      result = await fn(tx);
+      const result = await fn(tx);
       options?.signal?.throwIfAborted();
+      return { result, commits };
     } catch (error) {
       tables = before;
       throw error;
     }
+  }
+
+  /** Runs a committed transaction's callbacks; as in the platform runner, they hold no transaction and may open one. */
+  async function afterCommit<T>({ result, commits }: Committed<T>): Promise<T> {
     for (const { cb, onError } of commits) {
       try {
         await cb();
@@ -656,7 +780,7 @@ export function createGatewayDb(opts: { onCommitError?: CommitErrorHandler } = {
         () => undefined,
         () => undefined,
       );
-      return run;
+      return run.then(afterCommit);
     },
     withTenant() {
       return Promise.reject(new Error('gateway db double: the gateway schema has no tenant tables'));

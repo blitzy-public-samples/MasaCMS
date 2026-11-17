@@ -2,6 +2,8 @@
 export { createLogger, SEVERITY_BY_LEVEL, serializeError } from './logger.js';
 export { emitDiagnostic, setDiagnosticLogger } from './diagnostics.js';
 export type { CreateLoggerOptions, LogFn, Logger } from './logger.js';
+export { createCliDiagnostics, parseArgsProblem } from './cli.js';
+export type { CliDiagnostics, CliDiagnosticsOptions } from './cli.js';
 export { logStartupFailure } from './startup.js';
 export type { StartupFailureOptions } from './startup.js';
 export { validateLogRecord } from './validate.js';

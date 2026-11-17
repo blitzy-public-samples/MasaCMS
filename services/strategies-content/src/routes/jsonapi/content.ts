@@ -18,12 +18,13 @@ import {
 import { throwIfRequestAborted } from '@opt2/platform/service-kit';
 import { deleteContentEntity, LegacyContentBean, saveContentEntity, type ContentDeps } from '../../domain/content.js';
 import { getCrumbList, readContent, readContentVersions, type ContentBean, type ContentRef, type ContentVersionRef } from '../../domain/content-tree.js';
-import { ContentNotFoundError, type Actor, type SiteContentSettings } from '../../domain/context.js';
+import type { Actor, SiteContentSettings } from '../../domain/context.js';
+import { FeedContentUnsupportedError } from '../../domain/feeds.js';
 import { allowContentAction } from '../../domain/permissions.js';
 import { contentPoolSites, type PoolSite } from '../../domain/pools.js';
 import { findContentQuery, type ContentQueryRequest, type ContentQueryResult } from '../../domain/search.js';
 import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
-import { contentUrl } from '../../legacy/content-urls.js';
+import { contentUrl, type LegacySiteUrlConfig } from '../../legacy/content-urls.js';
 import {
   iteratorPage,
   paramUrl,
@@ -42,12 +43,17 @@ import {
 import {
   authorizationDenied,
   entityAccessAllowed,
+  finderOf,
+  finderParamsOf,
   findPropertiesFor,
   jsonApiResultOf,
   permissionsOf,
+  relatedResolver,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
+  type RelationSourceKey,
+  type SourceBeanGetter,
 } from './types.js';
 
 type Ctx = Parameters<JsonApiHandlerFn>[0];
@@ -65,11 +71,6 @@ const GETTER_KEYS: readonly string[] = ['imagesize', 'imageheight', 'imagewidth'
 const TYPE_OVERRIDES: ReadonlySet<string> = new Set(['form', 'component', 'variation']);
 /** Types whose getEditURL `topid` is their module (contentBean.cfc:1328-1330). */
 const MODULE_TOP_TYPES: ReadonlySet<string> = new Set(['form', 'component']);
-/** configBean `allowedIndexFiles` default (configBean.cfc:229); renderFilename drops such a last segment. */
-const INDEX_FILES: ReadonlySet<string> = new Set(['index.cfm', 'index.json', 'index.html']);
-/** parseCustomURLVars' keywords (contentServer.cfc:531); configBean `customUrlVarDelimiters` default `_` reads as `params`. */
-const URL_VAR_KEYS: ReadonlySet<string> = new Set(['date', 'category', 'params', 'tag', 'linkservid', 'showmeta', 'ref']);
-const URL_VAR_DELIMITER = '_';
 /** Fields getFilteredValues fills itself after the field loop, whatever the bean holds (2195-2221). */
 const COMPUTED_FIELDS: ReadonlySet<string> = new Set(['links', 'images', 'url']);
 const OVERWRITTEN_FIELDS: ReadonlySet<string> = new Set(['id', 'entityname']);
@@ -172,10 +173,10 @@ function assertNoHumanCheck(call: JsonApiCall): void {
 
 // ---- content beans as the serializers read them ----
 
-/** contentBean.getAssocURL (contentBean.cfc:1293-1299): a Link's body, else the complete URL of its filename. */
-function assocUrlOf(scope: ContentScope, bean: LegacyContentBean): unknown {
+/** contentBean.getAssocURL (contentBean.cfc:1293-1299): a Link's body, else the complete URL of its filename on `site`. */
+function assocUrlOf(site: LegacySiteUrlConfig, bean: LegacyContentBean): unknown {
   if (cfEq(bean.text('type'), 'Link')) return bean.get('body');
-  return contentUrl(scope.call.apiContext.site, { filename: bean.text('filename') }, { complete: true });
+  return contentUrl(site, { filename: bean.text('filename') }, { complete: true });
 }
 
 /** getEditURL (contentBean.cfc:1325-1349, contentNavBean.cfc:274-302) without compact display, tab or hash. */
@@ -200,10 +201,14 @@ function editUrlOf(call: JsonApiCall, value: (key: string) => string): string {
 
 /**
  * The view of a content bean, or of a contentNavBean over `row`, whose getValue reads the row before the bean; reading
- * the ids creates them, as getContentID does.
+ * the ids creates them, as getContentID does. `site` is the bean's own site when it is not the request site.
  */
-function contentView(scope: ContentScope, bean: LegacyContentBean, configName: string, row?: NavRow): ApiEntityView {
-  const values: Struct = { contentid: bean.contentId(), contenthistid: bean.contentHistId(), assocurl: assocUrlOf(scope, bean) };
+function contentView(scope: ContentScope, bean: LegacyContentBean, configName: string, row?: NavRow, site?: LegacySiteUrlConfig): ApiEntityView {
+  const values: Struct = {
+    contentid: bean.contentId(),
+    contenthistid: bean.contentHistId(),
+    assocurl: assocUrlOf(site ?? scope.call.apiContext.site, bean),
+  };
   for (const key of GETTER_KEYS) values[key] = bean.get(key);
   for (const [key, value] of Object.entries(row ?? {})) setNoCase(values, key, value ?? '');
   const value = (key: string): string => cfText(getNoCase(values, key) ?? bean.get(key));
@@ -216,6 +221,7 @@ function contentView(scope: ContentScope, bean: LegacyContentBean, configName: s
     hasMany: CONTENT.hasMany,
     hasOne: CONTENT.hasOne,
     editUrl: editUrlOf(scope.call, value),
+    ...(site === undefined ? {} : { site }),
   };
 }
 
@@ -272,6 +278,18 @@ async function tenantOfSite(scope: ContentScope, siteId: string): Promise<string
   return site.tenantId;
 }
 
+/** contentNavBean.getContentBean's read (contentNavBean.cfc:168-188): the row's version, else the active version of its contentid. */
+function navRef(row: NavRow, siteId: string): Omit<ContentRef, 'siteId'> & { siteId: string } {
+  const contentHistId = getNoCase(row, 'contenthistid');
+  if (contentHistId !== undefined) return { siteId, contentHistId: cfText(contentHistId) };
+  return { siteId, contentId: cfText(getNoCase(row, 'contentid')) };
+}
+
+/** Whether every column of `row` is '', as queryRowToStruct reads a row at or before index 0. */
+function isBlankRow(row: NavRow): boolean {
+  return Object.values(row).every((value) => value === '');
+}
+
 /** A NavRow with the version it proxies and the tenant of its site, which that version is read in. */
 interface NavRead extends ContentVersionRef {
   row: NavRow;
@@ -297,24 +315,54 @@ async function navBeans(scope: ContentScope, reads: readonly NavRead[]): Promise
   return reads.map((read) => legacyBeanOf(scope, loaded.get(read) as ContentBean));
 }
 
-/** contentNavBean views of `rows`, each with the full version it proxies read in its site's tenant; throws the error of the first failing row. */
-async function navViews(scope: ContentScope, rows: readonly NavRow[], opts: FilteredValuesOptions): Promise<ApiEntityView[]> {
-  const reads: NavRead[] = [];
+/** One row of navViews: a blank row, a bean read already, or a version read batched by navBeans. */
+type NavSlot = { kind: 'blank'; row: NavRow } | { kind: 'bean'; row: NavRow; tenantId: string; bean: LegacyContentBean } | { kind: 'read'; read: NavRead };
+
+/**
+ * contentNavBean views of `rows`, each with the full version it proxies read in its site's tenant; a blank row, or one
+ * at a position of `misses`, proxies contentDAO's new bean. Throws the error of the first failing row.
+ */
+async function navViews(scope: ContentScope, rows: readonly NavRow[], opts: FilteredValuesOptions, misses: ReadonlySet<number> = new Set()): Promise<ApiEntityView[]> {
+  const { ctx, reader } = scope;
+  const slots: NavSlot[] = [];
   let failure: { error: unknown } | undefined;
-  for (const row of rows) {
+  for (const [position, row] of rows.entries()) {
     try {
+      if (isBlankRow(row)) {
+        slots.push({ kind: 'blank', row });
+        continue;
+      }
       const siteId = cfText(getNoCase(row, 'siteid'));
       const tenantId = await tenantOfSite(scope, siteId);
-      reads.push({ row, siteId, tenantId, contentHistId: cfText(getNoCase(row, 'contenthistid')) });
+      const ref = navRef(row, siteId);
+      if (misses.has(position)) {
+        slots.push({ kind: 'bean', row, tenantId, bean: LegacyContentBean.notFound(reader, ctx.domain.clock.now(), siteId) });
+      } else if (ref.contentHistId === undefined) {
+        const actor = tenantId === reader.tenantId ? reader : { ...reader, tenantId };
+        slots.push({ kind: 'bean', row, tenantId, bean: legacyBeanOf(scope, await readContent(ctx.domain, actor, ref)) });
+      } else {
+        slots.push({ kind: 'read', read: { row, siteId, tenantId, contentHistId: ref.contentHistId } });
+      }
     } catch (error) {
       failure = { error };
       break;
     }
   }
+  const reads = slots.flatMap((slot) => (slot.kind === 'read' ? [slot.read] : []));
   const beans = await navBeans(scope, reads);
-  const views = reads.map((read, at) => {
-    const view = contentView(scope, beans[at] as LegacyContentBean, 'contentnav', read.row);
-    assertServable(scope, view, opts, read.tenantId !== scope.call.tenantId);
+  const beanOf = new Map(reads.map((read, at) => [read, beans[at] as LegacyContentBean]));
+  const views = slots.map((slot) => {
+    if (slot.kind === 'blank') {
+      // No version has the blank ids, so contentDAO answers a new bean of site '' (contentDAO.cfc:177-181), whose URLs
+      // getSite('') builds with the `default` site's settings (settingsManager.cfc:537-541).
+      const site = scope.call.defaultSiteUrls;
+      const view = contentView(scope, LegacyContentBean.notFound(reader, ctx.domain.clock.now(), ''), 'contentnav', slot.row, site);
+      assertServable(scope, view, opts, site === undefined);
+      return view;
+    }
+    const [row, tenantId, bean] = slot.kind === 'read' ? [slot.read.row, slot.read.tenantId, beanOf.get(slot.read) as LegacyContentBean] : [slot.row, slot.tenantId, slot.bean];
+    const view = contentView(scope, bean, 'contentnav', row);
+    assertServable(scope, view, opts, tenantId !== scope.call.tenantId);
     return view;
   });
   if (failure !== undefined) throw failure.error;
@@ -322,8 +370,8 @@ async function navViews(scope: ContentScope, rows: readonly NavRow[], opts: Filt
 }
 
 /** contentNavBean views of `rows` (feed rows or crumbs) for callers that serialize content lists themselves. */
-export function contentNavViews(ctx: Ctx, call: JsonApiCall, rows: readonly NavRow[], opts: ExpansionOptions): Promise<ApiEntityView[]> {
-  return navViews(scopeOf(ctx, call), rows, { expanded: opts.expanded, expandLinks: opts.expand });
+export function contentNavViews(ctx: Ctx, call: JsonApiCall, rows: readonly NavRow[], opts: ExpansionOptions, misses?: ReadonlySet<number>): Promise<ApiEntityView[]> {
+  return navViews(scopeOf(ctx, call), rows, { expanded: opts.expanded, expandLinks: opts.expand }, misses);
 }
 
 // ---- AllowAction and the expansion resolver ----
@@ -346,33 +394,34 @@ async function contentActionAllowed(scope: ContentScope, value: (key: string) =>
   return verdict.allowed;
 }
 
-/** The legacy 503 for a relation another entity's finder or another service serves. */
-function relationUnavailable(name: string): LegacyServiceUnavailableError {
-  return unavailable(`The ${name} relation of content is served by another entity's finder`, `content-expand-${name.toLowerCase()}`);
-}
-
 /** The scope of one handler call. */
 function scopeOf(ctx: Ctx, call: JsonApiCall): ContentScope {
   let poolSites: Promise<readonly PoolSite[]> | undefined;
+  const related = relatedResolver(call);
   const scope: ContentScope = {
     ctx,
     call,
     reader: readerOf(call),
     apiContext: { ...call.apiContext, allowAction: (view) => contentActionAllowed(scope, (key) => heldValue(view, key)) },
     resolver: {
-      hasMany: (prop, params, opts) => (cfEq(prop.cfc, ENTITY) ? expandedQuery(scope, params, opts) : Promise.reject(relationUnavailable(prop.name))),
-      hasOne: (prop, id, opts) => (cfEq(prop.cfc, ENTITY) ? contentData(scope, cfText(id), opts) : Promise.reject(relationUnavailable(prop.name))),
+      hasMany: (prop, params, opts) => (cfEq(prop.cfc, ENTITY) ? expandedQuery(scope, params, opts) : related.hasMany(prop, params, opts)),
+      hasOne: (prop, id, opts) => (cfEq(prop.cfc, ENTITY) ? contentData(scope, cfText(id), opts) : related.hasOne(prop, id, opts)),
       crumbs: (view) => crumbSource(scope, view),
-      relatedContent: () => Promise.reject(relationUnavailable('relatedcontent')),
+      relatedContent: related.relatedContent,
     },
     poolSites: () => (poolSites ??= contentPoolSites(ctx.domain.db, call.tenantId)),
   };
   return scope;
 }
 
-/** The expansion resolver of content relations: kids and parent through the content finders, crumbs through getCrumbList. */
+/** The expansion resolver of content relations: kids and parent through the content finders, crumbs through getCrumbList, the others through their entities. */
 export function contentExpansionResolver(ctx: Ctx, call: JsonApiCall): ExpansionResolver {
   return scopeOf(ctx, call).resolver;
+}
+
+/** getCrumbIterator of a content view, for callers outside this module. */
+export function contentCrumbSource(ctx: Ctx, call: JsonApiCall, view: ApiEntityView): Promise<EntityCollectionSource> {
+  return crumbSource(scopeOf(ctx, call), view);
 }
 
 /** getCrumbIterator (contentBean.cfc:1278-1283) of a view: its crumbs, node to root, as one iterator page. */
@@ -421,6 +470,16 @@ function queryRequest(scope: ContentScope, params: Readonly<Struct>, queryString
   };
 }
 
+/** findContentQuery for the scope's reader; a feed step this service does not reproduce answers the legacy 503. */
+async function contentQuery(scope: ContentScope, request: ContentQueryRequest): Promise<ContentQueryResult> {
+  try {
+    return await findContentQuery(scope.ctx.domain, scope.reader, request);
+  } catch (err) {
+    if (err instanceof FeedContentUnsupportedError) throw unavailable(err.message, 'feed-content-unsupported');
+    throw err;
+  }
+}
+
 /** findQuery's base URL (2795): the endpoint's `content` collection with the query the filters were built from. */
 function queryBaseUrl(call: JsonApiCall, baseQuery: string): string {
   return `${call.apiContext.endpoint}/${ENTITY}/?${baseQuery}`;
@@ -435,7 +494,7 @@ async function collectionData(
   arrange: (items: Struct[]) => Struct[] = (items) => items,
 ): Promise<Struct> {
   if ('count' in result) return { count: result.count };
-  const views = await navViews(scope, result.rows, { expanded: opts.expanded, expandLinks: opts.expand });
+  const views = await navViews(scope, result.rows, { expanded: opts.expanded, expandLinks: opts.expand }, result.misses);
   const items = await serializeEntityList(views, scope.apiContext, { entityName: ENTITY, expand: opts.expand, expanded: opts.expanded }, scope.resolver);
   const page = iteratorPage({
     recordCount: result.paging.recordCount,
@@ -452,43 +511,22 @@ async function collectionData(
 
 /** expandEntity's content `kids` (2432-2468): findQuery's expanded branch, every non-excluded param filtering by equality. */
 async function expandedQuery(scope: ContentScope, params: Struct, opts: ExpansionOptions): Promise<Struct> {
-  const { ctx, call } = scope;
+  const { call } = scope;
   throwIfRequestAborted();
   paramUrl(call.apiContext, 'entityname', ENTITY);
-  const result = await findContentQuery(ctx.domain, scope.reader, queryRequest(scope, params, call.query.raw, eventValues(call), opts.expanded));
+  const result = await contentQuery(scope, queryRequest(scope, params, call.query.raw, eventValues(call), opts.expanded));
   const baseUrl = 'count' in result ? undefined : queryBaseUrl(call, result.baseQuery);
   return collectionData(scope, result, 'findQuery', { ...opts, ...(baseUrl === undefined ? {} : { baseUrl }) });
 }
 
-/** renderFilename's filename (contentServer.cfc:461-494): an allowed index file dropped, then parseCustomURLVars' file segments. */
-function renderedFilename(filename: string): string {
-  const segments = cfListToArray(filename, '/');
-  if ((segments.at(-1) ?? '').includes('.') && INDEX_FILES.has(segments.at(-1) ?? '')) segments.pop();
-  const file: string[] = [];
-  const ref: string[] = [];
-  let current = 'file';
-  for (const segment of segments) {
-    const key = segment === URL_VAR_DELIMITER ? 'params' : segment.toLowerCase();
-    if (URL_VAR_KEYS.has(key)) current = key;
-    else if (current === 'tag' || current === 'linkservid' || current === 'showmeta') current = '';
-    else if (current === 'file') file.push(segment);
-    else if (current === 'ref') ref.push(segment);
-  }
-  return (ref.length > 0 ? ref : file).join('/');
-}
+/** The exceptions-list entry of findOne's render branch, which only the CFML theme runtime answers. */
+export const CONTENT_RENDER_EXCEPTION = 'EX-CONTENT-RENDER';
 
-// Fail closed: legacy answers a resolvable render from the CFML theme runtime (renderFilename, the JSON translator's
-// displayRegions, template and dspBody), which the target cannot reproduce, so it never approximates that body.
-/** findOne's render branch (2302-2331): the legacy 404 for an unknown `_path` filename, else the legacy 503. */
-async function renderContent(scope: ContentScope): Promise<never> {
-  const { call } = scope;
-  const linkServId = cfText(urlParam(call.apiContext, 'linkservid'));
-  if (call.render?.variation !== true && linkServId === '') {
-    const id = call.id ?? '';
-    const bean = await loadBean(scope, { filename: renderedFilename(id === 'null' ? '' : id) });
-    if (bean.isNew === 1) throw new ContentNotFoundError();
-  }
-  throw unavailable('The rendered content response runs the CFML theme renderer', 'cfml-render');
+// Fail closed: legacy answers every render request, an unknown filename's 404 page data included, from the CFML theme
+// runtime (renderFilename, the JSON translator's displayRegions, template and dspBody), which the target cannot reproduce.
+/** findOne's render branch (2302-2331): the legacy 503 for every request. */
+function renderContent(): never {
+  throw unavailable(`The rendered content response runs the CFML theme renderer (${CONTENT_RENDER_EXCEPTION})`, 'cfml-render');
 }
 
 /** findMany's `ids` as legacy lists them. */
@@ -514,9 +552,9 @@ function without(record: Readonly<Struct>, name: string): Struct {
 const findOne: JsonApiHandlerFn = async (ctx, call) => {
   paramUrl(call.apiContext, 'entityname', call.entityName);
   const scope = scopeOf(ctx, call);
-  if (call.render !== undefined) return renderContent(scope);
+  if (call.render !== undefined) return renderContent();
   if (!entityAccessAllowed(call.actor, CONTENT)) return authorizationDenied();
-  return jsonApiResultOf(await contentData(scope, call.id ?? '', { expand: expandOf(call), expanded: 0 }), ENTITY);
+  return jsonApiResultOf(await contentData(scope, call.id ?? '', finderOf(call)), ENTITY);
 };
 
 /** findMany (2627-2709): the content or `feedid` feed restricted to the ids, in `ids` order unless `sort` is set. */
@@ -530,7 +568,7 @@ const findMany: JsonApiHandlerFn = async (ctx, call) => {
   const params = without(call.apiContext.url, 'countOnly');
   setNoCase(params, PK, `in^${ids.join(',')}`);
   const feedId = call.params.string('feedid');
-  const result = await findContentQuery(ctx.domain, scope.reader, queryRequest(scope, params, PK, feedId === '' ? {} : { feedid: feedId }));
+  const result = await contentQuery(scope, queryRequest(scope, params, PK, feedId === '' ? {} : { feedid: feedId }));
   const sorted = cfText(urlParam(call.apiContext, 'sort')) !== '';
   const data = await collectionData(scope, result, 'findmany', { expand: expandOf(call), expanded: 0 }, sorted ? undefined : inIdOrder(ids));
   return jsonApiResultOf(data, ENTITY);
@@ -541,18 +579,20 @@ const findAll: JsonApiHandlerFn = async (ctx, call) => {
   paramUrl(call.apiContext, 'entityname', call.entityName);
   if (!entityAccessAllowed(call.actor, CONTENT)) return authorizationDenied();
   const scope = scopeOf(ctx, call);
-  const result = await findContentQuery(ctx.domain, scope.reader, queryRequest(scope, call.apiContext.url, '', {}));
+  const result = await contentQuery(scope, queryRequest(scope, call.apiContext.url, '', {}));
   return jsonApiResultOf(await collectionData(scope, result, 'findall', { expand: expandOf(call), expanded: 0 }), ENTITY);
 };
 
-/** findQuery (2711-2918): the content feed (or the `feedid`/`feedname` feed) filtered by the query string, or its count. */
+/** findQuery (2711-2918): the content feed (or the `feedid`/`feedname` feed) filtered by the query string or a related caller's params, or its count. */
 const findQuery: JsonApiHandlerFn = async (ctx, call) => {
   paramUrl(call.apiContext, 'entityname', call.entityName);
   if (!entityAccessAllowed(call.actor, CONTENT)) return authorizationDenied();
   const scope = scopeOf(ctx, call);
-  const result = await findContentQuery(ctx.domain, scope.reader, queryRequest(scope, call.apiContext.url, call.query.raw, eventValues(call)));
+  const opts = finderOf(call);
+  const request = queryRequest(scope, finderParamsOf(call), call.query.raw, eventValues(call), opts.expanded > 0 ? opts.expanded : undefined);
+  const result = await contentQuery(scope, request);
   const baseUrl = 'count' in result ? undefined : queryBaseUrl(call, result.baseQuery);
-  const data = await collectionData(scope, result, 'findQuery', { expand: expandOf(call), expanded: 0, ...(baseUrl === undefined ? {} : { baseUrl }) });
+  const data = await collectionData(scope, result, 'findQuery', { ...opts, ...(baseUrl === undefined ? {} : { baseUrl }) });
   return jsonApiResultOf(data, ENTITY);
 };
 
@@ -568,6 +608,12 @@ const findNew: JsonApiHandlerFn = async (ctx, call) => {
 
 /** findProperties (1548-1618) from the registration. */
 const findProperties: JsonApiHandlerFn = async (_ctx, call) => jsonApiResultOf(findPropertiesFor(CONTENT, call), ENTITY);
+
+/** loadBy(contentid=id) of a relation path's source: the stored version, else the new bean, whose ids its getters create. */
+async function loadBy(ctx: Ctx, call: JsonApiCall, key: RelationSourceKey): Promise<SourceBeanGetter> {
+  const bean = await loadBean(scopeOf(ctx, call), { contentId: 'contentid' in key ? key.contentid : key.primaryKey });
+  return (name) => bean.get(cfEq(name, 'primaryKey') ? PK : name);
+}
 
 /** findPermissions (2240-2266): bean.getPermissions of the content a CF UUID or 35-character id loads; a bean without a site gets none. */
 const findPermissions: JsonApiHandlerFn = async (ctx, call) => {
@@ -627,4 +673,5 @@ export const contentHandler: EntityHandler = Object.freeze({
   findPermissions,
   save,
   delete: remove,
+  loadBy,
 });

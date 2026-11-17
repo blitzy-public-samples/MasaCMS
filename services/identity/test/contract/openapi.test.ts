@@ -1109,6 +1109,21 @@ const CASES: Record<string, Case[]> = {
           ],
         }),
     },
+    {
+      name: "reads the editor's groups by group name, as getAccountMemberships lists them",
+      method: 'POST',
+      url: '/internal/v1/accounts:memberships',
+      headers: relay('people', 'editor'),
+      payload: { userIds: [UNKNOWN_ID, EDITOR.account.userid], byGroupName: true },
+      status: 200,
+      verify: (body) =>
+        expect(body).toEqual({
+          items: [
+            { userId: UNKNOWN_ID, groupIds: [] },
+            { userId: EDITOR.account.userid, groupIds: [EDITOR_GROUP] },
+          ],
+        }),
+    },
     { name: 'refuses an empty id list', method: 'POST', url: '/internal/v1/accounts:memberships', headers: relay('people', 'editor'), payload: { userIds: [] }, status: 400 },
   ],
   lookupGroupFavorites: [

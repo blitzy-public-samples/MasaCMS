@@ -6,7 +6,7 @@ import { createImageSizesDomain } from '../domain/image-sizes.js';
 import { createSitesDomain } from '../domain/sites.js';
 import type { ProgramsSitesRepository } from '../repo/repository.js';
 import { registerImageSizeRoutes } from './image-sizes.js';
-import { registerJsonApiSiteRoutes } from './json-api-site.js';
+import { legacyGlobalConfig, registerJsonApiSiteRoutes } from './json-api-site.js';
 import { registerSiteRoutes } from './sites.js';
 import { registerUserSiteRoutes } from './user-sites.js';
 
@@ -30,7 +30,7 @@ export interface RouteDeps {
 
 /** Registers the carried site, user site, image size and JSON API `site` routes; `app.ts` registers the site-monitor routes after the outbox sweep. */
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
-  const sites = createSitesDomain({ repo: deps.repository });
+  const sites = createSitesDomain({ repo: deps.repository, config: legacyGlobalConfig() });
   const imageSizes = createImageSizesDomain({ repo: deps.repository });
   await registerSiteRoutes(app, { db: deps.db, sites });
   registerUserSiteRoutes(app, { db: deps.db, repository: deps.repository });

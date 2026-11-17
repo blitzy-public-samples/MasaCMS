@@ -29,7 +29,14 @@ import {
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import { createContentRepository, type ContentRepository, type FileInput } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
-import { registerRenderRoutes, renderRequestOf, type ParsedRenderRequest, type RenderQuery } from '../../src/routes/render.js';
+import {
+  FILE_RENDITION_EXCEPTION,
+  MISSING_RENDITION_REASON,
+  registerRenderRoutes,
+  renderRequestOf,
+  type ParsedRenderRequest,
+  type RenderQuery,
+} from '../../src/routes/render.js';
 import { SERVICE, testEnv, userHeaders } from '../helpers/app.js';
 
 type ContractOperation = Record<string, unknown>;
@@ -107,6 +114,7 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
   let stateDir: string;
   let storage: LocalStorageAdapter;
   let app: FastifyInstance;
+  const routeErrors: Error[] = [];
 
   const bytesOf = (name: string): Buffer => OBJECTS[name] ?? Buffer.alloc(0);
 
@@ -170,6 +178,9 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
       verifierOverride: testVerifier(SERVICE),
       pool: db,
       logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    });
+    app.addHook('onError', async (_request, _reply, error) => {
+      routeErrors.push(error);
     });
     registerRenderRoutes(app, { domain: { db, repository: repo }, storage });
     await app.ready();
@@ -269,8 +280,18 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
   });
 
   it('fails closed for a custom-size image rendition that was never stored', async () => {
+    routeErrors.length = 0;
     const res = await call(`/_api/render/file/?fileid=${PNG}`, await tenantA());
     expect(res.statusCode).toBe(503);
+    expect(res.rawPayload).not.toEqual(bytesOf(`${PNG}.png`));
+    expect(routeErrors).toEqual([
+      expect.objectContaining({
+        name: 'LegacyServiceUnavailableError',
+        reason: MISSING_RENDITION_REASON,
+        message: expect.stringContaining(`_file.png was never stored; ColdFusion's image engine generates it (${FILE_RENDITION_EXCEPTION})`),
+      }),
+    ]);
+    expect([FILE_RENDITION_EXCEPTION, MISSING_RENDITION_REASON]).toEqual(['EX-FILE-RENDITION', 'missing-rendition']);
   });
 
   it('answers the legacy error page when the stored object is absent', async () => {

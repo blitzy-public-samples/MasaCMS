@@ -147,8 +147,14 @@ urls:
       whenContains: ["/opt2/files/", "storage.googleapis.com"]
   downloadFieldMatch: case-insensitive
   otherwise:
-    apply: [token, origin, cf-uuid, uuid-rfc4122]
+    apply: [token, origin, cf-uuid, uuid-rfc4122, url-scope-query]
     sortQuery: false
+  # `?&name=value…` with distinct names is a CFML url-scope walk, whose order varies per request, so it is sorted by name.
+  urlScope:
+    id: url-scope-query
+    match: query-starting-with-ampersand
+    order: by-name
+    percentEncodedValues: true
 
 headers:
   id: drop-headers
@@ -179,7 +185,7 @@ headers:
     id: location
     header: Location
     normalise: as-body-url
-    apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122]
+    apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, url-scope-query]
   compare:
     id: compare-case
     names: lower-case
@@ -288,6 +294,11 @@ exports:
     parser: csv-parse
     compare: cells
     whitespace: exact
+    # SQL Server leaves the order of rows tying on a csvKeyOrder step's key cells to the engine; each tied run is sorted.
+    keyTies:
+      match: case-insensitive
+      whitespace: collapse-and-trim
+      order: row-alone-then-raw
   xlsx:
     parser: exceljs
     compare: cells-per-sheet
@@ -329,6 +340,11 @@ rows:
   literal:
     money: "^-?\\d+\\.\\d{4}$"
     dateOnlyFields: true
+  # Masa salts each bcrypt hash afresh: one a scenario secret verifies becomes $<rev>$<cost>$<verifies:NAME>, others stay literal.
+  volatile:
+    - column: tusers.password
+      format: "^\\$2[abxy]?\\$\\d{2}\\$[./A-Za-z0-9]{53}$"
+      verify: bcrypt-scenario-secrets
 
 tasks:
   id: tasks
@@ -455,3 +471,6 @@ overrides:
     sortArrays:
       value: json-paths
       description: "Sorts arrays at the listed paths, whose order legacy does not guarantee."
+    csvKeyOrder:
+      value: step-key-columns
+      description: "<step>: <column>[, <column>…] names the CSV columns legacy orders a step's export by; rows tying on them are ordered by exports.csv.keyTies before ids are numbered, all other row order is compared."

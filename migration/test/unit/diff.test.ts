@@ -9,7 +9,7 @@ import { DiffOrderError, diffKeyedStreams, diffManifests, diffMultisetStreams } 
 import type { DiffSide, KeyedChange, KeyedDiffOptions, ManifestChange, MultisetChange, RowSource } from '../../src/diff/index.js';
 import { compareCanonicalRows } from '../../src/extract/index.js';
 import type { CanonicalRow } from '../../src/extract/index.js';
-import { compareManifestKeys, diffSnapshotManifests, parseStoredName, storePath } from '../../src/files/index.js';
+import { compareManifestKeys, diffSnapshotManifests, parseStoredName, storePath, streamChangedEntries, streamDroppedEntries } from '../../src/files/index.js';
 import type { FilesContext, ManifestEntry, ManifestKey } from '../../src/files/index.js';
 import { FILE_LISTINGS, FIXTURE_FILES, TABLES, fixtureId, imageSizeRow, mailingListMemberRow, userRow } from '../helpers/fixtures.js';
 import type { FixtureFile, FixtureTable, FixtureTableName } from '../helpers/fixtures.js';
@@ -456,28 +456,24 @@ describe('diffSnapshotManifests', () => {
     const diff = await diffSnapshotManifests(ctx, 1, 2, { read });
 
     expect(before).toHaveLength(9);
-    expect([diff.added.length, diff.changed.length, diff.removed.length, diff.toTransfer.length]).toEqual([4, 2, 1, 6]);
+    expect(diff).toEqual({ from: 1, to: 2, added: 4, changed: 2, removed: 1, unchanged: 6 });
     expect(read.mock.calls).toEqual([[1], [2]]);
     expect(withMetadata).not.toHaveBeenCalled();
-    expect(diff).toEqual({
-      from: 1,
-      to: 2,
-      added: after.filter((entry) => entry.fileId === banner),
-      changed: after
-        .filter((entry) => changedPaths.has(entry.path))
-        .map((entry) => ({ before: before.find((old) => old.path === entry.path), after: entry })),
-      removed: before.filter((entry) => entry.fileId === pdf.fileId),
-      unchanged: 6,
-      toTransfer: after.filter((entry) => entry.fileId === banner || changedPaths.has(entry.path)).map(keyOf),
-    });
+    expect((await collect(streamChangedEntries(ctx, 1, 2, { read }))).map(keyOf)).toEqual(
+      after.filter((entry) => entry.fileId === banner || changedPaths.has(entry.path)).map(keyOf),
+    );
+    expect(await collect(streamDroppedEntries(ctx, 1, 2, { read }))).toEqual(
+      before.filter((entry) => entry.fileId === pdf.fileId || changedPaths.has(entry.path)),
+    );
   });
 
   it('agrees with diffManifests on the same fixture manifests', async () => {
-    const diff = await diffSnapshotManifests(ctx, 1, 2, { read: (snapshotSeq) => asyncOf(snapshotSeq === 1 ? before : after) });
+    const opts = { read: (snapshotSeq: number) => asyncOf(snapshotSeq === 1 ? before : after) };
+    const diff = await diffSnapshotManifests(ctx, 1, 2, opts);
     const changes = await collect(diffManifests(before, after));
 
-    expect(changes.flatMap((change) => (change.kind === 'added' ? [change.after] : []))).toEqual(diff.added);
-    expect(changes.flatMap((change) => (change.kind === 'removed' ? [change.before] : []))).toEqual(diff.removed);
-    expect(changes.flatMap((change) => (change.kind === 'changed' ? [{ before: change.before, after: change.after }] : []))).toEqual(diff.changed);
+    expect(['added', 'changed', 'removed'].map((kind) => changes.filter((change) => change.kind === kind).length)).toEqual([diff.added, diff.changed, diff.removed]);
+    expect(changes.flatMap((change) => (change.kind === 'removed' ? [] : [change.after]))).toEqual(await collect(streamChangedEntries(ctx, 1, 2, opts)));
+    expect(changes.flatMap((change) => (change.kind === 'added' ? [] : [change.before]))).toEqual(await collect(streamDroppedEntries(ctx, 1, 2, opts)));
   });
 });

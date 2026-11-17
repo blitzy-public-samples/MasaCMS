@@ -37,6 +37,12 @@ const upStateShape = z.object({
     .nullable()
     .optional(),
   startedAt: z.string().optional(),
+  /** `OPT2_CUTOVER_DIR` every process of the stack reads; null when they read the committed `gateway/cutover`. */
+  cutoverDir: z
+    .string()
+    .refine((value) => path.isAbsolute(value), 'must be an absolute path')
+    .nullable()
+    .optional(),
 });
 
 /** Schema of `${OPT2_STATE_DIR}/up.json`; processes are keyed by name and unknown keys are kept. */
@@ -166,6 +172,7 @@ export interface PublicUpState {
   startedAt?: string;
   fixtures?: { available: boolean; reason?: string | null; checkedAt?: string } | null;
   snapshot?: Partial<Record<(typeof SNAPSHOT_FIELDS)[number], number | string>>;
+  cutoverDir?: string | null;
 }
 
 /** `value` without its undefined properties, so `read --field` reports an absent one as not present. */
@@ -205,6 +212,7 @@ export function redactUpState(state: UpState): PublicUpState {
             checkedAt: fixtures.checkedAt,
           }),
     snapshot: publicSnapshot(state.snapshot),
+    cutoverDir: state.cutoverDir,
   });
 }
 

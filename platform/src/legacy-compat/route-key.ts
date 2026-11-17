@@ -6,7 +6,7 @@
  *              rest also `oauth`, `oauth2`, `tokeninfo`
  *   feed `v1` · render `small|medium|file|!server_error` · trackopen `open` · variation `js` · sitemonitor `run`
  *   widgets `redirect` · asset `upload|render|!server_error`
- *   apiother, cfm, static, opt2, bridge  `<normalised path>`
+ *   apiother, cfm, static, opt2, bridge  `<normalised path>`; opt2 is `/opt2/**` and {@link SYNTHETIC_V1_PREFIXES}
  *   cfc        `<path>?method=<method>` | `<path>`
  *   admin      `<section>.<item>` (subsystem `core:` dropped) | `<subsystem>:<section>.<item>` | `!actioncontainsslash`
  *   fixture    `<module>/<resource>[/{id}][/<seg>…]@<httpmethod>` | `!notfound@<httpmethod>`
@@ -88,6 +88,8 @@ export interface RouteKeyOptions {
   entityPrimaryKeys?: Record<string, string>;
   /** Plugin method names added through registerMethod. */
   registeredMethods?: readonly string[];
+  /** Whether the OPT-2 namespaces key in the `opt2` family; false keys them as legacy's own pipeline serves them. Default true. */
+  opt2Namespaces?: boolean;
 }
 
 /** A computed route key and the request facts it was derived from. */
@@ -142,6 +144,16 @@ export const SAVEFORM_CONDITION: VariantCondition = Object.freeze<VariantConditi
 /** Gateway-set header naming, comma-separated and in any case, the REST credential params its exchange consumed. */
 export const REST_CONSUMED_PARAMS_HEADER = 'X-Opt2-Consumed-Params';
 
+/** Each synthetic service's own `/v1/` resource prefixes (its contracts/openapi.yaml), keyed in the `opt2` family. */
+export const SYNTHETIC_V1_PREFIXES = Object.freeze({
+  communications: Object.freeze(['/v1/messages', '/v1/templates']),
+  'e-signature': Object.freeze(['/v1/esignature']),
+  finance: Object.freeze(['/v1/finance']),
+  reporting: Object.freeze(['/v1/reporting']),
+  surveys: Object.freeze(['/v1/surveys']),
+  timesheets: Object.freeze(['/v1/timesheets']),
+});
+
 /** Extra request facts any entry point may carry. */
 interface EntryPointExtras {
   params?: Record<string, string>;
@@ -185,6 +197,7 @@ interface ResolvedOptions {
   relationships: ReadonlyMap<string, ReadonlySet<string>>;
   primaryKeys: ReadonlyMap<string, string>;
   registeredMethods: readonly string[];
+  opt2Namespaces: boolean;
 }
 
 interface NormalisedPath {
@@ -207,11 +220,23 @@ interface BaseRoute {
 }
 
 const GLOB_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'static', 'cfm', 'apiother']);
-/** OPT-2 namespaces and the fixture front controller, whose Application.cfc suppresses the reload. */
+/** Never reload-keyed: target serves opt2 and a legacy-bound opt2 request is re-keyed; bridge and fixture Application.cfc suppress it. */
 const NO_RELOAD_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'fixture']);
 const RELOAD_KEY = 'reload:application';
 const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
+/**
+ * The scope each `.cfm` template that binds a site reads its `siteID` from (saveRate.cfm:80; saveFavorite.cfm:81;
+ * deleteRSSFavorite.cfm:77), by lower-cased path; deleteFavorite.cfm binds none.
+ */
+const CFM_SITE_SCOPES: ReadonlyMap<string, 'query' | 'form'> = new Map([
+  ['/core/modules/v1/rater/ajax/saverate.cfm', 'form'],
+  ['/core/modules/v1/favorites/ajax/savefavorite.cfm', 'query'],
+  ['/core/modules/v1/favorites/ajax/deleterssfavorite.cfm', 'query'],
+]);
 const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
+const SYNTHETIC_V1_SEGMENTS: ReadonlyArray<readonly string[]> = Object.values(SYNTHETIC_V1_PREFIXES).flatMap((prefixes) =>
+  prefixes.map((prefix) => listToArray(prefix, '/')),
+);
 const RFC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGITS = /^\d+$/;
 const FILE_EXTENSION = /\.[A-Za-z0-9]+$/;
@@ -355,6 +380,7 @@ function resolveOptions(opts: RouteKeyOptions): ResolvedOptions {
       Object.entries({ ...ENTITY_PRIMARY_KEYS, ...opts.entityPrimaryKeys }).map(([e, pk]) => [e.toLowerCase(), pk]),
     ),
     registeredMethods: opts.registeredMethods ?? [],
+    opt2Namespaces: opts.opt2Namespaces ?? true,
   };
 }
 
@@ -919,6 +945,15 @@ function cfcRoute(c: RouteContext): BaseRoute {
   return route;
 }
 
+/** A `.cfm` template; its site is the `siteid` of the scope the template reads it from, which the user token must be minted for. */
+function cfmRoute(c: RouteContext): BaseRoute {
+  const route: BaseRoute = { family: 'cfm', body: c.path, params: queryThenForm(c.req) };
+  const scope = CFM_SITE_SCOPES.get(c.path.toLowerCase());
+  const siteId = scope === undefined ? undefined : str(scopeMap(c.req[scope]), 'siteid');
+  if (siteId !== undefined) route.siteId = siteId;
+  return route;
+}
+
 /** Front-end page or static file; event params keep URL values over form values (servletEvent.cfc:85-86). */
 function pageRoute(c: RouteContext, allowStatic: boolean): BaseRoute {
   const params = append(scopeMap(c.req.query), scopeMap(c.req.form), false);
@@ -944,6 +979,11 @@ function opt2Route(req: RouteKeyRequest, path: string): BaseRoute {
   return route;
 }
 
+/** Whether path segments start with one of {@link SYNTHETIC_V1_PREFIXES}, in any case. */
+function isSyntheticV1Path(segments: readonly string[]): boolean {
+  return SYNTHETIC_V1_SEGMENTS.some((prefix) => prefix.every((segment, i) => nth(segments, i + 1).toLowerCase() === segment));
+}
+
 /** First matching rule of the shared precedence; `rootPath` is the path the root front controller reads, `served` the one served. */
 function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: string): BaseRoute {
   const { req, path, segments } = c;
@@ -956,7 +996,9 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: s
   if (!frontController && startsNoCase(path, BRIDGE_PREFIX)) return { family: 'bridge', body: path, params: queryThenForm(req) };
   // Any other spelling served from the bridge directory is the bridge too, keyed on its served path.
   if (startsNoCase(`${served}/`, BRIDGE_PREFIX)) return { family: 'bridge', body: served, params: queryThenForm(req) };
-  if (!frontController && first === 'opt2') return opt2Route(req, path);
+  const opt2 = !frontController && c.opts.opt2Namespaces;
+  if (opt2 && first === 'opt2') return opt2Route(req, path);
+  if (opt2 && isSyntheticV1Path(segments)) return opt2Route(req, path);
   if (first === '_api' || first === 'tasks' || (frontController && rootApi)) return apiRoute(root);
   if (frontController) return pageRoute(c, false);
   const adminLength = adminPrefixLength(c, indexAt);
@@ -965,7 +1007,7 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: s
   if (last.endsWith('.cfc')) return cfcRoute(c);
   const fixture = fixtureItems(req.path, c.opts.context);
   if (fixture !== undefined) return fixtureRoute(c, fixture);
-  if (last.endsWith('.cfm')) return { family: 'cfm', body: path, params: queryThenForm(req) };
+  if (last.endsWith('.cfm')) return cfmRoute(c);
   const page = pageRoute(c, true);
   // A page path is rewritten to the root front controller (CommandBox framework-rewrite).
   return page.family === 'page' && rootApi ? apiRoute(root) : page;

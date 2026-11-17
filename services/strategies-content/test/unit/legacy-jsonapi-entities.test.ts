@@ -12,6 +12,7 @@ import {
   getContentEntityConfig,
   isContentEntity,
 } from '../../src/legacy/jsonapi-entities.js';
+import { ENTITY_PROPERTIES } from '../../src/legacy/jsonapi-properties.js';
 
 const API_UTILITY = new URL('../../../../core/mura/client/api/json/v1/jsonApiUtility.cfc', import.meta.url);
 const CORE_MURA = new URL('../../../../core/mura/', import.meta.url);
@@ -35,8 +36,8 @@ const BEAN_CHAINS: Readonly<Record<ContentEntityName, readonly string[]>> = {
   variationTargeting: ['content/contentVariationTargetingBean.cfc', 'bean/beanORM.cfc', 'bean/bean.cfc'],
 };
 
-/** `[name, nonPersistent]` of each uncommented property declaration of a component under core/mura. */
-function cfcProperties(path: string): [string, boolean][] {
+/** `[name, attributes]` of each uncommented property declaration of a component under core/mura. */
+function cfcDeclarations(path: string): [string, string][] {
   const text = readFileSync(new URL(path, CORE_MURA), 'utf8')
     .replace(/<!---[\s\S]*?--->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -45,8 +46,22 @@ function cfcProperties(path: string): [string, boolean][] {
     const attrs = match[1] ?? match[2] ?? '';
     const name = /\bname\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1];
     if (name === undefined) throw new Error(`no property name in ${path}: ${attrs}`);
-    return [name, /\bpersistent\s*=\s*["']?false/i.test(attrs) && !/\b(cfc|relatesTo)\s*=/i.test(attrs)];
+    return [name, attrs];
   });
+}
+
+/** `[name, nonPersistent]` of each uncommented property declaration of a component under core/mura. */
+function cfcProperties(path: string): [string, boolean][] {
+  return cfcDeclarations(path).map(([name, attrs]) => [
+    name,
+    /\bpersistent\s*=\s*["']?false/i.test(attrs) && !/\b(cfc|relatesTo)\s*=/i.test(attrs),
+  ]);
+}
+
+/** The value of attribute `name` in a declaration's attributes, quoted or not; undefined when absent. */
+function attributeOf(attrs: string, name: string): string | undefined {
+  const match = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"']+))`, 'i').exec(attrs);
+  return match === null ? undefined : (match[1] ?? match[2] ?? match[3]);
 }
 
 /** The `fields="…"` value on a 1-based line of jsonApiUtility.cfc. */
@@ -115,22 +130,22 @@ describe('CONTENT_ENTITIES', () => {
     expect(CONTENT_ENTITIES.contentnav).toMatchObject({ public: true, moduleId: '00000000000000000000000000000000000' });
   });
 
-  it.each<[ContentEntityName, string, string, `m:${string}`]>([
-    ['contentnav', 'contentid', 'content', 'm:000'],
-    ['content', 'contentid', 'content', 'm:000'],
-    ['comment', 'commentid', 'comment', 'm:015'],
-    ['changeset', 'changesetid', 'changeset', 'm:014'],
-    ['feed', 'feedid', 'content', 'm:011'],
-    ['category', 'categoryid', 'category', 'm:010'],
-    ['contentCategoryAssign', '', 'contentCategoryAssign', 'm:000'],
-    ['file', 'fileid', 'file', 'm:000'],
-    ['fileMetaData', 'metaid', 'fileMetaData', 'm:000'],
-    ['changesetCategoryAssignment', 'assignmentid', 'changesetCategoryAssignment', 'm:000'],
-    ['stats', 'contentid', 'stats', 'm:000'],
-    ['variationTargeting', 'targetingid', 'variationTargeting', 'm:000'],
-  ])('%s: primary key %j, display name %j, role %s', (name, primaryKey, displayName, role) => {
+  it.each<[ContentEntityName, string, string, string, `m:${string}`]>([
+    ['contentnav', 'contentid', 'contenthistid', 'content', 'm:000'],
+    ['content', 'contentid', 'contenthistid', 'content', 'm:000'],
+    ['comment', 'commentid', 'commentid', 'comment', 'm:015'],
+    ['changeset', 'changesetid', 'changesetid', 'changeset', 'm:014'],
+    ['feed', 'feedid', 'feedid', 'content', 'm:011'],
+    ['category', 'categoryid', 'categoryid', 'category', 'm:010'],
+    ['contentCategoryAssign', '', '', 'contentCategoryAssign', 'm:000'],
+    ['file', 'fileid', 'fileid', 'file', 'm:000'],
+    ['fileMetaData', 'metaid', 'metaid', 'fileMetaData', 'm:000'],
+    ['changesetCategoryAssignment', 'assignmentid', 'assignmentid', 'changesetCategoryAssignment', 'm:000'],
+    ['stats', 'contentid', '', 'stats', 'm:000'],
+    ['variationTargeting', 'targetingid', 'targetingid', 'variationTargeting', 'm:000'],
+  ])('%s: primary key %j, mapped primary key %j, display name %j, role %s', (name, primaryKey, mappedPrimaryKey, displayName, role) => {
     const config = CONTENT_ENTITIES[name];
-    expect(config).toMatchObject({ name, primaryKey, displayName, allowFieldSelect: true });
+    expect(config).toMatchObject({ name, primaryKey, mappedPrimaryKey, displayName, allowFieldSelect: true });
     expect(config.moduleId).toHaveLength(35);
     expect(entityModuleRole(name)).toBe(role);
   });
@@ -194,6 +209,68 @@ describe('CONTENT_ENTITIES', () => {
     expect(Object.isFrozen(CONTENT_ENTITIES.content.fields)).toBe(true);
     expect(Object.isFrozen(CONTENT_ENTITIES.content.hints)).toBe(true);
     expect(Object.isFrozen(CONTENT_ENTITIES.content.hasMany[0])).toBe(true);
+  });
+});
+
+describe('ENTITY_PROPERTIES', () => {
+  const NAMES = Object.keys(BEAN_CHAINS) as ContentEntityName[];
+
+  it.each(NAMES)('%s formats every declared persistent or related property its fields allow, and nothing else', (name) => {
+    const config = CONTENT_ENTITIES[name];
+    const fields = (config.fields ?? []).map((field) => field.toLowerCase());
+    const listed = [...config.declaredProperties].filter(
+      (property) => !config.nonPersistentProperties.has(property) && (fields.length === 0 || fields.includes(property)),
+    );
+    const { formats } = ENTITY_PROPERTIES[name];
+    expect([...formats.keys()].sort()).toEqual(listed.sort());
+    for (const [key, format] of formats) expect(format['name']).toBe(key);
+  });
+
+  // applyPropertyFormat reports `cfc` as relatesto; getProperties maps a declared type onto the four datatypes.
+  const ATTRIBUTES: readonly [string, string][] = [
+    ['fieldtype', 'fieldtype'],
+    ['required', 'required'],
+    ['nullable', 'nullable'],
+    ['html', 'html'],
+    ['listview', 'listview'],
+    ['length', 'length'],
+    ['fkcolumn', 'fkcolumn'],
+    ['loadkey', 'loadkey'],
+    ['cascade', 'cascade'],
+    ['orderby', 'orderby'],
+    ['renderfield', 'renderfield'],
+    ['cfc', 'relatesto'],
+  ];
+  const DATATYPES: Readonly<Record<string, string>> = { string: 'varchar', numeric: 'int', integer: 'int', int: 'int', date: 'datetime' };
+
+  it.each(NAMES)('%s formats carry the attributes the first declaration of each property gives', (name) => {
+    const declarations = new Map<string, string>();
+    for (const path of BEAN_CHAINS[name]) {
+      for (const [property, attrs] of cfcDeclarations(path)) {
+        if (!declarations.has(property.toLowerCase())) declarations.set(property.toLowerCase(), attrs);
+      }
+    }
+    for (const [property, format] of ENTITY_PROPERTIES[name].formats) {
+      const attrs = declarations.get(property) ?? '';
+      for (const [attribute, key] of ATTRIBUTES) {
+        const declared = attributeOf(attrs, attribute);
+        if (declared !== undefined) expect([property, String(format[key])]).toEqual([property, declared]);
+      }
+      // setPropAsIDColumn replaces an id's default and type (bean.cfc:1096-1116).
+      const declaredDefault = attributeOf(attrs, 'default');
+      if (format['fieldtype'] !== 'id' && declaredDefault !== undefined) expect([property, format['default']]).toEqual([property, declaredDefault]);
+      const declaredType = attributeOf(attrs, 'datatype') ?? attributeOf(attrs, 'type');
+      if (format['fieldtype'] !== 'id' && declaredType !== undefined) {
+        expect([property, format['datatype']]).toEqual([property, DATATYPES[declaredType.toLowerCase()] ?? declaredType.toLowerCase()]);
+      }
+    }
+  });
+
+  it('shares the content metadata with contentnav and is frozen', () => {
+    expect(ENTITY_PROPERTIES.contentnav).toBe(ENTITY_PROPERTIES.content);
+    expect(Object.isFrozen(ENTITY_PROPERTIES)).toBe(true);
+    expect(Object.isFrozen(ENTITY_PROPERTIES.comment)).toBe(true);
+    expect(Object.isFrozen(ENTITY_PROPERTIES.comment.formats.get('kids'))).toBe(true);
   });
 });
 

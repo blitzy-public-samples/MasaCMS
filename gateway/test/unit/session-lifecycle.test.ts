@@ -1,10 +1,24 @@
-// Session lifecycle across the seam: user tokens, state checks, hydration and logout over the memory jar and the legacy double.
+// Session lifecycle across the seam: user tokens, state checks and jar activity, hydration and logout over the memory jar and the legacy double.
 import { Buffer } from 'node:buffer';
-import { LegacyServiceUnavailableError, parseCookieHeader } from '@opt2/platform/legacy-compat';
+import {
+  LegacyServiceUnavailableError,
+  deleteCookieLegacy,
+  jsessionidForSessionId,
+  parseCookieHeader,
+} from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import type { Clock } from '@opt2/platform/service-kit';
 import { mintUserToken } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryFacts, RouteFacts } from '../../src/cutover/types.js';
+import {
+  DEFAULT_SESSION_TIMEOUT_MINUTES,
+  JAR_ACTIVITY_INTERVAL_MS,
+  jarIdleLimitMs,
+  sessionTimeoutMinutes,
+  trackJarActivity,
+  type JarActivityLogger,
+} from '../../src/session/activity.js';
 import {
   createBridgeClient,
   type BridgeClient,
@@ -22,7 +36,7 @@ import type {
 } from '../../src/session/identity-client.js';
 import {
   createInvalidation,
-  isLegacyLogout,
+  isLogoutRouteKey,
   isTargetLogout,
   legacySessionEffect,
   type Invalidation,
@@ -37,8 +51,14 @@ import {
   type SessionStateChecker,
 } from '../../src/session/state-check.js';
 import { DEFAULT_SITE_ID, TOKEN_REUSE_MARGIN_MS, createTokenCache, type TokenCache } from '../../src/session/token-cache.js';
+import { buildTestGateway, type TestGateway } from '../helpers/app.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from '../helpers/env.js';
-import { createInProcessLegacyOrigin, parseWireTime, type InProcessLegacyOrigin } from '../helpers/legacy-origin.js';
+import {
+  createInProcessLegacyOrigin,
+  parseWireTime,
+  type InProcessLegacyOrigin,
+  type LegacyResponseSpec,
+} from '../helpers/legacy-origin.js';
 import { createMemoryGatewayDb, type LegacyJarRow, type MemoryGatewayDb } from '../helpers/memory-store.js';
 
 const SESSION = 's1';
@@ -672,10 +692,19 @@ describe('invalidation', () => {
   it('after a legacy logout ends the identity session and drops the jar and the cached tokens', async () => {
     const seam = createSeam([jarOf('legacy-primary', null)]);
     await primeCaches(seam);
+    const describe = seam.bridge.describe;
+    seam.bridge.describe = async (cookies, call) => {
+      const { body, setCookies } = await describe(cookies, call);
+      return { body: { ...body, isLoggedIn: false }, setCookies };
+    };
 
-    await seam.invalidation().afterLegacyLogout(SESSION);
+    await seam.invalidation().afterLegacyLogout(SESSION, { cookies: JAR_COOKIES, userAgent: USER_AGENT, mode: 'legacy-primary' });
 
-    expect(seam.calls).toEqual([['identity.end', SESSION, 'legacy-logout']]);
+    expect(seam.calls).toEqual([
+      ['bridge.describe', JAR_COOKIES, { userAgent: USER_AGENT }],
+      ['identity.snapshot', SESSION],
+      ['identity.end', SESSION, 'legacy-logout'],
+    ]);
     expect(seam.db.tables.legacy_jar).toEqual([]);
     await expectCachesDropped(seam);
   });
@@ -709,6 +738,76 @@ describe('invalidation', () => {
   );
 });
 
+describe('a legacy-served identity logout through the gateway at the committed v0002 (target-primary)', () => {
+  const GATEWAY_SESSION = 'C3D4E5F6-A7B8-C9D0-E1F2A3B4C5D6E7F8';
+  /** Identity-issued cookies under the legacy names; `JSESSIONID` names the identity session. */
+  const TARGET_COOKIE = `CFID=T-CFID-7101; CFTOKEN=T-CFTOKEN-7101; JSESSIONID=${jsessionidForSessionId(GATEWAY_SESSION)}`;
+  const LOGIN_LOCATION = './?muraAction=cLogin.main';
+  /** Masa's logout deletes these cookies (loginManager.cfc:507-508), as identity's own logout does. */
+  const REMEMBER_ME_DELETIONS = ['userHash', 'userid'].map((name) => deleteCookieLegacy(name, {}, TEST_CLOCK.now()));
+
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  it.each<{ route: string; url: string; answer: LegacyResponseSpec }>([
+    { route: 'admin:clogin.logout', url: '/admin/?muraAction=cLogin.logout', answer: { status: 302, headers: { location: './?muraAction=home.redirect' } } },
+    { route: 'api:logout', url: '/_api/json/v1/default/logout', answer: { body: { data: { status: 'success' } } } },
+  ])('ends the identity session and drops the jar once legacy logs out at $route, so the next admin request is anonymous', async ({ url, answer }) => {
+    gateway = await buildTestGateway({
+      version: 'v0002',
+      identity: {
+        sessions: [
+          {
+            sessionId: GATEWAY_SESSION,
+            userId: USER_ID,
+            epoch: 3,
+            state: 'active',
+            mode: 'target-primary',
+            snapshot: {
+              sessionId: GATEWAY_SESSION,
+              epoch: 3,
+              loginSnapshot: { user: { ...USER, membershipIds: MEMBERSHIP_IDS }, roles: [...ROLES] },
+              csrfSecretKey: CSRF_SECRET,
+              usedTokens: [],
+            },
+          },
+        ],
+      },
+    });
+    const { app, identity, legacy, memory } = gateway;
+    // Masa's logout replaces session.mura under a fresh secret; its access gate sends a logged-out admin request to the login.
+    legacy.setResponse((req, attached) => {
+      if (req.url === url) {
+        if (attached !== undefined) Object.assign(attached, { isLoggedIn: false, csrfSecretKey: 'CSRF-SECRET-LOGGED-OUT' });
+        return { ...answer, setCookies: REMEMBER_ME_DELETIONS };
+      }
+      return attached?.isLoggedIn === true ? { body: '<p>dashboard</p>' } : { status: 302, headers: { location: LOGIN_LOCATION } };
+    });
+    const headers = { cookie: TARGET_COOKIE, 'user-agent': USER_AGENT };
+
+    const logout = await app.inject({ method: 'GET', url, headers });
+
+    expect(logout.statusCode).toBe(answer.status ?? 200);
+    expect(logout.headers['set-cookie']).toEqual(REMEMBER_ME_DELETIONS);
+    const hydrated = legacy.bridgeCalls.find((call) => call.op === 'hydrate')?.legacySessionId ?? '';
+    const logoutRequest = legacy.requests.find((request) => request.url === url);
+    expect(parseCookieHeader(logoutRequest?.headers.cookie).get('JSESSIONID')).toBe(legacy.sessions.get(hydrated)?.jsessionid);
+    expect(legacy.sessions.get(hydrated)?.isLoggedIn).toBe(false);
+    expect(identity.calls.end).toBe(1);
+    expect(identity.sessions.get(GATEWAY_SESSION)?.state).toBe('ended');
+    expect(memory?.tables.legacy_jar.filter((row) => row.session_id === GATEWAY_SESSION)).toEqual([]);
+
+    const next = await app.inject({ method: 'GET', url: '/admin/?muraAction=cDashboard.main', headers });
+
+    expect([next.statusCode, next.headers.location]).toEqual([302, LOGIN_LOCATION]);
+    expect(legacy.bridgeCalls.filter((call) => call.op === 'hydrate')).toHaveLength(1);
+  });
+});
+
 describe('session-effect predicates', () => {
   const pageLogin: RouteFacts = {
     route: 'page:login',
@@ -722,16 +821,127 @@ describe('session-effect predicates', () => {
     routes: () => [pageLogin.route],
   };
 
-  it.each<[string, SessionMode, boolean, boolean, LegacySessionChange | undefined]>([
-    ['admin:clogin.logout', 'legacy-primary', true, true, 'logout'],
-    ['admin:clogin.logout', 'target-primary', false, true, undefined],
-    ['page:logout', 'target-primary', true, false, 'logout'],
-    ['page:login,logout', 'legacy-primary', true, false, 'logout'],
-    ['page:login', 'legacy-primary', false, false, 'login'],
-    ['page:render', 'legacy-primary', false, false, undefined],
-  ])('%s in %s mode', (routeKey, mode, legacyLogout, targetLogout, effect) => {
-    expect(isLegacyLogout(routeKey, mode)).toBe(legacyLogout);
+  it.each<[string, boolean, boolean, LegacySessionChange | undefined]>([
+    ['admin:clogin.logout', true, true, 'logout'],
+    ['api:logout', true, true, 'logout'],
+    ['page:logout', true, false, 'logout'],
+    ['page:login,logout', true, false, 'logout'],
+    ['page:login', false, false, 'login'],
+    ['page:render', false, false, undefined],
+  ])('%s', (routeKey, logout, targetLogout, effect) => {
+    expect(isLogoutRouteKey(routeKey)).toBe(logout);
     expect(isTargetLogout(routeKey)).toBe(targetLogout);
-    expect(legacySessionEffect(routeKey, mode, facts)).toBe(effect);
+    expect(legacySessionEffect(routeKey, facts)).toBe(effect);
+  });
+});
+
+describe('jar activity', () => {
+  /** The seam's state check recording activity on `jar`, with the warnings it logs. */
+  function tracked(seam: Seam, jar: Pick<LegacyJar, 'markActive'> = seam.jar) {
+    const warnings: Array<[object, string]> = [];
+    const logger: JarActivityLogger = { warn: (obj, msg) => warnings.push([obj, msg]) };
+    return { states: trackJarActivity({ states: seam.stateCheck, jar, clock: seam.clock, logger }), warnings };
+  }
+
+  const LONG_AGO = new Date(0);
+
+  it('records the active session in its jar, leaving updated_at, the row version a hydration compares', async () => {
+    const seam = createSeam([{ ...jarOf('target-primary', '1'), updated_at: LONG_AGO, last_active_at: LONG_AGO }]);
+    const { states } = tracked(seam);
+
+    await expect(states.check(SESSION)).resolves.toEqual({ ...active(1), epochChanged: false });
+
+    const [row] = seam.db.tables.legacy_jar;
+    expect(row?.last_active_at.getTime()).toBeGreaterThan(LONG_AGO.getTime());
+    expect(row?.updated_at).toEqual(LONG_AGO);
+  });
+
+  it('writes at most once per interval for each session', async () => {
+    const seam = createSeam();
+    const markActive = vi.spyOn(seam.jar, 'markActive');
+    const { states } = tracked(seam);
+
+    await states.check(SESSION);
+    await states.check(SESSION);
+    await states.check(OTHER_SESSION);
+    seam.clock.advance(JAR_ACTIVITY_INTERVAL_MS - 1);
+    await states.check(SESSION);
+    expect(markActive.mock.calls).toEqual([[SESSION], [OTHER_SESSION]]);
+
+    seam.clock.advance(1);
+    await states.check(SESSION);
+    expect(JAR_ACTIVITY_INTERVAL_MS).toBe(60_000);
+    expect(markActive.mock.calls).toEqual([[SESSION], [OTHER_SESSION], [SESSION]]);
+  });
+
+  it.each<[string, (seam: Seam) => void]>([
+    ['an ended session', (seam) => seam.identity.states.set(SESSION, { state: 'ended', epoch: 2, userId: '', siteId: '' })],
+    ['a failed state read', (seam) => {
+      seam.identity.stateFailure = new Error('identity unavailable');
+    }],
+  ])('records nothing for %s and answers the check unchanged', async (_label, arrange) => {
+    const seam = createSeam();
+    const markActive = vi.spyOn(seam.jar, 'markActive');
+    arrange(seam);
+    const expected = await seam.stateCheck.check(SESSION).then(
+      (check) => ({ check }),
+      (error: unknown) => ({ error }),
+    );
+    seam.stateCheck.forget(SESSION);
+    const { states } = tracked(seam);
+
+    const answered = await states.check(SESSION).then(
+      (check) => ({ check }),
+      (error: unknown) => ({ error }),
+    );
+    expect(answered).toEqual(expected);
+    expect(markActive).not.toHaveBeenCalled();
+  });
+
+  it('writes again after the clock stepped back, and after forget', async () => {
+    const seam = createSeam();
+    const markActive = vi.spyOn(seam.jar, 'markActive');
+    const { states } = tracked(seam);
+
+    await states.check(SESSION);
+    seam.clock.advance(-STATE_CHECK_INTERVAL_MS);
+    await states.check(SESSION);
+    states.forget(SESSION);
+    await states.check(SESSION);
+    expect(markActive).toHaveBeenCalledTimes(3);
+    expect(callsOf(seam, 'identity.state')).toHaveLength(3);
+  });
+
+  it('answers the check when the write fails, warns, and writes again on the next active check', async () => {
+    const seam = createSeam();
+    const failure = new Error('gateway database unavailable');
+    const jar = { markActive: vi.fn<LegacyJar['markActive']>().mockRejectedValueOnce(failure).mockResolvedValue(true) };
+    const { states, warnings } = tracked(seam, jar);
+
+    await expect(states.check(SESSION)).resolves.toEqual({ ...active(1), epochChanged: false });
+    expect(warnings).toEqual([[{ error: serializeError(failure) }, 'legacy jar activity write failed']]);
+    await states.check(SESSION);
+    await states.check(SESSION);
+    expect(jar.markActive).toHaveBeenCalledTimes(2);
+  });
+
+  it.each<[string | undefined, number]>([
+    [undefined, 180],
+    ['', 180],
+    ['  ', 180],
+    ['0', 180],
+    ['0.5', 180],
+    ['-5', 180],
+    ['1', 1],
+    [' 45 ', 45],
+    ['90.5', 90.5],
+  ])('reads a session timeout of %j as %d minutes, as Masa floors it', (setting, minutes) => {
+    expect(sessionTimeoutMinutes(setting)).toBe(minutes);
+    expect(DEFAULT_SESSION_TIMEOUT_MINUTES).toBe(180);
+  });
+
+  it('purges a jar two intervals past the timeout, one past identity ending its session', () => {
+    expect(jarIdleLimitMs(180)).toBe(180 * 60_000 + 2 * JAR_ACTIVITY_INTERVAL_MS);
+    expect(jarIdleLimitMs(1)).toBe(180_000);
   });
 });

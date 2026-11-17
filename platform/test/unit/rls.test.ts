@@ -50,6 +50,7 @@ describe('tenantRegistrySql', () => {
     expect(lines[0]).toBe('CREATE TABLE people.tenant_registry (');
     expect(lines).toContain('  site_id text PRIMARY KEY,');
     expect(lines).toContain('  tenant_id uuid NOT NULL UNIQUE,');
+    expect(lines.at(-2)).toBe('  deleted boolean NOT NULL DEFAULT false');
     expect(lines.at(-1)).toBe(');');
     expect(tenantRegistrySql('people')).not.toMatch(NO_RLS);
   });

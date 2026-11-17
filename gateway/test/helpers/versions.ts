@@ -12,7 +12,8 @@ import {
   loadVersion,
 } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
-import { DEFAULT_FREEZE_WAIT_MS, type CutoverState, type CutoverStatus } from '../../src/cutover/state.js';
+import { DEFAULT_FREEZE_WAIT_MS, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
+import type { CutoverStatusOf, CutoverStatusPages } from '../../src/cutover/status-pages.js';
 import type {
   Authority,
   CutoverEntry,
@@ -224,6 +225,21 @@ export async function writeCutoverDir(table: CutoverTable, opts: WriteCutoverDir
   return dir;
 }
 
+async function* pagesFrom<T>(pages: readonly (readonly T[])[]): AsyncGenerator<T[]> {
+  for (const page of pages) yield [...page];
+}
+
+/** `status` as `CutoverStatusPages`, its lists split into the given page sizes (one page each by default) and any rest. */
+export function pagesOf<I extends CutoverStatus['inflight'][number]>(
+  status: CutoverStatusOf<I>,
+  sizes: { instances?: number; inflight?: number } = {},
+): CutoverStatusPages<I> {
+  const { instances, inflight, ...head } = status;
+  const split = <T>(items: readonly T[], size: number | undefined): T[][] =>
+    size === undefined ? [[...items]] : Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
+  return { head, instances: pagesFrom(split(instances, sizes.instances)), inflight: pagesFrom(split(inflight, sizes.inflight)) };
+}
+
 /** A CutoverState double over a fixed routing index, with setters for its index and epoch. */
 export interface FakeCutoverState extends CutoverState {
   setIndex(index: RoutingIndex | undefined): void;
@@ -309,8 +325,12 @@ export function fakeCutoverState(index: RoutingIndex | undefined, opts: FakeCuto
     activate: () =>
       Promise.reject(new Error('fakeCutoverState cannot activate versions; use createCutoverState over the gateway db double')),
     freeze: (routes) => changeFreezes('freeze', routes),
+    freezePages: async (routes) => pagesOf(await changeFreezes('freeze', routes)),
     unfreeze: (routes) => changeFreezes('unfreeze', routes),
+    unfreezePages: async (routes) => pagesOf(await changeFreezes('unfreeze', routes)),
     awaitVisible: () => Promise.resolve(true),
     status: () => Promise.resolve(status()),
+    statusPages: () => Promise.resolve(pagesOf(status())),
+    statusV2Pages: () => Promise.resolve(pagesOf<CutoverStatusV2['inflight'][number]>({ ...status(), inflight: [] })),
   };
 }

@@ -447,6 +447,7 @@ const SESSION_COLUMNS = [
   { name: 'updated_at', type: 't' },
   { name: 'ended_at', type: 't' },
   { name: 'admin_state', type: 's' },
+  { name: 'last_active_at', type: 't' },
 ] as const satisfies Columns;
 
 /** `identity.session`: browser sessions with their login-time snapshot and CSRF secret. */
@@ -671,7 +672,7 @@ export type ExtendRcSetRow = RowOf<typeof EXTEND_RC_SET_COLUMNS, 'tenant_id' | '
 export type ExtendDataRow = RowOf<typeof EXTEND_DATA_COLUMNS, 'tenant_id' | 'dataid' | 'baseid' | 'attributeid'>;
 /** A `session` row; `login_snapshot` is the JSON text of a {@link LoginSnapshot}, `admin_state` that of the stored admin session values, and the int8 `epoch` a decimal string. */
 export type SessionRow = Override<
-  RowOf<typeof SESSION_COLUMNS, 'tenant_id' | 'session_id' | 'epoch' | 'csrf_secret' | 'mode' | 'state' | 'created_at' | 'updated_at'>,
+  RowOf<typeof SESSION_COLUMNS, 'tenant_id' | 'session_id' | 'epoch' | 'csrf_secret' | 'mode' | 'state' | 'created_at' | 'updated_at' | 'last_active_at'>,
   { epoch: string; mode: SessionMode; state: SessionState }
 >;
 /** A `csrf_claim` row. */

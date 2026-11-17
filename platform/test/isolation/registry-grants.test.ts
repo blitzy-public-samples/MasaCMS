@@ -6,6 +6,7 @@ import {
   SITE_CHANGED_TOPIC,
   contentPoolTenants,
   hasGrant,
+  knownTenants,
   poolTenantFor,
   registeredTenants,
   registryEntries,
@@ -51,6 +52,8 @@ const SITE_C = 'tenant-c';
 const TENANT_C = tenantIdForSite(SITE_C);
 const SITE_D = 'tenant-d';
 const TENANT_D = tenantIdForSite(SITE_D);
+const SITE_E = 'tenant-e';
+const TENANT_E = tenantIdForSite(SITE_E);
 const SURVEY_RESPONSE = 'survey-response';
 const SURVEY_ID = '6E2C9A1B-4D7F-4A3E-8B5C0D1E2F3A4B5C';
 const OTHER_SURVEY_ID = '0F1E2D3C-4B5A-4968-8776A5B4C3D2E1F0';
@@ -329,6 +332,57 @@ describe('tenant registry and grants against PostgreSQL', () => {
         inbox: { [v4.eventId]: 'applied', [v5.eventId]: 'applied' },
         versions: [{ aggregate_type: 'site', aggregate_id: SITE_D, last_version: '5' }],
       });
+    });
+
+    it('marks a deleted site, hides it from every reader but knownTenants, ignores a version at or below its deletion and re-registers it later', async () => {
+      const subscription = subscriptionName(SERVICE, SITE_CHANGED_TOPIC);
+      const logger = createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+      /** A tenant-e site.changed envelope at `aggregateVersion` carrying `payload`. */
+      const envelopeE = (aggregateVersion: number, payload: SiteChangedPayload) =>
+        testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: TENANT_E, aggregateType: 'site', aggregateId: SITE_E, aggregateVersion, payload });
+      /** The outcome of consuming `envelope` once, and the registry entry of tenant-e after it. */
+      const consume = async (envelope: ReturnType<typeof envelopeE>) => {
+        const outcome = await consumeEnvelope(db(), tenantRegistryConsumer, envelope, { subscription, messageId: randomUUID(), logger });
+        return { results: outcome.destinations.map((destination) => destination.result), entry: await registryEntryForTenant(db(), TENANT_E) };
+      };
+      /** Tenant-e's stored row: its deleted marker and version. */
+      const stored = async () =>
+        (
+          await withMetadata(db(), (tx) =>
+            tx.query(`SELECT deleted, aggregate_version FROM ${tx.schema}.tenant_registry WHERE site_id = $1`, [SITE_E]),
+          )
+        ).rows;
+      /** What each registry reader answers for tenant-e, whose public user pool is umbrella's. */
+      const readers = async () => ({
+        registered: (await registeredTenants(db())).some((entry) => entry.tenantId === TENANT_E),
+        known: (await knownTenants(db())).some((entry) => entry.tenantId === TENANT_E),
+        entries: (await registryEntries(db())).some((entry) => entry.tenantId === TENANT_E),
+        site: await siteForTenant(db(), TENANT_E),
+        tenant: await tenantForRegisteredSite(db(), SITE_E.toUpperCase()),
+        pool: await poolTenantFor(db(), TENANT_E, 'publicUser'),
+        contentPool: await contentPoolTenants(db(), TENANT_E),
+        fanout: (await userPoolFanoutTenants(db(), UMBRELLA)).includes(TENANT_E),
+      });
+      const active = { registered: true, known: true, entries: true, site: SITE_E, tenant: TENANT_E, pool: UMBRELLA, contentPool: [TENANT_E], fanout: true };
+      const pooled = { siteId: SITE_E, publicUserPoolId: TENANT_UMBRELLA.siteId };
+
+      expect(await consume(envelopeE(1, pooled))).toMatchObject({ results: ['applied'], entry: { siteId: SITE_E, aggregateVersion: 1 } });
+      expect(await readers()).toEqual(active);
+      const tombstone = envelopeE(2, { ...pooled, deleted: true });
+      expect(await consume(tombstone)).toEqual({ results: ['applied'], entry: null });
+      expect(await stored()).toEqual([{ deleted: true, aggregate_version: '2' }]);
+      expect(await readers()).toEqual({ registered: false, known: true, entries: false, site: null, tenant: null, pool: null, contentPool: [], fanout: false });
+      expect(await consume(tombstone)).toEqual({ results: ['duplicate'], entry: null });
+      expect(await consume(envelopeE(2, pooled))).toEqual({ results: ['stale'], entry: null });
+      await withTenant(db(), TENANT_E, (tx) => tenantRegistryConsumer.apply(tx, envelopeE(1, pooled)));
+      expect(await stored()).toEqual([{ deleted: true, aggregate_version: '2' }]);
+
+      expect(await consume(envelopeE(3, { ...pooled, filePoolId: TENANT_UMBRELLA.siteId }))).toMatchObject({
+        results: ['applied'],
+        entry: { siteId: SITE_E, tenantId: TENANT_E, filePoolTenant: UMBRELLA, aggregateVersion: 3 },
+      });
+      expect(await stored()).toEqual([{ deleted: false, aggregate_version: '3' }]);
+      expect(await readers()).toEqual(active);
     });
   });
 });

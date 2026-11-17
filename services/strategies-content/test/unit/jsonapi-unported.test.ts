@@ -1,4 +1,4 @@
-/** JSON API operations no handler ports: each content entity's `validate` and the comment bean methods fail closed with the legacy 503. */
+/** JSON API operations no handler ports: each content entity's `validate` fails closed with the legacy 503. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { contentEntities } from '../../src/legacy/jsonapi-entities.js';
@@ -16,7 +16,6 @@ const RESOLVE: JsonApiResolveOptions = {
 };
 const ENDPOINTS = { api: `/_api/json/v1/${SITE}`, rest: `/_api/rest/v1/${SITE}` } as const;
 const FAMILIES = Object.keys(ENDPOINTS) as Array<keyof typeof ENDPOINTS>;
-const COMMENT_METHODS = ['delete', 'flag', 'markasspam', 'undelete', 'unmarkasspam'] as const;
 
 /** [route key, request URL, refusal reason] of every unported operation on both families. */
 const UNPORTED: ReadonlyArray<readonly [string, string, string]> = FAMILIES.flatMap((family) => [
@@ -24,9 +23,6 @@ const UNPORTED: ReadonlyArray<readonly [string, string, string]> = FAMILIES.flat
     const name = entity.name.toLowerCase();
     return [`${family}:${name}.validate`, `${ENDPOINTS[family]}/?method=validate&entityname=${entity.name}`, `jsonapi-${name}-validate-not-ported`] as const;
   }),
-  ...COMMENT_METHODS.map(
-    (method) => [`${family}:comment.~${method}`, `${ENDPOINTS[family]}/comment/${method}`, `jsonapi-comment-${method}-not-ported`] as const,
-  ),
 ]);
 
 function queryOf(url: string): Record<string, string> {

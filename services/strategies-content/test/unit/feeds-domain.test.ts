@@ -18,6 +18,7 @@ import {
   feedAccess,
   feedContent,
   feedEditModel,
+  feedListContent,
   feedStruct,
   listFeeds,
   readFeed,
@@ -316,6 +317,70 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
       await expect(feedContent(fx.deps, ADMIN, bean)).rejects.toThrow(/multi-site feed/);
     });
 
+    const poolBothSites = () =>
+      fx.handle.app.withMetadata((tx) =>
+        tx.query(`UPDATE ${fx.handle.schema}.tenant_registry SET content_pool_ids = $1, content_pool_tenants = $2 WHERE tenant_id = $3`, [
+          [TENANT_A.siteId, TENANT_B.siteId],
+          [TENANT_A.tenantId, TENANT_B.tenantId],
+          TENANT_A.tenantId,
+        ]),
+      );
+
+    it.each(['tfiles.created', 'tcontentstats.majorversion', 'tcontent.lockid'])(
+      'refuses a multi-site feed ordered by %s, whose row column of that name another table fills',
+      async (column) => {
+        await poolBothSites();
+        const bean = await news();
+        bean.setValue('contentpoolid', '*');
+        bean.setValue('sort', `${column} asc`);
+        await expect(feedContent(fx.deps, ADMIN, bean)).rejects.toThrow(/multi-site feed/);
+      },
+    );
+
+    it.each([
+      ['tparent.type', 'parenttype'],
+      ['tfiles.filename', 'assocfilename'],
+    ])('merges a multi-site feed ordered by %s through its rows\' %s', async (column) => {
+      await poolBothSites();
+      const bean = await news();
+      bean.setValue('contentpoolid', '*');
+      bean.setValue('sort', `${column} asc, tcontent.menutitle desc`);
+      expect(titles(await feedContent(fx.deps, ADMIN, bean))).toEqual(['Echo', 'Delta', 'charlie', 'Bravo', 'alpha']);
+    });
+
+    const ADDITIONS = ['display', 'displayinterval', 'displaystart', 'displaystop', 'parenttype', 'siteid'];
+    it.each([
+      ['title', ['contentid', ...ADDITIONS, 'title']],
+      ['contentHistID,menuTitle,nosuch', ['contenthistid', ...ADDITIONS, 'menutitle'].sort()],
+    ])('feedListContent selects the fields %s with transformFields\' additions in the feed sort, and counts as feedContent does', async (fields, columns) => {
+      const bean = await news();
+      bean.setValue('fields', fields);
+      await expect(feedContent(fx.deps, ADMIN, bean)).rejects.toBeInstanceOf(FeedContentUnsupportedError);
+      const rows = await feedListContent(fx.deps, ADMIN, bean, { applyPermFilter: true });
+      expect(rows.map((row) => [row['title'] ?? row['menutitle'], Object.keys(row).sort()])).toEqual(['alpha', 'Delta', 'Echo'].map((title) => [title, columns]));
+      expect(await feedListContent(fx.deps, ADMIN, bean, { countOnly: true })).toEqual({ count: 3 });
+    });
+
+    it('merges a multi-site fields feed by a sort column it selects for the merge only', async () => {
+      await fx.handle.app.withMetadata((tx) =>
+        tx.query(`UPDATE ${fx.handle.schema}.tenant_registry SET content_pool_ids = $1, content_pool_tenants = $2 WHERE tenant_id = $3`, [
+          [TENANT_A.siteId, TENANT_B.siteId],
+          [TENANT_A.tenantId, TENANT_B.tenantId],
+          TENANT_A.tenantId,
+        ]),
+      );
+      const bean = await news();
+      bean.setValue('contentpoolid', '*');
+      bean.setValue('fields', 'menutitle');
+      const rows = await feedListContent(fx.deps, ADMIN, bean);
+      expect(rows.map((row) => [row['menutitle'], 'title' in row])).toEqual(['alpha', 'Bravo', 'charlie', 'Delta', 'Echo'].map((title) => [title, false]));
+      bean.setValue('sortBy', 'rating');
+      await expect(feedListContent(fx.deps, ADMIN, bean)).rejects.toThrow(/outside tcontent/);
+      bean.setValue('sortBy', 'title');
+      bean.setValue('distinct', true);
+      await expect(feedListContent(fx.deps, ADMIN, bean)).rejects.toThrow('ORDER BY items must appear in the select list if SELECT DISTINCT is specified.');
+    });
+
     it('refuses beanFeed fields and live rows contentIntervalManager.apply would expand', async () => {
       const fielded = await news();
       fielded.setValue('fields', 'title');
@@ -397,6 +462,15 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
       const kept = await feedContent(fx.deps, actor, bean, { applyPermFilter: true });
       expect(titles(kept)).toEqual(expected);
       expect(kept).toEqual(await perRowFilter(actor, await feedContent(fx.deps, actor, bean)));
+    });
+
+    it.each([
+      ['anonymous', ANONYMOUS, ['P1 open', 'P4 open']],
+      ['a member', member(['system-user']), ['P1 open', 'P2 by name', 'P3 by id', 'P4 open']],
+    ] as Array<[string, Actor, string[]]>)('the permission filter walks the crumbs of path-less fields rows for %s', async (_label, actor, expected) => {
+      const bean = await membersFeed();
+      bean.setValue('fields', 'title');
+      expect((await feedListContent(fx.deps, actor, bean, { applyPermFilter: true })).map((row) => row['title'])).toEqual(expected);
     });
 
     it.each([

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ConsumeContext, EventEnvelope } from '@opt2/platform/events';
 import { createLogger, type Logger } from '@opt2/platform/logging';
 import { outboxRuntimeFor, type RecoveryContext } from '@opt2/platform/outbox';
-import type { TenantDb } from '@opt2/platform/tenancy';
+import { withMetadata, type TenantDb } from '@opt2/platform/tenancy';
 import { TENANT_A, fixedClock, pushTo } from '@opt2/platform/testing';
 import type { MailDeps } from '../../src/domain/delivery.js';
 import {
@@ -16,7 +16,7 @@ import {
   loginMailRecovery,
 } from '../../src/domain/login-mail.js';
 import { cfTrim, messageIdHeader } from '../../src/domain/mail-transport.js';
-import type { SenderAddressSource } from '../../src/domain/sender-address.js';
+import { FALLBACK_DOMAIN, createSenderAddressSource, type SenderAddressSource } from '../../src/domain/sender-address.js';
 import { LOGIN_MAIL_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { LOGIN_MAIL_TOPIC, type LoginMailRequestedPayload } from '../../src/events/login-mail.js';
 import { RECOVERY_BATCH_SIZE } from '../../src/repo/queries.js';
@@ -370,13 +370,22 @@ describe('login-mail recovery', () => {
     expect(history(rig.t, SAMPLE_IDS.messageId)).toEqual([queued, sent, delivered(SAMPLE_IDS.messageId)]);
   });
 
-  it('recovers each registry tenant in its own tenant transaction', async () => {
+  it.each([
+    ['registered', `no-reply@${TENANT_A.siteId}.opt2.test`, false],
+    ['deleted from the registry', `no-reply@${FALLBACK_DOMAIN}`, true],
+  ])('recovers each tenant the registry has known in its own tenant transaction, sending a mail of a site %s from %s', async (_label, from, deleted) => {
     const rig = await buildRig();
     const row = await storeQueued(rig);
+    rig.t.deliveryStatus.script(SAMPLE_IDS.messageId, { foundOnTry: 2 });
+    if (deleted) {
+      await withMetadata(rig.t.db, (tx) => tx.query(`UPDATE ${SCHEMA}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT_A.tenantId]));
+    }
     const start = rig.t.db.transactions.length;
 
-    await loginMailRecovery(rig.deps).run(sweepAt(rig, overdue(row)));
+    await loginMailRecovery({ ...rig.deps, senderAddress: createSenderAddressSource({ db: rig.t.db }) }).run(sweepAt(rig, overdue(row)));
 
+    expect(rig.t.mail.sent.map((mail) => mail.from.address)).toEqual([from]);
+    expect(messageRow(rig.t, SAMPLE_IDS.messageId).state).toBe('delivered');
     const swept = rig.t.db.transactions.slice(start);
     const registry = rig.t.db.rows('tenant_registry').map((entry) => String(entry.tenant_id).toLowerCase());
     expect(new Set(swept.flatMap((tx) => (tx.tenantId === null ? [] : [tx.tenantId])))).toEqual(new Set(registry));

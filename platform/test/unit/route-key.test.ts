@@ -5,6 +5,7 @@ import {
   REST_CONSUMED_PARAMS_HEADER,
   ROUTE_FAMILIES,
   SAVEFORM_CONDITION,
+  SYNTHETIC_V1_PREFIXES,
   type RouteEntryPoint,
   type RouteKeyOptions,
   type RouteKeyRequest,
@@ -18,6 +19,7 @@ import {
   routeKeyForEntryPoint,
   routeKeyForRequest,
 } from '../../src/legacy-compat/route-key.js';
+import { scannedRouteKey } from '../../src/legacy-compat/scanned-route-key.js';
 import { routeKeyCaseOptions, routeKeyConflictCases } from '../../src/testing/route-key-cases.js';
 
 const UUID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
@@ -89,6 +91,7 @@ describe('path normalisation', () => {
 
   it.each([
     '/index.cfm/opt2/stub/items',
+    '/index.cfm/v1/messages',
     '/index.cfm/gateway/legacy-bridge/session.cfm',
     '/index.cfm/admin/',
     '/index.cfm/core/mura/remote.cfc',
@@ -334,6 +337,30 @@ describe('JSON API method resolution', () => {
       'api:!invalidmethodcall',
     );
     expect(keyOf('GET', `${API}/?method=origin`)).toBe('api:entity.findquery');
+  });
+
+  // ACF's `file` scope makes the name a defined, non-public method ahead of the `file` entity.
+  it.each<[string, string, string]>([
+    ['GET', `${API}/file`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/file/properties`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/file/abc`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/FILE/new`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/?method=file`, 'api:!invalidmethodcall'],
+    ['GET', '/_api/json/v1/file', 'api:!invalidmethodcall'],
+    ['POST', `${API}/file/`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/?method=findProperties&entityname=file`, 'api:file.findproperties'],
+    ['GET', `${API}/files/new`, 'api:file.findnew'],
+    ['POST', `${API}/?method=save&entityname=file`, 'api:file.save'],
+  ])('keys %s %s as %s', (method, url, key) => {
+    expect(keyOf(method, url, {}, ONLY_DEFAULT)).toBe(key);
+  });
+
+  it.each<[string, string]>([
+    ['/_api/json/v1/tenant-a/file/properties', 'api:file.findproperties'],
+    ['/_api/json/v1/tenant-a/file', 'api:file.findall'],
+    ['/_api/json/v1/tenant-a/?method=file', 'api:!invalidmethodcall'],
+  ])('keys %s as %s: a site id that is no variable name skips the direct method, and the entity route skips file', (url, key) => {
+    expect(keyOf('GET', url, {}, { siteExists: (siteId) => siteId === 'tenant-a' })).toBe(key);
   });
 
   it.each<{ name: string; method: string; url: string; form?: Record<string, string>; key: string }>([
@@ -746,7 +773,31 @@ describe('remote CFC proxies, fixtures and path families', () => {
     expect(ROUTE_FAMILIES).toContain(result.family);
   });
 
+  it.each(Object.entries(SYNTHETIC_V1_PREFIXES).flatMap(([service, prefixes]) => prefixes.map((prefix) => [service, prefix])))(
+    "keys %s's own %s namespace in the opt2 family, in any case and below it",
+    (_service, prefix) => {
+      for (const url of [prefix, `${prefix}/`, `${prefix.toUpperCase()}/A/B?siteid=tenant-a`]) {
+        const result = resultOf('POST', url);
+        expect(result.key, url).toBe(`opt2:${(url.split('?')[0] ?? '').toLowerCase()}`);
+        expect(result.family).toBe('opt2');
+      }
+    },
+  );
+
+  it.each([
+    ['a synthetic prefix with a suffix', '/v1/messagesx'],
+    ['a file under a synthetic prefix name', '/v1/finance.json'],
+    ['a migrated service /v1/ path', '/v1/users/x'],
+    ['an unknown /v1/ path', '/v1/other/x'],
+    ['the bare /v1/ path', '/v1/'],
+    ['a synthetic name outside /v1/', '/v2/finance/records'],
+  ])('keeps %s (%s) out of the opt2 family', (_label, url) => {
+    expect(resultOf('GET', url).family).not.toBe('opt2');
+  });
+
   it.each<{ name: string; url: string; form?: Record<string, string>; query?: Record<string, string[]>; siteId: string | undefined }>([
+    { name: 'a synthetic /v1/ query siteid', url: '/v1/timesheets/sheets?siteid=tenant-a', siteId: 'tenant-a' },
+    { name: 'a synthetic /v1/ form siteid over the query one', url: '/v1/messages?siteid=tenant-a', form: { siteid: 'tenant-b' }, siteId: 'tenant-b' },
     { name: 'a query siteid', url: '/opt2/admin/reporting/exports?siteid=tenant-a', siteId: 'tenant-a' },
     { name: 'any spelling of the name, value as sent', url: '/opt2/admin/reporting/exports?SiteID=Tenant-A', siteId: 'Tenant-A' },
     {
@@ -785,6 +836,31 @@ describe('remote CFC proxies, fixtures and path families', () => {
   ])('reads a remote CFC call site from $name, as ColdFusion binds the argument', ({ url, form, siteId }) => {
     const result = resultOf(form === undefined ? 'GET' : 'POST', url, form === undefined ? {} : { form });
     expect(result.key).toBe('cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get');
+    expect(result.siteId).toBe(siteId);
+    expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
+  });
+
+  const RATER = '/core/modules/v1/rater/ajax/saveRate.cfm';
+  const FAVORITES = '/core/modules/v1/favorites/ajax';
+  it.each<{ name: string; url: string; form?: Record<string, string>; siteId: string | undefined }>([
+    { name: 'the rater form siteID', url: RATER, form: { SiteID: 'tenant-a', rate: '5' }, siteId: 'tenant-a' },
+    { name: 'the rater form siteID over the query one', url: `${RATER}?siteid=default`, form: { siteID: 'tenant-a' }, siteId: 'tenant-a' },
+    { name: 'no rater form siteID, ignoring the query one', url: `${RATER}?siteid=tenant-a`, form: { rate: '5' }, siteId: undefined },
+    { name: 'the rater path in any case', url: '/CORE/modules/v1/rater/ajax/SAVERATE.cfm', form: { siteid: 'tenant-a' }, siteId: 'tenant-a' },
+    { name: 'the favorite query siteID', url: `${FAVORITES}/saveFavorite.cfm?siteID=tenant-a&userID=U`, siteId: 'tenant-a' },
+    {
+      name: 'the favorite query siteID over the form one',
+      url: `${FAVORITES}/saveFavorite.cfm?siteid=tenant-a`,
+      form: { siteid: 'tenant-b' },
+      siteId: 'tenant-a',
+    },
+    { name: 'no favorite query siteID, ignoring the form one', url: `${FAVORITES}/saveFavorite.cfm`, form: { siteid: 'tenant-b' }, siteId: undefined },
+    { name: 'the RSS favorite query siteID', url: `${FAVORITES}/deleteRSSFavorite.cfm?userID=U&siteID=tenant-b`, siteId: 'tenant-b' },
+    { name: 'a favorite delete, which binds no site', url: `${FAVORITES}/deleteFavorite.cfm?favoriteID=F&siteid=tenant-a`, siteId: undefined },
+    { name: 'a template that binds no listed site', url: '/admin/custom.cfm?siteid=tenant-a', siteId: undefined },
+  ])('reads a template site from $name, leaving the key unchanged', ({ url, form, siteId }) => {
+    const result = resultOf(form === undefined ? 'GET' : 'POST', url, form === undefined ? {} : { form });
+    expect(result.key).toBe(`cfm:${(url.split('?')[0] ?? '').toLowerCase()}`);
     expect(result.siteId).toBe(siteId);
     expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
   });
@@ -996,6 +1072,7 @@ describe('application reload', () => {
       key: 'api:content.save',
     },
     { name: 'an OPT-2 path', url: '/opt2/stub/x?appreload', key: 'opt2:/opt2/stub/x' },
+    { name: "a synthetic service's /v1/ path", url: '/v1/surveys/x?appreload', key: 'opt2:/v1/surveys/x' },
     {
       name: 'a bridge path',
       url: '/gateway/legacy-bridge/cfml/session.cfm?appreload',
@@ -1056,6 +1133,22 @@ describe('application reload', () => {
     const result = resultOf('GET', url);
     expect(matchRouteKey(result, carried)).toBeUndefined();
     expect(matchRouteKey(result, [...carried, 'reload:application'])).toBe('reload:application');
+  });
+});
+
+describe('OPT-2 namespaces keyed as legacy serves them', () => {
+  it.each([
+    { url: '/opt2/stub/x', legacyUrl: '/about/x', key: 'page:render' },
+    { url: '/opt2/admin/reporting/exports', legacyUrl: '/about/reporting/exports', key: 'page:render' },
+    { url: '/v1/surveys/x', legacyUrl: '/about/x', key: 'page:render' },
+    { url: '/v1/timesheets/sheets?appreload', legacyUrl: '/about/sheets?appreload', key: 'reload:application' },
+    { url: '/opt2/x?doaction=login', legacyUrl: '/about/x?doaction=login', key: 'page:login' },
+  ])('keys $url as $key like $legacyUrl without the namespaces, and in the opt2 family with them', ({ url, legacyUrl, key }) => {
+    const served = resultOf('GET', url, {}, { opt2Namespaces: false });
+    expect(served.key).toBe(key);
+    expect(served).toStrictEqual(resultOf('GET', legacyUrl));
+    expect(scannedRouteKey({ ...request('GET', url), url }, { opt2Namespaces: false }).result).toStrictEqual(served);
+    expect(resultOf('GET', url)).toMatchObject({ key: `opt2:${url.split('?')[0] ?? ''}`, family: 'opt2' });
   });
 });
 

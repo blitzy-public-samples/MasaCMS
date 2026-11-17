@@ -153,6 +153,13 @@ function httpFailure(pageOp: string, status: number, error: string | undefined):
   return new ServiceUnavailableError(BRIDGE_SERVICE, cause);
 }
 
+/** True when `error` is the bridge's 409 `sessionMismatch`: the cookies no longer attach the named legacy session. */
+export function isBridgeSessionMismatch(error: unknown): boolean {
+  if (!(error instanceof ServiceUnavailableError) || error.service !== BRIDGE_SERVICE) return false;
+  const cause = error.cause as { status?: unknown; error?: unknown } | null | undefined;
+  return cause?.status === 409 && cause.error === 'sessionMismatch';
+}
+
 /** Sender of one bridge page's ops; every call carries a freshly signed single-use assertion for `<page>.<op>`. */
 function bridgeSender<Op extends string>(opts: BridgeClientOptions, page: 'session' | 'site') {
   const origin = opts.legacyOrigin.replace(/\/+$/, '');

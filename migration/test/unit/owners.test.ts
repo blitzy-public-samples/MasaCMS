@@ -4,6 +4,8 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { createServer, type IncomingHttpHeaders } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +22,7 @@ import {
   type PositionResponse,
   type WatermarkRecord,
 } from '@opt2/platform/migration-kit';
-import { ServiceUnavailableError, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, createServiceClient, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { SITEMONITOR_QUEUE, type QueueControlOp, type QueueControlResult } from '@opt2/platform/tasks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -691,6 +693,55 @@ describe('createOwnersClient', () => {
     ]);
   });
 
+  it('putObject sends a streamed body over HTTP as its exact bytes under Content-Length, unchunked', async () => {
+    const bytes = Buffer.alloc(256 * 1024, 0xa5);
+    const params: PutObjectParams = {
+      tenantId: TENANT,
+      fileId: FILE_ID,
+      variant: '',
+      ext: 'pdf',
+      contentType: 'application/pdf',
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+    const stored: FileObject = { key: `${TENANT}/${FILE_ID}.pdf`, size: bytes.length, sha256: params.sha256, created: true };
+    const received: { url: string; headers: IncomingHttpHeaders; body: Buffer }[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        received.push({ url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks) });
+        res.writeHead(200, { 'content-type': 'application/json', 'x-opt2-write-position': 'strategies-content=78' }).end(JSON.stringify(stored));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const client = createServiceClient({
+      serviceUrls: { 'strategies-content': `http://127.0.0.1:${String((server.address() as AddressInfo).port)}` },
+      self: 'migration',
+      credentials: { headersFor: () => Promise.resolve({}) },
+    });
+    const owners = createOwnersClient({ client, catalog: UNUSED_CATALOG });
+    // Read in several chunks, as a spool file is.
+    const stream = Readable.from([bytes.subarray(0, 1000), bytes.subarray(1000, 70_000), bytes.subarray(70_000)], { objectMode: false });
+
+    try {
+      await expect(owners.putObject(params, { stream, size: bytes.length })).resolves.toEqual({
+        ...stored,
+        writePositions: new Map([['strategies-content', '78']]),
+      });
+    } finally {
+      await client.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    expect(received).toHaveLength(1);
+    const [upload] = received;
+    expect(new URL(upload?.url ?? '', 'http://owner.test').searchParams.get('sha256')).toBe(params.sha256);
+    expect(upload?.body.equals(bytes)).toBe(true);
+    expect(upload?.headers).toMatchObject({ 'content-length': String(bytes.length), 'content-type': 'application/octet-stream' });
+    expect(upload?.headers['transfer-encoding']).toBeUndefined();
+  });
+
   it('getObject streams one object of strategies-content by key as its undecoded bytes', async () => {
     const key = `${TENANT}/${FILE_ID}.json`;
     const bytes = Buffer.from('{"stored":"as json"}');
@@ -720,17 +771,28 @@ describe('createOwnersClient', () => {
     expect(calls).toEqual([{ service: 'strategies-content', method: 'DELETE', path: '/internal/v1/migration/objects', query: { key }, userToken: null }]);
   });
 
-  it('getAttachmentObject streams one finance attachment by tenant and attachment id as its undecoded bytes', async () => {
+  it.each<[string, 'finance' | 'reporting', Record<string, string>, (owners: OwnersClient) => Promise<Readable>]>([
+    [
+      'getAttachmentObject streams one finance attachment by tenant and attachment id',
+      'finance',
+      { tenantId: TENANT, attachmentId: FILE_ID },
+      (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
+    ],
+    [
+      'getExportObject streams one reporting export output by tenant and job id',
+      'reporting',
+      { tenantId: TENANT, jobId: FILE_ID },
+      (owners) => owners.getExportObject({ tenantId: TENANT, jobId: FILE_ID }),
+    ],
+  ])('%s as its undecoded bytes', async (_label, service, query, read) => {
     const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
     const served = Readable.from([bytes]);
-    const { owners, calls } = routedClient({ 'finance GET /internal/v1/migration/objects': [{ body: served }] });
+    const { owners, calls } = routedClient({ [`${service} GET /internal/v1/migration/objects`]: [{ body: served }] });
 
-    const body = await owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID });
+    const body = await read(owners);
 
     expect(body).toBe(served);
-    expect(calls).toEqual([
-      { service: 'finance', method: 'GET', path: '/internal/v1/migration/objects', query: { tenantId: TENANT, attachmentId: FILE_ID }, stream: true, userToken: null },
-    ]);
+    expect(calls).toEqual([{ service, method: 'GET', path: '/internal/v1/migration/objects', query, stream: true, userToken: null }]);
   });
 
   it.each<QueueControlOp>(['pause', 'resume', 'ensure'])('queueControl posts %s to the queue on the given service', async (op) => {
@@ -816,6 +878,15 @@ describe('createOwnersClient', () => {
       status: 404,
       body: { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid method call', code: 'invalid_request' } },
       call: (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
+    },
+    {
+      name: 'getExportObject answering 404',
+      owner: 'reporting',
+      method: 'GET',
+      path: '/internal/v1/migration/objects',
+      status: 404,
+      body: { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid method call', code: 'invalid_request' } },
+      call: (owners) => owners.getExportObject({ tenantId: TENANT, jobId: FILE_ID }),
     },
     {
       name: 'gate answering 409 without a gate conflict',

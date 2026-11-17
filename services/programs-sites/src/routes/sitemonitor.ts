@@ -1,11 +1,11 @@
 /** HTTP surfaces of the site-monitor orchestrator: legacy `/_api/sitemonitor`, its recurring Cloud Task and the cursor hand-off state. */
 import { Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LEGACY_HTML_CONTENT_TYPE, LegacyApiError, cfDateTimeFormat } from '@opt2/platform/legacy-compat';
-import { sendLegacyResponse, z, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
+import { SERVICE_CALL_TIMEOUT_MS, sendLegacyResponse, z, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SITEMONITOR_QUEUE, recurringHandler, recurringSpec, registerTaskRoute, type TaskPort } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createMigrationJobsPort, createStepDispatcher } from '../jobs/dispatch.js';
-import { runSiteMonitor, type SiteMonitorResult } from '../jobs/sitemonitor.js';
+import { createSiteMonitorRunner, runSiteMonitor, type SiteMonitorResult, type SiteMonitorRunnerDeps } from '../jobs/sitemonitor.js';
 import { readState, writeCursor, type CursorState } from '../repo/sitemonitor-state.js';
 import type { components } from '../generated/openapi.js';
 
@@ -19,7 +19,14 @@ export interface SiteMonitorRouteDeps {
   clock: Clock;
   /** `OPT2_SERVICE_URLS`. */
   serviceUrls: Record<string, string>;
+  /** Waits out a public caller's budget; defaults to a timer. */
+  sleep?: SiteMonitorRunnerDeps['sleep'];
 }
+
+/** How long before the gateway's SERVICE_CALL_TIMEOUT_MS forward timeout a public-run caller is answered. */
+export const PUBLIC_RUN_MARGIN_MS = 1000;
+/** Budget of one public-run caller and deadline of a pass it starts, so the gateway always receives the answer. */
+export const PUBLIC_RUN_BUDGET_MS = SERVICE_CALL_TIMEOUT_MS - PUBLIC_RUN_MARGIN_MS;
 
 /** Public-run prefixes; legacy compares them in any letter case (contentServer.cfc:669, 783), so createService routes them case-insensitively. */
 export const SITEMONITOR_RUN_PREFIXES: readonly string[] = Object.freeze(['/_api/sitemonitor', '/index.cfm/_api/sitemonitor']);
@@ -84,7 +91,10 @@ export async function registerSiteMonitorRoutes(app: FastifyInstance, deps: Site
   const { db, port, clock, serviceUrls } = deps;
   const migration = createMigrationJobsPort({ client: app.opt2.client, clock });
   const dispatch = createStepDispatcher({ port, migration, serviceUrls, clock });
-  const run = (): Promise<SiteMonitorResult> => runSiteMonitor({ db, clock, dispatch });
+  const monitor = createSiteMonitorRunner({
+    start: (deadlineMs) => runSiteMonitor({ db, clock, dispatch, ...(deadlineMs === undefined ? {} : { deadlineMs }) }),
+    ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
+  });
 
   // legacy: contentServer.cfc:745-747 returns "" once every step ran; a failed pass propagates and leaves the cursor.
   for (const url of RUN_PATHS) {
@@ -93,7 +103,7 @@ export async function registerSiteMonitorRoutes(app: FastifyInstance, deps: Site
       url,
       config: { opt2: PUBLIC_RUN },
       handler: async (_request, reply) => {
-        await run();
+        await monitor.run(PUBLIC_RUN_BUDGET_MS);
         return sendLegacyResponse(reply, { status: 200, headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE }, body: '' });
       },
     });
@@ -102,7 +112,7 @@ export async function registerSiteMonitorRoutes(app: FastifyInstance, deps: Site
   registerTaskRoute(app, TASK_PATH, {
     scope: 'system',
     handler: recurringHandler({ ...recurringSpec(SITEMONITOR_QUEUE, serviceUrls), port, clock }, async () =>
-      toRunResult(await run()),
+      toRunResult(await monitor.run()),
     ),
   });
 

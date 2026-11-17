@@ -12,7 +12,10 @@ import { UnitCatalogError, UnknownLegacyTableError, type UnitCatalog } from '../
 import { findColumn, listLegacyTables, parseQualifiedName, qualifiedName, TableNotFoundError, type LegacyTableRef } from './catalog.js';
 import {
   compareCanonicalRows,
+  DEFAULT_SORT_RUN_BYTES,
   describeStream,
+  mergeFanIn,
+  reduceRuns,
   RunReader,
   streamCanonicalRows,
   writeRecords,
@@ -225,8 +228,13 @@ function restoreRow(table: string, text: string): CanonicalRow {
   return { table, legacyProgramId: spilled.p, key: spilled.k ?? spilled.e, keyValues: spilled.v.map(restoreKey), encoding: spilled.e, row };
 }
 
-async function* spilledRows(rows: AsyncIterable<CanonicalRow>): AsyncGenerator<string, void, undefined> {
-  for await (const row of rows) yield spillRow(row);
+/** Spill records of `rows`; `sizes.largest` keeps the byte length of the largest one. */
+async function* spilledRows(rows: AsyncIterable<CanonicalRow>, sizes?: { largest: number }): AsyncGenerator<string, void, undefined> {
+  for await (const row of rows) {
+    const text = spillRow(row);
+    if (sizes !== undefined) sizes.largest = Math.max(sizes.largest, Buffer.byteLength(text, 'utf8'));
+    yield text;
+  }
 }
 
 /** The rows of one spill run; its file is closed when the run ends or is returned. */
@@ -264,18 +272,29 @@ async function* mergeRows(sources: readonly AsyncGenerator<CanonicalRow, void, u
   }
 }
 
-/** Merges each group of `limit` parts, in program id order, into a spill run, then merges the runs; no part outlives its group. */
-async function* spilledMerge(plan: FoldPlan, limit: number, spillDir: string | undefined): AsyncGenerator<CanonicalRow, void, undefined> {
-  const dir = await mkdtemp(join(spillDir ?? tmpdir(), SPILL_PREFIX));
+/**
+ * Merges each group of `limit` parts, in program id order, into a spill run, reduces the runs to the fan-in `sortRunBytes`
+ * allows, then merges them; no part outlives its group.
+ */
+async function* spilledMerge(
+  plan: FoldPlan,
+  limit: number,
+  options: Pick<StreamOptions, 'sortRunBytes' | 'spillDir'>,
+): AsyncGenerator<CanonicalRow, void, undefined> {
+  const dir = await mkdtemp(join(options.spillDir ?? tmpdir(), SPILL_PREFIX));
+  const runsOf = (files: readonly string[]) => files.map((file) => runRows(plan.shape.table, file));
   try {
     const files: string[] = [];
+    const sizes = { largest: 0 };
     for (let start = 0; start < plan.partOptions.length; start += limit) {
       const file = join(dir, `run-${String(files.length)}`);
       const group = plan.partOptions.slice(start, start + limit).map((_, offset) => foldedPartRows(plan, start + offset));
-      await writeRecords(file, spilledRows(mergeRows(group)));
+      await writeRecords(file, spilledRows(mergeRows(group), sizes));
       files.push(file);
     }
-    yield* mergeRows(files.map((file) => runRows(plan.shape.table, file)));
+    const fanIn = mergeFanIn(options.sortRunBytes ?? DEFAULT_SORT_RUN_BYTES, sizes.largest);
+    const runs = await reduceRuns(dir, files, fanIn, (group, file) => writeRecords(file, spilledRows(mergeRows(runsOf(group)))));
+    yield* mergeRows(runsOf(runs));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -292,7 +311,7 @@ export async function* streamFoldedRows(options: FoldedStreamOptions): AsyncGene
   const limit = options.maxOpenParts ?? DEFAULT_MAX_OPEN_PARTS;
   if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`maxOpenParts must be a positive integer, got ${String(limit)}`);
   const plan = await planFold(options);
-  if (plan.partOptions.length > limit) yield* spilledMerge(plan, limit, options.spillDir);
+  if (plan.partOptions.length > limit) yield* spilledMerge(plan, limit, options);
   else yield* mergeRows(plan.partOptions.map((_, index) => foldedPartRows(plan, index)));
 }
 

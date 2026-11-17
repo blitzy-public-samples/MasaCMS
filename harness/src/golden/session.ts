@@ -81,6 +81,8 @@ export interface ScenarioContext {
   /** Row (or reserved scalar) each seedRef selected, keyed by its `as`; kept apart so `bindings` starts empty. */
   readonly seedRows: Map<string, unknown>;
   readonly secrets: SecretStore;
+  /** Each secret resolved through `secrets`, by name, first resolution first; {@link createScenarioContext} sets it. */
+  readonly resolvedSecrets?: ReadonlyMap<string, string>;
   readonly seed: SeedStore;
   readonly env: EnvLike;
 }
@@ -196,6 +198,18 @@ export function originBaseUrl(origin: Origin, env: EnvLike = process.env): strin
   return `http://127.0.0.1:${port}`;
 }
 
+/** A loopback IP literal, which is no seeded site's domain or alias. */
+const LOOPBACK_IP = /^(?:127(?:\.\d{1,3}){3}|\[::1\])$/;
+/** The domain alias of every seeded site, so admin pages' Mura.js API calls stay on the page's origin. */
+const BROWSER_HOST = 'localhost';
+
+/** Base URL a browser drives `origin` at: {@link originBaseUrl} with a loopback IP host as {@link BROWSER_HOST}. */
+export function browserBaseUrl(origin: Origin, env: EnvLike = process.env): string {
+  const url = new URL(originBaseUrl(origin, env));
+  if (LOOPBACK_IP.test(url.hostname)) url.hostname = BROWSER_HOST;
+  return trimSlash(url.href);
+}
+
 /** `text` with every value {@link secretValues} lists for `ctx` replaced by `<secret>`, longest first. */
 function maskSecrets(ctx: Pick<ScenarioContext, 'secrets'>, text: string): string {
   const values = secretValues(ctx).sort((a, b) => b.length - a.length);
@@ -224,6 +238,19 @@ function inScenario<T>(ctx: Pick<ScenarioContext, 'scenarioId' | 'secrets'>, fn:
     }
     throw err;
   }
+}
+
+/** `store` recording each secret it returns into `resolved` by name, first resolution first; `values()` unchanged. */
+function recordingSecrets(store: SecretStore, resolved: Map<string, string>): SecretStore {
+  return {
+    secret(name) {
+      const value = store.secret(name);
+      if (!resolved.has(name)) resolved.set(name, value);
+      return value;
+    },
+    username: (site, role) => store.username(site, role),
+    values: () => store.values(),
+  };
 }
 
 /**
@@ -258,6 +285,7 @@ export function createScenarioContext(scenario: ScenarioInput, opts: ScenarioCon
   const baseUrl = originBaseUrl(opts.origin, env);
   const declared = Object.keys(scenario.sessions ?? {});
   const names = declared.length > 0 ? declared : [DEFAULT_SESSION];
+  const resolvedSecrets = new Map<string, string>();
   const ctx: ScenarioContext = {
     origin: opts.origin,
     baseUrl,
@@ -265,7 +293,8 @@ export function createScenarioContext(scenario: ScenarioInput, opts: ScenarioCon
     sessions: new Map(),
     bindings: new Map(),
     seedRows: new Map(),
-    secrets: opts.secrets ?? loadSecretStore(env),
+    secrets: recordingSecrets(opts.secrets ?? loadSecretStore(env), resolvedSecrets),
+    resolvedSecrets,
     seed: opts.seed ?? loadSeedStore(env),
     env,
   };

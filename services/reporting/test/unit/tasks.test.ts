@@ -86,6 +86,15 @@ const refusingClient = (status: number): ServiceClient => ({
   close: () => Promise.resolve(),
 });
 
+/** A loopback URL whose port no longer listens, as a stopped producer leaves it. */
+async function stoppedUrl(): Promise<string> {
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise((resolve) => server.close(resolve));
+  return `http://127.0.0.1:${String(port)}`;
+}
+
 /** One request a stub HTTP server received. */
 interface ReceivedRequest {
   method: string;
@@ -340,12 +349,9 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     }
   });
 
-  it.each([
-    ['refuses its export scope', 403],
-    ['answers 503', 503],
-  ])('answers a run with its failed state, and acknowledges a redelivery unchanged, when the source %s', async (_case, status) => {
+  it('answers a run with its failed state, and acknowledges a redelivery unchanged, when the source refuses its export scope', async () => {
     const { job, payload } = await queuedJob();
-    const app = await taskApp(() => refusingClient(status));
+    const app = await taskApp(() => refusingClient(403));
 
     const res = await post(app, wire(job.tenant_id, payload));
 
@@ -353,10 +359,30 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     expect(res.json()).toStrictEqual({ jobId: job.job_id, state: 'failed' });
     assertContract(res);
     const failed = await read(job);
-    expect(failed).toMatchObject({ state: 'failed', error: 'source-unavailable' });
+    expect(failed).toMatchObject({ state: 'failed', error: 'export-failed' });
     const again = await post(app, wire(job.tenant_id, payload));
     expect(again.json()).toStrictEqual({ jobId: job.job_id, state: 'failed' });
     expect(await read(job)).toStrictEqual(failed);
+  });
+
+  it.each<[string, () => Promise<FastifyInstance>]>([
+    ['answers 503', () => taskApp(() => refusingClient(503))],
+    ['is not listening', async () => taskApp((created) => created.opt2.client, { timesheets: await stoppedUrl() })],
+  ])('answers the legacy 503 while the source %s, leaving the job running, and runs a redelivery to done once it recovers', async (_case, unavailableApp) => {
+    const { job, payload } = await queuedJob();
+
+    const res = await post(await unavailableApp(), wire(job.tenant_id, payload));
+
+    expect(res.statusCode).toBe(503);
+    assertContract(res);
+    expect(await read(job)).toMatchObject({ state: 'running', error: null, object_key: null, row_version: '2' });
+
+    const retried = await post(await taskApp(), wire(job.tenant_id, payload));
+
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toStrictEqual({ jobId: job.job_id, state: 'done' });
+    assertContract(retried);
+    expect(await read(job)).toMatchObject({ state: 'done', error: null, row_version: '4' });
   });
 
   it.each<[string, (job: ExportJobRow, payload: ExportRunPayload) => unknown]>([

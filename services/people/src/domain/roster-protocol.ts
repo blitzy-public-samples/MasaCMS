@@ -16,7 +16,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import { discardOperation, releaseOperation } from '@opt2/platform/outbox';
 import { ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
-import { registeredTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { knownTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { PeopleEvents } from '../events/publish.js';
 import type { ContentClient } from '../legacy/content-client.js';
 import type {
@@ -1169,7 +1169,7 @@ export const rosterOperationStatus: NonNullable<MigrationHandlerOptions['operati
   const repo = repositoryFor(db.schema);
   const statuses: Record<string, OperationStatus> = {};
   const pending = new Set(operationIds);
-  const tenants = new Set((await registeredTenants(db)).map((entry) => entry.tenantId));
+  const tenants = new Set((await knownTenants(db)).map((entry) => entry.tenantId));
   for (const tenantId of tenants) {
     if (pending.size === 0) break;
     await withTenant(db, tenantId, async (tx) => {

@@ -36,6 +36,7 @@ import {
   type SerializedLegacyResponse,
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import {
   EnvValidationError,
   csrfPreHandler,
@@ -625,14 +626,14 @@ async function findPersonRows(call: ApiCall, observer: PersonObserver, tenants: 
   return null;
 }
 
-/** `readMembershipIDs` of users: identity's ordered list for one user, its stored rows by user for a feed's many. */
+/** `readMembershipIDs` of users: identity's ordered list for one user, the same lists in one batch for a feed's many. */
 async function membershipsOf(call: ApiCall, userIds: readonly string[]): Promise<Map<string, string[]>> {
   const { identity } = call.deps;
   if (userIds.length === 1) {
     const [userId] = userIds as [string];
     return new Map([[userId, await identity.membershipGroupIds(userId)]]);
   }
-  const looked = await identity.lookupMemberships(userIds);
+  const looked = await identity.lookupMemberships(userIds, { byGroupName: true });
   const byKey = new Map([...looked].map(([userId, groupIds]) => [userId.trimEnd().toUpperCase(), groupIds]));
   return new Map(userIds.map((userId) => [userId, byKey.get(userId.trimEnd().toUpperCase()) ?? []]));
 }
@@ -1392,6 +1393,51 @@ function addressFeedRefused(): LegacyServiceUnavailableError {
   return unavailable('An address feed includes group addresses, which are identity data', 'address-feed-group-rows');
 }
 
+/** A stored address findMany reads, with the user tenant holding it. */
+interface HeldAddress {
+  tenantId: string;
+  row: AddressRow;
+}
+
+/** The users owning `rows`, which an observed address read covers. */
+function addressOwners(rows: Iterable<AddressRow>): string[] {
+  return [...rows].flatMap((row) => (row.userid === null ? [] : [row.userid]));
+}
+
+/** Each of the distinct `keys` from the first of `tenants` holding it: one fenced read per tenant of the keys still unheld. */
+async function heldAddresses(call: ApiCall, observer: PersonObserver, tenants: readonly string[], keys: readonly string[]): Promise<Map<string, HeldAddress>> {
+  const held = new Map<string, HeldAddress>();
+  for (const tenantId of tenants) {
+    const pending = keys.filter((key) => !held.has(key));
+    if (pending.length === 0) break;
+    const found = await observer.read(tenantId, (tx) => call.deps.repository.findAddresses(tx, pending), (rows) => addressOwners(rows.values()));
+    for (const [key, row] of found) held.set(key, { tenantId, row });
+  }
+  // An id people holds no address for may be a group's, which identity holds.
+  if (held.size < keys.length) throw addressFeedRefused();
+  return held;
+}
+
+/** The beans of `held`, in its order: each tenant's extended data in one fenced read covering its owners. */
+async function heldAddressBeans(call: ApiCall, observer: PersonObserver, held: readonly HeldAddress[]): Promise<AddressBean[]> {
+  const byTenant = new Map<string, HeldAddress[]>();
+  for (const address of held) {
+    const members = byTenant.get(address.tenantId);
+    if (members === undefined) byTenant.set(address.tenantId, [address]);
+    else members.push(address);
+  }
+  const extended = new Map<HeldAddress, ExtendSetData>();
+  for (const [tenantId, members] of byTenant) {
+    const bases = members.map(({ row }) => ({ baseId: row.addressid, scope: { siteId: row.siteid ?? '', type: ADDRESS_BEAN_DEFAULTS.type, subtype: ADDRESS_BEAN_DEFAULTS.subtype } }));
+    const data = await observer.read(tenantId, (tx) => extendSetsData(call.deps.repository, tx, bases), () => addressOwners(members.map(({ row }) => row)));
+    members.forEach((address, index) => extended.set(address, data[index] as ExtendSetData));
+  }
+  return held.map((address) => {
+    const extend = extended.get(address) as ExtendSetData;
+    return { values: addressBeanValues({ address: address.row, extend }), exists: true, tenantId: address.tenantId, extendData: extend.data };
+  });
+}
+
 /** findMany(entityName, ids): the feed's rows whose primary key is in `ids`, in the order of `ids` unless sorted (jsonApiUtility.cfc:2612-2712). */
 async function findMany(call: ApiCall): Promise<EntityCollection> {
   defaultUrlEntityName(call);
@@ -1408,21 +1454,28 @@ async function findMany(call: ApiCall): Promise<EntityCollection> {
   if (call.entity === 'user') return packagedUsers(call, feed, () => scopeBaseUrl(call, 'findmany'), reorder);
 
   const tenants = userTenants(tokenEntry(call));
-  const beans: AddressBean[] = [];
-  for (const id of [...new Set(ids.map((item) => item.toUpperCase()))]) {
-    const found = await findAddressRows(call, tenants, id);
-    // An id people holds no address for may be a group's, which identity holds.
-    if (found === null) throw addressFeedRefused();
-    // The feed filters `tuseraddresses.siteID in (<site>)`.
-    if (!cfEq(found.row.siteid ?? '', call.siteId)) continue;
-    beans.push({ values: addressBeanValues({ address: found.row, extend: found.extend }), exists: true, tenantId: found.tenantId, extendData: found.extend.data });
-  }
-  // SQL Server reads the clustered primary key in order.
-  beans.sort((a, b) => String(a.values.addressid).toUpperCase().localeCompare(String(b.values.addressid).toUpperCase()));
-  const limited = feed.maxItems > 0 ? beans.slice(0, feed.maxItems) : beans;
-  const page = iteratorPage(limited.length, feed.nextN, call.url);
-  const pageBeans = page.positions.flatMap((position) => (limited[position] === undefined ? [] : [limited[position]]));
-  let items = await itemsOf(call, pageBeans);
+  const keys = [...new Set(ids.map((item) => item.toUpperCase()))];
+  // The bean's addressid, which the sort compares, is the stored id trimmed.
+  const order = (address: HeldAddress): string => javaTrim(address.row.addressid).toUpperCase();
+  const { page, beans } = await observePersons(
+    observerDeps(call),
+    async (observer) => {
+      const held = await heldAddresses(call, observer, tenants, keys);
+      // The feed filters `tuseraddresses.siteID in (<site>)`.
+      const rows = keys.flatMap((key) => {
+        const address = held.get(key);
+        return address !== undefined && cfEq(address.row.siteid ?? '', call.siteId) ? [address] : [];
+      });
+      // SQL Server reads the clustered primary key in order.
+      rows.sort((a, b) => order(a).localeCompare(order(b)));
+      const limited = feed.maxItems > 0 ? rows.slice(0, feed.maxItems) : rows;
+      const pageOf = iteratorPage(limited.length, feed.nextN, call.url);
+      const pageRows = pageOf.positions.flatMap((position) => (limited[position] === undefined ? [] : [limited[position]]));
+      return { page: pageOf, beans: await heldAddressBeans(call, observer, pageRows) };
+    },
+    (people) => Promise.resolve(people),
+  );
+  let items = await itemsOf(call, beans);
   if (reorder !== undefined) items = reorderByIds(items, reorder);
   return packagePage(call, page, items, scopeBaseUrl(call, 'findmany'));
 }
@@ -1903,7 +1956,7 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
         );
       }
       if (err instanceof LegacyServiceUnavailableError || err instanceof AuthDenial) throw err;
-      request.log.error({ err }, 'unhandled JSON API error');
+      request.log.error({ error: serializeError(err) }, 'unhandled JSON API error');
       // catch (Any e) reports params.method as the failing operation had set it.
       return sendLegacyResponse(reply, legacyErrorResponse('server_error', { method: call.method, params, methodCtx }));
     }

@@ -78,7 +78,7 @@ export const SITE_A = TENANT_A.siteId;
 export const DEFAULT_SITE = 'default';
 
 /** configBean values of the JSON API routes, fixed so no `MURA_*` variable of the host is read. */
-export const LEGACY_SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '' });
+export const LEGACY_SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '', sessionTimeout: 180 });
 
 const USERS_MODULE_ROLE = moduleRole('00000000000000000000000000000000008');
 const SITE_MANAGER_MODULE_ROLE = moduleRole('00000000000000000000000000000000000');
@@ -205,7 +205,7 @@ export function registryAnswer(sql: string, values: readonly unknown[]): QueryRe
   const sorted = [...REGISTRY_ROWS].sort((a, b) => String(a.site_id).localeCompare(String(b.site_id), 'en'));
   let rows = sorted;
   if (/WHERE lower\(site_id\) = lower\(\$1\)/.test(sql)) rows = sorted.filter((row) => String(row.site_id).toLowerCase() === String(first).toLowerCase());
-  else if (/WHERE public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1/.test(sql)) {
+  else if (/WHERE \(public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1\)/.test(sql)) {
     rows = sorted.filter((row) => row.public_user_pool_tenant === first || row.private_user_pool_tenant === first);
   } else if (/WHERE tenant_id = \$1/.test(sql)) rows = sorted.filter((row) => row.tenant_id === first);
   const pooled = /SELECT (\w+) AS pool_tenant/.exec(sql)?.[1];

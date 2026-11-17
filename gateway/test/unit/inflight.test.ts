@@ -49,6 +49,12 @@ const keys = (rows: readonly InflightRow[]): string[][] => rows.map((row) => [ro
 
 const isInflightDelete = (query: RecordedQuery): boolean => INFLIGHT_DELETE.test(query.text);
 
+async function collected<T>(pages: AsyncIterable<T[]>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const page of pages) items.push(...page);
+  return items;
+}
+
 /** Statements deleting from `gateway.inflight` that `fn` issued. */
 async function inflightDeletesOf(fn: () => Promise<unknown>): Promise<RecordedQuery[]> {
   const from = db.queries.length;
@@ -249,6 +255,69 @@ describe('orphan evidence', () => {
   });
 });
 
+describe('abandoned exchanges', () => {
+  let live: InflightStore;
+
+  beforeEach(async () => {
+    db.heartbeat('gw-live', 0);
+    db.heartbeat('gw-b', 0);
+    live = store('gw-live');
+    await live.register({ requestId: 'live-target', route: ROUTE_TARGET, side: 'target' });
+    await live.register({ requestId: 'live-running', route: ROUTE_TARGET, side: 'target' });
+    await live.register({ requestId: 'live-legacy', route: ROUTE_LEGACY, side: 'legacy' });
+    await store('gw-b').register({ requestId: 'live-target', route: ROUTE_TARGET, side: 'target' });
+  });
+
+  it("marks only the instance's own row, once, and keeps it", async () => {
+    expect(await live.abandon('live-target')).toBe(true);
+    expect(await live.abandon('live-target')).toBe(false);
+    expect(await live.abandon('absent')).toBe(false);
+
+    expect(db.tables.inflight.map((row) => [row.instance_id, row.request_id, row.abandoned_at])).toEqual([
+      ['gw-live', 'live-target', T0],
+      ['gw-live', 'live-running', null],
+      ['gw-live', 'live-legacy', null],
+      ['gw-b', 'live-target', null],
+    ]);
+  });
+
+  it("keeps a live instance's abandoned and running rows of one route in one v1 group, and splits them in v2 with the abandoned one orphaned", async () => {
+    await live.abandon('live-target');
+
+    expect((await live.summary()).map(({ instanceId, route, count }) => [instanceId, route, count])).toEqual([
+      ['gw-b', ROUTE_TARGET, 1],
+      ['gw-live', ROUTE_TARGET, 2],
+      ['gw-live', ROUTE_LEGACY, 1],
+    ]);
+    expect((await collected(live.orphanSummaryPages())).map(({ instanceId, route, count, orphaned }) => [instanceId, route, count, orphaned])).toEqual([
+      ['gw-b', ROUTE_TARGET, 1, false],
+      ['gw-live', ROUTE_TARGET, 1, false],
+      ['gw-live', ROUTE_TARGET, 1, true],
+      ['gw-live', ROUTE_LEGACY, 1, false],
+    ]);
+  });
+
+  it.each<{ name: string; requestId: string; input: InflightClearInput }>([
+    { name: 'gates closed on its units', requestId: 'live-target', input: { side: 'target', evidence: gatesClosed(TARGET_UNITS) } },
+    { name: 'a controlled legacy restart', requestId: 'live-legacy', input: { side: 'legacy', evidence: legacyRestart() } },
+  ])("clears a live instance's abandoned row with $name, leaving its other rows", async ({ requestId, input }) => {
+    await live.abandon(requestId);
+
+    const result = await live.clearOrphans({ ...input, instanceIds: ['gw-live', 'gw-b'] });
+
+    expect(keys(result.rows)).toEqual([['gw-live', requestId]]);
+    expect(db.tables.inflight).toHaveLength(3);
+  });
+
+  it('clears no abandoned row with evidence older than its start or gates that leave a unit open', async () => {
+    await live.abandon('live-target');
+
+    expect(await live.clearOrphans({ side: 'target', evidence: gatesClosed(TARGET_UNITS, secondsFromT0(-1)) })).toEqual({ cleared: 0, rows: [] });
+    expect(await live.clearOrphans({ side: 'target', evidence: gatesClosed(['identity.permission']) })).toEqual({ cleared: 0, rows: [] });
+    expect(db.tables.inflight).toHaveLength(4);
+  });
+});
+
 describe('time never clears', () => {
   let a: InflightStore;
   let live: InflightStore;
@@ -273,6 +342,11 @@ describe('time never clears', () => {
       { instanceId: 'gw-a', route: ROUTE_LEGACY, side: 'legacy', count: 1, oldestStartedAt: expect.any(String) },
       { instanceId: 'gw-live', route: ROUTE_LEGACY, side: 'legacy', count: 1, oldestStartedAt: expect.any(String) },
     ]);
+    expect((await collected(live.orphanSummaryPages())).map(({ instanceId, orphaned }) => [instanceId, orphaned])).toEqual([
+      ['gw-a', true],
+      ['gw-a', true],
+      ['gw-live', false],
+    ]);
     expect(keys(orphaned)).toEqual([
       ['gw-a', 'a-legacy'],
       ['gw-a', 'a-target'],
@@ -287,6 +361,7 @@ describe('time never clears', () => {
       await inflightDeletesOf(() => live.list()),
       await inflightDeletesOf(() => live.list({ side: 'legacy', routes: [ROUTE_LEGACY], instanceIds: ['gw-a'] })),
       await inflightDeletesOf(() => live.summary()),
+      await inflightDeletesOf(() => collected(live.orphanSummaryPages())),
     ];
     expect(quiet.flat()).toEqual([]);
     expect(db.tables.inflight).toHaveLength(3);

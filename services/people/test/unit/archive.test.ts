@@ -41,6 +41,7 @@ import {
   SYSTEM_USER_A_PERSON,
   TENANT_B_ARCHIVE,
 } from '../helpers/fixtures.js';
+import { UNEXPECTED_DB_FAILURES, captureRequestLogs, expectSerializedErrorLog } from '../helpers/request-logs.js';
 
 type ArchiveRepo = ArchiveDeps['repo'];
 type Tx = Parameters<ArchiveRepo['findPerson']>[0];
@@ -285,8 +286,8 @@ const REGISTERED_SITES: readonly Pick<TenantFixture, 'siteId' | 'tenantId'>[] = 
 const POOL_FIXTURES: readonly TenantFixture[] = [TENANT_A, TENANT_B, TENANT_UMBRELLA];
 const POOL_KINDS = { public_user_pool_tenant: 'publicUser', private_user_pool_tenant: 'privateUser' } as const;
 
-const SITE_LOOKUP = /tenant_registry"? WHERE lower\(site_id\) = lower\(\$1\)$/;
-const POOL_LOOKUP = /^SELECT (\w+) AS pool_tenant FROM \S*tenant_registry"? WHERE tenant_id = \$1$/;
+const SITE_LOOKUP = /tenant_registry"? WHERE lower\(site_id\) = lower\(\$1\) AND NOT deleted$/;
+const POOL_LOOKUP = /^SELECT (\w+) AS pool_tenant FROM \S*tenant_registry"? WHERE tenant_id = \$1 AND NOT deleted$/;
 const PERSON_BY_ID = /^SELECT \* FROM \S*\bperson"? WHERE tenant_id = \$1 AND userid\b/;
 const ARCHIVE_BY_PERSON = /^SELECT \* FROM \S*\bperson_archive"? WHERE tenant_id = \$1 AND person_id\b/;
 const ARCHIVE_INSERT = /^INSERT INTO \S*\bperson_archive"? \(/;
@@ -473,6 +474,19 @@ describe('the fixture archive route over the recording database', () => {
 
     expectFixtureError(response, LEGACY_ERROR_MAP.server_error);
     expect(t.db.writes()).toEqual([]);
+  });
+
+  it.each(UNEXPECTED_DB_FAILURES)('answers server_error for %s, logging only its serialized record', async (_label, failure, safeMessage) => {
+    const logs = captureRequestLogs(t.app);
+    t.db.respond(PERSON_BY_ID, () => {
+      throw failure;
+    });
+
+    const response = await callArchive(t.app, { userId: SYSTEM_USER_A_PERSON.userid, headers: await actorHeaders(SITE_ADMIN_A) });
+
+    expectFixtureError(response, LEGACY_ERROR_MAP.server_error);
+    expect(t.db.writes()).toEqual([]);
+    expectSerializedErrorLog(logs, 'unhandled fixture exception', safeMessage);
   });
 
   it('answers the legacy 503 when identity cannot be reached for the CSRF check, reading no person', async () => {

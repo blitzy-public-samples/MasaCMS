@@ -23,6 +23,7 @@ import {
   type AddressInput,
   type ExtendAttributeFilter,
   type ExtendDataValues,
+  type HaltedRosterCursor,
   type PeopleRepository,
   type PersonArchiveInput,
   type PersonCursor,
@@ -763,21 +764,58 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       await inTenant((tx) => repo.setRosterOperationState(tx, never.operation_id, { state: 'rolled-back' }));
       const ids = [resolved, halted, never].map((row) => row.operation_id);
 
-      const listed = (await inTenant((tx) => repo.listHaltedRosterOperations(tx))).filter((row) => ids.includes(row.operation_id));
+      const page = await inTenant((tx) => repo.pageHaltedRosterOperations(tx));
+      const listed = page.rows.filter((row) => ids.includes(row.operation_id));
 
+      expect(page.next).toBeNull();
       expect(listed.map((row) => [row.operation_id, row.state, row.halted_at])).toEqual([
         [resolved.operation_id, 'rolled-back', LATER],
         [halted.operation_id, 'halted', second],
       ]);
-      expect(await inTenant((tx) => repo.listHaltedRosterOperations(tx), TENANT_B.tenantId)).toEqual([]);
+      expect(await inTenant((tx) => repo.pageHaltedRosterOperations(tx), TENANT_B.tenantId)).toEqual({ rows: [], next: null });
       expect((await changelog('roster_operation', resolved.operation_id)).map((change) => [change.op, change.columns.includes('halted_at')])).toEqual([
         ['insert', true],
         ['update', true],
         ['update', false],
         ['update', false],
       ]);
-      const plan = planNodes(await planOf((tx) => repo.listHaltedRosterOperations(tx), 'roster_operation'));
+      const plan = planNodes(await planOf((tx) => repo.pageHaltedRosterOperations(tx), 'roster_operation'));
       expect(plan.map((node) => node['Index Name'])).toContain('roster_operation_tenant_halted_idx');
+    });
+
+    it('pages the halted operations of the tenant in (started_at, operation_id) order with only their summary columns, each page resuming after its next, through the partial index', async () => {
+      const halts: RosterOperationRow[] = [];
+      for (const at of [NOW, LATER, NOW, LATER]) {
+        repo = createPeopleRepository({ clock: fixedClock(at), schema: handle.schema });
+        const op = await startedOperation();
+        await inTenant((tx) => repo.setRosterOperationState(tx, op.operation_id, { state: 'halted', haltedAt: LATER }));
+        halts.push(op);
+      }
+      const whole = await inTenant((tx) => repo.pageHaltedRosterOperations(tx, { limit: 1000 }));
+      const pages: Awaited<ReturnType<PeopleRepository['pageHaltedRosterOperations']>>[] = [];
+      let after: HaltedRosterCursor | null = null;
+      do {
+        const page = await inTenant((tx) => repo.pageHaltedRosterOperations(tx, { after, limit: 2 }));
+        pages.push(page);
+        after = page.next;
+      } while (after !== null && pages.length <= whole.rows.length);
+
+      const key = (row: { started_at: Date; operation_id: string }): string => `${row.started_at.toISOString()} ${row.operation_id}`;
+      const mine = (rows: readonly { operation_id: string }[]): string[] => rows.map((row) => row.operation_id).filter((id) => halts.some((op) => op.operation_id === id));
+      expect(mine(whole.rows)).toEqual([...halts].sort((a, b) => (key(a) < key(b) ? -1 : 1)).map((op) => op.operation_id));
+      expect(whole.rows.map(key)).toEqual(whole.rows.map(key).sort());
+      expect(pages.flatMap((page) => page.rows)).toEqual(whole.rows);
+      expect(pages.map((page) => page.rows.length).every((length) => length >= 1 && length <= 2)).toBe(true);
+      expect(pages.slice(0, -1).map((page) => page.next)).toEqual(pages.slice(0, -1).map((page) => ({ startedAt: page.rows.at(-1)?.started_at, operationId: page.rows.at(-1)?.operation_id })));
+      expect(new Set(whole.rows.flatMap((row) => Object.keys(row)))).toEqual(
+        new Set(['operation_id', 'kind', 'user_id', 'state', 'started_at', 'updated_at', 'identity_unreachable_since', 'halted_at']),
+      );
+      const [first] = whole.rows;
+      if (first === undefined) throw new Error('no halted operation listed');
+      const resumed = planNodes(
+        await planOf((tx) => repo.pageHaltedRosterOperations(tx, { after: { startedAt: first.started_at, operationId: first.operation_id }, limit: 2 }), 'roster_operation'),
+      );
+      expect(resumed.map((node) => node['Index Name'])).toContain('roster_operation_tenant_halted_idx');
     });
 
     it('rethrows other insert failures', async () => {
@@ -1359,6 +1397,22 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(none.filter((sql) => sql.includes(`"${handle.schema}"."${table}"`))).toEqual([]);
     });
 
+    it('findAddresses reads every requested id in one statement, keyed by the id as given, each as findAddress finds it and an unmatched id absent', async () => {
+      const userid = cfUuid();
+      const first = await inTenant((tx) => repo.insertAddress(tx, { userid, city: 'Oslo' }));
+      const second = await inTenant((tx) => repo.insertAddress(tx, { userid, city: 'Bergen' }));
+      const requested = [first.addressid.toLowerCase(), `${second.addressid}  `, first.addressid.toLowerCase(), cfUuid()];
+      const statements: string[] = [];
+      const found = await inTenant((tx) => repo.findAddresses(recorded(tx, statements), requested));
+      expect(statements.filter((sql) => sql.includes(`"${handle.schema}"."user_address"`))).toHaveLength(1);
+      expect([...found.keys()]).toEqual([first.addressid.toLowerCase(), `${second.addressid}  `]);
+      for (const [id, row] of found) expect(row).toEqual(await inTenant((tx) => repo.findAddress(tx, id)));
+      expect(await inTenant((tx) => repo.findAddresses(tx, [first.addressid]), TENANT_B.tenantId)).toEqual(new Map());
+      const none: string[] = [];
+      expect(await inTenant((tx) => repo.findAddresses(recorded(tx, none), []))).toEqual(new Map());
+      expect(none.filter((sql) => sql.includes(`"${handle.schema}"."user_address"`))).toEqual([]);
+    });
+
     describe('planned over analyzed filler statistics', () => {
       // Committed in a tenant no other test reads, then analyzed, so the plans no longer depend on the statistics autovacuum last gathered.
       const tenant = TENANT_UMBRELLA.tenantId;
@@ -1383,6 +1437,7 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
         ['findPerson', (tx) => repo.findPerson(tx, cfUuid()), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
         ['findPersons', (tx) => repo.findPersons(tx, [cfUuid()]), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
         ['findAddress', (tx) => repo.findAddress(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
+        ['findAddresses', (tx) => repo.findAddresses(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
         ['listAddresses', (tx) => repo.listAddresses(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
         ['listAddressesOf', (tx) => repo.listAddressesOf(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
         ['listInterestsOf', (tx) => repo.listInterestsOf(tx, [cfUuid()]), 'user_interest', 'user_interest_tenant_ci_key_uidx', 'userid'],

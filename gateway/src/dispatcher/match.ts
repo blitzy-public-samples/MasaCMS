@@ -97,7 +97,10 @@ export interface RelayOutcome {
 
 /** A keyed request with the entry it matched, if any. */
 export interface RoutedOutcome {
-  /** The request's route key; for a request halted to legacy, the key it would have had, which its legacy semantics read. */
+  /**
+   * The request's route key; for a request halted to legacy, the key it would have had, which its legacy semantics read;
+   * for a legacy-bound opt2 request, the key legacy's own pipeline serves it under.
+   */
   readonly result: RouteKeyResult;
   readonly entry: CutoverEntry | undefined;
   readonly destination: Exclude<Destination, RelayDestination>;
@@ -190,6 +193,24 @@ function reloadRouting(reload: CutoverEntry | undefined, served: CutoverEntry | 
   return { entry, holdRoutes: Object.freeze(holdRoutes) };
 }
 
+/** A request's key, the entry it routes under, the scan facts it read and, for a reload, the routes also holding it. */
+type KeyedMatch = Pick<RoutedOutcome, 'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes'>;
+
+/** The scanned key of `request` under `options` and the entry it routes under in `index`, if any. */
+function keyedMatch(request: ScannedRouteKeyRequest, options: RouteKeyOptions, index: RoutingIndex | undefined): KeyedMatch {
+  const { result: keyed, urlScope, scanFailed, unhalted } = scannedRouteKey(request, options);
+  // A key the halt variant replaced has no entry, so legacy serves the request as its unhalted key's legacy entry would.
+  const result = unhalted ?? keyed;
+  if (index === undefined) return { result, entry: undefined, urlScope, scanFailed };
+  const matched = entryOf(index, result);
+  // A reload is never halted: scannedRouteKey keys it as sent.
+  if (result.afterReload !== undefined) {
+    return { result, urlScope, scanFailed, ...reloadRouting(matched, entryOf(index, result.afterReload)) };
+  }
+  const entry = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
+  return { result, entry, urlScope, scanFailed };
+}
+
 /** Path and `?query` (or '') of a request target. */
 function splitTarget(url: string): { path: string; search: string } {
   const queryAt = url.indexOf('?');
@@ -221,6 +242,7 @@ function relayOf(path: string, search: string): RelayDestination {
 /** Creates the matcher; the storage HMAC key is read on first signed-URL use, only for the local adapter. */
 export function createMatcher(deps: MatcherDeps): Matcher {
   const options: RouteKeyOptions = { ...deps.routeKeyOptions, variants: deps.variants.variants };
+  const legacyOptions: RouteKeyOptions = { ...options, opt2Namespaces: false };
   let hmacKey: Promise<Buffer> | undefined;
 
   /** The memoised key read; a failed read is forgotten so the next request retries it. */
@@ -307,13 +329,10 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
         multipartFileNames: body.files,
       };
-      const { result: keyed, urlScope, scanFailed, unhalted } = scannedRouteKey(keyRequest, options);
-      // A key the halt variant replaced has no entry, so legacy serves the request as its unhalted key's legacy entry would.
-      const result = unhalted ?? keyed;
+      const keyed = keyedMatch(keyRequest, options, index);
       const routed = (
-        entry: CutoverEntry | undefined,
+        { result, entry, urlScope, scanFailed, holdRoutes }: KeyedMatch,
         destination: RoutedOutcome['destination'],
-        holdRoutes?: readonly string[],
       ): RoutedOutcome => ({
         result,
         entry,
@@ -324,17 +343,15 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         ...(holdRoutes === undefined ? {} : { holdRoutes }),
       });
 
-      if (index === undefined) return routed(undefined, unavailable('no-active-version'));
-      const matched = entryOf(index, result);
-      const reload = result.afterReload === undefined ? undefined : reloadRouting(matched, entryOf(index, result.afterReload));
-      const halted = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
-      const entry = reload === undefined ? halted : reload.entry;
-      const holdRoutes = reload?.holdRoutes;
-      if (entry === undefined) return routed(undefined, LEGACY, holdRoutes);
+      if (index === undefined) return routed(keyed, unavailable('no-active-version'));
+      const { result, entry } = keyed;
       // The legacy bridge is reachable only from the gateway and migration, never through the edge.
-      if (entry.owningService === 'gateway') return routed(entry, NOT_FOUND, holdRoutes);
-      if (entry.state === 'legacy') return routed(entry, LEGACY, holdRoutes);
-      return routed(entry, await targetDestination(request, body, result, entry), holdRoutes);
+      if (entry?.owningService === 'gateway') return routed(keyed, NOT_FOUND);
+      if (entry === undefined || entry.state === 'legacy') {
+        // Legacy serves an OPT-2 namespace path as one of its own (a page, through its root front controller), so it routes as that.
+        return routed(result.family === 'opt2' ? keyedMatch(keyRequest, legacyOptions, index) : keyed, LEGACY);
+      }
+      return routed(keyed, await targetDestination(request, body, result, entry));
     },
   };
 }

@@ -51,6 +51,7 @@ interface Statements {
   readonly jobPage: string;
   readonly unfinishedJobs: string;
   readonly jobObjects: string;
+  readonly jobObjectKey: string;
 }
 
 /** The quoted catalogue columns of `def`, in catalogue order. */
@@ -77,6 +78,7 @@ function statementsFor(schema: string): Statements {
       `SELECT "job_id", "object_key", "output_sha256", "content_type" FROM ${jobTable}` +
       ' WHERE "object_key" IS NOT NULL AND ($1::bpchar IS NULL OR "job_id" COLLATE "C" > $1::bpchar)' +
       ' ORDER BY "job_id" COLLATE "C" LIMIT $2',
+    jobObjectKey: `SELECT "object_key" FROM ${jobTable} WHERE "job_id" = $1`,
   });
 }
 
@@ -135,6 +137,13 @@ export async function listJobObjects(tx: TenantTx, paging: JobObjectPaging = {})
     ...(row.content_type === null ? {} : { contentType: row.content_type }),
   }));
   return { objects, next: rows.length > limit ? (objects.at(-1)?.jobId ?? null) : null };
+}
+
+/** The `object_key` of the tenant's job `jobId`; null when there is no such job or it names no object. */
+export async function findJobObjectKey(tx: TenantTx, jobId: string): Promise<string | null> {
+  // No read gate: the reverse projector reads the bytes while a window or transition holds the unit's gate.
+  const { rows } = await tx.query<Pick<ExportJobRow, 'object_key'>>(statementsFor(tx.schema).jobObjectKey, [jobId]);
+  return rows[0]?.object_key ?? null;
 }
 
 /** Every stored output of the tenant's manifest in job-id order, read `pageSize` at a time so one page is held at once. */

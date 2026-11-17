@@ -17,8 +17,10 @@ case $# in
 usage: harness/repro/up.sh
 
 Boots legacy Masa (CommandBox server opt2-legacy) and the OPT-2 target stack, activates cut-over version v0001,
-seeds both sides and records the stack in ${OPT2_STATE_DIR:-$HOME/.opt2/state}/up.json. Takes no arguments; it is
-configured through the environment below. harness/repro/down.sh stops the stack and releases the run lock.
+seeds both sides and records the stack in ${OPT2_STATE_DIR:-$HOME/.opt2/state}/up.json. When the legacy fixtures are
+unavailable, every process reads the cut-over versions built for that case in ${OPT2_STATE_DIR}/cutover. Takes no
+arguments; it is configured through the environment below. harness/repro/down.sh stops the stack and releases the
+run lock.
 
 Environment (* = secret):
   required
@@ -71,6 +73,9 @@ CAPTURE_FILE="$OPT2_PRISTINE_DIR/server-capture.json"
 NATIVE_TASKS_FILE="$OPT2_PRISTINE_DIR/native-tasks.json"
 ENVIRONMENT_FILE="$OPT2_STATE_DIR/baseline/environment.json"
 FIXTURES_FILE="$OPT2_STATE_DIR/fixtures.json"
+COMMITTED_CUTOVER_DIR="$REPO/gateway/cutover"
+# The fixtures-unavailable cut-over directory, rebuilt on every run that needs it.
+UNAVAILABLE_CUTOVER_DIR="$OPT2_STATE_DIR/cutover"
 SERVICES=(identity people programs-sites strategies-content communications reporting surveys timesheets finance e-signature stub)
 # Setup §3's packages, plus those cfspreadsheet, cfdocument and the bridge's cfschedule need.
 CFPM_REQUIRED=(sqlserver image mail zip feed caching orm ajax document spreadsheet scheduler)
@@ -118,7 +123,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# Dies naming the first fixed target port that equals legacy's PORT or is already in use.
+# Dies naming the first fixed target port that equals legacy's PORT or is already in use, or a foreign OTLP listener.
 check_target_ports() {
   local var
   while IFS= read -r var; do
@@ -127,6 +132,7 @@ check_target_ports() {
       die "port ${!var} ($var) is already in use: stop what listens on it (harness/repro/down.sh for an OPT-2 stack)"
     fi
   done < <(compgen -v OPT2_PORT_)
+  repro_otelcol_pid >/dev/null
 }
 
 # Exports TZ as legacy's JVM resolves its zone: OPT2_TZ, else -Duser.timezone in its JVM arguments, else TZ or the system zone.
@@ -179,12 +185,16 @@ stop_coldfusion() {
   wait_port_closed "$LEGACY_PORT" 120
 }
 
+# Prints the cfpm.sh of the captured server home, which opt2-legacy shares.
+cfpm_bin() {
+  printf '%s\n' "$(legacy_server_home)/WEB-INF/cfusion/bin/cfpm.sh"
+}
+
 # Installs the CFPM_REQUIRED packages the legacy server lacks (setup's missing-tag rule), ColdFusion stopped.
 ensure_cfpm_packages() {
-  local home cfpm out line name list
+  local cfpm out line name list
   local -a installed=() missing=()
-  home="$(legacy_server_home)"
-  cfpm="$home/WEB-INF/cfusion/bin/cfpm.sh"
+  cfpm="$(cfpm_bin)"
   [[ -x $cfpm ]] || die "no cfpm at $cfpm: the captured server home must hold the installed ACF 2023 engine"
   out="$("$cfpm" list 2>&1)" || die "cfpm list failed: $out"
   while IFS= read -r line; do
@@ -199,6 +209,38 @@ ensure_cfpm_packages() {
   printf 'opt2: installing missing cfpm packages: %s\n' "$list" >&2
   "$cfpm" install "$list" >&2 || die "cfpm install $list failed"
   printf 'opt2: installed cfpm packages: %s\n' "$list" >&2
+}
+
+# Runs legacy-fixtures/load-fixtures.sh with its arguments; both runs list cfpm packages from the same server home,
+# since opt2-legacy is registered only at step 9.
+load_fixtures() {
+  MAILPIT_API_URL="${MAILPIT_API_URL:-$MAILPIT_API_LOCAL}" CFPM_CMD="${CFPM_CMD:-$(cfpm_bin)}" \
+    "$REPO/legacy-fixtures/load-fixtures.sh" "$@" >&2
+}
+
+# select_cutover_versions <available>: exports OPT2_CUTOVER_DIR at the validated fixtures-unavailable build when
+# fixtures are unavailable, else unsets it so the committed versions apply; a stale build is removed either way.
+select_cutover_versions() {
+  local file
+  rm -rf -- "$UNAVAILABLE_CUTOVER_DIR"
+  if [[ $1 == true ]]; then
+    unset OPT2_CUTOVER_DIR
+    printf 'opt2: fixtures available; cut-over versions from %s\n' "$COMMITTED_CUTOVER_DIR" >&2
+    return 0
+  fi
+  mkdir -p -- "$UNAVAILABLE_CUTOVER_DIR"
+  for file in cutover-table.schema.json variants.json groups.json; do
+    cp -- "$COMMITTED_CUTOVER_DIR/$file" "$UNAVAILABLE_CUTOVER_DIR/$file" || die "cannot copy $file to $UNAVAILABLE_CUTOVER_DIR"
+  done
+  OPT2_CUTOVER_DIR="$UNAVAILABLE_CUTOVER_DIR" npm --prefix "$REPO/gateway" run --silent cutover:versions -- \
+    --fixtures unavailable >&2 || die "cannot build the fixtures-unavailable cut-over versions in $UNAVAILABLE_CUTOVER_DIR"
+  OPT2_CUTOVER_DIR="$UNAVAILABLE_CUTOVER_DIR" npm --prefix "$REPO/gateway" run --silent cutover:validate >&2 ||
+    die "the fixtures-unavailable cut-over versions in $UNAVAILABLE_CUTOVER_DIR fail validation (findings above)"
+  # v0001 is activated before seeding, so both builds must share it byte for byte.
+  cmp -s -- "$COMMITTED_CUTOVER_DIR/versions/v0001.json" "$UNAVAILABLE_CUTOVER_DIR/versions/v0001.json" ||
+    die "the fixtures-unavailable v0001 differs from $COMMITTED_CUTOVER_DIR/versions/v0001.json"
+  export OPT2_CUTOVER_DIR="$UNAVAILABLE_CUTOVER_DIR"
+  printf 'opt2: fixtures unavailable; cut-over versions from %s\n' "$OPT2_CUTOVER_DIR" >&2
 }
 
 # Merges the JSON patch on stdin into up.json through a mode-0600 file, since process entries carry role passwords.
@@ -372,6 +414,10 @@ if [[ -e $OPT2_PRISTINE_DIR/pristine.json ]]; then
 else
   pristine_take
 fi
+# Selected before any target process or CLI starts, so none reads or caches versions of the other capability.
+load_fixtures --check-only || die "legacy-fixtures/load-fixtures.sh --check-only failed unexpectedly"
+FIXTURES_AVAILABLE="$(json_get "$FIXTURES_FILE" available)" || die "$FIXTURES_FILE records no availability"
+select_cutover_versions "$FIXTURES_AVAILABLE"
 
 step 6 "databases"
 summary="$(OPT2_ENV=local "$OPT2_DB" bootstrap --target local)" || die "opt2-db bootstrap --target local failed: $summary"
@@ -423,6 +469,12 @@ zone="$(json_get "$ENVIRONMENT_FILE" settings.timeZone)" || die "$ENVIRONMENT_FI
   die "legacy ColdFusion runs in time zone $zone but the target processes run with TZ=$TZ: set OPT2_TZ=$zone and rerun"
 ping="$(json_get "$ENVIRONMENT_FILE" settings.ping)" || die "$ENVIRONMENT_FILE records no ping setting"
 [[ $ping == false ]] || die "legacy reports ping=$ping although it was started with MURA_PING=false"
+writers_closed="$(json_get "$ENVIRONMENT_FILE" settings.startup.writersClosed)" ||
+  die "$ENVIRONMENT_FILE records no start-up writer guards"
+if [[ $writers_closed != true ]]; then
+  open_guards="$(json_get "$ENVIRONMENT_FILE" settings.startup.openGuards)" || open_guards="none recorded"
+  die "legacy application start-up can write target units outside a window; open guards: $open_guards (environment.md Settings)"
+fi
 
 step 11 "activate $ACTIVE_VERSION"
 harness_run repro:cutover -- activate "$ACTIVE_VERSION" --gateway-url "$OPT2_GATEWAY_ORIGIN_LOCAL" >&2 ||
@@ -431,9 +483,10 @@ repoint_site_monitor
 
 step 12 "seed and backfill"
 npm --prefix "$REPO/legacy-fixtures/seed" run --silent generate >&2 || die "seed generation failed"
-MAILPIT_API_URL="${MAILPIT_API_URL:-$MAILPIT_API_LOCAL}" "$REPO/legacy-fixtures/load-fixtures.sh" >&2 ||
-  die "legacy-fixtures/load-fixtures.sh failed unexpectedly"
+load_fixtures || die "legacy-fixtures/load-fixtures.sh failed unexpectedly"
 available="$(json_get "$FIXTURES_FILE" available)" || die "$FIXTURES_FILE records no availability"
+[[ $available == "$FIXTURES_AVAILABLE" ]] ||
+  die "fixtures available=$available, but step 5 found available=$FIXTURES_AVAILABLE and selected cut-over versions for it: rerun up.sh"
 if [[ $available != true ]]; then
   printf 'opt2: legacy fixtures unavailable (%s); seeding the synthetic services directly\n' \
     "$(json_get "$FIXTURES_FILE" reason 2>/dev/null || printf 'no reason recorded')" >&2
@@ -459,7 +512,7 @@ ports=()
 for name in "${TARGET_START_ORDER[@]}"; do ports+=("$name" "$(process_port "$name")"); done
 # shellcheck disable=SC2016 # JavaScript source
 node -e '
-const [snapshot, startedAt, nativeTaskExisted, serverName, origin, deviation, ...pairs] = process.argv.slice(1);
+const [snapshot, startedAt, nativeTaskExisted, serverName, origin, deviation, cutoverDir, ...pairs] = process.argv.slice(1);
 const ports = {};
 for (let i = 0; i + 1 < pairs.length; i += 2) ports[pairs[i]] = Number(pairs[i + 1]);
 process.stdout.write(JSON.stringify({
@@ -469,13 +522,14 @@ process.stdout.write(JSON.stringify({
   nativeTaskExisted: nativeTaskExisted === "true",
   legacy: { serverName, origin },
   legacyDeviation: deviation === "" ? null : deviation,
+  cutoverDir: cutoverDir === "" ? null : cutoverDir,
 }));
 ' -- "$SNAPSHOT_JSON" "$STARTED_AT" "$NATIVE_TASK_EXISTED" "$LEGACY_SERVER_NAME" "$(legacy_origin)" "$LEGACY_DEVIATION" \
-  "${ports[@]}" | write_up_state --fixtures-file "$FIXTURES_FILE"
+  "${OPT2_CUTOVER_DIR:-}" "${ports[@]}" | write_up_state --fixtures-file "$FIXTURES_FILE"
 
 CURRENT_STEP="13 (done)"
 if [[ $SNAPSHOT_JSON == null ]]; then snapshot_text="no seed snapshot ($LEGACY_DEVIATION)"; else snapshot_text="seed snapshot S$seq backfilled"; fi
-printf 'OPT-2 stack up: gateway %s (cut-over %s), legacy %s (CommandBox server %s), %d target processes recorded in %s/up.json, fixtures available=%s, %s, TZ=%s. Stop it with harness/repro/down.sh.\n' \
-  "$OPT2_GATEWAY_ORIGIN_LOCAL" "$ACTIVE_VERSION" "$(legacy_origin)" "$LEGACY_SERVER_NAME" "${#TARGET_START_ORDER[@]}" \
-  "$OPT2_STATE_DIR" "$available" "$snapshot_text" "$TZ"
+printf 'OPT-2 stack up: gateway %s (cut-over %s of %s), legacy %s (CommandBox server %s), %d target processes recorded in %s/up.json, fixtures available=%s, %s, TZ=%s. Stop it with harness/repro/down.sh.\n' \
+  "$OPT2_GATEWAY_ORIGIN_LOCAL" "$ACTIVE_VERSION" "${OPT2_CUTOVER_DIR:-$COMMITTED_CUTOVER_DIR}" "$(legacy_origin)" \
+  "$LEGACY_SERVER_NAME" "${#TARGET_START_ORDER[@]}" "$OPT2_STATE_DIR" "$available" "$snapshot_text" "$TZ"
 

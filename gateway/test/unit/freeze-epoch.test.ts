@@ -213,6 +213,15 @@ describe('read refresh', () => {
   });
 });
 
+describe('freeze wait', () => {
+  it.each([
+    { name: 'DEFAULT_FREEZE_WAIT_MS', value: DEFAULT_FREEZE_WAIT_MS },
+    { name: 'FREEZE_WAIT_MS', value: FREEZE_WAIT_MS },
+  ])('sets $name to 30 000 ms', ({ value }) => {
+    expect(value).toBe(30_000);
+  });
+});
+
 describe('freeze', () => {
   let db: MemoryGatewayDb;
   let state: CutoverState;
@@ -252,14 +261,14 @@ describe('freeze', () => {
     expect(state.isFrozen(PERM_UPDATE)).toBe(false);
   });
 
-  it('keeps a frozen route waiting through 29 999 ms and answers false at 30 000 ms', async () => {
+  it('keeps a frozen route waiting through 29 999 ms by default and answers false at 30 000 ms', async () => {
     await state.freeze([PERM_UPDATE], 'op');
     let settled: boolean | undefined;
-    void state.waitUnfrozen(PERM_UPDATE, DEFAULT_FREEZE_WAIT_MS).then((value) => {
+    void state.waitUnfrozen(PERM_UPDATE).then((value) => {
       settled = value;
     });
 
-    await vi.advanceTimersByTimeAsync(DEFAULT_FREEZE_WAIT_MS - 1);
+    await vi.advanceTimersByTimeAsync(29_999);
     expect(settled).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1);
     expect(settled).toBe(false);
@@ -308,14 +317,14 @@ describe('frozen entries at the edge', () => {
         body: '{"apiversion":"v1","method":"people.persons.archive","error":{"code":"server_error","message":"Unhandled Exception"}}',
       },
     },
-  ])('holds a frozen $label for FREEZE_WAIT_MS, then answers the legacy 503 without reaching either side', async ({ route, request, expected }) => {
+  ])('holds a frozen $label for 30 000 ms, then answers the legacy 503 without reaching either side', async ({ route, request, expected }) => {
     const test = gateway as TestGateway;
     await fake.freeze([route], 'op');
     const wait = vi.spyOn(fake, 'waitUnfrozen').mockResolvedValue(false);
 
     const res = await test.app.inject(request());
 
-    expect(wait).toHaveBeenCalledExactlyOnceWith(route, FREEZE_WAIT_MS);
+    expect(wait).toHaveBeenCalledExactlyOnceWith(route, 30_000);
     expect(res.statusCode).toBe(503);
     expect(res.headers['content-type']).toBe(expected.headers['Content-Type']);
     expect(res.body).toBe(expected.body);
@@ -337,7 +346,7 @@ describe('frozen entries at the edge', () => {
 
     const res = await test.app.inject(request());
 
-    expect(wait).toHaveBeenCalledExactlyOnceWith(route, FREEZE_WAIT_MS);
+    expect(wait).toHaveBeenCalledExactlyOnceWith(route, 30_000);
     expect(res.statusCode).toBe(200);
     const legacyPaths = pageRequests(test.legacy).map((req) => req.path);
     const people = test.targets.people?.requests.map((req) => req.path) ?? [];
@@ -352,7 +361,7 @@ describe('frozen entries at the edge', () => {
 
     const res = await test.app.inject(reloadTargetingPost());
 
-    expect(wait).toHaveBeenCalledExactlyOnceWith(route, FREEZE_WAIT_MS);
+    expect(wait).toHaveBeenCalledExactlyOnceWith(route, 30_000);
     const expected = apiUnavailableResponse();
     expect(res.statusCode).toBe(503);
     expect(res.headers['content-type']).toBe(expected.headers['Content-Type']);
@@ -372,12 +381,12 @@ describe('frozen entries at the edge', () => {
 
     const res = await test.app.inject(reloadTargetingPost());
 
-    expect(wait).toHaveBeenCalledExactlyOnceWith(route, FREEZE_WAIT_MS);
+    expect(wait).toHaveBeenCalledExactlyOnceWith(route, 30_000);
     expect(res.statusCode).toBe(200);
     expect(pageRequests(test.legacy).map((req) => req.url)).toEqual([RELOAD_TARGETING_URL]);
     expect(targetRequests(test)).toBe(0);
     expect(test.migration.windows).toEqual([
-      expect.objectContaining({ routeKey: TARGETING_SAVE, units: ['content.variation_targeting'], scope: { table: true } }),
+      expect.objectContaining({ routeKey: TARGETING_SAVE, units: ['content.variation_targeting', 'content.content'], scope: { table: true } }),
     ]);
   });
 });
@@ -514,7 +523,7 @@ describe('visibility and status', () => {
       frozen: [PERM_UPDATE],
       acknowledgedEpoch: 1,
       inflight: [],
-      sessionMode: 'legacy-primary',
+      sessionMode: 'target-primary',
     });
     expect(status.groupAuthority).toEqual(a.active()?.table.groupAuthority);
     expect(status.instances).toEqual([

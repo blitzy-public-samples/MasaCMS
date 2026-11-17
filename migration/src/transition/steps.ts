@@ -23,7 +23,7 @@ import {
   type InflightRow,
   type WaitBudget,
 } from '../cutover/index.js';
-import { diffSnapshotManifests, removeDroppedObjects, transferFiles } from '../files/index.js';
+import { removeDroppedObjects, streamChangedEntries, transferFiles } from '../files/index.js';
 import {
   LegacyRestartError,
   RestartUnavailableError,
@@ -605,7 +605,7 @@ async function stopNewWork(run: StepRun): Promise<void> {
   await awaitEpochOrAbort(run, epoch, 2);
 }
 
-/** Waits for live in-flight writes on the frozen entries; rows of dead instances come back as orphans. */
+/** Waits for live in-flight writes on the frozen entries; orphaned rows (instance dead, or exchange abandoned) come back as orphans. */
 async function awaitInflight(run: StepRun): Promise<InflightRow[]> {
   try {
     return (await run.ctx.gateway.awaitInflightDrained(run.plan.frozenRoutes, gatewayBudget(run.ctx))).orphans;
@@ -942,9 +942,8 @@ async function transferMovedFiles(run: StepRun, snapshot: SnapshotRecord, fileFe
   const bases = await Promise.all(owners.map(async (owner) => (await ctx.owners.watermark(owner, FILES_TABLE, 'forward'))?.snapshotSeq ?? null));
   const from = bases.some((base) => base === null) ? null : Math.min(...(bases as number[]));
   if (from !== null && from >= snapshot.seq) return;
-  const diff = from === null ? undefined : await diffSnapshotManifests(ctx, from, snapshot.seq);
-  const result = await transferFiles(ctx, snapshot.seq, diff === undefined ? {} : { only: diff.toTransfer });
-  const removal = diff === undefined ? undefined : await removeDroppedObjects(ctx, diff);
+  const result = await transferFiles(ctx, snapshot.seq, from === null ? {} : { entries: streamChangedEntries(ctx, from, snapshot.seq) });
+  const removal = from === null ? undefined : await removeDroppedObjects(ctx, { from, to: snapshot.seq });
   ctx.logger.info(
     `Transition ${holderId}: file objects of snapshot ${String(snapshot.seq)} since ${from === null ? 'none' : String(from)}: ` +
       `${String(result.transferred)} stored, ${String(result.unchanged)} unchanged, ${String(removal?.deleted ?? 0)} deleted`,

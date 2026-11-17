@@ -42,6 +42,7 @@ import {
   type PersonNameLike,
   type PersonOrderScope,
   type PersonQueryColumn,
+  type PersonSearchKey,
   type PersonSortKey,
 } from '../repo/repository.js';
 import { ADDRESS, FAVORITE, INTEREST, PERSON, TAG, type ExtendAttributeRow, type ExtendDataRow, type PersonRow } from '../repo/tables.js';
@@ -921,12 +922,12 @@ function advancedPools(entry: TenantRegistryEntry, isPublic: unknown): UserPool[
 }
 
 /** The candidates of `persons` in their order: each with the account `where` matches, of every site for an `allSites` viewer. */
-async function withAccounts(
+async function withAccounts<P extends Pick<PersonRow, 'userid'>>(
   deps: Pick<SearchDeps, 'identity'>,
   viewer: Pick<ViewerScope, 'allSites'>,
-  persons: readonly PersonRow[],
+  persons: readonly P[],
   where: AccountWhere,
-): Promise<Candidate[]> {
+): Promise<{ person: P; account: AccountView }[]> {
   if (persons.length === 0) return [];
   const userIds = persons.map((person) => person.userid);
   const accounts = viewer.allSites === true ? await deps.identity.readAccountsAllSites(userIds, where) : await deps.identity.readAccounts(userIds, where);
@@ -951,9 +952,14 @@ const SCAN_BATCH = 500;
 /** One keyset page of persons in the transaction tenant, after `after`. */
 type PersonPager = (tx: TenantTx, after: PersonCursor | null) => Promise<Page<PersonRow, PersonCursor>>;
 
-/** A pager of `pagePersonsInOrder` over `scope` by `orderBy`, then userid. */
-function orderedPager(repo: PeopleRepository, scope: PersonOrderScope, orderBy: readonly PersonSortKey[]): PersonPager {
-  return (tx, after) => repo.pagePersonsInOrder(tx, scope, { orderBy, after, limit: SCAN_BATCH });
+/** A pager of `pagePersonsInOrder` over `scope` by `orderBy`, then userid, `limit` persons per page. */
+function orderedPager(repo: PeopleRepository, scope: PersonOrderScope, orderBy: readonly PersonSortKey[], limit = SCAN_BATCH): PersonPager {
+  return (tx, after) => repo.pagePersonsInOrder(tx, scope, { orderBy, after, limit });
+}
+
+/** Options of a streamed read: persons per keyset read, each batch one identity account lookup; SCAN_BATCH when omitted. */
+export interface StreamOptions {
+  batchSize?: number;
 }
 
 /** One page of persons and what was read beside it in the page's transaction. */
@@ -1129,22 +1135,30 @@ interface UsersRead {
   candidates(): AsyncGenerator<Candidate>;
 }
 
-/** The persons of `scope` in `tenantId` by name whose account `where` matches, one account lookup per batch. */
-function listedCandidates(deps: SearchDeps, viewer: ViewerScope, tenantId: string, scope: PersonOrderScope, where: AccountWhere): AsyncGenerator<Candidate> {
-  return personBatches(deps, tenantId, orderedPager(deps.repo, scope, PERSON_NAME_ORDER), NOTHING, ({ persons }) => withAccounts(deps, viewer, persons, where));
+/** The persons of `scope` in `tenantId` by name whose account `where` matches, `batchSize` persons per account lookup. */
+function listedCandidates(
+  deps: SearchDeps,
+  viewer: ViewerScope,
+  tenantId: string,
+  scope: PersonOrderScope,
+  where: AccountWhere,
+  batchSize = SCAN_BATCH,
+): AsyncGenerator<Candidate> {
+  const pager = orderedPager(deps.repo, scope, PERSON_NAME_ORDER, batchSize);
+  return personBatches(deps, tenantId, pager, NOTHING, ({ persons }) => withAccounts(deps, viewer, persons, where));
 }
 
 /** getUsers of the site's pool, or with no `siteid` of the viewer's tenant. */
-async function usersRead(deps: SearchDeps, viewer: ViewerScope, args: UsersQueryArgs): Promise<UsersRead> {
+async function usersRead(deps: SearchDeps, viewer: ViewerScope, args: UsersQueryArgs, { batchSize }: StreamOptions = {}): Promise<UsersRead> {
   const where = usersWhere(args);
   if ((args.siteid ?? '') === '') {
-    return { count: { scope: 'tenant', where }, candidates: () => listedCandidates(deps, viewer, viewer.tid, {}, where) };
+    return { count: { scope: 'tenant', where }, candidates: () => listedCandidates(deps, viewer, viewer.tid, {}, where, batchSize) };
   }
   const publicPool = !isZero(args.ispublic ?? 1);
   const pool = userPool(await registryEntry(deps, viewer.tid), publicPool);
   return {
     count: { scope: 'pool', publicPool, where },
-    candidates: () => listedCandidates(deps, viewer, pool.tenantId, { siteIds: [pool.siteId] }, where),
+    candidates: () => listedCandidates(deps, viewer, pool.tenantId, { siteIds: [pool.siteId] }, where, batchSize),
   };
 }
 
@@ -1154,12 +1168,12 @@ async function allSiteScopes(deps: Pick<SearchDeps, 'db'>, viewer: ViewerScope):
 }
 
 /** getUsers of every registered tenant for an S2 viewer, merged by name. */
-async function allSitesRead(deps: SearchDeps, viewer: ViewerScope, args: Omit<UsersQueryArgs, 'siteid'>): Promise<UsersRead> {
+async function allSitesRead(deps: SearchDeps, viewer: ViewerScope, args: Omit<UsersQueryArgs, 'siteid'>, { batchSize }: StreamOptions = {}): Promise<UsersRead> {
   const scopes = await allSiteScopes(deps, viewer);
   const where = usersWhere(args);
   return {
     count: { scope: 'all-sites', where },
-    candidates: () => mergeOrdered(scopes.map((scope) => listedCandidates(deps, scope, scope.tid, {}, where)), byName),
+    candidates: () => mergeOrdered(scopes.map((scope) => listedCandidates(deps, scope, scope.tid, {}, where, batchSize)), byName),
   };
 }
 
@@ -1192,8 +1206,19 @@ export async function getUsers(deps: SearchDeps, viewer: ViewerScope, args: User
 }
 
 /** `getUsers` read as its rows are iterated; argument and registry errors reject before any row is read. */
-export async function getUsersStream(deps: SearchDeps, viewer: ViewerScope, args: UsersQueryArgs = {}): Promise<StreamedQuery> {
-  return { columnList: [...USERS_LIST_COLUMNS], rows: usersRows(await usersRead(deps, viewer, args)) };
+export async function getUsersStream(deps: SearchDeps, viewer: ViewerScope, args: UsersQueryArgs = {}, options: StreamOptions = {}): Promise<StreamedQuery> {
+  return { columnList: [...USERS_LIST_COLUMNS], rows: usersRows(await usersRead(deps, viewer, args, options)) };
+}
+
+/** `getAllSitesUsers` read as its rows are iterated; argument and registry errors reject before any row is read. */
+export async function getAllSitesUsersStream(
+  deps: SearchDeps,
+  viewer: ViewerScope,
+  args: Omit<UsersQueryArgs, 'siteid'>,
+  options: StreamOptions = {},
+): Promise<StreamedQuery> {
+  if (!viewer.isS2) return getUsersStream(deps, viewer, { ...args, siteid: viewer.site }, options);
+  return { columnList: [...USERS_LIST_COLUMNS], rows: usersRows(await allSitesRead(deps, viewer, args, options)) };
 }
 
 /** `getUsers` as the cusers page `paging` selects, holding only the rows that page shows. */
@@ -1242,8 +1267,9 @@ export function getUnassignedUsersStream(
   deps: SearchDeps,
   viewer: ViewerScope,
   args: Omit<UsersQueryArgs, 'isunassigned'> = {},
+  options: StreamOptions = {},
 ): Promise<StreamedQuery> {
-  return getUsersStream(deps, viewer, unassignedArgs(args));
+  return getUsersStream(deps, viewer, unassignedArgs(args), options);
 }
 
 /** Arguments of `getSearch`; `siteid` is the legacy argument the pools came from, here the viewer's verified site. */
@@ -1317,14 +1343,107 @@ export async function getSearch(deps: SearchDeps, viewer: ViewerScope, args: Sea
   return legacyQuery([...SEARCH_FIELD_LIST], matched.map((c) => resultRow(c, SEARCH_FIELD_LIST, exts)));
 }
 
-/** `getSearch` as the cusers page `paging` selects, holding at most two pages; `TotalRecords` counts at most the 2100 rows getSearch returns. */
+/** `getSearch` read as its rows are iterated; its argument and registry errors reject the first read. */
+export function getSearchStream(deps: SearchDeps, viewer: ViewerScope, args: SearchQueryArgs = {}): StreamedQuery {
+  return { columnList: [...SEARCH_FIELD_LIST], rows: matchRows(deps, searchMatches(deps, viewer, args), (c) => c) };
+}
+
+/** A resolved getSearch: its pool, account predicates and person prefilter, and the term's tests of a person and of a match. */
+interface SearchPlan {
+  pool: UserPool;
+  where: AccountWhere;
+  scope: PersonOrderScope;
+  /** Whether a person the prefilter read can match, so identity is asked for its account. */
+  asked: (person: PersonSearchKey) => boolean;
+  /** Whether a person with its account matches the term on one of the six columns. */
+  matches: (match: SearchMatch) => boolean;
+}
+
+/** A person's search key with its account: one getSearch match before its full row is read. */
+interface SearchMatch {
+  person: PersonSearchKey;
+  account: AccountView;
+}
+
+/** The plan of getSearch `args`, checked and resolved in `searchMatches` order; undefined for an empty term, which matches nothing. */
+async function searchPlan(deps: SearchDeps, viewer: ViewerScope, { search = '', isPublic = 0 }: SearchQueryArgs): Promise<SearchPlan | undefined> {
+  // ACF checks the numeric isPublic argument at the call, before any query [legacy: core/mura/user/userManager.cfc:812].
+  const isPublicValue = numericArgument(isPublic, 'isPublic', 'getSearch');
+  // Legacy adds `and 0=1` for an empty term.
+  if (search === '') return undefined;
+  const publicPool = !isZero(isPublic);
+  const pool = userPool(await registryEntry(deps, viewer.tid), publicPool);
+  const like = likeMatcher(`%${search}%`);
+  const where: AccountWhere = viewer.isS2 ? { isPublic: isPublicValue } : { isPublic: isPublicValue, s2: 0 };
+  const personMatches = (person: PersonSearchKey): boolean =>
+    SEARCH_PERSON_COLUMNS.some((column) => {
+      const value = person[column];
+      return value !== null && like.test(value);
+    });
+  const nameLike = await searchNameLike(deps, like, likePrefilter(`%${search}%`), publicPool, where);
+  const usernameIds = new Set((nameLike?.orUserIds ?? []).map(idKey));
+  return {
+    pool,
+    where,
+    scope: nameLike === undefined ? { siteIds: [pool.siteId] } : { siteIds: [pool.siteId], nameLike },
+    // Past the prefilter, only a person whose own columns match or a username candidate can match.
+    asked: (person) => nameLike === undefined || personMatches(person) || usernameIds.has(idKey(person.userid)),
+    matches: ({ person, account }) => personMatches(person) || (account.username !== null && like.test(account.username)),
+  };
+}
+
+/** User ids per account lookup of a search page: identity's lookup body limit, so each lookup is one identity call. */
+const SEARCH_LOOKUP_IDS = 1000;
+
+/** The page `paging` selects of `plan`'s first 2100 matches in one observation: the pool's search keys in one people read, their accounts a chunk at a time, then the page's person rows. */
+function searchPage(deps: SearchDeps, viewer: ViewerScope, plan: SearchPlan, paging: UsersPaging): Promise<UsersPage<Candidate>> {
+  const { tenantId } = plan.pool;
+  return observePersons(
+    observerDeps(deps),
+    async (observer) => {
+      throwIfRequestAborted();
+      const keys = await observer.read(
+        tenantId,
+        (tx) => deps.repo.listPersonSearchKeys(tx, plan.scope, PERSON_LAST_NAME_ORDER),
+        (read) => read.map((key) => key.userid),
+      );
+      return { observer, keys };
+    },
+    async ({ observer, keys }): Promise<UsersPage<Candidate>> => {
+      const hold = pageHold<SearchMatch>(paging);
+      const asked = keys.filter(plan.asked);
+      for (let from = 0; from < asked.length && hold.count < SEARCH_MAX_ROWS; from += SEARCH_LOOKUP_IDS) {
+        throwIfRequestAborted();
+        for (const match of await withAccounts(deps, viewer, asked.slice(from, from + SEARCH_LOOKUP_IDS), plan.where)) {
+          if (hold.count < SEARCH_MAX_ROWS && plan.matches(match)) hold.offer(match);
+        }
+      }
+      const page = hold.page();
+      if (page.rows.length === 0) return { ...page, rows: [] };
+      throwIfRequestAborted();
+      const persons = await observer.read(tenantId, (tx) => deps.repo.findPersons(tx, page.rows.map(({ person }) => person.userid)), personIds);
+      const byId = new Map(persons.map((person) => [idKey(person.userid), person]));
+      // A page person deleted between the two people reads has no row to show.
+      return {
+        ...page,
+        rows: page.rows.flatMap(({ person, account }) => {
+          const row = byId.get(idKey(person.userid));
+          return row === undefined ? [] : [{ person: row, account }];
+        }),
+      };
+    },
+  );
+}
+
+/** `getSearch` as the cusers page `paging` selects; `TotalRecords` counts at most the 2100 rows getSearch returns, and only the page's rows are read in full. */
 export async function getSearchPage(
   deps: SearchDeps,
   viewer: ViewerScope,
   args: SearchQueryArgs,
   paging: UsersPaging,
 ): Promise<UsersPage<Record<string, unknown>>> {
-  const page = await heldPage(searchMatches(deps, viewer, args), paging);
+  const plan = await searchPlan(deps, viewer, args);
+  const page = plan === undefined ? pageHold<Candidate>(paging).page() : await searchPage(deps, viewer, plan, paging);
   const exts = await photoExtensions(deps, page.rows);
   return rowsOf(page, (c) => resultRow(c, SEARCH_FIELD_LIST, exts));
 }
@@ -1667,6 +1786,7 @@ async function prepareAdvancedSearch(
   criteria: AdvancedSearchCriteria & UserFeedKeys,
   { siteid = '', isPublic = '', sortBy = 'lname', sortDirection = 'asc', countOnly = false }: AdvancedSearchOptions,
   observer?: PersonObserver,
+  batchSize = SCAN_BATCH,
 ): Promise<AdvancedScan> {
   const feed = userFeed(criteria, isPublic);
   const siteId = siteid !== '' ? siteid : feed.siteId !== '' ? feed.siteId : viewer.site;
@@ -1705,8 +1825,8 @@ async function prepareAdvancedSearch(
   const siteIds = pools.map((pool) => pool.siteId);
   const pager: PersonPager =
     personSort === undefined
-      ? (tx, after) => deps.repo.pageQueryPersons(tx, { siteIds }, { after, limit: SCAN_BATCH })
-      : orderedPager(deps.repo, { siteIds }, personSort);
+      ? (tx, after) => deps.repo.pageQueryPersons(tx, { siteIds }, { after, limit: batchSize })
+      : orderedPager(deps.repo, { siteIds }, personSort, batchSize);
   const load = (tx: TenantTx, persons: PersonRow[]): Promise<BatchRows> => loadBatchRows(deps.repo, tx, persons, { extended, tables });
   // SQL's AND binds tighter than an escaped OR, so identity applies the account and type terms only while the params stay grouped.
   const grouped = paramsGrouped(paramTokens(params, context([])));
@@ -1773,11 +1893,11 @@ async function searchFieldRows(deps: SearchDeps, candidates: readonly Candidate[
   return candidates.map((c) => resultRow(c, SEARCH_FIELD_LIST, exts));
 }
 
-/** The SEARCH_FIELD_LIST rows of `matches` in their order, one photo lookup per SCAN_BATCH rows. */
-async function* matchRows(deps: SearchDeps, matches: AsyncIterable<SortedMatch>): AsyncGenerator<Record<string, unknown>> {
+/** The SEARCH_FIELD_LIST rows of the candidates of `matches` in their order, one photo lookup per SCAN_BATCH rows. */
+async function* matchRows<T>(deps: SearchDeps, matches: AsyncIterable<T>, candidateOf: (match: T) => Candidate): AsyncGenerator<Record<string, unknown>> {
   let batch: Candidate[] = [];
-  for await (const { candidate } of matches) {
-    batch.push(candidate);
+  for await (const match of matches) {
+    batch.push(candidateOf(match));
     if (batch.length === SCAN_BATCH) {
       yield* await searchFieldRows(deps, batch);
       batch = [];
@@ -1792,9 +1912,10 @@ export async function getAdvancedSearchStream(
   viewer: ViewerScope,
   criteria: AdvancedSearchCriteria & UserFeedKeys,
   { siteid, isPublic }: Pick<AdvancedSearchOptions, 'siteid' | 'isPublic'> = {},
+  { batchSize }: StreamOptions = {},
 ): Promise<StreamedQuery> {
-  const scan = await prepareAdvancedSearch(deps, viewer, criteria, { siteid, isPublic });
-  return { columnList: [...SEARCH_FIELD_LIST], rows: matchRows(deps, scan.matches()) };
+  const scan = await prepareAdvancedSearch(deps, viewer, criteria, { siteid, isPublic }, undefined, batchSize);
+  return { columnList: [...SEARCH_FIELD_LIST], rows: matchRows(deps, scan.matches(), ({ candidate }) => candidate) };
 }
 
 /** `getAdvancedSearch` as the cusers page `paging` selects, holding only the rows that page can show. */
@@ -1903,7 +2024,7 @@ function sliceIndex(value: number): number {
 }
 
 /** The rows `pageRows` shows of `total` ordered rows, indices `from` to before `to`, with the iterator's page index and the nextN struct. */
-function pageWindow(total: number, paging: UsersPaging): { from: number; to: number; pageIndex: number; nextn: NextN } {
+export function pageWindow(total: number, paging: UsersPaging): { from: number; to: number; pageIndex: number; nextn: NextN } {
   const { perPage } = pagingOf(paging);
   let { start } = pagingOf(paging);
   if (start > total) start = 1;

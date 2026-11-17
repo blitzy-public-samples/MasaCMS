@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, javaTrim } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, qualified } from '@opt2/platform/migration-kit';
 import { createService, loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
-import { withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TENANT_B,
@@ -112,10 +112,10 @@ async function changes(contentId: string): Promise<Array<{ table: string; op: st
   return rows;
 }
 
-/** Changelog rows of both tenants: every write logs one, so an unchanged count means nothing was written. */
-async function writeCount(): Promise<number> {
+/** Changelog rows of both tenants and of `others`: every write logs one, so an unchanged count means nothing was written. */
+async function writeCount(...others: string[]): Promise<number> {
   let total = 0;
-  for (const tenantId of [TENANT_A.tenantId, TENANT_B.tenantId]) {
+  for (const tenantId of [TENANT_A.tenantId, TENANT_B.tenantId, ...others]) {
     const { rows } = await withTenant(handle.app, tenantId, (tx) =>
       tx.query<{ n: number }>(`SELECT count(*)::integer AS n FROM ${qualified(handle.schema, 'changelog')}`),
     );
@@ -190,12 +190,13 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
   });
 
-  it('declares POST as the contract does: public on the service transport, the site checked by the handler', () => {
-    const operation = OPENAPI.paths[RATER_SAVE_PATH]?.post ?? {};
-    expect(operation['x-opt2-public']).toBe(true);
-    expect(collectRouteMatrix(app).routes.filter((route) => route.url === RATER_SAVE_PATH)).toEqual([
-      { method: 'POST', url: RATER_SAVE_PATH, transport: operation['x-opt2-transport'], public: true, siteCheck: false },
-    ]);
+  it('declares GET and POST as the contract does: public on the service transport, the site checked by the handler', () => {
+    const methods = ['GET', 'POST'] as const;
+    const operations = methods.map((method) => OPENAPI.paths[RATER_SAVE_PATH]?.[method.toLowerCase()] ?? {});
+    expect(operations.map((operation) => operation['x-opt2-public'])).toEqual([true, true]);
+    expect(collectRouteMatrix(app).routes.filter((route) => route.url === RATER_SAVE_PATH)).toEqual(
+      methods.map((method, n) => ({ method, url: RATER_SAVE_PATH, transport: operations[n]?.['x-opt2-transport'], public: true, siteCheck: false })),
+    );
   });
 
   it('saves a new rating and answers the average as Mura.json encodes the getAvgRating query, in the legacy text/html content type', async () => {
@@ -276,6 +277,30 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     expect({ status: res.statusCode, body: res.body }).toEqual({ status: 200, body: ORACLE_FIRST });
   });
 
+  it('rates the item a space-padded contentID names, as the start-up scan trims the form fields getAvgRating reads', async () => {
+    const item = cfId('C', 17);
+    expect((await save(rateForm(item, U1, '3'))).statusCode).toBe(200);
+    const res = await save(rateForm(` ${item} `, U2, '4'));
+    // Own oracle: SQL Server's int avg of 3 and 4 is 3, with no up or down vote rows.
+    expect({ status: res.statusCode, body: res.body }).toEqual({
+      status: 200,
+      body: '{"recordcount":1,"columnlist":"DOWNVOTES,THEAVG,THECOUNT,UPVOTES","data":{"DOWNVOTES":[""],"THEAVG":[3],"THECOUNT":[2],"UPVOTES":[""]}}',
+    });
+    expect((await ratings(item)).map((row) => [row.userid, row.rate])).toEqual([
+      [U1, 3],
+      [U2, 4],
+    ]);
+    expect(await votes(item)).toMatchObject({ rating: 3, totalvotes: 2, upvotes: 2, downvotes: 0 });
+  });
+
+  it('answers a GET with the ColdFusion error page and writes nothing, as its url fields fill no form scope', async () => {
+    const before = await writeCount();
+    const res = await app.inject({ method: 'GET', url: `${RATER_SAVE_PATH}?${rateForm(cfId('C', 18), U1, '4')}`, headers: await visitorHeaders() });
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: RATER_SAVE_PATH, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    expectErrorPage(res);
+    expect(await writeCount()).toBe(before);
+  });
+
   it('answers the ColdFusion error page with nothing written when contentID, siteID, userID or rate is missing from the form', async () => {
     const item = cfId('C', 7);
     const complete = { contentID: item, siteID: SITE, userID: U1, rate: '4' };
@@ -311,11 +336,42 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     },
   );
 
-  it.each(['contentID', 'siteID', 'userID'])('answers the ColdFusion error page with nothing written for an empty %s, which the rating insert binds as NULL', async (field) => {
+  it.each([
+    ['contentID', ''],
+    ['siteID', ''],
+    ['userID', ''],
+    ['contentID', '   '],
+  ])('answers the ColdFusion error page with nothing written for the %s %j, which the rating insert binds as NULL once trimmed', async (field, value) => {
     const before = await writeCount();
-    const fields = new URLSearchParams({ contentID: cfId('C', 10), siteID: SITE, userID: U1, rate: '4', [field]: '' });
+    const fields = new URLSearchParams({ contentID: cfId('C', 10), siteID: SITE, userID: U1, rate: '4', [field]: value });
     expectErrorPage(await save(fields.toString()));
     expect(await writeCount()).toBe(before);
+  });
+
+  // The token names the posted site, as identity mints it for the requested siteid.
+  it.each([
+    ['contentID', `${cfId('C', 19)}F`],
+    ['userID', `${U1}F`],
+    ['siteID', 's'.repeat(26)],
+  ])('answers the ColdFusion error page with nothing written for the %s %j, longer than its tcontentratings column', async (field, value) => {
+    const form = { contentID: cfId('C', 19), siteID: SITE, userID: U1, rate: '4', [field]: value };
+    const tenantId = tenantIdForSite(form.siteID);
+    const before = await writeCount(tenantId);
+    expectErrorPage(await save(new URLSearchParams(form).toString(), { headers: await visitorHeaders(form.siteID) }));
+    expect(await writeCount(tenantId)).toBe(before);
+  });
+
+  it.each([
+    ['contentID', cfId('C', 20)],
+    ['userID', ` ${cfId('U', 4)} `],
+    ['siteID', 's'.repeat(25)],
+  ])('saves the rating whose %s %j is, trimmed, exactly as long as its tcontentratings column', async (field, value) => {
+    const form = { contentID: cfId('C', 21), siteID: SITE, userID: U1, rate: '4', [field]: value };
+    const res = await save(new URLSearchParams(form).toString(), { headers: await visitorHeaders(form.siteID) });
+    expect({ status: res.statusCode, body: res.body }).toEqual({ status: 200, body: ORACLE_FIRST });
+    expect(await ratings(form.contentID, tenantIdForSite(form.siteID))).toEqual([
+      { userid: javaTrim(form.userID), siteid: form.siteID, rate: 4, entered: NOW },
+    ]);
   });
 
   it("refuses a siteID other than the token's site with 403 and writes nothing", async () => {

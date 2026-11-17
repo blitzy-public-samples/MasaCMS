@@ -16926,8 +16926,8 @@
       "owningService": "strategies-content",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:content.approval_action",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "content.file"
       ],

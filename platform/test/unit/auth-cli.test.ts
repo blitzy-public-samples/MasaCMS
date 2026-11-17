@@ -15,11 +15,15 @@ import {
   type TransportAuthenticator,
   type TransportSet,
 } from '../../src/auth/index.js';
+import { REDACTED, validateLogRecord } from '../../src/logging/index.js';
 
 const USAGE = 'usage: opt2-auth matrix --app <module> [--export <name>] [--options <json>] [--out <file>]';
+// Assembled at run time, so no literal credential appears in source.
+const SECRET = ['s3cr3t', 'auth', 'cli', 'value'].join('-');
 
 type Builder = (exportName: string, options: unknown) => unknown;
 type WriteCallback = (err?: Error | null) => void;
+type LogLine = Record<string, unknown>;
 
 const scope = globalThis as typeof globalThis & { __opt2AuthCliBuilder?: Builder };
 
@@ -71,13 +75,33 @@ function capture(sink: (chunk: string) => void, error: Error | null = null) {
   };
 }
 
-/** The message of a usage error written to stderr, between its `opt2-auth: ` prefix and usage suffix. */
-function usageMessage(text: string): string {
+/** The one line written to stderr, checked against log-record.v1 and the CLI's service. */
+function stderrRecord(): LogLine {
+  expect(stderr.endsWith('\n')).toBe(true);
+  const lines = stderr.slice(0, -1).split('\n');
+  expect(lines).toHaveLength(1);
+  const record = JSON.parse(lines[0] as string) as LogLine;
+  expect(validateLogRecord(record)).toStrictEqual({ valid: true, errors: [] });
+  expect(record).toMatchObject({ service: 'opt2-auth' });
+  return record;
+}
+
+/** The problem of the usage line on stderr, between its `opt2-auth: ` prefix and usage suffix. */
+function usageProblem(): string {
+  const record = stderrRecord();
+  expect(record).toMatchObject({ severity: 'ERROR' });
+  expect(record).not.toHaveProperty('error');
+  const message = record.message as string;
   const prefix = 'opt2-auth: ';
-  const suffix = `; ${USAGE}\n`;
-  expect(text.slice(0, prefix.length)).toBe(prefix);
-  expect(text.slice(-suffix.length)).toBe(suffix);
-  return text.slice(prefix.length, -suffix.length);
+  const suffix = `; ${USAGE}`;
+  expect(message.slice(0, prefix.length)).toBe(prefix);
+  expect(message.slice(-suffix.length)).toBe(suffix);
+  return message.slice(prefix.length, -suffix.length);
+}
+
+/** Asserts stderr holds one CRITICAL line with `message` and the failure's safe record of `type`. */
+function expectFailureLine(message: string, type: string): void {
+  expect(stderrRecord()).toMatchObject({ severity: 'CRITICAL', message, error: { type, message: REDACTED } });
 }
 
 function trackedApp(): FastifyInstance {
@@ -143,30 +167,39 @@ describe('main', () => {
   it('fails with exit code 1 when stdout rejects the write', async () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(capture(() => undefined, new Error('write EPIPE')));
     expect(await main(['--help'])).toBe(1);
-    expect(stderr).toBe('opt2-auth: write EPIPE\n');
+    expectFailureLine('opt2-auth: matrix failed', 'Error');
   });
 
   it.each([
-    { argv: [], message: /^missing subcommand$/ },
-    { argv: ['foo'], message: /^unknown subcommand "foo"$/ },
-    { argv: ['matrix', 'extra', '--app', 'app.mjs'], message: /^unknown subcommand "matrix extra"$/ },
-    { argv: ['matrix'], message: /^missing --app$/ },
-    { argv: ['matrix', '--app', ''], message: /^missing --app$/ },
-    { argv: ['matrix', '--app', 'app.mjs', '--options', '{bad'], message: /^--options is not valid JSON: \S/ },
-    { argv: ['matrix', '--app', 'app.mjs', '--verbose'], message: /^Unknown option '--verbose'/ },
-    { argv: ['matrix', '--app'], message: /^Option '--app <value>' argument missing/ },
-  ])('answers $argv with a usage error and exit code 2 without calling a builder', async ({ argv, message }) => {
+    { argv: [], problem: 'missing subcommand' },
+    { argv: ['foo'], problem: 'unknown subcommand' },
+    { argv: [`bogus-${SECRET}`], problem: 'unknown subcommand' },
+    { argv: ['matrix', 'extra', '--app', 'app.mjs'], problem: 'unknown subcommand' },
+    { argv: ['matrix'], problem: 'missing --app' },
+    { argv: ['matrix', '--app', ''], problem: 'missing --app' },
+    { argv: ['matrix', '--app', 'app.mjs', '--options', '{bad'], problem: '--options is not valid JSON' },
+    { argv: ['matrix', '--app', 'app.mjs', '--options', `{"password":"${SECRET}"`], problem: '--options is not valid JSON' },
+    { argv: ['matrix', '--app', 'app.mjs', '--options', `{"password": ${SECRET}}`], problem: '--options is not valid JSON' },
+    { argv: ['matrix', '--app', 'app.mjs', '--verbose'], problem: 'unknown option' },
+    { argv: ['matrix', '--app', 'app.mjs', `--${SECRET}=x`], problem: 'unknown option' },
+    { argv: ['matrix', '--app'], problem: 'an option is missing its value or was given one it does not take' },
+    { argv: ['matrix', '--app', 'app.mjs', `--help=${SECRET}`], problem: 'an option is missing its value or was given one it does not take' },
+  ])('answers $argv with a usage error and exit code 2 without calling a builder or quoting an argument', async ({ argv, problem }) => {
     const builder = vi.fn<Builder>();
     scope.__opt2AuthCliBuilder = builder;
     expect(await main(argv)).toBe(2);
-    expect(usageMessage(stderr)).toMatch(message);
+    expect(usageProblem()).toBe(problem);
+    expect(stderr).not.toContain(SECRET);
+    expect(stderr).not.toMatch(/foo|extra|\{bad|--verbose|app\.mjs/);
     expect(stdout).toBe('');
     expect(builder).not.toHaveBeenCalled();
   });
 
   it.each(['nope', 'absent'])('answers --export %s, which is not a function, with a usage error and exit code 2', async (name) => {
     expect(await main(['matrix', '--app', modulePath, '--export', name])).toBe(2);
-    expect(usageMessage(stderr)).toBe(`export ${JSON.stringify(name)} of ${modulePath} is not a function`);
+    expect(usageProblem()).toBe('--export does not name a function of the --app module');
+    expect(stderr).not.toContain(name);
+    expect(stderr).not.toContain(dir);
     expect(stdout).toBe('');
   });
 
@@ -178,7 +211,7 @@ describe('main', () => {
   ])('fails with exit code 1 when the builder returns $label', async ({ built }) => {
     scope.__opt2AuthCliBuilder = () => built;
     expect(await main(['matrix', '--app', modulePath])).toBe(1);
-    expect(stderr).toBe('opt2-auth: the builder returned neither a Fastify instance nor { app }\n');
+    expectFailureLine('opt2-auth: the builder returned neither a Fastify instance nor { app }', 'MatrixError');
     expect(stdout).toBe('');
   });
 
@@ -186,22 +219,24 @@ describe('main', () => {
     {
       label: 'throws an Error',
       builder: (): never => {
-        throw new Error('database unreachable');
+        throw new Error(`database unreachable: postgres://svc:${SECRET}@db/x`);
       },
-      message: 'database unreachable',
+      type: 'Error',
     },
-    { label: 'rejects with an Error', builder: () => Promise.reject(new Error('pool exhausted')), message: 'pool exhausted' },
+    { label: 'rejects with an Error', builder: () => Promise.reject(new Error(`pool exhausted ${SECRET}`)), type: 'Error' },
     {
       label: 'throws a non-Error value',
       builder: (): never => {
-        throw 'plain failure';
+        throw `plain failure ${SECRET}`;
       },
-      message: 'plain failure',
+      type: 'string',
     },
-  ])('fails with exit code 1 and the error message when the builder $label', async ({ builder, message }) => {
+  ])('fails with exit code 1 and a fixed message, never the error text, when the builder $label', async ({ builder, type }) => {
     scope.__opt2AuthCliBuilder = builder;
     expect(await main(['matrix', '--app', modulePath])).toBe(1);
-    expect(stderr).toBe(`opt2-auth: ${message}\n`);
+    expectFailureLine('opt2-auth: matrix failed', type);
+    expect(stderr).not.toContain(SECRET);
+    expect(stderr).not.toMatch(/unreachable|exhausted|plain failure/);
     expect(stdout).toBe('');
   });
 
@@ -245,7 +280,6 @@ describe('main', () => {
         return app;
       },
       asRecord: false,
-      message: 'registerAuth was not applied to this Fastify instance',
     },
     {
       label: 'a plugin of the returned { app } fails while it becomes ready',
@@ -257,14 +291,13 @@ describe('main', () => {
         return app;
       },
       asRecord: true,
-      message: 'plugin failed',
     },
-  ])('fails with exit code 1 and still closes the app when $label', async ({ build, asRecord, message }) => {
+  ])('fails with exit code 1 and still closes the app when $label', async ({ build, asRecord }) => {
     const app = build();
     const close = vi.spyOn(app, 'close');
     scope.__opt2AuthCliBuilder = () => (asRecord ? { app } : app);
     expect(await main(['matrix', '--app', modulePath])).toBe(1);
-    expect(stderr).toBe(`opt2-auth: ${message}\n`);
+    expectFailureLine('opt2-auth: matrix failed', 'Error');
     expect(stdout).toBe('');
     expect(close).toHaveBeenCalledOnce();
   });

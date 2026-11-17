@@ -3317,7 +3317,7 @@ paths:
   /internal/v1/accounts:memberships:
     post:
       operationId: lookupMemberships
-      summary: Reads the stored `tusersmemb` group ids of many users in one call, for the unassigned and group filters of the user list and search screens.
+      summary: Reads the stored `tusersmemb` group ids of many users in one call, for the unassigned and group filters of the user list and search screens, or with `byGroupName` as `readMembershipIDs` lists them, for the JSON API user feed.
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3332,7 +3332,7 @@ paths:
               $ref: '#/components/schemas/MembershipLookupRequest'
       responses:
         '200':
-          description: One item per listed user, in request order and spelling, with its membership rows from every registered tenant; an empty `groupIds` for a user without any.
+          description: One item per listed user, in request order and spelling, with its membership rows from every registered tenant, or with `byGroupName` the ids `getAccountMemberships` answers for it; an empty `groupIds` for a user without any.
           content:
             application/json:
               schema:
@@ -3345,7 +3345,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on `identity.membership` for 30 s.
+          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on `identity.membership`, or with `byGroupName` on `identity.group_account`, for 30 s.
   /internal/v1/groups:
     get:
       operationId: listSiteGroups
@@ -6793,9 +6793,12 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/CfUuid'
+        byGroupName:
+          type: boolean
+          description: True answers each user's ids as `getAccountMemberships` does, reading the groups once per registered tenant for all listed users; false or absent answers the stored rows.
     MembershipListItem:
       type: object
-      description: The `tusersmemb` group ids of one user, de-duplicated ignoring case, by registry site order then group id.
+      description: The `tusersmemb` group ids of one user, de-duplicated ignoring case, by registry site order then group id; with `byGroupName`, only the ids naming a stored group, as that group's id, by group name (NULL first, then ignoring case, ties by id).
       required:
         - userId
         - groupIds
@@ -7486,7 +7489,7 @@ components:
           minimum: 0
     InboxCounts:
       type: object
-      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      description: Inbox receipts over every tenant the registry has known, deleted sites included; `receipts` maps each asked event id to the tenants that applied it.
       required:
         - total
         - bySubscription
@@ -7531,7 +7534,7 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
         publishedNext:
@@ -7544,7 +7547,7 @@ components:
         publishedFrontier:
           type: string
           pattern: '^[0-9]+$'
-          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
         publishedUpTo:
           type: integer
           minimum: 0

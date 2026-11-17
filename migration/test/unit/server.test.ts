@@ -2,12 +2,14 @@
 // builds and the listener; the composed services are doubles, so only `server.ts` itself is under test.
 import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer, type AddressInfo, type Server } from 'node:net';
 import path from 'node:path';
 
 import { EnvValidationError, fixedClock, type FastifyInstance } from '@opt2/platform/service-kit';
 import { reconcileRecurringQueues, type ReconcileResult } from '@opt2/platform/tasks';
 import { testVerifier } from '@opt2/platform/testing';
+import { MemorySpanExporter, flushTracing, shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMigrationContext } from '../../src/context.js';
@@ -435,6 +437,50 @@ describe('background loops', () => {
     const after = h.events.length;
     await pause(80);
     expect(h.events.length).toBe(after);
+  });
+});
+
+describe('background loop tracing', () => {
+  const exporter = new MemorySpanExporter();
+  /** `traceparent` of each bridge call the double received. */
+  const received: (string | undefined)[] = [];
+  const double = createHttpServer((request, response) => {
+    received.push(request.headers.traceparent as string | undefined);
+    request.resume();
+    response.end('{}');
+  });
+  let base = '';
+
+  beforeAll(async () => {
+    double.listen(0, '127.0.0.1');
+    await once(double, 'listening');
+    base = `http://127.0.0.1:${String((double.address() as AddressInfo).port)}`;
+    await startTracing({ serviceName: 'migration-server-test', version: '1.0.0', exporter });
+  });
+
+  afterAll(async () => {
+    await shutdownTracing();
+    double.closeAllConnections();
+    double.close();
+    await once(double, 'close');
+  });
+
+  it('runs each iteration in its own unsampled trace, whose calls carry traceparent flags 00 and export no span', async () => {
+    const traced = {
+      schedulerDescribe: async () => {
+        await (await fetch(`${base}/legacy-bridge/scheduler.cfm`)).text();
+        return DESCRIPTION;
+      },
+    } as unknown as BridgeClient;
+    await build({ bridge: traced });
+    await vi.waitFor(() => expect(received.length).toBeGreaterThanOrEqual(3), { timeout: 10_000 });
+    await app?.close();
+    app = undefined;
+    await flushTracing();
+
+    expect(exporter.getFinishedSpans()).toEqual([]);
+    expect(new Set(received.map((traceparent) => traceparent?.split('-')[3]))).toStrictEqual(new Set(['00']));
+    expect(new Set(received.map((traceparent) => traceparent?.split('-')[1])).size).toBe(received.length);
   });
 });
 

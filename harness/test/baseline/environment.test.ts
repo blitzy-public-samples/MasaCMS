@@ -10,6 +10,7 @@ import {
   PROBE_TIMEOUT_MS,
   UNPROBED_PINS,
   defaultCommandRunner,
+  environmentEnvSchema,
   main,
   mergeRecord,
   probeLocal,
@@ -19,6 +20,7 @@ import {
   runEnvironment,
   type CommandResult,
   type CommandRunner,
+  type EnvironmentConfig,
   type EnvironmentDeps,
   type EnvironmentRecord,
   type EnvironmentSettings,
@@ -35,7 +37,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFile: vi.fn() };
 });
 
-type RunInfo = Record<string, unknown> & { cluster: Record<string, unknown> };
+type RunInfo = Record<string, unknown> & { cluster: Record<string, unknown>; startup: Record<string, unknown> };
 
 const FIXTURE = new URL('../fixtures/testbox/run-info.json', import.meta.url);
 const RUN_INFO_TEXT = await fs.readFile(FIXTURE, 'utf8');
@@ -115,6 +117,18 @@ const FIXTURE_SETTINGS: EnvironmentSettings = {
     broadcastingOff: true,
     noPeers: true,
     clusterSafe: true,
+  },
+  startup: {
+    projectSiteID: 'default',
+    projectSiteExists: true,
+    deployBundlePath: '/tmp/MuraBundle.zip',
+    deployBundlePresent: false,
+    autoDiscoverPlugins: false,
+    applyDbUpdates: false,
+    appAutoUpdated: false,
+    themeStandardImageSizes: [],
+    writersClosed: true,
+    openGuards: [],
   },
   dbtype: 'mssql',
   mysqlFallback: false,
@@ -211,6 +225,10 @@ function info(patch: Record<string, unknown>): Record<string, () => Response> {
 
 function cluster(patch: Record<string, unknown>): Record<string, unknown> {
   return { ...RUN_INFO.cluster, ...patch };
+}
+
+function startup(patch: Record<string, unknown>): Record<string, unknown> {
+  return { ...RUN_INFO.startup, ...patch };
 }
 
 type SqlOptions = { version?: unknown[]; count?: unknown[]; connectError?: Error };
@@ -367,6 +385,7 @@ describe('run-info.json fixture', () => {
 
     expect(Object.keys(RUN_INFO)).toEqual(keys(/\benvironment\["(\w+)"\]/g));
     expect(Object.keys(RUN_INFO.cluster)).toEqual(keys(/\bcluster\["(\w+)"\]/g));
+    expect(Object.keys(RUN_INFO.startup)).toEqual(keys(/\bstartup\["(\w+)"\]/g));
     expect(RUN_INFO.bundles).toEqual(
       specs
         .filter((name) => name.endsWith('.cfc'))
@@ -501,6 +520,7 @@ describe('probeLocal', () => {
         failed: [id],
         mysqlFallback: null,
         clusterSafe: null,
+        startupWritersClosed: null,
         ping: null,
         timeZone: null,
       },
@@ -667,6 +687,54 @@ describe('probeServices', () => {
     expect(settings.cluster).toMatchObject(expected);
   });
 
+  it.each<[string, Record<string, unknown> | undefined, Partial<EnvironmentSettings['startup']>, string[]]>([
+    ['an existing project site other than default', { projectSiteID: 'umbrella' }, { projectSiteID: 'umbrella' }, []],
+    ['the default project site in another case', { projectSiteID: 'DEFAULT', projectSiteExists: false }, {}, []],
+    ['a project site start-up would create', { projectSiteID: 'umbrella', projectSiteExists: false }, {}, ['projectSiteID umbrella names no existing site']],
+    ['a present deploy bundle', { deployBundlePresent: true }, {}, ['deploy bundle present at /tmp/MuraBundle.zip']],
+    ['plugin discovery on', { autoDiscoverPlugins: true }, {}, ['autoDiscoverPlugins is true']],
+    ['DB updates on, as without MURA_APPLYDBUPDATES=false', { applyDbUpdates: true }, {}, ['applyDbUpdates is true']],
+    ['a pending auto-update', { appAutoUpdated: true }, {}, ['appAutoUpdated is true']],
+    [
+      'themes declaring standard image sizes',
+      { themeStandardImageSizes: ['default', 'tenant-a'] },
+      { themeStandardImageSizes: ['default', 'tenant-a'] },
+      ['themeStandardImageSizes: default, tenant-a'],
+    ],
+    ['string-typed flags', { projectSiteExists: 'yes', autoDiscoverPlugins: 'NO', applyDbUpdates: 'false' }, { projectSiteExists: true }, []],
+    [
+      'unreadable values',
+      { projectSiteExists: 'maybe', themeStandardImageSizes: ['default', null] },
+      { projectSiteExists: null, themeStandardImageSizes: null },
+      ['projectSiteExists unreadable', 'themeStandardImageSizes unreadable'],
+    ],
+    [
+      'an open bundle at an unreadable path and DB updates on',
+      { deployBundlePath: undefined, deployBundlePresent: true, applyDbUpdates: true },
+      { deployBundlePath: null },
+      ['deployBundlePath unreadable', 'deploy bundle present at an unreadable path', 'applyDbUpdates is true'],
+    ],
+    [
+      'no startup block',
+      undefined,
+      { projectSiteID: null, themeStandardImageSizes: null },
+      [
+        'projectSiteID unreadable',
+        'projectSiteExists unreadable',
+        'deployBundlePath unreadable',
+        'deployBundlePresent unreadable',
+        'autoDiscoverPlugins unreadable',
+        'applyDbUpdates unreadable',
+        'appAutoUpdated unreadable',
+        'themeStandardImageSizes unreadable',
+      ],
+    ],
+  ])('judges the start-up writer guards for %s', async (_name, patch, fields, openGuards) => {
+    const { settings } = await probeServices(rig({ routes: info({ startup: patch === undefined ? undefined : startup(patch) }) }).deps);
+
+    expect(settings.startup).toMatchObject({ ...fields, writersClosed: openGuards.length === 0, openGuards });
+  });
+
   it.each<[string | undefined, string, boolean, string]>([
     ['mysql', 'mysql', true, 'the MySQL fallback is in use'],
     [undefined, 'unset', false, 'MURA_DBTYPE is unset'],
@@ -710,6 +778,7 @@ describe('probeServices', () => {
       ping: null,
       edition: null,
       cluster: { broadcastClusterCommands: null, peerCount: null, clusterSafe: false },
+      startup: { projectSiteID: null, applyDbUpdates: null, writersClosed: false },
     });
   });
 
@@ -985,23 +1054,15 @@ describe('mergeRecord', () => {
 describe('renderEnvironmentMarkdown and recordedSections', () => {
   const empty: EnvironmentRecord = { local: null, services: null, settings: null };
 
-  it('renders the committed placeholder rows when nothing is recorded, followed by the rows added since', () => {
+  it('renders the committed placeholder, below its title and Source SHA lines, when nothing is recorded', () => {
     const committed = COMMITTED_REPORT_TEXT.split('\n');
 
     const rendered = renderEnvironmentMarkdown(empty);
 
-    expect(rendered.slice(0, 7)).toEqual(committed.slice(3, 10));
-    const added: Record<keyof typeof HEADINGS, string[]> = {
-      local: [],
-      services: ['TestBox', 'Java (ColdFusion runtime)'],
-      settings: ['Start-up guard verdict (`clusterSafe`)'],
-    };
+    expect(committed.slice(0, 3)).toEqual(['# Environment record', '', `Source SHA: ${PIN_SHA}`]);
+    expect([...committed.slice(0, 3), ...rendered, '']).toEqual(committed);
     for (const key of ['local', 'services', 'settings'] as const) {
-      const committedTable = section(committed, HEADINGS[key]).filter((line) => line.startsWith('|'));
-      const renderedTable = section(rendered, HEADINGS[key]).filter((line) => line.startsWith('|'));
-      expect(committedTable.length).toBeGreaterThan(2);
-      expect(renderedTable.slice(0, committedTable.length)).toEqual(committedTable);
-      expect(renderedTable.slice(committedTable.length).map((line) => cells(line)[0])).toEqual(added[key]);
+      expect(tableRows(rendered, HEADINGS[key]).length).toBeGreaterThan(0);
       expect(tableRows(rendered, HEADINGS[key]).every((line) => cells(line).at(-1) === 'pending-run')).toBe(true);
     }
     expect(section(rendered, HEADINGS.local)).toContain(
@@ -1086,6 +1147,13 @@ describe('renderEnvironmentMarkdown and recordedSections', () => {
       ['MySQL fallback used', 'no (`mssql`)'],
       ['Default hash algorithm', '`CFMX_COMPAT`'],
       ['Start-up guard verdict (`clusterSafe`)', 'true: the content units may become `target`-authoritative'],
+      ['Project site (`ProjectSiteID`)', 'default (exists)'],
+      ['Deploy bundle', 'absent at /tmp/MuraBundle.zip'],
+      ['`autoDiscoverPlugins`', 'false'],
+      ['`applyDbUpdates`', 'false'],
+      ['`appAutoUpdated`', 'false'],
+      ['Theme `small`, `medium` or `large` image sizes', 'none'],
+      ['Start-up writers verdict (`writersClosed`)', 'true: application start-up runs none of these writers'],
     ]);
   });
 
@@ -1181,6 +1249,53 @@ describe('renderEnvironmentMarkdown and recordedSections', () => {
       'Start-up guard verdict (`clusterSafe`)',
       'false (tclustercommands not counted): the content units stay `legacy`',
     ],
+    ['an unread project site', (s) => ({ ...s, startup: { ...s.startup, projectSiteID: null } }), 'Project site (`ProjectSiteID`)', 'unavailable'],
+    [
+      'a missing project site',
+      (s) => ({ ...s, startup: { ...s.startup, projectSiteID: 'umbrella', projectSiteExists: false } }),
+      'Project site (`ProjectSiteID`)',
+      'umbrella (no such site)',
+    ],
+    [
+      'an unread project site existence',
+      (s) => ({ ...s, startup: { ...s.startup, projectSiteExists: null } }),
+      'Project site (`ProjectSiteID`)',
+      'default (existence unavailable)',
+    ],
+    [
+      'a present deploy bundle at an unread path',
+      (s) => ({ ...s, startup: { ...s.startup, deployBundlePresent: true, deployBundlePath: null } }),
+      'Deploy bundle',
+      'present at an unreadable path',
+    ],
+    ['an unread deploy bundle', (s) => ({ ...s, startup: { ...s.startup, deployBundlePresent: null } }), 'Deploy bundle', 'unavailable'],
+    ['plugin discovery on', (s) => ({ ...s, startup: { ...s.startup, autoDiscoverPlugins: true } }), '`autoDiscoverPlugins`', 'true'],
+    ['unread plugin discovery', (s) => ({ ...s, startup: { ...s.startup, autoDiscoverPlugins: null } }), '`autoDiscoverPlugins`', 'unavailable'],
+    ['DB updates on', (s) => ({ ...s, startup: { ...s.startup, applyDbUpdates: true } }), '`applyDbUpdates`', 'true'],
+    ['unread DB updates', (s) => ({ ...s, startup: { ...s.startup, applyDbUpdates: null } }), '`applyDbUpdates`', 'unavailable'],
+    ['a pending auto-update', (s) => ({ ...s, startup: { ...s.startup, appAutoUpdated: true } }), '`appAutoUpdated`', 'true'],
+    ['an unread auto-update', (s) => ({ ...s, startup: { ...s.startup, appAutoUpdated: null } }), '`appAutoUpdated`', 'unavailable'],
+    [
+      'themes declaring standard image sizes',
+      (s) => ({ ...s, startup: { ...s.startup, themeStandardImageSizes: ['default', 'tenant-a'] } }),
+      'Theme `small`, `medium` or `large` image sizes',
+      'sites default, tenant-a',
+    ],
+    [
+      'unread theme image sizes',
+      (s) => ({ ...s, startup: { ...s.startup, themeStandardImageSizes: null } }),
+      'Theme `small`, `medium` or `large` image sizes',
+      'unavailable',
+    ],
+    [
+      'open start-up writer guards',
+      (s) => ({
+        ...s,
+        startup: { ...s.startup, applyDbUpdates: true, writersClosed: false, openGuards: ['applyDbUpdates is true', 'appAutoUpdated unreadable'] },
+      }),
+      'Start-up writers verdict (`writersClosed`)',
+      'false (applyDbUpdates is true; appAutoUpdated unreadable): `up.sh` stops',
+    ],
   ])('renders %s in the settings table', (_name, patch, label, expected) => {
     const lines = renderEnvironmentMarkdown({ local: null, services: null, settings: patch(FIXTURE_SETTINGS) });
 
@@ -1205,6 +1320,7 @@ describe('runEnvironment', () => {
         failed: [],
         mysqlFallback: null,
         clusterSafe: null,
+        startupWritersClosed: null,
         ping: null,
         timeZone: null,
       },
@@ -1218,6 +1334,7 @@ describe('runEnvironment', () => {
         failed: [],
         mysqlFallback: false,
         clusterSafe: true,
+        startupWritersClosed: true,
         ping: false,
         timeZone: 'America/New_York',
       },
@@ -1339,6 +1456,7 @@ describe('runEnvironment', () => {
         failed: [],
         mysqlFallback: true,
         clusterSafe: false,
+        startupWritersClosed: true,
         ping: false,
         timeZone: 'America/New_York',
       },
@@ -1353,9 +1471,60 @@ describe('runEnvironment', () => {
       `${path.join(stateDir, 'baseline', 'environment.json')} does not hold a JSON object; remove it to record both phases afresh`,
     );
   });
+
+  it('treats settings recorded without the start-up writer guards as unrecorded on a later local run', async () => {
+    const stale: Partial<EnvironmentSettings> = structuredClone(FIXTURE_SETTINGS);
+    delete stale.startup;
+    await fs.mkdir(path.join(stateDir, 'baseline'), { recursive: true });
+    await fs.writeFile(path.join(stateDir, 'baseline', 'environment.json'), JSON.stringify({ local: null, services: null, settings: stale }));
+
+    const outcome = await runEnvironment('local', rig({ at: LOCAL_AT }).deps);
+
+    expect(outcome).toMatchObject({ code: 0, summary: { status: 'partial', clusterSafe: null, startupWritersClosed: null } });
+    expect(tableRows(await readReport(), HEADINGS.settings).every((line) => cells(line).at(-1) === 'pending-run')).toBe(true);
+    expect(await readState()).toMatchObject({ settings: null });
+  });
+});
+
+describe('environmentEnvSchema', () => {
+  const UNSET: EnvironmentConfig = { MURA_DBTYPE: 'unset', MAILPIT_API_URL: 'http://127.0.0.1:8025', TZ: undefined, MURA_DEFAULTHASHALGORITHM: undefined };
+
+  it.each<[string, EnvLike, EnvironmentConfig]>([
+    ['nothing set as the defaults', {}, UNSET],
+    ['empty values as unset', { MURA_DBTYPE: '', MAILPIT_API_URL: '', TZ: '', MURA_DEFAULTHASHALGORITHM: '' }, UNSET],
+    [
+      'set values, the database type lower-cased',
+      { MURA_DBTYPE: 'MSSQL', MAILPIT_API_URL: MAILPIT, TZ: 'UTC', MURA_DEFAULTHASHALGORITHM: 'CFMX_COMPAT' },
+      { MURA_DBTYPE: 'mssql', MAILPIT_API_URL: MAILPIT, TZ: 'UTC', MURA_DEFAULTHASHALGORITHM: 'CFMX_COMPAT' },
+    ],
+    ['whitespace values as set', { MURA_DBTYPE: ' ', TZ: ' ' }, { ...UNSET, MURA_DBTYPE: ' ', TZ: ' ' }],
+  ])('parses %s', (_case, env, expected) => {
+    expect(environmentEnvSchema.parse(env)).toEqual(expected);
+  });
+
+  it('gives the services probes an injected config in place of the variables of env', async () => {
+    const r = rig({ env: { MURA_DBTYPE: 'mssql', TZ: 'America/New_York' } });
+
+    const { settings } = await probeServices({ ...r.deps, config: environmentEnvSchema.parse({ MURA_DBTYPE: 'MySQL', TZ: 'UTC', MAILPIT_API_URL: MAILPIT }) });
+
+    expect(settings).toMatchObject({ dbtype: 'mysql', mysqlFallback: true, processTz: 'UTC', defaultHashAlgorithm: null });
+    expect(r.mssql.factory).not.toHaveBeenCalled();
+  });
 });
 
 describe('main', () => {
+  it('parses the variables once and records the services phase from them', async () => {
+    const parse = vi.spyOn(environmentEnvSchema, 'parse');
+    const r = rig({ env: { MURA_DBTYPE: 'MySQL' } });
+
+    const outcome = await main(['--phase', 'services'], r.deps);
+
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(parse).toHaveBeenCalledWith(r.deps.env);
+    expect(outcome).toMatchObject({ code: 4, summary: { phase: 'services', mysqlFallback: true } });
+    parse.mockRestore();
+  });
+
   it('prints one JSON summary line and exits 0 for --phase local', async () => {
     const r = rig({ at: LOCAL_AT });
 
@@ -1375,6 +1544,7 @@ describe('main', () => {
       failed: [],
       mysqlFallback: null,
       clusterSafe: null,
+      startupWritersClosed: null,
       ping: null,
       timeZone: null,
     });

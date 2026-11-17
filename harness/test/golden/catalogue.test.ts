@@ -178,6 +178,24 @@ describe('loadCatalogue', () => {
       'scenarios/3/tableVersion',
     ],
     [
+      'a csvKeyOrder entry without its step',
+      () => validVariant('normalisationOverrides: []', "normalisationOverrides: {csvKeyOrder: ['home LNAME']}"),
+      /csvKeyOrder\.0: must be <step>: <column>\[, <column>…\]/,
+      'scenarios/0/normalisationOverrides/csvKeyOrder/0',
+    ],
+    [
+      'a csvKeyOrder entry naming no step',
+      () => validVariant('normalisationOverrides: []', "normalisationOverrides: {csvKeyOrder: ['download: LNAME']}"),
+      /csvKeyOrder download: LNAME names no step/,
+      'scenarios/0/normalisationOverrides/csvKeyOrder/0',
+    ],
+    [
+      'two csvKeyOrder entries for one step',
+      () => validVariant('normalisationOverrides: []', "normalisationOverrides: {csvKeyOrder: ['home: LNAME', 'home: FNAME']}"),
+      /csvKeyOrder names step home more than once/,
+      'scenarios/0/normalisationOverrides/csvKeyOrder/1',
+    ],
+    [
       'a session site that is not a kebab-case site id',
       () => validVariant('        via: public', '        via: public\n        site: Tenant_A'),
       /scenarios\.1\.sessions\.anon\.site: must be a lower-case kebab-case id/,

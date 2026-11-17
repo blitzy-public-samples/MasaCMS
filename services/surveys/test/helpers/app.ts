@@ -1238,6 +1238,13 @@ class SqlParser {
     };
   }
 
+  /** The column of an `ALTER TABLE … ADD COLUMN` definition, read after its keywords. */
+  addedColumn(constraints: UniqueConstraint[]): CatalogColumn {
+    const column = this.columnDefinition(constraints);
+    this.acceptOp(';');
+    return column;
+  }
+
   private columnDefinition(constraints: UniqueConstraint[]): CatalogColumn {
     const name = this.identifier();
     const serial = this.isWord('bigserial') || this.isWord('serial') || this.isWord('serial8');
@@ -1279,6 +1286,24 @@ function parseCreateTables(ddl: string, schema: string): CatalogTable[] {
   return tables;
 }
 
+/** Every `ALTER TABLE <table> ADD COLUMN <definition>` in `ddl`, appended to its table's columns. */
+function addColumns(ddl: string, schema: string, tables: ReadonlyMap<string, CatalogTable>): void {
+  const tokens = tokenize(ddl);
+  const isWord = (at: number, word: string): boolean => tokens[at]?.kind === 'word' && tokens[at]?.value === word;
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (!isWord(i, 'alter') || !isWord(i + 1, 'table')) continue;
+    const parser = new SqlParser(tokens, schema, i + 2);
+    const name = parser.tableName();
+    if (!isWord(parser.position, 'add') || !isWord(parser.position + 1, 'column')) continue;
+    const table = tables.get(name) ?? unsupported(`column added to unknown table ${name}`);
+    const reader = new SqlParser(tokens, schema, parser.position + 2);
+    const column = reader.addedColumn(table.constraints);
+    table.columns.push(column);
+    table.columnNames.push(column.name);
+    i = reader.position - 1;
+  }
+}
+
 let catalogCache: ReadonlyMap<string, CatalogTable> | undefined;
 
 /** Tables of schema `surveys` as the service's own migrations create them, read once per process. */
@@ -1290,7 +1315,9 @@ function surveysCatalog(): ReadonlyMap<string, CatalogTable> {
       .sort()
       .map((file) => readFileSync(join(dir, file), 'utf8'))
       .join('\n');
-    catalogCache = new Map(parseCreateTables(ddl, SCHEMA).map((table) => [table.name, table]));
+    const tables = new Map(parseCreateTables(ddl, SCHEMA).map((table) => [table.name, table]));
+    addColumns(ddl, SCHEMA, tables);
+    catalogCache = tables;
   }
   return catalogCache;
 }

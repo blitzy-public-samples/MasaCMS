@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { adminUrl, cfUuid } from '@opt2/platform/legacy-compat';
 import { TENANT_A, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
-import { TEST_CLOCK, userHeaders } from '../helpers/app.js';
+import type { PeopleEnv } from '../../src/app.js';
+import { TEST_CLOCK, testEnv, userHeaders } from '../helpers/app.js';
 import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
 import type { IdentityDouble } from '../helpers/identity-double.js';
 import { ADMIN_S2, DEFAULT_PEOPLE_SEED, S2_USER, SITE_ADMIN_A, SYSTEM_USER_A_PERSON, accountFor, seedPeople, type TestActor } from '../helpers/fixtures.js';
@@ -50,15 +51,15 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
   type PeopleDb = PgTestApp['db'];
   type PersonTable = 'person' | 'user_address' | 'user_interest' | 'user_tag';
 
-  /** Runs `fn` against people over a fresh throwaway schema holding the fixture seed and the S2 target. */
-  async function onPeople(fn: (pg: PgTestApp) => Promise<void>): Promise<void> {
+  /** Runs `fn` against people, built with `env` when given, over a fresh throwaway schema holding the fixture seed and the S2 target. */
+  async function onPeople(fn: (pg: PgTestApp) => Promise<void>, env?: PeopleEnv): Promise<void> {
     const outcome = await withPgApp(
       async (pg) => {
         await seedPeople(pg.db, DEFAULT_PEOPLE_SEED, { clock: TEST_CLOCK });
         await seedPeople(pg.db, { [TENANT_A.tenantId]: { persons: [S2_TARGET] } }, { clock: TEST_CLOCK });
         await fn(pg);
       },
-      { identity: newIdentity() },
+      { identity: newIdentity(), ...(env === undefined ? {} : { env }) },
     );
     if (outcome !== undefined) throw new Error(outcome.reason);
   }
@@ -255,28 +256,19 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       for (const table of ['person', 'user_address', 'user_interest', 'user_tag'] as const) expect(await rowsOf(db, table, userId)).toEqual([]);
     }));
 
-  // The routes read MURA_EXPIREPASSWORDS from the environment they are registered under.
+  // The routes take MURA_EXPIREPASSWORDS from the people environment buildApp parsed.
   it.each<[string, string | undefined, boolean]>([
     ['passwords never expire', undefined, false],
     ['they expire after 30 days', '30', true],
-  ])("answers a stored user's failed update with its password expiry when %s", async (_name, setting, expired) => {
-    const previous = process.env.MURA_EXPIREPASSWORDS;
-    if (setting === undefined) delete process.env.MURA_EXPIREPASSWORDS;
-    else process.env.MURA_EXPIREPASSWORDS = setting;
-    try {
-      await onPeople(async ({ app, identity }) => {
-        identity.seedAccounts(accountFor(SYSTEM_USER_A_PERSON, { passwordCreated: '2026-01-02T09:00:00.000' }));
-        const fields = userForm('Update', { email: '', usernameNoCache: 'system_user_a', passwordNoCache: '', password2: '' });
-        const { status, body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(STORED_USER) });
-        expect(status).toBe(200);
-        expect(body).toMatchObject({ written: false, userBean: { UserID: STORED_USER }, passwordExpired: expired });
-        expect(Object.keys(body.errors)).toEqual(['email']);
-      });
-    } finally {
-      if (previous === undefined) delete process.env.MURA_EXPIREPASSWORDS;
-      else process.env.MURA_EXPIREPASSWORDS = previous;
-    }
-  });
+  ])("answers a stored user's failed update with its password expiry when %s", (_name, setting, expired) =>
+    onPeople(async ({ app, identity }) => {
+      identity.seedAccounts(accountFor(SYSTEM_USER_A_PERSON, { passwordCreated: '2026-01-02T09:00:00.000' }));
+      const fields = userForm('Update', { email: '', usernameNoCache: 'system_user_a', passwordNoCache: '', password2: '' });
+      const { status, body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(STORED_USER) });
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ written: false, userBean: { UserID: STORED_USER }, passwordExpired: expired });
+      expect(Object.keys(body.errors)).toEqual(['email']);
+    }, testEnv({ MURA_EXPIREPASSWORDS: setting })));
 
   it.each<[string, string]>([
     ['an Add', 'Add'],

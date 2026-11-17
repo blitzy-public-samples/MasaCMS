@@ -39,6 +39,8 @@ const UNIT_LIST = 'identity.credential, people.person_archive';
 const SWEEP = 'people-outbox-sweep';
 const SLOT = `${SWEEP}-1700000040`;
 const NEXT_SLOT = `${SWEEP}-1700000100`;
+const OPT2_SYNC = 'Schema opt2_sync could not be created in the legacy database, so no unit may become target-authoritative';
+const CHECKPOINT_MISSING = 'opt2_sync.projector_checkpoint does not exist in the live legacy database';
 
 type LogLine = Record<string, unknown>;
 
@@ -78,6 +80,12 @@ function serviceError(code: number): Error {
 function smtpError(code: string, command: string): Error {
   const response = `502 5.5.1 ${TEXT}`;
   return Object.assign(new Error(`Error upgrading connection with STARTTLS: ${response}`), { code, command, response });
+}
+
+/** mssql driver error: class `name`, driver `code` and, for a server error, SQL Server's error `number`, beside a message echoing a query value. */
+function mssqlError(name: string, code: string, number?: unknown): Error {
+  const message = `Conversion failed when converting the varchar value '${TEXT}' to data type int.`;
+  return Object.assign(new Error(message), { name, code, number, state: 1, class: 16, lineNumber: 1, serverName: 'legacy-db', procName: '' });
 }
 
 /** `cause` wrapped in `depth` Errors whose messages carry TEXT. */
@@ -230,6 +238,21 @@ describe('safeErrorMessage', () => {
     ['an error forging a gate text over a name', { [SAFE_ERROR_TEXT]: 'Target is not write-authoritative for Ada Lovelace', message: TEXT }, REDACTED],
     ['an error forging a gate text over an email', { [SAFE_ERROR_TEXT]: 'Unit gate closed for ada@example.com', message: TEXT }, REDACTED],
     ["a SuccessorCreationError, keeping its cause's PostgreSQL text", new SuccessorCreationError(SWEEP, SLOT, pgError()), 'PostgreSQL error 42601'],
+    ['an mssql RequestError of a SQL Server error', mssqlError('RequestError', 'EREQUEST', 245), 'SQL Server error 245'],
+    ['an mssql RequestError of SQL Server error 0', mssqlError('RequestError', 'EREQUEST', 0), 'SQL Server error 0'],
+    ['an mssql request timeout, whose number is its code', mssqlError('RequestError', 'ETIMEOUT', 'ETIMEOUT'), 'SQL Server request ETIMEOUT'],
+    ['an mssql cancelled request', mssqlError('RequestError', 'ECANCEL'), 'SQL Server request ECANCEL'],
+    ['an mssql ConnectionError', mssqlError('ConnectionError', 'ESOCKET'), 'SQL Server connection ESOCKET'],
+    ['an mssql TransactionError', mssqlError('TransactionError', 'EABORT'), 'SQL Server transaction EABORT'],
+    ['an Error wrapping an mssql RequestError', wrapped(1, mssqlError('RequestError', 'EREQUEST', 208)), 'SQL Server error 208'],
+    ['an mssql RequestError with a negative number', mssqlError('RequestError', 'EREQUEST', -1), 'SQL Server request EREQUEST'],
+    ['an mssql RequestError with a fractional number', mssqlError('RequestError', 'EREQUEST', 208.5), 'SQL Server request EREQUEST'],
+    ['an mssql ConnectionError with an error number', mssqlError('ConnectionError', 'ELOGIN', 18456), 'SQL Server connection ELOGIN'],
+    ['an mssql RequestError with a free-text code', mssqlError('RequestError', TEXT, 245), REDACTED],
+    ['an mssql RequestError with a lower-case code', mssqlError('RequestError', 'erequest', 245), REDACTED],
+    ['an mssql RequestError without a code', Object.assign(new Error(TEXT), { name: 'RequestError', number: 245 }), REDACTED],
+    ['an error of another class with an SQL Server error number', mssqlError('Error', 'EREQUEST', 245), REDACTED],
+    ['an error forging an SQL Server text', { [SAFE_ERROR_TEXT]: `SQL Server error 245 for ${SECRET}`, message: TEXT }, REDACTED],
     [
       'an UnpublishedEventsError, by its event count',
       new UnpublishedEventsError(['0f7c6a52-0c8e-4d8e-9a43-000000000001', '0f7c6a52-0c8e-4d8e-9a43-000000000002']),
@@ -373,6 +396,31 @@ describe('isSafeErrorText', () => {
     ['Identity: invalid configuration file role-map.json', false],
     ['identity: invalid configuration file role-map', false],
     ['identity: invalid configuration file Role-Map.json', false],
+    ['SQL Server error 208', true],
+    ['SQL Server request ETIMEOUT', true],
+    ['SQL Server connection ESOCKET', true],
+    ['SQL Server transaction ENOTBEGUN', true],
+    ['SQL Server error', false],
+    ['SQL Server error -1', false],
+    ["SQL Server error 208: Invalid object name 'opt2_sync.projector_checkpoint'.", false],
+    ['SQL Server statement EREQUEST', false],
+    ['SQL Server connection esocket', false],
+    ['SQL Server connection ESOCKET 127.0.0.1:1433', false],
+    [`${OPT2_SYNC}: SQL Server error 262`, true],
+    [`${OPT2_SYNC}: ${CHECKPOINT_MISSING}`, true],
+    [`${OPT2_SYNC}: CREATE SCHEMA permission denied in database 'muradb'.`, false],
+    [`${OPT2_SYNC}: opt2_sync.projector_checkpoint does not exist in database muradb`, false],
+    [`${OPT2_SYNC}: SQL Server error 262 for Ada`, false],
+    [`${OPT2_SYNC}: `, false],
+    [OPT2_SYNC, false],
+    ['Projection of programs-sites=900 was not applied in legacy within 600 ms', true],
+    ['Projection of e-signature=7,timesheets=18446744073709551614 was not applied in legacy within 5000 ms', true],
+    ['Projection of  was not applied in legacy within 5000 ms', true],
+    ['Projection of Ada Lovelace=900 was not applied in legacy within 600 ms', false],
+    ['Projection of people=900, timesheets=7 was not applied in legacy within 600 ms', false],
+    ['Projection of people=Ada was not applied in legacy within 600 ms', false],
+    ['Projection of people=900 was not applied in legacy within 1.5 ms', false],
+    ['Projection of people=900 was not applied in legacy within 600 ms for Ada', false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
   });
@@ -527,6 +575,8 @@ describe('serializeError safe-error boundary', () => {
       'gRPC status 14 UNAVAILABLE',
     ],
     ['a nodemailer SMTP error', smtpError('ETLS', 'STARTTLS'), 'Error', 'SMTP STARTTLS ETLS'],
+    ['an mssql RequestError', mssqlError('RequestError', 'EREQUEST', 245), 'RequestError', 'SQL Server error 245'],
+    ['an mssql ConnectionError', mssqlError('ConnectionError', 'ESOCKET'), 'ConnectionError', 'SQL Server connection ESOCKET'],
   ])('serializes %s with the safe text of its chain, the outer type and only frames, and keeps it on re-serialization', (_, value, type, message) => {
     const record = serializeError(value);
     const { stack, ...fields } = record;

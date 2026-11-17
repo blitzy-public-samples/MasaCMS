@@ -24,7 +24,7 @@ const PAYLOAD_KEYS = Object.keys({
   displayPoolId: true,
   contentPoolIds: true,
   domains: true,
-} satisfies Record<keyof SiteChangedPayload, true>);
+} satisfies Record<Exclude<keyof SiteChangedPayload, 'deleted'>, true>);
 
 const UUID_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-/i;
 

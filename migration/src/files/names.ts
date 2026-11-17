@@ -1,8 +1,10 @@
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { isTenantId } from '@opt2/platform/tenancy';
 
-// Same language as files.cfm's namePattern: fileDAO.cfc:153-199 variants plus the on-demand `_<size name>` and
-// `_W<w>_H<h>` renditions of processImgCfimage.cfc:190-201; `ext` follows the last dot.
-/** Name of a stored file-store object, `<fileID><variant>.<ext>`; groups are fileId, variant and ext. */
+// files.cfm's namePattern, which the owner's object keys share: fileDAO.cfc:153-199 variants plus the on-demand
+// `_<size name>` and `_W<w>_H<h>` renditions of processImgCfimage.cfc:190-201; `ext` follows the last dot. It admits any
+// 35-character id, so parseStoredName also requires the CF UUID the owner's upload takes as `fileId`.
+/** Name files.cfm lists, `<35-character id><variant>.<ext>`; groups are fileId, variant and ext. */
 export const STORED_NAME_PATTERN = /^([A-Za-z0-9-]{35})(_[^/\\\u0000-\u001F\u007F]+)?\.([A-Za-z0-9]+)$/;
 
 /** Suffix distinguishing an original (`''`) from its image renditions. */
@@ -29,18 +31,24 @@ export class InvalidStoredNameError extends Error {
   }
 }
 
-/** Splits a stored name into its parts; returns null when the name is not a stored object name. */
-export function parseStoredName(name: string): StoredName | null {
+/** Parts of a name matching STORED_NAME_PATTERN, whatever its id; null otherwise. */
+function splitStoredName(name: string): StoredName | null {
   const match = STORED_NAME_PATTERN.exec(name);
   if (match === null) return null;
   const [, fileId = '', variant = '', ext = ''] = match;
   return { fileId, variant: variant as StoredVariant, ext };
 }
 
-/** Joins parts into `<fileId><variant>.<ext>`; throws InvalidStoredNameError unless the result parses back to `parts`. */
+/** Splits a stored name into its parts; returns null unless it matches STORED_NAME_PATTERN with a CF UUID file id. */
+export function parseStoredName(name: string): StoredName | null {
+  const parts = splitStoredName(name);
+  return parts !== null && isCfUuid(parts.fileId) ? parts : null;
+}
+
+/** Joins parts into `<fileId><variant>.<ext>`; throws InvalidStoredNameError unless the result splits back to `parts`. */
 export function formatStoredName(parts: StoredName): string {
   const name = `${parts.fileId}${parts.variant}.${parts.ext}`;
-  const parsed = parseStoredName(name);
+  const parsed = splitStoredName(name);
   if (parsed?.fileId !== parts.fileId || parsed.variant !== parts.variant || parsed.ext !== parts.ext) {
     throw new InvalidStoredNameError(name);
   }
@@ -64,11 +72,11 @@ export function objectKey(tenantId: string, fileId: string, variant: StoredVaria
   return `${tenantId}/${name}`;
 }
 
-/** Inverse of objectKey; returns null unless the key is exactly `<tenant UUID>/<stored name>`. */
+/** Inverse of objectKey; returns null unless the key is exactly `<tenant UUID>/<name matching STORED_NAME_PATTERN>`. */
 export function parseObjectKey(key: string): (StoredName & { tenantId: string }) | null {
   const segments = key.split('/');
   if (segments.length !== 2) return null;
   const [tenantId = '', name = ''] = segments;
-  const parsed = parseStoredName(name);
+  const parsed = splitStoredName(name);
   return parsed !== null && isTenantId(tenantId) ? { tenantId, ...parsed } : null;
 }

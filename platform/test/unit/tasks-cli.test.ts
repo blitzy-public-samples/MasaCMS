@@ -19,9 +19,9 @@ interface Received {
   invocation?: string | string[];
 }
 
-const URLS_ISSUE = 'OPT2_SERVICE_URLS: must name at least one service';
-const CLOUD_ISSUE = 'GOOGLE_CLOUD_PROJECT: is required when OPT2_ENV=cloud';
-const NO_CREATOR = 'opt2-tasks: OPT2_SERVICE_URLS names no creator of the selected queues\n';
+const NO_CREATOR = 'opt2-tasks: OPT2_SERVICE_URLS names no creator of the selected queues';
+// Assembled at run time, so no literal credential appears in source.
+const SECRET = ['s3cr3t', 'tasks', 'cli', 'value'].join('-');
 const CREATOR = 'communications';
 const QUEUE = 'communications-outbox-sweep';
 
@@ -84,6 +84,16 @@ function stdoutLines(): unknown[] {
     .map((line) => JSON.parse(line) as unknown);
 }
 
+/** The one line opt2-tasks wrote to stderr, checked against log-record.v1 and the CLI's service. */
+function stderrRecord(): Record<string, unknown> {
+  const [line, ...rest] = stderr.split('\n');
+  expect(rest).toEqual(['']);
+  const record = JSON.parse(line as string) as Record<string, unknown>;
+  expect(validateLogRecord(record)).toEqual({ valid: true, errors: [] });
+  expect(record).toMatchObject({ service: 'opt2-tasks', env: 'local' });
+  return record;
+}
+
 beforeAll(async () => {
   stateDir = await mkdtemp(join(tmpdir(), 'opt2-tasks-cli-'));
   await writeTestSecrets(stateDir);
@@ -118,16 +128,24 @@ afterEach(() => {
 
 describe('opt2-tasks reconcile', () => {
   it.each([
-    { label: 'OPT2_SERVICE_URLS is unset', mode: 'local', urls: () => undefined, issue: URLS_ISSUE },
-    { label: 'OPT2_SERVICE_URLS is blank', mode: 'local', urls: () => '  ', issue: URLS_ISSUE },
-    { label: 'OPT2_SERVICE_URLS is an empty map', mode: 'local', urls: () => '{}', issue: URLS_ISSUE },
-    { label: 'OPT2_ENV=cloud lacks GOOGLE_CLOUD_PROJECT', mode: 'cloud', urls: () => JSON.stringify({ [CREATOR]: serverUrl }), issue: CLOUD_ISSUE },
-  ])('exits 2 naming the variable, before any call, when $label', async ({ mode, urls, issue }) => {
+    { label: 'OPT2_SERVICE_URLS is unset', mode: 'local', urls: () => undefined, entry: 'OPT2_SERVICE_URLS: is invalid' },
+    { label: 'OPT2_SERVICE_URLS is blank', mode: 'local', urls: () => '  ', entry: 'OPT2_SERVICE_URLS: is invalid' },
+    { label: 'OPT2_SERVICE_URLS is an empty map', mode: 'local', urls: () => '{}', entry: 'OPT2_SERVICE_URLS: is invalid' },
+    { label: 'OPT2_SERVICE_URLS maps a creator to a non-URL', mode: 'local', urls: () => JSON.stringify({ [CREATOR]: SECRET }), entry: 'OPT2_SERVICE_URLS: expected an http(s) URL' },
+    { label: 'OPT2_SERVICE_URLS is not JSON', mode: 'local', urls: () => `{${SECRET}`, entry: 'OPT2_SERVICE_URLS: must be a JSON object' },
+    { label: 'OPT2_ENV is not a mode', mode: SECRET, urls: () => JSON.stringify({ [CREATOR]: serverUrl }), entry: 'OPT2_ENV: expected one of local|cloud' },
+    { label: 'OPT2_ENV=cloud lacks GOOGLE_CLOUD_PROJECT', mode: 'cloud', urls: () => JSON.stringify({ [CREATOR]: serverUrl }), entry: 'GOOGLE_CLOUD_PROJECT: is required when OPT2_ENV=cloud' },
+  ])('exits 2 with one line naming only the variable and its reason, before any call, when $label', async ({ mode, urls, entry }) => {
     stubCliEnv(urls(), mode);
 
     expect(await main(['reconcile'])).toBe(2);
 
-    expect(stderr).toBe(`opt2-tasks: invalid environment\n  ${issue}\n`);
+    expect(stderrRecord()).toMatchObject({
+      severity: 'ERROR',
+      message: 'opt2-tasks: invalid environment',
+      error: { type: 'EnvValidationError', message: `opt2-tasks: invalid environment (${entry})` },
+    });
+    expect(stderr).not.toMatch(new RegExp(`${SECRET}|must name|Invalid`));
     expect(stdout).toBe('');
     expect(received).toEqual([]);
   });
@@ -138,7 +156,9 @@ describe('opt2-tasks reconcile', () => {
     expect(await main(['reconcile'])).toBe(2);
 
     expect(stdoutLines()).toEqual(expectedLines());
-    expect(stderr).toBe(NO_CREATOR);
+    const record = stderrRecord();
+    expect(record).toMatchObject({ severity: 'ERROR', message: NO_CREATOR });
+    expect(record).not.toHaveProperty('error');
     expect(received).toEqual([]);
   });
 
@@ -185,15 +205,9 @@ describe('opt2-tasks reconcile', () => {
 
     expect(await run()).toBe(1);
 
-    const [line, ...rest] = stderr.split('\n');
-    expect(rest).toEqual(['']);
-    const record = JSON.parse(line as string) as unknown;
-    expect(validateLogRecord(record)).toEqual({ valid: true, errors: [] });
-    expect(record).toMatchObject({
+    expect(stderrRecord()).toMatchObject({
       severity: 'CRITICAL',
-      service: 'opt2-tasks',
-      env: 'local',
-      message: 'opt2-tasks failed',
+      message: 'opt2-tasks: reconcile failed',
       error: { type: 'Error', message: REDACTED },
     });
     expect(stderr).not.toMatch(/write failed|user:pw|X-Goog-Signature/);

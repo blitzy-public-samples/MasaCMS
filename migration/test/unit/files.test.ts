@@ -20,7 +20,10 @@ import {
   parseStoredName,
   planObjects,
   readManifest,
+  readManifestNames,
+  removeDroppedObjects,
   storePath,
+  streamChangedEntries,
   transferFiles,
   type ManifestEntry,
   type ManifestKey,
@@ -281,8 +284,21 @@ describe.skipIf(!schemaAvailable)(pgTitle('file store against a migrated migrati
 
       const built = await buildFileManifest(t.ctx, SNAPSHOT_SEQ);
 
-      expect(built).toMatchObject({ entries: STORED.length, skipped: [{ siteId: 'default', name: 'Thumbs.db' }] });
+      expect(built).toMatchObject({ entries: STORED.length, skipped: [{ siteId: 'default', name: 'Thumbs.db', reason: 'not a stored-object name' }] });
       expect((await readManifest(t.ctx, SNAPSHOT_SEQ)).some((entry) => entry.siteId === 'default')).toBe(false);
+    });
+
+    it('skips a stray store file whose 35-character id is no CF UUID, naming why, so the transfer never sends it', async () => {
+      const stray = 'QAORPHAN-FILE-0000-0000000000000058.txt';
+      bridge().files.set(pathOf(DEFAULT_UMBRELLA_SITE_ID, stray), Buffer.from('x', 'utf8'));
+
+      const built = await buildFileManifest(t.ctx, SNAPSHOT_SEQ);
+      const transfer = await transferFiles(t.ctx, SNAPSHOT_SEQ);
+
+      expect(built).toMatchObject({ entries: STORED.length, skipped: [{ siteId: DEFAULT_UMBRELLA_SITE_ID, name: stray, reason: 'file id is not a CF UUID' }] });
+      expect((await readManifest(t.ctx, SNAPSHOT_SEQ)).some((entry) => entry.name === stray)).toBe(false);
+      expect(transfer).toMatchObject({ transferred: STORED.length, rejected: [] });
+      expect(bridge().calls.filter((call) => call.op === 'files.get').map((call) => call.query.name)).not.toContain(stray);
     });
 
     it.each<[string, (double: BridgeDouble) => void, boolean]>([
@@ -310,6 +326,9 @@ describe.skipIf(!schemaAvailable)(pgTitle('file store against a migrated migrati
     const misplacedBytes = Buffer.from('stale copy outside the file pool', 'utf8');
     const misplaced = expectedEntry(image, 'tenant-a', misplacedBytes);
     const entryKey = (object: StoredObject): ManifestKey => ({ siteId: object.file.siteId, path: pathOf(object.file.siteId, object.name) });
+    /** The recorded manifest entries of `keys`, in manifest order. */
+    const manifestEntries = async (keys: readonly ManifestKey[]): Promise<ManifestEntry[]> =>
+      (await readManifest(t.ctx, SNAPSHOT_SEQ)).filter((entry) => keys.some((key) => key.siteId === entry.siteId && key.path === entry.path));
 
     beforeEach(async () => {
       bridge().files.set(misplaced.path, misplacedBytes);
@@ -339,6 +358,7 @@ describe.skipIf(!schemaAvailable)(pgTitle('file store against a migrated migrati
         bytes: TOTAL_BYTES,
         orphans: [entryKey(orphan)],
         misplaced: [keyOf(misplaced)],
+        rejected: [],
       });
       const { objects } = content();
       expect([...objects.keys()].sort()).toEqual(STORED.map((object) => `${tenantOf(object)}/${object.name}`).sort());
@@ -379,7 +399,7 @@ describe.skipIf(!schemaAvailable)(pgTitle('file store against a migrated migrati
       const served = 'not the stored bytes';
       bridge().failNext('files.get', 200, served);
 
-      const error = await transferFiles(t.ctx, SNAPSHOT_SEQ, { only: [entryKey(videoSmall)] }).catch((caught: unknown) => caught);
+      const error = await transferFiles(t.ctx, SNAPSHOT_SEQ, { entries: await manifestEntries([entryKey(videoSmall)]) }).catch((caught: unknown) => caught);
 
       expect(error).toBeInstanceOf(FileHashMismatchError);
       expect(error).toMatchObject({
@@ -392,11 +412,11 @@ describe.skipIf(!schemaAvailable)(pgTitle('file store against a migrated migrati
       expect(content().calls.filter((call) => call.method === 'putObject')).toEqual([]);
     });
 
-    it('restricts planning and transfer to the keys `only` names, still reporting their orphans and misplaced copies', async () => {
+    it('restricts planning and transfer to the entries it is given, still reporting their orphans and misplaced copies', async () => {
       const only = [entryKey(videoSmall), keyOf(misplaced), entryKey(orphan)];
 
-      const planned = await planObjects(t.ctx, SNAPSHOT_SEQ, { only });
-      const result = await transferFiles(t.ctx, SNAPSHOT_SEQ, { only });
+      const planned = await planObjects(t.ctx, SNAPSHOT_SEQ, { entries: await manifestEntries(only) });
+      const result = await transferFiles(t.ctx, SNAPSHOT_SEQ, { entries: await manifestEntries(only) });
 
       expect(planned.map((object) => keyOf(object.entry))).toEqual([...only].sort(compareManifestKeys));
       expect(result).toEqual({
@@ -406,8 +426,42 @@ describe.skipIf(!schemaAvailable)(pgTitle('file store against a migrated migrati
         bytes: bytesOf(videoSmall.name).length + bytesOf(orphan.name).length,
         orphans: [entryKey(orphan)],
         misplaced: [keyOf(misplaced)],
+        rejected: [],
       });
       expect([...content().objects.keys()].sort()).toEqual([`${tenantOf(videoSmall)}/${videoSmall.name}`, `${tenantOf(orphan)}/${orphan.name}`].sort());
+    });
+  });
+
+  describe('feed of the next snapshot', () => {
+    const image = FIXTURE_FILES.image;
+    const pdf = storedObject(FIXTURE_FILES.pdf, '');
+    const imageSmall = storedObject(image, '_small');
+    const reuploaded = Buffer.from('re-uploaded pdf bytes', 'utf8');
+
+    it('transfers the changed copy, then deletes the dropped rendition and keeps the changed key, reading copies by exact name', async () => {
+      await buildFileManifest(t.ctx, SNAPSHOT_SEQ);
+      await transferFiles(t.ctx, SNAPSHOT_SEQ);
+      // SQL Server database names compare case-insensitively, so the second snapshot row names the same fake database.
+      await db().withMetadata((tx) => tx.query(INSERT_SNAPSHOT_SQL, [2, SNAPSHOT_DB.toUpperCase(), 'snap-2.bak', '2026-06-02 09:00:00', TEST_SOURCE_SHA]));
+      bridge().files.delete(pathOf(image.siteId, imageSmall.name));
+      bridge().files.set(pathOf(pdf.file.siteId, pdf.name), reuploaded);
+      await buildFileManifest(t.ctx, 2);
+
+      const transfer = await transferFiles(t.ctx, 2, { entries: streamChangedEntries(t.ctx, SNAPSHOT_SEQ, 2) });
+      const removal = await removeDroppedObjects(t.ctx, { from: SNAPSHOT_SEQ, to: 2 });
+
+      expect(transfer.transferred + transfer.unchanged).toBe(1);
+      expect(transfer).toMatchObject({ bytes: reuploaded.length, rejected: [] });
+      expect(removal).toEqual({ from: SNAPSHOT_SEQ, to: 2, deleted: 1, absent: 0, retained: 1, misplaced: 0 });
+      const { objects } = content();
+      expect(objects.has(`${tenantOf(imageSmall)}/${imageSmall.name}`)).toBe(false);
+      expect(objects.get(`${tenantOf(pdf)}/${pdf.name}`)?.bytes).toEqual(reuploaded);
+      // The dropped rendition is asked but gone; the unasked `_medium` rendition of the same file id stays unread.
+      const asked = (await readManifest(t.ctx, SNAPSHOT_SEQ)).filter((entry) => entry.fileId === image.fileId && entry.variant !== '_medium');
+      expect(asked.map((entry) => entry.variant)).toContain('_small');
+      expect(await readManifestNames(t.ctx, 2, asked)).toEqual(
+        (await readManifest(t.ctx, 2)).filter((entry) => entry.fileId === image.fileId && entry.variant !== '_medium'),
+      );
     });
   });
 });

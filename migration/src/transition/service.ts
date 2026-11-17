@@ -8,6 +8,7 @@ import { serializeError } from '@opt2/platform/logging';
 import { GATE_WAIT_MS } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, type ServiceClient, type ServiceRequest } from '@opt2/platform/service-kit';
 import type { MetadataTx } from '@opt2/platform/tenancy';
+import { SpanKind, startLinkedRootSpan, withUnsampledTrace } from '@opt2/platform/tracing';
 
 import { resolveReportsDir } from '../config.js';
 import type { MigrationContext, ServiceCaller } from '../context.js';
@@ -209,6 +210,7 @@ function fencedOwners(owners: OwnersClient): OwnersClient {
     getObject: (...args) => fenced(() => owners.getObject(...args)),
     deleteObject: (...args) => fenced(() => owners.deleteObject(...args)),
     getAttachmentObject: (...args) => fenced(() => owners.getAttachmentObject(...args)),
+    getExportObject: (...args) => fenced(() => owners.getExportObject(...args)),
     siteMonitorState: () => fenced(() => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => fenced(() => owners.putSiteMonitorState(...args)),
     adoptScheduledTasks: (...args) => fenced(() => owners.adoptScheduledTasks(...args)),
@@ -225,6 +227,7 @@ function fencedGateway(gateway: GatewayClient): GatewayClient {
     freeze: (...args) => fenced(() => gateway.freeze(...args)),
     unfreeze: (...args) => fenced(() => gateway.unfreeze(...args)),
     awaitEpoch: (...args) => fenced(() => gateway.awaitEpoch(...args)),
+    inflightStatus: () => fenced(() => gateway.inflightStatus()),
     awaitInflightDrained: (...args) => fenced(() => gateway.awaitInflightDrained(...args)),
     clearOrphans: (...args) => fenced(() => gateway.clearOrphans(...args)),
   };
@@ -783,15 +786,18 @@ export function createTransitionService(base: MigrationContext, options: Transit
 
   /**
    * Drives `record` in the background under this instance's claim, valid until `until`, unless this process already drives it;
-   * while stopping it only gives the claim back, which leaves the row to the next resume.
+   * while stopping it only gives the claim back, which leaves the row to the next resume. A `resumed` drive, which no request
+   * started, is recorded as its own linked root span.
    */
-  function launch(record: TransitionRecord, until: Date): void {
+  function launch(record: TransitionRecord, until: Date, resumed = false): void {
     const id = record.transitionId;
     if (loops.has(id)) return;
     const loop = (async () => {
       try {
         if (stopping) await releaseClaim(id, until.getTime());
-        else await holdClaim(record, until);
+        else if (resumed) {
+          await startLinkedRootSpan('transition.drive', SpanKind.INTERNAL, () => holdClaim(record, until), { 'opt2.transition_id': id });
+        } else await holdClaim(record, until);
       } catch (error) {
         ctx.logger.error({ error: serializeError(error) }, `Transition ${id} stopped and continues from its persisted state on resume`);
       } finally {
@@ -809,11 +815,11 @@ export function createTransitionService(base: MigrationContext, options: Transit
     if (claimed === undefined) return undefined;
     // The view is taken first: the loop starts changing the record before its first await.
     const view = toTransitionView(claimed.record);
-    launch(claimed.record, claimed.until);
+    launch(claimed.record, claimed.until, true);
     return view;
   }
 
-  /** Starts, once, the pass that claims and drives the non-terminal transition every `importRetryMs` until `stop()`. */
+  /** Starts, once, the pass that claims, in an unsampled trace, and drives the non-terminal transition every `importRetryMs` until `stop()`. */
   function startPass(): void {
     if (stopping || pass !== undefined) return;
     pass = (async () => {
@@ -821,7 +827,7 @@ export function createTransitionService(base: MigrationContext, options: Transit
         await Promise.race([delay(importRetryMs, undefined, { ref: false }), passStopped]);
         if (stopping) break;
         try {
-          await claimActive();
+          await withUnsampledTrace(claimActive);
         } catch (error) {
           ctx.logger.warn({ error: serializeError(error) }, `Transition claim pass failed; it runs again in ${String(importRetryMs)} ms`);
         }

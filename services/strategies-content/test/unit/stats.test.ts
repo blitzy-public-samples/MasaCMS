@@ -1,7 +1,7 @@
-/** Content stats and ratings: the stats bean's defaults, setters and value struct, its load/save, the comment stat, the rating reads and the JSON API `stats` findOne route. */
+/** Content stats and ratings: the stats bean's defaults, setters and value struct, its load/save, the comment stat, the rating reads and save, and the JSON API `stats` findOne route. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
+import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
@@ -10,6 +10,7 @@ import {
   getTopRated,
   loadStats,
   readRate,
+  saveRate,
   saveStatsInTx,
   setCommentStat,
   setStatsValues,
@@ -279,6 +280,49 @@ describe.skipIf(!(await pgAvailable()))('domain/stats over a throwaway content s
     expect(second).not.toBeInstanceOf(Error);
     expect((second as ContentStats).comments).toBe(expected);
     expect((await inA((tx) => repo.stats.readStats(tx, { contentId, siteId: SITE })))?.comments).toBe(expected);
+  });
+
+  it('saveRate keeps the comment and version stats a concurrent writer commits while the rating waits on the item lock', async () => {
+    const contentId = cfId('V', 1);
+    await inA(async (tx) => {
+      await saveStatsInTx(tx, repo, { ...STATS_DEFAULTS, contentID: contentId, siteID: SITE, views: 5 });
+      await repo.comments.insertComment(tx, { contentid: contentId, siteid: SITE, entered: NOW, name: 'n', isapproved: 1, isspam: 0, isdeleted: 0 });
+    });
+    let release: () => void = () => undefined;
+    let written: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const statsWritten = new Promise<void>((resolve) => (written = resolve));
+    // The competing transaction holds the item lock after its stats writes until the rating is seen waiting.
+    const competing = inA(async (tx) => {
+      await setCommentStat(tx, repo, contentId, SITE);
+      await repo.stats.setVersionNumbers(tx, { contentId, siteId: SITE, majorVersion: 3, minorVersion: 2 });
+      written();
+      await held;
+    });
+    await Promise.race([statsWritten, competing]);
+    const rating = withGatedTenant(handle.app, TENANT_A.tenantId, (tx) =>
+      saveRate(tx, repo, { contentId, siteId: SITE, userId: cfId('U', 1), rate: 5, now: NOW }, { requestId: 'stats-test' }),
+    ).catch((err: unknown) => err);
+    let settled = false;
+    void rating.then(() => (settled = true));
+    const waiting = async (): Promise<boolean> =>
+      (await handle.adminPool.query('SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.usename = $1', [handle.roles.app])).rows.length > 0;
+    while (!settled && !(await waiting())) await new Promise((resolve) => setTimeout(resolve, 20));
+    const blocked = !settled;
+    release();
+    await competing;
+    expect(blocked).toBe(true);
+    expect(await rating).toEqual({ theavg: 5, thecount: 1, upvotes: null, downvotes: null });
+    expect(await inA((tx) => repo.stats.readStats(tx, { contentId, siteId: SITE }))).toMatchObject({
+      views: 5,
+      rating: 5,
+      totalvotes: 1,
+      upvotes: 1,
+      downvotes: 0,
+      comments: 1,
+      majorversion: 3,
+      minorversion: 2,
+    });
   });
 
   // Rows of the legacy getAvgRating query, recorded on SQL Server 2022 over the same ratings.

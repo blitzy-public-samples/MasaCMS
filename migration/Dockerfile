@@ -13,6 +13,7 @@ RUN npm ci
 COPY gateway/contracts/openapi.yaml /app/gateway/contracts/
 COPY services/strategies-content/contracts/openapi.yaml /app/services/strategies-content/contracts/
 COPY services/finance/contracts/openapi.yaml /app/services/finance/contracts/
+COPY services/reporting/contracts/openapi.yaml /app/services/reporting/contracts/
 COPY migration/contracts/ ./contracts/
 COPY migration/src/ ./src/
 RUN npm run build \

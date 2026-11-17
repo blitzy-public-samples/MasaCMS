@@ -52,6 +52,8 @@ export interface ContentEntityConfig {
   readonly allowFieldSelect: boolean;
   /** Lower-cased, as findProperties reports it; empty when the bean declares none. */
   readonly primaryKey: string;
+  /** application.objectMappings' primarykey, lower-cased: the fieldtype="id" property (bean.cfc:645, 835-839), else empty. */
+  readonly mappedPrimaryKey: string;
   readonly displayName: string;
   /** Hints for this entity's own properties, keyed by property name in declared case. */
   readonly hints: Readonly<Record<string, EntityPropertyHint>>;
@@ -80,6 +82,8 @@ interface EntityDefinition {
   /** Legacy comma-separated field list. */
   readonly fields?: string;
   readonly primaryKey: string;
+  /** Set where it is not `primaryKey`. */
+  readonly mappedPrimaryKey?: string;
   readonly displayName: string;
   /** Property datatypes, as getProperties resolves them, for the properties that carry a hint. */
   readonly datatypes: Readonly<Record<string, string>>;
@@ -199,6 +203,8 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     moduleId: MODULE_CONTENT,
     fields: CONTENT_FIELDS,
     primaryKey: 'contentid',
+    // contentBean.cfc:80 declares contentHistID fieldtype="id".
+    mappedPrimaryKey: 'contenthistid',
     displayName: 'content',
     datatypes: CONTENT_DATATYPES,
     hasMany: CONTENT_HAS_MANY,
@@ -210,6 +216,7 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     moduleId: MODULE_CONTENT,
     fields: CONTENT_FIELDS,
     primaryKey: 'contentid',
+    mappedPrimaryKey: 'contenthistid',
     displayName: 'content',
     datatypes: CONTENT_DATATYPES,
     hasMany: CONTENT_HAS_MANY,
@@ -435,6 +442,8 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     public: false,
     moduleId: MODULE_CONTENT,
     primaryKey: 'contentid',
+    // No fieldtype="id" property.
+    mappedPrimaryKey: '',
     displayName: 'stats',
     datatypes: {
       views: NUMERIC,
@@ -512,6 +521,7 @@ function configOf(name: ContentEntityName, def: EntityDefinition): ContentEntity
     ...(def.fields === undefined ? {} : { fields: Object.freeze(def.fields.split(',')) }),
     allowFieldSelect: true,
     primaryKey: def.primaryKey,
+    mappedPrimaryKey: def.mappedPrimaryKey ?? def.primaryKey,
     displayName: def.displayName,
     hints: hintsOf(def.datatypes),
     hasMany: Object.freeze([...def.hasMany]),

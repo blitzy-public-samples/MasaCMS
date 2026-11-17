@@ -471,10 +471,10 @@ describe('pubsub-redelivery fault script', () => {
   });
 
   it.each([
-    [{}, { producers: [...PRODUCERS], drainTimeoutMs: 120_000 }],
+    [{}, { producers: [...PRODUCERS], drainTimeoutMs: 120_000, replayTimeoutMs: 1_800_000 }],
     [
-      { producers: ['people'], since: '2026-06-30T08:00:00+02:00', drainTimeoutMs: 5000 },
-      { producers: ['people'], since: '2026-06-30T08:00:00+02:00', drainTimeoutMs: 5000 },
+      { producers: ['people'], since: '2026-06-30T08:00:00+02:00', drainTimeoutMs: 5000, replayTimeoutMs: 900_000 },
+      { producers: ['people'], since: '2026-06-30T08:00:00+02:00', drainTimeoutMs: 5000, replayTimeoutMs: 900_000 },
     ],
   ])('parses %j as %j', (input, expected) => {
     expect(pubsubRedelivery.paramsSchema.parse(input)).toStrictEqual(expected);
@@ -487,6 +487,9 @@ describe('pubsub-redelivery fault script', () => {
     { since: '2026-06-30T08:00:00' },
     { drainTimeoutMs: 0 },
     { drainTimeoutMs: 1.5 },
+    { replayTimeoutMs: 0 },
+    { replayTimeoutMs: -1 },
+    { replayTimeoutMs: 1.5 },
     { tenant: TENANT_A },
   ])('rejects %j', (input) => {
     expect(pubsubRedelivery.paramsSchema.safeParse(input).success).toBe(false);
@@ -508,6 +511,7 @@ describe('pubsub-redelivery fault script', () => {
     expect(output.details).toStrictEqual({
       since,
       producers: [...PRODUCERS],
+      replayTimeoutMs: 1_800_000,
       republished: REPUBLISHED,
       subscriptions: HELD,
       checksumKeys: KEYS_PER_CAPTURE,
@@ -542,7 +546,7 @@ describe('pubsub-redelivery fault script', () => {
       PRODUCERS.map((producer) => [
         process.execPath,
         [outboxCliPath(), 'replay', '--since', since],
-        { env: envOf.mock.results[PRODUCERS.indexOf(producer)]?.value, timeoutMs: 120_000 },
+        { env: envOf.mock.results[PRODUCERS.indexOf(producer)]?.value as unknown, timeoutMs: 1_800_000 },
       ]),
     );
     expect(awaitDrained).toHaveBeenCalledExactlyOnceWith(ctx, { timeoutMs: 120_000 });
@@ -597,17 +601,18 @@ describe('pubsub-redelivery fault script', () => {
     expect(timeline.filter((entry) => entry.startsWith('answered:'))).toHaveLength(6);
   });
 
-  it('uses the given since and producers', async () => {
+  it('uses the given since, producers and timeouts, bounding the replay child by replayTimeoutMs and the drain by drainTimeoutMs', async () => {
     const { env, envOf } = envWith();
     const since = '2026-06-30T09:30:00+02:00';
-    const output = await script.run(env, params({ producers: ['people'], since, drainTimeoutMs: 5000 }));
+    const output = await script.run(env, params({ producers: ['people'], since, drainTimeoutMs: 5000, replayTimeoutMs: 600_000 }));
 
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(envOf).toHaveBeenCalledExactlyOnceWith('people');
     expect(vi.mocked(spawnChild).mock.calls[0]?.[1]).toStrictEqual([outboxCliPath(), 'replay', '--since', since]);
-    expect(vi.mocked(spawnChild).mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 5000 });
+    expect(vi.mocked(spawnChild).mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 600_000 });
     expect(output.assertions.slice(0, 2)).toStrictEqual(replayedAndObserved('people', since));
-    expect(awaitDrained).toHaveBeenCalledWith(env.ctx, { timeoutMs: 5000 });
+    expect(output.details).toMatchObject({ since, replayTimeoutMs: 600_000 });
+    expect(awaitDrained).toHaveBeenCalledExactlyOnceWith(env.ctx, { timeoutMs: 5000 });
   });
 
   it('takes the latest snapshot itself as the earliest when no lower sequence exists', async () => {

@@ -468,8 +468,13 @@ export interface GoldenStepBuilder {
  * Builder for one scenario side. `normalised` uses one state across the scenario's steps and side effects, so id
  * ordinals stay consistent; the reviewed `response` uses a second state of its own, so parts the scenario does not
  * compare never shift the compared ordinals.
+ * @param secrets The side's `ScenarioContext.resolvedSecrets`, read when side effects are normalised.
  */
-export function createGoldenStepBuilder(scenario: Scenario, rules: NormaliseRules): GoldenStepBuilder {
+export function createGoldenStepBuilder(
+  scenario: Scenario,
+  rules: NormaliseRules,
+  secrets?: ReadonlyMap<string, string>,
+): GoldenStepBuilder {
   const state = createNormaliseState();
   const viewState = createNormaliseState();
   const viewed = viewScenario(scenario);
@@ -499,7 +504,7 @@ export function createGoldenStepBuilder(scenario: Scenario, rules: NormaliseRule
     async sideEffects(effects, steps) {
       const normalised = await normaliseSideEffects(
         effects,
-        { state, rules, scenario },
+        { state, rules, scenario, secrets },
         steps.map((step) => step.normalised),
       );
       return { mail: [], rows: {}, tasks: [], files: [], ...normalised };
@@ -683,7 +688,7 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   const reloadKey = configuredAppReloadKey(env);
   const scrub = <T>(value: T): T => redactReloadKey(redact(value, secrets), reloadKey);
 
-  const builder = createGoldenStepBuilder(scenario, deps.rules);
+  const builder = createGoldenStepBuilder(scenario, deps.rules, ctx.resolvedSecrets);
   const steps: GoldenStep[] = [];
   const gaps: string[] = [];
   for (const record of scrub(records)) {

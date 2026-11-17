@@ -130,7 +130,7 @@ export interface RunFaultResult {
   assertions: FaultAssertion[];
   /** The first failure, of `run`, `resume` or `reconcile`. */
   error?: FaultError;
-  /** Absent for a toggle fault, which has no reconciliation point. */
+  /** The reconciliation's own data verdict, apart from `outcome`; absent for a toggle fault, which has no reconciliation point. */
   reconciliation?: { point: string; result: ReconcileResult; reportPath: string };
   exitCode: 0 | 1;
 }
@@ -220,6 +220,19 @@ function unitsOf(ctx: MigrationContext, params: unknown): readonly string[] {
 
 type Reconciled = { ok: true; report: ReconcileReport } | { ok: false; error: FaultError; known: PartialPoint };
 
+/**
+ * Expected version of an after-fault point: the one active when the fault started, else the point's default, since a
+ * fault runs at whichever version is active; `tableVersionMatches` compares it with `tableVersion`, the version measured.
+ */
+function faultExpectation<D extends string | null>(
+  startVersion: string | null,
+  pointDefault: D,
+  tableVersion: string | null,
+): { expectedTableVersion: string | D; tableVersionMatches: boolean } {
+  const expectedTableVersion = startVersion === null ? pointDefault : startVersion;
+  return { expectedTableVersion, tableVersionMatches: tableVersion !== null && tableVersion === expectedTableVersion };
+}
+
 /** Reconciles the fault's point; a failure of point, snapshot or comparison is returned with what was resolved before it. */
 async function reconcilePoint(ctx: MigrationContext, deps: RunFaultDeps, fault: FaultName, point: string, params: unknown): Promise<Reconciled> {
   const known: PartialPoint = { expectedTableVersion: null, legacySource: null, snapshotSeq: null };
@@ -245,10 +258,12 @@ async function writeFailedReconciliation(
   fault: FaultReportBlock,
 ): Promise<string> {
   // buildReport needs a resolved point and a file-store state, which a failed reconciliation may not have reached.
+  const expected = faultExpectation(fault.tableVersion, failed.known.expectedTableVersion, fault.tableVersion);
   const body = {
     point,
-    expectedTableVersion: failed.known.expectedTableVersion,
+    expectedTableVersion: expected.expectedTableVersion,
     tableVersion: fault.tableVersion,
+    tableVersionMatches: expected.tableVersionMatches,
     snapshotSeq: failed.known.snapshotSeq,
     legacySource: failed.known.legacySource,
     tolerance: 0,
@@ -323,8 +338,13 @@ async function runReconciling(
   let result: ReconcileResult;
   let reportPath: string;
   if (reconciled.ok) {
-    result = outcome === 'failed' ? 'difference' : reconciled.report.result;
-    const written: ReconcileReport & { fault: FaultReportBlock } = { ...reconciled.report, result, fault: block };
+    const { report } = reconciled;
+    result = report.result;
+    const written: ReconcileReport & { fault: FaultReportBlock } = {
+      ...report,
+      ...faultExpectation(tableVersion, report.expectedTableVersion, report.tableVersion),
+      fault: block,
+    };
     reportPath = await (deps.writeReport ?? writeReconciliationReport)(ctx, written);
   } else {
     result = 'difference';

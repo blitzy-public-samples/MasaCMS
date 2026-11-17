@@ -265,7 +265,7 @@ Caller: the migration service, `migration/src/files/` and the reverse projector 
 
 ## Environment
 
-Set on the ColdFusion start command only, by `harness/repro/lib/legacy-start.sh` (AAP 0.4.2, 0.6.1):
+Set on the ColdFusion start command only, by `harness/repro/lib/legacy-start.sh` (AAP 0.4.2, 0.5.4, 0.6.1):
 
 | Variable | Use |
 |---|---|
@@ -273,6 +273,11 @@ Set on the ColdFusion start command only, by `harness/repro/lib/legacy-start.sh`
 | `OPT2_GATEWAY_ORIGIN` | Gateway origin used by `scheduler.cfm` `repoint` and `restore` |
 | `MURA_PING` | `false`, so Masa never registers the site-monitor task itself (`core/appcfc/onApplicationStart_include.cfm:136-141`, `:561`) |
 | `MURA_BROADCASTCLUSTERCOMMANDS` | `false`, so Masa queues no cluster reload commands (`core/appcfc/onApplicationStart_include.cfm:167-181`, `core/mura/cluster/clusterManager.cfc:81, 203-211`), as the start-up guard requires before a content unit becomes `target`-authoritative |
+| `MURA_AUTODISCOVERPLUGINS` | `false`, so start-up never runs `pluginManager.discover` (`core/appcfc/onApplicationStart_include.cfm:167-170`, `:534`); prevented writer `startup-plugin-discovery` in `gateway/src/cutover/prevented-writers.ts` |
+| `MURA_APPLYDBUPDATES` | `false`, so start-up, reload and re-initialisation skip `configBean.applyDbUpdates` (`:167-170`, `:421-424`); prevented writer `startup-db-updates` |
+| `PORT` | Legacy's port: `OPT2_LEGACY_PORT` (written to `${OPT2_STATE_DIR}/secrets/legacy-env` by `--fresh`), else the caller's `PORT` |
+
+Before starting `opt2-legacy`, `legacy-start.sh` refuses to run ColdFusion while Masa's start-up deploy bundle exists (`/tmp/MuraBundle.zip` when `MURA_DATASOURCE` is set, else `config/setup/deploy/bundle.zip`; prevented writer `startup-deploy-bundle`) or while `MURA_PROJECTSITEID` is set and not `default` (`startup-project-site`).
 
 The rendered server definition, `harness/repro/server.json.template`, also sets `MURA_PORT` and `MURA_PROXYPORT` to the gateway port, so the absolute URLs Masa builds address the gateway.
 

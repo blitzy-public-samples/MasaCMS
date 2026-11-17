@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { Readable, type Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 import { BRIDGE_ASSERTION_HEADER, signBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, createSignalBoundFetch } from '@opt2/platform/service-kit';
@@ -213,10 +215,10 @@ export interface FileListing {
   serverTime: string;
 }
 
-/** `files.get` bytes with their verified lowercase hex SHA-256. */
-export interface LegacyFileBytes {
-  bytes: Buffer;
+/** `files.get` outcome: the lowercase hex SHA-256 verified against `X-Opt2-Sha256` and the byte count written to the sink. */
+export interface LegacyFileDownload {
   sha256: string;
+  size: number;
 }
 
 /** `files.put` answer. */
@@ -268,8 +270,14 @@ export interface BridgeClient {
   siteRefresh(siteId: string, opts?: BridgeRequestOptions): Promise<SiteRefreshResult>;
   /** Lists a site's cached files with size and hash (`files.list`). Bounded by BRIDGE_BATCH_TIMEOUT_MS. */
   filesList(siteId: string, opts?: BridgeRequestOptions): Promise<FileListing>;
-  /** Reads one cached file and verifies it against `X-Opt2-Sha256` (`files.get`). */
-  filesGet(siteId: string, name: string, opts?: BridgeRequestOptions): Promise<LegacyFileBytes>;
+  /**
+   * Streams one cached file into `sink`, hashing it as it arrives, and verifies it against `X-Opt2-Sha256` after the last
+   * byte, before the sink finishes (`files.get`). The bound and the caller's signal cover the whole download, through the
+   * sink's finish.
+   * @param sink receives the bytes with backpressure; once the answer's body is read, it is ended when the bytes verify and
+   * destroyed on any failure or cancellation.
+   */
+  filesGet(siteId: string, name: string, sink: Writable, opts?: BridgeRequestOptions): Promise<LegacyFileDownload>;
   /**
    * Writes one cached file through Masa's file writer (`files.put`).
    * @param bytes the file's bytes, or a stream of them sent as they are read.
@@ -306,12 +314,12 @@ export function createBridgeClient(options: BridgeClientOptions): BridgeClient {
   const origin = options.origin.replace(/\/+$/, '');
   const doFetch: typeof globalThis.fetch = options.fetch ?? createSignalBoundFetch();
 
-  /** One bounded exchange: the request and `read` of its 2xx answer, or the error of any other answer. */
+  /** One bounded exchange: the request and `read` of its 2xx answer under the call's signal, or the error of any other answer. */
   const exchange = async <T>(
     page: BridgePage,
     opOrJob: string,
     spec: CallSpec,
-    read: (response: Response) => Promise<T>,
+    read: (response: Response, signal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
     const op = `${page}.${opOrJob}`;
     const params = new URLSearchParams({ [page === 'jobs' ? 'job' : 'op']: opOrJob });
@@ -350,7 +358,7 @@ export function createBridgeClient(options: BridgeClientOptions): BridgeClient {
         ...(body === undefined || typeof body === 'string' || body instanceof Uint8Array ? {} : { duplex: 'half' as const }),
       });
       if (!response.ok) throw await bridgeErrorFrom(op, response);
-      return await read(response);
+      return await read(response, signal);
     } catch (error) {
       // A BridgeError is an answer, so it propagates as is. The combined signal keeps the reason of whichever source
       // aborted first, so a caller's abort propagates unchanged.
@@ -402,17 +410,49 @@ export function createBridgeClient(options: BridgeClientOptions): BridgeClient {
     filesList: (siteId, opts = {}) =>
       call<FileListing>('files', 'list', { method: 'GET', siteId, opts, timeoutMs: BRIDGE_BATCH_TIMEOUT_MS }),
 
-    filesGet: (siteId, name, opts = {}) =>
+    filesGet: (siteId, name, sink, opts = {}) =>
       exchange(
         'files',
         'get',
         { method: 'GET', siteId, query: { name }, acceptJson: false, opts, timeoutMs: BRIDGE_CALL_TIMEOUT_MS },
-        async (response): Promise<LegacyFileBytes> => {
-          const bytes = Buffer.from(await response.arrayBuffer());
-          const actual = createHash('sha256').update(bytes).digest('hex');
+        async (response, signal): Promise<LegacyFileDownload> => {
           const expected = (response.headers.get(SHA256_HEADER) ?? '').trim().toLowerCase();
-          if (expected !== actual) throw new BridgeHashMismatchError('files.get', response.status, expected, actual);
-          return { bytes, sha256: actual };
+          const hash = createHash('sha256');
+          let actual = '';
+          let size = 0;
+          // An abort during a pending body read reaches the body through fetch, which holds the same signal; any other wait
+          // is the sink's, so the abort destroys the sink with its reason.
+          let reading = false;
+          const cancel = (): void => {
+            if (!reading) sink.destroy(signal.reason as Error);
+          };
+          signal.addEventListener('abort', cancel, { once: true });
+          try {
+            // A failed pipeline destroys every stage, which cancels the body and so releases its connection.
+            await pipeline(
+              response.body === null ? Readable.from([]) : Readable.fromWeb(response.body),
+              async function* (chunks: AsyncIterable<Buffer>) {
+                reading = true;
+                for await (const chunk of chunks) {
+                  reading = false;
+                  signal.throwIfAborted();
+                  hash.update(chunk);
+                  size += chunk.byteLength;
+                  yield chunk;
+                  reading = true;
+                }
+                reading = false;
+                actual = hash.digest('hex');
+                // Checked before the sink finishes, so bytes that do not verify never complete it.
+                if (expected !== actual) throw new BridgeHashMismatchError('files.get', response.status, expected, actual);
+                signal.throwIfAborted();
+              },
+              sink,
+            );
+          } finally {
+            signal.removeEventListener('abort', cancel);
+          }
+          return { sha256: actual, size };
         },
       ),
 

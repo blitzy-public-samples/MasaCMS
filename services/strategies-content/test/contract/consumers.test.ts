@@ -1,15 +1,19 @@
-/** Consumer contracts of strategies-content: the producers' payload schemas its four push consumers read, and what each delivery writes. */
+/** Consumer contracts of strategies-content: the producers' payload schemas its four push consumers read, what each delivery writes, and the programs-sites operation it calls. */
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { readTopicSchema, subscriptionName, topicMeta, topicOfSubscription, type ConsumerRegistration } from '@opt2/platform/events';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
+import type { ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
 import {
   ContractAssertionError,
   TENANT_A,
   TENANT_UMBRELLA,
   assertEventMatches,
   assertProducerConsumerCompatible,
+  assertRequestMatchesOpenApi,
+  assertResponseMatchesOpenApi,
+  findOperation,
   pushTo,
   registryPayloads,
   testEnvelope,
@@ -29,13 +33,15 @@ import {
   permissionChangedSchema,
   siteChangedSchema,
 } from '../../src/events/consumers.js';
+import { createSitesClient } from '../../src/legacy/sites-client.js';
 import { createContentRepository } from '../../src/repo/repository.js';
-import { SERVICE, buildContentApp, type ContentTestApp } from '../helpers/app.js';
+import { SERVICE, buildContentApp, createClientRecorder, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 
 const OPENAPI_URL = new URL('../../contracts/openapi.yaml', import.meta.url);
-const OPENAPI = parse(readFileSync(OPENAPI_URL, 'utf8')) as { paths: Record<string, { post?: Json }> };
+const OPENAPI = parse(readFileSync(OPENAPI_URL, 'utf8')) as { paths: Record<string, { post?: Json }>; 'x-opt2-calls'?: unknown };
+const PROGRAMS_SITES_OPENAPI = parse(readFileSync(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 const SITE_A = TENANT_A.siteId;
 const GROUP_ID = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const OTHER_GROUP = 'A1B2C3D4-0002-4A5B-8C7D9E0F1A2B3C4D';
@@ -234,6 +240,145 @@ describe('contract checks', () => {
   ] as const)('rejects %s', (_label, check, finding) => {
     expect(check).toThrow(ContractAssertionError);
     expect(check).toThrow(finding);
+  });
+});
+
+describe('programs-sites lookupSiteFeedSettings', () => {
+  const PATH = '/internal/v1/sites/feed-settings:lookup';
+  const exchanges: Array<{ req: ServiceRequest; res: ServiceResponse }> = [];
+  const site = (siteID: string): Json => ({
+    siteID,
+    contact: `contact@${siteID}.example`,
+    javaLocale: 'en_US',
+    domain: `${siteID}.example`,
+    domainAliases: [`www.${siteID}.example`],
+    enforcePrimaryDomain: false,
+    useSSL: true,
+    remote: siteID === 'default' ? null : { serverPort: ':8443', context: '/remote' },
+  });
+  let answer: Awaited<ReturnType<ReturnType<typeof createSitesClient>['feedSettings']>>;
+
+  beforeAll(async () => {
+    const client = createClientRecorder({
+      'programs-sites': {
+        [`POST ${PATH}`]: (req) => {
+          const res = { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, body: { items: [site(SITE_A), site('default')] } };
+          exchanges.push({ req, res });
+          return res;
+        },
+      },
+    });
+    answer = await createSitesClient(client).feedSettings([SITE_A, '']);
+  });
+
+  it('is a callee the contract lists in x-opt2-calls', () => {
+    expect(OPENAPI['x-opt2-calls']).toContain('programs-sites');
+  });
+
+  it('is called as strategies-content alone over the service transport, with no user token', () => {
+    expect(exchanges.map(({ req }) => findOperation(PROGRAMS_SITES_OPENAPI, req.method, req.path).operation.operationId)).toEqual(['lookupSiteFeedSettings']);
+    for (const { req } of exchanges) {
+      const { operation } = findOperation(PROGRAMS_SITES_OPENAPI, req.method, req.path);
+      expect(operation['x-opt2-transport']).toBe('service');
+      expect(operation['x-opt2-requires']).toEqual([`service:${SERVICE}`]);
+      expect(operation['security']).toEqual([{ invocationCredential: [] }]);
+      expect(req.userToken).toBeNull();
+    }
+  });
+
+  it('sends the JSON body the operation declares and reads only answers its contract declares', () => {
+    for (const { req, res } of exchanges) {
+      expect(req.json).toEqual({ siteIds: [SITE_A, ''] });
+      assertRequestMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, contentType: 'application/json', body: req.json });
+      assertResponseMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, status: res.status, contentType: 'application/json', body: res.body });
+    }
+    expect(answer).toEqual([site(SITE_A), site('default')]);
+  });
+});
+
+describe('programs-sites lookupSiteConfigFlags', () => {
+  const PATH = '/internal/v1/sites/config-flags:lookup';
+  const exchanges: Array<{ req: ServiceRequest; res: ServiceResponse }> = [];
+  const flags: Json = { siteID: SITE_A, hasLockableNodes: 0, hasChangesets: null, dataCollection: 1, hasComments: 1, scaffolding: 1 };
+  let answer: Awaited<ReturnType<ReturnType<typeof createSitesClient>['configFlags']>>;
+
+  beforeAll(async () => {
+    const client = createClientRecorder({
+      'programs-sites': {
+        [`POST ${PATH}`]: (req) => {
+          const res = { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, body: { items: [flags] } };
+          exchanges.push({ req, res });
+          return res;
+        },
+      },
+    });
+    answer = await createSitesClient(client).configFlags([SITE_A]);
+  });
+
+  it('is called as strategies-content alone over the service transport with the declared body, reading only answers its contract declares', () => {
+    expect(exchanges.map(({ req }) => findOperation(PROGRAMS_SITES_OPENAPI, req.method, req.path).operation.operationId)).toEqual(['lookupSiteConfigFlags']);
+    for (const { req, res } of exchanges) {
+      const { operation } = findOperation(PROGRAMS_SITES_OPENAPI, req.method, req.path);
+      expect([operation['x-opt2-transport'], operation['x-opt2-requires'], operation['security']]).toEqual(['service', [`service:${SERVICE}`], [{ invocationCredential: [] }]]);
+      expect([req.userToken, req.json]).toEqual([null, { siteIds: [SITE_A] }]);
+      assertRequestMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, contentType: 'application/json', body: req.json });
+      assertResponseMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, status: res.status, contentType: 'application/json', body: res.body });
+    }
+    expect(answer).toEqual([flags]);
+  });
+});
+
+describe('programs-sites lookupSiteJsonApiValues', () => {
+  const PATH = '/internal/v1/sites/json-api-values:lookup';
+  const BASE_URL = `http://localhost/index.cfm/_api/json/v1/${SITE_A}`;
+  const exchanges: Array<{ req: ServiceRequest; res: ServiceResponse }> = [];
+  const values: Json = {
+    links: {
+      entities: BASE_URL,
+      all: `${BASE_URL}/site`,
+      properties: `${BASE_URL}/site/properties`,
+      self: `${BASE_URL}/site`,
+      permissions: `${BASE_URL}/site/${SITE_A}/permissions`,
+    },
+    domain: `${SITE_A}.example`,
+    siteid: SITE_A,
+    isnew: 0,
+    id: SITE_A,
+    entityname: 'site',
+  };
+  let answer: Awaited<ReturnType<ReturnType<typeof createSitesClient>['jsonApiValues']>>;
+
+  beforeAll(async () => {
+    const client = createClientRecorder({
+      'programs-sites': {
+        [`POST ${PATH}`]: (req) => {
+          const res = { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, body: { items: [values] } };
+          exchanges.push({ req, res });
+          return res;
+        },
+      },
+    });
+    answer = await createSitesClient(client).jsonApiValues(BASE_URL, [SITE_A]);
+  });
+
+  it('is called as strategies-content alone over the service transport, with no user token', () => {
+    expect(exchanges.map(({ req }) => findOperation(PROGRAMS_SITES_OPENAPI, req.method, req.path).operation.operationId)).toEqual(['lookupSiteJsonApiValues']);
+    for (const { req } of exchanges) {
+      const { operation } = findOperation(PROGRAMS_SITES_OPENAPI, req.method, req.path);
+      expect(operation['x-opt2-transport']).toBe('service');
+      expect(operation['x-opt2-requires']).toEqual([`service:${SERVICE}`]);
+      expect(operation['security']).toEqual([{ invocationCredential: [] }]);
+      expect(req.userToken).toBeNull();
+    }
+  });
+
+  it('sends the JSON body the operation declares and reads only answers its contract declares', () => {
+    for (const { req, res } of exchanges) {
+      expect(req.json).toEqual({ baseUrl: BASE_URL, siteIds: [SITE_A] });
+      assertRequestMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, contentType: 'application/json', body: req.json });
+      assertResponseMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, status: res.status, contentType: 'application/json', body: res.body });
+    }
+    expect(answer).toEqual([values]);
   });
 });
 

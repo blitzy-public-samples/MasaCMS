@@ -5,7 +5,7 @@ import { serializeError } from '@opt2/platform/logging';
 import { readGates, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import type { RecoveryHook } from '@opt2/platform/outbox';
 import { QUEUES, type TaskPort } from '@opt2/platform/tasks';
-import { registeredTenants, siteForTenant, withTenant } from '@opt2/platform/tenancy';
+import { knownTenants, siteForTenant, withTenant } from '@opt2/platform/tenancy';
 import type { SurveyScheduledPayload } from '../generated/events/surveys.survey.scheduled.v1.js';
 import {
   RECOVERY_BATCH_SIZE,
@@ -230,7 +230,7 @@ export function scheduledTaskRecovery(deps: SurveyScheduleDeps): RecoveryHook {
       const open = gate?.state === 'open';
       const cutoff = new Date(ctx.clock.now().getTime() - SCHEDULED_TASK_RECOVERY_AGE_MS);
       // Case-folded as withTenant folds them, so one tenant is never recovered twice in a sweep.
-      const tenants = new Map((await registeredTenants(deps.db)).map(({ tenantId, siteId }) => [tenantId.toLowerCase(), siteId]));
+      const tenants = new Map((await knownTenants(deps.db)).map(({ tenantId, siteId }) => [tenantId.toLowerCase(), siteId]));
       for (const [tenantId, siteId] of tenants) {
         try {
           await recoverTenant(deps, tenantId, siteId, cutoff, open);

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { outboxRuntimeFor } from '@opt2/platform/outbox';
 import type { CreateTaskInput } from '@opt2/platform/tasks';
-import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withMetadata } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, assertRequestMatchesOpenApi, assertResponseMatchesOpenApi, fixedClock } from '@opt2/platform/testing';
 import { SCHEDULED_TASK_RECOVERY_AGE_MS, scheduledTaskRecovery, type SurveyScheduleDeps } from '../../src/domain/survey-schedule.js';
 import { parseLocalTimestamp, portTaskName } from '../../src/domain/survey-tasks.js';
@@ -252,6 +252,18 @@ describe('scheduler hand-off routes', () => {
       expect(res.json()).toEqual({ cancelled: 0 });
       expect(t.db.rows('scheduled_task')).toEqual(rows);
       expect(t.taskPort.deleted).toHaveLength(4);
+    });
+
+    it('cancels the adopted tasks of a site the registry marked deleted after their adoption', async () => {
+      const t = await build();
+      await post(t, ADOPT_PATH, ADOPT_BODY);
+      await withMetadata(t.db, (tx) => tx.query(`UPDATE ${t.db.schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT_B.tenantId]));
+
+      const res = await post(t, CANCEL_ADOPTED_PATH, {});
+
+      expect(res.json()).toEqual({ cancelled: 4 });
+      expect(rowNamed(t, LAUNCH_B)).toMatchObject({ status: 'cancelled', dequeued_at: expect.any(Date) });
+      expect(liveSurveyTasks(t)).toEqual([]);
     });
 
     it('cancels adopted tasks beyond one batch', async () => {

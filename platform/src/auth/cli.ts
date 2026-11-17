@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { FastifyInstance } from 'fastify';
+import { createCliDiagnostics, parseArgsProblem } from '../logging/index.js';
 import { collectRouteMatrix, serializeRouteMatrix } from './matrix.js';
 
 const USAGE = 'usage: opt2-auth matrix --app <module> [--export <name>] [--options <json>] [--out <file>]';
@@ -23,8 +24,11 @@ Environment:
 Exit codes: 0 done, 1 failed, 2 usage error.
 `;
 
-/** Invalid command-line usage; answered on stderr with the usage line and exit code 2. */
+/** Invalid command-line usage, its message a fixed problem text; answered on stderr with the usage line and exit code 2. */
 class UsageError extends Error {}
+
+/** A failure whose message is fixed text naming no supplied value; logged as its own message with exit code 1. */
+class MatrixError extends Error {}
 
 /** Arguments of `opt2-auth matrix`. */
 interface MatrixArgs {
@@ -36,6 +40,7 @@ interface MatrixArgs {
 
 /** Runs `opt2-auth` with the arguments after the script path; returns the exit code: 0 done, 1 failed, 2 usage error. */
 export async function main(argv: string[]): Promise<number> {
+  const diagnostics = createCliDiagnostics({ cli: 'opt2-auth', usage: USAGE });
   try {
     const args = parseCommand(argv);
     if (args === 'help') {
@@ -46,11 +51,13 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`opt2-auth: ${err.message}; ${USAGE}\n`);
+      diagnostics.usage(err.message);
       return 2;
     }
-    process.stderr.write(`opt2-auth: ${messageOf(err)}\n`);
+    diagnostics.fatal(err instanceof MatrixError ? err.message : 'matrix failed', err);
     return 1;
+  } finally {
+    await diagnostics.flush();
   }
 }
 
@@ -71,7 +78,7 @@ function parseCommand(argv: string[]): MatrixArgs | 'help' {
       },
     });
   } catch (err) {
-    throw new UsageError(messageOf(err));
+    throw new UsageError(parseArgsProblem(err));
   }
   const { values, positionals } = parsed;
   if (values.help) {
@@ -81,7 +88,7 @@ function parseCommand(argv: string[]): MatrixArgs | 'help' {
     throw new UsageError('missing subcommand');
   }
   if (positionals.length !== 1 || positionals[0] !== 'matrix') {
-    throw new UsageError(`unknown subcommand ${JSON.stringify(positionals.join(' '))}`);
+    throw new UsageError('unknown subcommand');
   }
   if (!values.app) {
     throw new UsageError('missing --app');
@@ -93,8 +100,9 @@ function parseCommand(argv: string[]): MatrixArgs | 'help' {
 function parseOptions(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
-  } catch (err) {
-    throw new UsageError(`--options is not valid JSON: ${messageOf(err)}`);
+  } catch {
+    // JSON.parse quotes the text around the fault, and the options may carry credentials.
+    throw new UsageError('--options is not valid JSON');
   }
 }
 
@@ -104,7 +112,7 @@ async function exportMatrix({ app: appPath, exportName, options, out }: MatrixAr
   const mod = (await import(pathToFileURL(modulePath).href)) as Record<string, unknown>;
   const builder = mod[exportName];
   if (typeof builder !== 'function') {
-    throw new UsageError(`export ${JSON.stringify(exportName)} of ${modulePath} is not a function`);
+    throw new UsageError('--export does not name a function of the --app module');
   }
   const app = appOf(await (builder as (options: unknown) => unknown)(options));
   try {
@@ -126,7 +134,7 @@ async function exportMatrix({ app: appPath, exportName, options, out }: MatrixAr
 function appOf(built: unknown): FastifyInstance {
   const candidate = isFastifyInstance(built) ? built : isRecord(built) ? built['app'] : undefined;
   if (!isFastifyInstance(candidate)) {
-    throw new Error('the builder returned neither a Fastify instance nor { app }');
+    throw new MatrixError('the builder returned neither a Fastify instance nor { app }');
   }
   return candidate;
 }
@@ -137,10 +145,6 @@ function isFastifyInstance(value: unknown): value is FastifyInstance {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Writes to stdout and resolves once the chunk is flushed. */

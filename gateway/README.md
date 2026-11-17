@@ -11,14 +11,14 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 
 | Matched entry | Destination |
 |---|---|
-| `state=target`, API, fixture, job or `/opt2/**` family | The owning service, from `OPT2_SERVICE_URLS` |
+| `state=target`, API, fixture, job or `opt2` family (`/opt2/**` and the synthetic services' own `/v1/` resource paths) | The owning service, from `OPT2_SERVICE_URLS` |
 | `state=target`, admin family | `web`, by the action's inventoried response mode: `page` → `/admin/<circuit>/<action>`; `fragment`, `json`, `download` → `/admin-raw/<circuit>/<action>`; `redirect` → `/admin-actions/<circuit>/<action>` |
-| `state=legacy`, or no entry | Masa at `LEGACY_ORIGIN`: `Host` preserved, `X-Forwarded-*` added, request and response bytes unchanged except the session mapping below. Request heads are admitted up to legacy's own 1 MiB limit; a head within the size of the gateway's added forwarding headers (`X-Forwarded-*`, trace context) below that limit reaches legacy over it and gets legacy's own bare 400 |
+| `state=legacy`, or no entry | Masa at `LEGACY_ORIGIN`: `Host` preserved, `X-Forwarded-*` added, request and response bytes unchanged except the session mapping below. Request heads are admitted up to legacy's own 1 MiB limit; a head within the size of the gateway's added forwarding headers (`X-Forwarded-*`, trace context) below that limit reaches legacy over it and gets legacy's own bare 400. An `opt2`-family request is routed as the legacy entry point that serves it (`page:render`, a `doaction`, `reload:application`) |
 | `/gateway/legacy-bridge/**` | 404, answered by the gateway |
 | `/opt2/svc/<service>/…` | The web service-call relay (see [Internal API](#internal-api)) |
 
 - **Legacy URLs stay.** The browser URL is always the legacy one; web receives the original request target in `X-Opt2-Original-Url`, and builds links, form actions and redirects in legacy form.
-- **Absolute URLs address the gateway.** Masa builds them from the preserved `Host` and its configured port, so legacy runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (set by `harness/repro/server.json.template`), and its `Mura.init` paths and redirect `Location` headers name the gateway. The platform-proof check `unmoved-to-legacy` fails on any forwarded response that names `LEGACY_ORIGIN`'s port.
+- **Absolute URLs address the gateway.** Masa builds them from the preserved `Host` and its configured port, so legacy runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (set by `harness/repro/server.json.template`), and its `Mura.init` paths and redirect `Location` headers name the gateway. `process_env` (`harness/repro/lib/processes.sh`) hands the target processes the same two values over any the caller exports, so their absolute URLs name the gateway too. The platform-proof check `unmoved-to-legacy` fails on any forwarded response that names `LEGACY_ORIGIN`'s port.
 
 ## Cut-over table
 
@@ -31,7 +31,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 | `cutover/versions/v0002.json` | Parity milestone: a group goes `target` when it has a carry write entry and none of its units keeps an unprevented non-gateway writer; a carry entry goes `target` when its units allow it; halted or `fix`-pending write variants are `legacy-write`. Committed after parity replay |
 | `cutover/versions/v0003.json` | Rollback rehearsal: the roster group set `R` back to `legacy`, named in `rollbackRefs` with `opt2/reports/reconciliation/rollback-before.json` and its evidence |
 
-- **`v0002` as committed.** 12 of 54 groups are `target`. Six groups with carry write entries stay `legacy` because their units have `appstart` writers that `src/cutover/prevented-writers.ts` does not close, chiefly Masa's start-up bundle deploy (`getToWork*` in `core/mura/publisher.cfc`): `grp:content.approval_action`, `grp:identity.credential`, `grp:identity.permission`, `grp:people.user_favorite`, `grp:programs_sites.image_size`, `grp:programs_sites.site`. `grp:identity.credential` holds `admin:clogin.login`, so sessions stay legacy-primary (see [Sessions and CSRF](#sessions-and-csrf)).
+- **`v0002` as committed.** 17 of 94 groups are `target`, with 166 `target` entries: `grp:communications.delivery_status`, `grp:communications.message_template`, `grp:content.approval_action`, `grp:content.variation_targeting`, `grp:esignature.audit_entry`, `grp:finance.attachment`, `grp:finance.record`, `grp:identity.credential`, `grp:identity.permission`, `grp:people.person_archive`, `grp:people.user_favorite`, `grp:programs_sites.site`, `grp:reporting.export_job`, `grp:surveys.survey`, `grp:surveys.survey_response`, `grp:surveys.survey_target`, `grp:timesheets.approval_action`. These are the 18 groups with carry write entries except `grp:programs_sites.image_size`. `src/cutover/prevented-writers.ts` closes the `appstart` writers of their units: Masa's start-up bundle deploy (`getToWork*` in `core/mura/publisher.cfc`), project-site creation, DB updates, plugin discovery, the theme-config site save and trash restore. `grp:programs_sites.image_size` stays `legacy` because the theme-config image-size upsert (`settingsImageSizeBean.save` through `core/mura/extend/extendManager.cfc:1998-2012`) runs on every start-up, reload and re-initialisation, and nothing closes it. `grp:identity.credential` holds `admin:clogin.login`, so sessions are target-primary under `v0002`. `v0003` returns `R` (`grp:identity.credential`, `grp:people.person_archive`) to `legacy`, which makes sessions legacy-primary again (see [Sessions and CSRF](#sessions-and-csrf)).
 - **File fields:** `tableVersion`, `previous`, `sourceSha`, `createdAt`, `groupAuthority` (group id → `legacy|target`), `rollbackRefs`, `entries`.
 - **Entry fields:** `route` (key with any variant), `owningService`, `tableVersion`, `state` (`legacy|target`), `kind` (`read|write|legacy-write|job|static`), `group` (for `write` entries), `units[]`, `disposition` (from the inventory).
 - **Validation** (`src/cutover/validate.ts`; finding rule ids in brackets), run by `npm run cutover:validate` in CI mode and again at activation:
@@ -44,7 +44,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
   - no `target`-authoritative unit keeps an unprevented non-gateway writer [`unprevented-writer`];
   - a group returns from `target` to `legacy` only with a `rollbackRefs` entry naming a zero-difference reconciliation report [`rollback-evidence`];
   - plus schema, pinned `sourceSha`, `previous` chain, group and variant references [`schema`, `source-sha`, `previous-chain`, `group-unknown`, `group-authority`, `variant-undeclared`, `route-not-inventoried`].
-- **Regeneration.** `npm run cutover:groups` and `npm run cutover:versions` rewrite the generated files. Run without `--write` (for example `npx tsx src/cutover/build-groups.ts`), each script only diffs and exits 1 on a difference. `build-versions.ts --fixtures available|unavailable|auto` defaults to `auto`, which reads `${OPT2_STATE_DIR}/fixtures.json`.
+- **Regeneration.** `npm run cutover:groups` and `npm run cutover:versions` rewrite the generated files. Run without `--write` (for example `npx tsx src/cutover/build-groups.ts`), each script only diffs and exits 1 on a difference. `build-versions.ts --fixtures available|unavailable|auto` defaults to `auto`, which reads `${OPT2_STATE_DIR}/fixtures.json`. `unavailable` adds to `v0002` and `v0003` one write entry `opt2:<prefix>/**`, `target` in `v0002`, per `/v1/` resource prefix of each synthetic service (`SYNTHETIC_V1_PREFIXES` in `route-key.ts`: `/v1/messages` and `/v1/templates` for communications, `/v1/esignature`, `/v1/finance`, `/v1/reporting`, `/v1/surveys`, `/v1/timesheets`); `v0001` is the same in both builds.
 
 ## Activation, freeze and in-flight writes
 
@@ -55,15 +55,15 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 | `gateway.cutover_state` | Active version, previous version and `epoch` (one row) |
 | `gateway.cutover_freeze` | Frozen route keys and the epoch of each freeze |
 | `gateway.instance` | Each instance's heartbeat and last seen epoch |
-| `gateway.inflight` | Forwarded writes not yet completed: instance, request id, route, side (`legacy` or `target`), window |
-| `gateway.legacy_jar` | Legacy ColdFusion cookies and session mode per identity session |
+| `gateway.inflight` | Forwarded writes not yet completed: instance, request id, route, side (`legacy` or `target`), window, and when the instance abandoned it |
+| `gateway.legacy_jar` | Legacy ColdFusion cookies, session mode and last activity per identity session. Activity is recorded at most once a minute when a state check finds the session active; each new jar purges up to 100 jars idle for Masa's `sessionTimeout` plus two minutes, marked for a pending identity end or not, with their barrier positions recorded as long ago |
 | `gateway.session_barrier` | Recorded and pending write positions per session and owner |
 
 - Activation validates the version, requires its `previous` to equal the active version, and commits a new `epoch`. Freeze and unfreeze also commit a new epoch.
 - Every write reads the epoch before routing; instances refresh their cached version and heartbeat every second. With no active version, or a cached one older than two seconds, every edge request the cut-over table dispatches (`edge*`) answers the legacy-shaped 503; `GET /healthz`, the internal operations (cut-over activate, freeze, unfreeze and status, in-flight orphan clearing, legacy-session mark-used) and the web service-call relay (`/internal/v1/relay/**` and its `/opt2/svc/**` alias) keep answering.
 - An operation is visible only once every live instance reports the new epoch; the transition procedure waits for this.
 - Freezing never changes where an entry routes. A frozen entry's requests wait up to 30 s, then answer the legacy-shaped 503.
-- Only the forwarding instance removes its `inflight` row. A dead instance's row is cleared only by evidence, never by time: `gates-closed` for target-bound writes (the owner's gates closed on the route's units), `legacy-restart` for legacy-bound writes (a controlled ColdFusion restart).
+- Only the forwarding instance removes its `inflight` row, when the response completes. A target exchange that ends while the owner may still commit (a timeout, or a broken response) marks its row abandoned instead. A row is an orphan when its instance is dead or it is abandoned, and the v2 cut-over status (`cutoverStatusV2`) reports it `orphaned`; the v1 status keeps its payload, grouped by instance, route and side. An orphan is cleared only by evidence, never by time: `gates-closed` for target-bound writes (the owner's gates closed on the route's units), `legacy-restart` for legacy-bound writes (a controlled ColdFusion restart).
 
 ## Write windows and the read-after-write barrier
 
@@ -72,7 +72,7 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 
 ## Fail closed
 
-- A `target` entry whose owner refuses the connection, times out, or answers 502, 503 or 504 answers the legacy-shaped 503: the JSON API envelope with `error` for JSON, AJAX, REST and OAuth, fixture, site-monitor, stub and relay routes; the legacy error page for admin routes and for `/_api/feed` and `/_api/render`, whose legacy failures are not enveloped.
+- A `target` entry whose owner refuses the connection, times out (40 s: the owner's 30 s gate wait plus the 10 s call bound), or answers 502, 503 or 504 answers the legacy-shaped 503: the JSON API envelope with `error` for JSON, AJAX, REST and OAuth, fixture, site-monitor, stub and relay routes; the legacy error page for admin routes and for `/_api/feed` and `/_api/render`, whose legacy failures are not enveloped.
 - Nothing is retried against legacy, reads included.
 - A `legacy-write` entry whose window cannot open answers the same 503 before legacy executes anything.
 - A fixture route's envelope `method` is the one `api.cfm` reads from the path: `<module>.<resource>[.<action>][.<tail>]` lower-cased, a CF UUID tail left out, and `invalid` outside that grammar.
@@ -88,7 +88,7 @@ Identity owns all session state; the gateway owns only the cookie mapping and th
 - **Hydration.** The first legacy-bound request of a target-primary session installs identity's login-time snapshot and CSRF ledger in the legacy session (`op=hydrate`), without a login or database write.
 - **CSRF.** Both sides share one secret per session. Claims on tokens sent to legacy go through identity (`POST /internal/v1/csrf/claims`, `…/claims:settle`): only tokens legacy actually consumed (`op=usedSince`) become used, the rest are released. Identity marks tokens consumed on the target side in the legacy session through `POST /internal/v1/legacy-sessions/{sid}:mark-used`.
 - **Adoption.** At cut-over, a request with legacy cookies mapped to no target session is adopted (`POST /internal/v1/sessions:adopt`); moving back to legacy-primary answers target cookies with the jar's legacy values.
-- **Invalidation.** Logout on either side ends both sessions (`op=end`, `POST /internal/v1/sessions/{sid}:end`). On a session epoch change, the legacy session is re-hydrated from the new snapshot.
+- **Invalidation.** Logout on either side ends both sessions (`op=end`, `POST /internal/v1/sessions/{sid}:end`). A legacy-served logout marks the session first and ends it in identity only once `op=describe` shows legacy logged it out; while legacy or identity cannot be read, the mark stays and the session's requests go on anonymously, each judging the logout again. On a session epoch change, the legacy session is re-hydrated from the new snapshot.
 - **User tokens.** A site-scoped token per (session, site) from identity `POST /internal/v1/tokens`, cached until an epoch change or until less than 25 s of its lifetime is left (twice the 10 s service-call timeout plus 5 s of clock skew), attached as `Authorization: Bearer` to target-bound requests. Inbound `X-Serverless-Authorization` and `X-Opt2-*` headers are always stripped, and `Authorization` once exchanged for a user token. Session state is re-checked with identity (`GET /internal/v1/sessions/{sid}/state`) at most once per second.
 
 ## Legacy bridge
@@ -105,6 +105,7 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `cutoverActivate` | `POST /internal/v1/cutover/activate` | `opt2-migrate transition` or an operator, `platform.operator` |
 | `cutoverFreeze`, `cutoverUnfreeze` | `POST /internal/v1/cutover/freeze`, `POST /internal/v1/cutover/unfreeze` | `opt2-migrate transition` or an operator, `platform.operator` |
 | `cutoverStatus` | `GET /internal/v1/cutover/status` | `platform.operator` or `platform.migration` |
+| `cutoverStatusV2` | `GET /internal/v2/cutover/status` | `platform.operator` or `platform.migration`; the migration service reads orphans from it |
 | `inflightClearOrphans` | `POST /internal/v1/inflight:clear-orphans` | `platform.operator` or `platform.migration` |
 | `legacySessionMarkUsed` | `POST /internal/v1/legacy-sessions/{sid}:mark-used` | Identity, `service:identity` |
 | `relayGet` … `relayDelete` | `/internal/v1/relay/{service}/{path}` (also reached as `/opt2/svc/{service}/{path}`) | Web, `service:web`; the user token passes on only with web's credential |
@@ -120,6 +121,8 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `OPT2_CUTOVER_DIR` | Relocates the cut-over directory; default `gateway/cutover` |
 | `OPT2_BRIDGE_HMAC_KEY` | Bridge assertion key; locally generated into `${OPT2_STATE_DIR}/secrets/`, in the cloud the Secret Manager secret `legacy-bridge-hmac` |
 | `MURA_APPRELOADKEY` | Masa's reload parameter name for the route key; default `appreload` |
+| `MURA_SESSIONTIMEOUT` | Masa's `sessionTimeout` in minutes, the idle limit of a jar and of the legacy-primary cookies known to attach a legacy session without a describe; 180 when unset, blank, an expression or below 1 |
+| `MURA_REQUESTTIMEOUT` | Masa's `requesttimeout` in seconds, after which no legacy logout can still be running, so a session whose pending logout legacy shows it kept is unmarked; 1000 when unset or blank; any other value that is not a positive number fails start-up |
 
 - `OPT2_SERVICE_NAME` must be `gateway`, and `OPT2_DB_AUTH` and `PG_DATABASE` are required.
 - `OPT2_SERVICE_URLS` must name the ten services and `web`, plus `stub` locally; migration comes from `OPT2_MIGRATION_URL` or the map.

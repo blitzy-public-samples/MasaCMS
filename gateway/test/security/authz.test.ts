@@ -56,6 +56,7 @@ const ACTIVATE_URL = '/internal/v1/cutover/activate';
 const FREEZE_URL = '/internal/v1/cutover/freeze';
 const UNFREEZE_URL = '/internal/v1/cutover/unfreeze';
 const STATUS_URL = '/internal/v1/cutover/status';
+const STATUS_V2_URL = '/internal/v2/cutover/status';
 const CLEAR_ORPHANS_URL = '/internal/v1/inflight::clear-orphans';
 const MARK_USED_URL = '/internal/v1/legacy-sessions/:sid(.+)::mark-used';
 const RELAY_URL = '/internal/v1/relay/:service/*';
@@ -99,6 +100,14 @@ const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
     operationId: 'cutoverStatus',
     method: 'GET',
     url: STATUS_URL,
+    transport: 'service',
+    requires: [Roles.platformOperator, Roles.platformMigration],
+    siteCheck: true,
+  },
+  {
+    operationId: 'cutoverStatusV2',
+    method: 'GET',
+    url: STATUS_V2_URL,
     transport: 'service',
     requires: [Roles.platformOperator, Roles.platformMigration],
     siteCheck: true,
@@ -156,6 +165,7 @@ const PROBES: Readonly<Record<string, Probe>> = {
   [FREEZE_URL]: { admitted: 200, fresh: { version: 'v0001' } },
   [UNFREEZE_URL]: { admitted: 200, fresh: { version: 'v0001' } },
   [STATUS_URL]: { admitted: 200 },
+  [STATUS_V2_URL]: { admitted: 200 },
   [CLEAR_ORPHANS_URL]: { admitted: 200 },
   // No jar maps the probe's sid, so an admitted call answers the legacy 404.
   [MARK_USED_URL]: { admitted: 404 },
@@ -568,7 +578,7 @@ describe('route declarations', () => {
 
   it('the table has one row per contract operation, declared as the contract declares it', async () => {
     const ids = EXPECTED_ROUTES.map((row) => row.operationId);
-    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 19, unique: 19 });
+    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 20, unique: 20 });
     expect(tableOperations()).toEqual(await contractOperations());
   });
 

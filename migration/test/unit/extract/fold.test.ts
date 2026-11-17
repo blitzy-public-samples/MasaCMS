@@ -2,12 +2,12 @@
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type { ConnectionPool } from 'mssql';
 import { compareEncodings, encodeKey, encodeRow, LEGACY_PROGRAM_ID_COLUMN, parseProgramTable } from '@opt2/platform/migration-kit';
 import type { CanonicalColumn } from '@opt2/platform/migration-kit';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TableNotFoundError, clearCatalogCache, type LegacyTableRef } from '../../../src/extract/catalog.js';
 import {
@@ -21,10 +21,60 @@ import {
   type LegacyTableOptions,
   type LegacyTableShape,
 } from '../../../src/extract/fold.js';
-import { ExtractError, compareCanonicalRows, type CanonicalRow } from '../../../src/extract/stream.js';
+import { ExtractError, MAX_MERGE_FAN_IN, compareCanonicalRows, type CanonicalRow } from '../../../src/extract/stream.js';
 import type { MigratableTable } from '../../../src/extract/tables.js';
 import type { LegacyDb } from '../../../src/legacy/legacy-db.js';
 import { UnitCatalogError, UnknownLegacyTableError, type UnitCatalog } from '../../../src/owners/units.js';
+
+/** Live and peak file handles, those opened for reading apart, and every open; `failOpen` fails the opens it selects. */
+const handles = vi.hoisted(() => ({
+  open: 0,
+  reading: 0,
+  peakOpen: 0,
+  peakReading: 0,
+  opened: [] as { path: string; flags: string }[],
+  failOpen: undefined as ((path: string, flags: string) => boolean) | undefined,
+}));
+
+// Pass-through open that counts live handles, so run merges can be held to their fan-in.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const open: typeof actual.open = async (path, flags, mode) => {
+    const name = String(path);
+    const flag = String(flags ?? 'r');
+    if (handles.failOpen?.(name, flag) === true) throw Object.assign(new Error(`EMFILE: too many open files, open '${name}'`), { code: 'EMFILE' });
+    const handle = await actual.open(path, flags, mode);
+    const reading = flag === 'r';
+    handles.opened.push({ path: name, flags: flag });
+    handles.open += 1;
+    handles.peakOpen = Math.max(handles.peakOpen, handles.open);
+    if (reading) {
+      handles.reading += 1;
+      handles.peakReading = Math.max(handles.peakReading, handles.reading);
+    }
+    const close = handle.close.bind(handle);
+    let closed = false;
+    handle.close = () => {
+      if (!closed) {
+        closed = true;
+        handles.open -= 1;
+        if (reading) handles.reading -= 1;
+      }
+      return close();
+    };
+    return handle;
+  };
+  return { ...actual, open };
+});
+
+function resetHandles(): void {
+  Object.assign(handles, { open: 0, reading: 0, peakOpen: 0, peakReading: 0, opened: [], failOpen: undefined });
+}
+
+/** Spill files written whose name starts with `prefix`. */
+function written(prefix: string): number {
+  return handles.opened.filter((file) => file.flags === 'wx' && basename(file.path).startsWith(prefix)).length;
+}
 
 type Row = Record<string, unknown>;
 
@@ -332,6 +382,7 @@ async function collect(rows: AsyncIterable<CanonicalRow>): Promise<CanonicalRow[
 
 beforeEach(() => {
   clearCatalogCache();
+  resetHandles();
 });
 
 describe('streamFoldedRows', () => {
@@ -600,6 +651,78 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
     expect(seen).toEqual(['0']);
     expect(fake.connections.held).toBe(0);
     expect(fake.streams.map((stream) => stream.cancels)).toEqual([0, 0, 0, 0, 0]);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  interface ReductionCase {
+    label: string;
+    name: string;
+    spec: TableSpec;
+    rows: (id: number) => Row[];
+    count: number;
+    maxOpenParts: number;
+    extra: { sortRunBytes?: number; keyColumns?: readonly string[] };
+    fanIn: number;
+    /** Part requests open at once; a keyless part's request ends before its first row, so the next starts after it. */
+    peak: number;
+  }
+
+  it.each<ReductionCase>([
+    { label: '40 keyed parts one at a time', name: 'timesheet', spec: TIMESHEET, rows: timesheetRows, count: 40, maxOpenParts: 1, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '40 keyed parts two at a time under a 1-byte sortRunBytes', name: 'timesheet', spec: TIMESHEET, rows: timesheetRows, count: 40, maxOpenParts: 2, extra: { sortRunBytes: 1 }, fanIn: 2, peak: 2 },
+    { label: '40 parts keyed on a value all rows of a part share', name: 'timesheet', spec: TIMESHEET, rows: timesheetRows, count: 40, maxOpenParts: 1, extra: { keyColumns: ['person_id'] }, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '36 keyless parts one at a time', name: 'blackout', spec: BLACKOUT, rows: blackoutRows, count: 36, maxOpenParts: 1, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '40 keyless parts two at a time', name: 'blackout', spec: BLACKOUT, rows: blackoutRows, count: 40, maxOpenParts: 2, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+  ])('folds $label exactly as the direct merge, reading at most $fanIn runs at once', async ({ name, spec, rows, count, maxOpenParts, extra, fanIn, peak }) => {
+    const { tables, scripts, parts, table } = programs(name, spec, count, rows);
+    const direct = await collect(streamFoldedRows({ ...extra, legacy: fakeLegacy(tables, scripts).legacy, table, parts, maxOpenParts: parts.length }));
+    resetHandles();
+    const fake = fakeLegacy(tables, scripts);
+    const out = await collect(streamFoldedRows({ ...extra, legacy: fake.legacy, table, parts, maxOpenParts, spillDir: spillParent }));
+
+    expect(out).toHaveLength(count * rows(1).length);
+    expect(out).toStrictEqual(direct);
+    out.slice(1).forEach((row, index) => expect(compareCanonicalRows(out[index] as CanonicalRow, row)).toBeLessThanOrEqual(0));
+    if (extra.keyColumns !== undefined) {
+      expect(out.filter((row) => row.legacyProgramId === 1).map((row) => row.row.timesheet_id)).toEqual(rows(1).map((row) => String(row.timesheet_id)));
+    }
+    expect(written('run-')).toBe(Math.ceil(count / maxOpenParts));
+    expect(written('merge-')).toBeGreaterThan(0);
+    expect(handles.peakReading).toBe(fanIn);
+    expect(handles.peakOpen).toBeLessThanOrEqual(fanIn + 1);
+    expect(handles.open).toBe(0);
+    expect(fake.connections).toEqual({ held: 0, peak });
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it('closes every run and removes its spill directory when the consumer breaks after a reduction', async () => {
+    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 40, timesheetRows);
+    const fake = fakeLegacy(tables, scripts);
+    const seen: unknown[] = [];
+    for await (const row of streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 1, spillDir: spillParent })) {
+      seen.push([row.row.timesheet_id, row.legacyProgramId]);
+      break;
+    }
+
+    expect(seen).toEqual([['0', 4]]);
+    expect(written('merge-')).toBeGreaterThan(0);
+    expect(handles.open).toBe(0);
+    expect(fake.connections.held).toBe(0);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it.each<[string, string]>([
+    ['a first-pass merge', 'run-1'],
+    ['the final merge', 'merge-1'],
+  ])('propagates a run that cannot be opened for %s, closing every run and removing its spill directory', async (_label, failing) => {
+    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 40, timesheetRows);
+    const fake = fakeLegacy(tables, scripts);
+    handles.failOpen = (path, flags) => flags === 'r' && basename(path) === failing;
+    const failure = collect(streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 1, spillDir: spillParent }));
+
+    await expect(failure).rejects.toMatchObject({ code: 'EMFILE' });
+    expect(handles.open).toBe(0);
+    expect(fake.connections.held).toBe(0);
     expect(await readdir(spillParent)).toEqual([]);
   });
 

@@ -446,7 +446,10 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
     expect(await stateOf(key)).toEqual(ABSENT);
   });
 
-  it('restores a replacement whose settle was lost on Fastify readiness, and returns 503 while bytes match neither row nor backup', async () => {
+  it.each([
+    ['registered', false],
+    ['deleted from the registry', true],
+  ])('restores a replacement whose settle was lost on Fastify readiness with its site %s, and returns 503 while bytes match neither row nor backup', async (_label, deleted) => {
     const fileId = nextFileId();
     const key = keyOf(fileId);
     const previous = Buffer.from('previous startup bytes');
@@ -478,6 +481,7 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: fixedClock(NOW) });
     app.get('/manifest', { config: { opt2: { public: true } } }, () => manifest());
     try {
+      if (deleted) await db.withMetadata((tx) => tx.query(`UPDATE ${handle.schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT_A.tenantId]));
       await app.ready();
       expect(await stateOf(key)).toEqual(published(previous));
       expect(await stagedFor(key)).toEqual([]);
@@ -500,6 +504,7 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
       expect(await stateOf(unknownKey)).toEqual(published(recorded));
       expect((await app.inject('/manifest')).statusCode).toBe(200);
     } finally {
+      await seedRegistry(handle.app);
       await app.opt2.shutdown();
     }
   });

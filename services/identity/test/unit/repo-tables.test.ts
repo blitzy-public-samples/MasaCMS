@@ -159,6 +159,7 @@ describe('identity tables', () => {
       updated_at: now,
       ended_at: null,
       admin_state: null,
+      last_active_at: now,
     };
     expect(Object.keys(row)).toEqual(SESSION.columns.map((column) => column.name));
   });

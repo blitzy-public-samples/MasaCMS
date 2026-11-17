@@ -81,8 +81,9 @@ E2E_SUITES=(isolation/tenant-isolation events/seams events/dlq-replay events/tra
 STACK_ENV_KEYS=(TZ GOOGLE_CLOUD_PROJECT PUBSUB_EMULATOR_HOST OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL
   LEGACY_ORIGIN OPT2_LEGACY_PORT MURA_DBHOST MURA_DBPORT MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD PG_HOST PG_PORT
   PG_DATABASE)
-# Stack addresses withheld from package unit suites, which run against PostgreSQL and Pub/Sub only, as in CI.
-PACKAGE_TEST_UNSET=(OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL LEGACY_ORIGIN OPT2_LEGACY_PORT)
+# Stack addresses withheld from package unit suites, which run against PostgreSQL, Pub/Sub and the committed cut-over
+# versions only, as in CI.
+PACKAGE_TEST_UNSET=(OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL LEGACY_ORIGIN OPT2_LEGACY_PORT OPT2_CUTOVER_DIR)
 
 STAGE_N=""
 STAGE_OUT=""
@@ -132,6 +133,21 @@ process.stdout.write(keys.map((key) => `${key}=${env[key]}\n`).join(""));
   done <<<"$text"
   LEGACY_PORT=$OPT2_LEGACY_PORT
   export PORT=$OPT2_LEGACY_PORT
+}
+
+# Exports the OPT2_CUTOVER_DIR up.sh recorded in up.json, or unsets it for the committed versions, so the transitions,
+# replay, coverage, rollback and every process a stage restarts read the versions the gateway serves.
+load_cutover_dir() {
+  local line dir
+  line="$(harness_run repro:up-state -- read)" || die "cannot read $UP_FILE ($line): run harness/repro/up.sh first"
+  dir="$(printf '%s\n' "$line" | json_get - value.cutoverDir 2>/dev/null)" ||
+    die "$UP_FILE records no cutoverDir: run harness/repro/up.sh again"
+  if [[ $dir == null ]]; then
+    unset OPT2_CUTOVER_DIR
+    return 0
+  fi
+  [[ -d $dir/versions ]] || die "the cut-over directory $dir recorded in $UP_FILE has no versions/: run harness/repro/up.sh again"
+  export OPT2_CUTOVER_DIR=$dir
 }
 
 # Prints the migration-stage skip reason when environment.json records a legacy baseline deviation; nothing otherwise.
@@ -650,6 +666,7 @@ require_stack
 # The Masa settings up.sh adopted; the stack values up.json recorded still win.
 adopt_captured_server_env
 load_stack_env
+load_cutover_dir
 export MURA_ADMIN_USERNAME="${MURA_ADMIN_USERNAME:-admin}"
 require_env PG_USER PG_PASSWORD MURA_ADMIN_PASSWORD MASA_TEST_EDITOR_PASSWORD
 require_cmd node npm curl box psql pg_dump pg_restore
@@ -667,8 +684,8 @@ mkdir -p -- "$TA_DIR"
 chmod 0700 -- "$TA_DIR"
 rm -rf -- "${RUN_DIR:?}" "${VITEST_DIR:?}" "${E2E_DIR:?}"
 mkdir -m 0700 -- "$RUN_DIR" "$VITEST_DIR" "$E2E_DIR"
-printf 'test-all: stack of %s, legacy %s, fixtures available=%s; stage output under %s\n' "$REPO" "$LEGACY_ORIGIN" \
-  "$FIXTURES_AVAILABLE" "$TA_DIR" >&2
+printf 'test-all: stack of %s, legacy %s, fixtures available=%s, cut-over versions of %s; stage output under %s\n' \
+  "$REPO" "$LEGACY_ORIGIN" "$FIXTURES_AVAILABLE" "${OPT2_CUTOVER_DIR:-$REPO/gateway/cutover}" "$TA_DIR" >&2
 
 # --- Stages 0-9 ------------------------------------------------------------------------------------------------
 

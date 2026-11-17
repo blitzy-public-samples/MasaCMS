@@ -566,6 +566,15 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
 
   const groupIdsOf = (userId: string): readonly string[] => memberships.get(charKey(userId)) ?? [];
 
+  /** `readMembershipIDs`: the user's held ids naming a seeded group, by group name; a dangling id is left out. */
+  function membershipIdsOf(userId: string): string[] {
+    const held = groupIdsOf(userId).flatMap((groupId) => {
+      const group = groups.get(charKey(groupId));
+      return group === undefined ? [] : [group];
+    });
+    return held.sort(byGroupName).map((group) => group.UserID);
+  }
+
   /** The active Type=2 account of `userId`; groups and `pending` reservations are never listed. */
   function listedAccount(userId: string): AccountView | undefined {
     const view = accounts.get(charKey(userId));
@@ -875,20 +884,15 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
     },
 
     async lookupMemberships(call) {
-      const { userIds } = call.body as { userIds: string[] };
+      const { userIds, byGroupName: named } = call.body as { userIds: string[]; byGroupName?: boolean };
       if (!(await awaitOpen(userIds, call))) return unavailable();
-      return json({ items: userIds.map((userId) => ({ userId, groupIds: [...groupIdsOf(userId)] })) });
+      return json({ items: userIds.map((userId) => ({ userId, groupIds: named === true ? membershipIdsOf(userId) : [...groupIdsOf(userId)] })) });
     },
 
-    // `readMembershipIDs` inner-joins the groups: a held id naming no seeded group is left out.
     async getAccountMemberships(call) {
       const userId = call.params.userId ?? '';
       if (!(await awaitOpen([userId], call))) return unavailable();
-      const held = groupIdsOf(userId).flatMap((groupId) => {
-        const group = groups.get(charKey(groupId));
-        return group === undefined ? [] : [group];
-      });
-      return json({ groupIds: held.sort(byGroupName).map((group) => group.UserID) });
+      return json({ groupIds: membershipIdsOf(userId) });
     },
 
     async listUserMemberships(call) {

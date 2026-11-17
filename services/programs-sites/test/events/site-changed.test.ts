@@ -31,6 +31,7 @@ import {
   type ApplyRequest,
   type GateRequest,
 } from '@opt2/platform/migration-kit';
+import type { EventEnvelope } from '@opt2/platform/events';
 import { outboxDrainCounts, outboxRuntimeFor, sweepOutbox } from '@opt2/platform/outbox';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { buildTestApp, headersFor, type FakeTaskPort, type TestApp } from '../helpers/app.js';
@@ -73,9 +74,13 @@ type RegistryRow = {
   domains: string[] | null;
   aggregate_version: string;
   updated_at: Date;
+  deleted: boolean;
 };
 
 type InboxRow = { tenant_id: string; status: string };
+
+/** A site and its tenant: a fixture tenant, or a site the migration applies of a case create. */
+type SiteRef = Pick<TenantFixture, 'siteId' | 'tenantId'>;
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
 const SERVICE = 'programs-sites';
@@ -116,7 +121,7 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
   }
 
   /** The stored `site` row of `fixture`, with its row `xmin`. */
-  async function storedSite(fixture: TenantFixture): Promise<SiteRow & { xmin: string }> {
+  async function storedSite(fixture: SiteRef): Promise<SiteRow & { xmin: string }> {
     const [row] = await tenantQuery<SiteRow & { xmin: string }>(
       fixture,
       `SELECT *, xmin::text AS xmin FROM ${table('site')} WHERE siteid = $1`,
@@ -126,12 +131,12 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
     return row;
   }
 
-  /** The site topic's outbox rows of `fixture`, in `seq` order. */
-  function outboxRows(fixture: Pick<TenantFixture, 'tenantId' | 'siteId'>): Promise<OutboxRow[]> {
+  /** The site topic's outbox rows of `fixture`, in numeric `seq` order. */
+  function outboxRows(fixture: SiteRef): Promise<OutboxRow[]> {
     return tenantQuery<OutboxRow>(
       fixture,
       `SELECT seq::text AS seq, event_id::text AS event_id, kind, envelope, published_at, xmin::text AS xmin
-         FROM ${table('outbox')} WHERE topic = $1 AND ordering_key = $2 ORDER BY seq`,
+         FROM ${table('outbox')} WHERE topic = $1 AND ordering_key = $2 ORDER BY ${table('outbox')}.seq`,
       [TOPIC, fixture.siteId],
     );
   }
@@ -180,7 +185,7 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
   }
 
   /** A contract-valid site envelope of `fixture` at `aggregateVersion`. */
-  function siteEnvelope(fixture: TenantFixture, aggregateVersion: number, payload: SitePayload) {
+  function siteEnvelope(fixture: SiteRef, aggregateVersion: number, payload: SitePayload) {
     return testEnvelope({ topic: TOPIC, tenantId: fixture.tenantId, aggregateId: fixture.siteId, aggregateVersion, payload });
   }
 
@@ -202,17 +207,49 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
     return row;
   }
 
-  /** A one-row `tsettings` backfill batch. */
-  function tsettingsBatch(batchId: string, row: Readonly<Record<string, unknown>>): ApplyRequest {
+  /** A one-row `tsettings` batch: a backfill upsert unless `op` or `origin` say otherwise. */
+  function tsettingsBatch(
+    batchId: string,
+    row: Readonly<Record<string, unknown>>,
+    { op = 'upsert', origin = 'backfill' }: { op?: 'upsert' | 'delete'; origin?: ApplyRequest['origin'] } = {},
+  ): ApplyRequest {
     const columns = tsettingsMapping.legacyColumns;
     return {
       batchId,
-      origin: 'backfill',
+      origin,
       legacyTable: tsettingsMapping.legacyTable,
       siteId: String(row.SiteID),
       columns: columns.map((column) => ({ ...column })),
-      rows: [{ op: 'upsert', row: encodeRow(columns, row) }],
+      rows: [{ op, row: encodeRow(columns, row) }],
     };
+  }
+
+  /** `siteId` and its tenant, for a site a case creates and deletes through migration applies. */
+  function appliedSite(siteId: string): SiteRef {
+    return { siteId, tenantId: tenantIdForSite(siteId) };
+  }
+
+  /** Applies a one-row `tsettings` feed batch of `op` for `site`, `values` over the bean defaults, and expects it applied. */
+  async function feedSite(site: SiteRef, batchId: string, op: 'upsert' | 'delete', values: Readonly<Record<string, unknown>> = {}) {
+    const res = await migrationPost('apply', tsettingsBatch(batchId, tsettingsRow(site.siteId, values), { op, origin: 'migration-feed' }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ duplicate: false, applied: 1 });
+  }
+
+  /** The envelope stored in an outbox row. */
+  function envelopeOf(row: OutboxRow): EventEnvelope<SitePayload> {
+    return row.envelope as unknown as EventEnvelope<SitePayload>;
+  }
+
+  /** Pushes the envelope of each outbox row to the registry subscription in order, expecting each acked with 204. */
+  async function pushRows(rows: readonly OutboxRow[]): Promise<void> {
+    for (const row of rows) expect((await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelopeOf(row))).statusCode).toBe(204);
+  }
+
+  /** Inbox statuses of `site`'s tenant by event id. */
+  async function siteInbox(site: SiteRef): Promise<Record<string, string>> {
+    const rows = await tenantQuery<{ event_id: string; status: string }>(site, `SELECT event_id::text AS event_id, status FROM ${table('inbox')}`);
+    return Object.fromEntries(rows.map((row) => [row.event_id, row.status]));
   }
 
   /** POSTs `body` to `/internal/v1/migration/<route>` as the migration service. */
@@ -235,6 +272,13 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
   function sweepTaskName(offset = 0): string {
     const slotStart = Math.floor(clock.now().getTime() / 1000 / SWEEP_INTERVAL_S) * SWEEP_INTERVAL_S;
     return `${SWEEP_QUEUE}-${slotStart + offset * SWEEP_INTERVAL_S}`;
+  }
+
+  /** Site ids of the `/v2/sites` page an S2 admin reads, in registry order. */
+  async function pagedSiteIds(): Promise<string[]> {
+    const res = await app.inject({ method: 'GET', url: '/v2/sites?limit=1000', headers: await headersFor('s2', { site: TENANT_A.siteId }) });
+    expect(res.statusCode).toBe(200);
+    return res.json<{ items: { siteid: string }[] }>().items.map((item) => item.siteid);
   }
 
   /** POSTs the current slot's outbox sweep task as the local Cloud Tasks adapter would. */
@@ -520,6 +564,103 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
       batch.batchId,
     ]);
     expect(batches).toHaveLength(1);
+  });
+
+  it('announces a deleted site as its last stored state marked deleted above its versions, marking its registry row deleted once', async () => {
+    const site = appliedSite('events-deleted');
+    await feedSite(site, 'site-changed-events-deleted-create', 'upsert', { Domain: 'deleted.events.test' });
+    await feedSite(site, 'site-changed-events-deleted-update', 'upsert', { Domain: 'deleted.events.test', publicUserPoolID: TENANT_UMBRELLA.siteId });
+    const lastState = await storedSite(site);
+    const announced = await outboxRows(site);
+    expect(announced.map((row) => row.envelope.aggregateVersion)).toEqual([1, 2]);
+
+    await feedSite(site, 'site-changed-events-deleted-delete', 'delete');
+
+    expect(await tenantQuery(site, `SELECT siteid FROM ${table('site')}`)).toEqual([]);
+    const rows = await outboxRows(site);
+    expect(rows).toHaveLength(3);
+    const [, , tombstone] = rows as [OutboxRow, OutboxRow, OutboxRow];
+    expect(tombstone.kind).toBe('state');
+    expect(tombstone.envelope).toMatchObject({ tenantId: site.tenantId, aggregateType: 'site', aggregateId: site.siteId, aggregateVersion: 3 });
+    expect(tombstone.envelope.payload).toEqual({ ...siteChangedPayload(lastState), deleted: true });
+    expect(tombstone.published_at).toBeInstanceOf(Date);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(tombstone.event_id);
+    // The delete's own transaction marked the registry row, so the later deliveries change nothing.
+    const tombstoned = { tenant_id: site.tenantId, public_user_pool_tenant: TENANT_UMBRELLA.tenantId, aggregate_version: '3', deleted: true };
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+
+    await pushRows(announced);
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+    const deliveries = await deliverDuplicate(app, SITE_CHANGED_SUBSCRIPTION, envelopeOf(tombstone), 3);
+    expect(deliveries.map(isAck)).toEqual([true, true, true]);
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+    const stale = [3, 1].map((version) => siteEnvelope(site, version, siteChangedPayload(lastState)));
+    for (const envelope of stale) expect((await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope)).statusCode).toBe(204);
+
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+    expect(await siteInbox(site)).toEqual({
+      ...Object.fromEntries(announced.map((row) => [row.event_id, 'applied'])),
+      [tombstone.event_id]: 'applied',
+      ...Object.fromEntries(stale.map((envelope) => [envelope.eventId, 'stale'])),
+    });
+  });
+
+  it('announces a site created again after its deletion above the deletion version and registers it again', async () => {
+    const site = appliedSite('events-recreated');
+    await feedSite(site, 'site-changed-events-recreated-create', 'upsert', { Domain: 'first.events.test' });
+    await feedSite(site, 'site-changed-events-recreated-delete', 'delete');
+    await pushRows(await outboxRows(site));
+    expect(await registryRow(site.siteId)).toMatchObject({ aggregate_version: '2', deleted: true });
+
+    await feedSite(site, 'site-changed-events-recreated-again', 'upsert', { Domain: 'again.events.test' });
+
+    const rows = await outboxRows(site);
+    expect(rows.map(({ envelope }) => [envelope.aggregateVersion, (envelope.payload as SitePayload).deleted])).toEqual([
+      [1, undefined],
+      [2, true],
+      [3, undefined],
+    ]);
+    const stored = await storedSite(site);
+    expect(stored.row_version).toBe('3');
+    expect(rows[2]?.envelope.payload).toEqual(siteChangedPayload(stored));
+    await pushRows(rows.slice(2));
+    expect(await registryRow(site.siteId)).toMatchObject({
+      tenant_id: site.tenantId,
+      domains: ['again.events.test'],
+      aggregate_version: '3',
+      deleted: false,
+    });
+    expect(Object.values(await siteInbox(site))).toEqual(['applied', 'applied', 'applied']);
+  });
+
+  it.each([
+    ['deleted', 'delete', {}, { aggregate_version: '2', deleted: true }, false],
+    ['created again', 'upsert', { Domain: 'recovered.events.test' }, { domains: ['recovered.events.test'], aggregate_version: '3', deleted: false }, true],
+  ] as const)('publishes from the next sweep the event of a site %s whose in-request flush failed', async (name, op, values, registered, paged) => {
+    const site = appliedSite(`events-recovered-${op}`);
+    await feedSite(site, `site-changed-${site.siteId}-create`, 'upsert');
+    if (op === 'upsert') await feedSite(site, `site-changed-${site.siteId}-delete`, 'delete');
+    await pushRows(await outboxRows(site));
+
+    publisher.failNext();
+    // The unpublished row withholds the answer: the request is abandoned while its write stays committed.
+    await expect(
+      migrationPost('apply', tsettingsBatch(`site-changed-${site.siteId}-${name}`, tsettingsRow(site.siteId, values), { op, origin: 'migration-feed' })),
+    ).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+    const pending = (await outboxRows(site)).at(-1) as OutboxRow;
+    expect(pending.envelope.aggregateVersion).toBe(Number(registered.aggregate_version));
+    expect(pending.published_at).toBeNull();
+    expect(await registryRow(site.siteId)).toMatchObject(registered);
+    expect((await outboxDrainCounts(schema.app)).tenants).toContainEqual({ tenantId: site.tenantId, unpublished: 1, held: 0 });
+
+    const res = await sweep();
+
+    expect(res.statusCode).toBe(200);
+    expect((await outboxRows(site)).at(-1)?.published_at).toBeInstanceOf(Date);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(pending.event_id);
+    await pushRows([pending]);
+    expect(await registryRow(site.siteId)).toMatchObject(registered);
+    expect((await pagedSiteIds()).includes(site.siteId)).toBe(paged);
   });
 
   it('publishes unflushed outbox rows from the sweep task and secures the next slot of the sweep chain', async () => {

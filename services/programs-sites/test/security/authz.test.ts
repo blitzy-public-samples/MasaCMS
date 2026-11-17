@@ -473,6 +473,7 @@ const SITE_UPDATE: ProbeRequest = {
   payload: `siteid=${SITE_A}&action=Update&site=Site%20${SITE_A}&${TOKEN_FIELDS}`,
 };
 const IMAGE_SIZES_READ: ProbeRequest = { method: 'GET', url: `/v1/sites/${SITE_A}/image-sizes` };
+const IMAGE_SIZES_PAGE: ProbeRequest = { method: 'GET', url: `/v2/sites/${SITE_A}/image-sizes?limit=2` };
 const JSON_API_READ: ProbeRequest = { method: 'GET', url: `/_api/json/v1/${SITE_A}/site` };
 const REST_SAVE: ProbeRequest = {
   method: 'POST',
@@ -569,6 +570,44 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
       ),
     ],
   },
+  // feedApiUtility's getSite, read for strategies-content's RSS writers; it calls as itself, with no user token.
+  'POST /internal/v1/sites/feed-settings::lookup': {
+    declared: { transport: 'service', requires: ['service:strategies-content'] },
+    probes: [
+      probe(
+        'POST feed-settings lookup',
+        { method: 'POST', url: '/internal/v1/sites/feed-settings:lookup', headers: JSON_HEADERS, payload: { siteIds: [SITE_A] } },
+        ['service:strategies-content'],
+      ),
+    ],
+  },
+  // `$.siteConfig` flags, read for strategies-content's Site Manager views; it calls as itself, with no user token.
+  'POST /internal/v1/sites/config-flags::lookup': {
+    declared: { transport: 'service', requires: ['service:strategies-content'] },
+    probes: [
+      probe(
+        'POST config-flags lookup',
+        { method: 'POST', url: '/internal/v1/sites/config-flags:lookup', headers: JSON_HEADERS, payload: { siteIds: [SITE_A] } },
+        ['service:strategies-content'],
+      ),
+    ],
+  },
+  // findOne(entityName='site') values, read for strategies-content's JSON API `site` relations; it calls as itself.
+  'POST /internal/v1/sites/json-api-values::lookup': {
+    declared: { transport: 'service', requires: ['service:strategies-content'] },
+    probes: [
+      probe(
+        'POST JSON API site values lookup',
+        {
+          method: 'POST',
+          url: '/internal/v1/sites/json-api-values:lookup',
+          headers: JSON_HEADERS,
+          payload: { baseUrl: 'http://localhost/index.cfm/_api/json/v1/tenant-a', siteIds: [SITE_A] },
+        },
+        ['service:strategies-content'],
+      ),
+    ],
+  },
   // jsonApiUtility.setImageURLs' getSite(siteid).getCustomImageSizeIterator(), read for strategies-content's content images as itself.
   'GET /internal/v1/sites/:siteId/image-sizes': {
     declared: { transport: 'service', requires: ['service:strategies-content'] },
@@ -578,6 +617,15 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
   'GET /v1/sites': {
     declared: { transport: 'service', requires: ['s2'] },
     probes: [probe('GET /v1/sites', { method: 'GET', url: '/v1/sites' }, ['s2'])],
+  },
+  // The paged Sites screen rows, for the same S2-only grant.
+  'GET /v2/sites': {
+    declared: { transport: 'service', requires: ['s2'] },
+    probes: [probe('GET /v2/sites', { method: 'GET', url: '/v2/sites?limit=2' }, ['s2'])],
+  },
+  'GET /v2/sites/:siteId/image-sizes': {
+    declared: S2_OR_SITE_ADMIN,
+    probes: [probe('page image sizes', IMAGE_SIZES_PAGE, ['s2', 'site-admin'])],
   },
   // csettings.cfc:84-94: Admin of the site's private user pool, or S2.
   'GET /v1/sites/:siteId': {
@@ -635,6 +683,11 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
   'GET /v1/user-sites': {
     declared: PRIVATE_ADMIN,
     probes: [probe('GET /v1/user-sites', { method: 'GET', url: '/v1/user-sites' }, [...TENANT_A_PRIVATE_USERS, 'other-tenant'])],
+  },
+  // The paged site selector, for the same users.
+  'GET /v2/user-sites': {
+    declared: PRIVATE_ADMIN,
+    probes: [probe('GET /v2/user-sites', { method: 'GET', url: '/v2/user-sites?limit=2' }, [...TENANT_A_PRIVATE_USERS, 'other-tenant'])],
   },
 };
 
@@ -785,7 +838,7 @@ describe('route admission', () => {
 });
 
 describe('tenant boundary', () => {
-  const tenantARequests: readonly ProbeRequest[] = [SITE_READ, SITE_UPDATE, IMAGE_SIZES_READ, JSON_API_READ, REST_SAVE];
+  const tenantARequests: readonly ProbeRequest[] = [SITE_READ, SITE_UPDATE, IMAGE_SIZES_READ, IMAGE_SIZES_PAGE, JSON_API_READ, REST_SAVE];
 
   it.each([
     ['a tenant-b site-admin', ['site-admin']],

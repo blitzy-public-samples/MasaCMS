@@ -1,4 +1,5 @@
 // Tests the gateway entry's start-up order, bind and failure handling with tracing, the kit, the app and logging mocked.
+import { randomUUID } from 'node:crypto';
 import type { StartupFailureOptions } from '@opt2/platform/logging';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -70,7 +71,7 @@ async function runMain(stage?: Stage, thrown?: unknown) {
   });
   vi.doMock('@opt2/platform/logging', () => {
     events.push('logging');
-    return { logStartupFailure };
+    return { logStartupFailure, serializeError: real.serializeError };
   });
   await import('../../src/main.js');
   return { events, lines, startTracing, loadEnv, buildApp, listen, logError, shutdown, logStartupFailure };
@@ -167,18 +168,23 @@ describe('gateway main', () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('logs through the built app and awaits its shutdown when listen rejects', async () => {
+  it('logs a serialized error through the built app and awaits its shutdown when listen rejects', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const thrown = Object.assign(new Error('listen EADDRINUSE: address already in use 0.0.0.0:8123'), { code: 'EADDRINUSE', syscall: 'listen' });
+    const secret = `probe-${randomUUID()}`;
+    const thrown = Object.assign(new Error(`listen EADDRINUSE: address already in use 0.0.0.0:8123 (OPT2_BRIDGE_HMAC_KEY=${secret})`), {
+      code: 'EADDRINUSE',
+      syscall: 'listen',
+    });
 
     const run = await runMain('listen', thrown);
 
     expect(process.exitCode).toBe(1);
-    expect(run.logError).toHaveBeenCalledTimes(1);
-    expect(run.logError.mock.calls[0]?.[0]).toBe(thrown);
-    expect(run.logError.mock.calls[0]?.[1]).toBe('start-up failed');
+    expect(run.logError.mock.calls).toStrictEqual([[{ error: real.serializeError(thrown) }, 'start-up failed']]);
+    expect(run.logError.mock.calls[0]?.[0]).toMatchObject({ error: { type: 'Error', message: 'listen EADDRINUSE' } });
+    expect((run.logError.mock.calls[0]?.[0] as { error: unknown }).error).not.toBeInstanceOf(Error);
+    expect(JSON.stringify(run.logError.mock.calls)).not.toContain(secret);
     expect(run.shutdown).toHaveBeenCalledTimes(1);
-    expect(run.events).toStrictEqual(['tracing:start', 'tracing:done', 'service-kit', 'app', 'shutdown:start', 'shutdown:done']);
+    expect(run.events).toStrictEqual(['tracing:start', 'tracing:done', 'service-kit', 'app', 'logging', 'shutdown:start', 'shutdown:done']);
     expect(run.logStartupFailure).not.toHaveBeenCalled();
     expect(run.lines).toHaveLength(0);
     expect(consoleError).not.toHaveBeenCalled();

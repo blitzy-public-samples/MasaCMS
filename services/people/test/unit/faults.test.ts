@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { createFaultHooks, FAULT_ENV, FAULT_PREFIX, isRosterStep, NO_FAULTS, ROSTER_STEPS } from '../../src/domain/faults.js';
+import { createFaultHooks, FAULT_ENV, FAULT_PREFIX, isRosterStep, killStepOf, NO_FAULTS, ROSTER_STEPS } from '../../src/domain/faults.js';
 import type { FaultHooks, RosterStep } from '../../src/domain/faults.js';
 
 let kill: MockInstance<typeof process.kill>;
@@ -63,7 +63,7 @@ describe('NO_FAULTS', () => {
 
 describe('createFaultHooks kill step', () => {
   it.each(ROSTER_STEPS)('sends SIGKILL to its own process at %s and never continues past that boundary', async (step) => {
-    const hooks = createFaultHooks({}, { [FAULT_ENV]: `${FAULT_PREFIX}${step}` });
+    const hooks = createFaultHooks({}, { killStep: step });
 
     expect(await settlement(hooks.at(step))).toBe('pending');
     expect(kill).toHaveBeenCalledTimes(1);
@@ -75,27 +75,23 @@ describe('createFaultHooks kill step', () => {
   });
 
   it('kills at the kill step instead of throwing an error injected at the same step', async () => {
-    const hooks = createFaultHooks({ 'after-prepare': new Error('identity unavailable') }, { [FAULT_ENV]: 'roster:after-prepare' });
+    const hooks = createFaultHooks({ 'after-prepare': new Error('identity unavailable') }, { killStep: 'after-prepare' });
 
     expect(await settlement(hooks.at('after-prepare'))).toBe('pending');
     expect(kill).toHaveBeenCalledWith(process.pid, 'SIGKILL');
   });
 
-  it('reads the kill step from process.env when no environment is given', async () => {
+  it('ignores OPT2_FAULT in process.env, which the people environment parses', async () => {
     vi.stubEnv(FAULT_ENV, 'roster:after-done');
-    const hooks = createFaultHooks();
 
-    expect(await settlement(hooks.at('after-done'))).toBe('pending');
-    expect(kill).toHaveBeenCalledWith(process.pid, 'SIGKILL');
-  });
-
-  it('reads the environment once, when the hooks are created', async () => {
-    const env: NodeJS.ProcessEnv = {};
-    const hooks = createFaultHooks({}, env);
-    env[FAULT_ENV] = 'roster:after-start';
-
-    await expectOtherStepsResolve(hooks);
+    await expectOtherStepsResolve(createFaultHooks());
     expect(kill).not.toHaveBeenCalled();
+  });
+});
+
+describe('killStepOf', () => {
+  it.each(ROSTER_STEPS)('reads OPT2_FAULT roster:%s as that step', (step) => {
+    expect(killStepOf(`${FAULT_PREFIX}${step}`)).toBe(step);
   });
 
   it.each([
@@ -106,11 +102,8 @@ describe('createFaultHooks kill step', () => {
     { name: 'an upper-case prefix', value: 'ROSTER:after-start' },
     { name: "another package's fault", value: 'timesheets:after-start' },
     { name: 'a step with trailing space', value: 'roster:after-start ' },
-  ])('ignores OPT2_FAULT $name and resolves at every step', async ({ value }) => {
-    const env: NodeJS.ProcessEnv = value === undefined ? {} : { [FAULT_ENV]: value };
-
-    await expectOtherStepsResolve(createFaultHooks({}, env));
-    expect(kill).not.toHaveBeenCalled();
+  ])('reads OPT2_FAULT $name as no kill step', ({ value }) => {
+    expect(killStepOf(value)).toBeUndefined();
   });
 });
 

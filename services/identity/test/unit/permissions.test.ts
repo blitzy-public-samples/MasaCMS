@@ -96,7 +96,7 @@ const REGISTRY_SQL = /FROM identity\.tenant_registry/;
 function registryAnswer(sql: string, values: readonly unknown[]): Record<string, unknown>[] {
   if (/lower\(site_id\) = lower\(\$1\)/.test(sql)) return REGISTRY.filter((row) => String(row.site_id) === String(values[0]).toLowerCase());
   if (/WHERE tenant_id = \$1/.test(sql)) return REGISTRY.filter((row) => row.tenant_id === values[0]);
-  if (/WHERE public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1/.test(sql)) {
+  if (/WHERE \(public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1\)/.test(sql)) {
     return REGISTRY.filter((row) => row.public_user_pool_tenant === values[0] || row.private_user_pool_tenant === values[0]);
   }
   return REGISTRY;

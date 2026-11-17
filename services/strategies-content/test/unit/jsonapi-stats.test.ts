@@ -127,9 +127,9 @@ async function writesOfA(): Promise<{ stats: number; changes: number }> {
   });
 }
 
-/** The `id`s of a collection's items. */
+/** The `contentID`s of a collection's items. */
 function itemIds(data: unknown): unknown[] {
-  return ((data as { items: Row[] }).items ?? []).map((item) => item['id']);
+  return ((data as { items: Row[] }).items ?? []).map((item) => item['contentID']);
 }
 
 describe.skipIf(!(await pgAvailable()))('JSON API stats handlers', () => {
@@ -229,6 +229,27 @@ describe.skipIf(!(await pgAvailable()))('JSON API stats handlers', () => {
     ['findQuery', 'views=3&countOnly=true', 2],
   ])('%s with %s answers the count', async (method, raw, count) => {
     expect((await run({ method, raw })).data).toEqual({ count });
+  });
+
+  // findAll and findMany key items by getPrimaryKey(); findQuery's iteratorToArray by objectMappings, empty for stats.
+  it.each<[Method, string, Partial<CallInput>, unknown[]]>([
+    ['findAll', '', {}, [cfId(1), cfId(2), cfId(3)]],
+    ['findMany', '', { ids: [cfId(2), cfId(1)] }, [cfId(2), cfId(1)]],
+    ['findQuery', 'views=3', {}, [undefined, undefined]],
+    ['findQuery', 'itemsPerPage=1&pageIndex=0', {}, [undefined]],
+    ['findQuery', 'itemsPerPage=2&pageIndex=-1', {}, [undefined, undefined]],
+  ])('%s %s %j keys its items by id', async (method, raw, extra, ids) => {
+    const items = ((await run({ method, raw, ...extra })).data as { items: Row[] }).items;
+    expect(items.map((item) => item['id'])).toEqual(ids);
+    expect(items.every((item) => 'id' in item)).toBe(ids[0] !== undefined);
+  });
+
+  it('findAll before the first record answers a blank row\'s bean: the defaults its numeric setters keep for \'\'', async () => {
+    const data = (await run({ method: 'findAll', raw: 'itemsPerPage=1&pageIndex=0' })).data as Row;
+    expect(data).toMatchObject({ totalItems: 3, pageIndex: 0 });
+    expect(data['items']).toEqual([
+      expect.objectContaining({ contentID: '', siteID: '', views: 0, rating: 0, comments: 0, lockID: '', isNew: 0, id: '', entityname: 'stats' }),
+    ]);
   });
 
   it('findQuery links its pages from the query string', async () => {

@@ -556,6 +556,7 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       client: {login: none, via: client-credentials}
+      rest: {login: admin, via: rest-basic}
     seedRefs:
       - {as: oauthClient, source: dataset, path: masa.oauthClients, where: {siteID: tenant-a}, index: 0}
     steps:
@@ -594,6 +595,14 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cwebservice.delete&clientid=${new.clientid}&siteid=tenant-a&csrf_token=${edit-existing.csrfToken}&csrf_token_expires=${edit-existing.csrfExpires}
         as: admin
+      - name: rest-login
+        method: POST
+        route: /_api/rest/v1/tenant-a/login
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          username: admin
+          'password': ${secret:admin}
       - name: token
         method: POST
         route: /_api/rest/v1/tenant-a/oauth2
@@ -625,7 +634,8 @@ scenarios:
         as: client
         auth: anonymous
     compare: [status, envelope, headers, auth, dom]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - admin:cwebservice.list
       - admin:cwebservice.edit
@@ -635,6 +645,7 @@ scenarios:
       - rest:oauth
       - rest:content.findall
       - rest:tokeninfo
+      - rest:login
   - id: GS-ID-09
     title: Session and CSRF continuity across the seam
     service: identity
@@ -1232,7 +1243,9 @@ scenarios:
         route: /admin/?muraAction=cUsers.downloadGroupMembers&siteid=tenant-a&userid=${seed.group.groupID}
         as: admin
     compare: [status, headers, export]
-    normalisationOverrides: {}
+    # Legacy orders these exports by name alone (userGateway.cfc:567-580 with userFeedBean.cfc:86-87, 712-713; userDAO.cfc:657).
+    normalisationOverrides:
+      csvKeyOrder: ['advanced-csv: LNAME', 'download: LNAME, FNAME', 'group-members: LNAME']
     covers:
       - admin:cusers.advancedsearch
       - admin:cusers.advancedsearchtocsv
@@ -2129,6 +2142,29 @@ scenarios:
             '/_api/json/v1/tenant-a/content/${seed.page.contentID}/crumbs', '/_api/json/v1/tenant-a/content/${seed.page.contentID}/relatedcontent', '/_api/json/v1/tenant-a/content/${seed.page.contentID}/history',
             '/_api/json/v1/tenant-a/findCrumbArray?contentid=${seed.page.contentID}', '/_api/json/v1/tenant-a/findRelatedContent?contentid=${seed.page.contentID}', '/_api/json/v1/tenant-a/findVersionHistory?contentid=${seed.page.contentID}',
             '/_api/json/v1/tenant-a/findCalendarItems?calendarid=${seed.page.contentID}&start=2026-06-01&end=2026-06-30', '/_api/json/v1/tenant-a/getURLForImage?fileid=${seed.image.fileID}&size=small']
+      - name: edge-reads
+        method: GET
+        route: ${matrix.path}
+        as: ${matrix.session}
+        matrix:
+          session: [anon, admin]
+          path: ['/_api/json/v1/tenant-a/content/?pageIndex=-3', '/_api/json/v1/tenant-a/content/?pageIndex=0', '/_api/json/v1/tenant-a/content/?pageIndex=-1', '/_api/json/v1/tenant-a/content/?itemsPerPage=-1',
+            '/_api/json/v1/tenant-a/content/?fields=title', '/_api/json/v1/tenant-a/content/?fields=title,summary,url', '/_api/json/v1/tenant-a/contentnav/?fields=title',
+            '/_api/json/v1/tenant-a/contentnav/?parentid=${seed.feed.contentID}&fields=title', /_api/json/v1/tenant-a/contentnav/properties, /_api/json/v1/tenant-a/comment/properties,
+            /_api/json/v1/tenant-a/category/properties, /_api/json/v1/tenant-a/contentCategoryAssign/properties, /_api/json/v1/tenant-a/fileMetaData/properties, /_api/json/v1/tenant-a/feed/properties,
+            /_api/json/v1/tenant-a/stats/properties, '/_api/json/v1/tenant-a/?method=findProperties&entityname=file']
+      - name: unordered-sort
+        method: GET
+        route: '/_api/json/v1/tenant-a/content/?sortBy=nosuchcol'
+        as: anon
+        expected: halted
+        exceptionId: EX-CONTENT-FEED-UNORDERED-SORT
+      - name: blank-row-limit
+        method: GET
+        route: '/_api/json/v1/tenant-a/content/?itemsPerPage=1001&pageIndex=0&fields=title'
+        as: anon
+        expected: halted
+        exceptionId: EX-JSONAPI-BLANK-ROW-LIMIT
     compare: [status, envelope, headers]
     normalisationOverrides: {}
     covers:
@@ -2146,6 +2182,13 @@ scenarios:
       - api:findversionhistory
       - api:findcalendaritems
       - api:geturlforimage
+      - api:comment.findproperties
+      - api:category.findproperties
+      - api:contentcategoryassign.findproperties
+      - api:filemetadata.findproperties
+      - api:feed.findproperties
+      - api:stats.findproperties
+      - api:file.findproperties
   - id: GS-CO-06
     title: Search
     service: strategies-content
@@ -2346,6 +2389,11 @@ scenarios:
         method: GET
         route: /tasks/render/small/?fileID=${seed.image.fileID}
         as: admin
+      - name: content-files-unsigned
+        method: GET
+        route: /opt2/files/content-files/gs-unsigned
+        as: admin
+        compare: []
     compare: [status, headers, files]
     normalisationOverrides: {}
     covers:
@@ -2358,6 +2406,7 @@ scenarios:
       - render:file
       - render:small
       - render:medium
+      - opt2:/opt2/files/content-files/**
   - id: GS-CO-08
     title: Site Manager tree and locks
     service: strategies-content
@@ -2685,7 +2734,9 @@ scenarios:
     role: admin
     sessions:
       admin: {login: admin, via: admin}
-    seedRefs: []
+      rest: {login: admin, via: rest-basic}
+    seedRefs:
+      - {as: category, source: dataset, path: masa.categories, where: {siteID: umbrella}, index: 0}
     steps:
       - name: list
         method: GET
@@ -2786,8 +2837,96 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cChangesets.delete&siteid=tenant-a&changesetID=${new-changeset.changesetID}&csrf_token=${delete-tokens.csrfToken}&csrf_token_expires=${delete-tokens.csrfExpires}
         as: admin
+      - name: api-changeset-new
+        method: GET
+        route: /_api/json/v1/tenant-a/changeset/new
+        as: admin
+        extract:
+          id: {from: body, path: data.id}
+      - name: api-changeset-save
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-changeset-new.id}
+        form:
+          method: save
+          entityname: changeset
+          siteid: tenant-a
+          id: ${api-changeset-new.id}
+          changesetid: ${api-changeset-new.id}
+          name: GS-CO-10 JSON Change Set
+          description: ''
+      - name: api-assignment-new
+        method: GET
+        route: /_api/json/v1/tenant-a/changesetCategoryAssignment/new
+        as: admin
+        extract:
+          id: {from: body, path: data.id}
+      - name: api-assignment-save
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-assignment-new.id}
+        form:
+          method: save
+          entityname: changesetCategoryAssignment
+          siteid: tenant-a
+          id: ${api-assignment-new.id}
+          assignmentid: ${api-assignment-new.id}
+          changesetid: ${api-changeset-new.id}
+          categoryid: ${seed.category.categoryID}
+      # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
+      - name: rest-changeset
+        method: POST
+        route: /_api/rest/v1/tenant-a/changeset/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-a
+          name: GS-CO-10 REST Change Set
+          description: ''
+      - name: rest-assignment
+        method: POST
+        route: /_api/rest/v1/tenant-a/changesetCategoryAssignment/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-a
+          changesetid: ${api-changeset-new.id}
+          categoryid: ${seed.category.categoryID}
+      - name: rest-assignment-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/changesetCategoryAssignment/${api-assignment-new.id}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-changeset-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/changeset/${api-changeset-new.id}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: api-assignment-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-assignment-new.id}
+        form:
+          method: delete
+          entityname: changesetCategoryAssignment
+          siteid: tenant-a
+          id: ${api-assignment-new.id}
+      - name: api-changeset-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-changeset-new.id}
+        form:
+          method: delete
+          entityname: changeset
+          siteid: tenant-a
+          id: ${api-changeset-new.id}
     compare: [status, auth, dom]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - admin:cchangesets.list
       - admin:cchangesets.edit
@@ -2801,6 +2940,16 @@ scenarios:
       - admin:cchangesets.publish
       - admin:cchangesets.rollback
       - admin:cchangesets.delete
+      - api:changeset.findnew
+      - api:changeset.save
+      - api:changesetcategoryassignment.findnew
+      - api:changesetcategoryassignment.save
+      - rest:changeset.save
+      - rest:changesetcategoryassignment.save
+      - rest:changesetcategoryassignment.delete
+      - rest:changeset.delete
+      - api:changesetcategoryassignment.delete
+      - api:changeset.delete
   - id: GS-CO-11
     title: Comments moderation and comment proxy
     service: strategies-content
@@ -2808,6 +2957,7 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       anon: {login: none, via: public}
+      rest: {login: admin, via: rest-basic}
     seedRefs:
       - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
     steps:
@@ -2904,6 +3054,103 @@ scenarios:
           method: flag
           commentID: ${comment.commentid}
           siteid: tenant-a
+      - name: api-flag
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/${comment.commentid}/flag
+        as: admin
+      - name: api-mark-spam
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/${comment.commentid}/markAsSpam
+        as: admin
+      - name: api-unmark-spam
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/${comment.commentid}/unMarkAsSpam
+        as: admin
+      - name: api-delete-function
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/${comment.commentid}/delete
+        as: admin
+      - name: api-undelete
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/${comment.commentid}/undelete
+        as: admin
+      # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
+      - name: rest-comment
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          contentid: ${seed.page.contentID}
+          siteid: tenant-a
+          name: GS REST Commenter
+          email: rest-commenter@seed.opt2.test
+          comments: GS-CO-11 REST comment
+          isApproved: '0'
+      - name: rest-flag
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/${comment.commentid}/flag
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-mark-spam
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/${comment.commentid}/markAsSpam
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-unmark-spam
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/${comment.commentid}/unMarkAsSpam
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-delete-function
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/${comment.commentid}/delete
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-undelete
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/${comment.commentid}/undelete
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-comment-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/comment/${comment.commentid}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: api-stats-save
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${seed.page.contentID}
+        form:
+          method: save
+          entityname: stats
+          siteid: tenant-a
+          id: ${seed.page.contentID}
+          contentid: ${seed.page.contentID}
+      - name: api-stats-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${seed.page.contentID}
+        form:
+          method: delete
+          entityname: stats
+          siteid: tenant-a
+          id: ${seed.page.contentID}
+      - name: rest-stats-save
+        method: POST
+        route: /_api/rest/v1/tenant-a/stats/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-a
+          contentid: ${seed.page.contentID}
+      - name: rest-stats-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/stats/${seed.page.contentID}
+        as: rest
+        auth: basic:admin:${secret:admin}
       - name: spam
         method: GET
         route: /admin/?muraAction=cComments.markAsSpam&siteid=tenant-a&commentid=${comment.commentid}
@@ -2912,12 +3159,23 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cComments.delete&siteid=tenant-a&commentid=${comment.commentid}
         as: admin
+      - name: api-comment-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${comment.commentid}
+        form:
+          method: delete
+          entityname: comment
+          siteid: tenant-a
+          id: ${comment.commentid}
       - name: purge
         method: GET
         route: /admin/?muraAction=cComments.purgeDeletedComments&siteid=tenant-a
         as: admin
     compare: [status, dom, envelope]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - api:comment.save
       - admin:ccomments.default
@@ -2932,8 +3190,25 @@ scenarios:
       - cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=getcontentstats
       - cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=rendercommentspage
       - cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag
+      - api:comment.~flag
+      - api:comment.~markasspam
+      - api:comment.~unmarkasspam
+      - api:comment.~delete
+      - api:comment.~undelete
+      - rest:comment.save
+      - rest:comment.~flag
+      - rest:comment.~markasspam
+      - rest:comment.~unmarkasspam
+      - rest:comment.~delete
+      - rest:comment.~undelete
+      - rest:comment.delete
+      - api:stats.save
+      - api:stats.delete
+      - rest:stats.save
+      - rest:stats.delete
       - admin:ccomments.markasspam
       - admin:ccomments.delete
+      - api:comment.delete
       - admin:ccomments.purgedeletedcomments
   - id: GS-CO-12
     title: Categories
@@ -2941,7 +3216,9 @@ scenarios:
     role: admin
     sessions:
       admin: {login: admin, via: admin}
-    seedRefs: []
+      rest: {login: admin, via: rest-basic}
+    seedRefs:
+      - {as: pageB, source: dataset, path: masa.content, where: {siteID: tenant-b, type: Page}, index: 0}
     steps:
       - name: list
         method: GET
@@ -2999,12 +3276,118 @@ scenarios:
           categoryID: ${new-category.categoryID}
           siteid: tenant-b
           action: delete
+      # A new category bean has an empty id, so the save takes no id and the CSRF context `new`.
+      - name: api-category-save
+        method: POST
+        route: /_api/json/v1/tenant-b/
+        as: admin
+        csrf: json-api:new
+        form:
+          method: save
+          entityname: category
+          siteid: tenant-b
+          name: GS-CO-12 JSON Category
+          isActive: '1'
+          isInterestGroup: '0'
+          isOpen: '1'
+          isfeatureable: '0'
+          parentID: ''
+        extract:
+          categoryid: {from: body, path: data.id}
+      - name: page-version
+        method: GET
+        route: /_api/json/v1/tenant-b/content/${seed.pageB.contentID}
+        as: admin
+        extract:
+          contenthistid: {from: body, path: data.contenthistid}
+      - name: api-assign-save
+        method: POST
+        route: /_api/json/v1/tenant-b/
+        as: admin
+        csrf: json-api:new
+        form:
+          method: save
+          entityname: contentCategoryAssign
+          siteid: tenant-b
+          contentid: ${seed.pageB.contentID}
+          contenthistid: ${page-version.contenthistid}
+          categoryid: ${api-category-save.categoryid}
+          isfeature: '0'
+      - name: api-assign-delete
+        method: POST
+        route: /_api/json/v1/tenant-b/
+        as: admin
+        csrf: 'json-api:'
+        form:
+          method: delete
+          entityname: contentCategoryAssign
+          siteid: tenant-b
+          id: ''
+      # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
+      - name: rest-category
+        method: POST
+        route: /_api/rest/v1/tenant-b/category/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-b
+          name: GS-CO-12 REST Category
+          isActive: '1'
+          isInterestGroup: '0'
+          isOpen: '1'
+          isfeatureable: '0'
+          parentID: ''
+      - name: rest-assign-save
+        method: POST
+        route: /_api/rest/v1/tenant-b/contentCategoryAssign/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-b
+          contentid: ${seed.pageB.contentID}
+          contenthistid: ${page-version.contenthistid}
+          categoryid: ${api-category-save.categoryid}
+          isfeature: '0'
+      - name: rest-assign-delete
+        method: POST
+        route: /_api/rest/v1/tenant-b/?method=delete
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-b
+          id: ''
+          entityname: contentCategoryAssign
+      - name: rest-category-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-b/category/${api-category-save.categoryid}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: api-category-delete
+        method: POST
+        route: /_api/json/v1/tenant-b/
+        as: admin
+        csrf: json-api:${api-category-save.categoryid}
+        form:
+          method: delete
+          entityname: category
+          siteid: tenant-b
+          id: ${api-category-save.categoryid}
     compare: [status, auth, dom]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - admin:ccategory.list
       - admin:ccategory.edit
       - admin:ccategory.update
+      - api:category.save
+      - api:content.findone
+      - api:contentcategoryassign.save
+      - api:contentcategoryassign.delete
+      - rest:category.save
+      - rest:contentcategoryassign.save
+      - rest:contentcategoryassign.delete
+      - rest:category.delete
+      - api:category.delete
   - id: GS-CO-13
     title: Collections and RSS feeds
     service: strategies-content
@@ -3012,6 +3395,7 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       anon: {login: none, via: public}
+      rest: {login: admin, via: rest-basic}
     seedRefs:
       - {as: folder, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Folder}, index: 0}
     steps:
@@ -3123,8 +3507,60 @@ scenarios:
           feedID: ${new-local.feedID}
           siteid: tenant-a
           action: delete
+      # A feed save answers 500 after its write (hasImage under the content config), so its id is found by name.
+      - name: api-feed-save
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:new
+        form:
+          method: save
+          entityname: feed
+          siteid: tenant-a
+          type: Local
+          name: GS-CO-13 JSON Feed
+          isActive: '1'
+          isPublic: '1'
+          maxItems: '20'
+          contentID: ${seed.folder.contentID}
+      - name: api-feed-find
+        method: GET
+        route: /_api/json/v1/tenant-a/feed/?name=GS-CO-13%20JSON%20Feed
+        as: admin
+        extract:
+          feedid: {from: body, path: 'data.items[0].id'}
+      # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
+      - name: rest-feed-save
+        method: POST
+        route: /_api/rest/v1/tenant-a/feed/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-a
+          type: Local
+          name: GS-CO-13 REST Feed
+          isActive: '1'
+          isPublic: '1'
+          maxItems: '20'
+          contentID: ${seed.folder.contentID}
+      - name: rest-feed-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/feed/${api-feed-find.feedid}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: api-feed-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-feed-find.feedid}
+        form:
+          method: delete
+          entityname: feed
+          siteid: tenant-a
+          id: ${api-feed-find.feedid}
     compare: [status, headers, dom]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - admin:cfeed.list
       - admin:cfeed.edit
@@ -3134,6 +3570,11 @@ scenarios:
       - feed:v1
       - admin:cfeed.import1
       - admin:cfeed.import2
+      - api:feed.save
+      - api:feed.findquery
+      - rest:feed.save
+      - rest:feed.delete
+      - api:feed.delete
   - id: GS-CO-14
     title: Forms dialogs and data manager
     service: strategies-content
@@ -5594,6 +6035,19 @@ scenarios:
         method: GET
         route: /_api/json/v1/tenant-a/group/${group-form.groupid}
         as: admin
+      - name: api-group-save
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${group-form.groupid}
+        form:
+          method: save
+          entityname: group
+          siteid: tenant-a
+          id: ${group-form.groupid}
+          userid: ${group-form.groupid}
+          type: '1'
+          groupname: GS-ID-10 Group JSON
       - name: api-group-extdata
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -5715,6 +6169,7 @@ scenarios:
       - admin:cusers.loadextendedattributes
       - admin:cusers.update{type=1,extdata}
       - api:group.findone
+      - api:group.save
       - api:group.save{extdata}
       - api:group.save{photo}
       - api:group.delete
@@ -6766,6 +7221,58 @@ scenarios:
             - {field: newfile, fixture: pdf-one-page, filename: gs-document.pdf, contentType: application/pdf}
         extract:
           fileid: {from: body, path: data.fileid}
+      - name: metadata-new
+        method: GET
+        route: /_api/json/v1/tenant-a/fileMetaData/new
+        as: admin
+        extract:
+          id: {from: body, path: data.id}
+      - name: metadata-save
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${metadata-new.id}
+        form:
+          method: save
+          entityname: fileMetaData
+          siteid: tenant-a
+          id: ${metadata-new.id}
+          metaid: ${metadata-new.id}
+          fileid: ${upload-pdf.fileid}
+          contentid: ${seed.page.contentID}
+          contenthistid: ${page-version.contenthistid}
+          alttext: GS-CO-17 PDF
+          caption: GS-CO-17 caption
+          credits: ''
+      # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
+      - name: rest-metadata
+        method: POST
+        route: /_api/rest/v1/tenant-a/fileMetaData/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-a
+          fileid: ${upload-pdf.fileid}
+          contentid: ${seed.page.contentID}
+          contenthistid: ${page-version.contenthistid}
+          alttext: GS-CO-17 REST PDF
+          caption: GS-CO-17 REST caption
+          credits: ''
+      - name: rest-metadata-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/fileMetaData/${metadata-new.id}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: metadata-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${metadata-new.id}
+        form:
+          method: delete
+          entityname: fileMetaData
+          siteid: tenant-a
+          id: ${metadata-new.id}
       - name: rest-upload-image
         method: POST
         route: /_api/rest/v1/tenant-a/file/
@@ -6779,6 +7286,17 @@ scenarios:
             - {field: newfile, fixture: image-png-8x8, filename: gs-rest-photo.png, contentType: image/png}
         expected: halted
         exceptionId: EX-FILE-RENDITION
+      - name: rest-upload-pdf
+        method: POST
+        route: /_api/rest/v1/tenant-a/file/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        multipart:
+          fields:
+            siteid: tenant-a
+            moduleid: '00000000000000000000000000000000000'
+          files:
+            - {field: newfile, fixture: pdf-one-page, filename: gs-rest-document.pdf, contentType: application/pdf}
       - name: imagedetails
         method: GET
         route: /admin/?muraAction=cArch.imagedetails&siteid=tenant-a&fileid=${upload-image.fileid}&compactDisplay=true
@@ -6834,6 +7352,11 @@ scenarios:
         method: GET
         route: /_api/render/small/?fileid=${upload-image.fileid}
         as: admin
+      - name: rest-delete-pdf
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/file/${upload-pdf.fileid}
+        as: rest
+        auth: basic:admin:${secret:admin}
       - name: delete-pdf
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -6855,13 +7378,21 @@ scenarios:
           siteid: tenant-a
           id: ${upload-image.fileid}
     compare: [status, headers, envelope, dom, files]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - api:content.findone
       - api:file.findnew
       - api:file.save{upload=image}
       - api:file.save
+      - api:filemetadata.findnew
+      - api:filemetadata.save
+      - api:filemetadata.delete
       - rest:file.save{upload=image}
+      - rest:file.save
+      - rest:filemetadata.save
+      - rest:filemetadata.delete
+      - rest:file.delete
       - admin:carch.imagedetails
       - admin:carch.getimagesizeurl
       - admin:carch.loadfilemetadata
@@ -7043,6 +7574,29 @@ scenarios:
           notify: ${seed.person.userID}
         expected: withheld
         decisionListRef: api:content.save{notify}
+      - name: api-draft-new
+        method: GET
+        route: /_api/json/v1/tenant-a/content/new
+        as: admin
+        extract:
+          id: {from: body, path: data.id}
+      - name: api-draft
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-draft-new.id}
+        form:
+          method: save
+          entityname: content
+          siteid: tenant-a
+          id: ${api-draft-new.id}
+          contentid: ${api-draft-new.id}
+          parentid: '00000000000000000000000000000000001'
+          type: Page
+          subtype: Default
+          title: GS-CO-18 JSON draft
+          menutitle: GS-CO-18 JSON draft
+          approved: '0'
       - name: nav-new
         method: GET
         route: /_api/json/v1/tenant-a/contentnav/new
@@ -7088,6 +7642,93 @@ scenarios:
           notify: ${seed.person.userID}
         expected: withheld
         decisionListRef: api:contentnav.save{notify}
+      - name: nav-draft-new
+        method: GET
+        route: /_api/json/v1/tenant-a/contentnav/new
+        as: admin
+        extract:
+          id: {from: body, path: data.id}
+      - name: nav-draft
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${nav-draft-new.id}
+        form:
+          method: save
+          entityname: contentnav
+          siteid: tenant-a
+          id: ${nav-draft-new.id}
+          contentid: ${nav-draft-new.id}
+          parentid: '00000000000000000000000000000000001'
+          type: Page
+          subtype: Default
+          title: GS-CO-18 JSON nav draft
+          menutitle: GS-CO-18 JSON nav draft
+          approved: '0'
+      # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
+      - name: rest-draft
+        method: POST
+        route: /_api/rest/v1/tenant-a/content/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          siteid: tenant-a
+          parentid: '00000000000000000000000000000000001'
+          type: Page
+          subtype: Default
+          title: GS-CO-18 REST draft
+          menutitle: GS-CO-18 REST draft
+          approved: '0'
+      - name: rest-draft-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/content/${api-draft-new.id}
+        as: rest
+        auth: basic:admin:${secret:admin}
+      - name: rest-nav-draft
+        method: POST
+        route: /_api/rest/v1/tenant-a/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          method: save
+          entityname: contentnav
+          siteid: tenant-a
+          parentid: '00000000000000000000000000000000001'
+          type: Page
+          subtype: Default
+          title: GS-CO-18 REST nav draft
+          menutitle: GS-CO-18 REST nav draft
+          approved: '0'
+      - name: rest-nav-draft-delete
+        method: POST
+        route: /_api/rest/v1/tenant-a/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          method: delete
+          entityname: contentnav
+          siteid: tenant-a
+          id: ${nav-draft-new.id}
+      - name: api-draft-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${api-draft-new.id}
+        form:
+          method: delete
+          entityname: content
+          siteid: tenant-a
+          id: ${api-draft-new.id}
+      - name: nav-draft-delete
+        method: POST
+        route: /_api/json/v1/tenant-a/
+        as: admin
+        csrf: json-api:${nav-draft-new.id}
+        form:
+          method: delete
+          entityname: contentnav
+          siteid: tenant-a
+          id: ${nav-draft-new.id}
       - name: rest-publish
         method: POST
         route: /_api/rest/v1/tenant-a/content/
@@ -7161,7 +7802,8 @@ scenarios:
         expected: withheld
         decisionListRef: rest:contentnav.save{notify}
     compare: [status, envelope, auth, dom, mail]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - admin:carch.edit
       - admin:carch.update{notify}
@@ -7173,12 +7815,20 @@ scenarios:
       - api:content.findnew
       - api:content.save{approved=1}
       - api:content.save{notify}
+      - api:content.save
+      - api:content.delete
       - api:contentnav.save{approved=1}
       - api:contentnav.save{notify}
+      - api:contentnav.save
+      - api:contentnav.delete
       - rest:content.save{approved=1}
       - rest:content.save{notify}
+      - rest:content.save
+      - rest:content.delete
       - rest:contentnav.save{approved=1}
       - rest:contentnav.save{notify}
+      - rest:contentnav.save
+      - rest:contentnav.delete
   - id: GS-CO-19
     title: Variation targeting through the admin, JSON API and REST
     service: strategies-content

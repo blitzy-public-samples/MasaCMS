@@ -15,6 +15,7 @@ import {
 import { discardOperation, releaseOperation } from '@opt2/platform/outbox';
 import type { Clock } from '@opt2/platform/service-kit';
 import {
+  knownTenants,
   registeredTenants,
   registryEntryForTenant,
   tenantForRegisteredSite,
@@ -349,6 +350,11 @@ async function registeredTenantIds(db: TenantDb): Promise<string[]> {
   return [...new Set((await registeredTenants(db)).map((entry) => entry.tenantId))];
 }
 
+/** Each distinct tenant the registry has known, deleted sites included, in site order. */
+async function knownTenantIds(db: TenantDb): Promise<string[]> {
+  return [...new Set((await knownTenants(db)).map((entry) => entry.tenantId))];
+}
+
 /** Resource-bundle `messageFormat` of one argument, which legacy splits as a comma list [legacy: core/mura/resourceBundle/resourceBundle.cfc:164-192]. */
 export function messageFormat(pattern: string, arg: string): string {
   const args = ['', ...cfListToArray(arg)];
@@ -412,10 +418,10 @@ function conflictOf(row: AccountOperationRow): Judged {
   return { verdict: 'conflict', operation: viewOf(row) };
 }
 
-/** The operation `operationId` in the first registered tenant holding it; undefined when identity never recorded it. */
+/** The operation `operationId` in the first tenant the registry has known that holds it; undefined when identity never recorded it. */
 async function locateOperation(deps: Pick<AccountOperationDeps, 'db' | 'repo'>, operationId: string): Promise<LocatedOperation | undefined> {
   const { db, repo } = deps;
-  for (const tenantId of await registeredTenantIds(db)) {
+  for (const tenantId of await knownTenantIds(db)) {
     const row = await withTenant(db, tenantId, (tx) => repo.findAccountOperation(tx, operationId));
     if (row !== null) return { tenantId, row };
   }
@@ -915,7 +921,7 @@ export const operationStatus: NonNullable<MigrationHandlerOptions['operationStat
   const repo = repositoryFor(db.schema);
   const statuses: Record<string, OperationStatus> = {};
   const pending = new Set(operationIds);
-  for (const tenantId of await registeredTenantIds(db)) {
+  for (const tenantId of await knownTenantIds(db)) {
     if (pending.size === 0) break;
     const rows = await withTenant(db, tenantId, (tx) => repo.findAccountOperations(tx, [...pending]));
     // operation_id is char(35), whose equality ignores trailing spaces.

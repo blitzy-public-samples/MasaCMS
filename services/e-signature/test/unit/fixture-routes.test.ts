@@ -7,11 +7,12 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { inspect } from 'node:util';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { ANONYMOUS_PRINCIPAL_UID, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash } from '@opt2/platform/legacy-compat';
-import { createLogger, validateLogRecord } from '@opt2/platform/logging';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError, createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import {
@@ -47,6 +48,8 @@ const MARKED_NAME = '  <b>Q3</b> <script>x</script> plan  ';
 const FORM_SITE = { type: 'application/x-www-form-urlencoded', text: 'siteid=nosuch' };
 const MULTIPART_SITE = { type: 'multipart/form-data; boundary=opt2', text: '--opt2\r\nContent-Disposition: form-data; name="siteid"\r\n\r\nnosuch\r\n--opt2--\r\n' };
 const JSON_SITE = { type: 'application/json', text: '{"siteid":"nosuch"}' };
+// Message of an unexpected failure: an address, an email and a credential no log argument or line may carry.
+const PROBE = 'connection to 10.0.0.7 refused for jane.doe@example.test with password=Hunter2-probe';
 // Identity's session without a login, which the verifier hands on as `sub` ''.
 const ANONYMOUS_SESSION = { sub: ANONYMOUS_PRINCIPAL_UID, roles: [] };
 
@@ -98,9 +101,13 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
   const persons = [person(SIGNER_USER_ID), person(OTHER_USER_ID)];
   const consumed: Array<{ token: string; context: string }> = [];
   const logLines: string[] = [];
+  const errorSpies: Array<{ mock: { calls: unknown[][] } }> = [];
+  // When set, every people read rejects with it: an unexpected client fault.
+  let peopleFailure: Error | undefined;
 
   const people: PeopleClient = {
     readPerson: (_siteId, userId) => {
+      if (peopleFailure !== undefined) return Promise.reject(peopleFailure);
       if (peopleMode === 'unavailable') return Promise.reject(new ServiceUnavailableError('people', new Error('connect ECONNREFUSED')));
       if (peopleMode === 'denied') return Promise.reject(new PeopleReadDeniedError(401, 'authorization'));
       return Promise.resolve(persons.find((candidate) => candidate.userId.toUpperCase() === userId.toUpperCase()) ?? null);
@@ -147,6 +154,10 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
       logger: createLogger({ service: 'e-signature', version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(line) } }),
     });
     registerWritePositionHeader(app);
+    // Captures log.error arguments as the error handler passes them, before the logger serializes.
+    app.addHook('onRequest', async (request) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
+    });
     const clock = fixedClock(NOW);
     await registerFixtureRoutes(app, { db: handle.app, repository: createEsignatureRepository({ db: handle.app, clock }), clock, peopleClient: people });
     origin = await app.listen({ port: 0, host: '127.0.0.1' });
@@ -168,6 +179,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
   beforeEach(async () => {
     consumed.length = 0;
     peopleMode = 'answer';
+    peopleFailure = undefined;
     await setGates('open');
   });
 
@@ -539,6 +551,28 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
       'request denied: site-mismatch',
     ]);
     for (const line of lines) expect(validateLogRecord(line).errors).toEqual([]);
+  });
+
+  it.each<[string, Error, string]>([
+    ['an error whose message carries credentials', new Error(PROBE), REDACTED],
+    ['a socket error, kept as its system call and code', Object.assign(new Error(PROBE), { code: 'ECONNRESET', syscall: 'read' }), 'read ECONNRESET'],
+  ])('answers server_error for %s of the signer read, logging only its serialized record', async (_case, failure, safeMessage) => {
+    const before = logLines.length;
+    errorSpies.length = 0;
+    peopleFailure = failure;
+    const res = await send('POST', P, { payload: CREATE });
+    expect([res.statusCode, res.body]).toEqual([500, errorBody('esignature.requests', 'server_error', 'Unhandled Exception')]);
+    const record = { type: 'Error', message: safeMessage, stack: expect.stringMatching(/^Error: .+(?:\n {4}at \S.*)+$/) };
+    const calls = errorSpies.flatMap((spy) => spy.mock.calls).filter(([, message]) => message === 'unhandled fixture exception');
+    expect(calls).toStrictEqual([[{ error: record }, 'unhandled fixture exception']]);
+    const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>).filter(({ message }) => message === 'unhandled fixture exception');
+    expect(lines).toStrictEqual([expect.objectContaining({ severity: 'ERROR', error: record })]);
+    expect((lines[0]?.error as { stack: string }).stack.split('\n')[0]).toBe(`Error: ${safeMessage}`);
+    expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
+    for (const text of [PROBE, '10.0.0.7', 'jane.doe@example.test', 'password=', 'Hunter2-probe']) {
+      expect(inspect(calls, { depth: null })).not.toContain(text);
+      expect(logLines.slice(before).join('\n')).not.toContain(text);
+    }
   });
 
   it('answers the legacy 503 when people is unavailable, and forbidden when people denies the read', async () => {

@@ -144,7 +144,7 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
       return ['GROUP-1'];
     },
     siteGroups: unused('siteGroups'),
-    userGroups: unused('userGroups'),
+    userGroupsPage: unused('userGroupsPage'),
     actingUser: unused('actingUser'),
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),
@@ -1169,7 +1169,10 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     });
   });
 
-  it('reports each roster state in the migration handlers\' vocabulary', async () => {
+  it.each([
+    ['registered', false],
+    ['deleted from the registry', true],
+  ])('reports each roster state in the migration handlers\' vocabulary, with the halted operation\'s site %s', async (_label, deleted) => {
     const rows = new Map<RosterState, string>();
     for (const state of ['started', 'people-committed', 'halted', 'done', 'rolled-back'] as const) {
       const row = await openOperation(cfUuid(), state === 'halted' ? TENANT_B.tenantId : A);
@@ -1177,14 +1180,19 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
       rows.set(state, row.operation_id);
     }
     const unknown = cfUuid();
-    const statuses = await rosterOperationStatus(db, [...rows.values(), unknown]);
-    expect(statuses).toEqual({
-      [rows.get('started') ?? '']: 'open',
-      [rows.get('people-committed') ?? '']: 'open',
-      [rows.get('halted') ?? '']: 'open',
-      [rows.get('done') ?? '']: 'done',
-      [rows.get('rolled-back') ?? '']: 'rolled-back',
-    });
+    if (deleted) await db.withMetadata((tx) => tx.query(`UPDATE ${schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT_B.tenantId]));
+    try {
+      const statuses = await rosterOperationStatus(db, [...rows.values(), unknown]);
+      expect(statuses).toEqual({
+        [rows.get('started') ?? '']: 'open',
+        [rows.get('people-committed') ?? '']: 'open',
+        [rows.get('halted') ?? '']: 'open',
+        [rows.get('done') ?? '']: 'done',
+        [rows.get('rolled-back') ?? '']: 'rolled-back',
+      });
+    } finally {
+      await seedRegistry(db);
+    }
     expect(await rosterOperationStatus(db, [])).toEqual({});
   });
 

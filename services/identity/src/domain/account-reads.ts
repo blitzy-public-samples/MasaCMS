@@ -75,8 +75,8 @@ export interface AccountReads {
   countAccounts(db: TenantDb, claims: UserClaims, request: AccountCountRequest): Promise<number>;
   /** `lookupUsernameCandidates`: the first `limit` pool accounts by user id whose UserName matches the pattern, and whether that was all; waits while a read candidate is closed. */
   lookupUsernameCandidates(db: TenantDb, claims: UserClaims, request: UsernameCandidateRequest): Promise<UsernameCandidateList>;
-  /** `lookupMemberships`: each listed user's stored membership group ids from every registered tenant, one item per id in request order. */
-  lookupMemberships(db: TenantDb, userIds: readonly string[]): Promise<MembershipListItem[]>;
+  /** `lookupMemberships`: each listed user's stored membership group ids from every registered tenant, one item per id in request order; `byGroupName` answers each as `readMembershipIds` does. */
+  lookupMemberships(db: TenantDb, userIds: readonly string[], options?: { byGroupName?: boolean }): Promise<MembershipListItem[]>;
   /** `loadLoginBlock`: the strike block of the `getAccount` user's stored user name, cleared on `removeBlock`; null when `getAccount` finds none. */
   loadLoginBlock(db: TenantDb, claims: UserClaims, userId: string, input: LoginBlockInput): Promise<LoginBlock | null>;
   /** `listSiteGroups`: the groups of the site's private or public user pool, as `getPrivateGroups`/`getPublicGroups` list them. */
@@ -115,8 +115,14 @@ function idKey(id: string): string {
   return id.replace(/ +$/, '').toLowerCase();
 }
 
+/** A stored group's id and name, as `readMembershipIDs` joins and orders it. */
+type NamedGroup = { userid: string; groupname: string | null };
+
+/** Reads the stored groups among `ids` in one tenant. */
+type GroupRead = (tenantId: string, ids: readonly string[]) => Promise<readonly NamedGroup[]>;
+
 /** The listing order of `order by tusers.groupname`: NULL names first, then names ignoring case, ties by id. */
-function byGroupName(a: { userid: string; groupname: string | null }, b: { userid: string; groupname: string | null }): number {
+function byGroupName(a: NamedGroup, b: NamedGroup): number {
   const left = a.groupname?.toLowerCase() ?? null;
   const right = b.groupname?.toLowerCase() ?? null;
   if (left !== right) {
@@ -141,17 +147,33 @@ export async function readMembershipIds(deps: { db: TenantDb; repo: IdentityRepo
   return groupIdsByName(deps, held, read);
 }
 
-/** The listed group ids, once each, whose group exists in `tenants`, by group name as `readMembershipIDs` orders them. */
-export async function groupIdsByName(deps: { db: TenantDb; repo: IdentityRepository }, groupIds: readonly string[], tenants: readonly string[]): Promise<string[]> {
+/** The stored groups of the listed ids by id key, one `read` per tenant, a later tenant's row replacing an earlier one's; no read for no ids. */
+async function storedGroups(groupIds: readonly string[], tenants: readonly string[], read: GroupRead): Promise<Map<string, NamedGroup>> {
   const held = new Map<string, string>();
   for (const groupId of groupIds) held.set(idKey(groupId), groupId);
-  if (held.size === 0) return [];
+  const found = new Map<string, NamedGroup>();
+  if (held.size === 0) return found;
   const ids = [...held.values()];
-  const found = new Map<string, { userid: string; groupname: string | null }>();
   for (const tenantId of tenants) {
-    for (const group of await withTenant(deps.db, tenantId, (tx) => deps.repo.findGroupsByIds(tx, ids))) found.set(idKey(group.userid), group);
+    for (const group of await read(tenantId, ids)) found.set(idKey(group.userid), group);
   }
-  return [...found.values()].sort(byGroupName).map((group) => group.userid);
+  return found;
+}
+
+/** The listed ids, once each, that name a group of `found`, as that group's stored id, by group name. */
+function namedOrder(groupIds: readonly string[], found: ReadonlyMap<string, NamedGroup>): string[] {
+  const named = new Map<string, NamedGroup>();
+  for (const groupId of groupIds) {
+    const group = found.get(idKey(groupId));
+    if (group !== undefined) named.set(idKey(group.userid), group);
+  }
+  return [...named.values()].sort(byGroupName).map((group) => group.userid);
+}
+
+/** The listed group ids, once each, whose group exists in `tenants`, by group name as `readMembershipIDs` orders them. */
+export async function groupIdsByName(deps: { db: TenantDb; repo: IdentityRepository }, groupIds: readonly string[], tenants: readonly string[]): Promise<string[]> {
+  const found = await storedGroups(groupIds, tenants, (tenantId, ids) => withTenant(deps.db, tenantId, (tx) => deps.repo.findGroupsByIds(tx, ids)));
+  return namedOrder(groupIds, found);
 }
 
 function siteGroup(row: PoolGroupRow): SiteGroup {
@@ -308,7 +330,7 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
     return { items: rows.slice(0, request.limit).map((row) => ({ userId: row.userid, username: row.username })), complete: rows.length <= request.limit };
   }
 
-  async function lookupMemberships(db: TenantDb, userIds: readonly string[]): Promise<MembershipListItem[]> {
+  async function lookupMemberships(db: TenantDb, userIds: readonly string[], options: { byGroupName?: boolean } = {}): Promise<MembershipListItem[]> {
     const tenants = (await registeredTenants(db)).map((entry) => entry.tenantId);
     const held = await untilOpen(async () => {
       // Per user id key, the group ids by group id key in first-read order.
@@ -325,7 +347,11 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
       }
       return { value: groups, closed };
     });
-    return userIds.map((userId) => ({ userId, groupIds: [...(held.get(charKey(userId))?.values() ?? [])] }));
+    const items = userIds.map((userId) => ({ userId, groupIds: [...(held.get(charKey(userId))?.values() ?? [])] }));
+    if (options.byGroupName !== true) return items;
+    const readGroups: GroupRead = (tenantId, ids) => withGatedTenant(db, tenantId, (tx) => repo.findGroupsByIds(tx, ids), gateBudget);
+    const found = await storedGroups(items.flatMap((item) => item.groupIds), tenants, readGroups);
+    return items.map(({ userId, groupIds }) => ({ userId, groupIds: namedOrder(groupIds, found) }));
   }
 
   async function loadLoginBlock(db: TenantDb, claims: UserClaims, userId: string, input: LoginBlockInput): Promise<LoginBlock | null> {

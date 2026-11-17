@@ -37,7 +37,7 @@ import {
   type ReplayHalt,
   type ReplayOutput,
 } from './replay.js';
-import { originBaseUrl } from './session.js';
+import { browserBaseUrl } from './session.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { safeDiagnostic } from '../lib/diagnostics.js';
 import { createHarnessLogger } from '../lib/logger.js';
@@ -564,7 +564,7 @@ export interface ClassifyOptions {
   browser?: BrowserRecord | null;
   /** SHA the capture and its replay or browser record carry, and the replay's version; default pin and scenario's. */
   expected?: { sourceSha?: string; tableVersion?: string };
-  /** Origin a browser record's XHRs must address; default the gateway's. */
+  /** Origin a browser record's XHRs must address; default the gateway's {@link browserBaseUrl} origin. */
   gatewayOrigin?: string;
   /** Why a side could not be read; stated instead of "missing". */
   readErrors?: { golden?: string; replay?: string };
@@ -646,7 +646,7 @@ function observe(golden: GoldenSet | null, replay: ReplayOutput | null, opts: Cl
     if (record.error !== undefined) return { error: failedRun('browser flow', record.error) };
     const gap = browserEvidenceGap(golden, record, opts);
     if (gap !== null) return { error: gap };
-    const gatewayOrigin = opts.gatewayOrigin ?? new URL(originBaseUrl('gateway')).origin;
+    const gatewayOrigin = opts.gatewayOrigin ?? new URL(browserBaseUrl('gateway')).origin;
     const differences = browserDifferences(golden, record, { scenario, rules: opts.rules, gatewayOrigin });
     if (!sameDifferences(record.differences, differences)) {
       const counts = `${record.differences.length} recorded, ${differences.length} recomputed`;
@@ -1255,7 +1255,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     fixtures: readFixtureStatus(env),
     exceptions,
     decisionList: await loadDecisionList(decisionListPath),
-    gatewayOrigin: new URL(originBaseUrl('gateway', env)).origin,
+    gatewayOrigin: new URL(browserBaseUrl('gateway', env)).origin,
     readGolden: deps.readGolden ?? ((id) => readGoldenSet(id)),
     captured: new Set(),
   };

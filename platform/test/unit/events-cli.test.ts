@@ -2,8 +2,10 @@
 import type { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main, replayDeadLetters } from '../../src/events/cli.js';
+import { REDACTED, validateLogRecord } from '../../src/logging/index.js';
 
 type WriteCallback = (err?: Error | null) => void;
+type LogLine = Record<string, unknown>;
 
 interface FakeSubscription extends EventEmitter {
   name: string;
@@ -67,6 +69,8 @@ const SUBSCRIPTION = 'timesheets.people.person.archived.v1';
 const TOPIC = 'people.person.archived.v1';
 const SOURCE = `${SUBSCRIPTION}.dlq.replay`;
 const PROJECT = 'opt2-unit';
+// Assembled at run time, so no literal credential appears in source.
+const SECRET = ['s3cr3t', 'events', 'cli', 'value'].join('-');
 
 let stdout: string;
 let stderr: string;
@@ -111,6 +115,17 @@ function replayArgs(...extra: string[]): string[] {
   return ['replay', '--subscription', SUBSCRIPTION, '--project', PROJECT, ...extra];
 }
 
+/** The one line written to stderr, checked against log-record.v1 and the CLI's service. */
+function stderrRecord(): LogLine {
+  expect(stderr.endsWith('\n')).toBe(true);
+  const lines = stderr.slice(0, -1).split('\n');
+  expect(lines).toHaveLength(1);
+  const record = JSON.parse(lines[0] as string) as LogLine;
+  expect(validateLogRecord(record)).toStrictEqual({ valid: true, errors: [] });
+  expect(record).toMatchObject({ service: 'opt2-events' });
+  return record;
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   stdout = '';
@@ -153,31 +168,34 @@ describe('opt2-events arguments', () => {
     expect(state.subscriptions).toHaveLength(0);
   });
 
+  const MAX_PROBLEM = '--max must be a positive integer up to 9007199254740991';
+  const SUBSCRIPTION_PROBLEM = '--subscription is not a <consumer>.<service>.<entity>.<event>.v<major> name';
+
   it.each([
     [[], 'missing subcommand'],
-    [['frob'], 'unknown subcommand "frob"'],
-    [['replay', 'extra', '--subscription', SUBSCRIPTION, '--project', PROJECT], 'unknown subcommand "replay extra"'],
+    [['frob'], 'unknown subcommand'],
+    [[`frob-${SECRET}`], 'unknown subcommand'],
+    [['replay', 'extra', '--subscription', SUBSCRIPTION, '--project', PROJECT], 'unknown subcommand'],
     [['replay', '--project', PROJECT], 'missing --subscription'],
-    [replayArgs('--bogus'), /^Unknown option '--bogus'/],
-    [['replay', '--subscription', 'timesheets', '--project', PROJECT], /^Invalid event name "timesheets"/],
-    [replayArgs('--max', '0'), '--max must be a positive integer up to 9007199254740991, got "0"'],
-    [replayArgs('--max', '1.5'), '--max must be a positive integer up to 9007199254740991, got "1.5"'],
-    [replayArgs('--max', '9007199254740993'), /^--max must be a positive integer/],
-    [replayArgs('--idle-seconds', '2147484'), '--idle-seconds must be a positive integer up to 2147483, got "2147484"'],
+    [replayArgs('--bogus'), 'unknown option'],
+    [replayArgs(`--${SECRET}=x`), 'unknown option'],
+    [replayArgs('--max'), 'an option is missing its value or was given one it does not take'],
+    [['replay', '--subscription', 'timesheets', '--project', PROJECT], SUBSCRIPTION_PROBLEM],
+    [['replay', '--subscription', `timesheets.${SECRET}`, '--project', PROJECT], SUBSCRIPTION_PROBLEM],
+    [replayArgs('--max', '0'), MAX_PROBLEM],
+    [replayArgs('--max', '1.5'), MAX_PROBLEM],
+    [replayArgs('--max', '9007199254740993'), MAX_PROBLEM],
+    [replayArgs('--max', `abc-${SECRET}`), MAX_PROBLEM],
+    [replayArgs('--idle-seconds', '2147484'), '--idle-seconds must be a positive integer up to 2147483'],
     [['replay', '--subscription', SUBSCRIPTION], 'missing --project and GOOGLE_CLOUD_PROJECT is unset'],
-  ])('answers %j with a usage error and exit code 2 before opening any client', async (argv, message) => {
+  ])('answers %j with a usage line quoting no argument and exit code 2 before opening any client', async (argv, problem) => {
     vi.stubEnv('GOOGLE_CLOUD_PROJECT', '');
     expect(await main(argv)).toBe(2);
-    const prefix = 'opt2-events: ';
-    const suffix = `; ${USAGE}\n`;
-    expect(stderr.startsWith(prefix)).toBe(true);
-    expect(stderr.endsWith(suffix)).toBe(true);
-    const text = stderr.slice(prefix.length, -suffix.length);
-    if (typeof message === 'string') {
-      expect(text).toBe(message);
-    } else {
-      expect(text).toMatch(message);
-    }
+    const record = stderrRecord();
+    expect(record).toMatchObject({ severity: 'ERROR', message: `opt2-events: ${problem}; ${USAGE}` });
+    expect(record).not.toHaveProperty('error');
+    expect(stderr).not.toContain(SECRET);
+    expect(stderr).not.toMatch(/frob|extra|bogus|timesheets|"0"|1\.5|9007199254740993|2147484/);
     expect(stdout).toBe('');
     expect(state.createPublisher).not.toHaveBeenCalled();
     expect(state.pubsubOptions).toHaveLength(0);
@@ -326,8 +344,9 @@ describe('opt2-events replay', () => {
     },
   );
 
-  it('nacks the dead letter, stops and exits 1 when its publish fails', async () => {
-    publishRaw.mockResolvedValueOnce('id').mockRejectedValueOnce(new Error('5 NOT_FOUND: Topic not found'));
+  it('nacks the dead letter, stops and exits 1 when its publish fails, logging the replayed count and only the gRPC status', async () => {
+    const notFound = Object.assign(new Error(`5 NOT_FOUND: Topic not found ${SECRET}`), { code: 5, details: `Topic not found ${SECRET}`, metadata: {} });
+    publishRaw.mockResolvedValueOnce('id').mockRejectedValueOnce(notFound);
     const run = main(replayArgs());
     const subscription = pulled();
     const first = deadLetter('{}', { eventId: 'ok' });
@@ -336,7 +355,12 @@ describe('opt2-events replay', () => {
     for (const message of [first, failing, next]) subscription.emit('message', message);
     expect(await run).toBe(1);
     await settle();
-    expect(stderr).toBe(`opt2-events: publish to ${TOPIC} failed after 1 replayed: 5 NOT_FOUND: Topic not found\n`);
+    expect(stderrRecord()).toMatchObject({
+      severity: 'CRITICAL',
+      message: 'opt2-events: replay failed after 1 replayed',
+      error: { type: 'ReplayError', message: 'gRPC status 5 NOT_FOUND' },
+    });
+    expect(stderr).not.toMatch(new RegExp(`Topic not found|${SECRET}|${SUBSCRIPTION}|${TOPIC}`));
     expect(stdout).toBe('');
     expect([first.ack.mock.calls.length, failing.ack.mock.calls.length, next.ack.mock.calls.length]).toEqual([1, 0, 0]);
     expect([failing.nack.mock.calls.length, next.nack.mock.calls.length]).toEqual([1, 1]);
@@ -348,7 +372,12 @@ describe('opt2-events replay', () => {
     const run = main(replayArgs());
     pulled().emit('error', new Error('Subscription does not exist'));
     expect(await run).toBe(1);
-    expect(stderr).toBe(`opt2-events: pull from ${SOURCE} failed after 0 replayed: Subscription does not exist\n`);
+    expect(stderrRecord()).toMatchObject({
+      severity: 'CRITICAL',
+      message: 'opt2-events: replay failed after 0 replayed',
+      error: { type: 'ReplayError', message: REDACTED },
+    });
+    expect(stderr).not.toMatch(new RegExp(`Subscription does not exist|${SUBSCRIPTION}`));
     expect(state.closed).toEqual(['subscription', 'publisher', 'pubsub']);
   });
 
@@ -366,6 +395,6 @@ describe('opt2-events replay', () => {
     const run = main(replayArgs('--idle-seconds', '1'));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(await run).toBe(1);
-    expect(stderr).toBe('opt2-events: write EPIPE\n');
+    expect(stderrRecord()).toMatchObject({ severity: 'CRITICAL', message: 'opt2-events: replay failed', error: { type: 'Error', message: REDACTED } });
   });
 });

@@ -2,6 +2,7 @@
 // compare-and-set gates, scripted change feeds and positions, consumer effects and injected failures; it opens no sockets.
 import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
@@ -68,6 +69,7 @@ import {
   type ChangesParams,
   type DeleteObjectResult,
   type ExportParams,
+  type ObjectBody,
   type OwnersClient,
   type PositionParams,
   type PutObjectParams,
@@ -93,6 +95,7 @@ const CANCEL_ADOPTED_TASKS_PATH = '/internal/v1/migration/cancel-adopted-schedul
 
 const CONTENT = 'strategies-content';
 const FINANCE = 'finance';
+const REPORTING = 'reporting';
 const PROGRAMS_SITES = 'programs-sites';
 const COMMUNICATIONS = 'communications';
 
@@ -217,6 +220,8 @@ export interface OwnerDoubleState {
   readonly manifestUnits: Set<string>;
   /** Finance attachment bytes keyed `<tenantId>/<attachmentId>`. */
   readonly attachments: Map<string, Buffer>;
+  /** Reporting export output bytes keyed `<tenantId>/<jobId>`. */
+  readonly exportOutputs: Map<string, Buffer>;
   siteMonitorState: SiteMonitorState;
   readonly adoptedTasks: Map<string, AdoptedTask>;
   readonly cancelledTasks: string[];
@@ -284,6 +289,7 @@ const ROUTES: Readonly<Record<OwnerMethod, readonly [HttpMethod, string]>> = {
   getObject: ['GET', OBJECTS_PATH],
   deleteObject: ['DELETE', OBJECTS_PATH],
   getAttachmentObject: ['GET', OBJECTS_PATH],
+  getExportObject: ['GET', OBJECTS_PATH],
   siteMonitorState: ['GET', SITEMONITOR_STATE_PATH],
   putSiteMonitorState: ['PUT', SITEMONITOR_STATE_PATH],
   adoptScheduledTasks: ['POST', ADOPT_TASKS_PATH],
@@ -317,6 +323,17 @@ function queueControlError(service: string, queue: string, op: QueueControlOp, s
 function unreachable(owner: string, code: 'ECONNREFUSED' | 'ECONNRESET'): ServiceUnavailableError {
   return new ServiceUnavailableError(owner, Object.assign(new Error(code === 'ECONNREFUSED' ? 'connect ECONNREFUSED' : 'socket hang up'), { code }));
 }
+
+/** Bytes of an upload body, read to its end; a stream of other than its declared size fails as undici fails such a request. */
+async function uploadedBytes(body: ObjectBody): Promise<Buffer> {
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  const bytes = await buffer(body.stream);
+  if (bytes.byteLength !== body.size) {
+    throw Object.assign(new Error('Request body length does not match content-length header'), { code: 'UND_ERR_REQ_CONTENT_LENGTH_MISMATCH' });
+  }
+  return bytes;
+}
+
 
 /** Lookup form of a legacy table name: no leading `dbo.`, lower case. */
 function tableKey(table: string): string {
@@ -425,6 +442,7 @@ class OwnerDouble implements OwnerDoubleState {
   readonly objects = new Map<string, StoredObject>();
   readonly manifestUnits = new Set<string>();
   readonly attachments = new Map<string, Buffer>();
+  readonly exportOutputs = new Map<string, Buffer>();
   siteMonitorState: SiteMonitorState = { lastMonitored: null, updatedAt: null };
   readonly adoptedTasks = new Map<string, AdoptedTask>();
   readonly cancelledTasks: string[] = [];
@@ -977,6 +995,13 @@ class OwnerDouble implements OwnerDoubleState {
     return Readable.from([Buffer.from(held)], { objectMode: false });
   }
 
+  /** Reporting `GET /objects`: the stored output of one export job. */
+  getExportObject(tenantId: string, jobId: string): Readable {
+    const held = this.exportOutputs.get(`${tenantId.toLowerCase()}/${jobId}`);
+    if (held === undefined) throw notFound(this.name, 'getExportObject');
+    return Readable.from([Buffer.from(held)], { objectMode: false });
+  }
+
   /** programs-sites `PUT /sitemonitor/state`: seeds the cursor and stamps `updatedAt` from the clock. */
   seedSiteMonitorState(input: SiteMonitorStateInput): SiteMonitorState {
     const lastMonitored = this.#wallClock('putSiteMonitorState', input.lastMonitored);
@@ -1162,8 +1187,9 @@ export function createOwnerDoubles(catalog: UnitCatalog, opts: OwnerDoublesOptio
       return invoke(state, 'gate', [req, options], () => state.gate(req), { op: `gate.${req.op}` });
     },
 
-    async putObject(params, bytes) {
+    async putObject(params, body) {
       const state = stateOf(CONTENT, 'putObject');
+      const bytes = await uploadedBytes(body);
       return invoke(state, 'putObject', [params, bytes], () => state.putObject(params, bytes));
     },
 
@@ -1180,6 +1206,11 @@ export function createOwnerDoubles(catalog: UnitCatalog, opts: OwnerDoublesOptio
     async getAttachmentObject(params) {
       const state = stateOf(FINANCE, 'getAttachmentObject');
       return invoke(state, 'getAttachmentObject', [params], () => state.getAttachmentObject(params.tenantId, params.attachmentId));
+    },
+
+    async getExportObject(params) {
+      const state = stateOf(REPORTING, 'getExportObject');
+      return invoke(state, 'getExportObject', [params], () => state.getExportObject(params.tenantId, params.jobId));
     },
 
     async siteMonitorState() {

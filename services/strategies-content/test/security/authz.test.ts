@@ -160,7 +160,29 @@ const IDENTITY_HANDLERS: ClientHandlers = {
   },
 };
 
-const t: TestApp = await buildTestApp({ env: { LOG_LEVEL: 'fatal' }, clock: CLOCK, clientHandlers: IDENTITY_HANDLERS });
+/** programs-sites' answer to the site settings lookup every stored feed reads before its query: each listed site's own. */
+const SITES_HANDLERS: ClientHandlers = {
+  'programs-sites': {
+    'POST /internal/v1/sites/feed-settings:lookup': (req) => ({
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: {
+        items: (req.json as { siteIds: string[] }).siteIds.map((siteID) => ({
+          siteID,
+          contact: `webmaster@${siteID}.example`,
+          javaLocale: 'en_US',
+          domain: `${siteID}.example`,
+          domainAliases: [],
+          enforcePrimaryDomain: false,
+          useSSL: false,
+          remote: null,
+        })),
+      },
+    }),
+  },
+};
+
+const t: TestApp = await buildTestApp({ env: { LOG_LEVEL: 'fatal' }, clock: CLOCK, clientHandlers: { ...IDENTITY_HANDLERS, ...SITES_HANDLERS } });
 seedRecordingDb(t.db);
 seedMemoryStorage(t.storage);
 const MATRIX: readonly RouteMatrixEntry[] = collectRouteMatrix(t.app).routes;
@@ -506,6 +528,15 @@ const FAMILIES: readonly Family[] = [
     declared: PUBLIC_LENIENT,
     allow: userTokenOnly,
     siteScoped: true,
+  },
+  {
+    // The template reads form fields only, so a GET fails it before any credential is read.
+    family: 'rater without form fields',
+    match: [at('GET', RATER_URL)],
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: always,
+    siteScoped: false,
   },
   {
     family: 'signed objects',
@@ -970,6 +1001,8 @@ function familyProbe(family: Family, entry: RouteMatrixEntry, site: string): Pro
     }
     case 'rater':
       return postForm(url, raterFields(site));
+    case 'rater without form fields':
+      return get(`${url}?${raterFields(site)}`);
     case 'queue control':
       return postJson(url, {});
     default:
@@ -1115,11 +1148,6 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
   { routes: apiRoutes('/:siteid'), status: 404, matches: answered(legacyEnvelope('invalidMethodCall', 'findall')) },
   { routes: apiRoutes('/:siteid/*'), status: 404, matches: answered(legacyEnvelope('invalidMethodCall', 'invalid')) },
   // Halted views: they print values another service holds, so the handler answers legacy's 503.
-  {
-    routes: ['GET /_api/feed/v1', 'GET /_api/feed/v1/*', 'GET /tasks/feed', 'GET /tasks/feed/*'],
-    status: 503,
-    matches: threw('LegacyServiceUnavailableError: Rendered feeds print site settings this service does not hold'),
-  },
   ...['loadsite', 'siteparents'].map((action) => ({
     routes: rawRoutes('cfeed', action),
     status: 503,
@@ -1199,6 +1227,8 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
     status: 500,
     matches: (result) => 'key' in result.query && answered(LEGACY_ERROR_PAGE_HTML)(result),
   },
+  // A GET posts no form fields, so the rater's save answers the error page before any credential is read.
+  { routes: [`GET ${RATER_URL}`], status: 500, matches: answered(LEGACY_ERROR_PAGE_HTML) },
   // A tenant-b caller's render of tenant-a's file finds no row in its own tenant: legacy's empty 404.
   {
     routes: ['GET /_api/render/:size', 'GET /tasks/render/:size'],

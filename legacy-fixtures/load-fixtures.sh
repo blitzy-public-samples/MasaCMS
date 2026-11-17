@@ -36,10 +36,11 @@ CFPM_INSTALLED=()
 # Prints the usage text.
 usage() {
   cat <<'EOF'
-Usage: legacy-fixtures/load-fixtures.sh [-h|--help]
+Usage: legacy-fixtures/load-fixtures.sh [--check-only | -h | --help]
 
 Checks what the legacy fixtures need, loads legacy-fixtures/sql into the legacy database when it is all present
-and writes ${OPT2_STATE_DIR}/fixtures.json. Takes no other arguments; it is configured through the environment.
+and writes ${OPT2_STATE_DIR}/fixtures.json. --check-only runs the checks and writes fixtures.json, loading nothing.
+Takes no other arguments; it is configured through the environment.
 
 Required: MURA_DATABASE, MURA_DBUSERNAME, MURA_DBPASSWORD
 Optional: MURA_DBHOST, MURA_DBPORT, OPT2_STATE_DIR (absolute, outside the checkout; default $HOME/.opt2/state),
@@ -262,14 +263,19 @@ load_transitions() {
   printf 'loaded opt2/reports/state-machines/%s.json into synthetic.%s (%s rows)\n' "$service" "$table" "$expected" >&2
 }
 
+CHECK_ONLY=0
 if (( $# > 0 )); then
   if [[ $# -eq 1 && ( "$1" == -h || "$1" == --help ) ]]; then
     usage
     exit 0
   fi
-  printf 'load-fixtures: unexpected arguments: %s\n' "$*" >&2
-  usage >&2
-  exit 2
+  if [[ $# -eq 1 && "$1" == --check-only ]]; then
+    CHECK_ONLY=1
+  else
+    printf 'load-fixtures: unexpected arguments: %s\n' "$*" >&2
+    usage >&2
+    exit 2
+  fi
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -312,6 +318,13 @@ if (( ${#REASONS[@]} > 0 )); then
   STEP="status"
   write_status false "$JOINED"
   printf 'load-fixtures: fixtures unavailable: %s\n' "$JOINED" >&2
+  exit 0
+fi
+
+if (( CHECK_ONLY == 1 )); then
+  STEP="status"
+  write_status true "capability checks passed; nothing loaded (--check-only)"
+  printf 'load-fixtures: fixtures available; nothing loaded (--check-only)\n' >&2
   exit 0
 fi
 

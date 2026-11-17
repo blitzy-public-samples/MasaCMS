@@ -41,8 +41,8 @@ async function registryDb(rows: readonly Row[] = EXTRA_SITES, fixtures = true): 
 }
 
 function lookupOf({ text, values }: RecordedStatement): Lookup {
-  if (text.endsWith(`FROM ${REGISTRY} WHERE lower(site_id) = lower($1)`)) return ['site', String(values[0])];
-  if (text.endsWith(`FROM ${REGISTRY} WHERE tenant_id = $1`)) return ['entry', String(values[0])];
+  if (text.endsWith(`FROM ${REGISTRY} WHERE lower(site_id) = lower($1) AND NOT deleted`)) return ['site', String(values[0])];
+  if (text.endsWith(`FROM ${REGISTRY} WHERE tenant_id = $1 AND NOT deleted`)) return ['entry', String(values[0])];
   throw new Error(`Unexpected statement: ${text}`);
 }
 

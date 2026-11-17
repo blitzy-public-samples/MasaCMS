@@ -8,6 +8,8 @@ import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { LEGACY_ERROR_MAP, cfHash, esapiUrlEncode } from '@opt2/platform/legacy-compat';
 import { createLogger, type Logger } from '@opt2/platform/logging';
+import { decodeRow } from '@opt2/platform/migration-kit';
+import bcrypt from 'bcryptjs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EXCEPTIONS_LIST_PATH,
@@ -43,7 +45,9 @@ import { haltEvidence, type ExceptionEntry } from '../../src/golden/errors.js';
 import { ETAG_OK } from '../../src/golden/normalise/index.js';
 import { RULES_PATH, loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
 import { loadSecretStore, secretValues } from '../../src/golden/session.js';
+import type { TableOwnership } from '../../src/golden/side-effects.js';
 import { GAP_REASON } from '../../src/golden/steps.js';
+import type { ReadOnlyMssql } from '../../src/lib/mssql.js';
 import { REPO_ROOT, isInsideRepo, type EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 
@@ -485,6 +489,66 @@ describe('captureScenario against legacy', () => {
     const ordinary = JSON.stringify({ title: 'Home' });
     expect(() => assertNoSecrets(ordinary, secretValues({ secrets: loadSecretStore(env) }), 'title')).not.toThrow();
     expect(() => assertNoReloadKey(ordinary, key, 'title')).not.toThrow();
+  });
+});
+
+describe('captureScenario stored password hashes', () => {
+  const USER_ID = 'FIXTURE-USER-0001';
+  const UNIT = 'identity.credential';
+  const OWNERSHIP: TableOwnership = {
+    tables: [
+      {
+        table: 'tusers',
+        schema: 'dbo',
+        owner: 'identity',
+        rowIdentity: 'key',
+        split: null,
+        targets: [
+          { unit: UNIT, owner: 'identity', rowPredicate: null, keyColumns: ['UserID'], ownedColumns: ['Password'] },
+        ],
+      },
+    ],
+    units: [{ unit: UNIT, owner: 'identity' }],
+  };
+
+  /** Legacy SQL holding one tusers row whose password is `hash`. */
+  function legacyTusers(hash: string): ReadOnlyMssql {
+    return {
+      async readOnlyQuery<T>(sql: string): Promise<T[]> {
+        const catalog = [
+          { COLUMN_NAME: 'UserID', DATA_TYPE: 'char', NUMERIC_SCALE: null },
+          { COLUMN_NAME: 'Password', DATA_TYPE: 'varchar', NUMERIC_SCALE: null },
+        ];
+        const rows: unknown[] = sql.startsWith('SELECT COLUMN_NAME') ? catalog : [{ UserID: USER_ID, Password: hash }];
+        return rows as T[];
+      },
+      close: () => Promise.resolve(),
+    };
+  }
+
+  it.each<[label: string, credential: string | undefined, shown: (hash: string) => string]>([
+    [
+      'names the secret the scenario resolved that the stored hash verifies',
+      '${secret:admin}',
+      () => '$2a$04$<verifies:admin>',
+    ],
+    ['keeps the stored hash literal when the scenario resolved no secret', undefined, (hash) => hash],
+  ])('%s', async (_label, credential, shown) => {
+    const hash = bcrypt.hashSync(ADMIN_PASSWORD, bcrypt.genSaltSync(4).replace('$2b$', '$2a$'));
+    const [findone] = catalogueCo05.steps;
+    const scenario = scenarioSchema.parse({
+      ...catalogueCo05,
+      steps: [{ ...findone, ...(credential === undefined ? {} : { headers: { 'X-Fixture-Credential': credential } }) }],
+      compare: ['status', 'rows'],
+      rows: [{ table: 'tusers', where: { userid: USER_ID } }],
+    });
+    const env = envFor(stateDir);
+    const sideEffects = { mssql: legacyTusers(hash), ownership: OWNERSHIP };
+    const { set } = await capture(scenario, { ...captureDeps(fakeLegacy(), env), sideEffects });
+    const table = set.sideEffects.rows[UNIT];
+    if (table === undefined) throw new Error(`no ${UNIT} rows captured`);
+    expect(table.entries.map((entry) => decodeRow(table.columns, entry.encoding).Password)).toEqual([shown(hash)]);
+    expect(JSON.stringify(set)).not.toContain(ADMIN_PASSWORD);
   });
 });
 

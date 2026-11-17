@@ -6,7 +6,16 @@ import path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { CutoverDataError, GatewayCallError, GatewayWaitTimeoutError, currentAuthority, loadGroups, loadVersion, type Authority, type CutoverStatus } from '../../src/cutover/index.js';
+import {
+  CutoverDataError,
+  GatewayCallError,
+  GatewayWaitTimeoutError,
+  currentAuthority,
+  loadGroups,
+  loadVersion,
+  type Authority,
+  type CutoverStatusV2,
+} from '../../src/cutover/index.js';
 import type { MigrationContext } from '../../src/context.js';
 import { GateConflict, UnknownLegacyTableError, loadUnitCatalog, type UnitCatalog } from '../../src/owners/index.js';
 import { DeadLetteredProcessEventError, DrainTimeoutError, type DeadLetteredDelivery } from '../../src/quiesce/index.js';
@@ -52,7 +61,7 @@ const m = vi.hoisted(() => ({
   restartLegacy: vi.fn(),
   opt2SyncReady: vi.fn(),
   countStartupRows: vi.fn(),
-  diffSnapshotManifests: vi.fn(),
+  streamChangedEntries: vi.fn(),
   transferFiles: vi.fn(),
   removeDroppedObjects: vi.fn(),
   readSchedulerState: vi.fn(),
@@ -101,7 +110,7 @@ vi.mock('../../src/legacy/index.js', async (orig) => ({
 }));
 vi.mock('../../src/files/index.js', async (orig) => ({
   ...(await orig<typeof import('../../src/files/index.js')>()),
-  diffSnapshotManifests: m.diffSnapshotManifests,
+  streamChangedEntries: m.streamChangedEntries,
   transferFiles: m.transferFiles,
   removeDroppedObjects: m.removeDroppedObjects,
 }));
@@ -116,8 +125,34 @@ const groups = loadGroups(config.paths.groupsFile);
 const v1 = loadVersion(config.paths.cutoverDir, 'v0001');
 const v2 = loadVersion(config.paths.cutoverDir, 'v0002');
 const v3 = loadVersion(config.paths.cutoverDir, 'v0003');
+// Units and owners of the roster group set R that v0003 returns to legacy.
+const R_UNITS = [
+  'identity.credential',
+  'identity.group_account',
+  'identity.login_state',
+  'identity.membership',
+  'identity.oauth_client',
+  'identity.oauth_token',
+  'identity.redirect',
+  'identity.user_account',
+  'identity.user_address',
+  'identity.user_device',
+  'identity.user_interest',
+  'identity.user_strike',
+  'identity.user_tag',
+  'people.person',
+  'people.person_archive',
+  'people.user_address',
+  'people.user_interest',
+  'people.user_tag',
+  'timesheets.blackout',
+];
+const R_OWNERS = ['identity', 'people', 'timesheets'];
 // Free text no redaction pattern masks, so it reaches a log only if interpolated there.
 const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
+/** Stream the mocked streamChangedEntries returns; the transfer must receive this very stream. */
+const CHANGED_ENTRIES = (async function* () {})();
+
 /** A person-archive event timesheets dead-lettered without applying its blackouts. */
 const DEAD_LETTERED: DeadLetteredDelivery = {
   eventId: 'de391048-ceeb-4696-98f5-e2f9df258e18',
@@ -156,14 +191,14 @@ type Call = [string, ...unknown[]];
 function harness(opts: {
   active: string;
   restartCmd?: string;
-  inflight?: CutoverStatus['inflight'];
-  instances?: CutoverStatus['instances'];
+  inflight?: CutoverStatusV2['inflight'];
+  instances?: CutoverStatusV2['instances'];
   stateDir?: string;
   clusterCommands?: number;
 }) {
   const calls: Call[] = [];
   let now = Date.parse('2026-06-30T12:00:00.000Z');
-  const status: CutoverStatus = {
+  const status: CutoverStatusV2 = {
     tableVersion: opts.active,
     previous: null,
     epoch: 10,
@@ -198,13 +233,14 @@ function harness(opts: {
     }),
     awaitInflightDrained: vi.fn(async (routes: readonly string[]) => {
       calls.push(['awaitInflight', routes.length]);
-      const live = new Set(status.instances.filter((i) => i.live).map((i) => i.instanceId));
-      return { orphans: status.inflight.filter((row) => !live.has(row.instanceId)) };
+      return { orphans: status.inflight.filter((row) => row.orphaned) };
     }),
     clearOrphans: vi.fn(async (req: { side: string; instanceIds?: string[] }) => {
       calls.push(['clearOrphans', req.side, req]);
       const before = status.inflight.length;
-      status.inflight = status.inflight.filter((row) => row.side !== req.side || !(req.instanceIds ?? []).includes(row.instanceId));
+      status.inflight = status.inflight.filter(
+        (row) => row.side !== req.side || !row.orphaned || !(req.instanceIds ?? []).includes(row.instanceId),
+      );
       return { cleared: before - status.inflight.length };
     }),
   };
@@ -400,7 +436,7 @@ beforeEach(() => {
   });
   m.unfreezeLegacyBound.mockResolvedValue(undefined);
   m.sendReloadRequest.mockResolvedValue({ status: 200 });
-  m.diffSnapshotManifests.mockResolvedValue({ toTransfer: [{ siteId: 'a', path: 'p' }] });
+  m.streamChangedEntries.mockImplementation(() => CHANGED_ENTRIES);
   m.transferFiles.mockResolvedValue({ transferred: 1, unchanged: 0 });
   m.importWindow.mockResolvedValue({ rowsImported: 2, perOwner: {}, objectsTransferred: 0, objectsRemoved: [], touchedContent: false, writePositions: new Map() });
   m.removeDroppedObjects.mockResolvedValue({ deleted: 2 });
@@ -433,7 +469,7 @@ describe('deriveTransitionPlan', () => {
     expect(plan.returnsToLegacy).toBe(false);
     expect(plan.siteMonitorEntryMoves).toBe(true);
     expect(plan.exportJobsWriteT).toBe(true);
-    expect(plan.contentToTarget).toBe(false);
+    expect(plan.contentToTarget).toBe(true);
     const routes = new Set(v1.entries.map((e) => e.route));
     expect(plan.frozenRoutes.every((r) => routes.has(r))).toBe(true);
     expect(plan.frozenRoutes.length).toBeGreaterThan(0);
@@ -444,14 +480,16 @@ describe('deriveTransitionPlan', () => {
     const plan = deriveTransitionPlan(v2, v3, groups, catalog);
     const R = computeRollbackSet({ config });
     expect(plan.setT).toEqual(R.units);
+    expect(plan.setT).toEqual(R_UNITS);
     const groupOf = (unit: string): string => groups.groups.find((g) => g.units.includes(unit))!.id;
     const targetInV2 = (unit: string): boolean => v2.groupAuthority[groupOf(unit)] === 'target';
     expect(plan.toLegacy).toEqual(R.units.filter(targetInV2));
-    expect(plan.toLegacy).toEqual(expect.arrayContaining(['people.person_archive', 'timesheets.blackout']));
+    expect(plan.toLegacy).toEqual(plan.setT);
     expect(plan.toTarget).toEqual([]);
     expect(plan.heldLegacy).toEqual(R.units.filter((u) => !targetInV2(u)));
     expect(plan.returnsToLegacy).toBe(true);
     expect(plan.owners).toEqual([...new Set(R.units.map((u) => catalog.ownerOf(u)))].sort());
+    expect(plan.owners).toEqual(R_OWNERS);
     expect(plan.siteMonitorEntryMoves).toBe(false);
     expect(plan.exportJobsWriteT).toBe(false);
     expect(plan.entriesChanged.every((e) => e.entry.units.some((u) => plan.setT.includes(u)) || e.entry.kind !== 'write')).toBe(true);
@@ -517,7 +555,7 @@ describe('planTransition preconditions', () => {
     await expect(planTransition(h1.ctx, 'v0002')).rejects.toMatchObject({ code: 'opt2-sync-unavailable' });
     // Returning to legacy needs no opt2_sync check.
     const plan = await planTransition(h.ctx, 'v0003');
-    expect(plan.toLegacy.length).toBe(2);
+    expect(plan.toLegacy).toEqual(R_UNITS);
   });
 
   const UNSAFE_CLUSTER = { ...SAFE_CLUSTER, broadcastClusterCommands: true, broadcastingOff: false, clusterSafe: false };
@@ -546,7 +584,7 @@ describe('planTransition preconditions', () => {
     const error = await planTransition(h.ctx, to).catch((e: unknown) => e);
     expect(error).toMatchObject({ name: 'TransitionPreconditionError', code: 'cluster-unsafe', statusCode: 409 });
     const { message } = error as Error;
-    expect(message).toMatch(/^content\.variation_targeting cannot become target-authoritative while cluster reload commands may reach legacy: /);
+    expect(message).toMatch(/^content\.approval_action, (content\.[a-z_]+, )+content\.variation_targeting cannot become target-authoritative while cluster reload commands may reach legacy: /);
     expect(message).toContain(refusal);
     // Step 1 refuses the same way, before it takes any lease.
     const stepOne = await runTransitionStep(h.deps, newRecord(from, to), 1).catch((e: unknown) => e);
@@ -562,25 +600,27 @@ describe('full run v0002 -> v0003', () => {
     const names = h.calls.map((c) => c[0]);
     const idx = (n: string) => names.indexOf(n);
     expect(idx('pauseFor')).toBeLessThan(idx('freeze'));
-    expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: ['identity', 'people', 'timesheets'], consumersWriting: record.plan?.setT }));
+    expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: R_OWNERS, consumersWriting: record.plan?.setT }));
     const gateCalls = h.calls.filter((c) => c[0] === 'gate');
-    expect(gateCalls.slice(0, 2).map((c) => c[2])).toEqual(['close', 'close']);
-    expect(gateCalls.slice(0, 2).map((c) => c[4])).toEqual([null, null]);
+    expect(gateCalls.slice(0, R_OWNERS.length).map((c) => c[2])).toEqual(R_OWNERS.map(() => 'close'));
+    expect(gateCalls.slice(0, R_OWNERS.length).map((c) => c[4])).toEqual(R_OWNERS.map(() => null));
     expect(idx('freeze')).toBeLessThan(idx('gate'));
     // Intents are persisted before the calls an abort must undo.
     const persistedBefore = (call: number) => h.calls.slice(0, call).filter((c) => c[0] === 'persist').at(-1)?.[1] as TransitionProgress;
     expect(persistedBefore(idx('freeze')).freezeRequested).toBe(true);
     expect(persistedBefore(idx('gate')).closedGates.map((g) => g.unit)).toContain((gateCalls[0]?.[3] as string[])[0]);
     expect(idx('awaitProjection')).toBeLessThan(idx('activate'));
-    expect(h.calls.find((c) => c[0] === 'awaitProjection')?.[1]).toMatchObject({ owners: ['people', 'timesheets'], timeoutMs: config.projection.defaultAwaitTimeoutMs });
-    expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'rollback-before', legacySource: 'live', database: 'muradb_c62', units: record.plan?.setT }));
+    expect(h.calls.find((c) => c[0] === 'awaitProjection')?.[1]).toMatchObject({ owners: R_OWNERS, timeoutMs: config.projection.defaultAwaitTimeoutMs });
+    expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'rollback-before', legacySource: 'live', database: 'muradb_c62', units: R_UNITS }));
+    // v0002 holds every group of R target, so no unit is held legacy and none needs the final snapshot.
+    expect(m.takeSnapshot).not.toHaveBeenCalled();
     const opens = gateCalls.filter((c) => c[2] === 'open');
-    expect(opens.map((c) => c[4])).toEqual(['legacy', 'legacy']);
+    expect(opens.map((c) => c[4])).toEqual(R_OWNERS.map(() => 'legacy'));
     expect(names.lastIndexOf('gate')).toBeGreaterThan(idx('activate'));
     expect(idx('unfreeze')).toBeGreaterThan(names.lastIndexOf('gate'));
     expect(h.calls.find((c) => c[0] === 'restoreToLegacy')?.[1]).toEqual({ siteMonitorUnits: record.plan?.siteMonitorUnits, siteMonitorEntryMoves: false });
     expect(m.releaseLeases).toHaveBeenCalledWith(h.ctx, record.transitionId);
-    expect(record.progress.rebaselineRequired).toEqual(['people.person_archive', 'timesheets.blackout']);
+    expect(record.progress.rebaselineRequired).toEqual(R_UNITS);
     expect(record.progress.closedGates).toEqual([]);
     expect(record.progress.freezeRequested).toBe(false);
     expect(record.progress.reconciliation).toEqual({ point: 'rollback-before', result: 'zero-difference', differences: 0, reportPath: '/r/reconciliation/rollback-before.json' });
@@ -667,7 +707,8 @@ describe('full run v0001 -> v0002', () => {
     expect(h.deps.sleep).toHaveBeenCalled();
     expect(m.takeSnapshot).toHaveBeenCalledWith(h.ctx, { kind: 'transition', holderId: record.transitionId });
     expect(m.restartFeedFor).toHaveBeenCalledWith(h.ctx, { units: record.plan?.toTarget, snapshotSeq: 7 });
-    expect(m.transferFiles).not.toHaveBeenCalled();
+    expect(m.streamChangedEntries).toHaveBeenCalledWith(h.ctx, 3, 7);
+    expect(m.transferFiles).toHaveBeenCalledWith(h.ctx, 7, { entries: CHANGED_ENTRIES });
     expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'post-cutover', snapshotSeq: 7 }));
     expect(h.scheduler.handOffSiteMonitorToTarget).toHaveBeenCalledTimes(1);
     expect(h.scheduler.handOffSurveysToTarget).toHaveBeenCalledTimes(1);
@@ -715,9 +756,9 @@ describe('full run v0001 -> v0002', () => {
     const plan = { ...record.plan!, contentToTarget: true, toTarget: [...record.plan!.toTarget, 'content.file'], setT: [...record.plan!.setT, 'content.file'] };
     const out = await runTransitionStep(h.deps, { ...record, plan, lastStep: 5 }, 6);
     expect(h.startupGuard.ensureEmpty).toHaveBeenCalledWith({ holderId: record.transitionId, exceptRoutes: plan.frozenRoutes, onFrozen: expect.any(Function) });
-    expect(m.diffSnapshotManifests).toHaveBeenCalledWith(h.ctx, 3, 7);
-    expect(m.transferFiles).toHaveBeenCalledWith(h.ctx, 7, { only: [{ siteId: 'a', path: 'p' }] });
-    expect(m.removeDroppedObjects).toHaveBeenCalledWith(h.ctx, await m.diffSnapshotManifests.mock.results[0]?.value);
+    expect(m.streamChangedEntries).toHaveBeenCalledWith(h.ctx, 3, 7);
+    expect(m.transferFiles).toHaveBeenCalledWith(h.ctx, 7, { entries: CHANGED_ENTRIES });
+    expect(m.removeDroppedObjects).toHaveBeenCalledWith(h.ctx, { from: 3, to: 7 });
     const firstCall = (fn: { mock: { invocationCallOrder: number[] } }): number => fn.mock.invocationCallOrder[0] ?? 0;
     expect(firstCall(m.transferFiles)).toBeLessThan(firstCall(m.removeDroppedObjects));
     expect(firstCall(m.removeDroppedObjects)).toBeLessThan(firstCall(m.restartFeedFor));
@@ -756,7 +797,8 @@ describe('reconciliation evidence around activation', () => {
     const h = harness({ active: 'v0001' });
     const record = await runAll(h, newRecord('v0001', 'v0002'), 5);
     const out = await runTransitionStep(h.deps, record, 6);
-    expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'post-cutover', legacySource: 'live', snapshotSeq: 7, units: record.plan?.setT }));
+    const units = [...(record.plan?.setT ?? []), 'content.file_object'].sort();
+    expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'post-cutover', legacySource: 'live', snapshotSeq: 7, units }));
     expect(m.writeReconciliationReport).not.toHaveBeenCalled();
     expect(out.progress.reconciliation).toBeUndefined();
     expect(out.progress.preActivationReconciliation).toEqual({ result: 'zero-difference', differences: 0, unitsWithDifferences: 0, tableVersion: 'v0001', snapshotSeq: 7, differingEntries: [] });
@@ -995,7 +1037,7 @@ describe('aborts', () => {
 });
 
 describe('orphans and export jobs', () => {
-  const orphan = { instanceId: 'gw-dead', route: '', side: 'legacy' as const, count: 1, oldestStartedAt: '2026-06-30T11:59:00Z' };
+  const orphan = { instanceId: 'gw-dead', route: '', side: 'legacy' as const, count: 1, oldestStartedAt: '2026-06-30T11:59:00Z', orphaned: true };
   const dead = { instanceId: 'gw-dead', seenEpoch: 5, heartbeatAt: '2026-06-30T11:00:00Z', live: false };
   const live = { instanceId: 'gw-1', seenEpoch: 10, heartbeatAt: '2026-06-30T12:00:00Z', live: true };
 
@@ -1033,6 +1075,30 @@ describe('orphans and export jobs', () => {
     expect(after5.progress.targetOrphansCleared).toBe(1);
     const names = h.calls.map((c) => c[0]);
     expect(names.lastIndexOf('gate')).toBeLessThan(names.lastIndexOf('clearOrphans'));
+  });
+
+  it("hands a live instance's abandoned target write from step 3 to step 5, whose gates-closed evidence clears it", async () => {
+    const plan = deriveTransitionPlan(v2, v3, groups, catalog);
+    const abandoned = { ...orphan, side: 'target' as const, route: plan.frozenRoutes[0]!, instanceId: 'gw-1' };
+    const running = { ...abandoned, orphaned: false, route: 'admin:other' };
+    const h = harness({ active: 'v0002', inflight: [abandoned, running], instances: [live] });
+
+    const after3 = await runAll(h, newRecord('v0002', 'v0003'), 3);
+    expect(m.restartLegacy).not.toHaveBeenCalled();
+    expect(h.gateway.clearOrphans).not.toHaveBeenCalled();
+    expect(after3.progress.targetOrphans).toEqual([abandoned]);
+
+    const after5 = await runAll(h, after3, 5);
+    const targetClear = h.calls.find((c) => c[0] === 'clearOrphans' && c[1] === 'target')?.[2];
+    expect(targetClear).toMatchObject({
+      side: 'target',
+      evidence: { kind: 'gates-closed', units: plan.setT.filter((unit) => !plan.heldLegacy.includes(unit)) },
+      instanceIds: ['gw-1'],
+    });
+    expect(after5.progress.targetOrphansCleared).toBe(1);
+    const names = h.calls.map((c) => c[0]);
+    expect(names.lastIndexOf('gate')).toBeLessThan(names.lastIndexOf('clearOrphans'));
+    expect((await h.gateway.status()).inflight).toEqual([running]);
   });
 
   it('a failed restart aborts and orphans left after a restart abort', async () => {
@@ -1073,7 +1139,14 @@ describe('controlled legacy restart of step 3', () => {
   /** A v0002 -> v0003 transition after step 2 with an orphaned legacy write, and the content units `target`-authoritative under v0002. */
   async function atStep3(orphaned = true) {
     const plan = deriveTransitionPlan(v2, v3, groups, catalog);
-    const row = { instanceId: 'gw-dead', route: plan.frozenRoutes[0]!, side: 'legacy' as const, count: 1, oldestStartedAt: '2026-06-30T11:59:00Z' };
+    const row = {
+      instanceId: 'gw-dead',
+      route: plan.frozenRoutes[0]!,
+      side: 'legacy' as const,
+      count: 1,
+      oldestStartedAt: '2026-06-30T11:59:00Z',
+      orphaned: true,
+    };
     const h = harness({ active: 'v0002', restartCmd: 'restart.sh', inflight: orphaned ? [row] : [], instances: [live, dead] });
     const record = await runAll(h, newRecord('v0002', 'v0003'), 2);
     const authority = await currentAuthority({ gateway: h.gateway, config: config.paths });

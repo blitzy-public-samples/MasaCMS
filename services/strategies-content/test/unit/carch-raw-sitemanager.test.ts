@@ -20,7 +20,16 @@ import type { ContentRouteContext } from '../../src/routes/index.js';
 import { SESSION_EFFECTS_HEADER, adminCsrf, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
 import type { RawActionResult } from '../../src/routes/v1/raw.js';
-import { TEST_CLOCK, buildContentApp, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import {
+  SEEDED_SITE_FLAGS,
+  SITE_CONFIG_FLAGS_PATH,
+  TEST_CLOCK,
+  buildContentApp,
+  siteConfigFlagsAnswer,
+  userHeaders,
+  type ContentTestApp,
+  type SiteConfigFlagValues,
+} from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 type RawAction = keyof typeof carchRawActions;
@@ -104,6 +113,8 @@ let last: { out?: RawActionResult; error?: unknown } = {};
 let versions: Json[] = [];
 let stats: Json[] = [];
 const calls: ServiceRequest[] = [];
+/** programs-sites' `$.siteConfig` flags of the site. */
+let siteFlags: SiteConfigFlagValues = SEEDED_SITE_FLAGS;
 const consumed: CsrfConsumeRequest[] = [];
 const identity = { adminState: {} as Json, user: { userID: USER_ID } as Json, userStatus: 200, csrfValid: true };
 
@@ -195,6 +206,7 @@ beforeAll(async () => {
   const request = (req: ServiceRequest): Promise<ServiceResponse> => {
     calls.push(req);
     const answer = (status: number, body: unknown): Promise<ServiceResponse> => Promise.resolve({ status, headers: {}, body });
+    if (req.service === 'programs-sites' && req.method === 'POST' && req.path === SITE_CONFIG_FLAGS_PATH) return Promise.resolve(siteConfigFlagsAnswer(siteFlags)(req));
     if (req.service === 'identity' && req.path === '/v1/sessions/current/admin-state') return answer(200, req.method === 'GET' ? identity.adminState : {});
     if (req.service === 'identity' && req.path === '/v1/sessions/current') return answer(identity.userStatus, { user: identity.user });
     if (req.service === 'identity' && req.path === '/v1/csrf/tokens') {
@@ -219,6 +231,7 @@ beforeEach(() => {
   calls.length = 0;
   consumed.length = 0;
   last = {};
+  siteFlags = SEEDED_SITE_FLAGS;
   Object.assign(identity, { adminState: {}, user: { userID: USER_ID, fname: 'Ada', lname: 'Admin', email: 'ada@example.com' }, userStatus: 200, csrfValid: true });
   seedWorld();
 });
@@ -567,6 +580,17 @@ describe('loadsitemanager', () => {
     expect(calls.some((call) => call.method === 'POST' && call.path === '/v1/sessions/current/admin-state')).toBe(false);
   });
 
+  it.each([
+    [1, true],
+    [0, false],
+  ] as const)("offers the comments sort as the site's programs-sites hasComments %i says", async (hasComments, offered) => {
+    siteFlags = { ...SEEDED_SITE_FLAGS, hasComments };
+    const { res } = await raw('loadsitemanager', { topid: PAGE, moduleid: SITE_MANAGER, sortby: '', startrow: '1' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.body.includes('<option value=\\"comments\\"')).toBe(offered);
+    expect(calls.filter((call) => call.service === 'programs-sites')).toEqual([expect.objectContaining({ path: SITE_CONFIG_FLAGS_PATH, json: { siteIds: [SITE] } })]);
+  });
+
   it('reads a later page as a SQL LIMIT/OFFSET window and looks up kids and verdicts of its printed rows alone', async () => {
     const [second, third, fourth, fifth] = [2, 3, 4, 5].map((n) => `A1000000-001${n}-4A5B-8C7D9E0F1A2B3C4D`) as [string, string, string, string];
     for (const [i, contentid] of [second, third, fourth, fifth].entries()) {
@@ -840,6 +864,18 @@ describe('loadsiteflat', () => {
     expect(res.body.indexOf(`>${first}`)).toBeGreaterThan(0);
     expect(res.body.indexOf(`>${first}`)).toBeLessThan(res.body.indexOf(`>${second}`));
     if (report !== 'mydrafts') expect(res.body).toContain('Pending');
+  });
+
+  it.each([
+    ['an expiration sort, which no extended attribute backs, over more than one row', { report: 'expires', sortby: 'expiration' }],
+    ['a due-date view whose rows tie on both dates', { report: 'myapprovals', sortby: 'duedate' }],
+  ])('halts %s', async (_label, form) => {
+    const draft = (contentid: string, contenthistid: string) => ({ contentid, contenthistid, lastupdate: DRAFTED_AT, publishdate: LATER, displaystart: PUBLISHED_AT, approvalstatus: 'Pending' });
+    t.db.respond(/^SELECT \* FROM \(SELECT (DISTINCT )?draft\.contenthistid/, [draft(PAGE, DRAFT_HIST), draft(KID, KID_HIST)]);
+    t.db.respond(FEED, [feedRow(PAGE, PAGE_HIST), feedRow(KID, KID_HIST)]);
+    const { res, error } = await raw('loadsiteflat', form);
+    expect(res.statusCode).toBe(503);
+    expect(error).toMatchObject({ reason: 'feed-extended-sort-unordered' });
   });
 
   it.each([

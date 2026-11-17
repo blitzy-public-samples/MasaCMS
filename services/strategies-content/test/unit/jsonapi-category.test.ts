@@ -367,6 +367,16 @@ describe.skipIf(!(await pgAvailable()))('JSON API category and contentCategoryAs
       expect(item).toMatchObject({ categoryid: OWN_A.categoryid, name: 'Own Topic', isnew: 0, siteid: '' });
     });
 
+    // A blank row (queryRowToStruct before row 1) sets '' on a new bean: setIsFeatureable keeps init's 1 for it.
+    it.each([
+      ['every value', {}, { datecreated: '', isactive: '', links: expect.objectContaining({ self: `${EP_A}/category/`, crumbs: `${EP_A}/category//crumbs` }) }],
+      ['a field list', { fields: 'name,isfeatureable' }, {}],
+    ])('findAll before the first record answers the beans of blank rows with %s', async (_label, url, values) => {
+      const data = wire('findAll', await onCategory('findAll', { url: { itemsPerPage: '2', pageIndex: '0', ...url } }));
+      const item = { id: '', categoryid: '', name: '', siteid: '', isfeatureable: 1, isnew: 0, entityname: 'category', ...values };
+      expect(data).toMatchObject({ totalitems: 1, pageindex: 0, startindex: -1, endindex: 0, items: [item, item] });
+    });
+
     it('findQuery rejects a `notes` filter as invalidParameters', async () => {
       await expect(onCategory('findQuery', { url: { notes: 'n1' } })).rejects.toEqual(
         new LegacyApiError('invalidParameters'),
@@ -532,6 +542,14 @@ describe.skipIf(!(await pgAvailable()))('JSON API category and contentCategoryAs
         [H2, 'Own Topic'],
       ]);
     });
+
+    it('findAll before the first record answers a blank row\'s bean: every column \'\' over the init values, no id', async () => {
+      const data = wire('findAll', await onAssign('findAll', { url: { itemsPerPage: '1', pageIndex: '0' } }));
+      const item = { contenthistid: '', contentid: '', categoryid: '', isfeature: '', categoryname: '', isnew: 0, entityname: 'contentCategoryAssign' };
+      expect(data).toMatchObject({ totalitems: 2, pageindex: 0, items: [item] });
+      expect((data['items'] as Struct[])[0]).not.toHaveProperty('id');
+    });
+
 
     it.each([
       ['findQuery', { contenthistid: H1 }],

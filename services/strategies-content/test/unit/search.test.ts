@@ -166,7 +166,8 @@ function seededDb(): RecordingDb {
 
 const depsOf = (db: RecordingDb): SearchDeps => ({ db, repository: createContentRepository({ clock: TEST_CLOCK, schema: db.schema }), clock: TEST_CLOCK });
 
-const titles = (rows: ReadonlyArray<{ title?: unknown }>): unknown[] => rows.map((row) => row.title);
+/** The `title` of each row; a projection or blank row may hold none. */
+const titles = (rows: readonly object[]): unknown[] => rows.map((row) => (row as { title?: unknown }).title);
 
 describe('privateSearch (carch.search)', () => {
   let db: RecordingDb;
@@ -429,11 +430,26 @@ describe('findContentQuery (JSON API findQuery)', () => {
   it.each<[string, Row, string, string[], unknown]>([
     ['one item a page, page 2', { itemsPerPage: '1', pageIndex: '2' }, 'itemsPerPage=1&pageIndex=2', ['Page One'], { recordCount: 2, nextN: 1, pageIndex: 2 }],
     ['every item on one page', { itemsPerPage: '*' }, 'itemsPerPage=*', ['Page Two', 'Page One'], { recordCount: 2, nextN: 2, pageIndex: 1 }],
+    ['the blank row of page 0', { itemsPerPage: '1', pageIndex: '0' }, 'itemsPerPage=1&pageIndex=0', [''], { recordCount: 2, nextN: 1, pageIndex: 0 }],
+    ['the blank rows of a negative page', { itemsPerPage: '2', pageIndex: '-3' }, 'itemsPerPage=2&pageIndex=-3', ['', ''], { recordCount: 2, nextN: 2, pageIndex: -3 }],
+    ['a page from row 0', { itemsPerPage: '2', pageIndex: '0.75' }, 'itemsPerPage=2&pageIndex=0.75', ['', 'Page Two'], { recordCount: 2, nextN: 2, pageIndex: 0.75 }],
+    ['a page whose index rounds past the last row', { itemsPerPage: '5', pageIndex: '1.2' }, 'itemsPerPage=5&pageIndex=1.2', ['Page Two', ''], { recordCount: 2, nextN: 5, pageIndex: 1.2 }],
+    ['no row for a negative page size', { itemsPerPage: '-1' }, 'itemsPerPage=-1', [], { recordCount: 2, nextN: -1, pageIndex: 1 }],
   ])('pages by the URL scope without filtering by it: %s', async (_name, url, queryString, expected, paging) => {
     db.respond(FEED_ROWS, BY_TITLE_DESC);
     const result = await findContentQuery(deps, ADMIN_A, request({ sort: '-title', ...url }, `sort=-title&${queryString}`));
     expect('rows' in result && [titles(result.rows), result.paging]).toEqual([expected, paging]);
     expect(ran(FEED_ROWS)[0]?.sql).not.toMatch(/itemsperpage|pageindex/i);
+  });
+
+  it.each<[string, (row: Row) => Row, string, number[]]>([
+    ['read by contenthistid after a blank row', (row) => row, '0.75', []],
+    ['read by contentid after a blank row, whose page query is of site \'\'', ({ contenthistid: _omitted, ...row }) => row, '0.75', [1]],
+    ['whose row lies past getPageIDList', (row) => row, '1.75', [0]],
+  ])('marks the rows whose content bean misses the page query: %s', async (_name, columns, pageIndex, misses) => {
+    db.respond(FEED_ROWS, BY_TITLE_DESC.map(columns));
+    const result = await findContentQuery(deps, ADMIN_A, request({ sort: '-title', itemsPerPage: '2', pageIndex }, `sort=-title&itemsPerPage=2&pageIndex=${pageIndex}`));
+    expect('rows' in result && [...result.misses]).toEqual(misses);
   });
 
   it('answers countOnly with the count query alone', async () => {

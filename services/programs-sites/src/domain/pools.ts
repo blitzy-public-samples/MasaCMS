@@ -3,7 +3,7 @@ import type { SiteChangedPayload } from '@opt2/platform/tenancy';
 import { getSiteText, readBean, type SiteBean, type SiteRow } from '../legacy/site-fields.js';
 
 // listToArray(value, chr(13)&chr(10)): each character is a delimiter on its own, and empty elements are dropped.
-const LINE_BREAKS = /[\r\n]+/;
+export const LINE_BREAKS = /[\r\n]+/;
 
 // CFML truth of a bean flag: true/yes, false/no or a number (the setters store numeric text).
 function cfBoolean(value: string): boolean {

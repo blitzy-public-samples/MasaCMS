@@ -225,6 +225,14 @@ describe('createMigrationContext', () => {
     expect(ports.legacy.close).not.toHaveBeenCalled();
   });
 
+  it('reads the cut-over versions and groups.json from the OPT2_CUTOVER_DIR its environment sets', async () => {
+    const cutoverDir = path.join(stateDir, 'cutover');
+    const ctx = await createMigrationContext({ env: envWith({ OPT2_CUTOVER_DIR: cutoverDir }), ...injectedPorts() });
+
+    expect(ctx.config.paths).toEqual({ ...loadConfig().paths, cutoverDir, groupsFile: path.join(cutoverDir, 'groups.json') });
+    await ctx.close();
+  });
+
   it('memoises clientAs per caller and answers the migration caller with the context client', async () => {
     const ports = injectedPorts();
     const ctx = await createMigrationContext({ env: envWith(), ...ports });

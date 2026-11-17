@@ -10,6 +10,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import {
   withMetadata,
+  type CommitCallback,
   type MetadataTx,
   type QueryConfig,
   type QueryResult,
@@ -20,6 +21,7 @@ import type { ServiceClient } from '@opt2/platform/service-kit';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { createSessionBarrier } from '../../src/dispatcher/barrier.js';
 import {
+  JAR_PURGE_BATCH,
   absorbLegacySetCookies,
   createLegacyJar,
   isDeletedJarCookie,
@@ -32,6 +34,7 @@ import {
   type JarRow,
   type JarUpsert,
   type LegacyJar,
+  type LegacyJarOptions,
 } from '../../src/session/jar.js';
 
 const NOW = new Date(Date.UTC(2026, 5, 30, 12));
@@ -251,6 +254,8 @@ interface JarRecord {
   hydrated_epoch: string | null;
   updated_at: Date;
   identity_end_pending_at: Date | null;
+  /** Returned by the upsert alone: whether it created the row. */
+  inserted?: boolean | undefined;
 }
 
 interface RecordedQuery {
@@ -266,6 +271,7 @@ interface RecordedTransaction {
 
 /** TenantDb double: metadata transactions record each statement and answer with the queued result. */
 interface FakeDb {
+  /** Its commit callbacks run once a transaction commits, outside it, as the platform runner runs them. */
   db: TenantDb;
   queries: RecordedQuery[];
   transactions: RecordedTransaction[];
@@ -287,6 +293,7 @@ function fakeDb(): FakeDb {
     async withMetadata<T>(fn: (tx: MetadataTx) => Promise<T>): Promise<T> {
       const transaction: RecordedTransaction = { queries: [], outcome: 'open' };
       transactions.push(transaction);
+      const commits: CommitCallback[] = [];
       const tx: MetadataTx = {
         kind: 'metadata',
         schema: DOUBLE_SCHEMA,
@@ -298,18 +305,20 @@ function fakeDb(): FakeDb {
           const result = special === undefined ? next : { rows: special, rowCount: special.length };
           return Promise.resolve({ command: 'SELECT', oid: 0, fields: [], ...result } as unknown as QueryResult<R>);
         },
-        onCommit: () => {
-          throw new Error('the jar registers no commit callbacks');
+        onCommit: (cb) => {
+          commits.push(cb);
         },
       };
+      let result: T;
       try {
-        const result = await fn(tx);
+        result = await fn(tx);
         transaction.outcome = 'commit';
-        return result;
       } catch (err) {
         transaction.outcome = 'rollback';
         throw err;
       }
+      for (const cb of commits) await cb();
+      return result;
     },
     end: () => Promise.resolve(),
   };
@@ -409,11 +418,12 @@ describe('createLegacyJar over a TenantDb double', () => {
   /** Asserts the merge-upsert statement of `input`. */
   function expectUpsert(statement: RecordedQuery | undefined, input: JarUpsert): void {
     expect(statement?.text).toContain(
-      `INSERT INTO ${TABLE} AS jar (${UPSERT_COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())`,
+      `INSERT INTO ${TABLE} AS jar (${UPSERT_COLUMNS}, last_active_at) VALUES ($1, $2, $3::jsonb, $4, $5, now(), now())`,
     );
     expect(statement?.text).toContain('ON CONFLICT (session_id) DO UPDATE SET');
     expect(statement?.text).toContain('cookies = jar.cookies || EXCLUDED.cookies');
-    expect(statement?.text).toContain(`RETURNING ${COLUMNS}`);
+    expect(statement?.text).toContain('last_active_at = EXCLUDED.last_active_at');
+    expect(statement?.text).toContain(`RETURNING ${COLUMNS}, (xmax = 0) AS inserted`);
     expect(statement?.values).toEqual([
       input.sessionId,
       input.legacySessionId,
@@ -482,6 +492,38 @@ describe('createLegacyJar over a TenantDb double', () => {
       },
     ]);
   });
+
+  it.each<[string, Date | undefined, Date | null]>([
+    ['whatever the row version', undefined, null],
+    ['only at the row version read', UPDATED_AT, UPDATED_AT],
+  ])(
+    'clears the pending identity end %s under the session lock in one transaction, first removing a jar held only for it',
+    async (_label, updatedAt, version) => {
+      await jar.clearIdentityEndPending(SESSION_ID, updatedAt);
+      expect(fake.transactions).toEqual([
+        {
+          queries: [
+            lockOf(SESSION_ID),
+            {
+              text:
+                `DELETE FROM ${TABLE} WHERE session_id = $1 AND identity_end_pending_at IS NOT NULL ` +
+                "AND legacy_session_id IS NULL AND cookies = '{}'::jsonb AND hydrated_epoch IS NULL " +
+                'AND ($2::timestamp IS NULL OR updated_at = $2)',
+              values: [SESSION_ID, version],
+            },
+            {
+              text:
+                `UPDATE ${TABLE} SET identity_end_pending_at = NULL, updated_at = now() ` +
+                'WHERE session_id = $1 AND identity_end_pending_at IS NOT NULL AND ($2::timestamp IS NULL OR updated_at = $2)',
+              values: [SESSION_ID, version],
+            },
+          ],
+          outcome: 'commit',
+        },
+      ]);
+    },
+  );
+
 
   it.each<[string, Date | null, JarRow]>([
     ['without', null, ROW],
@@ -624,6 +666,73 @@ describe('createLegacyJar over a TenantDb double', () => {
     expect(fake.transactions).toHaveLength(1);
     expect(fake.transactions[0]?.outcome).toBe('rollback');
     expect(fake.transactions[0]?.queries[0]).toEqual(lockOf(SESSION_ID));
+  });
+
+  it.each(outcomes)(
+    'marks activity in one transaction without a lock, leaving updated_at, and answers $expected for a row count of $rowCount',
+    async ({ rowCount, expected }) => {
+      fake.answer([], rowCount);
+      await expect(jar.markActive(SESSION_ID)).resolves.toBe(expected);
+      expect(fake.transactions).toEqual([
+        {
+          queries: [{ text: `UPDATE ${TABLE} SET last_active_at = now() WHERE session_id = $1`, values: [SESSION_ID] }],
+          outcome: 'commit',
+        },
+      ]);
+    },
+  );
+
+  const IDLE_AFTER_MS = 10_920_000;
+  const BARRIER_TABLE = `${DOUBLE_SCHEMA}.session_barrier`;
+  const PURGE: RecordedQuery = {
+    text:
+      `WITH idle AS ( SELECT session_id FROM ${TABLE} ` +
+      'WHERE last_active_at < now() - make_interval(secs => $1) ORDER BY last_active_at, session_id LIMIT $2 ' +
+      'FOR UPDATE SKIP LOCKED ), purged AS ( ' +
+      `DELETE FROM ${TABLE} AS jar USING idle WHERE jar.session_id = idle.session_id ), positions AS ( ` +
+      `SELECT session_id, owner FROM ${BARRIER_TABLE} WHERE session_id IN (SELECT session_id FROM idle) AND pending = 0 ` +
+      'AND recorded_at < now() - make_interval(secs => $1) FOR UPDATE SKIP LOCKED ) ' +
+      `DELETE FROM ${BARRIER_TABLE} AS b USING positions AS p WHERE b.session_id = p.session_id AND b.owner = p.owner`,
+    values: [IDLE_AFTER_MS / 1000, JAR_PURGE_BATCH],
+  };
+
+  it('purges up to 100 idle jars in a transaction of its own once a write that created a jar commits', async () => {
+    const purging = createLegacyJar(fake.db, { purgeIdleAfterMs: IDLE_AFTER_MS });
+    fake.answer([{ ...RECORD, inserted: true }]);
+    await expect(purging.upsert(INPUT)).resolves.toEqual(ROW);
+    expect(JAR_PURGE_BATCH).toBe(100);
+    expect(fake.transactions).toHaveLength(2);
+    expect(fake.transactions[0]?.outcome).toBe('commit');
+    expectUpsert(fake.transactions[0]?.queries[1], INPUT);
+    expect(fake.transactions[1]).toEqual({ queries: [PURGE], outcome: 'commit' });
+  });
+
+  it('queues one purge for a locked section however many jars it creates', async () => {
+    const purging = createLegacyJar(fake.db, { purgeIdleAfterMs: IDLE_AFTER_MS });
+    fake.answer([{ ...RECORD, inserted: true }]);
+    fake.answerFor('WITH kept AS', []);
+    await purging.withSessionLock(SESSION_ID, async (locked) => {
+      await locked.upsert(INPUT);
+      await locked.rebind({ ...INPUT, sessionId: SESSION_ID });
+    });
+    expect(fake.transactions.map((transaction) => transaction.queries.filter((query) => query.text === PURGE.text).length)).toEqual([0, 1]);
+  });
+
+  it.each<[string, LegacyJarOptions, boolean | undefined, boolean]>([
+    ['a write that updated a stored jar', { purgeIdleAfterMs: IDLE_AFTER_MS }, false, false],
+    ['a store without an idle limit', {}, true, false],
+    ['a section that rolled its created jar back', { purgeIdleAfterMs: IDLE_AFTER_MS }, true, true],
+  ])('purges nothing after %s', async (_label, options, inserted, rollsBack) => {
+    fake.answer([{ ...RECORD, inserted }]);
+    const store = createLegacyJar(fake.db, options);
+    const section = store.withSessionLock(SESSION_ID, async (locked) => {
+      await locked.upsert(INPUT);
+      if (rollsBack) throw new Error('bridge refused');
+    });
+    if (rollsBack) await expect(section).rejects.toThrow('bridge refused');
+    else await section;
+    expect(fake.transactions).toHaveLength(1);
+    expect(fake.queries.map((query) => query.text)).not.toContain(PURGE.text);
   });
 });
 
@@ -814,6 +923,52 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
     await expect(jar.get(SESSION_ID)).resolves.toBeUndefined();
   });
 
+  it('clears the mark of a jar holding a legacy session, keeping its cookies and epoch, and leaves an unmarked jar as it was', async () => {
+    await jar.upsert(INPUT);
+    const unmarked = await jar.upsert({ ...INPUT, sessionId: 'unmarked', legacySessionId: 'OPT2TEST_3003_33333333' });
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+
+    await jar.clearIdentityEndPending(SESSION_ID);
+    await jar.clearIdentityEndPending('unmarked');
+    const cleared = await jar.get(SESSION_ID);
+    expect(cleared).toMatchObject(INPUT);
+    expect(cleared).not.toHaveProperty('identityEndPendingAt');
+    await expect(jar.get('unmarked')).resolves.toEqual(unmarked);
+  });
+
+  it('removes the empty jar a mark left for a session without one, and does nothing for a session with no jar', async () => {
+    await jar.markIdentityEndPending(SESSION_ID, 'legacy-primary');
+    await jar.clearIdentityEndPending(SESSION_ID);
+    await expect(jar.get(SESSION_ID)).resolves.toBeUndefined();
+    await expect(jar.clearIdentityEndPending(SESSION_ID)).resolves.toBeUndefined();
+    await expect(jar.get(SESSION_ID)).resolves.toBeUndefined();
+  });
+
+  it.each<[string, JarUpsert | undefined, Partial<JarRow> | undefined]>([
+    ['a jar holding a legacy session', INPUT, INPUT],
+    ['the empty jar a mark left', undefined, undefined],
+  ])('clears the mark of %s only at the version read, leaving a later mark standing', async (_label, seed, cleared) => {
+    if (seed !== undefined) await jar.upsert(seed);
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+    const read = await jar.get(SESSION_ID);
+    // A later logout's mark, in a later millisecond, keeps the first mark's time and stamps updated_at.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+    const remarked = await jar.get(SESSION_ID);
+    expect(remarked?.updatedAt.getTime()).toBeGreaterThan(read?.updatedAt.getTime() ?? Infinity);
+
+    await jar.clearIdentityEndPending(SESSION_ID, read?.updatedAt);
+    await expect(jar.get(SESSION_ID)).resolves.toEqual(remarked);
+
+    // Activity leaves the version, so the clear at the version read still applies.
+    await jar.markActive(SESSION_ID);
+    await jar.clearIdentityEndPending(SESSION_ID, remarked?.updatedAt);
+    const after = await jar.get(SESSION_ID);
+    expect(after).toEqual(cleared === undefined ? undefined : expect.objectContaining(cleared));
+    expect(after?.identityEndPendingAt).toBeUndefined();
+  });
+
+
   it('keeps the mark of a jar through upserts, epoch updates and a rebind to the same session', async () => {
     await jar.upsert(INPUT);
     await expect(jar.get(SESSION_ID)).resolves.not.toHaveProperty('identityEndPendingAt');
@@ -951,5 +1106,144 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
       }),
     ).rejects.toBe(failure);
     await expect(jar.get(SESSION_ID)).resolves.toEqual(before);
+  });
+
+  describe('activity and the idle purge', () => {
+    const HOUR_MS = 3_600_000;
+    const created: JarUpsert = { ...INPUT, sessionId: 'created', legacySessionId: null };
+
+    /** Moves the session's idle clock `seconds` into the past. */
+    async function idleFor(sessionId: string, seconds: number): Promise<void> {
+      await withMetadata(handle.app, (tx) =>
+        tx.query(
+          `UPDATE ${handle.schema}.legacy_jar SET last_active_at = now() - make_interval(secs => $2) WHERE session_id = $1`,
+          [sessionId, seconds],
+        ),
+      );
+    }
+
+    /** Seeds a jar without a legacy session, idle for `seconds`. */
+    async function idleJar(sessionId: string, seconds: number): Promise<void> {
+      await jar.upsert({ ...created, sessionId });
+      await idleFor(sessionId, seconds);
+    }
+
+    /** Whether the session's jar was active within the last `seconds`. */
+    async function activeWithin(sessionId: string, seconds: number): Promise<boolean | undefined> {
+      const { rows } = await withMetadata(handle.app, (tx) =>
+        tx.query<{ recent: boolean }>(
+          `SELECT last_active_at > now() - make_interval(secs => $2) AS recent FROM ${handle.schema}.legacy_jar WHERE session_id = $1`,
+          [sessionId, seconds],
+        ),
+      );
+      return rows[0]?.recent;
+    }
+
+    async function jarIds(): Promise<string[]> {
+      const { rows } = await withMetadata(handle.app, (tx) =>
+        tx.query<{ session_id: string }>(`SELECT session_id FROM ${handle.schema}.legacy_jar ORDER BY session_id`),
+      );
+      return rows.map((row) => row.session_id);
+    }
+
+    /** Stores a barrier row of `owner` recorded `seconds` ago. */
+    async function barrierRow(sessionId: string, owner: string, pending: number, seconds: number): Promise<void> {
+      await withMetadata(handle.app, (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.session_barrier (session_id, owner, xid, pending, recorded_at)
+           VALUES ($1, $2, CASE WHEN $3::integer = 0 THEN 42 END, $3, now() - make_interval(secs => $4))`,
+          [sessionId, owner, pending, seconds],
+        ),
+      );
+    }
+
+    async function barrierKeys(): Promise<string[]> {
+      const { rows } = await withMetadata(handle.app, (tx) =>
+        tx.query<{ key: string }>(
+          `SELECT session_id || '/' || owner AS key FROM ${handle.schema}.session_barrier ORDER BY session_id, owner`,
+        ),
+      );
+      return rows.map((row) => row.key);
+    }
+
+    it('marks a jar active now without touching updated_at, and every write refreshes it', async () => {
+      const stored = await jar.upsert(INPUT);
+      await idleFor(SESSION_ID, 7200);
+      await expect(activeWithin(SESSION_ID, 60)).resolves.toBe(false);
+
+      await expect(jar.markActive(SESSION_ID)).resolves.toBe(true);
+      await expect(activeWithin(SESSION_ID, 60)).resolves.toBe(true);
+      await expect(jar.get(SESSION_ID)).resolves.toEqual(stored);
+      await expect(jar.markActive('identity-session-none')).resolves.toBe(false);
+
+      await idleFor(SESSION_ID, 7200);
+      await jar.upsert(INPUT);
+      await expect(activeWithin(SESSION_ID, 60)).resolves.toBe(true);
+    });
+
+    it('purges, once a write creates a jar, the idle jars, marked or not, with their long-recorded positions', async () => {
+      await idleJar('idle', 7200);
+      await idleJar('idle-recent-position', 7200);
+      await idleJar('fresh', 0);
+      await idleJar('just-under', 3570);
+      await jar.markIdentityEndPending('pending-idle', 'target-primary');
+      await idleFor('pending-idle', 7200);
+      await idleJar('pending-active', 7200);
+      await jar.markIdentityEndPending('pending-active', 'legacy-primary');
+      await jar.markActive('pending-active');
+      await barrierRow('idle', 'people', 0, 7200);
+      await barrierRow('idle', 'identity', 2, 7200);
+      await barrierRow('idle-recent-position', 'people', 0, 0);
+      await barrierRow('fresh', 'people', 0, 7200);
+      await barrierRow('pending-idle', 'people', 0, 7200);
+      const purging = createLegacyJar(handle.app, { purgeIdleAfterMs: HOUR_MS });
+
+      await purging.upsert({ ...created, sessionId: 'fresh' });
+      expect(await jarIds()).toEqual(['fresh', 'idle', 'idle-recent-position', 'just-under', 'pending-active', 'pending-idle']);
+
+      await purging.upsert(created);
+      expect(await jarIds()).toEqual(['created', 'fresh', 'just-under', 'pending-active']);
+      await expect(jar.get('pending-active')).resolves.toHaveProperty('identityEndPendingAt');
+      // A pending declaration stays for its exchange; a position recorded within the limit stays for its await.
+      expect(await barrierKeys()).toEqual(['fresh/people', 'idle/identity', 'idle-recent-position/people']);
+    });
+
+    it('purges at most 100 jars per created jar, oldest first', async () => {
+      await withMetadata(handle.app, (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.legacy_jar (session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at, last_active_at)
+           SELECT 'idle-' || lpad(i::text, 3, '0'), NULL, '{}'::jsonb, 'legacy-primary', NULL, now(), now() - make_interval(secs => 7200 - i)
+           FROM generate_series(1, 102) AS i`,
+        ),
+      );
+      await createLegacyJar(handle.app, { purgeIdleAfterMs: HOUR_MS }).upsert(created);
+      expect(await jarIds()).toEqual(['created', 'idle-101', 'idle-102']);
+    });
+
+    it('skips an idle jar another transaction holds instead of waiting for it', async () => {
+      await idleJar('idle-held', 7200);
+      await idleJar('idle-free', 7200);
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holding!: () => void;
+      const held = new Promise<void>((resolve) => {
+        holding = resolve;
+      });
+      const holder = withMetadata(handle.app, async (tx) => {
+        await tx.query(`SELECT 1 FROM ${handle.schema}.legacy_jar WHERE session_id = $1 FOR UPDATE`, ['idle-held']);
+        holding();
+        await released;
+      });
+      await held;
+      try {
+        await createLegacyJar(handle.app, { purgeIdleAfterMs: HOUR_MS }).upsert(created);
+        expect(await jarIds()).toEqual(['created', 'idle-held']);
+      } finally {
+        release();
+        await holder;
+      }
+    });
   });
 });

@@ -4,7 +4,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
 import type { HeaderMap, InvocationMinter } from '@opt2/platform/auth';
 import { serializeError } from '@opt2/platform/logging';
-import { WRITE_POSITION_HEADER_LC, parseWritePosition, type WritePositions } from '@opt2/platform/migration-kit';
+import { GATE_WAIT_MS, WRITE_POSITION_HEADER_LC, parseWritePosition, type WritePositions } from '@opt2/platform/migration-kit';
 import {
   REQUEST_ID_HEADER,
   SERVICE_CALL_TIMEOUT_MS,
@@ -69,7 +69,12 @@ export interface TargetForwardContext {
   beforeSend?: (upstream: TargetUpstream) => Promise<void>;
   /** Called at most once, only when the target can no longer commit: its response completed or the request never reached it. */
   onSettled?: () => Promise<void>;
+  /** Called at most once, when the exchange ended while the target may still commit; `onSettled` is then never called. */
+  onAbandoned?: () => Promise<void>;
 }
+
+/** Bound of a target forward: the owner's gate wait plus the platform call bound, so the owner answers first. */
+export const TARGET_FORWARD_TIMEOUT_MS = GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS;
 
 /** Request headers never forwarded: hop-by-hop ones, `expect` (the gateway already answered it) and those set below. */
 const DROPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set([...HOP_BY_HOP_HEADERS, 'expect', 'host', 'content-length']);
@@ -184,7 +189,7 @@ function normaliseWebReply(reply: FastifyReply, path: string, statusCode: number
 }
 
 /**
- * Forwards `request` to `ctx.serviceUrl` + `ctx.path` once, bounded by SERVICE_CALL_TIMEOUT_MS and never retried.
+ * Forwards `request` to `ctx.serviceUrl` + `ctx.path` once, bounded by TARGET_FORWARD_TIMEOUT_MS and never retried.
  * Connection failure, timeout or an unavailable status sends the legacy-shaped 503 of `ctx.failContext`.
  */
 export async function forwardToTarget(
@@ -224,12 +229,17 @@ export async function forwardToTarget(
     await release();
     return failClosed(reply, ctx.failContext, { reason, error });
   };
-  /** Logs an end after which the target may still commit, which therefore leaves the exchange unsettled. */
+  /** Logs an end after which the target may still commit and runs `onAbandoned` once instead of settling; a failure is logged. */
   const unsettled = (error: unknown): void => {
     request.log.warn(
       { error: serializeError(error) },
       `target exchange with ${callee} ended uncertainly; in-flight registration kept`,
     );
+    if (settled) return;
+    settled = true;
+    void ctx.onAbandoned?.().catch((abandonError: unknown) => {
+      request.log.error({ error: serializeError(abandonError) }, `target forward to ${callee} onAbandoned failed`);
+    });
   };
 
   let credential: Record<string, string>;
@@ -288,6 +298,9 @@ export async function forwardToTarget(
     const unavailable = isTargetUnavailable(statusCode);
     if (unavailable || (ctx.isWeb && statusCode >= 500)) {
       res.stream.resume();
+      // The target answered, so the declaration ends: by the positions it lists, else it committed nothing.
+      await recordPositions(res.headers[WRITE_POSITION_HEADER_LC]);
+      await release();
       const reason = unavailable ? `${ctx.service} unavailable: answered ${statusCode}` : `${ctx.service} answered ${statusCode}`;
       failClosed(reply, ctx.failContext, { reason });
       return;
@@ -333,11 +346,11 @@ export async function forwardToTarget(
     ...(body === undefined ? { body: null } : { body, contentType: RAW_BODY_CONTENT_TYPE }),
     rewriteRequestHeaders: () => targetRequestHeaders(request, ctx, credential, body?.length),
     rewriteHeaders: (headers) => endToEndHeaders(headers),
-    timeout: SERVICE_CALL_TIMEOUT_MS,
+    timeout: TARGET_FORWARD_TIMEOUT_MS,
     retriesCount: 0,
     // Runs once per exchange, before reply-from may destroy the response of an aborted client; null disables retries.
     retryDelay: ({ err, res }) => {
-      if (ctx.onSettled === undefined && declared === undefined) return null;
+      if (ctx.onSettled === undefined && ctx.onAbandoned === undefined && declared === undefined) return null;
       // Typed as the reply, but reply-from passes the upstream response here, or nothing when the exchange failed.
       const upstream = res as unknown as FastifyReplyFromResponse | undefined;
       // The same object reaches reply-from's abort check and onResponse, so both see only the relay.

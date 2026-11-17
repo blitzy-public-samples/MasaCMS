@@ -254,6 +254,24 @@ describe('legacy-write dispatch through the gateway', () => {
     expect(inflightRows(gw)).toEqual([]);
   });
 
+  it.each(['/opt2/admin/communications/x', '/v1/surveys/x'])(
+    'opens the window of the legacy entry point that serves the unmatched OPT-2 namespace path %s',
+    async (url) => {
+      const gw = await start();
+
+      const res = await gw.app.inject({
+        method: 'POST',
+        url,
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-request-id': 'req-opt2' },
+        payload: new URLSearchParams(RATE_FORM).toString(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(gw.legacy.requests.map((req) => req.url)).toEqual([url]);
+      expect(gw.migration.windows).toEqual([expect.objectContaining({ routeKey: SAVE_RATE, units: [RATING_UNIT], requestId: 'req-opt2' })]);
+    },
+  );
+
   it.each<[string, string, Record<string, string>, string, string[]]>([
     ['a target write', '/_api/json/v1/default/variationtargeting/?appreload', { contentid: 'C1', targetingjs: 'probe' }, TARGETING_SAVE, [TARGETING_UNIT, CONTENT_UNIT]],
     ['a request-scoped legacy-write', '/index.cfm?appreload', RATE_FORM, SAVE_RATE, [RATING_UNIT, CONTENT_UNIT]],

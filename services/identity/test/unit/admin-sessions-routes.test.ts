@@ -70,7 +70,7 @@ const NO_DB: TenantDb = {
 
 const NO_RELAY: BridgeRelay = { markUsed: () => Promise.resolve({ applied: true }) };
 
-const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM \S+\.tenant_registry ORDER BY site_id$/;
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM \S+\.tenant_registry WHERE NOT deleted ORDER BY site_id$/;
 const registryReads: string[] = [];
 
 /** `db` with the SQL of every statement its metadata transactions run recorded in `registryReads`. */

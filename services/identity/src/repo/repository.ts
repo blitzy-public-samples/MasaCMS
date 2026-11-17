@@ -409,11 +409,13 @@ export type StrikeValues = Pick<UserStrikeRow, 'strikes' | 'lastattempt'>;
 
 /** A session to insert; timestamps default to now and `epoch` to 0. */
 export type SessionInsert = Pick<SessionRow, 'session_id' | 'csrf_secret' | 'mode' | 'state'> &
-  Partial<Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'jar_ref' | 'ended_at' | 'admin_state'>> & { epoch?: number | string };
+  Partial<Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'jar_ref' | 'ended_at' | 'admin_state' | 'last_active_at'>> & {
+    epoch?: number | string;
+  };
 
-/** Session columns `updateSession` may set; `updated_at` is always now. */
+/** Session columns `updateSession` may set; `updated_at` is always now, `last_active_at` now unless the patch sets it. */
 export type SessionPatch = Partial<
-  Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'csrf_secret' | 'mode' | 'state' | 'jar_ref' | 'ended_at' | 'admin_state'>
+  Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'csrf_secret' | 'mode' | 'state' | 'jar_ref' | 'ended_at' | 'admin_state' | 'last_active_at'>
 > & {
   epoch?: number | string;
 };
@@ -717,8 +719,12 @@ export interface IdentityRepository extends Repository {
   lockSession(tx: TenantTx, sessionId: string, mode: SessionLockMode): Promise<SessionRow | null>;
   /** Inserts a session. */
   insertSession(tx: TenantTx, row: SessionInsert, ctx?: WriteContext): Promise<SessionRow>;
-  /** Sets `patch` and `updated_at`; null when absent. */
+  /** Sets `patch` and `updated_at`, and `last_active_at` to now unless `patch` sets it; null when absent. */
   updateSession(tx: TenantTx, sessionId: string, patch: SessionPatch, ctx?: WriteContext): Promise<SessionRow | null>;
+  /** Sets only `last_active_at` to `at` while the session is active, last active at or before `staleBefore` and not locked elsewhere; false otherwise. */
+  touchSession(tx: TenantTx, sessionId: string, at: Date, staleBefore: Date, ctx?: WriteContext): Promise<boolean>;
+  /** Deletes up to `limit` sessions of this tenant last active before `idleBefore`, oldest first, with their CSRF claims; rows locked elsewhere are skipped. Returns the number deleted. */
+  purgeIdleSessions(tx: TenantTx, idleBefore: Date, limit: number, ctx?: WriteContext): Promise<number>;
   /** Deletes the session of this tenant; false when absent. */
   deleteSession(tx: TenantTx, sessionId: string, ctx?: WriteContext): Promise<boolean>;
   /** The admin state the session stored, `{}` when none; null when the session is absent. */
@@ -1137,6 +1143,14 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     update: `SELECT * FROM ${session} WHERE tenant_id = $1 AND session_id = $2 FOR UPDATE`,
     share: `SELECT * FROM ${session} WHERE tenant_id = $1 AND session_id = $2 FOR SHARE`,
   };
+  const lockStaleActiveSessionSql =
+    `SELECT session_id FROM ${session} WHERE tenant_id = $1 AND session_id = $2 AND state = 'active'` +
+    ' AND last_active_at <= $3::timestamp FOR UPDATE SKIP LOCKED';
+  const lockIdleSessionsSql =
+    `SELECT session_id FROM ${session} WHERE tenant_id = $1 AND last_active_at < $2::timestamp` +
+    ' ORDER BY last_active_at, session_id LIMIT $3 FOR UPDATE SKIP LOCKED';
+  const lockSessionsClaimsSql =
+    `SELECT session_id, token FROM ${csrfClaim} WHERE tenant_id = $1 AND session_id = ANY($2::text[]) ORDER BY session_id, token FOR UPDATE`;
   const claimsSql =
     `SELECT * FROM ${csrfClaim} WHERE tenant_id = $1 AND session_id = $2 AND ($3::text IS NULL OR state = $3)` +
     ' AND ($4::timestamp IS NULL OR coalesce(used_at, claimed_at) >= $4) ORDER BY claimed_at, token';
@@ -1985,6 +1999,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       ended_at: null,
       admin_state: null,
       epoch: 0,
+      last_active_at: now,
       ...row,
       created_at: now,
       updated_at: now,
@@ -1993,7 +2008,23 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   function updateSession(tx: TenantTx, sessionId: string, patch: SessionPatch, ctx: WriteContext = {}): Promise<SessionRow | null> {
-    return base.update<SessionRow>(tx, SESSION.table, { session_id: sessionId }, { ...patch, updated_at: clock.now() }, ctx);
+    const now = clock.now();
+    return base.update<SessionRow>(tx, SESSION.table, { session_id: sessionId }, { last_active_at: now, ...patch, updated_at: now }, ctx);
+  }
+
+  async function touchSession(tx: TenantTx, sessionId: string, at: Date, staleBefore: Date, ctx: WriteContext = {}): Promise<boolean> {
+    const stale = await select<{ session_id: string }>(tx, lockStaleActiveSessionSql, [tx.tenantId, sessionId, staleBefore]);
+    if (stale.length === 0) return false;
+    await base.update(tx, SESSION.table, { session_id: sessionId }, { last_active_at: at }, ctx);
+    return true;
+  }
+
+  async function purgeIdleSessions(tx: TenantTx, idleBefore: Date, limit: number, ctx: WriteContext = {}): Promise<number> {
+    const idle = await select<{ session_id: string }>(tx, lockIdleSessionsSql, [tx.tenantId, idleBefore, limit]);
+    if (idle.length === 0) return 0;
+    const claims = await select<{ session_id: string; token: string }>(tx, lockSessionsClaimsSql, [tx.tenantId, idle.map((row) => row.session_id)]);
+    await deleteKeys(tx, CSRF_CLAIM.table, claims, ctx);
+    return deleteKeys(tx, SESSION.table, idle, ctx);
   }
 
   async function deleteSession(tx: TenantTx, sessionId: string, ctx: WriteContext = {}): Promise<boolean> {
@@ -2337,6 +2368,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     lockSession,
     insertSession,
     updateSession,
+    touchSession,
+    purgeIdleSessions,
     deleteSession,
     readSessionAdminState,
     mergeSessionAdminState,

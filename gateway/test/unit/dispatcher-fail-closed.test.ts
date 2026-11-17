@@ -120,11 +120,14 @@ describe('surfaceForFamily', () => {
     ['admin', '/internal/v1/relay'],
     ['page', '/Internal/V1/Relay/identity/sessions?next=/admin/'],
     [undefined, '/OPT2/SVC/x'],
+    ['opt2', '/v1/timesheets/sheets?siteid=tenant-a'],
+    ['opt2', '/V1/Templates'],
+    [undefined, '/v1/messages/x'],
   ] as const)('answers family %s on %s in the envelope whatever the family', (family, path) => {
     expect(surfaceForFamily(family, path)).toBe('api');
   });
 
-  it.each(['/opt2/stubs', '/opt2/web/admin', '/internal/v1/relayed'])(
+  it.each(['/opt2/stubs', '/opt2/web/admin', '/internal/v1/relayed', '/v1/messagesx', '/v1/users'])(
     'answers %s by its family when it only shares a namespace prefix',
     (path) => {
       expect(surfaceForFamily('opt2', path)).toBe('admin');

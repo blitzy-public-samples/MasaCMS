@@ -28,7 +28,7 @@ export type HydrationCall = Pick<BridgeCallOptions, 'userAgent'>;
 export interface Hydrator {
   /**
    * The jar row, hydrated at `epoch` or later into a ColdFusion session that still holds it; undefined when identity
-   * reports the session missing or ended.
+   * reports the session missing or ended, or when it needs hydrating while its jar marks a pending identity end.
    */
   ensureHydrated(sessionId: string, epoch: number, call?: HydrationCall): Promise<JarRow | undefined>;
 }
@@ -171,6 +171,8 @@ export function createHydrator(opts: HydratorOptions): Hydrator {
       const now = clock.now();
       const attachment = probed !== undefined && unchangedSince(probed, row, now) ? probed : await probe(row, call);
       if (isCurrent(row, epoch) && attachment.live) return row;
+      // A legacy logout's outcome is judged from legacy's login state, so none is installed while that logout is pending.
+      if (row?.identityEndPendingAt !== undefined) return undefined;
       // Read under the lock, so a logout that ended the session first leaves nothing to recreate.
       const snapshot = await identity.snapshot(sessionId);
       if (snapshot === undefined) return undefined;

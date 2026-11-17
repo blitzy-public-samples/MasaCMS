@@ -10,6 +10,7 @@ import { REDACTED } from '@opt2/platform/logging';
 import { systemClock } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { MemorySpanExporter, activeSpanIds, flushTracing, shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import { parse } from 'yaml';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -170,8 +171,11 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     await db.withMetadata((tx) => tx.query(`DELETE FROM ${tx.schema}.transition`));
   });
 
-  /** A service instance named `name`; `skewMs` runs its clock ahead of the host's, and `clock` replaces it. */
-  function service(name = 'A', { config = CONFIG, skewMs = 0, clock }: { config?: typeof CONFIG; skewMs?: number; clock?: { now(): Date } } = {}) {
+  /** A service instance named `name`; `skewMs` runs its clock ahead of the host's, `clock` replaces it, and `pool` replaces the suite's pool. */
+  function service(
+    name = 'A',
+    { config = CONFIG, skewMs = 0, clock, pool = db }: { config?: typeof CONFIG; skewMs?: number; clock?: { now(): Date }; pool?: TenantDb } = {},
+  ) {
     const log = (level: string) => (...args: unknown[]) => logs.push({ level, args, by: name });
     const ctx = {
       instance: name,
@@ -180,7 +184,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
       legacy: { live: async () => ({}) },
       clock: clock ?? (skewMs === 0 ? systemClock : { now: () => new Date(Date.now() + skewMs) }),
       logger: { info: log('info'), warn: log('warn'), error: log('error'), debug: log('debug') },
-      db,
+      db: pool,
       gateway: {
         status: async () => {
           gatewayCalls.push(name);
@@ -923,6 +927,65 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     expect(logs.some((l) => l.level === 'error' && /undo failed|runs again on resume/.test(String(l.args.at(-1))))).toBe(true);
     await a.stop();
     expect(await row(transitionId)).toMatchObject({ claimed_by: null });
+  });
+
+  describe('claim pass tracing', () => {
+    const exporter = new MemorySpanExporter();
+
+    beforeAll(async () => {
+      await startTracing({ serviceName: 'transition-service-test', version: '1.0.0', exporter });
+    });
+
+    afterAll(async () => {
+      await shutdownTracing();
+    });
+
+    it('claims in unsampled traces and records a drive it takes over as one root span linked to its pass', async () => {
+      const id = await seedRow(2, 'awaiting-inflight', [{ step: 3, name: 'awaitInflight', startedAt: '2026-06-30T12:00:00.000Z' }]);
+      await db.withMetadata((tx) =>
+        tx.query(`UPDATE ${tx.schema}.transition SET claimed_by = 'dead-instance', claim_expires_at = $2 WHERE transition_id = $1`, [
+          id,
+          new Date(Date.now() + 1500),
+        ]),
+      );
+      // The active span of each transaction the instance opens, and of each step its drive runs.
+      const transactions: ReturnType<typeof activeSpanIds>[] = [];
+      const driven: ReturnType<typeof activeSpanIds>[] = [];
+      const traced: TenantDb = {
+        schema: db.schema,
+        withTenant: (tenantId, fn) => db.withTenant(tenantId, fn),
+        withMetadata: (fn, options) => {
+          transactions.push(activeSpanIds());
+          return db.withMetadata(fn, options);
+        },
+        end: () => Promise.resolve(),
+      };
+      for (const step of [3, 4, 5, 6, 7, 8]) {
+        behaviour.set(step, async (_deps, record) => {
+          driven.push(activeSpanIds());
+          if (step === 7) active = record.to;
+          return { plan: record.plan, progress: { ...record.progress } };
+        });
+      }
+      const b = service('B', { config: SHORT, pool: traced });
+
+      await b.resume();
+      // The claim lapses first, so this waits longer than settle does.
+      for (let i = 0; i < 300 && (await b.get(id)).state !== 'completed'; i += 1) await delay(100);
+      expect((await b.get(id)).state).toBe('completed');
+      await b.stop();
+      await flushTracing();
+      const [drive, ...others] = exporter.getFinishedSpans();
+      const passes = transactions.filter((ids) => ids?.traceSampled === false).map((ids) => ids?.traceId);
+
+      expect(others).toEqual([]);
+      expect(drive).toMatchObject({ name: 'transition.drive', attributes: { 'opt2.transition_id': id } });
+      expect(drive?.parentSpanContext).toBeUndefined();
+      expect(driven).toHaveLength(6);
+      expect(new Set(driven.map((ids) => ids?.traceId))).toStrictEqual(new Set([drive?.spanContext().traceId]));
+      expect(drive?.links).toHaveLength(1);
+      expect(passes).toContain(drive?.links[0]?.context.traceId);
+    });
   });
 
   afterEach(async () => {

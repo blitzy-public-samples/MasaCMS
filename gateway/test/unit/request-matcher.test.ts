@@ -23,6 +23,7 @@ import type {
   VariantsFile,
 } from '../../src/cutover/types.js';
 import { bodyParamsFrom, type BodyParams } from '../../src/dispatcher/body.js';
+import type { FailContext } from '../../src/dispatcher/fail-closed.js';
 import {
   BUCKET_OWNERS,
   RELAY_ALIAS_PREFIX,
@@ -218,10 +219,10 @@ describe('createMatcher relay alias', () => {
   });
 
   it.each(['/opt2/svc', '/OPT2/SVC/people/v1', '/opt2/%73vc/people/v1'])(
-    'keys %s, which is not the exact alias prefix, and routes it by the table',
+    'keys %s, which is not the exact alias prefix, and routes it by the table as the page legacy serves',
     async (url) => {
       const outcome = await matchOf(matcherWith(), url);
-      expect(outcome.result?.key.startsWith('opt2:/opt2/svc')).toBe(true);
+      expect(outcome.result?.key).toBe('page:render');
       expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
     },
   );
@@ -236,12 +237,9 @@ describe('createMatcher legacy destinations', () => {
     expect(outcome.failContext).toStrictEqual({ surface: 'admin', route: 'admin:cusers.delete', owner: 'legacy' });
   });
 
-  it.each([
-    ['/admin/?muraAction=cUsers.edit&userid=1', 'admin:cusers.edit'],
-    ['/opt2/admin/reporting/exports', 'opt2:/opt2/admin/reporting/**'],
-  ])('sends %s, whose entry is legacy, to legacy with the entry it matched', async (url, route) => {
-    const outcome = await matchOf(matcherWith(), url);
-    expect(outcome.entry?.route).toBe(route);
+  it('sends a request whose entry is legacy to legacy with the entry it matched', async () => {
+    const outcome = await matchOf(matcherWith(), '/admin/?muraAction=cUsers.edit&userid=1');
+    expect(outcome.entry?.route).toBe('admin:cusers.edit');
     expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
   });
 
@@ -269,6 +267,69 @@ describe('createMatcher legacy destinations', () => {
     const defaults = await matchOf(matcherWith(), url);
     expect(defaults.result?.key).toBe('page:render');
     expect(defaults.destination).toStrictEqual({ kind: 'legacy' });
+  });
+});
+
+describe('createMatcher legacy-bound OPT-2 namespaces', () => {
+  const legacyWrite = (route: string, owningService: OwningService, units: string[]): CutoverEntry => ({
+    ...entry(route, owningService, 'legacy'),
+    kind: 'legacy-write',
+    units,
+  });
+  const PAGE_RENDER = legacyWrite('page:render', 'none', ['identity.credential', 'people.person']);
+  const PAGE_LOGIN = legacyWrite('page:login', 'identity', ['identity.login_state']);
+  const RELOAD = legacyWrite('reload:application', 'strategies-content', ['content.content']);
+  const SERVED_INDEX = indexOf([...ENTRIES, entry('opt2:/v1/finance/**', 'finance'), PAGE_RENDER, PAGE_LOGIN, RELOAD]);
+  const serving = (): Matcher => matcherWith({ active: () => SERVED_INDEX });
+
+  it.each<[string, string, CutoverEntry]>([
+    ['an opt2 path whose entry is legacy', '/opt2/admin/reporting/exports', PAGE_RENDER],
+    ['an opt2 path no entry names', '/opt2/does-not-exist', PAGE_RENDER],
+    ["a synthetic service's /v1/ path no entry names", '/v1/surveys/x', PAGE_RENDER],
+    ['a doaction on a legacy-bound opt2 path', '/opt2/does-not-exist?doaction=login', PAGE_LOGIN],
+  ])('sends %s (%s) to legacy under the entry legacy serves it as', async (_label, url, served) => {
+    const outcome = await matchOf(serving(), url);
+    expect(outcome.result?.key).toBe(served.route);
+    expect(outcome.entry).toBe(SERVED_INDEX.entryFor(served.route));
+    expect(outcome.entry).toMatchObject({ state: 'legacy', kind: 'legacy-write' });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+  });
+
+  it.each(['/opt2/admin/reporting/exports?appreload', '/v1/timesheets/sheets?appreload'])(
+    "serves the legacy-bound reload %s as the page writer behind it over both entries' units, held also by the reload entry",
+    async (url) => {
+      const outcome = await matchOf(serving(), url);
+      expect(outcome.result).toMatchObject({ key: RELOAD.route, afterReload: { key: PAGE_RENDER.route } });
+      expect(outcome.entry).toStrictEqual({ ...PAGE_RENDER, units: [...PAGE_RENDER.units, ...RELOAD.units] });
+      expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+      expect(outcome).toMatchObject({ holdRoutes: [RELOAD.route] });
+    },
+  );
+
+  it('serves a halted legacy-bound opt2 request under its unhalted page entry', async () => {
+    const outcome = await matchOf(serving(), '/opt2/admin/reporting/exports?a-b=one&a.b=two');
+    expect(outcome.result?.key).toBe('page:render');
+    expect(outcome.entry).toMatchObject({ route: 'page:render', state: 'legacy', kind: 'legacy-write', units: PAGE_RENDER.units });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+  });
+
+  it.each<[string, FailContext]>([
+    ['/opt2/admin/reporting/exports?doaction=login', { surface: 'admin', route: PAGE_LOGIN.route, owner: 'legacy' }],
+    ['/v1/surveys/x?siteid=tenant-a', { surface: 'api', params: { siteid: 'tenant-a' }, route: PAGE_RENDER.route, owner: 'legacy' }],
+  ])("fails %s closed as its namespace's surface with the served key's route and params", async (url, failContext) => {
+    expect((await matchOf(serving(), url)).failContext).toEqual(failContext);
+  });
+
+  it.each<[string, string, OwningService]>([
+    ['/opt2/stub/ping?appreload', 'opt2:/opt2/stub/**', 'stub'],
+    ['/opt2/admin/finance/records?doaction=login', 'opt2:/opt2/admin/finance/**', 'web'],
+    ['/v1/finance/records?appreload', 'opt2:/v1/finance/**', 'finance'],
+    [FILE_URL, FINANCE_FILES_ROUTE, 'finance'],
+  ])('keeps the target-bound %s on its opt2 entry', async (url, route, service) => {
+    const outcome = await matchOf(serving(), url);
+    expect(outcome.result?.family).toBe('opt2');
+    expect(outcome.entry?.route).toBe(route);
+    expect(outcome.destination).toMatchObject({ kind: 'target', service, path: url });
   });
 });
 

@@ -32,7 +32,10 @@ export interface JarRow {
   mode: SessionMode;
   hydratedEpoch: number | null;
   updatedAt: Date;
-  /** Set before a legacy logout of the session runs; stays until identity confirms the session's end and `drop` removes it. */
+  /**
+   * Set before a legacy logout of the session runs; stays until identity confirms the session's end and `drop` removes
+   * it, legacy shows it kept the login and `clearIdentityEndPending` clears it, or the idle purge removes the jar.
+   */
   identityEndPendingAt?: Date;
 }
 
@@ -74,7 +77,8 @@ export interface LockedJar extends JarStatements {
 /**
  * Store of `gateway.legacy_jar`. A row's own state is written under its session's lock; every `op=hydrate` or `op=end`
  * of a ColdFusion session, and every rebind to it, holds that ColdFusion session's lock. A transaction takes at most
- * one session lock and one ColdFusion session lock, the session's first; any other order throws.
+ * one session lock and one ColdFusion session lock, the session's first; any other order throws. Only the activity
+ * column, which no section reads, is written without a lock, and the purge of idle jars takes none.
  */
 export interface LegacyJar extends JarStatements {
   /**
@@ -86,7 +90,23 @@ export interface LegacyJar extends JarStatements {
   withNativeLock<T>(legacySessionId: string, fn: (locked: JarStatements) => Promise<T>): Promise<T>;
   /** Marks the session's identity end pending in its own transaction; a session without a jar gets an empty one. */
   markIdentityEndPending(sessionId: string, mode: SessionMode): Promise<void>;
+  /**
+   * Clears the session's pending identity end in its own transaction; a marked jar holding nothing else is removed.
+   * With `updatedAt`, only while the row's `updatedAt` still equals it, so a later mark stands.
+   */
+  clearIdentityEndPending(sessionId: string, updatedAt?: Date): Promise<void>;
+  /** Records activity of the session's jar in its own transaction; false when it has none. */
+  markActive(sessionId: string): Promise<boolean>;
 }
+
+/** Settings of {@link createLegacyJar}. */
+export interface LegacyJarOptions {
+  /** Idle time after which a jar is purged, its session expired on both sides; absent, jars never expire. */
+  purgeIdleAfterMs?: number;
+}
+
+/** Most idle jars the purge after one inserting write removes. */
+export const JAR_PURGE_BATCH = 100;
 
 /** Raw `Set-Cookie` values of a legacy response split into jar cookies and the rest. */
 export interface AbsorbedSetCookies {
@@ -233,15 +253,17 @@ function toRow(record: JarRecord): JarRow {
   };
 }
 
-/** Jar statements of one transaction, plus the session lock they take and the pending-end mark. */
+/** Jar statements of one transaction, plus the session lock they take, the pending-end mark and the activity mark. */
 interface TxStatements extends LockedJar {
   /** Takes the transaction-scoped advisory lock of an identity session. */
   lockSession: (sessionId: string) => Promise<void>;
   markIdentityEndPending: LegacyJar['markIdentityEndPending'];
+  clearIdentityEndPending: LegacyJar['clearIdentityEndPending'];
+  markActive: LegacyJar['markActive'];
 }
 
-/** The jar statements on one metadata transaction. */
-function statementsOn(tx: MetadataTx): TxStatements {
+/** The jar statements on one metadata transaction; `inserted` runs when a write creates a jar. */
+function statementsOn(tx: MetadataTx, inserted: () => void): TxStatements {
   // Qualified by the handle's schema, as platform grants are, rather than a literal `gateway.`, so a throwaway schema is read.
   const table = `${tx.schema}.${TABLE}`;
   const barrier = `${tx.schema}.${BARRIER_TABLE}`;
@@ -281,19 +303,23 @@ function statementsOn(tx: MetadataTx): TxStatements {
   }
 
   async function write(input: JarUpsert): Promise<JarRow> {
-    const row = await first(
-      `INSERT INTO ${table} AS jar (${UPSERT_COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())
+    // xmax is 0 only in a row version this statement inserted; the conflict update leaves its own transaction id there.
+    const { rows } = await tx.query<JarRecord & { inserted: boolean }>(
+      `INSERT INTO ${table} AS jar (${UPSERT_COLUMNS}, last_active_at) VALUES ($1, $2, $3::jsonb, $4, $5, now(), now())
        ON CONFLICT (session_id) DO UPDATE SET
          legacy_session_id = EXCLUDED.legacy_session_id,
          cookies = jar.cookies || EXCLUDED.cookies,
          mode = EXCLUDED.mode,
          hydrated_epoch = EXCLUDED.hydrated_epoch,
-         updated_at = EXCLUDED.updated_at
-       RETURNING ${COLUMNS}`,
+         updated_at = EXCLUDED.updated_at,
+         last_active_at = EXCLUDED.last_active_at
+       RETURNING ${COLUMNS}, (xmax = 0) AS inserted`,
       [input.sessionId, input.legacySessionId, JSON.stringify(input.cookies), input.mode, input.hydratedEpoch],
     );
+    const record = rows[0];
+    if (record?.inserted === true) inserted();
     // INSERT … ON CONFLICT DO UPDATE … RETURNING always returns the written row.
-    return row as JarRow;
+    return (record === undefined ? undefined : toRow(record)) as JarRow;
   }
 
   return {
@@ -334,6 +360,28 @@ function statementsOn(tx: MetadataTx): TxStatements {
       );
     },
 
+    async clearIdentityEndPending(sessionId, updatedAt) {
+      await lockSession(sessionId);
+      // updated_at is timestamp(3) and reads back at that precision, so an unchanged row compares equal.
+      const version = updatedAt ?? null;
+      // A jar with no legacy session, cookies or epoch exists only for its mark, as markIdentityEndPending or a rebind left it.
+      await tx.query(
+        `DELETE FROM ${table}
+         WHERE session_id = $1 AND identity_end_pending_at IS NOT NULL
+           AND legacy_session_id IS NULL AND cookies = '{}'::jsonb AND hydrated_epoch IS NULL
+           AND ($2::timestamp IS NULL OR updated_at = $2)`,
+        [sessionId, version],
+      );
+      await tx.query(
+        `UPDATE ${table} SET identity_end_pending_at = NULL, updated_at = now()
+         WHERE session_id = $1 AND identity_end_pending_at IS NOT NULL AND ($2::timestamp IS NULL OR updated_at = $2)`,
+        [sessionId, version],
+      );
+    },
+
+    // Leaves updated_at, the row version hydrations and mark clears compare, unchanged.
+    markActive: (sessionId) => changed(`UPDATE ${table} SET last_active_at = now() WHERE session_id = $1`, [sessionId]),
+
     async rebind(input, previousSessionId) {
       // The holders of the legacy session are guarded by its lock, which their hydrations and logouts hold too.
       if (previousSessionId !== undefined) await lockSession(previousSessionId);
@@ -372,11 +420,46 @@ function statementsOn(tx: MetadataTx): TxStatements {
   };
 }
 
+/**
+ * Deletes up to $2 jars idle longer than $1 seconds, marked or not, oldest first, with their barrier positions recorded
+ * as long ago; rows another transaction holds are skipped. A pending declaration stays for its exchange.
+ */
+function purgeSql(schema: string): string {
+  const table = `${schema}.${TABLE}`;
+  const barrier = `${schema}.${BARRIER_TABLE}`;
+  return `WITH idle AS (
+      SELECT session_id FROM ${table}
+      WHERE last_active_at < now() - make_interval(secs => $1)
+      ORDER BY last_active_at, session_id LIMIT $2
+      FOR UPDATE SKIP LOCKED
+    ), purged AS (
+      DELETE FROM ${table} AS jar USING idle WHERE jar.session_id = idle.session_id
+    ), positions AS (
+      SELECT session_id, owner FROM ${barrier}
+      WHERE session_id IN (SELECT session_id FROM idle) AND pending = 0 AND recorded_at < now() - make_interval(secs => $1)
+      FOR UPDATE SKIP LOCKED
+    )
+    DELETE FROM ${barrier} AS b USING positions AS p WHERE b.session_id = p.session_id AND b.owner = p.owner`;
+}
+
 /** Creates the jar store over the gateway's database handle; SQL is qualified by the handle's schema (`gateway`). */
-export function createLegacyJar(db: TenantDb): LegacyJar {
-  /** Runs `fn` on the jar statements of one metadata transaction. */
+export function createLegacyJar(db: TenantDb, options: LegacyJarOptions = {}): LegacyJar {
+  const { purgeIdleAfterMs } = options;
+
+  /** Runs `fn` on the jar statements of one metadata transaction; a jar it creates queues one purge after its commit. */
   function inTransaction<T>(fn: (statements: TxStatements) => Promise<T>): Promise<T> {
-    return withMetadata(db, (tx) => fn(statementsOn(tx)));
+    return withMetadata(db, (tx) => {
+      let queued = false;
+      const inserted = (): void => {
+        if (purgeIdleAfterMs === undefined || queued) return;
+        queued = true;
+        // Its own transaction after the commit, so purged rows are never held while this one's section waits on a lock.
+        tx.onCommit(async () => {
+          await withMetadata(db, (purge) => purge.query(purgeSql(purge.schema), [purgeIdleAfterMs / 1000, JAR_PURGE_BATCH]));
+        });
+      };
+      return fn(statementsOn(tx, inserted));
+    });
   }
 
   return {
@@ -387,6 +470,8 @@ export function createLegacyJar(db: TenantDb): LegacyJar {
     drop: (sessionId) => inTransaction((s) => s.drop(sessionId)),
     rebind: (input, previousSessionId) => inTransaction((s) => s.rebind(input, previousSessionId)),
     markIdentityEndPending: (sessionId, mode) => inTransaction((s) => s.markIdentityEndPending(sessionId, mode)),
+    clearIdentityEndPending: (sessionId, updatedAt) => inTransaction((s) => s.clearIdentityEndPending(sessionId, updatedAt)),
+    markActive: (sessionId) => inTransaction((s) => s.markActive(sessionId)),
 
     withSessionLock: (sessionId, fn) =>
       inTransaction(async ({ lockSession, ...locked }) => {

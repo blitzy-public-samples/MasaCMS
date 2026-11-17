@@ -11,10 +11,19 @@ import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole, recordedRoutes } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { createService, fixedClock, loadEnv, throwIfRequestAborted, type FastifyInstance } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, createService, fixedClock, loadEnv, throwIfRequestAborted, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
-import type { AccountView, AdminSessionState, GroupSummary, IdentityClient, UserGroupRow } from '../../src/legacy/identity-client.js';
+import type {
+  AccountView,
+  AdminSessionState,
+  GroupSummary,
+  IdentityClient,
+  UserGroupRow,
+  UserGroupsPage,
+  UserGroupsWindow,
+} from '../../src/legacy/identity-client.js';
+import { getAdvancedSearch, getSearch, getUnassignedUsers, getUsers, newAdvancedSearchCriteria } from '../../src/domain/search.js';
 import type { Page, PeopleRepository, PersonCursor, PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
 import type { AddressRow, ExtendSubtypeRow, PersonRow } from '../../src/repo/tables.js';
 import {
@@ -24,7 +33,7 @@ import {
   routeRedirect,
   sanitizeHref,
 } from '../../src/routes/admin-users.js';
-import { IdentityDouble, personsInOrder } from '../helpers/search-doubles.js';
+import { IdentityDouble, personSearchKeys, personsById, personsInOrder } from '../helpers/search-doubles.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, { operationId?: string; 'x-opt2-transport'?: string; 'x-opt2-requires'?: string[] }>>;
@@ -127,6 +136,11 @@ const GROUP_ROWS: UserGroupRow[] = [
   { userId: 'B0000000-0000-0000-0000000000000009', email: null, groupName: 'Editors', type: null, lastLogin: null, lastUpdate: null, lastUpdateBy: null, lastUpdateById: null, counter: null, perm: 0, isPublic: 0 },
 ];
 
+/** `count` group rows shaped as the first of GROUP_ROWS, each under its own id, in listing order. */
+function groupListing(count: number): UserGroupRow[] {
+  return Array.from({ length: count }, (_, n) => ({ ...(GROUP_ROWS[0] as UserGroupRow), userId: `B1000000-0000-0000-${String(n).padStart(16, '0')}` }));
+}
+
 /** A tenant transaction of the fake database; only the tenant matters to the fake repository. */
 function fakeTx(tenantId: string): TenantTx {
   return { tenantId } as unknown as TenantTx;
@@ -134,7 +148,7 @@ function fakeTx(tenantId: string): TenantTx {
 
 const tenantsRead: string[] = [];
 const registryReads: string[] = [];
-const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM people\.tenant_registry ORDER BY site_id$/;
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM people\.tenant_registry WHERE NOT deleted ORDER BY site_id$/;
 
 /** A TenantDb whose metadata transactions record and answer the registry queries, and whose tenant transactions record the tenant. */
 const db: TenantDb = {
@@ -174,6 +188,8 @@ const repository = {
   pagePersonsInOrder: async (tx: TenantTx, scope: PersonOrderScope, opts: { orderBy: readonly PersonSortKey[] }) => ({
     rows: personsInOrder(ofTenant(PERSONS, tx), scope, opts.orderBy), next: null,
   }),
+  listPersonSearchKeys: (tx: TenantTx, scope: PersonOrderScope, orderBy: readonly PersonSortKey[]) => Promise.resolve(personSearchKeys(ofTenant(PERSONS, tx), scope, orderBy)),
+  findPersons: (tx: TenantTx, userIds: readonly string[]) => Promise.resolve(personsById(ofTenant(PERSONS, tx), userIds)),
   listInterests: async (_tx: TenantTx, userId: string) => (userId === JANE ? [{ userid: JANE, categoryid: 'E0000000-0000-0000-0000000000000001' }] : []),
   listAddresses: async (tx: TenantTx, userId: string) => ofTenant(ADDRESSES, tx).filter((row) => sameId(row.userid, userId)),
   findAddress: async (tx: TenantTx, addressId: string) => ofTenant(ADDRESSES, tx).find((row) => sameId(row.addressid, addressId)) ?? null,
@@ -203,6 +219,17 @@ const repository = {
 let sessionState: AdminSessionState = {};
 const saves: AdminSessionState[] = [];
 const groupReads: Array<readonly [siteId: string, isPublic: number]> = [];
+/** The window of each identity group page read, in call order. */
+const groupWindows: UserGroupsWindow[] = [];
+/** The groups identity lists; a test may swap in a longer listing. */
+let groupRows: readonly UserGroupRow[] = GROUP_ROWS;
+
+/** Identity's `listGroups` page of `rows` for `window`, at its default size of 1000 without a limit. */
+function groupPage(rows: readonly UserGroupRow[], { offset, limit = 1000 }: UserGroupsWindow): UserGroupsPage {
+  const page = rows.slice(offset, offset + limit);
+  const next = offset + page.length;
+  return { rows: page, total: rows.length, nextOffset: next < rows.length ? next : null };
+}
 /** Errors the routes threw, as the service-kit error handler receives them. */
 const routeErrors: Error[] = [];
 const loginBlocks = new Map<string, string>();
@@ -239,9 +266,10 @@ const identity: IdentityClient = {
   userMemberships: unused('userMemberships'),
   membershipGroupIds: async (userId) => MEMBERSHIPS.get(userId) ?? [],
   siteGroups: async (_siteId, isPublic) => (isPublic === 1 ? PUBLIC_GROUPS : PRIVATE_GROUPS),
-  userGroups: (siteId, isPublic) => {
+  userGroupsPage: async (siteId, isPublic, window) => {
     groupReads.push([siteId, isPublic]);
-    return Promise.resolve(GROUP_ROWS);
+    groupWindows.push(window);
+    return groupPage(groupRows, window);
   },
   actingUser: unused('actingUser'),
   adminSessionState: async () => sessionState,
@@ -311,6 +339,8 @@ beforeEach(() => {
   saves.length = 0;
   tenantsRead.length = 0;
   groupReads.length = 0;
+  groupWindows.length = 0;
+  groupRows = GROUP_ROWS;
   routeErrors.length = 0;
   identityReads.length = 0;
   loginBlocks.clear();
@@ -416,7 +446,7 @@ describe('route() URL helpers [legacy: core/mura/utility.cfc:1326-1469]', () => 
 describe('registration', () => {
   const OPERATIONS = [
     'listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'getUserEdit', 'getAddressEdit', 'routeUser', 'readCurrentUser',
-    'readPoolUser', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2',
+    'readPoolUser', 'listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2',
   ];
 
   it('registers exactly the contract operations of these reads, with their transport and roles', () => {
@@ -443,18 +473,18 @@ describe('the cUsers gate', () => {
   ])('refuses %s', async (_case, headers, status) => {
     const urls = [
       '/v1/users/groups', '/v1/users', '/v1/users/search', '/v1/users/advanced-search', '/v1/users/edit', '/v1/users/address', '/v1/users/route',
-      '/v2/users', '/v2/users/search', '/v2/users/advanced-search',
+      '/v2/users/groups', '/v2/users', '/v2/users/search', '/v2/users/advanced-search',
     ];
     for (const url of urls) {
       expect((await call('GET', url, await headers())).status, url).toBe(status);
     }
   });
 
-  it('admits the Users and Site Manager module grants together', async () => {
-    expect((await call('GET', '/v1/users/groups', await headersFor([USERS_MODULE, SITE_MANAGER_MODULE, Roles.systemUser]))).status).toBe(200);
+  it.each(VERSIONS)('admits the Users and Site Manager module grants together on %s/users/groups', async (version) => {
+    expect((await call('GET', `${version}/users/groups`, await headersFor([USERS_MODULE, SITE_MANAGER_MODULE, Roles.systemUser]))).status).toBe(200);
   });
 
-  it.each(['/v1/users/groups', '/v1/users', '/v1/users/edit', '/v1/users/route', '/v2/users'])('refuses another site than the token’s on %s', async (url) => {
+  it.each(['/v1/users/groups', '/v1/users', '/v1/users/edit', '/v1/users/route', '/v2/users/groups', '/v2/users'])('refuses another site than the token’s on %s', async (url) => {
     expect((await call('GET', `${url}?siteid=${OTHER}`, await headersFor(S2))).status).toBe(403);
   });
 
@@ -482,26 +512,82 @@ describe('lists and searches', () => {
     expect(body?.items[0]).toMatchObject({ UserID: GROUP, Type: 1, Counter: 2, Perm: 1, isPublic: 0 });
     expect(body?.items[1]).not.toHaveProperty('Type');
     expect(body?.nextn).toMatchObject({ totalrecords: 2, recordsperpage: 1, startrow: 1, numberofpages: 2, next: 2 });
+    // `/v1` reads identity's listing page by page at its default size.
+    expect(groupWindows).toEqual([{ offset: 0 }]);
+  });
+
+  const EDITORS = GROUP_ROWS[1]?.userId ?? '';
+  it.each<[string, string, string[], number, UserGroupsWindow[]]>([
+    ['the first page', 'recordsperpage=1', [GROUP], 1, [{ offset: 0, limit: 1 }]],
+    ['a later page', 'startrow=2&recordsperpage=1', [EDITORS], 2, [{ offset: 1, limit: 1 }]],
+    // The iterator reads the start row as a page number, so start row 2 of pages of 3 lies past the end and shows page 1.
+    ['page 1 for a page past the end', 'startrow=2&recordsperpage=3', [GROUP, EDITORS], 2, [{ offset: 3, limit: 3 }, { offset: 0, limit: 2 }]],
+    ['page 1 for a start row past the end', 'startrow=50&recordsperpage=1', [GROUP], 1, [{ offset: 49, limit: 1 }, { offset: 0, limit: 1 }]],
+    ['every group on the default page', '', [GROUP, EDITORS], 1, [{ offset: 0, limit: 25 }]],
+  ])('/v2 asks identity only for the groups of %s, with nextn over every group', async (_label, query, items, startrow, windows) => {
+    const { body } = await call('GET', `/v2/users/groups?ispublic=0&${query}`, await headersFor(SITE_ADMIN));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
+    expect(body?.nextn).toMatchObject({ totalrecords: 2, startrow });
+    expect(groupWindows).toEqual(windows);
+  });
+
+  it('/v2 answers the group rows as /v1 lists them', async () => {
+    const v1 = await call('GET', '/v1/users/groups?ispublic=0', await headersFor(SITE_ADMIN));
+    const v2 = await call('GET', '/v2/users/groups?ispublic=0', await headersFor(SITE_ADMIN));
+    expect(v2.body).toEqual(v1.body);
+  });
+
+  it.each<[string, UserGroupsWindow[], [first: number, last: number]]>([
+    ['recordsperpage=2500&startrow=1', [{ offset: 0, limit: 1000 }, { offset: 1000, limit: 1000 }, { offset: 2000, limit: 500 }], [0, 2499]],
+    ['recordsperpage=1000&startrow=2', [{ offset: 1000, limit: 1000 }], [1000, 1999]],
+    ['recordsperpage=1500&startrow=2', [{ offset: 1500, limit: 1000 }, { offset: 2500, limit: 500 }], [1500, 2999]],
+  ])('/v2 reads the page of %s in identity pages of at most 1000 groups', async (query, windows, [first, last]) => {
+    groupRows = groupListing(3000);
+    const { body } = await call('GET', `/v2/users/groups?ispublic=0&${query}`, await headersFor(SITE_ADMIN));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(groupRows.slice(first, last + 1).map((row) => row.userId));
+    expect(body?.nextn).toMatchObject({ totalrecords: 3000 });
+    expect(groupWindows).toEqual(windows);
+  });
+
+  it.each(VERSIONS)('%s answers an empty group listing with no items and nextn over none', async (version) => {
+    groupRows = [];
+    const { body } = await call('GET', `${version}/users/groups?ispublic=0`, await headersFor(SITE_ADMIN));
+    expect(body).toEqual({ items: [], nextn: expect.objectContaining({ totalrecords: 0, numberofpages: 0, startrow: 1 }) });
+    expect(groupWindows).toHaveLength(1);
+  });
+
+  it('/v1 writes every group of a listing longer than one identity page, in its order, with nextn over them', async () => {
+    groupRows = groupListing(2500);
+    const { body } = await call('GET', '/v1/users/groups?ispublic=0&startrow=11&recordsperpage=10', await headersFor(SITE_ADMIN));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(groupRows.map((row) => row.userId));
+    expect(body?.nextn).toMatchObject({ totalrecords: 2500, recordsperpage: 10, startrow: 11, numberofpages: 250 });
+    expect(groupWindows).toEqual([{ offset: 0 }, { offset: 1000 }, { offset: 2000 }]);
   });
 
   // `before()` scrubs a value the admin Portcullis scan does not leave boolean, such as 'abc' or ' false' (scanned to '"NO"'),
   // to 1 [legacy: admin/core/controllers/cusers.cfc:163]; the scan trims ' 0 ' to 0.
-  it.each<[string, number]>([
-    ['0', 0],
-    ['0.0', 0],
-    ['1', 1],
-    ['1.0', 1],
-    ['2', 2],
-    ['-1', -1],
-    [' 1', 1],
-    [' 0 ', 0],
-    ['0\u0001', 0],
-    ['abc', 1],
-    [' false', 1],
-    ['\ttrue', 1],
-    ['"0"', 1],
-  ])('reads identity groups for ispublic %j as the number %j', async (ispublic, flag) => {
-    expect((await call('GET', `/v1/users/groups?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN))).status).toBe(200);
+  it.each<[string, string, number]>(
+    VERSIONS.flatMap((version) =>
+      (
+        [
+          ['0', 0],
+          ['0.0', 0],
+          ['1', 1],
+          ['1.0', 1],
+          ['2', 2],
+          ['-1', -1],
+          [' 1', 1],
+          [' 0 ', 0],
+          ['0\u0001', 0],
+          ['abc', 1],
+          [' false', 1],
+          ['\ttrue', 1],
+          ['"0"', 1],
+        ] as const
+      ).map(([ispublic, flag]): [string, string, number] => [version, ispublic, flag]),
+    ),
+  )('%s reads identity groups for ispublic %j as the number %j', async (version, ispublic, flag) => {
+    expect((await call('GET', `${version}/users/groups?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN))).status).toBe(200);
     expect(groupReads).toEqual([[SITE, flag]]);
   });
 
@@ -510,6 +596,7 @@ describe('lists and searches', () => {
   it.each(
     ['yes', 'No', 'TRUE', 'false', ' no', '\tFALSE\n', ' True'].flatMap((ispublic) => [
       ['/v1/users/groups', ispublic, 'getUserGroups'] as const,
+      ['/v2/users/groups', ispublic, 'getUserGroups'] as const,
       ['/v1/users/search', ispublic, 'getSearch'] as const,
       ['/v2/users/search', ispublic, 'getSearch'] as const,
     ]),
@@ -593,15 +680,13 @@ describe('lists and searches', () => {
     { op: 'readAccountsAllSites', userIds: [MEMBER] },
   ];
 
-  it.each<[string, string[], (typeof EVERY_SITE_READS)[number][]]>([
-    // The list and its unassigned query each read every site once.
-    ['/v1', [JANE, OUTSIDER], [...EVERY_SITE_READS, ...EVERY_SITE_READS]],
-    ['/v2', [JANE, OUTSIDER], EVERY_SITE_READS],
-  ])('%s reads every site once for an S2 siteid=all, with its people without a membership', async (version, unassigned, reads) => {
+  it.each(VERSIONS)('%s reads every site once for an S2 siteid=all, with its people without a membership', async (version) => {
     const { body } = await call('GET', `${version}/users?siteid=ALL&ispublic=0`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT, JANE, OUTSIDER]);
-    expect(body?.listUnassignedUsers).toEqual(unassigned);
-    expect(identityReads.filter(({ op }) => op !== 'lookupMemberships')).toEqual(reads);
+    expect(body?.listUnassignedUsers).toEqual([JANE, OUTSIDER]);
+    expect(identityReads.filter(({ op }) => op !== 'lookupMemberships')).toEqual(EVERY_SITE_READS);
+    // The listed people's marks come from one membership lookup.
+    expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([{ op: 'lookupMemberships', userIds: [ROOT, JANE, OUTSIDER] }]);
   });
 
   it.each<[string, string, number, string[]]>([
@@ -654,11 +739,15 @@ describe('lists and searches', () => {
     ['search=o&recordsperpage=1&startrow=2', [ROOT, JANE], [JANE]],
     // Jane is no match, but every unassigned user of the pool is marked.
     ['search=admin', [ROOT], [JANE]],
+    ['search=', [], [JANE]],
   ])('/v1 answers every search match of %s, with every unassigned user of the pool', async (query, items, unassigned) => {
     const { body } = await call('GET', `/v1/users/search?ispublic=0&${query}`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: items.length });
     expect(body?.listUnassignedUsers).toEqual(unassigned);
+    // The pool's unassigned users are read last, by name, from identity's unassigned account filter.
+    expect(identityReads.at(-1)).toEqual({ op: 'readAccounts', userIds: [ROOT, JANE] });
+    expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([]);
   });
 
   it.each<[string, string[], string[]]>([
@@ -697,6 +786,199 @@ describe('lists and searches', () => {
     expect(body?.listUnassignedUsers).toEqual([JANE]);
   });
 });
+
+describe('/v1 user lists over a pool larger than one identity lookup', () => {
+  const POOL = 2500;
+  const poolId = (n: number): string => `A1000000-0000-0000-${String(n).padStart(16, '0')}`;
+  const poolPersons = Array.from({ length: POOL }, (_, n) =>
+    person(poolId(n), SITE, { fname: `First ${n % 7}`, lname: `Person ${String(n % 1250).padStart(4, '0')}`, email: `p${n}@example.test` }),
+  );
+  const poolAccounts = new Map(poolPersons.map((row) => [row.userid, account(row.userid, SITE)]));
+  // Every third person holds a membership.
+  const poolMemberships = new Map(poolPersons.filter((_, n) => n % 3 === 0).map((row) => [row.userid, [GROUP]]));
+  const reads = new IdentityDouble(poolAccounts, poolMemberships, { db, tid: tenantIdForSite(SITE), s2: true });
+  const VIEWER = { tid: tenantIdForSite(SITE), site: SITE, isS2: true };
+  /** The identity reads of the routes under test, with the ids each carried and whether it filtered to unassigned accounts. */
+  const calls: { op: 'readAccounts' | 'lookupMemberships'; ids: number; unassigned: boolean }[] = [];
+  /** The 1-based membership lookup that fails, if any. */
+  let failingLookup: number | undefined;
+  /** Resolves once the reads may go past the first person page of 1000. */
+  let pastFirstPage: Promise<void> = Promise.resolve();
+  let poolApp: FastifyInstance;
+
+  const poolIdentity: IdentityClient = {
+    ...identity,
+    readAccounts: async (userIds, where) => {
+      calls.push({ op: 'readAccounts', ids: userIds.length, unassigned: where?.unassigned === true });
+      return reads.readAccounts(userIds, where);
+    },
+    countAccounts: (request) => reads.countAccounts(request),
+    usernameCandidates: (request) => reads.usernameCandidates(request),
+    lookupMemberships: async (userIds) => {
+      calls.push({ op: 'lookupMemberships', ids: userIds.length, unassigned: false });
+      if (calls.filter(({ op }) => op === 'lookupMemberships').length === failingLookup) {
+        throw new ServiceUnavailableError('identity', new Error('identity lookupMemberships answered HTTP 503'));
+      }
+      return reads.lookupMemberships(userIds);
+    },
+  };
+
+  // Keyset pages of `limit` persons, the cursor holding the next row's index.
+  const poolRepository = {
+    ...repository,
+    pagePersonsInOrder: async (tx: TenantTx, scope: PersonOrderScope, opts: { orderBy: readonly PersonSortKey[]; after?: PersonCursor | null; limit: number }) => {
+      const from = Number(opts.after?.keys[0] ?? 0);
+      if (from > 0) await pastFirstPage;
+      const rows = personsInOrder(ofTenant(poolPersons, tx), scope, opts.orderBy);
+      const to = from + opts.limit;
+      return { rows: rows.slice(from, to), next: to < rows.length ? { keys: [to], userid: '' } : null };
+    },
+  } as unknown as PeopleRepository;
+  /** The collected reads `/v1` answered from before it streamed, as the oracle of its rows. */
+  const oracle = { db, repo: poolRepository, identity: reads, clock: fixedClock(NOW) };
+
+  beforeAll(async () => {
+    const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+    poolApp = await createService({
+      name: 'people',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8112',
+        OPT2_SERVICE_NAME: 'people',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        OPT2_STATE_DIR: stateDir,
+        TZ: 'UTC',
+      }),
+      verifierOverride: testVerifier('people'),
+      logger,
+    });
+    await registerAdminUserRoutes(poolApp, { db, repository: poolRepository, identity: poolIdentity, clock: fixedClock(NOW), awaitPersonOpen: awaitOpen });
+    await poolApp.listen({ port: 0, host: '127.0.0.1' });
+  });
+
+  afterAll(async () => {
+    await poolApp?.opt2.shutdown();
+  });
+
+  beforeEach(() => {
+    calls.length = 0;
+    failingLookup = undefined;
+    pastFirstPage = Promise.resolve();
+  });
+
+  /** A site admin's GET of `url` from the pool service, checked against the contract. */
+  async function poolCall(url: string) {
+    const res = await poolApp.inject({ method: 'GET', url, headers: await headersFor(S2) });
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url.split('?')[0] ?? url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    return { status: res.statusCode, body: res.statusCode === 200 ? (res.json() as Record<string, any>) : undefined };
+  }
+
+  const idsOf = (rows: ReadonlyArray<Record<string, unknown>>): unknown[] => rows.map((row) => row.UserID ?? row.userID);
+  const sizes = (op: 'readAccounts' | 'lookupMemberships'): number[] => calls.filter((c) => c.op === op).map((c) => c.ids);
+
+  it('lists the pool in one pass, as many identity lookups as 1000-id batches, with the collected reads’ rows, order, nextn and marks', async () => {
+    const { body } = await poolCall('/v1/users?ispublic=0&startrow=11&recordsperpage=10');
+    expect(calls).toEqual([1000, 1000, 500].flatMap((ids) => [
+      { op: 'readAccounts', ids, unassigned: false },
+      { op: 'lookupMemberships', ids, unassigned: false },
+    ]));
+    expect(idsOf(body?.items)).toEqual(idsOf((await getUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows));
+    expect(body?.listUnassignedUsers).toEqual(idsOf((await getUnassignedUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows));
+    // `/v2` pages the same rows and marks them the same way.
+    const v2 = await poolCall('/v2/users?ispublic=0&startrow=1&recordsperpage=2500');
+    expect(body?.items).toEqual(v2.body?.items);
+    expect(body?.listUnassignedUsers).toEqual(v2.body?.listUnassignedUsers);
+    expect(body?.nextn).toEqual((await poolCall('/v2/users?ispublic=0&startrow=11&recordsperpage=10')).body?.nextn);
+  });
+
+  it('lists the unassigned people only with the list itself as the marks, without a membership lookup', async () => {
+    const { body } = await poolCall('/v1/users?ispublic=0&unassigned=1');
+    const unassigned = idsOf((await getUnassignedUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows);
+    expect(idsOf(body?.items)).toEqual(unassigned);
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+    expect(calls).toEqual([1000, 1000, 500].map((ids) => ({ op: 'readAccounts', ids, unassigned: true })));
+  });
+
+  it.each<[term: string, matches: number]>([
+    ['Person', 2100],
+    ['Person 0001', 2],
+  ])('searches the pool for %j once, then reads every unassigned user of the pool in 1000-person batches, as getUnassignedUsers orders them', async (term, matches) => {
+    const { body } = await poolCall(`/v1/users/search?ispublic=0&search=${encodeURIComponent(term)}`);
+    const matched = (await getSearch(oracle, VIEWER, { search: term, siteid: SITE, isPublic: '0' })).rows;
+    expect(idsOf(body?.items)).toEqual(idsOf(matched));
+    expect(body?.nextn).toMatchObject({ totalrecords: matches });
+    expect(body?.listUnassignedUsers).toEqual(idsOf((await getUnassignedUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows));
+    expect(body?.listUnassignedUsers).toHaveLength(POOL - poolMemberships.size);
+    // The pool pass is the last identity work, and no membership lookup is needed.
+    const poolPass = [1000, 1000, 500].map((ids) => ({ op: 'readAccounts', ids, unassigned: true }));
+    expect(calls.filter(({ unassigned }) => unassigned)).toEqual(poolPass);
+    expect(calls.slice(-poolPass.length)).toEqual(poolPass);
+    expect(sizes('lookupMemberships')).toEqual([]);
+  });
+
+  it('runs the advanced search once in 1000-person batches, with the collected search’s rows', async () => {
+    const { body } = await poolCall('/v1/users/advanced-search?ispublic=0');
+    expect(sizes('readAccounts')).toEqual([1000, 1000, 500]);
+    expect(sizes('lookupMemberships')).toEqual([]);
+    const collected = await getAdvancedSearch(oracle, VIEWER, newAdvancedSearchCriteria(), { siteid: SITE, isPublic: '0' });
+    expect(idsOf(body?.items)).toEqual(idsOf(collected.rows));
+    expect(body?.items).toEqual((await poolCall('/v2/users/advanced-search?ispublic=0&recordsperpage=2500')).body?.items);
+    expect(body?.nextn).toMatchObject({ totalrecords: POOL });
+  });
+
+  /** A GET of `url` on a real socket: the status, each body chunk as it arrived, and whether the body ended complete. */
+  function streamed(url: string, headers: Record<string, string>, onChunk: (chunk: string) => void = () => undefined) {
+    const { port } = poolApp.server.address() as AddressInfo;
+    return new Promise<{ status: number; body: string; complete: boolean }>((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: url, headers }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+          onChunk(chunk);
+        });
+        // A body cut short also errors the response; `complete` reports it.
+        res.on('error', () => undefined);
+        res.on('close', () => resolve({ status: res.statusCode ?? 0, body, complete: res.complete }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('writes the first batch before the pool is read past it', async () => {
+    let release = (): void => undefined;
+    pastFirstPage = new Promise((resolve) => {
+      release = resolve;
+    });
+    let firstChunk = '';
+    const answer = await streamed('/v1/users?ispublic=0', await headersFor(S2), (chunk) => {
+      if (firstChunk === '') {
+        firstChunk = chunk;
+        release();
+      }
+    });
+    expect(firstChunk.startsWith('{"items":[{"UserID":')).toBe(true);
+    expect(answer).toMatchObject({ status: 200, complete: true });
+    expect((JSON.parse(answer.body) as { items: unknown[] }).items).toHaveLength(POOL);
+  });
+
+  it('answers the error response for a failure in the first batch, and cuts the body short for a later one', async () => {
+    failingLookup = 1;
+    const first = await poolCall('/v1/users?ispublic=0');
+    expect(first.status).toBe(503);
+    calls.length = 0;
+    failingLookup = 2;
+    const later = await streamed('/v1/users?ispublic=0', await headersFor(S2));
+    expect(later.status).toBe(200);
+    expect(later.complete).toBe(false);
+    expect(() => JSON.parse(later.body)).toThrow();
+  });
+});
+
 
 describe.each(VERSIONS)('advanced search under %s', (version) => {
   const form = {
@@ -801,6 +1083,9 @@ describe('list reads whose client disconnects', () => {
     ...repository,
     pagePersonsInOrder: (tx: TenantTx, scope: PersonOrderScope, opts: { orderBy: readonly PersonSortKey[]; after?: PersonCursor | null }) =>
       personPage(personsInOrder(ofTenant(PERSONS, tx), scope, opts.orderBy), opts.after),
+    // A search page reads its pool's search keys in one read, so a disconnect during it stops the read before any account lookup.
+    listPersonSearchKeys: async (tx: TenantTx, scope: PersonOrderScope, orderBy: readonly PersonSortKey[]) =>
+      (await personPage(personsInOrder(ofTenant(PERSONS, tx), scope, orderBy), null)).rows,
     pageQueryPersons: (tx: TenantTx, query: { siteIds?: readonly string[] }, opts: { after?: PersonCursor | null }) =>
       personPage(ofTenant(PERSONS, tx).filter((row) => query.siteIds === undefined || query.siteIds.some((siteId) => sameId(row.siteid, siteId))), opts.after),
   } as unknown as PeopleRepository;
@@ -810,14 +1095,12 @@ describe('list reads whose client disconnects', () => {
     // A total past every page keeps a /v2 page reading until the listing ends.
     countAccounts: () => Promise.resolve(10_000),
     // Identity's group paging, each page one service call, which checks the request's signal first.
-    userGroups: async (siteId, isPublic) => {
-      for (let page = 0; page < PAGES; page += 1) {
-        throwIfRequestAborted();
-        groupPages += 1;
-        working();
-        await sleep(STEP_MS);
-      }
-      return identity.userGroups(siteId, isPublic);
+    userGroupsPage: async (_siteId, _isPublic, { offset }) => {
+      throwIfRequestAborted();
+      groupPages += 1;
+      working();
+      await sleep(STEP_MS);
+      return { rows: [...GROUP_ROWS], total: GROUP_ROWS.length * PAGES, nextOffset: offset + 1 < PAGES ? offset + 1 : null };
     },
     saveAdminSessionState: async (state) => {
       working();
@@ -844,7 +1127,7 @@ describe('list reads whose client disconnects', () => {
       verifierOverride: testVerifier('people'),
       logger,
     });
-    await registerAdminUserRoutes(listening, { db, repository: pagingRepository, identity: pagingIdentity, clock: fixedClock(NOW), awaitPersonOpen: awaitOpen });
+    await registerAdminUserRoutes(listening, { db, repository: pagingRepository, identity: pagingIdentity, clock: fixedClock(NOW), awaitPersonOpen: awaitOpen, expirePasswords: 0 });
     await listening.listen({ port: 0, host: '127.0.0.1' });
   });
 

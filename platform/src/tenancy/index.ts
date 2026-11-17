@@ -20,6 +20,7 @@ export { createPool, tenantDbFromPool, iamDbUser, sessionTimeZoneSetter } from '
 export type { DbEnv, CreatePoolOptions, TenantDbOptions } from './pool.js';
 export {
   registeredTenants,
+  knownTenants,
   registryEntries,
   registryEntryForTenant,
   tenantForRegisteredSite,

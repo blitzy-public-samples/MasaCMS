@@ -3,7 +3,16 @@ import { Roles } from '@opt2/platform/auth';
 import { LegacyApiError, cfEq, cfIsBoolean, cfListToArray, cfToBoolean, isValidVariableName } from '@opt2/platform/legacy-compat';
 import { acfKeyOrder, acfStruct, type StructOp } from './acf-struct.js';
 import { cfUrlDecode, unavailable } from './json-api-site-feed.js';
-import { applySet, getSiteText, getSiteValue, newSiteBean, type SiteBean, type SiteStoredValue } from './site-fields.js';
+import {
+  applySet,
+  getSiteText,
+  getSiteValue,
+  newSiteBean,
+  readBean,
+  type SiteBean,
+  type SiteRow,
+  type SiteStoredValue,
+} from './site-fields.js';
 import { validateSite } from './validation.js';
 
 // legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:69-73,2097,2126-2128
@@ -105,6 +114,15 @@ export function jsonApiSiteValues(bean: SiteBean, baseUrl: string, entityName = 
     },
     VALUE_OPS,
   );
+}
+
+/**
+ * `$.getBean('site').loadBy(...)`: the scope seeds the bean with the request's site id (cfobject.cfc:138-149), and
+ * setSiteID keeps it over the stored id it equals ignoring case; the defaulted new bean when no row is stored.
+ */
+export function jsonApiSiteBean(row: SiteRow | null, scopeSiteId: string): SiteBean {
+  const bean = row === null ? newSiteBean() : readBean(row);
+  return { values: { ...bean.values, siteid: scopeSiteId }, isNew: bean.isNew };
 }
 
 // legacy: core/mura/bean/beanIterator.cfc:98-101 and jsonApiUtility.cfc:3374-3381 (a distinct feed's generic bean links only `entities`)

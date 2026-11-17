@@ -1,5 +1,5 @@
-// Stored-row rules of the golden normaliser: canonical row encodings with ids, timestamps and chain hashes normalised,
-// compared as multisets.
+// Stored-row rules of the golden normaliser: canonical row encodings with ids, timestamps and chain hashes normalised
+// and volatile bcrypt values verified against the scenario's secrets, compared as multisets.
 import { Buffer } from 'node:buffer';
 import {
   SERIALIZED_DOCUMENT_COLUMNS,
@@ -13,6 +13,7 @@ import {
   type CanonicalValue,
   type MultisetDelta,
 } from '@opt2/platform/migration-kit';
+import bcrypt from 'bcryptjs';
 import type { RowSnapshot } from '../side-effects.js';
 import { chainEntryVerdict, chainHashValue, isChainHashField } from './chain-hashes.js';
 import { normaliseIdsInString, type IdOrdinals, type OrdinalCounter } from './ids.js';
@@ -42,12 +43,18 @@ export interface RowComparison {
 
 type CellRule = 'literal' | 'ids' | 'text' | 'timestamp' | 'chain-hash';
 
+/** A `rows.volatile` column: a bcrypt value of `format` is verified against the scenario's secrets. */
+interface VolatileColumn {
+  readonly format: RegExp;
+}
+
 interface ColumnPlan {
   readonly name: string;
   readonly output: CanonicalColumn;
   readonly rule: CellRule;
   /** Name the timestamp rules see; undefined when a date-only column is to be masked like any other. */
   readonly key: string | undefined;
+  readonly volatile: VolatileColumn | undefined;
 }
 
 interface RowContext {
@@ -57,12 +64,17 @@ interface RowContext {
   readonly chainHashes: boolean;
   readonly money: RegExp;
   readonly serialized: ReadonlySet<string>;
+  readonly volatile: ReadonlyMap<string, VolatileColumn>;
+  readonly secrets: ReadonlyMap<string, string>;
+  /** Normalised form of each volatile value already verified, since every row is normalised twice. */
+  readonly verified: Map<string, string>;
 }
 
 // Stored rows normalise only ids, timestamps and chain-hash columns, selected by `rows.apply`; origins, tokens and URLs
-// inside stored text stay compared, which is why normaliseText (which masks them too) is not used here. The rows rules
-// declare no other volatile columns, so no other column is masked.
-function rowContext(rules: NormaliseRules): RowContext {
+// inside stored text stay compared, which is why normaliseText (which masks them too) is not used here. A
+// `rows.volatile` value of the declared format keeps its bcrypt revision and cost and names the scenario secret it
+// verifies; any other stays literal.
+function rowContext(rules: NormaliseRules, secrets: ReadonlyMap<string, string>): RowContext {
   const apply = new Set<string>(rules.rows.apply);
   return {
     rules,
@@ -71,7 +83,31 @@ function rowContext(rules: NormaliseRules): RowContext {
     chainHashes: apply.has(rules.chainHashes.id),
     money: new RegExp(rules.rows.literal.money),
     serialized: new Set(SERIALIZED_DOCUMENT_COLUMNS.map((name) => name.toLowerCase())),
+    volatile: new Map(rules.rows.volatile.map((v) => [v.column.toLowerCase(), { format: new RegExp(v.format) }])),
+    secrets,
+    verified: new Map(),
   };
+}
+
+/** True when `secret` hashes to `hash` under its salt; a hash bcryptjs rejects ($2x$, cost not 4-31) verifies none. */
+function verifies(secret: string, hash: string): boolean {
+  try {
+    // Not bcrypt.compareSync: it rejects the 59-character $2$ form, which jBCrypt verifies.
+    return bcrypt.hashSync(secret, hash) === hash;
+  } catch {
+    return false;
+  }
+}
+
+/** `$<rev>$<cost>$<verifies:NAME>` for the first secret in `ctx.secrets` that `hash` verifies, else `hash`. */
+function verifiedHash(hash: string, ctx: RowContext): string {
+  let normalised = ctx.verified.get(hash);
+  if (normalised === undefined) {
+    const name = [...ctx.secrets].find(([, secret]) => verifies(secret, hash))?.[0];
+    normalised = name === undefined ? hash : `${hash.slice(0, hash.lastIndexOf('$') + 1)}<verifies:${name}>`;
+    ctx.verified.set(hash, normalised);
+  }
+  return normalised;
 }
 
 /** Bare lower-cased table name: `dbo.[ttrash]` and `ttrash` name one table, as SQL Server compares names. */
@@ -84,17 +120,19 @@ function planColumns(snapshot: RowSnapshot, ctx: RowContext): ColumnPlan[] {
   const literalDates = ctx.rules.rows.literal.dateOnlyFields;
   return snapshot.columns.map((column): ColumnPlan => {
     const dateOnly = isDateOnlyField(column.name, ctx.rules);
+    const qualified = `${table}.${column.name.toLowerCase()}`;
     let rule: CellRule = 'literal';
     const hashColumn = column.type === 'b' || column.type === 's';
     if (ctx.chainHashes && hashColumn && isChainHashField(column.name, ctx.rules.chainHashes)) rule = 'chain-hash';
     else if (column.type === 't' && ctx.timestamps && !(dateOnly && literalDates)) rule = 'timestamp';
     // Serialized documents are compared byte-exact and never parsed; only their ids are masked.
-    else if (column.type === 's') rule = ctx.serialized.has(`${table}.${column.name.toLowerCase()}`) ? 'ids' : 'text';
+    else if (column.type === 's') rule = ctx.serialized.has(qualified) ? 'ids' : 'text';
     return {
       name: column.name,
       output: rule === 'timestamp' || rule === 'chain-hash' ? { name: column.name, type: 's' } : { ...column },
       rule,
       key: dateOnly && !literalDates ? undefined : column.name,
+      volatile: ctx.volatile.get(qualified),
     };
   });
 }
@@ -113,6 +151,8 @@ function normaliseCell(
     if (Buffer.isBuffer(value)) return value.toString('hex');
   }
   if (plan.rule === 'literal' || typeof value !== 'string') return value;
+  // Any other value of a volatile column stays literal, so a change of its format still differs.
+  if (plan.volatile !== undefined) return plan.volatile.format.test(value) ? verifiedHash(value, ctx) : value;
   if (plan.rule === 'timestamp') return normaliseTimestamp(value, ctx.rules, plan.key);
   if (plan.rule === 'text' || plan.rule === 'chain-hash') {
     if (ctx.money.test(value)) return value;
@@ -212,13 +252,16 @@ function normaliseTable(snapshot: RowSnapshot, state: IdOrdinals, ctx: RowContex
 /**
  * Normalises each unit's canonical rows, units in sorted order, continuing the scenario's id ordinals in `state`.
  * Every table is a multiset of normalised encodings, so keyless tables and duplicate rows keep their multiplicity.
+ * @param secrets The scenario's resolved secrets by name, in resolution order, that `rows.volatile` values are
+ *   verified against; a value none verifies stays literal.
  */
 export function normaliseRows(
   snapshots: Readonly<Record<string, RowSnapshot>>,
   state: IdOrdinals,
   rules: NormaliseRules,
+  secrets: ReadonlyMap<string, string> = new Map(),
 ): NormalisedRows {
-  const ctx = rowContext(rules);
+  const ctx = rowContext(rules, secrets);
   return Object.fromEntries(
     Object.entries(snapshots)
       .sort(([a], [b]) => compareEncodings(a, b))

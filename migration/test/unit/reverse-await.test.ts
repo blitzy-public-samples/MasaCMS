@@ -1,5 +1,6 @@
 // Unit tests for the projection awaiter over a scripted checkpoint table, owners client, authority and driven clock.
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import { REDACTED, serializeError } from '@opt2/platform/logging';
 import type { PositionResponse } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { ConnectionPool } from 'mssql';
@@ -8,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CurrentAuthority } from '../../src/cutover/index.js';
 import { OwnerCallError, type DataOwner } from '../../src/owners/index.js';
 import type { LegacyEffect } from '../../src/reverse/apply-legacy.js';
-import { ProjectionTimeoutError, createAwaiter, type AwaitProjectionRequest, type ReadBudget } from '../../src/reverse/await.js';
+import { ProjectionTimeoutError, createAwaiter, type AwaitProjectionRequest, type PendingPosition, type ReadBudget } from '../../src/reverse/await.js';
 
 const TENANT_A = '3f9c3a52-1c1b-5d4e-8f00-0a1b2c3d4e5f';
 const TENANT_B = '7d2e9b10-4a6c-5f8e-9b11-1c2d3e4f5a6b';
@@ -299,6 +300,7 @@ describe('createAwaiter', () => {
     expect(timeout.surface).toBe('auto');
     expect(timeout.reason).toBe('projection-timeout');
     expect(timeout.message).toBe('Projection of programs-sites=900 was not applied in legacy within 600 ms');
+    expect(serializeError(timeout)).toMatchObject({ type: 'ProjectionTimeoutError', message: timeout.message });
     expect(h.sleeps).toEqual([POLL_MS, POLL_MS, 100]);
     expect(h.log).toHaveLength(4);
   });
@@ -449,5 +451,29 @@ describe('createAwaiter budget', () => {
 
     expect(error).toBeInstanceOf(ProjectionTimeoutError);
     expect(error).toMatchObject({ pending: UNREAD, timeoutMs: 600 });
+  });
+});
+
+describe('ProjectionTimeoutError safe text', () => {
+  it.each<[string, PendingPosition[], number, string]>([
+    ['one position', [{ owner: 'programs-sites', xid: '900', tenantsBehind: [TENANT_A] }], 600, 'Projection of programs-sites=900 was not applied in legacy within 600 ms'],
+    [
+      'positions of several owners',
+      [
+        { owner: 'timesheets', xid: '18446744073709551614', tenantsBehind: [] },
+        { owner: 'e-signature', xid: '7', tenantsBehind: [TENANT_B] },
+      ],
+      TIMEOUT_MS,
+      'Projection of e-signature=7,timesheets=18446744073709551614 was not applied in legacy within 5000 ms',
+    ],
+    ['no position read yet', [], TIMEOUT_MS, 'Projection of  was not applied in legacy within 5000 ms'],
+    ['an owner name outside the allowlist', [{ owner: 'Ada Lovelace', xid: '900', tenantsBehind: [] }], 600, REDACTED],
+    ['a fractional budget', [{ owner: 'people', xid: '900', tenantsBehind: [] }], 600.5, REDACTED],
+  ])('serializes a timeout over %s with only its fixed text', (_label, pending, timeoutMs, message) => {
+    const record = serializeError(new ProjectionTimeoutError(pending, timeoutMs));
+
+    expect(record).toMatchObject({ type: 'ProjectionTimeoutError', message });
+    expect(JSON.stringify(record)).not.toContain('Ada');
+    expect(JSON.stringify(record)).not.toContain(TENANT_A);
   });
 });

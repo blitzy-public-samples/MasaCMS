@@ -42,7 +42,7 @@ const ABSENT_SITE_FIND = '/_api/json/v1//site?method=findOne&entityName=site';
 const INSUFFICIENT = { code: 'invalid_request', message: 'Insufficient Account Permissions' };
 // configBean settings the endpoint and the route key read at registration; unset, they take the settings template values.
 const LEGACY_SETTINGS_ENV = ['MURA_ADMINSSL', 'MURA_PORT', 'MURA_CONTEXT', 'MURA_ADMINDOMAIN', 'MURA_APPRELOADKEY'];
-const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM programs_sites\.tenant_registry ORDER BY site_id$/;
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM programs_sites\.tenant_registry WHERE NOT deleted ORDER BY site_id$/;
 
 let t: TestApp;
 

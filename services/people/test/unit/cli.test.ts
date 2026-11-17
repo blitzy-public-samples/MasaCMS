@@ -1,7 +1,7 @@
 /** `opt2-people resolve-operation`: argument parsing, environment checks, and resolutions over a recording database with identity doubles. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cfUuid } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { createOutbox } from '@opt2/platform/outbox';
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B, createCapturingPublisher } from '@opt2/platform/testing';
@@ -43,6 +43,23 @@ vi.mock('../../src/legacy/identity-client.js', async (importOriginal) => {
 
 const A = TENANT_A.tenantId;
 const SITE = TENANT_A.siteId;
+const USAGE = 'usage: opt2-people resolve-operation <operationId> [--to rolled-back|done] [--tenant <uuid>]';
+const OPTION_VALUE = 'an option is missing its value or was given one it does not take';
+// Assembled at run time, so no literal credential appears in source.
+const SECRET = ['s3cr3t', 'people', 'cli', 'value'].join('-');
+
+type LogLine = Record<string, unknown>;
+
+/** The stderr chunks as log-record.v1 lines of the people CLI, each checked against the schema. */
+function stderrRecords(chunks: readonly string[]): LogLine[] {
+  return chunks.map((chunk) => {
+    expect(chunk.endsWith('\n')).toBe(true);
+    const record = JSON.parse(chunk) as LogLine;
+    expect(validateLogRecord(record)).toStrictEqual({ valid: true, errors: [] });
+    expect(record).toMatchObject({ service: 'people' });
+    return record;
+  });
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -64,16 +81,19 @@ describe('parseArgs', () => {
 
   it.each<[string[], string]>([
     [[], 'missing subcommand'],
-    [['resolve'], 'unknown subcommand "resolve"'],
+    [['resolve'], 'unknown subcommand'],
     [['resolve-operation'], 'missing operation id'],
     [['resolve-operation', ''], 'missing operation id'],
-    [['resolve-operation', OP, 'extra'], 'unexpected argument "extra"'],
-    [['resolve-operation', OP, '--to', 'halted'], '--to must be one of rolled-back, done, got "halted"'],
-    [['resolve-operation', OP, '--tenant', 'tenant-a'], '--tenant must be a tenant UUID, got "tenant-a"'],
-    [['resolve-operation', OP, '--force'], "Unknown option '--force'"],
-  ])('rejects %j', (argv, message) => {
+    [['resolve-operation', OP, 'extra'], 'unexpected argument'],
+    [['resolve-operation', OP, SECRET], 'unexpected argument'],
+    [['resolve-operation', OP, '--to', 'halted'], '--to must be one of rolled-back, done'],
+    [['resolve-operation', OP, '--tenant', 'tenant-a'], '--tenant must be a tenant UUID'],
+    [['resolve-operation', OP, '--force'], 'unknown option'],
+    [['resolve-operation', OP, `--${SECRET}=x`], 'unknown option'],
+    [['resolve-operation', OP, '--tenant'], OPTION_VALUE],
+  ])('rejects %j with a fixed message that quotes no argument', (argv, message) => {
     expect(() => parseArgs(argv)).toThrow(UsageError);
-    expect(() => parseArgs(argv)).toThrow(message);
+    expect(() => parseArgs(argv)).toThrow(new UsageError(message));
   });
 
   it('rethrows a tenant check failure other than an invalid tenant id', () => {
@@ -88,15 +108,24 @@ describe('parseArgs', () => {
 describe('main before any dependency opens', () => {
   it.each<[string[], string]>([
     [[], 'missing subcommand'],
-    [['resolve'], 'unknown subcommand "resolve"'],
+    [['resolve'], 'unknown subcommand'],
+    [[`resolve-${SECRET}`], 'unknown subcommand'],
     [['resolve-operation'], 'missing operation id'],
-    [['resolve-operation', 'OP-1', '--to', 'other'], '--to must be one of rolled-back, done, got "other"'],
-    [['resolve-operation', 'OP-1', '--tenant', 'not-a-uuid'], '--tenant must be a tenant UUID, got "not-a-uuid"'],
-  ])('exits 2 for %j with the reason and the usage line on stderr', async (argv, reason) => {
+    [['resolve-operation', 'OP-1', `extra-${SECRET}`], 'unexpected argument'],
+    [['resolve-operation', 'OP-1', '--to', 'other'], '--to must be one of rolled-back, done'],
+    [['resolve-operation', 'OP-1', '--to', SECRET], '--to must be one of rolled-back, done'],
+    [['resolve-operation', 'OP-1', '--tenant', 'not-a-uuid'], '--tenant must be a tenant UUID'],
+    [['resolve-operation', 'OP-1', '--tenant', SECRET], '--tenant must be a tenant UUID'],
+    [['resolve-operation', 'OP-1', `--${SECRET}`], 'unknown option'],
+    [['resolve-operation', 'OP-1', `--help=${SECRET}`], OPTION_VALUE],
+  ])('exits 2 for %j with one usage line on stderr that quotes no argument', async (argv, reason) => {
     const stdout = captureWrites(process.stdout);
     const stderr = captureWrites(process.stderr);
     expect(await main(argv, cliEnv())).toBe(2);
-    expect(stderr).toEqual([`opt2-people: ${reason}; usage: opt2-people resolve-operation <operationId> [--to rolled-back|done] [--tenant <uuid>]\n`]);
+    const records = stderrRecords(stderr);
+    expect(records).toEqual([expect.objectContaining({ severity: 'ERROR', env: 'local', message: `opt2-people: ${reason}; ${USAGE}` })]);
+    expect(records[0]).not.toHaveProperty('error');
+    expect(stderr.join('')).not.toMatch(new RegExp(`${SECRET}|OP-1|other|not-a-uuid`));
     expect(stdout).toEqual([]);
   });
 
@@ -107,14 +136,26 @@ describe('main before any dependency opens', () => {
   });
 
   it.each<[string, NodeJS.ProcessEnv, string]>([
-    ['an empty environment', {}, 'OPT2_SERVICE_NAME: is required'],
-    ['no identity URL', cliEnv({ OPT2_SERVICE_URLS: '{}' }), 'OPT2_SERVICE_URLS: must name identity'],
-    ['no database settings', cliEnv({ OPT2_DB_AUTH: undefined, PG_DATABASE: undefined }), 'PG_DATABASE: is required'],
-    ['no local emulator', cliEnv({ PUBSUB_EMULATOR_HOST: undefined }), 'PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local'],
-  ])('exits 2 for %s', async (_label, env, message) => {
+    [
+      'an empty environment',
+      {},
+      'invalid environment (PORT: is required; OPT2_SERVICE_NAME: is required; OPT2_ENV: is required; OPT2_TOKEN_ISSUER: is required; OPT2_TOKEN_AUDIENCE: is required; TZ: is required)',
+    ],
+    ['no identity URL', cliEnv({ OPT2_SERVICE_URLS: '{}' }), 'opt2-people: invalid environment (OPT2_SERVICE_URLS: is invalid)'],
+    ['no database settings', cliEnv({ OPT2_DB_AUTH: undefined, PG_DATABASE: undefined }), 'opt2-people: invalid environment (OPT2_DB_AUTH: is required; PG_DATABASE: is required)'],
+    ['no local emulator', cliEnv({ PUBSUB_EMULATOR_HOST: undefined }), 'people: invalid environment (PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local)'],
+    ['a secret-bearing invalid value', cliEnv({ PG_PORT: SECRET, OPT2_SERVICE_URLS: `{"identity":"${SECRET}"}` }), 'people: invalid environment (PG_PORT: expected number; OPT2_SERVICE_URLS: expected an http(s) URL)'],
+  ])('exits 2 for %s with one line naming only the invalid variables and their reasons', async (_label, env, safeText) => {
     const stderr = captureWrites(process.stderr);
     expect(await main(['resolve-operation', 'OP-1'], env)).toBe(2);
-    expect(stderr.join('')).toContain(message);
+    expect(stderrRecords(stderr)).toEqual([
+      expect.objectContaining({
+        severity: 'ERROR',
+        message: 'opt2-people: invalid environment',
+        error: expect.objectContaining({ type: 'EnvValidationError', message: safeText }),
+      }),
+    ]);
+    expect(stderr.join('')).not.toMatch(new RegExp(`must name|${SECRET}`));
     expect(mocks.createPool).not.toHaveBeenCalled();
   });
 });
@@ -134,7 +175,7 @@ const ROSTER_CLAIM = /^UPDATE "people"\."roster_operation" SET "claimed_by" = \$
 const CHANGELOG_INSERT = /^INSERT INTO "people"\."changelog"/;
 const SET_TENANT = /set_config\('app\.tenant_id'/;
 
-/** A recording `people` database whose registry lists tenants A and B and whose `roster_operation` holds one row that updates change. */
+/** A recording `people` database whose registry has known tenants A and B and whose `roster_operation` holds one row that updates change. */
 interface RosterDb {
   readonly db: RecordingDb;
   /** The held row of the operation in tenant A. */
@@ -143,13 +184,14 @@ interface RosterDb {
   tenantsRead(): string[];
 }
 
-function rosterDb(row: RosterOperationRow): RosterDb {
+/** The recording database holding `row`; reads of registered sites leave out the `deleted` tenants, as the registry does. */
+function rosterDb(row: RosterOperationRow, deleted: readonly string[] = []): RosterDb {
   const held = new Map([[`${row.tenant_id}/${row.operation_id}`, { ...row }]]);
   // Both the key read and the update end their parameters with the tenant and the operation id.
   const heldBy = (values: readonly unknown[]): RosterOperationRow | undefined => held.get(`${String(values.at(-2))}/${String(values.at(-1))}`);
   const db = createRecordingDb({
     responses: [
-      [REGISTRY_READ, REGISTRY_ROWS],
+      [REGISTRY_READ, (text) => (/\bNOT deleted\b/.test(text) ? REGISTRY_ROWS.filter((entry) => !deleted.includes(entry.tenant_id)) : REGISTRY_ROWS)],
       [ROSTER_READ, (_text, values) => [heldBy(values)].filter((row) => row !== undefined)],
       [
         ROSTER_UPDATE,
@@ -178,8 +220,8 @@ interface Scenario {
   readonly operationId: string;
 }
 
-/** An operation of tenant A built from `overrides`, prepared at identity, or prepared and committed, as `identityState` names. */
-async function scenario(overrides: Partial<RosterOperationRow>, identityState?: 'prepared' | 'committed'): Promise<Scenario> {
+/** An operation of tenant A built from `overrides`, prepared at identity, or prepared and committed, as `identityState` names; `deleted` as rosterDb takes it. */
+async function scenario(overrides: Partial<RosterOperationRow>, identityState?: 'prepared' | 'committed', deleted: readonly string[] = []): Promise<Scenario> {
   const row = rosterOperationRow(overrides);
   const identity = createIdentityDouble();
   if (identityState !== undefined) {
@@ -188,7 +230,7 @@ async function scenario(overrides: Partial<RosterOperationRow>, identityState?: 
     expect(prepared).toMatchObject({ ok: true, state: 'prepared' });
     if (identityState === 'committed') await identity.identityClient.commit(row.user_id, row.operation_id);
   }
-  return { store: rosterDb(row), identity, operationId: row.operation_id };
+  return { store: rosterDb(row, deleted), identity, operationId: row.operation_id };
 }
 
 const preparedStarted = (): Promise<Scenario> => scenario({}, 'prepared');
@@ -213,8 +255,11 @@ function writeTexts(store: RosterDb): string[] {
 }
 
 describe('runResolveOperation over a recording database', () => {
-  it('aborts identity and rolls back an operation identity only prepared, found in tenant A through the registry', async () => {
-    const s = await preparedStarted();
+  it.each<[string, string[]]>([
+    ['registered', []],
+    ['deleted from the registry', [A]],
+  ])('aborts identity and rolls back an operation identity only prepared, found through the registry in tenant A %s', async (_label, deleted) => {
+    const s = await scenario({}, 'prepared', deleted);
     const clock = staleClock();
     const run = await runResolveOperation(recordingDeps(s, clock), { operationId: s.operationId });
     expect(run).toEqual({
@@ -228,11 +273,12 @@ describe('runResolveOperation over a recording database', () => {
     expect(writeTexts(s.store)).toContainEqual(expect.stringMatching(/^DELETE FROM \S*open_operation/));
   });
 
-  it.each<[string, string | undefined, string[], RegExp]>([
-    ['only tenant B under --tenant', TENANT_B.tenantId, [TENANT_B.tenantId], /is held by no row of tenant /],
-    ['every registered tenant', undefined, [A, TENANT_B.tenantId], /is held by no registered tenant/],
-  ])('throws OperationNotFoundError after searching %s, writing nothing', async (_label, tenant, searched, message) => {
-    const s = await scenario({});
+  it.each<[string, string | undefined, string[], RegExp, string[]]>([
+    ['only tenant B under --tenant', TENANT_B.tenantId, [TENANT_B.tenantId], /is held by no row of tenant /, []],
+    ['every tenant the registry has known', undefined, [A, TENANT_B.tenantId], /is held by no tenant the registry has known/, []],
+    ['every tenant the registry has known, a deleted site included', undefined, [A, TENANT_B.tenantId], /is held by no tenant the registry has known/, [TENANT_B.tenantId]],
+  ])('throws OperationNotFoundError after searching %s, writing nothing', async (_label, tenant, searched, message, deleted) => {
+    const s = await scenario({}, undefined, deleted);
     const operationId = tenant === undefined ? cfUuid() : s.operationId;
     const run = runResolveOperation(recordingDeps(s), { operationId, ...(tenant === undefined ? {} : { tenant }) });
     await expect(run).rejects.toThrow(OperationNotFoundError);
@@ -320,8 +366,13 @@ interface MainCase {
   exit: number;
   /** The report line's fields; no stdout line when absent. */
   report?: Omit<ResolveReport, 'operationId' | 'tenantId'>;
-  /** What stderr matches; nothing on stderr when absent. */
-  stderr?: RegExp;
+  /** The one stderr line's severity, message and error record, if any; nothing on stderr when absent. */
+  stderr?: { severity: 'ERROR' | 'CRITICAL'; message: string; error?: { type: string; message: string | RegExp } };
+}
+
+/** The `error` record a stderr line of `c` carries, as a matcher. */
+function errorMatcher(error: { type: string; message: string | RegExp }): unknown {
+  return expect.objectContaining({ type: error.type, message: typeof error.message === 'string' ? error.message : expect.stringMatching(error.message) });
 }
 
 describe('main over a recording database', () => {
@@ -329,14 +380,47 @@ describe('main over a recording database', () => {
     ['a prepared operation found through the registry', { setUp: preparedStarted, flags: [], exit: 0, report: { from: 'started', to: 'rolled-back', identityState: 'prepared', outcome: 'aborted' } }],
     [
       'an operation tenant B does not hold',
-      { setUp: preparedStarted, flags: ['--tenant', TENANT_B.tenantId], exit: 1, stderr: /^opt2-people: Roster operation \S+ is held by no row of tenant \S+\n$/ },
+      {
+        setUp: preparedStarted,
+        flags: ['--tenant', TENANT_B.tenantId],
+        exit: 1,
+        stderr: { severity: 'ERROR', message: 'opt2-people: no searched tenant holds the roster operation', error: { type: 'OperationNotFoundError', message: REDACTED } },
+      },
     ],
     [
       'a halted operation without --to',
-      { setUp: haltedCommitted, flags: [], exit: 1, report: { from: 'halted', to: 'halted', identityState: null, outcome: 'unchanged' }, stderr: /^opt2-people: roster operation \S+ is halted; rerun with --to rolled-back or --to done\n$/ },
+      {
+        setUp: haltedCommitted,
+        flags: [],
+        exit: 1,
+        report: { from: 'halted', to: 'halted', identityState: null, outcome: 'unchanged' },
+        stderr: { severity: 'ERROR', message: 'opt2-people: roster operation is halted; rerun with --to rolled-back or --to done' },
+      },
+    ],
+    [
+      'a refused resolution',
+      {
+        setUp: () => scenario({ state: 'rolled-back' }),
+        flags: ['--to', 'done'],
+        exit: 1,
+        stderr: {
+          severity: 'ERROR',
+          message: 'opt2-people: roster operation refused: its recorded states do not allow the resolution, or another resolution holds it',
+          error: { type: 'RosterResolutionError', message: REDACTED },
+        },
+      },
     ],
     ['a halted operation with --to done', { setUp: haltedCommitted, flags: ['--to', 'done'], exit: 0, report: { from: 'halted', to: 'done', identityState: 'committed', outcome: 'finished' } }],
-    ['identity unreachable', { setUp: haltedCommitted, flags: ['--to', 'done'], arrange: unreachable, exit: 1, stderr: /^opt2-people: .*Service identity unavailable.*\n$/ }],
+    [
+      'identity unreachable',
+      {
+        setUp: haltedCommitted,
+        flags: ['--to', 'done'],
+        arrange: unreachable,
+        exit: 1,
+        stderr: { severity: 'ERROR', message: 'opt2-people: identity unavailable; rerun later', error: { type: 'ServiceUnavailableError', message: /^Service identity unavailable \(\S+\)$/ } },
+      },
+    ],
     [
       'an operation its request still holds',
       {
@@ -344,7 +428,7 @@ describe('main over a recording database', () => {
         flags: [],
         exit: 1,
         report: { from: 'started', to: 'started', identityState: null, outcome: 'unchanged' },
-        stderr: /^opt2-people: roster operation \S+ is still started: its request or another resolution holds it, or identity is unreachable; rerun later\n$/,
+        stderr: { severity: 'ERROR', message: 'opt2-people: roster operation is still started: its request or another resolution holds it, or identity is unreachable; rerun later' },
       },
     ],
     [
@@ -355,7 +439,7 @@ describe('main over a recording database', () => {
         arrange: unreachable,
         exit: 1,
         report: { from: 'done', to: 'done', identityState: null, outcome: 'unchanged' },
-        stderr: /^opt2-people: roster operation \S+ is done but identity's finish is still pending; rerun later\n$/,
+        stderr: { severity: 'ERROR', message: "opt2-people: roster operation is done but identity's finish is still pending; rerun later" },
       },
     ],
     [
@@ -365,10 +449,10 @@ describe('main over a recording database', () => {
         flags: [],
         arrange: (s) =>
           s.store.db.respond(ROSTER_CLAIM, () => {
-            throw new Error('database down');
+            throw new Error(`database down for postgres://svc:${SECRET}@db`);
           }),
         exit: 1,
-        stderr: /opt2-people resolve-operation failed/,
+        stderr: { severity: 'CRITICAL', message: 'opt2-people: resolve-operation failed', error: { type: 'Error', message: REDACTED } },
       },
     ],
   ])('runs %s: its exit code and output lines, and the pool closed', async (_label, c) => {
@@ -385,8 +469,16 @@ describe('main over a recording database', () => {
     expect(stdout.map((line) => JSON.parse(line) as unknown)).toEqual(
       c.report === undefined ? [] : [{ operationId: s.operationId, tenantId: A, ...c.report }],
     );
-    if (c.stderr === undefined) expect(stderr).toEqual([]);
-    else expect(stderr.join('')).toMatch(c.stderr);
+    if (c.stderr === undefined) {
+      expect(stderr).toEqual([]);
+    } else {
+      const { error, ...line } = c.stderr;
+      const records = stderrRecords(stderr);
+      expect(records).toEqual([expect.objectContaining({ ...line, ...(error === undefined ? {} : { error: errorMatcher(error) }) })]);
+      if (error === undefined) expect(records[0]).not.toHaveProperty('error');
+      // The report line names the operation; diagnostics never echo the arguments.
+      expect(stderr.join('')).not.toMatch(new RegExp(`${s.operationId}|${TENANT_B.tenantId}|${SECRET}|database down`));
+    }
     expect(end).toHaveBeenCalledOnce();
   });
 });

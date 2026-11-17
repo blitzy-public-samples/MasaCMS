@@ -50,7 +50,7 @@ const CLOCK = businessClock();
 type VerifiedClaims = NonNullable<Parameters<typeof auditActorFor>[0]>;
 type AuditStamp = ReturnType<typeof lastUpdateInfo>;
 
-const REGISTRY_READ = /FROM people\.tenant_registry WHERE tenant_id = \$1$/;
+const REGISTRY_READ = /FROM people\.tenant_registry WHERE tenant_id = \$1 AND NOT deleted$/;
 
 /** The `tenant_registry` row `seedRegistry` stores for the platform fixture of `tenantId`; none for any other tenant. */
 function fixtureRegistryRows(tenantId: unknown): Record<string, unknown>[] {

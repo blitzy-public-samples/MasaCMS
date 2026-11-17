@@ -303,7 +303,7 @@ describe('runLegacyStepWith', () => {
     expect(error).toMatchObject({ windowId: undefined, cause: timeout });
   });
 
-  it('runs every step without a window under the committed v0002', async () => {
+  it('runs only the steps writing content units in a window under the committed v0002, which makes them target-authoritative', async () => {
     const h = harness({ tableVersion: 'v0002', committedCutover: true });
     const runs: Array<[BridgeJobName, string?]> = [
       ['sendReminders'],
@@ -320,7 +320,10 @@ describe('runLegacyStepWith', () => {
     for (const [step, siteId] of runs) {
       await runLegacyStepWith(h.ctx, h.lifecycle, { step, ...CURSOR, ...(siteId === undefined ? {} : { siteId }) });
     }
-    expect(h.open).not.toHaveBeenCalled();
+    expect(h.open.mock.calls.map(([request]) => [request.units, request.scope])).toEqual([
+      [legacyStepUnits(h.ctx, 'publishScheduledChangesets'), { table: true }],
+      [legacyStepUnits(h.ctx, 'feedAutoImport'), { keys: { siteid: 'tenant-a' } }],
+    ]);
     expect(h.jobsRun).toHaveBeenCalledTimes(runs.length);
   });
 });

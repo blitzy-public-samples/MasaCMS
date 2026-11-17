@@ -4,7 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseArgs as parseCliArgs } from 'node:util';
 import { createPublisher, type EventPublisher } from '../events/index.js';
-import { createLogger, serializeError } from '../logging/index.js';
+import { createCliDiagnostics, createLogger, parseArgsProblem, serializeError } from '../logging/index.js';
 import { EnvValidationError, baseEnvSchema, requiredEnvString, z } from '../service-kit/index.js';
 import { createPool, isTenantId, withTenant } from '../tenancy/index.js';
 import { localTimestamp, outboxTable, rowFromDb } from './ddl.js';
@@ -132,7 +132,7 @@ export interface ReplaySummary {
 /** The summary line `main` prints: the replay counts with the schema, `since` and any `--tenant`. */
 type ReplayReport = ReplaySummary & { schema: string; since: string; tenant?: string };
 
-/** Invalid command-line usage; answered on stderr with the usage line and exit code 2. */
+/** Invalid command-line usage, its message a fixed problem text; answered on stderr with the usage line and exit code 2. */
 export class UsageError extends Error {
   override readonly name = 'UsageError';
 }
@@ -153,7 +153,7 @@ export function parseArgs(argv: string[]): ReplayOptions | 'help' {
       },
     });
   } catch (err) {
-    throw new UsageError(messageOf(err));
+    throw new UsageError(parseArgsProblem(err));
   }
   const { values, positionals } = parsed;
   if (values.help) {
@@ -163,7 +163,7 @@ export function parseArgs(argv: string[]): ReplayOptions | 'help' {
     throw new UsageError('missing subcommand');
   }
   if (positionals.length !== 1 || positionals[0] !== 'replay') {
-    throw new UsageError(`unknown subcommand ${JSON.stringify(positionals.join(' '))}`);
+    throw new UsageError('unknown subcommand');
   }
   const { since, tenant, schema } = values;
   if (since === undefined) {
@@ -171,12 +171,10 @@ export function parseArgs(argv: string[]): ReplayOptions | 'help' {
   }
   const sinceDate = isoInstant(since);
   if (sinceDate === undefined) {
-    throw new UsageError(
-      `--since must be an ISO-8601 timestamp with a date, time and zone, such as 2026-06-30T00:00:00Z, got ${JSON.stringify(since)}`,
-    );
+    throw new UsageError('--since must be an ISO-8601 timestamp with a date, time and zone, such as 2026-06-30T00:00:00Z');
   }
   if (tenant !== undefined && !isTenantId(tenant)) {
-    throw new UsageError(`--tenant must be a tenant UUID, got ${JSON.stringify(tenant)}`);
+    throw new UsageError('--tenant must be a tenant UUID');
   }
   if (schema !== undefined) {
     checkSchema(schema);
@@ -200,8 +198,8 @@ function isoInstant(text: string): Date | undefined {
 function checkSchema(schema: string): void {
   try {
     outboxTable(schema);
-  } catch (err) {
-    throw new UsageError(`--schema: ${messageOf(err)}`);
+  } catch {
+    throw new UsageError('--schema must be lower-case letters, digits and _, not starting with a digit');
   }
 }
 
@@ -295,6 +293,7 @@ function trackingFailures(runtime: OutboxRuntime, failedEvents: Set<string>): Ou
 
 /** Runs `opt2-outbox` with the arguments after the script path; returns 0 when every row was republished or help was printed, 1 when a row failed or was skipped or on an error, 2 on a usage or environment error. */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  const diagnostics = createCliDiagnostics({ cli: 'opt2-outbox', usage: USAGE });
   try {
     const args = parseArgs(argv);
     if (args === 'help') {
@@ -307,20 +306,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return result.failed > 0 || result.skipped > 0 ? 1 : 0;
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`opt2-outbox: ${err.message}; ${USAGE}\n`);
+      diagnostics.usage(err.message);
       return 2;
     }
     if (err instanceof EnvValidationError) {
-      process.stderr.write(`${err.message}\n`);
+      // Its safe record names the invalid variables, never their values or issue texts.
+      diagnostics.error('invalid environment', err);
       return 2;
     }
-    process.stderr.write(`opt2-outbox: ${messageOf(err)}\n`);
+    diagnostics.fatal('replay failed', err);
     return 1;
+  } finally {
+    await diagnostics.flush();
   }
 }
 
 /** Parses the variables replay reads with their mode rules; throws EnvValidationError listing every invalid or missing one. */
-function loadReplayEnv(source: NodeJS.ProcessEnv): ReplayEnv {
+export function loadReplayEnv(source: NodeJS.ProcessEnv): ReplayEnv {
   const result = replayEnvSchema.safeParse(source, {
     error: (issue) => (issue.input === undefined ? 'is required' : undefined),
   });
@@ -366,10 +368,6 @@ async function replayFromEnv(args: ReplayOptions, env: ReplayEnv): Promise<Repla
 async function platformVersion(): Promise<string> {
   const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
   return manifest.version;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Writes to stdout and resolves once the chunk is flushed. */

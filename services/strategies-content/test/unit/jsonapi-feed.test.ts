@@ -187,6 +187,15 @@ describe.skipIf(!(await pgAvailable()))('JSON API feed handler', () => {
     });
 
     it.each([
+      ['an anonymous caller', ANONYMOUS],
+      ['an S2 admin of tenant-b', ADMIN_B],
+    ])("findOne of tenant-a's feed through tenant-b answers tenant-b's fresh bean for %s, where legacy loads it by id alone", async (_label, actor) => {
+      const data = wire(await on('findOne', { site: TENANT_B, actor, id: OPEN }));
+      expect(data).toMatchObject({ id: '', feedid: '', name: '', siteid: TENANT_B.siteId, isnew: 1, entityname: 'feed' });
+      expect(await stored(OPEN)).toBe(true);
+    });
+
+    it.each([
       ['an S2 admin, whom AllowAction allows', ADMIN, true],
       ['an anonymous caller', ANONYMOUS, false],
     ])('findOne with fields reads the stored feed for %s, with the cFeed edit link only when allowed', async (_label, actor, edit) => {
@@ -211,6 +220,14 @@ describe.skipIf(!(await pgAvailable()))('JSON API feed handler', () => {
     it('findQuery reads only the selected columns of a fields SELECT, so siteid stays empty', async () => {
       const [item] = itemsOf(await on('findQuery', { actor: COLLECTIONS, url: { name: 'Plain', fields: 'name,bogus' } }));
       expect(item).toEqual({ contentid: '', feedid: PLAIN, id: PLAIN, siteid: '', isnew: 0, entityname: 'feed', name: 'Plain', bogus: '' });
+    });
+
+    it('findQuery before the first record answers a blank row\'s bean: \'\' through the feed setters, the flags keeping init\'s', async () => {
+      const data = wire(await on('findQuery', { actor: COLLECTIONS, url: { fields: 'name,type,displaysummaries,nextn', itemsPerPage: 1, pageIndex: 0 } }));
+      expect(data).toMatchObject({ totalitems: 4, pageindex: 0 });
+      expect(data['items']).toEqual([
+        { name: '', type: '', displaysummaries: '1', nextn: 20, contentid: '', feedid: '', id: '', siteid: '', isnew: 0, entityname: 'feed' },
+      ]);
     });
 
     it.each([

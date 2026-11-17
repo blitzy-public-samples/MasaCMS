@@ -7,7 +7,15 @@ import { businessClock } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { GatewayWaitTimeoutError, type CutoverStatus, type GatewayClient, type InflightRow } from '../../src/cutover/gateway-client.js';
+import {
+  GatewayWaitTimeoutError,
+  createGatewayClient,
+  type CutoverStatus,
+  type CutoverStatusV2,
+  type GatewayClient,
+  type InflightRow,
+  type InflightStatus,
+} from '../../src/cutover/gateway-client.js';
 import type { MigrationEnv } from '../../src/env.js';
 import type { DataOwner, OwnersClient, PositionParams } from '../../src/owners/index.js';
 import { defaultBackgroundRecord, type BackgroundRecord, type BackgroundStateApi } from '../../src/quiesce/background.js';
@@ -24,6 +32,7 @@ import {
 } from '../../src/quiesce/suspend.js';
 import { declaredSubscriptions } from '../../src/quiesce/topology.js';
 import type { PauseResult } from '../../src/scheduler/index.js';
+import type { GatewayGeneration } from '../helpers/gateway-double.js';
 
 vi.mock('../../src/quiesce/subscriptions.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/quiesce/subscriptions.js')>();
@@ -97,9 +106,17 @@ const TENANT = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
 const LIVE_GATEWAY = 'gateway-live';
 const DEAD_GATEWAY = 'gateway-dead';
 const MONITOR_ROUTE = 'job:/_api/sitemonitor/';
-const inflightRow = (instanceId: string, route: string): InflightRow => ({ instanceId, route, side: 'legacy', count: 1, oldestStartedAt: NOW });
-/** Gateway status with one live and one dead instance and the given in-flight rows. */
-const cutoverStatus = (inflight: InflightRow[]): CutoverStatus => ({
+/** A legacy-side in-flight group, orphaned as the gateway reports a dead instance's rows unless `orphaned` says otherwise. */
+const inflightRow = (instanceId: string, route: string, orphaned = instanceId === DEAD_GATEWAY): InflightRow => ({
+  instanceId,
+  route,
+  side: 'legacy',
+  count: 1,
+  oldestStartedAt: NOW,
+  orphaned,
+});
+/** `CutoverStatusV2` with one live and one dead instance and the given in-flight rows. */
+const cutoverStatus = (inflight: InflightRow[]): CutoverStatusV2 => ({
   tableVersion: 'v0001',
   previous: null,
   epoch: 1,
@@ -326,22 +343,38 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
     close: () => Promise.resolve(),
   };
 
-  /** Status the gateway answers; `settle` runs when a wait for in-flight writes is asked, which then answers the awaited routes' dead-instance rows. */
-  const gatewayState = { status: cutoverStatus([]), settle: (): void => undefined };
+  /**
+   * Status the gateway answers, as a `generation` gateway serves it; `settle` runs when a wait for in-flight writes is asked,
+   * which then answers the awaited routes' orphaned rows.
+   */
+  const gatewayState = { status: cutoverStatus([]), generation: 'v2' as GatewayGeneration, settle: (): void => undefined };
   const awaitInflightDrained = vi.fn<GatewayClient['awaitInflightDrained']>((routes) => {
     log.push(`gateway awaitInflightDrained ${routes.join(' ')}`);
     gatewayState.settle();
-    const { instances, inflight } = copy(gatewayState.status);
-    const live = new Set(instances.filter((instance) => instance.live).map((instance) => instance.instanceId));
-    return Promise.resolve({ orphans: inflight.filter((row) => routes.includes(row.route) && !live.has(row.instanceId)) });
+    const { inflight } = copy(gatewayState.status);
+    return Promise.resolve({ orphans: inflight.filter((row) => routes.includes(row.route) && row.orphaned) });
   });
-  const gatewayStatus = (): Promise<CutoverStatus> => {
+  /** `cutoverStatusV2` from `gatewayState.status`, a 404 for it on a v1 gateway, and `cutoverStatus` without `orphaned`. */
+  const gatewayService: ServiceClient = {
+    request<T>(request: ServiceRequest): Promise<ServiceResponse<T>> {
+      const { status, generation } = copy(gatewayState);
+      const answer = (code: number, body: unknown): Promise<ServiceResponse<T>> => Promise.resolve({ status: code, headers: {}, body: body as T });
+      if (request.path === '/internal/v2/cutover/status') return generation === 'v2' ? answer(200, status) : answer(404, { apiversion: 'v1' });
+      if (request.path === '/internal/v1/cutover/status') {
+        return answer(200, { ...status, inflight: status.inflight.map(({ orphaned: _orphaned, ...row }) => row) } satisfies CutoverStatus);
+      }
+      throw new Error(`gateway ${request.method} ${request.path} was requested`);
+    },
+    close: () => Promise.resolve(),
+  };
+  const gatewayClient = createGatewayClient({ migrationClient: gatewayService, operatorClient: gatewayService });
+  const inflightStatus = (): Promise<InflightStatus> => {
     log.push('gateway status');
-    return Promise.resolve(copy(gatewayState.status));
+    return gatewayClient.inflightStatus();
   };
   const gateway = new Proxy({} as GatewayClient, {
     get(_target, member) {
-      if (member === 'status') return gatewayStatus;
+      if (member === 'inflightStatus') return inflightStatus;
       if (member === 'awaitInflightDrained') return awaitInflightDrained;
       throw new Error(`gateway.${String(member)} was read`);
     },
@@ -608,8 +641,9 @@ describe('drainAndSuspend', () => {
     expect(w.shortSleep.mock.calls).toStrictEqual([[DEFAULT_DRAIN_POLL_MS]]);
   });
 
-  it('waits for the live in-flight writes of the gateway before the final drain', async () => {
+  it.each<GatewayGeneration>(['v2', 'v1'])('waits for the live in-flight writes of a %s gateway before the final drain', async (generation) => {
     const w = await world();
+    w.gatewayState.generation = generation;
     w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]);
     w.gatewayState.settle = () => {
       w.gatewayState.status = cutoverStatus([]);
@@ -627,11 +661,15 @@ describe('drainAndSuspend', () => {
     expect(result.switchedToPull).toStrictEqual(PUSHED);
   });
 
-  it.each<[string, InflightRow]>([
-    ['legacy-bound native task run', inflightRow(DEAD_GATEWAY, MONITOR_ROUTE)],
-    ['target-bound write', { ...inflightRow(DEAD_GATEWAY, 'admin:carch.update'), side: 'target', count: 2 }],
-  ])('changes nothing on a first run when a dead instance holds a %s after the first drain', async (_label, orphan) => {
+  it.each<[string, GatewayGeneration, InflightRow]>([
+    ["dead instance's legacy-bound native task run", 'v2', inflightRow(DEAD_GATEWAY, MONITOR_ROUTE)],
+    ["dead instance's legacy-bound native task run", 'v1', inflightRow(DEAD_GATEWAY, MONITOR_ROUTE)],
+    ["dead instance's target-bound write", 'v2', { ...inflightRow(DEAD_GATEWAY, 'admin:carch.update'), side: 'target', count: 2 }],
+    ["dead instance's target-bound write", 'v1', { ...inflightRow(DEAD_GATEWAY, 'admin:carch.update'), side: 'target', count: 2 }],
+    ['target-bound write its live instance abandoned', 'v2', { ...inflightRow(LIVE_GATEWAY, 'admin:carch.update', true), side: 'target' }],
+  ])('changes nothing on a first run when a %s is orphaned after the first drain, read from a %s gateway', async (_label, generation, orphan) => {
     const w = await world();
+    w.gatewayState.generation = generation;
     w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE), orphan]);
 
     const failure = await drainAndSuspend(w.context(), w.ports()).catch((error: unknown) => error);
@@ -639,7 +677,7 @@ describe('drainAndSuspend', () => {
     expect(failure).toBeInstanceOf(OrphanedWritesError);
     expect(failure).toMatchObject({
       name: 'OrphanedWritesError',
-      message: `In-flight writes of dead gateway instances clear only with legacy-restart or gates-closed evidence: ${DEAD_GATEWAY} ${orphan.side} ${orphan.route} (${String(orphan.count)} since ${NOW})`,
+      message: `Orphaned in-flight writes of gateway instances clear only with legacy-restart or gates-closed evidence: ${orphan.instanceId} ${orphan.side} ${orphan.route} (${String(orphan.count)} since ${NOW})`,
       rows: [orphan],
     });
     expect(w.log).toStrictEqual(['get', ...DRAIN_LOG, 'gateway status']);
@@ -711,10 +749,11 @@ describe('drainAndSuspend', () => {
         w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]);
         w.gatewayState.settle = () => {
           w.gatewayState.status.instances = w.gatewayState.status.instances.map((instance) => ({ ...instance, live: false }));
+          w.gatewayState.status.inflight = w.gatewayState.status.inflight.map((row) => ({ ...row, orphaned: true }));
         };
       },
       PRODUCER_TARGETS,
-      new OrphanedWritesError([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]),
+      new OrphanedWritesError([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE, true)]),
     ],
     [
       'dead instance’s in-flight write found by the confirming read',

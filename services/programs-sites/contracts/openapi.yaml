@@ -3352,6 +3352,89 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v2/user-sites:
+    get:
+      operationId: listUserSitesV2
+      summary: Lists one page of the sites the token's user administers in site-id order, as settingsManager.getUserSites rows, reading only the tenants of that page; no host is bound.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - system-user
+      parameters:
+        - $ref: '#/components/parameters/ListPageSize'
+        - $ref: '#/components/parameters/SitePageAfter'
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSitePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: '`invalidParameters` for a `limit` outside 1 to 1000 or an `after` outside 1 to 25 characters.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v2/sites:
+    get:
+      operationId: listSitesV2
+      summary: Lists one page of the registered sites in site-id order as Sites screen rows, reading only the tenants of that page.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/ListPageSize'
+        - $ref: '#/components/parameters/SitePageAfter'
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteListPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: '`invalidParameters` for a `limit` outside 1 to 1000 or an `after` outside 1 to 25 characters.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v2/sites/{siteId}/image-sizes:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: listImageSizesV2
+      summary: Lists one page of the site's custom image sizes by size id.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+      parameters:
+        - $ref: '#/components/parameters/ListPageSize'
+        - $ref: '#/components/parameters/ImageSizePageAfter'
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageSizePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: '`invalidParameters` for a `limit` outside 1 to 1000 or an `after` outside 1 to 35 characters.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /internal/v1/sites/mail-settings:lookup:
     post:
@@ -3376,6 +3459,99 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SiteMailSettingsList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/sites/feed-settings:lookup:
+    post:
+      operationId: lookupSiteFeedSettings
+      summary: Reads the site settings the RSS writers of strategies-content print through settingsManager.getSite, for each listed site id.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:strategies-content
+      x-opt2-fastify-path: /internal/v1/sites/feed-settings::lookup
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteFeedSettingsLookup'
+      responses:
+        '200':
+          description: One item per listed id, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteFeedSettingsList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/sites/config-flags:lookup:
+    post:
+      operationId: lookupSiteConfigFlags
+      summary: Reads the `$.siteConfig` flags strategies-content's Site Manager views test through settingsManager.getSite, for each listed site id.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:strategies-content
+      x-opt2-fastify-path: /internal/v1/sites/config-flags::lookup
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteConfigFlagsLookup'
+      responses:
+        '200':
+          description: One item per listed id, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteConfigFlagsList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/sites/json-api-values:lookup:
+    post:
+      operationId: lookupSiteJsonApiValues
+      summary: Reads the values the JSON API's findOne of the `site` entity answers for each listed site id, for the `site` relations strategies-content's JSON API expands and reads by path.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:strategies-content
+      x-opt2-fastify-path: /internal/v1/sites/json-api-values::lookup
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteJsonApiValuesLookup'
+      responses:
+        '200':
+          description: One item per listed id, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteJsonApiValuesList'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -4190,6 +4366,34 @@ components:
       description: Page size, 1 to 10000; 1000 when omitted.
       schema:
         $ref: '#/components/schemas/DigitString'
+    ListPageSize:
+      name: limit
+      in: query
+      required: false
+      description: Entries per page of a `/v2` list, 1 to 1000; 50 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    SitePageAfter:
+      name: after
+      in: query
+      required: false
+      description: The previous page's `next`; the page starts after this registered site id.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 25
+    ImageSizePageAfter:
+      name: after
+      in: query
+      required: false
+      description: The previous page's `next`; the page starts after this image size id.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 35
     PushKey:
       name: key
       in: query
@@ -4753,6 +4957,23 @@ components:
           oneOf:
             - $ref: '#/components/schemas/LocalTimestamp'
             - type: 'null'
+    SiteListPage:
+      type: object
+      description: One page of the registered sites in site-id order, as the stored Sites screen rows of each one's tenant; `next` is null after the last page.
+      required:
+        - items
+        - next
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SiteListItem'
+        next:
+          description: Cursor of the following page, sent back as `after`.
+          type:
+            - string
+            - 'null'
     UserSite:
       type: object
       description: One site of settingsManager.getUserSites, with the bean's `showDashboard`.
@@ -4806,6 +5027,24 @@ components:
             - string
             - 'null'
           description: Present only when `host` is given. The id contentServer.bindToDomain(isAdmin=true) answers over every registered site by bind order; null for `--none--` on the admin domain or when no site is registered.
+    UserSitePage:
+      type: object
+      description: One page of the sites settingsManager.getUserSites lists, in site-id order (code-point order for the session's sites); `next` is null after the last page.
+      required:
+        - items
+        - next
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: The stored sites of the page's registered sites for an S2 token, else those whose id equals one of the page's session site ids exactly; each as its `UserSiteList` row.
+          items:
+            $ref: '#/components/schemas/UserSite'
+        next:
+          description: Cursor of the following page, sent back as `after`.
+          type:
+            - string
+            - 'null'
     HrefDomains:
       type: object
       description: settingsManager `getAccessControlOriginDomainList()` and `getSite(siteid).getDomain()`, as utility.sanitizeHref reads them.
@@ -4901,6 +5140,153 @@ components:
         context:
           type: string
           description: RemoteContext.
+    SiteFeedSettingsLookup:
+      type: object
+      required:
+        - siteIds
+      additionalProperties: false
+      properties:
+        siteIds:
+          type: array
+          minItems: 1
+          description: Site ids as the RSS writers pass them to `getSite`.
+          items:
+            type: string
+    SiteFeedSettingsList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: One entry per listed id, in request order.
+          items:
+            $ref: '#/components/schemas/SiteFeedSettings'
+    SiteFeedSettings:
+      type: object
+      description: The settings rss20, rss092 and the content URLs they print read from `getSite(siteid)`; an empty id or one naming no site resolves to `default`, ignoring case.
+      required:
+        - siteID
+        - contact
+        - javaLocale
+        - domain
+        - domainAliases
+        - enforcePrimaryDomain
+        - useSSL
+        - remote
+      additionalProperties: false
+      properties:
+        siteID:
+          type: string
+          description: Stored id of the resolved site.
+        contact:
+          type: string
+        javaLocale:
+          type: string
+          description: getJavaLocale(), CF2Java of siteLocale, else of configBean's locale.
+        domain:
+          type: string
+          description: getDomain(), the stored primary domain.
+        domainAliases:
+          type: array
+          description: The domainAlias lines, as isValidDomain lists them.
+          items:
+            type: string
+        enforcePrimaryDomain:
+          type: boolean
+        useSSL:
+          type: boolean
+          description: getUseSSL(), true when useSSL or extranetSSL is.
+        remote:
+          description: Null unless the site is remote, whose getServerPort() and getContext() are then its own rather than configBean's.
+          oneOf:
+            - $ref: '#/components/schemas/SiteMailRemote'
+            - type: 'null'
+    SiteConfigFlagsLookup:
+      type: object
+      required:
+        - siteIds
+      additionalProperties: false
+      properties:
+        siteIds:
+          type: array
+          minItems: 1
+          description: Site ids as the admin views pass them to `getSite`.
+          items:
+            type: string
+    SiteConfigFlagsList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: One entry per listed id, in request order.
+          items:
+            $ref: '#/components/schemas/SiteConfigFlags'
+    SiteConfigFlags:
+      type: object
+      description: The `getValue(<flag>)` answers of `getSite(siteid)`; an empty id or one naming no site resolves to `default`, ignoring case.
+      required:
+        - siteID
+        - hasLockableNodes
+        - hasChangesets
+        - dataCollection
+        - hasComments
+        - scaffolding
+      additionalProperties: false
+      properties:
+        siteID:
+          type: string
+          description: Stored id of the resolved site.
+        hasLockableNodes:
+          type: integer
+          description: The stored number; a non-numeric or NULL value keeps the bean's 0, as setHasLockableNodes does.
+        hasChangesets:
+          type:
+            - integer
+            - 'null'
+          description: The stored number; null for a NULL column, which the bean holds as an empty string.
+        dataCollection:
+          type:
+            - integer
+            - 'null'
+          description: getDataCollection(), 0 while configBean's dataCollection is off, else the stored number; null for a NULL column.
+        hasComments:
+          type: integer
+          description: The stored number; a non-numeric or NULL value keeps the bean's 1, as setHasComments does.
+        scaffolding:
+          type: integer
+          description: The stored number; a non-numeric or NULL value keeps the bean's 1, as setScaffolding does.
+    SiteJsonApiValuesLookup:
+      type: object
+      required:
+        - baseUrl
+        - siteIds
+      additionalProperties: false
+      properties:
+        baseUrl:
+          type: string
+          description: The calling JSON API request's getEndPoint() URL, which the site's links are built under.
+        siteIds:
+          type: array
+          minItems: 1
+          description: Site ids as findOne(entityName='site') loads them; the values keep each id as spelled.
+          items:
+            type: string
+    SiteJsonApiValuesList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: One entry per listed id, in request order; an id naming no registered site answers the new bean.
+          items:
+            $ref: '#/components/schemas/JsonApiSite'
     SiteOrderUpdate:
       type: object
       description: The Sites screen form; list fields are comma lists in row order, as legacy posts them.
@@ -5304,6 +5690,24 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/ImageSize'
+    ImageSizePage:
+      type: object
+      description: One page of a site's custom image sizes by size id; `next` is null after the last page.
+      required:
+        - items
+        - next
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/ImageSize'
+        next:
+          description: Cursor of the following page, sent back as `after`.
+          type:
+            - string
+            - 'null'
     ImageSizeInput:
       type: object
       description: An image size as the Edit Site dialog posts it; a height or width that is neither digits nor `AUTO` keeps the stored value.
@@ -5951,7 +6355,7 @@ components:
           minimum: 0
     InboxCounts:
       type: object
-      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      description: Inbox receipts over every tenant the registry has known, deleted sites included; `receipts` maps each asked event id to the tenants that applied it.
       required:
         - total
         - bySubscription
@@ -5996,7 +6400,7 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
         publishedNext:
@@ -6009,7 +6413,7 @@ components:
         publishedFrontier:
           type: string
           pattern: '^[0-9]+$'
-          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
         publishedUpTo:
           type: integer
           minimum: 0

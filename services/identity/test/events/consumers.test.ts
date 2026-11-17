@@ -432,6 +432,7 @@ describe.skipIf(!available)('identity event consumers', () => {
           domains: [`${siteId}.opt2.test`],
           aggregate_version: '1',
           updated_at: expect.any(Date),
+          deleted: false,
         },
       ]);
       expect(await inboxRows(tenantId, envelope.eventId)).toEqual([{ status: 'applied' }]);

@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   compareManifestKeys,
   diffSnapshotManifests,
+  streamChangedEntries,
+  streamDroppedEntries,
   streamManifestDiff,
   type DiffManifestOptions,
   type ManifestDifference,
@@ -48,6 +50,13 @@ function entry(
 const k = (siteId: string, path: string): ManifestKey => ({ siteId, path });
 
 const keyOf = ({ siteId, path }: ManifestEntry): ManifestKey => k(siteId, path);
+
+/** Every entry `entries` yields, in order. */
+async function collect(entries: AsyncIterable<ManifestEntry>): Promise<ManifestEntry[]> {
+  const found: ManifestEntry[] = [];
+  for await (const next of entries) found.push(next);
+  return found;
+}
 
 /** Async iterable over `entries` that records how far it was read and whether it was closed. */
 function sourceOf(entries: readonly ManifestEntry[], failure?: Error) {
@@ -159,7 +168,7 @@ describe('compareManifestKeys', () => {
 });
 
 describe('diffSnapshotManifests', () => {
-  it('classifies added, removed, changed and unchanged objects and lists the keys to transfer in snapshot-to order', async () => {
+  it('counts added, removed, changed and unchanged objects and streams the copies to transfer and to drop in snapshot order', async () => {
     const keptBefore = entry(4, 'default', `${FID_A}.jpg`);
     const rehashedBefore = entry(4, 'default', `${FID_A}_small.jpg`);
     const resizedBefore = entry(4, 'default', `${FID_B}.pdf`);
@@ -178,20 +187,10 @@ describe('diffSnapshotManifests', () => {
 
     const diff = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read });
 
-    expect(diff).toEqual({
-      from: 4,
-      to: 5,
-      added: [rendition, uploaded],
-      changed: [
-        { before: rehashedBefore, after: rehashedAfter },
-        { before: resizedBefore, after: resizedAfter },
-        { before: adoptedBefore, after: adoptedAfter },
-      ],
-      removed: [deleted],
-      unchanged: 1,
-      toTransfer: [rendition, rehashedAfter, resizedAfter, adoptedAfter, uploaded].map(keyOf),
-    });
+    expect(diff).toEqual({ from: 4, to: 5, added: 2, changed: 3, removed: 1, unchanged: 1 });
     expect(read.mock.calls).toEqual([[4], [5]]);
+    expect(await collect(streamChangedEntries({ db: unusedDb }, 4, 5, { read }))).toEqual([rendition, rehashedAfter, resizedAfter, adoptedAfter, uploaded]);
+    expect(await collect(streamDroppedEntries({ db: unusedDb }, 4, 5, { read }))).toEqual([rehashedBefore, resizedBefore, adoptedBefore, deleted]);
   });
 
   it.each<[string, ManifestEntry[], ManifestEntry[], string]>([
@@ -231,7 +230,7 @@ describe('diffSnapshotManifests', () => {
 
     const diff = await diffSnapshotManifests({ db: unusedDb }, 4, 9, { read: readerOf({ 4: kept, 9: again }) });
 
-    expect(diff).toEqual({ from: 4, to: 9, added: [], changed: [], removed: [], unchanged: 2, toTransfer: [] });
+    expect(diff).toEqual({ from: 4, to: 9, added: 0, changed: 0, removed: 0, unchanged: 2 });
   });
 
   it.each<[string, ManifestEntry[], ManifestEntry[]]>([
@@ -239,9 +238,13 @@ describe('diffSnapshotManifests', () => {
     ['the earlier manifest is empty', [], [entry(5, 'default', `${FID_A}.jpg`), entry(5, 'tenant-a', `${FID_D}.png`)]],
     ['the later manifest is empty', [entry(4, 'default', `${FID_A}.jpg`), entry(4, 'tenant-a', `${FID_D}.png`)], []],
   ])('adds every later object and removes every earlier one when %s', async (_case, before, after) => {
-    const diff = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: readerOf({ 4: before, 5: after }) });
+    const read = readerOf({ 4: before, 5: after });
 
-    expect(diff).toEqual({ from: 4, to: 5, added: after, changed: [], removed: before, unchanged: 0, toTransfer: after.map(keyOf) });
+    const diff = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read });
+
+    expect(diff).toEqual({ from: 4, to: 5, added: after.length, changed: 0, removed: before.length, unchanged: 0 });
+    expect(await collect(streamChangedEntries({ db: unusedDb }, 4, 5, { read }))).toEqual(after);
+    expect(await collect(streamDroppedEntries({ db: unusedDb }, 4, 5, { read }))).toEqual(before);
   });
 
   it.each<[string, [] | [DiffManifestOptions]]>([
@@ -254,16 +257,9 @@ describe('diffSnapshotManifests', () => {
 
     const diff = await diffSnapshotManifests({ db }, 4, 5, ...opts);
 
-    expect(diff).toEqual({
-      from: 4,
-      to: 5,
-      added: [after[1]],
-      changed: [],
-      removed: [before[1]],
-      unchanged: 1,
-      toTransfer: [k('default', `default/cache/file/${FID_C}.png`)],
-    });
-    expect(queries.map((query) => query.values)).toEqual([
+    expect(diff).toEqual({ from: 4, to: 5, added: 1, changed: 0, removed: 1, unchanged: 1 });
+    expect((await collect(streamChangedEntries({ db }, 4, 5, ...opts))).map(keyOf)).toEqual([k('default', `default/cache/file/${FID_C}.png`)]);
+    expect(queries.slice(0, 2).map((query) => query.values)).toEqual([
       [4, 1000],
       [5, 1000],
     ]);
@@ -283,14 +279,17 @@ describe('diffSnapshotManifests', () => {
     ];
     const { db, queries } = manifestDb({ 4: before, 5: after });
     const expected = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: readerOf({ 4: before, 5: after }) });
+    const paged: DiffManifestOptions = { read: (snapshotSeq) => streamManifest({ db }, snapshotSeq, { pageRows }) };
 
-    const diff = await diffSnapshotManifests({ db }, 4, 5, { read: (snapshotSeq) => streamManifest({ db }, snapshotSeq, { pageRows }) });
+    const diff = await diffSnapshotManifests({ db }, 4, 5, paged);
 
     expect(diff).toEqual(expected);
-    expect(diff).toMatchObject({ unchanged: 4, removed: before.slice(2, 4), toTransfer: after.filter((_found, index) => [0, 3, 4, 7, 8].includes(index)).map(keyOf) });
+    expect(diff).toMatchObject({ unchanged: 4, removed: 2, added: 3, changed: 2 });
     expect(Math.max(...queries.map((query) => query.returned))).toBeLessThanOrEqual(pageRows);
     expect(queries.filter((query) => query.values[0] === 4)).toHaveLength(Math.floor(before.length / pageRows) + 1);
     expect(queries.filter((query) => query.values[0] === 5)).toHaveLength(Math.floor(after.length / pageRows) + 1);
+    expect(await collect(streamChangedEntries({ db }, 4, 5, paged))).toEqual(after.filter((_found, index) => [0, 3, 4, 7, 8].includes(index)));
+    expect(await collect(streamDroppedEntries({ db }, 4, 5, paged))).toEqual(before.slice(2, 6));
   });
 
   it('rejects with the reader error when a manifest cannot be read, and closes the other reader', async () => {

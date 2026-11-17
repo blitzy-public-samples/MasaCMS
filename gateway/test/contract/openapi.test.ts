@@ -1,6 +1,7 @@
 /** Gateway contract: buildApp's routes and responses against contracts/openapi.yaml, and its identity and migration calls against theirs. */
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -20,8 +21,10 @@ import {
   type RoleSubject,
 } from '@opt2/platform/testing';
 import { SERVICE_NAME, SERVICE_VERSION } from '../../src/app.js';
+import { STATUS_PAGE_SIZE } from '../../src/cutover/inflight.js';
 import { loadInventoryFacts } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
+import type { CutoverStatus, CutoverStatusV2 } from '../../src/cutover/state.js';
 import type { CutoverTable } from '../../src/cutover/types.js';
 import { PROJECTION_AWAIT_TIMEOUT_MS, createSessionBarrier } from '../../src/dispatcher/barrier.js';
 import { EDGE_METHODS } from '../../src/dispatcher/dispatch.js';
@@ -104,6 +107,8 @@ function loadContract(relative: string): OpenApiDoc {
 }
 
 const DOC = loadContract('../../contracts/openapi.yaml');
+/** `CutoverStatus` as v1 first published it, which every later v1 answer must still satisfy. */
+const PUBLISHED_V1_STATUS = JSON.parse(readFileSync(new URL('fixtures/cutover-status-v1.schema.json', import.meta.url), 'utf8')) as Json;
 const IDENTITY_DOC = loadContract('../../../services/identity/contracts/openapi.yaml');
 const MIGRATION_DOC = loadContract('../../../migration/contracts/openapi.yaml');
 const PIN = JSON.parse(readFileSync(new URL('../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
@@ -114,6 +119,7 @@ const GATEWAY_OPERATION_IDS = [
   'cutoverFreeze',
   'cutoverUnfreeze',
   'cutoverStatus',
+  'cutoverStatusV2',
   'inflightClearOrphans',
   'legacySessionMarkUsed',
   'relayGet',
@@ -160,6 +166,8 @@ const USED_AT = '2026-06-30T12:00:00.000';
 const MARKED_SESSION = 'ids-contract-marked';
 const STALE_SESSION = 'ids-contract-stale';
 const DEAD_INSTANCE = 'gw-contract-dead';
+/** Dead instances, each with one in-flight write, enough for three keyset pages of each status list. */
+const PAGED_INSTANCES = Array.from({ length: 2 * STATUS_PAGE_SIZE + 1 }, (_, i) => `gw-contract-paged-${String(i).padStart(4, '0')}`);
 const MARKED_TOKEN = randomBytes(32).toString('hex').toUpperCase();
 /** The activation's compare-and-set in src/cutover/state.ts, as the memory store matches statements. */
 const CAS_STATEMENT = 'UPDATE gateway.cutover_state SET table_version = $1';
@@ -168,7 +176,12 @@ const ACTIVATE = '/internal/v1/cutover/activate';
 const FREEZE = '/internal/v1/cutover/freeze';
 const UNFREEZE = '/internal/v1/cutover/unfreeze';
 const STATUS = '/internal/v1/cutover/status';
+const STATUS_V2 = '/internal/v2/cutover/status';
 const CLEAR = '/internal/v1/inflight:clear-orphans';
+/** The keys of a v1 in-flight group; v2 adds `orphaned`. */
+const V1_INFLIGHT_KEYS = ['count', 'instanceId', 'oldestStartedAt', 'route', 'side'];
+/** Route of the live instance's running and abandoned writes, one v1 group and two v2 groups. */
+const SPLIT_ROUTE = 'page:saverate';
 const markUsedUrl = (sid: string): string => `/internal/v1/legacy-sessions/${sid}:mark-used`;
 
 const NO_VERSION: Start = {};
@@ -289,6 +302,37 @@ function expectContract(operation: ContractOperation, res: InjectResponse): unkn
 function memoryOf(tg: TestGateway): MemoryGatewayDb {
   if (tg.memory === undefined) throw new TypeError('the test gateway has no memory store');
   return tg.memory;
+}
+
+const satisfiesPublishedV1 = new Ajv2020({ allErrors: true, allowUnionTypes: true }).compile(PUBLISHED_V1_STATUS);
+
+/** `node` without its `description` annotations, which never change what validates. */
+function withoutDescriptions(node: unknown): Json {
+  return JSON.parse(JSON.stringify(node, (key, value: unknown) => (key === 'description' ? undefined : value))) as Json;
+}
+
+/** Adds a running and an abandoned write of the live test instance on SPLIT_ROUTE. */
+function seedSplitRows(tg: TestGateway): void {
+  const startedAt = new Date(Date.now() - 1_000);
+  for (const [request_id, abandoned_at] of [
+    ['r-running', null],
+    ['r-abandoned', startedAt],
+  ] as const) {
+    memoryOf(tg).tables.inflight.push({
+      instance_id: TEST_INSTANCE_ID,
+      request_id,
+      route: SPLIT_ROUTE,
+      side: 'legacy',
+      window_id: null,
+      started_at: startedAt,
+      abandoned_at,
+    });
+  }
+}
+
+function removeSplitRows(tg: TestGateway): void {
+  const { inflight } = memoryOf(tg).tables;
+  inflight.splice(0, inflight.length, ...inflight.filter((row) => row.route !== SPLIT_ROUTE));
 }
 
 function target(tg: TestGateway, name: string): TargetDouble {
@@ -537,7 +581,7 @@ const CONTROL_CASES: Case[] = [
           frozen: [],
           acknowledgedEpoch: startEpoch,
           inflight: [],
-          sessionMode: 'legacy-primary',
+          sessionMode: 'target-primary',
         });
         expect((body as { instances: unknown[] }).instances).toContainEqual(
           expect.objectContaining({ instanceId: TEST_INSTANCE_ID, seenEpoch: startEpoch, live: true }),
@@ -545,7 +589,79 @@ const CONTROL_CASES: Case[] = [
       },
     }),
   ),
+  ...([STATUS, STATUS_V2] as const).map(
+    (url): Case => ({
+      operationId: url === STATUS ? 'cutoverStatus' : 'cutoverStatusV2',
+      status: '200',
+      title: 'streamed across more instances and in-flight groups than one keyset page',
+      start: V0002,
+      isolated: true,
+      before: (tg) => {
+        const { tables } = memoryOf(tg);
+        const at = new Date(Date.now() - 600_000);
+        for (const instance_id of PAGED_INSTANCES) {
+          tables.instance.push({ instance_id, seen_epoch: '1', started_at: at, heartbeat_at: at });
+          tables.inflight.push({ instance_id, request_id: 'r-paged', route: 'page:render', side: 'legacy', window_id: null, started_at: at, abandoned_at: null });
+        }
+      },
+      request: async () => ({ method: 'GET', url, headers: await operatorHeaders() }),
+      verify: (res, body) => {
+        expect(res.headers['content-length']).toBeUndefined();
+        const { instances, inflight, acknowledgedEpoch } = body as CutoverStatusV2;
+        const paged = new Set(PAGED_INSTANCES);
+        expect(instances.map((instance) => instance.instanceId).filter((id) => paged.has(id))).toEqual(PAGED_INSTANCES);
+        expect(instances.filter((instance) => paged.has(instance.instanceId)).every((instance) => !instance.live)).toBe(true);
+        expect(inflight.map((group) => [group.instanceId, group.route, group.count])).toEqual(PAGED_INSTANCES.map((id) => [id, 'page:render', 1]));
+        // A dead instance's rows are orphans in v2; v1 groups carry exactly the keys v1 was published with.
+        expect(new Set(inflight.map((group) => (url === STATUS ? Object.keys(group).sort().join() : group.orphaned)))).toEqual(
+          new Set([url === STATUS ? V1_INFLIGHT_KEYS.join() : true]),
+        );
+        expect(acknowledgedEpoch).toBe(startEpoch);
+      },
+      after: (tg) => {
+        const { tables } = memoryOf(tg);
+        const paged = new Set(PAGED_INSTANCES);
+        tables.instance.splice(0, tables.instance.length, ...tables.instance.filter((row) => !paged.has(row.instance_id)));
+        tables.inflight.splice(0, tables.inflight.length, ...tables.inflight.filter((row) => !paged.has(row.instance_id)));
+      },
+    }),
+  ),
+  {
+    operationId: 'cutoverStatus',
+    status: '200',
+    title: "a live instance's running and abandoned write of one route as one group, valid against v1 as first published",
+    start: V0002,
+    isolated: true,
+    before: seedSplitRows,
+    request: async () => ({ method: 'GET', url: STATUS, headers: await migrationServiceHeaders() }),
+    verify: (_res, body) => {
+      expect((body as CutoverStatus).inflight.filter((group) => group.route === SPLIT_ROUTE)).toEqual([
+        { instanceId: TEST_INSTANCE_ID, route: SPLIT_ROUTE, side: 'legacy', count: 2, oldestStartedAt: expect.any(String) },
+      ]);
+      expect(satisfiesPublishedV1(body), JSON.stringify(satisfiesPublishedV1.errors)).toBe(true);
+    },
+    after: removeSplitRows,
+  },
   ...credentialCases('cutoverStatus', STATUS, 'GET', undefined, 'web', V0002),
+  {
+    operationId: 'cutoverStatusV2',
+    status: '200',
+    title: "a live instance's running and abandoned write of one route as two groups, only the abandoned one orphaned",
+    start: V0002,
+    isolated: true,
+    before: seedSplitRows,
+    request: async () => ({ method: 'GET', url: STATUS_V2, headers: await migrationServiceHeaders() }),
+    verify: (_res, body) => {
+      const group = { instanceId: TEST_INSTANCE_ID, route: SPLIT_ROUTE, side: 'legacy', count: 1, oldestStartedAt: expect.any(String) };
+      expect((body as CutoverStatusV2).inflight.filter(({ route }) => route === SPLIT_ROUTE)).toEqual([
+        { ...group, orphaned: false },
+        { ...group, orphaned: true },
+      ]);
+      expect(body).toMatchObject({ tableVersion: 'v0002', previous: 'v0001', epoch: startEpoch, frozen: [], acknowledgedEpoch: startEpoch });
+    },
+    after: removeSplitRows,
+  },
+  ...credentialCases('cutoverStatusV2', STATUS_V2, 'GET', undefined, 'web', V0002),
   {
     operationId: 'cutoverFreeze',
     status: '200',
@@ -609,6 +725,7 @@ const CONTROL_CASES: Case[] = [
         side: 'legacy',
         window_id: null,
         started_at: startedAt,
+        abandoned_at: null,
       });
     },
     request: async () => ({
@@ -849,6 +966,23 @@ describe('gateway contract document', () => {
 
   it('declares exactly the gateway operation ids', () => {
     expect([...OPERATIONS.keys()].sort()).toEqual([...GATEWAY_OPERATION_IDS].sort());
+  });
+
+  it('keeps CutoverStatus as v1 first published it, and CutoverStatusV2 is it with a required boolean orphaned on each in-flight group', () => {
+    type StatusSchema = Json & { properties: Json & { inflight: Json & { items: Json & { required: string[]; properties: Json } } } };
+    const schemas = (DOC as unknown as { components: { schemas: Record<string, unknown> } }).components.schemas;
+    expect(withoutDescriptions(schemas.CutoverStatus)).toEqual(withoutDescriptions(PUBLISHED_V1_STATUS));
+
+    const v2 = withoutDescriptions(schemas.CutoverStatusV2) as StatusSchema;
+    const { inflight } = v2.properties;
+    const { orphaned, ...v1Properties } = inflight.items.properties;
+    expect(orphaned).toEqual({ type: 'boolean' });
+    expect(inflight.items.required.at(-1)).toBe('orphaned');
+    const asV1 = {
+      ...v2,
+      properties: { ...v2.properties, inflight: { ...inflight, items: { ...inflight.items, required: inflight.items.required.slice(0, -1), properties: v1Properties } } },
+    };
+    expect(asV1).toEqual(withoutDescriptions(PUBLISHED_V1_STATUS));
   });
 
   it('exercises every declared response of every operation', () => {

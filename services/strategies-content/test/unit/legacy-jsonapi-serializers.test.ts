@@ -9,9 +9,13 @@ import {
   contentApiSerializer,
   contentEntityLinks,
   contentImages,
+  ITERATOR_BLANK_ROW_LIMIT,
   iteratorPage,
+  iteratorRows,
   jsonApiEndpoint,
+  pageQueryMisses,
   paramUrl,
+  readRecords,
   selectFields,
   serializeCollection,
   serializeContentEntity,
@@ -670,13 +674,63 @@ describe('iterator serializers', () => {
     expect(page(0, 0)).toMatchObject({ pageCount: 0, firstOnPage: 1, lastOnPage: 0 });
   });
 
+  const range = (from: number, to: number): number[] => Array.from({ length: to - from }, (_, k) => from + k);
+  const none = { blank: 0, records: [], blankAfter: 0, from: 0, count: 0 };
+
+  // recordIndex and end as setIteratorProps leaves them: (pageIndex - 1) * nextN and min(recordCount, pageIndex * nextN).
+  it.each([
+    ['a first page', 20, 0, 20, { ...none, records: range(0, 20), count: 20 }],
+    ['a later page', 20, 5, 10, { ...none, records: range(5, 10), from: 5, count: 5 }],
+    ['page 0 (oracle: startindex -19)', 20, -20, 0, { ...none, blank: 20 }],
+    ['page -3 (oracle: endindex -60)', 20, -80, -60, { ...none, blank: 20 }],
+    ['a fractional page 0.5 of 3 (oracle: two blank items, then the first)', 20, -1.5, 1.5, { ...none, blank: 2, records: [0], count: 1 }],
+    ['a fractional page 1.5 of 3 (oracle: rows 2 to 4)', 20, 1.5, 4.5, { ...none, records: [1, 2, 3], from: 1, count: 3 }],
+    ['page 1.4 of 5, whose index rounds past row 4 (oracle: Alpha 24, 23, 21, 20, 19)', 20, (1.4 - 1) * 5, Math.min(20, 1.4 * 5), { ...none, records: [1, 2, 4, 5, 6], from: 1, count: 6 }],
+    ['page 1.4 of 10 over 8 records, whose last index rounds past them (oracle: four items, then a blank one)', 8, (1.4 - 1) * 10, Math.min(8, 1.4 * 10), { ...none, records: [3, 4, 5, 6], blankAfter: 1, from: 3, count: 4 }],
+    ['a negative page size', 20, 0, -1, none],
+    ['an empty iterator', 0, -20, 0, none],
+    ['an unbounded index', 20, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, none],
+  ] satisfies Array<[string, number, number, number, Struct]>)('iteratorRows reads %s', (_label, recordCount, recordIndex, end, rows) => {
+    expect(iteratorRows(recordCount, recordIndex, end, 'content')).toEqual(rows);
+  });
+
+  it('readRecords picks the records read from the span fetched at their first', () => {
+    const read = iteratorRows(20, (1.4 - 1) * 5, Math.min(20, 1.4 * 5), 'content');
+    expect(readRecords(read, ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'])).toEqual(['r1', 'r2', 'r4', 'r5', 'r6']);
+  });
+
+  it.each([
+    ['a whole page', 20, 1, 20, false, []],
+    ['page 7.5 of 3, whose record lies past getPageIDList (oracle: Alpha 06 isnew 1)', 20, 7.5, 3, false, [0]],
+    ['page 6.9 of 3, whose third record lies past it (oracle: Alpha 06 isnew 1)', 20, 6.9, 3, false, [2]],
+    ['page 0.5 of 3 over one version (oracle: the version isnew 1)', 1, 0.5, 3, false, [2]],
+    ['page 0.4 of 5 read by contentid after blank rows (oracle: Alpha 25 and 24 isnew 1)', 20, 0.4, 5, true, [3, 4]],
+    ['page 0.4 of 5 read by contenthistid (oracle: isnew 0)', 20, 0.4, 5, false, []],
+    ['a page of more than 2000 records, whose beans are read one by one', 2500, 0.9995, 2001, true, []],
+  ] satisfies Array<[string, number, number, number, boolean, number[]]>)('pageQueryMisses of %s', (_label, recordCount, pageIndex, perPage, byContentId, misses) => {
+    const read = iteratorRows(recordCount, (pageIndex - 1) * perPage, Math.min(recordCount, pageIndex * perPage), 'content');
+    expect([...pageQueryMisses(read, { recordCount, pageIndex, perPage }, byContentId)]).toEqual(misses);
+  });
+
+  it('iteratorRows fails closed on more blank rows than legacy finishes within its request timeout', () => {
+    expect(iteratorRows(1, -ITERATOR_BLANK_ROW_LIMIT, 0, 'comment')).toEqual({ ...none, blank: ITERATOR_BLANK_ROW_LIMIT });
+    expect(() => iteratorRows(1, -ITERATOR_BLANK_ROW_LIMIT - 1, 0, 'comment')).toThrow(
+      expect.objectContaining({ name: 'LegacyServiceUnavailableError', reason: 'iterator-blank-rows-timeout' }) as Error,
+    );
+  });
+
+
   it('serializeEntityList uses the iterator entity for the config and primary key', async () => {
     const ctx = context(OWN, { fields: 'name' });
     const feed = entityView('feed', { feedid: 'F1', name: 'Feed', siteid: 'default' }, { entityName: 'content', primaryKey: 'feedID' });
     const [feedItem] = await serializeEntityList([feed], ctx, { entityName: 'feed' });
     expect(feedItem).toMatchObject({ id: 'F1', entityname: 'feed', name: 'Feed' });
-    const [stats] = await serializeEntityList([entityView('stats', { contentid: 'C', siteid: 'default', views: 3 })], context(OWN, {}), { entityName: 'stats' });
-    expect(stats).toMatchObject({ id: 'C', entityname: 'stats', views: 3 });
+    const statsView = entityView('stats', { contentid: 'C', siteid: 'default', views: 3 });
+    const [stats] = await serializeEntityList([statsView], context(OWN, {}), { entityName: 'stats' });
+    expect(stats).toMatchObject({ entityname: 'stats', views: 3 });
+    expect(stats).not.toHaveProperty('id');
+    const [keyed] = await serializeEntityList([statsView], context(OWN, {}), { entityName: 'stats', pk: 'contentid' });
+    expect(keyed).toMatchObject({ id: 'C', entityname: 'stats' });
     const [unknown] = await serializeEntityList([entityView('stats', { a: 1 }, { configName: 'x' })], context(OWN, {}), { entityName: 'plugin' });
     expect(unknown).not.toHaveProperty('id');
   });

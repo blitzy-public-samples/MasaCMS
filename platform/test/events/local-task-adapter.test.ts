@@ -29,7 +29,7 @@ import {
   type TenantDb,
 } from '../../src/tenancy/index.js';
 import { createLocalCloudTasksTransport } from '../../src/auth/index.js';
-import { MemorySpanExporter, SpanKind, flushTracing, shutdownTracing, startSpan, startTracing } from '../../src/tracing/index.js';
+import { MemorySpanExporter, SpanKind, activeSpanIds, flushTracing, shutdownTracing, startSpan, startTracing } from '../../src/tracing/index.js';
 import { createThrowawaySchema, pgAvailable, testPgConfig, type ThrowawaySchema } from '../../src/testing/schema.js';
 import { TENANT_A, TENANT_B, TENANT_LIST, TENANT_UMBRELLA, seedRegistry } from '../../src/testing/fixtures.js';
 import { testSigningKeys, writeTestSecrets } from '../../src/testing/tokens.js';
@@ -785,6 +785,60 @@ describe.skipIf(!available)('local task adapter', () => {
       expect(await stubbed.dispatchDue()).toBe(1);
       expect(calls.at(-1)?.headers.traceparent).toBe(stored.traceparent);
       expect(String(stored.traceparent).split('-')[1]).toBe(traceId);
+    });
+
+    it('checks for due tasks in an unsampled trace and sends each task with only its stored trace context', async () => {
+      hang = false;
+      const exporter = new MemorySpanExporter();
+      await startTracing({ serviceName: 'local-tasks-timer-test', version: '1.0.0', exporter });
+      // Sampling flag of the active span at each transaction the timer-driven adapter opens.
+      const sampled: (boolean | undefined)[] = [];
+      const observed: TenantDb = {
+        schema: db.schema,
+        withTenant: (tenantId, fn) => {
+          sampled.push(activeSpanIds()?.traceSampled);
+          return db.withTenant(tenantId, fn);
+        },
+        withMetadata: (fn, options) => {
+          sampled.push(activeSpanIds()?.traceSampled);
+          return db.withMetadata(fn, options);
+        },
+        end: () => Promise.resolve(),
+      };
+      const task = (name: string): CreateTaskInput => ({
+        queue: 'reporting-export-run',
+        name,
+        scheduleTime: new Date(nowMs - 1000),
+        url: `${target.reporting}/internal/v1/tasks/exports/${name}/run`,
+        deadlineS: 30,
+        tenantId: TENANT_A.tenantId,
+      });
+      const traceparentOf = (name: string): string =>
+        String(received.find((headers) => headers['x-cloudtasks-taskname'] === name)?.traceparent);
+      const createdTrace = await startSpan('create-task', SpanKind.INTERNAL, async (span) => {
+        await real.create(task('timer-traced'));
+        return span.spanContext().traceId;
+      });
+      await real.create(task('timer-untraced'));
+      const timed = await createLocalTaskAdapter({ db: observed, stateDir, serviceUrls: target, clock, logger, pollIntervalMs: 20 });
+      try {
+        for (let i = 0; i < 250 && received.filter((headers) => String(headers['x-cloudtasks-taskname']).startsWith('timer-')).length < 2; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      } finally {
+        await timed.close();
+        await flushTracing();
+        await shutdownTracing();
+      }
+      const untraced = traceparentOf('timer-untraced').split('-');
+      const dispatched = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === untraced[2]);
+
+      expect(sampled.length).toBeGreaterThan(0);
+      expect(new Set(sampled)).toStrictEqual(new Set([false]));
+      expect(traceparentOf('timer-traced')).toMatch(new RegExp(`^00-${createdTrace}-[0-9a-f]{16}-01$`));
+      expect(untraced[3]).toBe('01');
+      expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
+      expect(dispatched?.parentSpanContext).toBeUndefined();
     });
   });
 

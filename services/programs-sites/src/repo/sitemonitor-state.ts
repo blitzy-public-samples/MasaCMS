@@ -75,8 +75,8 @@ export async function writeCursor(db: TenantDb, at: Date, clock: Clock = systemC
   return cursorStateOf(row);
 }
 
-/** Answer of `acquireLease`: the stored cursor (null before the first pass) when granted, `busy` while another holder's lease is live. */
-export type LeaseGrant = { readonly status: 'granted'; readonly lastMonitored: Date | null } | { readonly status: 'busy' };
+/** Answer of `acquireLease`, `busy` while another holder's lease is live, with the stored cursor (null before the first pass). */
+export type LeaseGrant = { readonly status: 'granted' | 'busy'; readonly lastMonitored: Date | null };
 
 /** Takes the run lease for `leaseId` until `until` unless another holder's lease outlasts `clock.now()`. */
 export function acquireLease(db: TenantDb, leaseId: string, until: Date, clock: Clock = systemClock, ctx: WriteContext = {}): Promise<LeaseGrant> {
@@ -84,7 +84,7 @@ export function acquireLease(db: TenantDb, leaseId: string, until: Date, clock: 
     const now = clock.now();
     const row = await repo.findByKey<StateRow>(tx, TABLE, KEY);
     if (row !== null && row.lease_id !== null && row.lease_until !== null && row.lease_until.getTime() > now.getTime()) {
-      return { status: 'busy' };
+      return { status: 'busy', lastMonitored: row.last_monitored };
     }
     const stored = await repo.upsert<StateRow>(tx, TABLE, { ...KEY, lease_id: leaseId, lease_until: until, updated_at: now }, ctx);
     return { status: 'granted', lastMonitored: stored.last_monitored };

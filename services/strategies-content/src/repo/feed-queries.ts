@@ -6,7 +6,7 @@
  * SQL Server semantics are reproduced where results depend on them: text equality and LIKE are case-insensitive,
  * text sorts through lower(), and NULLs sort lowest.
  */
-import { cfIsBoolean, cfIsNumeric, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfIsBoolean, cfIsNumeric, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -157,6 +157,8 @@ export interface FeedCriteria {
   orderBy?: string;
   /** Defaults to 20; 0 lists every row. */
   maxItems?: number;
+  /** The caller re-sorts the rows, so an extended sort no attribute backs halts only when the TOP drops rows. */
+  resorted?: boolean;
   distinct?: boolean;
   /** Legacy `altTable`; a plugin or alternate table this service does not hold, so a non-empty value throws. */
   altTable?: string;
@@ -1159,7 +1161,7 @@ function moduleClause(type: string): string {
 }
 
 // getFeed's default select list: [alias, column, output name where it differs].
-const FEED_SELECT: readonly (readonly [alias: string, column: string, name?: string])[] = [
+export const FEED_SELECT: readonly (readonly [alias: string, column: string, name?: string])[] = [
   ['tcontent', 'siteid'],
   ['tcontent', 'title'],
   ['tcontent', 'menutitle'],
@@ -1291,6 +1293,24 @@ function sortColumn(reference: string, scope: Scope, outputs: readonly ScopeColu
   return scope.column(reference);
 }
 
+/** The ORDER BY key of an extended-attribute sort. */
+const EXTENDED_SORT_KEY = 'qextendedsort.extendedsort';
+
+/** The reason of the legacy 503 for a TOP feed ordered by an extended sort no attribute backs (EX-CONTENT-FEED-UNORDERED-SORT). */
+export const UNORDERED_SORT_REASON = 'feed-extended-sort-unordered';
+
+/** Whether an extended attribute of a `pool` site is named `name`, as the qExtendedSort subquery filters them. */
+async function poolAttributeNamed(tx: TenantTx, pool: readonly string[], name: string): Promise<boolean> {
+  const p = new SqlParams();
+  const rows = await run(
+    tx,
+    `SELECT 1 AS found FROM ${qualified(tx.schema, EXTEND_ATTRIBUTE.table)} tclassextendattributes` +
+      ` WHERE tclassextendattributes.siteid = ANY(${p.add(pool)}::text[]) AND ${ciEq(p, 'tclassextendattributes.name', name)} LIMIT 1`,
+    p.values,
+  );
+  return rows.length > 0;
+}
+
 /** The ORDER BY keys of `getFeed`: `orderBy` when set, else the `sortBy` switch; none when both are empty. */
 function orderTerms(criteria: FeedCriteria, scope: Scope, outputs: readonly ScopeColumn[], extended: ExtendedCastColumn | undefined): OrderTerm[] {
   const orderBy = criteria.orderBy ?? '';
@@ -1325,7 +1345,7 @@ function orderTerms(criteria: FeedCriteria, scope: Scope, outputs: readonly Scop
       return [{ expr: 'random()', type: 'random', direction: 'asc' }];
     default:
       if (extended !== undefined) {
-        return [{ expr: 'qextendedsort.extendedsort', type: extended === 'stringvalue' ? 's' : extended === 'numericvalue' ? 'f' : 't', direction }];
+        return [{ expr: EXTENDED_SORT_KEY, type: extended === 'stringvalue' ? 's' : extended === 'numericvalue' ? 'f' : 't', direction }];
       }
       return [
         { ...scope.column('tcontent.releasedate'), direction: 'desc' },
@@ -1546,10 +1566,23 @@ export async function feedContent(tx: TenantTx, criteria: FeedQuery): Promise<Fe
     const keys = [...terms.map(termSql), ...(aggregated || grouping !== '' ? [] : ['tcontent.tcontent_id'])];
     sql = `${select}${keys.length > 0 ? ` ORDER BY ${keys.join(', ')}` : ''}`;
   }
-  if (maxItems > 0) {
-    sql += ` LIMIT ${p.add(maxItems)}`;
-  }
   await readable(tx, build.units);
-  return run<FeedContentRow | FeedProjectionRow>(tx, sql, p.values) as Promise<FeedContentRow[] | FeedProjectionRow[]>;
+  // With no attribute of that name, every row sorts by NULL, so SQL Server's TOP plan alone picks and orders the rows;
+  // one row beyond the rows the answer may hold tells whether the plan chose among them.
+  const unordered =
+    maxItems > 0 && distinct === '' && !aggregated && grouping === '' && terms.some((term) => term.expr === EXTENDED_SORT_KEY) && !(await poolAttributeNamed(tx, pool, sortBy));
+  const decided = criteria.resorted === true ? maxItems : 1;
+  if (maxItems > 0) {
+    sql += ` LIMIT ${p.add(unordered ? Math.max(maxItems, decided + 1) : maxItems)}`;
+  }
+  const selected = await run<FeedContentRow | FeedProjectionRow>(tx, sql, p.values);
+  if (unordered && selected.length > decided) {
+    throw new LegacyServiceUnavailableError(
+      `No extended attribute "${sortBy}" orders the feed, so legacy answers the rows SQL Server's TOP plan picks (EX-CONTENT-FEED-UNORDERED-SORT)`,
+      'auto',
+      UNORDERED_SORT_REASON,
+    );
+  }
+  return selected as FeedContentRow[] | FeedProjectionRow[];
 }
 

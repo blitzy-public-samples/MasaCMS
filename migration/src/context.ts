@@ -128,7 +128,7 @@ async function closeAll(closers: (() => Promise<void>)[]): Promise<void> {
 export async function createMigrationContext(options: CreateContextOptions = {}): Promise<MigrationContext> {
   const env = options.env ?? loadMigrationEnv();
   assertSqlServerSource(env);
-  const config = loadConfig();
+  const config = loadConfig({ env });
   const catalog = options.catalog ?? loadUnitCatalog(config.paths.tableOwnership);
   const clock = options.clock ?? systemClock;
   // stderr, so the stdout of an `opt2-migrate` command carries only its JSON summary line.

@@ -1,5 +1,6 @@
 /** Local Cloud Tasks stand-in: a tenant-scoped queue table under forced RLS and an in-process dispatcher. */
 import { channel } from 'node:diagnostics_channel';
+import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { request as undiciRequest } from 'undici';
 import {
   CLOUD_TASKS_HEADERS,
@@ -20,7 +21,7 @@ import { UnknownTaskTargetError, queueDefinition, retryDelayS, type RetryPolicy 
 import {
   SYSTEM_TENANT_ID,
   isTenantId,
-  registeredTenants,
+  knownTenants,
   rlsSql,
   withTenant,
   type NotificationHandlers,
@@ -29,7 +30,7 @@ import {
   type TenantTx,
 } from '../tenancy/index.js';
 import { loadLocalSigningKeys, signLocalServiceToken, type MANAGED_INVOKER_NAMES } from '../auth/index.js';
-import { taskHeaders, withCallee, withExtractedContext, type TraceCarrier } from '../tracing/index.js';
+import { extractHttpContext, taskHeaders, withCallee, withUnsampledTrace, type TraceCarrier } from '../tracing/index.js';
 import { systemClock, z, type Clock } from '../service-kit/index.js';
 import { serializeError } from '../logging/index.js';
 
@@ -298,7 +299,7 @@ RETURNING t.*`;
   const notifyWake = (tx: TenantTx, atMs: number): Promise<unknown> => tx.query(NOTIFY_SQL, [channel, `${tx.tenantId} ${String(atMs)}`]);
   const nowText = (): string => toLocalTimestamp(clock.now());
   const scanTenants = async (): Promise<string[]> => [
-    ...new Set([SYSTEM_TENANT_ID, ...(await registeredTenants(db)).map((entry) => entry.tenantId)]),
+    ...new Set([SYSTEM_TENANT_ID, ...(await knownTenants(db)).map((entry) => entry.tenantId)]),
   ];
 
   async function create(input: CreateTaskInput): Promise<CreateTaskResult> {
@@ -338,7 +339,7 @@ WHERE tenant_id = $1 AND queue = $2 AND name = $3 AND status IN ('pending', 'run
     return { name, deleted: false };
   }
 
-  /** One page of live tasks, the system tenant's first and then each registered tenant's, each by schedule time and name. */
+  /** One page of live tasks, the system tenant's first and then each known registry tenant's, each by schedule time and name. */
   async function list(queue: string, page: TaskPageRequest = {}): Promise<TaskPage> {
     queueDefinition(queue);
     const pageSize = resolvePageSize(page.pageSize);
@@ -465,7 +466,8 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
         [CLOUD_TASKS_HEADERS.eta]: String(fromLocalTimestamp(row.schedule_time).getTime() / 1000),
       };
       const deadlineMs = row.deadline_s * 1000;
-      const response = await withExtractedContext(row.headers, () =>
+      // Only the stored trace context goes with the task, as Cloud Tasks sends it; the dispatcher's own context never does.
+      const response = await context.with(extractHttpContext(row.headers, ROOT_CONTEXT), () =>
         withCallee(audience, () =>
           send(row.url, {
             method: 'POST',
@@ -603,7 +605,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     return { dispatches, reachedAll: true };
   }
 
-  /** Scans the system and every registered tenant, leaving a full scan to the next check when it fails or cannot reach them all. */
+  /** Scans the system and every known registry tenant, leaving a full scan to the next check when it fails or cannot reach them all. */
   async function fullScan(): Promise<Promise<void>[]> {
     fullScanNeeded = false;
     try {
@@ -636,7 +638,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
   function schedule(): void {
     timer = setTimeout(() => {
       timer = undefined;
-      ticking = check()
+      ticking = withUnsampledTrace(check)
         .then(
           () => undefined,
           (err: unknown) => {
