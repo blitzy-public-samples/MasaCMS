@@ -1,10 +1,12 @@
-// cChangesets rollback, removeitem and delete as registered behind before() (cchangesets.cfc 149-192): the relayed
-// strategies-content write on tenant-a, then FW/1's redirect (framework.cfc 723-783) whatever the CSRF outcome.
+// cChangesets removeitem and delete as registered behind before(), and the withheld rollback's implementation on the
+// request before() leaves (cchangesets.cfc 149-192): the relayed strategies-content write on tenant-a, then FW/1's
+// redirect (framework.cfc 723-783) whatever the CSRF outcome.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { components } from '@/generated/clients/strategies-content';
 import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { encodeUrl } from '@/lib/html';
 import { applyCchangesetsDefaults, cchangesetsScreens } from '@/screens/cchangesets';
+import { changesetRollbackScreen } from '@/screens/cchangesets/rollback';
 import type { Rc, RedirectScreen, SubmitResult } from '@/screens/registry';
 import { CONTENT_HIST_IDS } from '../../fixtures/strategies-content/carch';
 import { CHANGESET_IDS } from '../../fixtures/strategies-content/changesets';
@@ -79,6 +81,15 @@ function registered(action: WriteCase['action']): RedirectScreen {
   return screen;
 }
 
+/** The submit of `cchangesets.<action>`: the registered one, or the withheld rollback's on the defaulted request. */
+function submitOf(action: WriteCase['action']): RedirectScreen['submit'] {
+  if (action !== 'rollback') return registered(action).submit;
+  return (ctx) => {
+    ctx.req = { ...ctx.req, rc: applyCchangesetsDefaults(ctx.req.rc) };
+    return changesetRollbackScreen.submit(ctx);
+  };
+}
+
 /** The S2 admin posting `rc` to `cchangesets.<action>`. */
 const requestFor = (action: WriteCase['action'], rc: Fields) =>
   adminS2Request({ circuit: 'cchangesets', item: action, rc });
@@ -127,7 +138,7 @@ describe.each(CASES)('cChangesets.$action', (c) => {
     const req = requestFor(c.action, c.rc);
     const ctx = makeScreenContext({ req, gateway: fakeGatewayClient({ [route]: ownerAnswer(c, saved) }) });
 
-    const result = await registered(c.action).submit(ctx);
+    const result = await submitOf(c.action)(ctx);
 
     expect(ctx.gateway.calls).toEqual([
       {
@@ -147,7 +158,7 @@ describe.each(CASES)('cChangesets.$action', (c) => {
     gateway.failWith(outage);
     const ctx = makeScreenContext({ req: requestFor(c.action, c.rc), gateway });
 
-    await expect(registered(c.action).submit(ctx)).rejects.toBe(outage);
+    await expect(submitOf(c.action)(ctx)).rejects.toBe(outage);
     expect(gateway.calls).toHaveLength(1);
   });
 });

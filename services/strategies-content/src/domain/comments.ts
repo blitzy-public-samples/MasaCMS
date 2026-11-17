@@ -884,6 +884,48 @@ export async function unmarkAsSpam(deps: DomainDeps, actor: Actor, commentId: st
   return managerCall('unmarkAsSpam', options, () => changeComment(deps, actor, commentId, setSpam(0), options));
 }
 
+/** A contentCommentBean function the JSON API invokes remotely (contentCommentBean.cfc:317-430). */
+export type CommentRemoteFunction = 'delete' | 'undelete' | 'flag' | 'markAsSpam' | 'unMarkAsSpam';
+
+/** The write of each remote function. */
+const REMOTE_CHANGES: Readonly<Record<CommentRemoteFunction, CommentChange>> = {
+  delete: setDeleted(1),
+  undelete: setDeleted(0),
+  flag: (repository, tx, commentId, write) => repository.comments.incrementFlagCount(tx, { commentId }, write),
+  markAsSpam: setSpam(1),
+  unMarkAsSpam: setSpam(0),
+};
+
+/** What the JSON API invokes a remote function on: `getBean('comment')` of the API site, then `loadBy(commentID)` when an id is given. */
+export interface CommentInvocation {
+  fn: CommentRemoteFunction;
+  /** Tenant the call runs in. */
+  tenantId: string;
+  /** The API site, which getBean sets on the new bean (cfobject.cfc:138-149). */
+  siteId: string;
+  /** The id loadBy reads; loadBy ignores the siteid it is also passed. */
+  commentId?: string;
+}
+
+/**
+ * `invoke(bean, fn)` (jsonApiUtility.cfc:1062-1087, 1163-1170, 1444-1468): `flag`, or the others with module access,
+ * writes its column under the bean's id (a fresh one for a bean loadBy missed) and recounts the bean content's comments.
+ */
+export async function invokeCommentFunction(deps: DomainDeps, actor: Actor, invocation: CommentInvocation): Promise<void> {
+  const write = writeContextFor(actor);
+  await withGatedTenant(deps.db, invocation.tenantId, async (tx) => {
+    const bean = newBean(deps.clock.now());
+    bean.siteID = invocation.siteId;
+    if (invocation.commentId !== undefined) {
+      const row = await deps.repository.comments.findComment(tx, { commentId: invocation.commentId });
+      if (row !== null) applyRow(bean, row, null);
+    }
+    if (invocation.fn !== 'flag' && !allowModuleAccess(actor, true)) return;
+    await REMOTE_CHANGES[invocation.fn](deps.repository, tx, commentIdOf(bean), write);
+    await setCommentStat(tx, deps.repository, bean.contentID, bean.siteID, write);
+  });
+}
+
 /**
  * contentCommentManager.approve (265-281): loads the comment, approves and saves it with notification when it exists
  * (contentManager.approveComment), then runs notifySubscribers on the first load again. Never sends: the mails legacy

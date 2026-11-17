@@ -22,8 +22,10 @@ afterEach(() => {
 });
 
 const inventory = JSON.parse(readFileSync(INVENTORY_PATH, 'utf8')) as { routes: Array<{ routeKey: string | null }> };
-/** Every inventoried remote-function key, `<api|rest>:<entity>.~<function>`. */
-const remoteFunctionKeys = inventory.routes.flatMap((route) => (route.routeKey?.includes('.~') ? [route.routeKey] : []));
+/** Every inventoried remote-function key, `<api|rest>:<entity>.~<function>`; a `{variant}` key keys another spelling of the same call. */
+const remoteFunctionKeys = inventory.routes.flatMap((route) =>
+  route.routeKey?.includes('.~') === true && !route.routeKey.includes('{') ? [route.routeKey] : [],
+);
 
 describe('defaultRouteKeyOptions', () => {
   it('keeps the shared case sites and reads the inventory once', () => {

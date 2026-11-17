@@ -1125,7 +1125,7 @@ export const carchDatamanagerData: AdminViewModel = {
     perm: 'editor',
     hasLockableNodes: 1,
     useLayoutManager: false,
-    rsDataInfo: [{ CountEntered: 3, firstEntered: '2026-06-29 10:15:00.0', lastEntered: '2026-06-30 16:40:00.0' }],
+    rsDataInfo: { firstentered: '2026-06-29 10:15:00.0', lastentered: '2026-06-30 16:40:00.0', countentered: 3 },
     fieldnames: 'fname,lname,email,message',
     rsData: [
       {

@@ -19,10 +19,13 @@ import { isIdentityUnavailable, type SessionRequestInput, type SessionResolver }
 /** Bridge wire time in the legacy server's zone, the space-separated form the bridge parses. */
 const WIRE_TIME_MASK = 'yyyy-MM-dd HH:nn:ss.lll';
 
-/** The session-managed JSON API family, whose `X-csrf_token*` headers replace the fields (jsonApiUtility.cfc:837-844). */
-const HEADER_FAMILY = 'api';
+/** JSON API families; session-managed, their `X-csrf_token*` headers replace the fields (jsonApiUtility.cfc:837-844). */
+const HEADER_FAMILIES: ReadonlySet<string> = new Set(['api', 'rest']);
 
-/** Legacy disables session management for /_api/rest/ (applicationSettings.cfm:179), so no ledger changes there. */
+/**
+ * Legacy disables session management for a path_info under /_api/rest/ (applicationSettings.cfm:179), so no ledger
+ * changes there; a REST key the inventory records session-managed (REST behind an unmapped index.cfm) still does.
+ */
 const SESSIONLESS_FAMILY = 'rest';
 
 /** Validation assumed for a route the inventory does not list; a claim legacy leaves unconsumed is released at settle. */
@@ -100,13 +103,13 @@ function paramText(params: SessionRequestInput['params'], name: string): string 
   return typeof found === 'string' || typeof found === 'number' || typeof found === 'boolean' ? String(found) : undefined;
 }
 
-/** A CSRF field; on the `api` family a present header, even an empty one, replaces the merged param. */
+/** A CSRF field; on a JSON API family a present header, even an empty one, replaces the merged param. */
 function csrfField(request: SessionRequestInput, family: string, header: string, field: string): string | undefined {
-  const fromHeader = family === HEADER_FAMILY ? headerText(request.headers, header) : undefined;
+  const fromHeader = HEADER_FAMILIES.has(family) ? headerText(request.headers, header) : undefined;
   return fromHeader ?? paramText(request.params, field);
 }
 
-/** The CSRF token legacy would validate for the request; undefined when it carries none or an empty one. */
+/** The CSRF token legacy would validate for a session-managed request; undefined when it carries none or an empty one. */
 export function csrfTokenFromRequest(request: SessionRequestInput, family: string): string | undefined {
   const token = csrfField(request, family, CSRF_HEADER_TOKEN, CSRF_FIELD_TOKEN);
   // Legacy rejects an empty token before touching the ledger (sessionUserFacade.cfc:217).
@@ -124,12 +127,12 @@ function servedRoute(route: string | RouteKeyResult): ServedRoute {
 }
 
 /** The jar cookies a browser would still send at `now`. */
-function liveCookies(cookies: JarCookies, now: Date): JarCookies {
+export function liveCookies(cookies: JarCookies, now: Date): JarCookies {
   return Object.fromEntries(Object.entries(cookies).filter(([, cookie]) => !isDeletedJarCookie(cookie, now)));
 }
 
 /** `call`'s result; undefined in legacy-primary while identity is unavailable, as no target route can consume a token then. */
-async function unlessIdentityDown<T>(mode: SessionMode, call: () => Promise<T>): Promise<T | undefined> {
+export async function unlessIdentityDown<T>(mode: SessionMode, call: () => Promise<T>): Promise<T | undefined> {
   try {
     return await call();
   } catch (error) {
@@ -190,12 +193,13 @@ export function createCsrfContinuity(opts: CsrfContinuityOptions): CsrfContinuit
   return {
     async beforeLegacy(request, route, mode) {
       const served = servedRoute(route);
-      if (served.family === SESSIONLESS_FAMILY) return undefined;
+      const restFacts = served.family === SESSIONLESS_FAMILY ? facts.get(served.key) : undefined;
+      if (served.family === SESSIONLESS_FAMILY && restFacts?.sessionless !== false) return undefined;
       const token = csrfTokenFromRequest(request, served.family);
       // Legacy-primary identity re-reads the ledger through describe; only a carried token needs arbitration here.
       if (mode === 'legacy-primary' && token === undefined) return undefined;
 
-      const routeFacts = facts.get(served.key);
+      const routeFacts = restFacts ?? facts.get(served.key);
       const validates = token !== undefined && (routeFacts?.csrfValidation ?? UNLISTED_VALIDATION) === 'validates';
       const resolution = await unlessIdentityDown(mode, () =>
         sessions.resolveLegacyBound(request, { mode, adopt: validates, siteId: served.siteId }),

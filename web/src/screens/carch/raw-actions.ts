@@ -7,7 +7,7 @@ type RawMode = 'fragment' | 'json' | 'download';
 
 /** Inventoried response mode of each carried carch action relayed from its `/v1/raw/carch/<action>` operation. */
 const RAW_ACTION_MODES = {
-  // One definition serves both inventoried branches ({action=approve} and the rest), which share one operation.
+  // Serves the cancel and reject branches; the withheld {action=approve} branch is the registry's not-built list.
   // No CSRF field is required: legacy short-circuits its check (`true or validateCSRFTokens`); the request goes as is.
   approvalaction: 'json',
   assocfiles: 'fragment',
@@ -29,7 +29,6 @@ const RAW_ACTION_MODES = {
   loadquickedit: 'fragment',
   loadrelatedcontent: 'fragment',
   loadselectedrelatedcontent: 'fragment',
-  loadsiteflat: 'fragment',
   loadsitemanager: 'json',
   loadsitesection: 'json',
   loadtagarray: 'json',

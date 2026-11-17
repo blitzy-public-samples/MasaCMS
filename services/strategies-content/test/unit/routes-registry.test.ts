@@ -123,10 +123,10 @@ function contractRoutes(): string[] {
     for (const method of ['get', 'post', 'put', 'delete', 'patch'] as const) {
       const op = item[method];
       if (op === undefined) continue;
-      const fastifyPath = op['x-opt2-fastify-path'];
-      const url = typeof fastifyPath === 'string' ? fastifyPath : template.replace(/\{path\}$/, '*').replace(/\{(\w+)\}/g, ':$1');
+      const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
+      const urls = fastifyPath === undefined ? [template.replace(/\{path\}$/, '*').replace(/\{(\w+)\}/g, ':$1')] : [fastifyPath].flat();
       const requires = Array.isArray(op['x-opt2-requires']) ? (op['x-opt2-requires'] as string[]) : undefined;
-      routes.push(routeText(method.toUpperCase(), url, op['x-opt2-transport'], requires, op['x-opt2-public'] === true));
+      for (const url of urls) routes.push(routeText(method.toUpperCase(), url, op['x-opt2-transport'], requires, op['x-opt2-public'] === true));
     }
   }
   return [...new Set(routes)].sort();

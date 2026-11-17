@@ -94,6 +94,7 @@ export const OVERRIDE_OPERATIONS = [
   'dropHeaders',
   'applyRules',
   'domExclude',
+  'domUnordered',
   'sortArrays',
   'csvKeyOrder',
 ] as const;
@@ -169,15 +170,37 @@ const sessionLogin = patterned<SessionLogin>(
   'must be none, admin, qa_editor or seed:<site>:<role>',
 );
 
+/** Capture-group count of regular expression `source`; -1 when it does not compile. */
+function captureGroups(source: string): number {
+  try {
+    new RegExp(source);
+    return (new RegExp(`${source}|`).exec('')?.length ?? 0) - 1;
+  } catch {
+    return -1;
+  }
+}
+
+const capturePattern = z
+  .string()
+  .refine((source) => captureGroups(source) > 0, 'must be a regular expression with a capture group');
+
 const extraction = z.union(
   [
     z.strictObject({ from: z.literal('body'), path: z.string().min(1) }),
-    z.strictObject({
-      from: z.literal('dom'),
-      selector: z.string().min(1),
-      attr: z.string().min(1).optional(),
-      param: z.string().min(1).optional(),
-    }),
+    z
+      .strictObject({
+        from: z.literal('dom'),
+        selector: z.string().min(1),
+        attr: z.string().min(1).optional(),
+        param: z.string().min(1).optional(),
+        /** First capture group of this pattern, matched against the attribute value or text, is the bound value. */
+        pattern: capturePattern.optional(),
+        path: z.string().min(1).optional(),
+      })
+      .refine((dom) => dom.param === undefined || dom.pattern === undefined, {
+        message: 'param and pattern are exclusive',
+        path: ['pattern'],
+      }),
     z.strictObject({
       from: patterned<`header:${string}`>(/^header:[A-Za-z0-9-]+$/, 'must be header:<Name>'),
       param: z.string().min(1).optional(),
@@ -186,7 +209,7 @@ const extraction = z.union(
   ],
   {
     error:
-      'must be {from: body, path}, {from: dom, selector, attr?, param?}, {from: header:<Name>, param?} ' +
+      'must be {from: body, path}, {from: dom, selector, attr?, param? | pattern?, path?}, {from: header:<Name>, param?} ' +
       'or {from: location-query, param}',
   },
 );
@@ -394,6 +417,7 @@ const normalisationOverrides = z
       dropHeaders: overrideList.optional(),
       applyRules: overrideList.optional(),
       domExclude: overrideList.optional(),
+      domUnordered: overrideList.optional(),
       sortArrays: overrideList.optional(),
       csvKeyOrder: z
         .array(z.string().refine((entry) => parseCsvKeyOrder(entry) !== undefined, 'must be <step>: <column>[, <column>…]'))

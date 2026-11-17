@@ -62,6 +62,7 @@ import {
   type RelationSourceKey,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Struct = Record<string, unknown>;
 type Ctx = Parameters<JsonApiHandlerFn>[0];
@@ -372,6 +373,7 @@ function overlaid(bean: ChangesetBean, event: Readonly<Struct>): Struct {
 export const changesetHandler: EntityHandler = Object.freeze({
   entity: CHANGESET.name,
   config: CHANGESET,
+  validate,
 
   /** findOne (2292-2384). */
   async findOne(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
@@ -555,6 +557,7 @@ function saveErrorsOf(call: JsonApiCall): boolean {
 export const changesetCategoryAssignmentHandler: EntityHandler = Object.freeze({
   entity: ASSIGNMENT.name,
   config: ASSIGNMENT,
+  validate,
 
   /** findOne (2292-2384): the site's assignment with the id, else a new bean keyed by it. */
   async findOne(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {

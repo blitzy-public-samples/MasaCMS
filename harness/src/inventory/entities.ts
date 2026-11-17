@@ -151,7 +151,8 @@ export interface FetchLiveEntitiesDeps {
 }
 
 // Declaration sites of the dynamic entity families. The ids are the ones the committed traceability tables cite;
-// live instances are separate `dynamic` entries that point back here through `patternId`.
+// live instances are separate `dynamic` entries that point back here through `patternId`. Entities declared through
+// tentity or by plugins persist in tables declared at run time, which table ownership names `tentity-declared:*`.
 const FORM_BUILDER_PATTERN = {
   id: 'ent:dyn:fb_*',
   origin: 'formBuilder',
@@ -163,6 +164,7 @@ const FUNCTION_PATTERNS = [
     origin: 'dynamic',
     component: 'core/mura/client/api/json/v1/jsonApiUtility.cfc',
     method: 'declareEntity',
+    table: 'tentity-declared:*',
     reason: 'tentity JSON entities declared through the JSON API',
   },
   {
@@ -170,6 +172,7 @@ const FUNCTION_PATTERNS = [
     origin: 'plugin',
     component: 'core/mura/plugin/pluginConfig.cfc',
     method: 'registerBeanDir',
+    table: 'tentity-declared:*',
     reason: 'entities registered from plugin bean directories',
   },
 ] as const;
@@ -336,6 +339,7 @@ function patternEntries(
         component: dottedName(p.component),
         bom: hasBom(tree, p.component),
         pattern: true,
+        table: p.table,
         origin: p.origin,
         reason: p.reason,
       }),
@@ -605,11 +609,28 @@ function daoWrites(e: EntityEntry, ctx: ClosureContext): Pick<EntityEntry, 'dao'
 }
 
 /**
- * Fills `dao`, `writesTables` and `writesBasis` of every domain bean, once `ctx.index` exists. The DAO is the bean
- * `<file name less Bean>DAO`, else the component the bean's `save()` delegates to, else the bean itself when its
- * `save()` writes. Tables are the closure of the bean's `save()`, or for a bean without one the union of its DAO's
- * methods; a bean with no DAO keeps null.
+ * Writes of a live registration: its table when its declaration reaches `beanORM` or lies outside the tree (generated
+ * form-builder and declared entities), else its DAO's as for a domain bean.
+ */
+function registrationWrites(e: EntityEntry, ctx: ClosureContext): Pick<EntityEntry, 'dao' | 'writesTables' | 'writesBasis'> {
+  const outsideTree = e.source.path === LIVE_SOURCE.path;
+  const orm = (c: CfmlComponent): boolean =>
+    c.path === ORM_ROOT_PATH || dottedKey(c.declaration.attrs.extends ?? '') === ORM_ROOT.toLowerCase();
+  if (e.table !== null && (outsideTree || componentChain(e.source.path, ctx).some(orm))) {
+    return { dao: null, writesTables: [e.table], writesBasis: 'orm-table' };
+  }
+  return outsideTree ? { dao: null, writesTables: null, writesBasis: null } : daoWrites(e, ctx);
+}
+
+/**
+ * Fills `dao`, `writesTables` and `writesBasis` of every domain bean and live registration, once `ctx.index` exists.
+ * The DAO is the bean `<file name less Bean>DAO`, else the component the bean's `save()` delegates to, else the bean
+ * itself when its `save()` writes. Tables are the closure of the bean's `save()`, or for a bean without one the union
+ * of its DAO's methods; a bean with no DAO keeps null.
  */
 export function attachDaoWrites(entities: readonly EntityEntry[], ctx: ClosureContext): EntityEntry[] {
-  return entities.map((e) => (e.class === 'domain-bean' ? { ...e, ...daoWrites(e, ctx) } : e));
+  return entities.map((e) => {
+    if (e.class === 'domain-bean') return { ...e, ...daoWrites(e, ctx) };
+    return e.class === 'dynamic' && !e.pattern ? { ...e, ...registrationWrites(e, ctx) } : e;
+  });
 }

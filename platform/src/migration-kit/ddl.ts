@@ -131,6 +131,18 @@ export function changelogSql(schema: string): string {
   ]);
 }
 
+/**
+ * Returns the `<schema>.changelog` indexes `readChanges` finds a target row's later-positioned same-row predecessors by:
+ * rows sharing its key, and updates whose after-image is its before-image. md5 keeps whole-row keys and images indexable.
+ */
+export function changelogOrderSql(schema: string): string {
+  const table = `${identifier(schema, 'schema')}.${CHANGELOG_TABLE}`;
+  return statements([
+    `CREATE INDEX changelog_key_order_idx ON ${table} (tenant_id, "table", md5(key), xid, seq) WHERE origin = 'target';`,
+    `CREATE INDEX changelog_after_order_idx ON ${table} (tenant_id, "table", md5(after), xid, seq) WHERE origin = 'target' AND op = 'update';`,
+  ]);
+}
+
 /** Returns the DDL of the non-tenant `<schema>.unit_gate`. */
 export function unitGateSql(schema: string): string {
   return statements(

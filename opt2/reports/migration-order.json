@@ -8,10 +8,11 @@
     "kinds": [
       "beanORM fkcolumn/cfc property",
       "DAO join predicate in core/mura/**",
-      "Program_<id> fixture foreign-key column"
+      "Program_<id> fixture foreign-key column",
+      "opt2/table-ownership.json tenantParent join of a table no code join relates to its tenant parent"
     ],
     "foreignKeysDeclared": 0,
-    "cyclePolicy": "load without back-reference column, patch in second pass"
+    "cyclePolicy": "load without back-reference column, patch in second pass; a back-reference mirrored by a kept relation loads unchanged"
   },
   "expectedHead": {
     "provenance": "planning",

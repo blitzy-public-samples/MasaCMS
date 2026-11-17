@@ -503,6 +503,12 @@ describe('createOwnersClient', () => {
       answer: POSITION_ANSWER,
     },
     {
+      name: 'position asks for the registered tenants',
+      call: (owners) => owners.position('timesheets', { registeredTenants: true }),
+      request: { service: 'timesheets', method: 'GET', path: '/internal/v1/migration/position', query: { registeredTenants: 'true' }, userToken: null },
+      answer: POSITION_ANSWER,
+    },
+    {
       name: 'position sends the published page cursor, limit and frontier in decimal',
       call: (owners) => owners.position('people', { publishedTopics: TOPICS, publishedAfter: '41', publishedLimit: 500, publishedThrough: '900' }),
       request: {

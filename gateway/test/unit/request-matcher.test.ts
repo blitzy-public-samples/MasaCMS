@@ -9,7 +9,7 @@ import { fixedClock } from '@opt2/platform/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ORIGINAL_URL_HEADER } from '../../src/admin/map.js';
 import { createResponseModes, type ResponseModes } from '../../src/admin/response-modes.js';
-import { buildRoutingIndex, listVersions, loadVersion } from '../../src/cutover/loader.js';
+import { buildRoutingIndex, listVersions, loadInventoryFacts, loadVersion } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type {
   Authority,
@@ -33,7 +33,7 @@ import {
   type Matcher,
   type MatcherDeps,
 } from '../../src/dispatcher/match.js';
-import { committedIndex } from '../helpers/versions.js';
+import { committedIndex, committedVariants } from '../helpers/versions.js';
 
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const NOW = '2026-06-30T12:00:00Z';
@@ -647,6 +647,145 @@ describe('createMatcher halted requests', () => {
   it('keeps target-only paths, which no legacy scan reads, on their entries', async () => {
     expect((await matchOf(halting(), '/opt2/stub/ping?a-b=one&a.b=two')).destination).toMatchObject({ kind: 'target', service: 'stub' });
     expect((await matchOf(halting(), '/gateway/legacy-bridge/cfml/session.cfm?a-b=one&a.b=two')).destination).toStrictEqual({ kind: 'bare', status: 404 });
+  });
+});
+
+describe('createMatcher REST spellings under the committed v0002', () => {
+  const REST_ID = 'A1B2C3D4-E5F6-7890-ABCDEF1234567890';
+  let entityRemoteFunctions: Readonly<Record<string, readonly string[]>> = {};
+  beforeAll(async () => {
+    ({ entityRemoteFunctions } = await loadInventoryFacts(resolveGatewayPaths({})));
+  });
+  const committedMatcher = (index: RoutingIndex): Matcher =>
+    createMatcher({
+      state: { active: () => index },
+      variants: committedVariants(),
+      modes: MODES,
+      env: { OPT2_SERVICE_URLS: SERVICE_URLS, OPT2_STORAGE_ADAPTER: 'local', OPT2_STATE_DIR: keyedDir },
+      clock: CLOCK,
+      routeKeyOptions: { entityRemoteFunctions },
+    });
+
+  it.each<[string, string, string, Record<string, string>?]>([
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/variationtargeting', 'rest:variationtargeting.save'],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/variationtargeting', 'rest:variationtargeting.save'],
+    ['DELETE', `/Index.cfm/_api/rest/v1/tenant-a/variationtargeting/${REST_ID}`, 'rest:variationtargeting.delete'],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/address/', 'rest:address.save', { siteid: 'tenant-a' }],
+    ['DELETE', '/Index.cfm/_api/rest/v1/tenant-a/category/00000000-0000-0000-0000000000000000', 'rest:category.delete'],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/category/', 'rest:category.save', { siteid: 'tenant-a' }],
+    ['DELETE', '/INDEX.CFM/_api/rest/v1/tenant-a/changeset/00000000-0000-0000-0000000000000000', 'rest:changeset.delete'],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/changeset/', 'rest:changeset.save', { siteid: 'tenant-a' }],
+    ['DELETE', '/index.CFM/_api/rest/v1/tenant-a/changesetCategoryAssignment/00000000-0000-0000-0000000000000000', 'rest:changesetcategoryassignment.delete'],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/changesetCategoryAssignment/', 'rest:changesetcategoryassignment.save', { siteid: 'tenant-a' }],
+    ['DELETE', '/Index.cfm/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000', 'rest:comment.delete'],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/comment/', 'rest:comment.save', { siteid: 'tenant-a' }],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/delete', 'rest:comment.~delete'],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/flag', 'rest:comment.~flag'],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/markAsSpam', 'rest:comment.~markasspam'],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/undelete', 'rest:comment.~undelete'],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/unMarkAsSpam', 'rest:comment.~unmarkasspam'],
+    ['DELETE', '/index.CFM/_api/rest/v1/tenant-a/content/00000000-0000-0000-0000000000000000', 'rest:content.delete'],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/content/', 'rest:content.save', { siteid: 'tenant-a' }],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/?method=delete', 'rest:contentcategoryassign.delete', { siteid: 'tenant-a', entityname: 'contentCategoryAssign' }],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/contentCategoryAssign/', 'rest:contentcategoryassign.save', { siteid: 'tenant-a' }],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/', 'rest:contentnav.delete', { method: 'delete', entityname: 'contentnav', siteid: 'tenant-a' }],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/', 'rest:contentnav.save', { method: 'save', entityname: 'contentnav', siteid: 'tenant-a' }],
+    ['DELETE', '/index.CFM/_api/rest/v1/tenant-a/feed/00000000-0000-0000-0000000000000000', 'rest:feed.delete'],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/feed/', 'rest:feed.save', { siteid: 'tenant-a' }],
+    ['DELETE', '/Index.cfm/_api/rest/v1/tenant-a/file/00000000-0000-0000-0000000000000000', 'rest:file.delete'],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/file/', 'rest:file.save'],
+    ['DELETE', '/INDEX.CFM/_api/rest/v1/tenant-a/fileMetaData/00000000-0000-0000-0000000000000000', 'rest:filemetadata.delete'],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/fileMetaData/', 'rest:filemetadata.save', { siteid: 'tenant-a' }],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/group/', 'rest:group.save', { siteid: 'tenant-a' }],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/login', 'rest:login'],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/oauth', 'rest:oauth', { grant_type: 'client_credentials' }],
+    ['POST', '/index.CFM/_api/rest/v1/tenant-a/oauth2', 'rest:oauth2', { grant_type: 'client_credentials' }],
+    ['DELETE', '/INDEX.CFM/_api/rest/v1/tenant-a/stats/00000000-0000-0000-0000000000000000', 'rest:stats.delete'],
+    ['POST', '/Index.cfm/_api/rest/v1/tenant-a/stats/', 'rest:stats.save', { siteid: 'tenant-a' }],
+    ['GET', '/index.CFM/_api/rest/v1/tenant-a/tokeninfo?access_token=gs-co-19-session&client_id=gs-co-19-session', 'rest:tokeninfo'],
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/user/', 'rest:user.save', { siteid: 'tenant-a' }],
+  ])('serves session-managed %s %s on legacy as the legacy-write {session} variant of %s', async (method, url, base, form) => {
+    const v0002 = await committedIndex('v0002');
+    const body = form === undefined ? {} : { contentType: URLENCODED, body: new URLSearchParams(form).toString() };
+    const outcome = await matchOf(committedMatcher(v0002), url, { method, ...body });
+    expect(outcome.result?.key).toBe(`${base}{session}`);
+    expect(outcome.entry).toMatchObject({ route: `${base}{session}`, state: 'legacy', kind: 'legacy-write', units: v0002.entryFor(base)?.units });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    // The base is a carried write, target with its group, or a withheld legacy-write.
+    const baseEntry = v0002.entryFor(base);
+    expect(baseEntry).toMatchObject(baseEntry?.kind === 'write' ? { state: 'target' } : { state: 'legacy', kind: 'legacy-write' });
+  });
+
+  const SITE = { siteid: 'tenant-a' };
+  const NEUTRAL = '00000000-0000-0000-0000000000000000';
+  it.each<[string, string, string, Record<string, string>?]>([
+    ['POST', '/_api/rest/v1/tenant-a/variationtargeting', 'rest:variationtargeting.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/variationtargeting/${REST_ID}?siteid=tenant-a`, 'rest:variationtargeting.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/address/', 'rest:address.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/category/${NEUTRAL}?siteid=tenant-a`, 'rest:category.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/category/', 'rest:category.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/changeset/${NEUTRAL}?siteid=tenant-a`, 'rest:changeset.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/changeset/', 'rest:changeset.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/changesetCategoryAssignment/${NEUTRAL}?siteid=tenant-a`, 'rest:changesetcategoryassignment.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/changesetCategoryAssignment/', 'rest:changesetcategoryassignment.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/comment/${NEUTRAL}?siteid=tenant-a`, 'rest:comment.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/comment/', 'rest:comment.save', SITE],
+    ['POST', `/_api/rest/v1/tenant-a/comment/${NEUTRAL}/delete`, 'rest:comment.~delete', SITE],
+    ['POST', `/_api/rest/v1/tenant-a/comment/${NEUTRAL}/flag`, 'rest:comment.~flag', SITE],
+    ['POST', `/_api/rest/v1/tenant-a/comment/${NEUTRAL}/markAsSpam`, 'rest:comment.~markasspam', SITE],
+    ['POST', `/_api/rest/v1/tenant-a/comment/${NEUTRAL}/undelete`, 'rest:comment.~undelete', SITE],
+    ['POST', `/_api/rest/v1/tenant-a/comment/${NEUTRAL}/unMarkAsSpam`, 'rest:comment.~unmarkasspam', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/content/${NEUTRAL}?siteid=tenant-a`, 'rest:content.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/content/', 'rest:content.save', SITE],
+    ['POST', '/_api/rest/v1/tenant-a/?method=delete', 'rest:contentcategoryassign.delete', { ...SITE, entityname: 'contentCategoryAssign' }],
+    ['POST', '/_api/rest/v1/tenant-a/contentCategoryAssign/', 'rest:contentcategoryassign.save', SITE],
+    ['POST', '/_api/rest/v1/tenant-a/', 'rest:contentnav.delete', { method: 'delete', entityname: 'contentnav', ...SITE }],
+    ['POST', '/_api/rest/v1/tenant-a/', 'rest:contentnav.save', { method: 'save', entityname: 'contentnav', ...SITE }],
+    ['DELETE', `/_api/rest/v1/tenant-a/feed/${NEUTRAL}?siteid=tenant-a`, 'rest:feed.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/feed/', 'rest:feed.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/file/${NEUTRAL}?siteid=tenant-a`, 'rest:file.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/file/', 'rest:file.save', SITE],
+    ['DELETE', `/_api/rest/v1/tenant-a/fileMetaData/${NEUTRAL}?siteid=tenant-a`, 'rest:filemetadata.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/fileMetaData/', 'rest:filemetadata.save', SITE],
+    ['POST', '/_api/rest/v1/tenant-a/group/', 'rest:group.save', SITE],
+    ['POST', '/_api/rest/v1/tenant-a/login', 'rest:login', SITE],
+    ['POST', '/_api/rest/v1/tenant-a/oauth', 'rest:oauth', { grant_type: 'client_credentials', ...SITE }],
+    ['POST', '/_api/rest/v1/tenant-a/oauth2', 'rest:oauth2', { grant_type: 'client_credentials', ...SITE }],
+    ['DELETE', `/_api/rest/v1/tenant-a/stats/${NEUTRAL}?siteid=tenant-a`, 'rest:stats.delete'],
+    ['POST', '/_api/rest/v1/tenant-a/stats/', 'rest:stats.save', SITE],
+    ['GET', '/_api/rest/v1/tenant-a/tokeninfo?access_token=gs-co-19-siteid&client_id=gs-co-19-siteid&siteid=tenant-a', 'rest:tokeninfo'],
+    ['POST', '/_api/rest/v1/tenant-a/user/', 'rest:user.save', SITE],
+  ])('serves sessionless %s %s carrying a siteid on legacy as the legacy-write {siteid} variant of %s', async (method, url, base, form) => {
+    const v0002 = await committedIndex('v0002');
+    const body = form === undefined ? {} : { contentType: URLENCODED, body: new URLSearchParams(form).toString() };
+    const outcome = await matchOf(committedMatcher(v0002), url, { method, ...body });
+    expect(outcome.result?.key).toBe(`${base}{siteid}`);
+    expect(outcome.entry).toMatchObject({ route: `${base}{siteid}`, state: 'legacy', kind: 'legacy-write', units: v0002.entryFor(base)?.units });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    // The base is a carried write, target with its group, or a withheld legacy-write.
+    const baseEntry = v0002.entryFor(base);
+    expect(baseEntry).toMatchObject(baseEntry?.kind === 'write' ? { state: 'target' } : { state: 'legacy', kind: 'legacy-write' });
+  });
+
+  it.each<[string, string, Record<string, string>?]>([
+    ['an empty form siteid over a url one', '/_api/rest/v1/tenant-a/variationtargeting?siteid=tenant-a', { siteid: '' }],
+    ['an empty url siteid', '/_api/rest/v1/tenant-a/variationtargeting?siteid='],
+  ])('keeps a sessionless REST save with %s on strategies-content', async (_label, url, form) => {
+    const body = form === undefined ? {} : { contentType: URLENCODED, body: new URLSearchParams(form).toString() };
+    const outcome = await matchOf(committedMatcher(await committedIndex('v0002')), url, { method: 'POST', ...body });
+    expect(outcome.result?.key).toBe('rest:variationtargeting.save');
+    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'strategies-content' });
+  });
+
+  it.each([
+    ['POST', '/index.cfm/_api/rest/v1/tenant-a/variationtargeting', 'rest:variationtargeting.save'],
+    ['POST', '/_api/rest/v1/tenant-a/variationtargeting', 'rest:variationtargeting.save'],
+    ['DELETE', `/_API/REST/v1/tenant-a/variationtargeting/${REST_ID}`, 'rest:variationtargeting.delete'],
+  ])('keeps sessionless %s %s on strategies-content as %s', async (method, url, key) => {
+    const outcome = await matchOf(committedMatcher(await committedIndex('v0002')), url, { method });
+    expect(outcome.result?.key).toBe(key);
+    expect(outcome.entry).toMatchObject({ route: key, state: 'target', kind: 'write' });
+    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'strategies-content', path: url });
   });
 });
 

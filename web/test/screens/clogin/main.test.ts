@@ -312,9 +312,13 @@ describe('cloginMainScreen', () => {
   const inventoryMode = (): unknown => {
     const inventory = JSON.parse(
       readFileSync(new URL('../../../../opt2/inventory/legacy-inventory.json', import.meta.url), 'utf8'),
-    ) as { controllers: Array<{ actions: Array<{ id: string; variants: Array<{ responseMode: string }> }> }> };
+    ) as {
+      controllers: Array<{
+        actions: Array<{ id: string; variants: Array<{ routeKey: string; responseMode: string }> }>;
+      }>;
+    };
     const action = inventory.controllers.flatMap((c) => c.actions).find((a) => a.id === 'ctl:clogin.main');
-    return action?.variants[0]?.responseMode;
+    return action?.variants.find((variant) => variant.routeKey === 'admin:clogin.main')?.responseMode;
   };
 
   it('is the identity-owned page of clogin.main, in its inventoried response mode', () => {

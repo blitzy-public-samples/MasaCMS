@@ -1,7 +1,18 @@
 // Admin circuits, their actions and action variants for the legacy inventory (controllers[]), and the core muraAction search.
 import path from 'node:path';
 import type { VariantCondition, VariantDeclaration } from '@opt2/platform/legacy-compat';
-import { computeClosure, lineOf, parseAttributes, parseCfmlComponent, parseCfmTemplate } from './closure.js';
+import {
+  CFML_TRUTHY,
+  cfTruthyText,
+  computeClosure,
+  detectMode,
+  isTruthyPredicate,
+  lineOf,
+  parseAttributes,
+  parseCfmlComponent,
+  parseCfmTemplate,
+  stripComments,
+} from './closure.js';
 import type {
   ClosureContext,
   ClosureWrite,
@@ -14,6 +25,7 @@ import type {
   UnresolvedRef,
   WriteClosure,
 } from './closure.js';
+import { OverrideError } from './overrides.js';
 import type {
   ApplicationGate,
   ExtractorPattern,
@@ -22,6 +34,8 @@ import type {
   RoleOverrides,
   SessionEffects,
   SourceRef,
+  ViewPartial,
+  ViewPartials,
 } from './overrides.js';
 import { inventoryRouteKey, normaliseInventoryKey, variantsFor } from './route-keys.js';
 
@@ -33,6 +47,9 @@ export const VIEWS_DIR = 'admin/core/views';
 
 /** Repository path override references point into, as `<path>#<id>`. */
 export const ROLE_OVERRIDES_REF = 'harness/inventory/role-overrides.yaml';
+
+/** Repository path reviewed-partial references point into, as `<path>#<id>`. */
+export const VIEW_PARTIALS_REF = 'harness/inventory/view-partials.yaml';
 
 /** Layouts a `page` response chooses between per request: `compactDisplay=true` selects compact (admin/common/layouts/default.cfm:1). */
 export const PAGE_LAYOUTS: readonly string[] = Object.freeze(['template', 'compact']);
@@ -81,7 +98,7 @@ export type ActionKind = 'method' | 'view-only';
 export type ExclusionReason = 'lifecycle' | 'base-helper' | 'di-setter' | 'accessor' | 'not-public';
 
 /** Why a file of a circuit's views folder is not a view-only action. */
-export type ViewExclusionReason = 'dsp-include' | 'included' | 'subfolder';
+export type ViewExclusionReason = 'dsp-include' | 'reviewed-partial' | 'subfolder';
 
 /** The role a gate requires, how it was classified and the reviewed override that settles it. */
 export interface RoleGate {
@@ -122,7 +139,9 @@ export interface ExcludedMethod {
 export interface ExcludedView {
   path: string;
   reason: ViewExclusionReason;
-  /** Views that include it, for `included`. */
+  /** `harness/inventory/view-partials.yaml#<id>` of the reviewed partial, for `reviewed-partial`. */
+  ref?: string;
+  /** Views that include it, for `reviewed-partial`. */
   includedBy?: string[];
 }
 
@@ -160,6 +179,13 @@ export interface VariantEntry {
   redirectTarget: string | null;
 }
 
+/** The includers of a view-only action another view includes, and the references addressing it. */
+export interface ViewReachability {
+  includedBy: string[];
+  /** Literal `<circuit>.<action>` references to it in `admin/` and `core/`: muraAction or fuseaction links and fields, FW/1 calls. */
+  addressedBy: SourceRef[];
+}
+
 /** An admin action of a circuit. */
 export interface ActionEntry {
   id: string;
@@ -170,6 +196,8 @@ export interface ActionEntry {
   name: string;
   kind: ActionKind;
   viewPath: string | null;
+  /** Present on a view-only action whose view another view includes. */
+  reachability?: ViewReachability;
   variants: VariantEntry[];
 }
 
@@ -215,6 +243,8 @@ export interface ControllerCounts {
 export interface ControllerInputs {
   variants: readonly VariantDeclaration[];
   roleOverrides: RoleOverrides;
+  /** Included views reviewed as partials; absent, every included view other than a dsp_ include is an action. */
+  viewPartials?: ViewPartials;
 }
 
 /** Result of {@link extractControllers}. */
@@ -1213,11 +1243,12 @@ function includeTarget(from: string, template: string): string | null {
   return target.startsWith('../') ? null : target;
 }
 
-/** A circuit's views folder: its direct `.cfm` files, its subfolders and who includes each template. */
+/** A circuit's views folder: its direct `.cfm` files, its subfolders, who includes each template and each include's line. */
 interface ViewFolder {
   files: string[];
   subfolders: string[];
   includedBy: Map<string, string[]>;
+  includes: Map<string, SourceRef[]>;
 }
 
 function viewFolder(tree: SourceTree, circuit: string): ViewFolder {
@@ -1228,6 +1259,7 @@ function viewFolder(tree: SourceTree, circuit: string): ViewFolder {
   const files = all.filter((p) => isCfm(p) && !nested(p));
   const subfolders = [...new Set(all.filter(nested).map((p) => `${dir}/${p.slice(dir.length + 1).split('/')[0] ?? ''}`))].sort(compareText);
   const includedBy = new Map<string, string[]>();
+  const includes = new Map<string, SourceRef[]>();
   for (const p of all.filter(isCfm)) {
     for (const inc of parseCfmTemplate(p, tree.readText(p)).functions[0]?.includes ?? []) {
       const target = includeTarget(p, inc.template);
@@ -1236,9 +1268,10 @@ function viewFolder(tree: SourceTree, circuit: string): ViewFolder {
       const by = includedBy.get(key) ?? [];
       if (!by.includes(p)) by.push(p);
       includedBy.set(key, by);
+      includes.set(key, [...(includes.get(key) ?? []), sourceRef(p, inc.line, inc.line)]);
     }
   }
-  return { files, subfolders, includedBy };
+  return { files, subfolders, includedBy, includes };
 }
 
 function viewName(p: string): string {
@@ -1260,6 +1293,51 @@ function expandTemplate(tree: SourceTree, rel: string, cache: Map<string, string
   return text;
 }
 
+/** Folders searched for references that address an admin action, and the folder skipped within them. */
+const ACTION_REFERENCE_ROOTS: readonly string[] = ['admin', 'core'];
+const ACTION_REFERENCE_SKIP = 'core/vendor/';
+
+/** An optionally `core:`-qualified `<circuit>.<action>` literal; groups 1 and 2 are circuit and action. */
+const ACTION_LITERAL = String.raw`(?:core:)?([A-Za-z_]\w*)\.([A-Za-z_]\w*)(?![\w$]|\.\w)`;
+const ACTION_PARAM = '(?:muraAction|fuseaction)';
+
+/** Literal action references: a URL or script value, a form field in either attribute order, an FW/1 redirect, buildURL or setView. */
+const ACTION_REFERENCES: readonly RegExp[] = [
+  new RegExp(String.raw`\b${ACTION_PARAM}\s*[=:]\s*["']?${ACTION_LITERAL}`, 'gi'),
+  new RegExp(String.raw`\bname\s*=\s*["']${ACTION_PARAM}["'][^<>]*?\bvalue\s*=\s*["']${ACTION_LITERAL}`, 'gi'),
+  new RegExp(String.raw`\bvalue\s*=\s*["']${ACTION_LITERAL}["'][^<>]*?\bname\s*=\s*["']${ACTION_PARAM}["']`, 'gi'),
+  new RegExp(String.raw`\b(?:redirect|buildURL|setView)\s*\(\s*(?:action\s*=\s*)?["']${ACTION_LITERAL}`, 'gi'),
+];
+
+/** Text searched for action references: CFML with its comments blanked, script files as they are. */
+function referenceText(p: string, text: string): string {
+  const lower = p.toLowerCase();
+  if (lower.endsWith('.cfm')) return stripComments(text, 'tag');
+  return lower.endsWith('.cfc') ? stripComments(text, detectMode(text)) : text;
+}
+
+/** Literal action references in the `.cfm`, `.cfc` and `.js` files of {@link ACTION_REFERENCE_ROOTS}, by lower-cased action. */
+function scanActionReferences(tree: SourceTree): Map<string, SourceRef[]> {
+  const found = new Map<string, Map<string, SourceRef>>();
+  for (const root of ACTION_REFERENCE_ROOTS) {
+    for (const p of tree.list(root, { ext: ['cfm', 'cfc', 'js'], recursive: true })) {
+      if (p.startsWith(ACTION_REFERENCE_SKIP)) continue;
+      const text = referenceText(p, tree.readText(p));
+      for (const re of ACTION_REFERENCES) {
+        for (const m of text.matchAll(re)) {
+          const ref = sourceRef(p, lineOf(text, m.index), lineOf(text, m.index + m[0].length - 1));
+          const key = `${m[1] ?? ''}.${m[2] ?? ''}`.toLowerCase();
+          const refs = found.get(key) ?? new Map<string, SourceRef>();
+          refs.set(`${ref.path}:${String(ref.lines[0])}:${String(ref.lines[1])}`, ref);
+          found.set(key, refs);
+        }
+      }
+    }
+  }
+  const byPlace = (a: SourceRef, b: SourceRef): number => compareText(a.path, b.path) || a.lines[0] - b.lines[0] || a.lines[1] - b.lines[1];
+  return new Map([...found].map(([key, refs]) => [key, [...refs.values()].sort(byPlace)]));
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Variants and write closures
 // ---------------------------------------------------------------------------------------------------------------
@@ -1272,11 +1350,17 @@ function conditionAlternatives(c: VariantCondition): Predicates[] | null {
     const alternatives = c.anyOf.map(conditionAlternatives);
     return alternatives.some((a) => a === null) ? null : alternatives.flatMap((a) => a ?? []);
   }
-  if ('not' in c || 'multipartExtensionIn' in c) return null;
+  if ('not' in c || 'multipartExtensionIn' in c || 'sessionManaged' in c || 'startupSiteId' in c) return null;
   if ('equals' in c) return [{ [c.param]: c.equals }];
   if ('in' in c) return c.in.map((v) => ({ [c.param]: v }));
-  // `nonEmpty` means present and non-empty; `truthy` is the CFML boolean the guards compare against.
-  return [{ [c.param]: 'nonEmpty' in c ? true : 'true' }];
+  return [{ [c.param]: 'nonEmpty' in c ? true : CFML_TRUTHY }];
+}
+
+/** Both values of a CFML-truthy predicate and another on one parameter; undefined when they contradict. */
+function conjoinTruthy(prev: PredicateValue, value: PredicateValue): PredicateValue | undefined {
+  const other = isTruthyPredicate(prev) ? value : prev;
+  if (isTruthyPredicate(other) || other === true) return CFML_TRUTHY;
+  return typeof other === 'string' && cfTruthyText(other) ? other : undefined;
 }
 
 /** Both predicate sets at once, or null when they contradict. */
@@ -1286,7 +1370,11 @@ function conjoin(a: Predicates, b: Predicates): Predicates | null {
     const key = Object.keys(out).find((k) => k.toLowerCase() === name.toLowerCase()) ?? name;
     const prev = out[key];
     const sameText = typeof prev === 'string' && typeof value === 'string' && prev.toLowerCase() === value.toLowerCase();
-    if (prev === undefined || prev === value) out[key] = value;
+    if (prev !== undefined && (isTruthyPredicate(prev) || isTruthyPredicate(value))) {
+      const both = conjoinTruthy(prev, value);
+      if (both === undefined) return null;
+      out[key] = both;
+    } else if (prev === undefined || prev === value) out[key] = value;
     else if (prev === true && typeof value === 'string' && value !== '') out[key] = value;
     else if (!sameText && !(value === true && typeof prev === 'string' && prev !== '')) return null;
   }
@@ -1327,8 +1415,12 @@ function satisfyingRequest(when: readonly VariantCondition[]): {
     } else if ('multipartExtensionIn' in c) {
       const ext = c.multipartExtensionIn[0];
       if (ext !== undefined) multipartFileNames.push({ field: 'file', filename: `upload.${ext}` });
-    } else if ('not' in c) {
+    } else if ('not' in c || 'sessionManaged' in c) {
+      // An admin request is always session-managed (applicationSettings.cfm:179).
       return;
+    } else if ('startupSiteId' in c) {
+      // Legacy's own default site, which every install has.
+      params.siteid ||= 'default';
     } else if ('equals' in c) {
       params[c.param] = c.equals;
     } else if ('in' in c) {
@@ -1385,14 +1477,21 @@ function mergeClosures(closures: readonly WriteClosure[]): WriteClosure {
       const prev = writes.get(key);
       if (prev === undefined || (prev.conditional && !w.conditional)) writes.set(key, w);
     }
-    for (const w of c.conditionalWrites) conditional.set(JSON.stringify([w.table, w.condition, w.source]), w);
+    // Keys leave out `via`: the first closure's call path is kept, as for the writes above.
+    for (const w of c.conditionalWrites) {
+      const key = JSON.stringify([w.table, w.condition, w.source]);
+      if (!conditional.has(key)) conditional.set(key, w);
+    }
     for (const e of c.fileStoreEvidence) {
       const key = JSON.stringify([e.component, e.method, e.source]);
       const prev = evidence.get(key);
       if (prev === undefined || (prev.conditional && !e.conditional)) evidence.set(key, e);
     }
     for (const t of c.threads) threads.set(JSON.stringify([t.component, t.method, t.source]), t);
-    for (const u of c.unresolved) unresolved.set(JSON.stringify([u.source, u.expr, u.kind]), u);
+    for (const u of c.unresolved) {
+      const key = JSON.stringify([u.source, u.expr, u.kind]);
+      if (!unresolved.has(key)) unresolved.set(key, u);
+    }
     c.overrides.forEach((o) => overrides.add(o));
     c.visited.forEach((v) => visited.add(v));
     if (SESSION_RANK[c.sessionEffects] > SESSION_RANK[session]) session = c.sessionEffects;
@@ -1601,12 +1700,79 @@ interface ExtractionState {
   inputs: ControllerInputs;
   expanded: Map<string, string>;
   writeEvidence: ControllerWriteEvidence[];
+  /** Literal action references, scanned on first use. */
+  actionReferences: Map<string, SourceRef[]> | null;
+  /** Reviewed partials by lower-cased view path. */
+  partials: ReadonlyMap<string, ViewPartial>;
+}
+
+/** Literal references in the tree that address `action` (`<circuit>.<action>`), in path and line order. */
+function referencesTo(state: ExtractionState, action: string): SourceRef[] {
+  state.actionReferences ??= scanActionReferences(state.ctx.tree);
+  return state.actionReferences.get(action.toLowerCase()) ?? [];
+}
+
+function refText(r: SourceRef): string {
+  return `${r.path}:${String(r.lines[0])}-${String(r.lines[1])}`;
+}
+
+/** Literal action references of `tree`, scanned on the first lookup. */
+function lazyReferences(tree: SourceTree): (action: string) => SourceRef[] {
+  let scanned: Map<string, SourceRef[]> | null = null;
+  return (action) => (scanned ??= scanActionReferences(tree)).get(action.toLowerCase()) ?? [];
+}
+
+/**
+ * A check of reviewed partials against `tree`, returning what the tree contradicts in one: an absent view, no or other
+ * includes, a method or dsp_ name, or a reference addressing it as an action. Checks share one parse per circuit.
+ */
+export function viewPartialChecker(
+  tree: SourceTree,
+  references: (action: string) => SourceRef[] = lazyReferences(tree),
+): (partial: ViewPartial) => string[] {
+  const controllers = tree.list(CONTROLLERS_DIR, { ext: ['cfc'] });
+  const circuits = new Map<string, { component: CfmlComponent | null; folder: ViewFolder }>();
+  const circuitOf = (circuit: string): { component: CfmlComponent | null; folder: ViewFolder } => {
+    const known = circuits.get(circuit);
+    if (known !== undefined) return known;
+    const p = controllers.find((c) => path.posix.basename(c).replace(/\.cfc$/i, '').toLowerCase() === circuit.toLowerCase());
+    const parsed = { component: p === undefined ? null : parseCfmlComponent(p, tree.readText(p)), folder: viewFolder(tree, circuit) };
+    circuits.set(circuit, parsed);
+    return parsed;
+  };
+  return (partial) => {
+    const circuit = path.posix.basename(path.posix.dirname(partial.view));
+    const name = viewName(partial.view);
+    if (!tree.exists(partial.view)) return [`${partial.view} does not exist`];
+    const { component, folder } = circuitOf(circuit);
+    if (component === null) return [`${partial.view} belongs to no controller of ${CONTROLLERS_DIR}`];
+    const issues: string[] = [];
+    if (name.toLowerCase().startsWith('dsp_')) issues.push(`${partial.view} is a dsp_ include, excluded by its name`);
+    if (methodActions(component).actions.some((fn) => fn.name.toLowerCase() === name.toLowerCase())) {
+      issues.push(`${partial.view} is the view of the ${circuit}.${name} method action`);
+    }
+    const includes = (folder.includes.get(partial.view.toLowerCase()) ?? []).map(refText).sort(compareText);
+    const recorded = partial.includers.map(refText).sort(compareText);
+    if (includes.length === 0) issues.push(`${partial.view} is not included by another view`);
+    else if (includes.join() !== recorded.join()) {
+      issues.push(`includers ${recorded.join(', ')} differ from its includes ${includes.join(', ')}`);
+    }
+    const addressed = references(`${circuit}.${name}`);
+    if (addressed.length > 0) issues.push(`${circuit}.${name} is addressed as an action at ${addressed.map(refText).join(', ')}`);
+    return issues;
+  };
+}
+
+/** Throws an `OverrideError` naming {@link VIEW_PARTIALS_REF} with every issue `check` finds in `partials`. */
+function checkPartials(partials: readonly ViewPartial[], check: (partial: ViewPartial) => string[]): void {
+  const issues = partials.flatMap((p) => check(p).map((issue) => `${p.id}: ${issue}`));
+  if (issues.length > 0) throw new OverrideError(VIEW_PARTIALS_REF, issues);
 }
 
 /** An action before its variants: its method or view and its settled role. */
 type ActionSeed = { name: string; role: RoleGate } & (
   | { kind: 'method'; fn: CfmlFunction; viewPath: string | null }
-  | { kind: 'view-only'; fn: null; viewPath: string }
+  | { kind: 'view-only'; fn: null; viewPath: string; reachability?: ViewReachability }
 );
 
 function idOfKey(key: string): string {
@@ -1689,7 +1855,8 @@ async function buildAction(
     variants.push(variant(keyed.key, index, decl));
   }
   variants.push(variant(base.key, declared.length, null));
-  return { id: idOfKey(base.baseKey), source, action: name.toLowerCase(), name, kind: seed.kind, viewPath, variants };
+  const reachability = seed.kind === 'view-only' && seed.reachability !== undefined ? { reachability: seed.reachability } : {};
+  return { id: idOfKey(base.baseKey), source, action: name.toLowerCase(), name, kind: seed.kind, viewPath, ...reachability, variants };
 }
 
 /** Lower-cased names of the controllers another controller extends. */
@@ -1770,13 +1937,17 @@ async function extractController(
   for (const file of folder.files) {
     const name = viewName(file);
     if (methodNames.has(name.toLowerCase())) continue;
-    const includedBy = folder.includedBy.get(file.toLowerCase());
+    const includers = folder.includedBy.get(file.toLowerCase())?.slice().sort(compareText);
+    const partial = state.partials.get(file.toLowerCase());
     if (name.toLowerCase().startsWith('dsp_')) {
       excludedViews.push({ path: file, reason: 'dsp-include' });
-    } else if (includedBy !== undefined) {
-      excludedViews.push({ path: file, reason: 'included', includedBy: [...includedBy].sort(compareText) });
+    } else if (partial !== undefined && includers !== undefined) {
+      excludedViews.push({ path: file, reason: 'reviewed-partial', ref: `${VIEW_PARTIALS_REF}#${partial.id}`, includedBy: includers });
     } else {
-      seeds.push({ name, kind: 'view-only', fn: null, viewPath: file, role: roleOf(name) });
+      // FW/1 renders any requested view, so an included view stays an action unless it is a reviewed partial.
+      const reachability =
+        includers === undefined ? {} : { reachability: { includedBy: includers, addressedBy: referencesTo(state, `${circuit}.${name}`) } };
+      seeds.push({ name, kind: 'view-only', fn: null, viewPath: file, role: roleOf(name), ...reachability });
     }
   }
   excludedViews.sort((a, b) => compareText(a.path, b.path));
@@ -1804,7 +1975,10 @@ async function extractController(
   return { entry, unclassified: unsettledGates(circuit, seeds, gates, requiredRole) };
 }
 
-/** Every controller of `admin/core/controllers/` with its actions, their variants, write closures, gates, CSRF facts and response modes. */
+/**
+ * Every controller of `admin/core/controllers/` with its actions, their variants, write closures, gates, CSRF facts and
+ * response modes; throws `OverrideError` when the tree contradicts a reviewed partial.
+ */
 export async function extractControllers(ctx: ClosureContext, inputs: ControllerInputs): Promise<ControllerExtraction> {
   const components = ctx.tree.list(CONTROLLERS_DIR, { ext: ['cfc'] }).map((p) => {
     const component = parseCfmlComponent(p, ctx.tree.readText(p));
@@ -1812,7 +1986,10 @@ export async function extractControllers(ctx: ClosureContext, inputs: Controller
     return component;
   });
   const bases = baseNames(components);
-  const state: ExtractionState = { ctx, inputs, expanded: new Map(), writeEvidence: [] };
+  const reviewed = inputs.viewPartials?.partials ?? [];
+  const partials = new Map(reviewed.map((p) => [p.view.toLowerCase(), p]));
+  const state: ExtractionState = { ctx, inputs, expanded: new Map(), writeEvidence: [], actionReferences: null, partials };
+  checkPartials(reviewed, viewPartialChecker(ctx.tree, (action) => referencesTo(state, action)));
   const controllers: ControllerEntry[] = [];
   const unclassifiedGates: UnclassifiedGate[] = [];
   for (const component of components) {

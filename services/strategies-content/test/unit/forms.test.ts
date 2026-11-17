@@ -308,6 +308,49 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     expect(validated).toEqual([responseId, responseId]);
   });
 
+  it.each([
+    ['the seed dataset ISO text', '2026-03-05T17:04:00.000', 20],
+    ['the edit form CF text', '2026-03-05 17:04:00.0', 21],
+  ] as const)('updates a seeded response from the GS-CO-14 edit post with entered as %s, writing the packet legacy wrote', async (_label, entered, n) => {
+    const formId = cfId('F', n);
+    await insertForm(fx, formId, n, MY_FORM);
+    const seeded = await updateResponse(fx.deps, ADMIN, {
+      formid: formId, siteid: SITE_ID, fieldnames: 'fullname,email,message',
+      fullname: 'Trenton Kuhn-Rice', email: 'trenton.kuhnrice@seed.opt2.test', message: 'Aegre sapiente nemo ancilla titulus blanditiis.',
+    });
+    expect(seeded.packet.fieldlist).toBe('fullname,email,message');
+    const validated: string[] = [];
+    const result = await dataManagerAction(
+      fx.deps,
+      ADMIN,
+      {
+        fullname: 'Trenton Kuhn-Rice', email: 'trenton.kuhnrice@seed.opt2.test', message: 'GS-CO-14 updated message',
+        formid: formId, contentid: formId, siteid: SITE_ID, muraAction: 'cArch.datamanager', responseID: seeded.responseId,
+        hour1: '0', hour2: '23', minute1: '0', minute2: '59', date1: '', date2: '', fieldlist: 'email,fullname,message',
+        sortBy: 'Entered', sortDirection: 'asc', filterBy: '', keywords: '', entered, moduleid: '00000000000000000000000000000000004', action: 'update',
+      },
+      { validateCsrfTokens: async (c: string) => (validated.push(c), true) },
+    );
+    expect([result.outcome, validated]).toEqual(['updated', [seeded.responseId]]);
+    // tformresponsepackets.Data of the response GS-CO-14 updated on legacy.
+    const legacyPacket =
+      "<wddxPacket version='1.0'><header/><data><struct>" +
+      `<var name='responseid'><string>${seeded.responseId}</string></var>` +
+      "<var name='message'><string>GS-CO-14 updated message</string></var>" +
+      "<var name='fieldnames'><string>email,fullname,message</string></var>" +
+      "<var name='email'><string>trenton.kuhnrice@seed.opt2.test</string></var>" +
+      "<var name='fullname'><string>Trenton Kuhn-Rice</string></var>" +
+      '</struct></data></wddxPacket>';
+    const [packet] = await fx.rows('form_response_packet', 'responseid = $1', [seeded.responseId]);
+    expect(packet).toMatchObject({ data: legacyPacket, fieldlist: 'email,fullname,message', entered: new Date(2026, 2, 5, 17, 4, 0, 0) });
+    const questions = await fx.rows('form_response_question', 'responseid = $1', [seeded.responseId], 'formfield');
+    expect(questions.map((q) => [q.formfield, q.formvalue, q.pollvalue])).toEqual([
+      ['email', 'trenton.kuhnrice@seed.opt2.test', 'trenton.kuhnrice@seed.opt2.test'],
+      ['fullname', 'Trenton Kuhn-Rice', 'Trenton Kuhn-Rice'],
+      ['message', 'GS-CO-14 updated message', 'GS-CO-14 updated message'],
+    ]);
+  });
+
   it('downloads the CSV as downloaddata.cfm writes it', async () => {
     const formId = cfId('F', 11);
     await insertForm(fx, formId, 8, MY_FORM_SHOWN);

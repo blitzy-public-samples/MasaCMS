@@ -1,11 +1,10 @@
 // Legacy inventory orchestrator: runs the extractors over the pinned archive, decides every item's disposition and
-// writes opt2/inventory/legacy-inventory.{json,md}.
+// writes opt2/inventory/legacy-inventory.{json,md}, plus the live snapshot of a --live run.
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { gitArchiveExtract } from '../lib/git.js';
-import type { FetchLike } from '../lib/http.js';
-import { createReadOnlyMssql, type ReadOnlyMssql } from '../lib/mssql.js';
+import { createReadOnlyMssql } from '../lib/mssql.js';
 import { isInsideRepo, opt2Path, REPO_ROOT, stateDir, type EnvLike } from '../lib/paths.js';
 import { pinnedSha, readPin } from '../lib/pin.js';
 import { sortKeysDeep, stableStringify, writeMarkdown } from '../lib/report.js';
@@ -14,6 +13,7 @@ import {
   openSourceTree,
   type ClosureContext,
   type ClosureWrite,
+  type ComponentIndex,
   type ConditionalWrite,
   type SourceTree,
   type UnresolvedRef,
@@ -33,6 +33,8 @@ import {
   AREA_OWNERS,
   areaKeyForRouteKey,
   decide,
+  expectedOutcome,
+  haltingExceptionId,
   loadDecisionList,
   loadExceptions,
   NO_OWNER,
@@ -50,19 +52,35 @@ import {
   type StoredDataOwner,
   type VariantPredicates,
   type WriteProtocol,
+  type WriteSetOwners,
 } from './disposition.js';
 import {
   attachDaoWrites,
   classCounts,
   extractEntities,
-  fetchLiveEntities,
   mergeLive,
   type EntityEntry,
   type LiveEntities,
 } from './entities.js';
-import { extractFrontEnd, type FrontEndEntry } from './frontend.js';
-import { extractJobs, jobWriteEvidence, type ExpectedOutcome, type ScheduledJobEntry, type ScheduledJobStep } from './jobs.js';
-import { loadRoleOverrides, loadWriterOverrides, type RoleOverrides, type SourceRef, type WriterOverrides } from './overrides.js';
+import { extractFrontEnd, type FrontEndEntry, type UnreachableRemote } from './frontend.js';
+import { AAP_REF, extractJobs, jobWriteEvidence, type ExpectedOutcome, type ScheduledJobEntry, type ScheduledJobStep } from './jobs.js';
+import {
+  captureLiveSnapshot,
+  LIVE_SNAPSHOT_JSON,
+  readLiveSnapshot,
+  writeLiveSnapshot,
+  type LiveSnapshot,
+  type LiveSources,
+} from './live-snapshot.js';
+import {
+  loadRoleOverrides,
+  loadViewPartials,
+  loadWriterOverrides,
+  type RoleOverrides,
+  type SourceRef,
+  type ViewPartials,
+  type WriterOverrides,
+} from './overrides.js';
 import { extractRelations, type Relation, type RelationCounts } from './relations.js';
 import { renderInventoryMarkdown } from './render-md.js';
 import { loadInventoryVariants, normaliseInventoryKey, type InventoryVariants } from './route-keys.js';
@@ -70,11 +88,21 @@ import { extractRoutes, type RouteCounts, type RouteEntry } from './routes.js';
 import { buildComponentIndex, extractAliases, extractServices, extractTransients, STARTUP_PATH, type ServiceEntry } from './services.js';
 import { storedProcedureCheck, type LiveCheck, type StoredProcedureCheck } from './stored-procedures.js';
 import {
+  RowTypeLookups,
+  UnitResolver,
+  WRITER_OVERRIDES_REF,
+  type BranchFacts,
+  type GuardOf,
+  type ItemWriteFacts,
+  type ProjectedWrites,
+  type WriteEvidenceSet,
+} from './units.js';
+import {
   assignOwners,
   attachWriters,
   DB_UPDATES_DIR,
+  extractFixtureTables,
   extractTables,
-  fetchLiveCatalog,
   loadTableOwnership,
   mergeLiveCatalog,
   tableKey,
@@ -91,8 +119,6 @@ export const INVENTORY_JSON = 'legacy-inventory.json';
 
 /** File name of the Markdown rendering in the output directory. */
 export const INVENTORY_MD = 'legacy-inventory.md';
-
-const WRITER_OVERRIDES_REF = 'harness/inventory/writer-overrides.yaml';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Types
@@ -116,9 +142,20 @@ export interface DispositionFields {
   correction: DispositionCorrection | null;
 }
 
-/** Tables of an item's write closure left out of its disposition write set by an environment guard. */
+/** Kind of a guard under which a closure write never runs while the oracle serves a request. */
+export type GuardKind = 'cluster-broadcast' | 'site-load' | 'entity-load' | 'trash-restore';
+
+/** A closure write that runs only under a guard on every path the closure records for it. */
+export type GuardedWrite = Pick<ClosureWrite, 'op' | 'component' | 'method' | 'source'> & {
+  kind: GuardKind;
+  table: string;
+  guard: string;
+};
+
+/** Tables of an item's write closure left out of its disposition write set by a guard, and the guarded writes. */
 export interface EnvironmentExclusion {
   environmentExcludedWrites: string[];
+  guardedWrites: GuardedWrite[];
 }
 
 /** Disposition of one target unit of a split table. */
@@ -127,11 +164,23 @@ export interface UnitDisposition extends DispositionFields {
   rowPredicate: string | null;
 }
 
+/** Exceptions-list and plan-expectation references of a route-bearing entry point. */
+export interface EntryReferences {
+  /** Id of the halted exceptions-list entry covering the entry's route key. */
+  exceptionRef: string | null;
+  /** Disposition and owner the plan's tables expect. */
+  expected: ExpectedOutcome | null;
+}
+
 // Inventory entries: each extractor's facts plus the owner and disposition fields decided here.
 /** An `entities[]` entry. */
-export type InventoryEntity = EntityEntry & DispositionFields & EnvironmentExclusion;
-export type InventoryService = ServiceEntry & DispositionFields & EnvironmentExclusion & { tablesWritten: string[] };
-export type InventoryVariant = VariantEntry & DispositionFields & EnvironmentExclusion;
+export type InventoryEntity = EntityEntry & DispositionFields & Pick<EnvironmentExclusion, 'environmentExcludedWrites'>;
+export type InventoryService = ServiceEntry &
+  DispositionFields &
+  Pick<EnvironmentExclusion, 'environmentExcludedWrites'> & { tablesWritten: string[] };
+/** Closure evidence an entry point's extractor keeps, which its write facts replace in the inventory. */
+type RawWriteFields = 'writeSet' | 'conditionalWrites' | 'closureEvidence' | 'fileStoreEvidence' | 'unresolved' | 'unresolvedCalls';
+export type InventoryVariant = Omit<VariantEntry, RawWriteFields> & DispositionFields & ItemWriteFacts & EntryReferences;
 export type InventoryAction = Omit<ActionEntry, 'variants'> & { variants: InventoryVariant[] };
 export type InventoryController = Omit<ControllerEntry, 'actions'> & {
   owningService: string | null;
@@ -140,17 +189,31 @@ export type InventoryController = Omit<ControllerEntry, 'actions'> & {
   dispositionStep: null;
   actions: InventoryAction[];
 };
-export type InventoryFrontEnd = Omit<FrontEndEntry, 'closure'> &
+export type InventoryFrontEnd = Omit<FrontEndEntry, 'closure' | RawWriteFields> &
   DispositionFields &
-  EnvironmentExclusion &
-  Pick<WriteClosure, 'conditionalWrites' | 'threads' | 'overrides'> & {
-    unresolvedCalls: UnresolvedRef[];
+  ItemWriteFacts &
+  EntryReferences &
+  Pick<WriteClosure, 'threads' | 'overrides'> & {
     /** A legacy writer of units a target service owns, run inside write windows once those units move. */
     windowed: boolean;
   };
-export type InventoryJobStep = Omit<ScheduledJobStep, 'closure'> & DispositionFields & EnvironmentExclusion;
+/** A remote CFC method HTTP cannot reach at the pin: no route key, no route and no target code. */
+export type InventoryUnreachableRemote = DispositionFields & {
+  /** `fe:unreachable:<lower-cased component path>#<method>`. */
+  id: string;
+  component: string;
+  method: string;
+  source: SourceRef;
+  /** `<file>:<start>-<end>` of the aborting `onRequestStart`. */
+  guard: string;
+  routeKey: null;
+};
+export type InventoryJobStep = Omit<ScheduledJobStep, 'closure' | 'tables' | RawWriteFields> & DispositionFields & ItemWriteFacts;
 export type InventoryJob = Omit<ScheduledJobEntry, 'steps'> & DispositionFields & { steps: InventoryJobStep[] };
-export type InventoryRoute = Omit<RouteEntry, 'owningService' | 'disposition' | 'dispositionStep'> & DispositionFields & EnvironmentExclusion;
+export type InventoryRoute = Omit<RouteEntry, 'owningService' | 'disposition' | 'dispositionStep' | RawWriteFields> &
+  DispositionFields &
+  ItemWriteFacts &
+  EntryReferences;
 export type InventoryTable = Omit<TableEntry, 'owningService' | 'decisionListRef'> &
   DispositionFields & {
     /** Owner value of the ownership file: a service, `split`, `decision-list` or `retired`. */
@@ -175,6 +238,7 @@ export type FindingKind =
   | 'unresolved-call'
   | 'unmatched-write'
   | 'unkeyed-entry'
+  | 'absent-entity-table'
   | 'count-difference';
 
 /** A finding of the run; `measure` names a count, `id` an inventoried item. */
@@ -202,10 +266,13 @@ export interface LegacyInventory {
   controllers: InventoryController[];
   coreMuraActionSearch: CoreMuraActionSearch;
   frontEnd: InventoryFrontEnd[];
+  unreachableRemote: InventoryUnreachableRemote[];
   scheduledJobs: InventoryJob[];
   routes: InventoryRoute[];
   tables: InventoryTable[];
   relations: Relation[];
+  /** Join edges with no key side; kept with their evidence and left out of the dependency order. */
+  unorientedRelations: Relation[];
   storedProcedureCheck: InventoryStoredProcedureCheck;
   findings: GeneratedFinding[];
 }
@@ -220,6 +287,7 @@ export interface InventoryCounts {
   controllers: ControllerEntryCounts;
   coreMuraActionFiles: number;
   frontEnd: number;
+  unreachableRemote: number;
   scheduledJobs: { jobs: number; siteMonitorSteps: number };
   routes: RouteCounts;
   tables: {
@@ -249,6 +317,7 @@ type ControllerEntryCounts = Awaited<ReturnType<typeof extractControllers>>['cou
 /** Reviewed and committed inputs, each read and validated once per run. */
 export interface InventoryInputs {
   roleOverrides: RoleOverrides;
+  viewPartials: ViewPartials;
   writerOverrides: WriterOverrides;
   variants: InventoryVariants;
   ownership: TableOwnership;
@@ -258,17 +327,14 @@ export interface InventoryInputs {
   fixtureTree?: SourceTree | null;
 }
 
-/** Live sources of a `--live` run; the caller owns and closes `db`. */
-export interface LiveSources {
-  origin: string;
-  db: ReadOnlyMssql;
-  fixturesLoaded: boolean;
-  fetch?: FetchLike;
-}
+export type { LiveSnapshot, LiveSources } from './live-snapshot.js';
 
 /** Options of {@link generateInventory}; without `sourceTree` the pinned commit is extracted with `git archive`. */
 export interface GenerateOptions {
+  /** Live sources to capture a snapshot from; not combinable with `liveSnapshot`. */
   live?: LiveSources;
+  /** A captured snapshot to rebuild the live fields from; absent or null leaves them `pending-run`. */
+  liveSnapshot?: LiveSnapshot | null;
   sourceTree?: SourceTree;
   inputs?: Partial<InventoryInputs>;
   /** Keep the archive extraction and return its path. */
@@ -277,10 +343,11 @@ export interface GenerateOptions {
   expectedDbUpdates?: number | null;
 }
 
-/** The generated inventory, its Markdown text and the kept extraction directory, if any. */
+/** The generated inventory, its Markdown text, the live snapshot it was built from and the kept extraction directory. */
 export interface GenerateResult {
   inventory: LegacyInventory;
   markdown: string;
+  liveSnapshot: LiveSnapshot | null;
   extractDir: string | null;
 }
 
@@ -288,17 +355,26 @@ export interface GenerateResult {
 // Facts no extractor yields
 // ---------------------------------------------------------------------------------------------------------------
 
-/** Rule-step facts of an item beyond its writes: a CFML-runtime dependence or an owner held in stored data. */
-interface RuntimeFact {
+/** Rule-step facts of an item beyond its writes: a CFML-runtime dependence, an owner held in stored data, or what it serves. */
+export interface RuntimeFact {
   runtimeCategory?: RuntimeCategory;
   webRootFilesystem?: boolean;
   storedDataOwner?: StoredDataOwner;
+  servesBranch?: string;
+  servesTable?: string;
 }
 
 // Disposition facts of admin actions that the extractors, which record writes only, cannot see: CFML-runtime
 // dependence (bundle engine, plugins, export HTML, scaffolder, display objects), the legacy web-root filesystem and
-// owners held in stored data (subtype baseTable, trash objectClass). Keyed by base route key, else by circuit area.
+// owners held in stored data (subtype baseTable, trash objectClass), the withheld branch a screen only submits and the
+// decision-list table an area only serves. Keyed by base route key, else by circuit area.
 const ADMIN_FACTS: Readonly<Record<string, RuntimeFact>> = Object.freeze({
+  // before() loads trazunasettings for every action and builds the Razuna client from it (razuna.cfc:35-42).
+  'admin:razuna': { servesTable: 'trazunasettings' },
+  // No view exists, so FW/1 raises viewNotFound (carch.cfc:246-248, framework.cfc:477-480) and onError_include.cfm answers.
+  'admin:carch.loadrepomanager': { runtimeCategory: 'framework-error' },
+  // Its only form submits cSettings.sitecopy (admin/core/views/csettings/sitecopyselect.cfm:88-108).
+  'admin:csettings.sitecopyselect': { servesBranch: 'admin:csettings.sitecopy' },
   'admin:cplugins': { runtimeCategory: 'plugin' },
   'admin:scaffold': { runtimeCategory: 'scaffolder' },
   'admin:cfilemanager': { webRootFilesystem: true },
@@ -323,8 +399,14 @@ const ADMIN_FACTS: Readonly<Record<string, RuntimeFact>> = Object.freeze({
   'admin:carch.frontendconfigurator': { runtimeCategory: 'theme-render' },
 });
 
-// The same dependencies of DI1 services, by component path prefix; the output cache holds rendered theme output.
+// The same dependencies of DI1 services and entity entries, by component path prefix; the output cache holds rendered
+// theme output, MasaScope builds the site and theme content renderers (MasaScope.cfc:153-195), the Razuna client is
+// configured only from trazunasettings (admin/core/controllers/razuna.cfc:40-41) and formBuilderManager writes the
+// form entities it generates into the site directory (formBuilderManager.cfc:405-418, 502-509).
 const SERVICE_FACTS: readonly (readonly [string, RuntimeFact])[] = Object.freeze([
+  ['core/mura/MasaScope.cfc', { runtimeCategory: 'theme-render' }],
+  ['core/mura/content/file/razuna/', { servesTable: 'trazunasettings' }],
+  ['core/mura/formBuilder/formBuilderManager.cfc', { webRootFilesystem: true }],
   ['core/mura/plugin/', { runtimeCategory: 'plugin' }],
   ['core/mura/autoUpdater/', { runtimeCategory: 'auto-update' }],
   ['core/mura/cluster/', { runtimeCategory: 'cluster' }],
@@ -346,16 +428,47 @@ const STEP_FACTS: Readonly<Record<string, RuntimeFact>> = Object.freeze({
   'cache-purge': { runtimeCategory: 'theme-render' },
 });
 
-// Legacy states that never hold while a request runs in the oracle environment. A write reached only under one stays as
-// evidence in the closure and in its table's writers, but is left out of the write set an item is disposed by:
-// - cluster commands are written only with broadcasting on and peers present (clusterManager.cfc:203-211), which the
-//   environment check asserts never hold;
+/** A guard: its kind, the reason recorded with each write it holds, and the condition conjunct the closure records for it. */
+interface WriteGuard {
+  kind: GuardKind;
+  guard: string;
+  conjunct: RegExp;
+}
+
+// Branches that never run while the oracle serves a request. A write reached only under one stays as evidence in the
+// closure and in its table's writers, but is left out of the write set an item is disposed by:
+// - cluster commands, peer registration and appreload broadcasts run only with broadcasting on and peers present
+//   (clusterManager.cfc:81-83,203-259), which the environment check asserts never hold; the clearOldCommands deletes
+//   stay, as the site-monitor cluster-cleanup step is disposed by them;
 // - a stored site missing from the in-memory registry is loaded on demand with its module configuration
 //   (settingsManager.cfc:440-486); start-up fills the registry and the projector refreshes it after every site
-//   change, so those writes are the start-up writer's, not the request's.
-const ENVIRONMENT_GUARDS: readonly { tables: readonly string[] | null; condition: RegExp }[] = Object.freeze([
-  { tables: ['tclustercommands'], condition: /\bbroadcastClusterCommands\b|\brsPeers\.recordcount\b/i },
-  { tables: null, condition: /!\(\s*structKeyExists\(\s*variables\.sites\s*,/i },
+//   change, so those writes are the start-up writer's, not the request's;
+// - a stored dynamic entity the bean factory lacks is declared on demand (beanFactory.cfc:220-231); start-up
+//   registers every stored dynamic entity (onApplicationStart_include.cfm:491) and declareEntity registers its own;
+// - trashManager.takeOut purges and restores files only for a bean carrying fromMuraTrash (trashManager.cfc:417-444),
+//   which trashManager.getObject sets on beans rebuilt from ttrash (trashManager.cfc:310); no form or script posts it.
+const WRITE_GUARDS: readonly WriteGuard[] = Object.freeze([
+  {
+    kind: 'cluster-broadcast',
+    guard: 'environment.ts asserts no broadcasting/peers (AAP 0.5.4)',
+    conjunct:
+      /^(?:(?:(?! or ).)+ and )?variables\.broadcast(?:ClusterCommands|Appreloads|CachePurges)$|^(?:variables\.)?rsPeers\.recordcount$/i,
+  },
+  {
+    kind: 'site-load',
+    guard: 'loads a site missing from the registry, which start-up fills and the projector refreshes after every site change',
+    conjunct: /^!\(\s*structKeyExists\(\s*variables\.sites\s*,[^()]*\)\)$/i,
+  },
+  {
+    kind: 'entity-load',
+    guard: 'declares a stored dynamic entity the factory lacks, which start-up and declareEntity register',
+    conjunct: /^super\.containsBean\(\s*'entity'\s*\)$/i,
+  },
+  {
+    kind: 'trash-restore',
+    guard: 'runs only for a bean carrying fromMuraTrash, which ctrash.restore sets (decision list)',
+    conjunct: /^doPurge$/i,
+  },
 ]);
 
 /** The migration plan's static figures, by measure, that the computed counts are compared with. */
@@ -392,11 +505,14 @@ function baseKey(routeKey: string): string {
   return normaliseInventoryKey(routeKey).replace(/\{[^{}]*\}$/, '');
 }
 
-function adminFacts(routeKey: string): RuntimeFact {
-  return own(ADMIN_FACTS, baseKey(routeKey)) ?? own(ADMIN_FACTS, areaKeyForRouteKey(routeKey)) ?? {};
+/** Facts of an admin route key: its action's, else its circuit's. */
+export function adminFacts(routeKey: string): RuntimeFact {
+  const key = baseKey(routeKey);
+  return own(ADMIN_FACTS, key) ?? own(ADMIN_FACTS, key.split('.')[0] ?? '') ?? {};
 }
 
-function serviceFacts(componentPath: string): RuntimeFact {
+/** Facts of a component, by the first matching path prefix. */
+export function serviceFacts(componentPath: string): RuntimeFact {
   return SERVICE_FACTS.find(([prefix]) => componentPath.startsWith(prefix))?.[1] ?? {};
 }
 
@@ -412,39 +528,71 @@ function predicatesOf(when: VariantPredicate['when']): VariantPredicates {
   return out;
 }
 
-function guardsOf(table: string): RegExp[] {
-  const key = tableKey(table);
-  return ENVIRONMENT_GUARDS.filter((g) => g.tables === null || g.tables.some((t) => tableKey(t) === key)).map((g) => g.condition);
+/** The guard of the innermost conjunct of a recorded path condition that one matches. */
+function guardOfPath(condition: string): WriteGuard | undefined {
+  const conjuncts = condition.split(' && ');
+  for (let i = conjuncts.length - 1; i >= 0; i--) {
+    const guard = WRITE_GUARDS.find((g) => g.conjunct.test(conjuncts[i] ?? ''));
+    if (guard !== undefined) return guard;
+  }
+  return undefined;
 }
 
 /** Writes of a closure with the guard conditions it recorded for them. */
 type WriteEvidenceOf = Pick<WriteClosure, 'writes' | 'conditionalWrites'>;
 
-/** Whether `w` runs only under an environment guard of its table on every path `conditionalWrites` records for it. */
-function guardedWrite(w: ClosureWrite, conditionalWrites: readonly ConditionalWrite[]): boolean {
-  if (w.table === null || !w.conditional) return false;
-  const guards = guardsOf(w.table);
-  if (guards.length === 0) return false;
+/** The guard `w` runs under on every path `conditionalWrites` records for it, from its first path; undefined if a path has none. */
+function guardOfWrite(w: ClosureWrite, conditionalWrites: readonly ConditionalWrite[]): WriteGuard | undefined {
+  if (w.table === null || !w.conditional) return undefined;
   const key = tableKey(w.table);
-  const paths = conditionalWrites.filter(
-    (c) =>
-      tableKey(c.table) === key &&
-      c.source.path === w.source.path &&
-      c.source.lines[0] === w.source.lines[0] &&
-      c.source.lines[1] === w.source.lines[1],
-  );
-  return paths.length > 0 && paths.every((c) => guards.some((g) => g.test(c.condition)));
+  const guards = conditionalWrites
+    .filter(
+      (c) =>
+        tableKey(c.table) === key &&
+        c.source.path === w.source.path &&
+        c.source.lines[0] === w.source.lines[0] &&
+        c.source.lines[1] === w.source.lines[1],
+    )
+    .map((c) => guardOfPath(c.condition));
+  return guards.length > 0 && guards.every((g) => g !== undefined) ? guards[0] : undefined;
 }
 
-/** Tables of `writeSet` written in `closures`, each of whose writes there runs only under an environment guard. */
-function environmentExcluded(writeSet: readonly string[], closures: readonly WriteEvidenceOf[]): string[] {
-  return writeSet.filter((table) => {
-    const key = tableKey(table);
-    const verdicts = closures.flatMap((c) =>
-      c.writes.filter((w) => w.table !== null && tableKey(w.table) === key).map((w) => guardedWrite(w, c.conditionalWrites)),
-    );
-    return verdicts.length > 0 && verdicts.every(Boolean);
-  });
+function compareGuarded(a: GuardedWrite, b: GuardedWrite): number {
+  return (
+    compareText(a.table, b.table) ||
+    compareText(a.source.path, b.source.path) ||
+    a.source.lines[0] - b.source.lines[0] ||
+    compareText(a.op, b.op) ||
+    compareText(a.component, b.component) ||
+    compareText(a.method, b.method) ||
+    compareText(a.kind, b.kind)
+  );
+}
+
+/** The writes of `closures` guarded wherever they occur, and the tables of `writeSet` written there only by those. */
+function environmentExcluded(writeSet: readonly string[], closures: readonly WriteEvidenceOf[]): EnvironmentExclusion {
+  const writes = new Map<string, GuardedWrite | null>();
+  const unguarded = new Set<string>();
+  for (const c of closures) {
+    for (const w of c.writes) {
+      if (w.table === null) continue;
+      const key = JSON.stringify([tableKey(w.table), w.op, w.component, w.method, w.source.path, w.source.lines]);
+      const g = guardOfWrite(w, c.conditionalWrites);
+      if (g === undefined) {
+        unguarded.add(tableKey(w.table));
+        writes.set(key, null);
+      } else if (!writes.has(key)) {
+        const { op, component, method, source } = w;
+        writes.set(key, { kind: g.kind, table: w.table, op, component, method, source, guard: g.guard });
+      }
+    }
+  }
+  const guardedWrites = [...writes.values()].filter((w): w is GuardedWrite => w !== null).sort(compareGuarded);
+  const guarded = new Set(guardedWrites.map((w) => tableKey(w.table)));
+  return {
+    environmentExcludedWrites: writeSet.filter((t) => guarded.has(tableKey(t)) && !unguarded.has(tableKey(t))),
+    guardedWrites,
+  };
 }
 
 /** `writeSet` without the tables in `excluded`. */
@@ -469,6 +617,38 @@ function routeClosure(r: RouteEntry): WriteClosure {
   };
 }
 
+/** Kind and reason of the guard a write runs under, for the unit projection. */
+const guardOf: GuardOf = (w, conditionalWrites) => {
+  const g = guardOfWrite(w, conditionalWrites);
+  return g === undefined ? undefined : { kind: g.kind, guard: g.guard };
+};
+
+/** Write facts of one item, naming the item in a resolution error; `record` adds its writes to their components' owners. */
+function projectItem(
+  units: UnitResolver,
+  id: string,
+  evidence: WriteEvidenceSet,
+  facts: BranchFacts,
+  tables: readonly string[],
+  record = true,
+): ProjectedWrites {
+  try {
+    return units.project(evidence, facts, guardOf, tables, record);
+  } catch (err) {
+    throw new Error(`${id}: ${(err as Error).message}`, { cause: err });
+  }
+}
+
+/** The recorded part of a projection. */
+function writeFactsOf(p: ProjectedWrites): ItemWriteFacts {
+  return { writeSet: p.writeSet, conditionalWrites: p.conditionalWrites, unresolvedCalls: p.unresolvedCalls };
+}
+
+/** References no reviewed record settles, for the run's unresolved-call findings. */
+function unsettled(units: UnitResolver, refs: readonly UnresolvedRef[]): UnresolvedRef[] {
+  return refs.filter((u) => units.settling(u) === null);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Dispositions
 // ---------------------------------------------------------------------------------------------------------------
@@ -476,6 +656,8 @@ function routeClosure(r: RouteEntry): WriteClosure {
 /** Applies `decide` to one item, optionally under a narrowed ownership view, and records its findings. */
 interface Disposer {
   dispose(facts: DispositionFacts, ownership?: TableOwnership): DispositionFields;
+  /** `dispose` of a route-bearing entry point, with its exceptions-list and plan-expectation references. */
+  disposeEntry(facts: DispositionFacts): DispositionFields & EntryReferences;
   readonly findings: DispositionFinding[];
 }
 
@@ -505,12 +687,21 @@ function createDisposer(inputs: InventoryInputs): Disposer {
     exceptions: inputs.exceptions,
     findings,
   };
+  const dispose = (facts: DispositionFacts, ownership?: TableOwnership): DispositionFields => {
+    const before = findings.length;
+    const result = decide(facts, ownership === undefined ? ctx : { ...ctx, ownership });
+    return fieldsOf(result, findings.slice(before).some((f) => f.kind === 'decision-list-mismatch'));
+  };
   return {
     findings,
-    dispose(facts, ownership) {
-      const before = findings.length;
-      const result = decide(facts, ownership === undefined ? ctx : { ...ctx, ownership });
-      return fieldsOf(result, findings.slice(before).some((f) => f.kind === 'decision-list-mismatch'));
+    dispose,
+    disposeEntry(facts) {
+      const expected = expectedOutcome(facts);
+      return {
+        ...dispose(facts),
+        exceptionRef: haltingExceptionId(inputs.exceptions, facts.routeKey),
+        expected: expected === null ? null : { ...expected, ref: AAP_REF },
+      };
     },
   };
 }
@@ -576,7 +767,7 @@ class UnresolvedCalls {
   }
 }
 
-function controllerItems(entries: readonly ControllerEntry[], d: Disposer, calls: UnresolvedCalls): InventoryController[] {
+function controllerItems(entries: readonly ControllerEntry[], d: Disposer, calls: UnresolvedCalls, units: UnitResolver): InventoryController[] {
   return byId(entries).map((c) => {
     const area = own(AREA_OWNERS, `admin:${c.circuit.toLowerCase()}`);
     const owner = area === undefined || area === NO_OWNER ? null : area;
@@ -589,24 +780,35 @@ function controllerItems(entries: readonly ControllerEntry[], d: Disposer, calls
       actions: c.actions.map((a) => ({
         ...a,
         variants: a.variants.map((v): InventoryVariant => {
-          calls.note(v.id, v.unresolvedCalls);
+          const { writeSet, conditionalWrites, closureEvidence, fileStoreEvidence, unresolvedCalls, ...variant } = v;
+          calls.note(v.id, unsettled(units, unresolvedCalls));
           const fact = adminFacts(v.routeKey);
-          const excluded = environmentExcluded(v.writeSet, [{ writes: v.closureEvidence, conditionalWrites: v.conditionalWrites }]);
-          const fields = d.dispose({
+          const variantPredicates = predicatesOf(v.predicate?.when ?? []);
+          const projected = projectItem(
+            units,
+            v.id,
+            { writes: closureEvidence, conditionalWrites, fileStoreEvidence, unresolved: unresolvedCalls },
+            { predicates: variantPredicates, storedDataOwner: fact.storedDataOwner !== undefined },
+            writeSet,
+          );
+          const fields = d.disposeEntry({
             itemKind: 'action',
             id: v.id,
             routeKey: v.routeKey,
-            variantPredicates: predicatesOf(v.predicate?.when ?? []),
+            variantPredicates,
             reachable: true,
-            writeSet: without(v.writeSet, excluded),
+            writeSet: projected.tables,
+            writeOwners: projected.owners,
             fileStoreWrite: v.fileStoreWrite,
             rendersCfml: false,
             webRootFilesystem: fact.webRootFilesystem === true,
             runtimeCategory: fact.runtimeCategory,
             storedDataOwner: fact.storedDataOwner,
+            servesBranch: fact.servesBranch,
+            servesTable: fact.servesTable,
             areaKey: areaKeyForRouteKey(v.routeKey),
           });
-          return { ...v, environmentExcludedWrites: excluded, ...fields };
+          return { ...variant, ...writeFactsOf(projected), ...fields };
         }),
       })),
     };
@@ -618,21 +820,24 @@ function frontEndItems(
   d: Disposer,
   calls: UnresolvedCalls,
   findings: GeneratedFinding[],
+  units: UnitResolver,
 ): InventoryFrontEnd[] {
   return byId(entries).map((e) => {
-    const { closure, ...entry } = e;
-    calls.note(e.id, closure.unresolved);
+    const { closure, writeSet, ...entry } = e;
+    calls.note(e.id, unsettled(units, closure.unresolved));
     if (e.unkeyed || e.routeKey === null) {
       findings.push({ kind: 'unkeyed-entry', id: e.id, source: e.source, detail: `front-end entry ${e.name} has no platform route key` });
     }
-    const excluded = environmentExcluded(e.writeSet, [closure]);
-    const fields = d.dispose({
+    const variantPredicates = predicatesOf(e.predicate?.when ?? []);
+    const projected = projectItem(units, e.id, closure, { predicates: variantPredicates, storedDataOwner: false }, writeSet);
+    const fields = d.disposeEntry({
       itemKind: 'front-end',
       id: e.id,
       routeKey: e.routeKey ?? undefined,
-      variantPredicates: predicatesOf(e.predicate?.when ?? []),
+      variantPredicates,
       reachable: e.reachable,
-      writeSet: without(e.writeSet, excluded),
+      writeSet: projected.tables,
+      writeOwners: projected.owners,
       fileStoreWrite: e.fileStoreWrite,
       rendersCfml: e.rendersCfml,
       webRootFilesystem: false,
@@ -641,14 +846,41 @@ function frontEndItems(
     return {
       ...entry,
       ...fields,
-      environmentExcludedWrites: excluded,
-      conditionalWrites: closure.conditionalWrites,
+      ...writeFactsOf(projected),
       threads: closure.threads,
       overrides: closure.overrides,
-      unresolvedCalls: closure.unresolved,
       windowed: fields.legacyWrite && fields.owners.length > 0,
     };
   });
+}
+
+/** Unreachable remote methods, each with its declaration span and its rule-step-1 disposition. */
+function unreachableRemoteItems(records: readonly UnreachableRemote[], index: ComponentIndex, d: Disposer): InventoryUnreachableRemote[] {
+  return byId(
+    records.map((u): InventoryUnreachableRemote => {
+      const id = `fe:unreachable:${u.path.toLowerCase()}#${u.method}`;
+      const fn = index.parsed(u.path)?.functions.find((f) => f.startLine === u.line && f.name === u.method);
+      const fields = d.dispose({
+        itemKind: 'front-end',
+        id,
+        reachable: false,
+        writeSet: [],
+        fileStoreWrite: false,
+        rendersCfml: false,
+        webRootFilesystem: false,
+        areaKey: id,
+      });
+      return {
+        id,
+        component: u.path,
+        method: u.method,
+        source: { path: u.path, lines: [u.line, fn?.endLine ?? u.line] },
+        guard: u.guard,
+        routeKey: null,
+        ...fields,
+      };
+    }),
+  );
 }
 
 function jobItems(
@@ -656,6 +888,7 @@ function jobItems(
   d: Disposer,
   calls: UnresolvedCalls,
   findings: GeneratedFinding[],
+  units: UnitResolver,
 ): InventoryJob[] {
   return byId(jobs).map((job) => {
     // The orchestrator itself writes only its own cursor; each step is disposed by its own write set.
@@ -671,15 +904,16 @@ function jobItems(
       areaKey: areaKeyForRouteKey(job.routeKey),
     });
     const steps = job.steps.map((s): InventoryJobStep => {
-      const { closure, ...step } = s;
-      calls.note(s.id, closure.unresolved);
+      const { closure, tables, writeSet: _writes, conditionalWrites: _conditional, unresolved: _unresolved, ...step } = s;
+      calls.note(s.id, unsettled(units, closure.unresolved));
       const fact = own(STEP_FACTS, s.step) ?? {};
-      const excluded = environmentExcluded(s.tables, [closure]);
+      const projected = projectItem(units, s.id, closure, { predicates: {}, storedDataOwner: false }, tables);
       const fields = d.dispose({
         itemKind: 'job-step',
         id: s.id,
         reachable: true,
-        writeSet: without(s.tables, excluded),
+        writeSet: projected.tables,
+        writeOwners: projected.owners,
         fileStoreWrite: s.fileStoreWrite,
         rendersCfml: false,
         webRootFilesystem: false,
@@ -687,7 +921,7 @@ function jobItems(
         runtimeCategory: s.dynamic === true ? 'plugin' : fact.runtimeCategory,
         areaKey: s.id,
       });
-      return { ...step, environmentExcludedWrites: excluded, ...withExpected(fields, s.expected, s.id, findings) };
+      return { ...step, ...writeFactsOf(projected), ...withExpected(fields, s.expected, s.id, findings) };
     });
     return { ...job, ...withExpected(jobFields, job.expected, job.id, findings), steps };
   });
@@ -703,20 +937,30 @@ function routeItems(
   d: Disposer,
   calls: UnresolvedCalls,
   findings: GeneratedFinding[],
+  units: UnitResolver,
 ): InventoryRoute[] {
   return byId(routes).map((r) => {
-    calls.note(r.id, r.unresolved);
+    const { writeSet, conditionalWrites, closureEvidence, fileStoreEvidence, unresolved, ...route } = r;
+    calls.note(r.id, unsettled(units, unresolved));
     if (r.routeKey === null && !keyless(r)) {
       findings.push({ kind: 'unkeyed-entry', id: r.id, source: r.source, detail: `${r.kind} route has no platform route key` });
     }
-    const excluded = environmentExcluded(r.writeSet, [{ writes: r.closureEvidence, conditionalWrites: r.conditionalWrites }]);
-    const fields = d.dispose({
+    const variantPredicates = predicatesOf(r.predicate?.when ?? []);
+    const projected = projectItem(
+      units,
+      r.id,
+      { writes: closureEvidence, conditionalWrites, fileStoreEvidence, unresolved },
+      { predicates: { ...r.assignedParams, ...variantPredicates }, storedDataOwner: false },
+      writeSet,
+    );
+    const fields = d.disposeEntry({
       itemKind: r.kind === 'fixture' ? 'fixture-route' : r.kind === 'api-entity-method' || r.kind === 'api-method' ? 'api' : 'route',
       id: r.id,
       routeKey: r.routeKey ?? undefined,
-      variantPredicates: predicatesOf(r.predicate?.when ?? []),
+      variantPredicates,
       reachable: r.reachable,
-      writeSet: without(r.writeSet, excluded),
+      writeSet: projected.tables,
+      writeOwners: projected.owners,
       fileStoreWrite: r.fileStoreWrite,
       rendersCfml: r.rendersCfml,
       webRootFilesystem: r.webRootFilesystem,
@@ -724,7 +968,7 @@ function routeItems(
       areaKey: r.areaKey,
       fixtureModule: r.fixtureModule ?? undefined,
     });
-    return { ...r, environmentExcludedWrites: excluded, ...fields };
+    return { ...route, ...writeFactsOf(projected), ...fields };
   });
 }
 
@@ -736,21 +980,62 @@ function entityClosures(e: EntityEntry, ctx: ClosureContext): WriteClosure[] {
   return (ctx.index.parsed(dao)?.functions ?? []).filter((f) => f.name !== '').map((f) => computeClosure({ component: dao, method: f.name }, ctx));
 }
 
-function entityItems(entities: readonly EntityEntry[], ctx: ClosureContext, d: Disposer): InventoryEntity[] {
+/**
+ * Entity items. A pattern writes its table family; any other entity writes what it persists, less an own table no
+ * `tables[]` entry lists, which is reported as `absent-entity-table`. Component facts apply by declaring file.
+ */
+function entityItems(
+  entities: readonly EntityEntry[],
+  tables: readonly TableEntry[],
+  ctx: ClosureContext,
+  d: Disposer,
+  findings: GeneratedFinding[],
+  units: UnitResolver,
+): InventoryEntity[] {
+  const listed = new Set(tables.map((t) => tableKey(t.table)));
   return byId(entities).map((e) => {
-    const writeSet = e.writesTables ?? (e.table === null ? [] : [e.table]);
-    const excluded = environmentExcluded(writeSet, entityClosures(e, ctx));
+    const persisted = e.writesTables ?? (e.pattern && e.table !== null ? [e.table] : []);
+    const absent = !e.pattern && e.table !== null && !listed.has(tableKey(e.table)) ? e.table : null;
+    if (absent !== null) {
+      findings.push({
+        kind: 'absent-entity-table',
+        id: e.id,
+        source: e.source,
+        detail: `${e.registeredName ?? e.id} declares table ${absent}, which no tables[] entry lists; the entity writes nothing to it`,
+      });
+    }
+    const writeSet = absent === null ? persisted : persisted.filter((t) => tableKey(t) !== tableKey(absent));
+    const persists = new Set(writeSet.map(tableKey));
+    const closures = entityClosures(e, ctx);
+    // The entity's owners come from the units its own closures write to its tables; its file-store writes are its callers'.
+    const projected = projectItem(
+      units,
+      e.id,
+      {
+        writes: closures.flatMap((c) => c.writes.filter((w) => w.table !== null && persists.has(tableKey(w.table)))),
+        conditionalWrites: closures.flatMap((c) => c.conditionalWrites),
+        fileStoreEvidence: [],
+        unresolved: [],
+      },
+      { predicates: {}, storedDataOwner: false },
+      writeSet,
+      false,
+    );
+    const fact = serviceFacts(e.source.path);
     const fields = d.dispose({
       itemKind: 'entity',
       id: e.id,
       reachable: true,
-      writeSet: without(writeSet, excluded),
+      writeSet: projected.tables,
+      writeOwners: projected.owners,
       fileStoreWrite: false,
       rendersCfml: false,
-      webRootFilesystem: false,
+      webRootFilesystem: fact.webRootFilesystem === true,
+      runtimeCategory: fact.runtimeCategory,
+      servesTable: fact.servesTable,
       areaKey: `entity:${e.id}`,
     });
-    return { ...e, environmentExcludedWrites: excluded, ...fields };
+    return { ...e, environmentExcludedWrites: without(writeSet, projected.tables), ...fields };
   });
 }
 
@@ -760,6 +1045,7 @@ function serviceItems(
   routes: readonly RouteEntry[],
   evidence: readonly WriteEvidence[],
   d: Disposer,
+  units: UnitResolver,
 ): InventoryService[] {
   // SOAP v1 components are registered beans whose only entry point, the SOAP route, is unreachable at the pin.
   const unreachable = new Set(routes.filter((r) => r.kind === 'soap' && !r.reachable).map((r) => r.source.path));
@@ -773,20 +1059,29 @@ function serviceItems(
       writes: ev.closure.writes.filter((w) => w.component === s.source.path),
       conditionalWrites: ev.closure.conditionalWrites,
     }));
-    const excluded = environmentExcluded(tablesWritten, own);
+    const { environmentExcludedWrites } = environmentExcluded(tablesWritten, own);
+    const writeSet = without(tablesWritten, environmentExcludedWrites);
+    let writeOwners: WriteSetOwners;
+    try {
+      writeOwners = units.ownersOfComponent(s.source.path, writeSet);
+    } catch (err) {
+      throw new Error(`${s.id}: ${(err as Error).message}`, { cause: err });
+    }
     const fact = serviceFacts(s.source.path);
     const fields = d.dispose({
       itemKind: 'service',
       id: s.id,
       reachable: !unreachable.has(s.source.path),
-      writeSet: without(tablesWritten, excluded),
+      writeSet,
+      writeOwners,
       fileStoreWrite: false,
       rendersCfml: false,
       webRootFilesystem: fact.webRootFilesystem === true,
       runtimeCategory: fact.runtimeCategory,
+      servesTable: fact.servesTable,
       areaKey: `service:${s.id}`,
     });
-    return { ...s, tablesWritten, environmentExcludedWrites: excluded, ...fields };
+    return { ...s, tablesWritten, environmentExcludedWrites, ...fields };
   });
 }
 
@@ -841,6 +1136,7 @@ function tableItems(tables: readonly TableEntry[], ownership: TableOwnership, d:
       rendersCfml: false,
       webRootFilesystem: false,
       areaKey: `table:${t.table}`,
+      fixtureTable: t.origin === 'fixture',
     };
     const entry = ownershipOf(t.table);
     // A split table is one item per target unit: each unit is decided under an ownership view holding only that unit.
@@ -889,6 +1185,7 @@ const PENDING_LIVE_CHECK: PendingLiveCheck = Object.freeze({
 async function loadInputs(given: Partial<InventoryInputs> = {}): Promise<InventoryInputs> {
   return {
     roleOverrides: given.roleOverrides ?? (await loadRoleOverrides()),
+    viewPartials: given.viewPartials ?? (await loadViewPartials()),
     writerOverrides: given.writerOverrides ?? (await loadWriterOverrides()),
     variants: given.variants ?? (await loadInventoryVariants()),
     ownership: given.ownership ?? (await loadTableOwnership()),
@@ -908,19 +1205,50 @@ function compareFindings(a: GeneratedFinding, b: GeneratedFinding): number {
   );
 }
 
-function countDifferences(computed: Readonly<Record<string, number>>): GeneratedFinding[] {
+/** A `count-difference` per computed figure that differs from the AAP's, with its explanation from `details`. */
+function countDifferences(computed: Readonly<Record<string, number>>, details: Readonly<Record<string, string>> = {}): GeneratedFinding[] {
   return Object.entries(AAP_FIGURES).flatMap(([measure, aapFigure]): GeneratedFinding[] => {
     const value = computed[measure];
     return value === undefined || value === aapFigure
       ? []
-      : [{ kind: 'count-difference', id: null, measure, source: null, detail: null, aapFigure, computed: value }];
+      : [{ kind: 'count-difference', id: null, measure, source: null, detail: details[measure] ?? null, aapFigure, computed: value }];
   });
 }
 
-async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<LegacyInventory> {
+/**
+ * Explanation of the static siteID count: its split by origin, the ORM tables whose siteID column a base component
+ * declares, and on a live run the live count with the static siteID tables the catalog lacks or holds without siteID.
+ */
+function withSiteIdDetail(statics: readonly TableEntry[], merged: readonly TableEntry[], live: number | null): string {
+  const withSiteId = statics.filter((t) => t.hasSiteId);
+  const of = (origin: TableEntry['origin']): number => withSiteId.filter((t) => t.origin === origin).length;
+  const parts = [`siteID on ${String(of('bootstrap'))} bootstrap, ${String(of('migration'))} migration and ${String(of('orm'))} ORM-only tables`];
+  const inherited = withSiteId.flatMap((t) =>
+    t.origin === 'orm' && t.siteIdSource !== null && t.siteIdSource.path !== t.source.path
+      ? [`${t.table} (${t.siteIdSource.path}:${String(t.siteIdSource.lines[0])})`]
+      : [],
+  );
+  if (inherited.length > 0) parts.push(`inherited from a base component: ${inherited.join(', ')}`);
+  if (live !== null) {
+    const state = new Map(merged.map((t) => [tableKey(t.table), t.live]));
+    const lost = (test: (s: TableEntry['live'] | undefined) => boolean): string[] =>
+      withSiteId.filter((t) => test(state.get(tableKey(t.table)))).map((t) => t.table);
+    const absent = lost((s) => s?.present !== true);
+    const unsited = lost((s) => s?.present === true && s.hasSiteId !== true);
+    parts.push(
+      [
+        `live catalog ${String(live)}`,
+        ...(absent.length > 0 ? [`tables absent live: ${absent.join(', ')}`] : []),
+        ...(unsited.length > 0 ? [`siteID absent live: ${unsited.join(', ')}`] : []),
+      ].join(', '),
+    );
+  }
+  return parts.join('; ');
+}
+
+async function buildInventory(tree: SourceTree, opts: GenerateOptions, live: LiveSnapshot | null): Promise<LegacyInventory> {
   const sha = pinnedSha();
   const inputs = await loadInputs(opts.inputs);
-  const live = opts.live;
   const disposer = createDisposer(inputs);
   const calls = new UnresolvedCalls();
   const findings: GeneratedFinding[] = [];
@@ -932,12 +1260,12 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
   const transients = extractTransients(tree);
   const index = buildComponentIndex({ services: serviceEntries, transients, aliases, ormIndex: entityExtraction.ormIndex, tree });
   const ctx: ClosureContext = { tree, index, overrides: inputs.writerOverrides };
-  const liveEntities: LiveEntities | null = live === undefined ? null : await fetchLiveEntities(live.origin, { fetch: live.fetch });
+  const liveEntities: LiveEntities | null = live?.entities ?? null;
   const entities = attachDaoWrites(mergeLive(entityExtraction.entities, liveEntities, tree), ctx);
 
   // Entry points with their write closures, and the application start-up root.
   const variants = inputs.variants.variants;
-  const controllers = await extractControllers(ctx, { variants, roleOverrides: inputs.roleOverrides });
+  const controllers = await extractControllers(ctx, { variants, roleOverrides: inputs.roleOverrides, viewPartials: inputs.viewPartials });
   const frontEnd = await extractFrontEnd(tree, { index, overrides: inputs.writerOverrides, routeKeyOptions: { variants } });
   const jobs = await extractJobs(ctx, { routeKeyOptions: { variants } });
   const routes = await extractRoutes(tree, { index, overrides: inputs.writerOverrides, variants, fixtureTree: inputs.fixtureTree });
@@ -946,7 +1274,7 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
 
   // Tables, the live catalog, writers from every entry point's evidence, then owners.
   const tableExtraction = extractTables(tree, entityExtraction.ormTables);
-  const catalog = live === undefined ? null : await fetchLiveCatalog(live.db);
+  const catalog = live?.catalog ?? null;
   const declaredEntityTables = (liveEntities?.entities ?? []).flatMap((e) => (e.origin === 'dynamic' && e.table ? [e.table] : []));
   const evidence: WriteEvidence[] = [
     ...controllers.writeEvidence,
@@ -956,7 +1284,11 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
     ...(appStart === null ? [] : [{ entryRouteKey: null, trigger: 'appstart' as const, closure: appStart }]),
   ];
   const attached = attachWriters(
-    mergeLiveCatalog(tableExtraction.tables, catalog, { declaredEntityTables }),
+    mergeLiveCatalog(
+      [...tableExtraction.tables, ...(routes.fixtureTree === null ? [] : extractFixtureTables(routes.fixtureTree))],
+      catalog,
+      { declaredEntityTables },
+    ),
     evidence,
     inputs.writerOverrides,
     { jobs: jobs.scheduledJobs },
@@ -966,18 +1298,19 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
   // Relations and the stored-procedure check.
   const relations = extractRelations({ entities, tables, tree, index: entityExtraction.ormIndex, ownership: inputs.ownership });
   const procedures = await storedProcedureCheck(tree, {
-    db: live?.db,
-    fixturesLoaded: live?.fixturesLoaded,
+    live: live?.storedProcedures ?? null,
     expectedDbUpdates: opts.expectedDbUpdates,
   });
 
-  // Dispositions, once per item.
-  const controllerItemsOut = controllerItems(controllers.controllers, disposer, calls);
-  const frontEndOut = frontEndItems(frontEnd.frontEnd, disposer, calls, findings);
-  const jobsOut = jobItems(jobs.scheduledJobs, disposer, calls, findings);
-  const routesOut = routeItems(routes.routes, disposer, calls, findings);
-  const entitiesOut = entityItems(entities, ctx, disposer);
-  const servicesOut = serviceItems(serviceEntries, tables, routes.routes, evidence, disposer);
+  // Dispositions, once per item; services follow the entry points, whose resolved writes give their owners.
+  const units = new UnitResolver(inputs.ownership, inputs.writerOverrides, new RowTypeLookups(tree, index));
+  const controllerItemsOut = controllerItems(controllers.controllers, disposer, calls, units);
+  const frontEndOut = frontEndItems(frontEnd.frontEnd, disposer, calls, findings, units);
+  const unreachableRemoteOut = unreachableRemoteItems(frontEnd.unreachableRemote, index, disposer);
+  const jobsOut = jobItems(jobs.scheduledJobs, disposer, calls, findings, units);
+  const routesOut = routeItems(routes.routes, disposer, calls, findings, units);
+  const entitiesOut = entityItems(entities, tables, ctx, disposer, findings, units);
+  const servicesOut = serviceItems(serviceEntries, tables, routes.routes, evidence, disposer, units);
   const tablesOut = tableItems(tables, inputs.ownership, disposer);
 
   for (const g of controllers.unclassifiedGates) {
@@ -1020,19 +1353,23 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
 
   const entityCounts = classCounts(entities);
   const staticCounts = tableExtraction.counts;
+  const withSiteIdLive = catalog === null ? null : tables.filter((t) => t.live?.present === true && t.live.hasSiteId === true).length;
   findings.push(
-    ...countDifferences({
-      'tables.bootstrap': staticCounts.bootstrap,
-      'tables.migration': staticCounts.migration,
-      'tables.ormOnly': staticCounts.orm,
-      'tables.staticTotal': staticCounts.staticTotal,
-      'tables.withSiteId': staticCounts.withSiteId,
-      'entities.ormBase': entityCounts.ormBase,
-      'entities.ormConcrete': entityCounts.ormConcrete,
-      'controllers.circuits': controllers.counts.circuits,
-      dbUpdates: tree.list(DB_UPDATES_DIR, { ext: ['cfm'] }).length,
-      coreMuraActionFiles: coreMuraActionSearch.filesMentioning,
-    }),
+    ...countDifferences(
+      {
+        'tables.bootstrap': staticCounts.bootstrap,
+        'tables.migration': staticCounts.migration,
+        'tables.ormOnly': staticCounts.orm,
+        'tables.staticTotal': staticCounts.staticTotal,
+        'tables.withSiteId': staticCounts.withSiteId,
+        'entities.ormBase': entityCounts.ormBase,
+        'entities.ormConcrete': entityCounts.ormConcrete,
+        'controllers.circuits': controllers.counts.circuits,
+        dbUpdates: tree.list(DB_UPDATES_DIR, { ext: ['cfm'] }).length,
+        coreMuraActionFiles: coreMuraActionSearch.filesMentioning,
+      },
+      { 'tables.withSiteId': withSiteIdDetail(tableExtraction.tables, tables, withSiteIdLive) },
+    ),
   );
 
   const variantsOut = controllerItemsOut.flatMap((c) => c.actions.flatMap((a) => a.variants));
@@ -1040,6 +1377,7 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
   const disposed: readonly DispositionFields[] = [
     ...variantsOut,
     ...frontEndOut,
+    ...unreachableRemoteOut,
     ...jobsOut.flatMap((j) => j.steps),
     ...routesOut,
     ...entitiesOut,
@@ -1048,7 +1386,7 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
   ];
   for (const item of disposed) dispositions[item.disposition] += 1;
   const originCount = (origin: TableEntry['origin']): number => tables.filter((t) => t.origin === origin).length;
-  const liveStatus: LiveStatus = live === undefined ? 'pending-run' : 'live';
+  const liveStatus: LiveStatus = live === null ? 'pending-run' : 'live';
 
   return {
     sourceSha: sha,
@@ -1074,6 +1412,7 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
       controllers: controllers.counts,
       coreMuraActionFiles: coreMuraActionSearch.filesMentioning,
       frontEnd: frontEndOut.length,
+      unreachableRemote: unreachableRemoteOut.length,
       scheduledJobs: { jobs: jobsOut.length, siteMonitorSteps: jobsOut.reduce((n, j) => n + j.steps.length, 0) },
       routes: routes.counts,
       tables: {
@@ -1090,7 +1429,7 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
         dynamic: originCount('dynamic'),
         liveOnly: originCount('live-only'),
         live: catalog === null ? null : tables.filter((t) => t.live?.present === true).length,
-        withSiteIdLive: catalog === null ? null : tables.filter((t) => t.live?.present === true && t.live.hasSiteId === true).length,
+        withSiteIdLive,
       },
       relations: relations.counts,
       storedProcedures: {
@@ -1106,10 +1445,12 @@ async function buildInventory(tree: SourceTree, opts: GenerateOptions): Promise<
     controllers: controllerItemsOut,
     coreMuraActionSearch,
     frontEnd: frontEndOut,
+    unreachableRemote: unreachableRemoteOut,
     scheduledJobs: jobsOut,
     routes: routesOut,
     tables: tablesOut,
     relations: byId(relations.relations),
+    unorientedRelations: byId(relations.unoriented),
     storedProcedureCheck: { ...procedures, live: procedures.live ?? PENDING_LIVE_CHECK },
     findings: findings.sort(compareFindings),
   };
@@ -1121,16 +1462,21 @@ function markdownOf(inv: LegacyInventory): string {
   return `${[`# ${title}`, `Source SHA: ${inv.sourceSha}`, '', ...lines].join('\n').replace(/\n+$/, '')}\n`;
 }
 
-/** Generates the inventory and its Markdown without writing; extracts the pinned commit unless `opts.sourceTree` is given. */
+/**
+ * Generates the inventory and its Markdown without writing; extracts the pinned commit unless `opts.sourceTree` is
+ * given. `opts.live` is captured into a snapshot first, so a live run and a replay of its snapshot build alike.
+ */
 export async function generateInventory(opts: GenerateOptions = {}): Promise<GenerateResult> {
+  if (opts.live !== undefined && opts.liveSnapshot != null) throw new Error('generateInventory takes live sources or a live snapshot, not both');
+  const liveSnapshot = opts.live === undefined ? (opts.liveSnapshot ?? null) : await captureLiveSnapshot(opts.live);
   if (opts.sourceTree !== undefined) {
-    const inventory = await buildInventory(opts.sourceTree, opts);
-    return { inventory, markdown: markdownOf(inventory), extractDir: null };
+    const inventory = await buildInventory(opts.sourceTree, opts, liveSnapshot);
+    return { inventory, markdown: markdownOf(inventory), liveSnapshot, extractDir: null };
   }
   const dir = await gitArchiveExtract(readPin().sha);
   try {
-    const inventory = await buildInventory(openSourceTree(dir), opts);
-    return { inventory, markdown: markdownOf(inventory), extractDir: opts.keepExtract === true ? dir : null };
+    const inventory = await buildInventory(openSourceTree(dir), opts, liveSnapshot);
+    return { inventory, markdown: markdownOf(inventory), liveSnapshot, extractDir: opts.keepExtract === true ? dir : null };
   } finally {
     if (opts.keepExtract !== true) await rm(dir, { recursive: true, force: true });
   }
@@ -1229,14 +1575,17 @@ const USAGE = 'inventory [--live] [--check] [--out <dir>] [--keep-extract]';
 const HELP = `${USAGE} [--help]
 
 Generates the legacy inventory from a git archive extraction of the pinned commit and writes
-legacy-inventory.json and legacy-inventory.md.
+legacy-inventory.json and legacy-inventory.md. Live fields come from ${LIVE_SNAPSHOT_JSON} in the output directory:
+--live captures it, every other run replays it, and without the file they stay pending-run.
 
 Options:
-  --live          add live entity registrations (LEGACY_ORIGIN, else http://127.0.0.1:$PORT) and the read-only
-                  SQL Server catalog (MURA_DB* variables)
-  --check         generate in memory and compare with the files in the output directory; exit 1 on a difference
-                  and write nothing
-  --out <dir>     output directory; a relative path resolves against the working directory (default: opt2/inventory)
+  --live          query live entity registrations (LEGACY_ORIGIN, else http://127.0.0.1:$PORT), the read-only
+                  SQL Server catalog and stored-procedure check (MURA_DB* variables), and write them to
+                  ${LIVE_SNAPSHOT_JSON} beside the inventory; not combinable with --check
+  --check         generate in memory, replaying ${LIVE_SNAPSHOT_JSON} from the output directory, and compare with
+                  the inventory files there; exit 1 on a difference and write nothing
+  --out <dir>     output directory, where ${LIVE_SNAPSHOT_JSON} is also read and written; a relative path resolves
+                  against the working directory (default: opt2/inventory)
   --keep-extract  keep the archive extraction and report its path
   --help          print this help and exit 0
 `;
@@ -1265,9 +1614,11 @@ function summaryOf(inv: LegacyInventory): Record<string, unknown> {
     controllers: inv.controllers.length,
     actions: inv.controllers.reduce((n, c) => n + c.actions.length, 0),
     frontEnd: inv.frontEnd.length,
+    unreachableRemote: inv.unreachableRemote.length,
     routes: inv.routes.length,
     tables: inv.tables.length,
     relations: inv.relations.length,
+    unorientedRelations: inv.unorientedRelations.length,
     findings: inv.findings.length,
     liveStatus: inv.counts.liveStatus,
   };
@@ -1281,15 +1632,24 @@ export async function main(argv: string[], env: EnvLike = process.env): Promise<
     help: HELP,
   });
   if (values.out === '') throw new UsageError('--out needs a directory', USAGE);
+  if (values.live === true && values.check === true) {
+    throw new UsageError(`--check replays ${LIVE_SNAPSHOT_JSON} from the output directory and cannot take --live`, USAGE);
+  }
   const outDir = values.out === undefined ? opt2Path('inventory') : path.resolve(values.out);
+  const snapshotFile = path.join(outDir, LIVE_SNAPSHOT_JSON);
   const live = values.live === true ? await openLiveSources(env) : undefined;
   let result: GenerateResult;
   try {
-    result = await generateInventory({ live, keepExtract: values['keep-extract'] === true });
+    const liveSnapshot = live === undefined ? await readLiveSnapshot(snapshotFile) : null;
+    result = await generateInventory({ live, liveSnapshot, keepExtract: values['keep-extract'] === true });
   } finally {
     await live?.db.close();
   }
-  const summary: Record<string, unknown> = { ...summaryOf(result.inventory), wrote: [] };
+  const summary: Record<string, unknown> = {
+    ...summaryOf(result.inventory),
+    liveSnapshot: result.liveSnapshot === null ? null : displayPath(snapshotFile),
+    wrote: [],
+  };
   if (result.extractDir !== null) summary.extract = result.extractDir;
 
   const gates = result.inventory.findings.filter((f) => f.kind === 'unclassified-gate');
@@ -1304,6 +1664,7 @@ export async function main(argv: string[], env: EnvLike = process.env): Promise<
     return { code: check.json.match && check.markdown.match ? 0 : 1, summary: { ...summary, check } };
   }
   const wrote = await writeInventory(result.inventory, outDir);
+  if (live !== undefined && result.liveSnapshot !== null) wrote.push(await writeLiveSnapshot(result.liveSnapshot, outDir));
   return { summary: { ...summary, wrote: wrote.map(displayPath) } };
 }
 

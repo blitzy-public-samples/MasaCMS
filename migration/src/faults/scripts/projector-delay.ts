@@ -1,4 +1,4 @@
-// Scripted fault projector-delay: arms or disarms the running migration service's sleep before each reverse-projector batch.
+// Scripted fault projector-delay: arms or disarms the running migration service's sleep once per reverse-projector cycle, before its first batch.
 import { z } from '@opt2/platform/service-kit';
 
 import { fail, pass, type FaultScript } from './types.js';

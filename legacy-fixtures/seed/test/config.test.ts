@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { SYNTHETIC_ROLES } from '@opt2/platform/auth';
 import { z } from '@opt2/platform/service-kit';
 import {
+  MASA_DEFAULT_PAGE_LIMIT,
   SITE_ORDER,
   loadConfig,
   parseConfig,
@@ -75,9 +76,16 @@ describe('loadConfig on the committed seed.config.json', () => {
     expect(config.sites['tenant-b'].pools).toEqual({});
   });
 
+  it('raises the page limit of tenant-a above its content nodes and leaves the other sites at the Masa default', () => {
+    expect(SITE_ORDER.map((site) => config.sites[site].pageLimit)).toEqual([null, 10000, null]);
+    for (const site of SITE_ORDER) {
+      expect(config.sites[site].counts.contentNodes).toBeLessThan(config.sites[site].pageLimit ?? MASA_DEFAULT_PAGE_LIMIT);
+    }
+  });
+
   it('resolves every count from the file, then the site default, then 0', () => {
     expect(config.sites.umbrella.counts).toEqual({
-      members: 1000, systemUsers: 0, groups: 0, categories: 100, files: 20, contentNodes: 0, maxVersionsPerNode: 0,
+      members: 1000, systemUsers: 0, groups: 0, categories: 100, files: 20, contentNodes: 10, maxVersionsPerNode: 3,
       timesheetDays: 0, daysPerTimesheet: 0, timesheetEmployees: 0, financeRecords: 0, financeAttachments: 0,
       surveys: 0, surveyResponses: 0, multiSiteResponses: 0, exportDefinitions: 0, exportJobs: 0,
       messageTemplates: 0, messages: 0, signatureRequests: 0, oauthClients: 0,
@@ -161,6 +169,11 @@ describe('parseConfig rejections', () => {
     ['a fractional count', (v) => { v.sites.umbrella.counts.members = 10.5; }, 'sites.umbrella.counts.members'],
     ['a pool naming an unknown site', (v) => { v.sites['tenant-a'].pools.filePoolID = 'default'; }, 'sites.tenant-a.pools.filePoolID'],
     ['an unknown pool', (v) => { v.sites['tenant-a'].pools.userPoolID = 'umbrella'; }, 'sites.tenant-a.pools'],
+    ['a fractional page limit', (v) => { v.sites['tenant-a'].pageLimit = 10000.5; }, 'sites.tenant-a.pageLimit'],
+    ['page limit 0', (v) => { v.sites.umbrella.pageLimit = 0; }, 'sites.umbrella.pageLimit'],
+    ['a page limit beyond a SQL Server int', (v) => { v.sites['tenant-a'].pageLimit = 2_147_483_648; }, 'sites.tenant-a.pageLimit'],
+    ['a page limit not above the content nodes', (v) => { v.sites['tenant-b'].pageLimit = 300; }, 'sites.tenant-b.pageLimit'],
+    ['no page limit where the content nodes reach the Masa default', (v) => { delete v.sites['tenant-a'].pageLimit; }, 'sites.tenant-a.pageLimit'],
     ['a fractional seed', (v) => { v.seed = 1.5; }, 'seed'],
     ['a businessDate without padding', (v) => { v.businessDate = '2026-6-30'; }, 'businessDate'],
     ['a businessDate that is not a calendar day', (v) => { v.businessDate = '2026-02-30'; }, 'businessDate'],
@@ -191,6 +204,12 @@ describe('parseConfig rejections', () => {
         expect.stringMatching(/^sites\.tenant-a\.programId: /),
       ]),
     );
+  });
+
+  it('names the content nodes a page limit must exceed', () => {
+    expect(issuesOf(mutated((v) => { v.sites['tenant-a'].pageLimit = 5000; }))).toEqual([
+      "sites.tenant-a.pageLimit: must exceed the site's 5000 content nodes (Masa's default is 1000)",
+    ]);
   });
 
   it.each([null, [], 'config'])('rejects a non-object value %j', (value) => {

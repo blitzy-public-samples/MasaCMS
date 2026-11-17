@@ -219,6 +219,7 @@ function identityStub(clock: Clock, record: (op: string, ...args: unknown[]) => 
       },
       authenticate: unexpected('authenticate'),
       adminSite: unexpected('adminSite'),
+      adminState: unexpected('adminState'),
       claim: unexpected('claim'),
       settle: unexpected('settle'),
     },

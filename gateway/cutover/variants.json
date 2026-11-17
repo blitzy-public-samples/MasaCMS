@@ -2,6 +2,330 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "variants": [
     {
+      "route": "rest:address.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:category.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:category.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changeset.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changeset.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changesetcategoryassignment.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changesetcategoryassignment.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~flag",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~markasspam",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~undelete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~unmarkasspam",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:content.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:content.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentcategoryassign.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentcategoryassign.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentnav.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentnav.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:feed.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:feed.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:file.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:file.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:filemetadata.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:filemetadata.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:group.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:login",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:oauth",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:oauth2",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:stats.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:stats.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:tokeninfo",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:user.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:variationtargeting.delete",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
+      "route": "rest:variationtargeting.save",
+      "variant": "session",
+      "when": [
+        {
+          "sessionManaged": true
+        }
+      ]
+    },
+    {
       "route": "admin:carch.multifileupload",
       "variant": "upload=image",
       "when": [
@@ -390,6 +714,26 @@
       ]
     },
     {
+      "route": "admin:clogin.login",
+      "variant": "status=sendlogin",
+      "when": [
+        {
+          "param": "status",
+          "equals": "sendLogin"
+        }
+      ]
+    },
+    {
+      "route": "admin:clogin.main",
+      "variant": "status=sendlogin",
+      "when": [
+        {
+          "param": "status",
+          "equals": "sendLogin"
+        }
+      ]
+    },
+    {
       "route": "admin:csettings.updatesite",
       "variant": "action=add",
       "when": [
@@ -630,6 +974,330 @@
         {
           "param": "extendSetID",
           "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "rest:address.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:category.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:category.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changeset.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changeset.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changesetcategoryassignment.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:changesetcategoryassignment.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~flag",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~markasspam",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~undelete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:comment.~unmarkasspam",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:content.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:content.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentcategoryassign.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentcategoryassign.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentnav.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentnav.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:feed.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:feed.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:file.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:file.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:filemetadata.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:filemetadata.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:group.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:login",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:oauth",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:oauth2",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:stats.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:stats.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:tokeninfo",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:user.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:variationtargeting.delete",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
+        }
+      ]
+    },
+    {
+      "route": "rest:variationtargeting.save",
+      "variant": "siteid",
+      "when": [
+        {
+          "startupSiteId": true
         }
       ]
     }

@@ -359,7 +359,7 @@ function contentFields(site: string, title: string, body: string): Record<string
     title,
     menutitle: title,
     body,
-    // approved=1 is a withheld variant (publish), so edits and creates save drafts, as GS-CO-01/02 do.
+    // Saves drafts, as GS-CO-01/02 do: an edit leaves the page's active version in place and a create stays unapproved.
     approved: '0',
     display: '1',
   };

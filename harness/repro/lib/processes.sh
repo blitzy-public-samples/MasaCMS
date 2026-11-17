@@ -105,7 +105,7 @@ _opt2_sh_quote() {
 # read them the same way. Prints the exported MURA_* settings for process <name>, sorted by name: the password
 # policy, never the database connection, a password, the admin login, the encryption key or the reCAPTCHA secret,
 # the reload key only to the processes that mirror legacy's appreloadkey, s3assets, which can embed S3 credentials,
-# only to web, and no port pair, which process_env sets.
+# only to web, and no port pair or web root, which process_env sets.
 _opt2_masa_settings_env() {
   local process=${1:?_opt2_masa_settings_env needs a process name} name
   while IFS= read -r name; do
@@ -113,7 +113,7 @@ _opt2_masa_settings_env() {
       MURA_AUTORESETPASSWORDS | MURA_BCRYPTPASSWORDS | MURA_ENCRYPTPASSWORDS | MURA_EXPIREPASSWORDS | \
         MURA_STRONGPASSWORDREGEX | MURA_STRONGPASSWORDS) _opt2_env_line "$name" "${!name}" ;;
       MURA_DATASOURCE | MURA_DATABASE | MURA_DBHOST | MURA_DBPORT | MURA_DBUSERNAME | MURA_ADMIN_* | *PASSWORD* | \
-        MURA_ENCRYPTIONKEY | MURA_RECAPTCHASECRET | MURA_PORT | MURA_PROXYPORT) ;;
+        MURA_ENCRYPTIONKEY | MURA_RECAPTCHASECRET | MURA_PORT | MURA_PROXYPORT | MURA_WEBROOT) ;;
       MURA_APPRELOADKEY)
         case $process in
           gateway | web | identity | people | programs-sites | strategies-content | migration)
@@ -157,6 +157,8 @@ process_env() {
   # The values server.json.template gives legacy, so absolute URLs built here match legacy's.
   _opt2_env_line MURA_PORT "$OPT2_PORT_GATEWAY"
   _opt2_env_line MURA_PROXYPORT "$OPT2_PORT_GATEWAY"
+  # Masa's webroot is always expandPath('/muraWRM'), the checkout legacy-start.sh serves; only web reads it.
+  if [[ $name == web ]]; then _opt2_env_line MURA_WEBROOT "$REPO"; fi
 
   # The caller's admin PG_USER and PG_PASSWORD serve the local bootstrap only; a process connects as its <schema>_app.
   if [[ -n $schema ]]; then

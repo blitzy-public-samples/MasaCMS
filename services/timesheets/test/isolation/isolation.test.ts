@@ -1,18 +1,29 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Tenant isolation of the timesheets schema, its sheet routes and its person-archive fan-out against PostgreSQL. */
+/** Tenant isolation of the timesheets schema, its sheet routes, its event consumers and its person-archive fan-out against PostgreSQL. */
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEAD_LETTER_REASON_ATTRIBUTE, INBOX_TABLE, dlqTopicName } from '@opt2/platform/events';
+import {
+  CONSUMER_AGGREGATE_VERSION_TABLE,
+  DEAD_LETTER_REASON_ATTRIBUTE,
+  INBOX_TABLE,
+  dlqTopicName,
+  type EventEnvelope,
+} from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
-import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { CHANGELOG_TABLE } from '@opt2/platform/migration-kit';
+import { SITE_CHANGED_TOPIC, withTenant, type SiteChangedPayload, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TENANT_B,
   TENANT_UMBRELLA,
   asOf,
+  createCapturingPublisher,
   defineIsolationSuite,
   expectPlatformTables,
+  fixtureForTenant,
   isAck,
   pushTo,
+  registryPayloads,
   testEnvelope,
   withoutTenant,
   type InjectResponse,
@@ -21,7 +32,7 @@ import {
   type TenantlessEnvelope,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { PERSON_ARCHIVED_SUBSCRIPTION } from '../../src/events/consumers.js';
+import { PERSON_ARCHIVED_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { PERSON_ARCHIVED_TOPIC } from '../../src/events/person-archived.js';
 import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
 import {
@@ -63,7 +74,11 @@ const READER = 'timesheets.primary-approver';
 const NOT_FOUND_BODY = { apiversion: 'v1', method: 'timesheets.sheets', error: { code: 'invalid_request', message: 'Not Found' } };
 const ARCHIVE_EFFECTIVE_FROM = `${EFFECTIVE_FROM} 00:00:00.000`;
 const ARCHIVED_AT = `${BUSINESS_DATE} 12:00:00.000`;
+// Platform tables the consumers write besides the unit tables: receipts, state versions and the blackout changelog.
+const CONSUMER_PLATFORM_TABLES: readonly string[] = [CHANGELOG_TABLE, INBOX_TABLE, CONSUMER_AGGREGATE_VERSION_TABLE];
+const SUITE_TABLES = [...tables.map(({ table }) => table), ...CONSUMER_PLATFORM_TABLES];
 
+const publisher = createCapturingPublisher();
 let handle: ThrowawaySchema | undefined;
 let repository: TimesheetsRepository | undefined;
 let service: TestApp<TenantDb> | undefined;
@@ -89,7 +104,7 @@ function freshIntegerId(): number {
   return lastIntegerId;
 }
 
-/** A fresh row of the unit table `table` for `tenant`, of a person no seed set uses, so archives of the shared person never touch it. */
+/** A fresh row of suite table `table` for `tenant`, of a person no seed set uses, so archives of the shared person never touch it. */
 function rowFor(table: string, tenant: TenantFixture): Row {
   const sheet = timesheetRow({ tenant });
   const day = dayRow(sheet, { workDate: EFFECTIVE_FROM, state: 'SUBMITTED' });
@@ -125,14 +140,31 @@ function rowFor(table: string, tenant: TenantFixture): Row {
         deletedby: 'admin',
         orderno: 1,
       };
+    case CHANGELOG_TABLE:
+      return { table: TIMESHEET.table, op: 'insert', key: sheet.timesheet_id, after: 's0:', origin: 'target' };
+    case INBOX_TABLE:
+      return { event_id: randomUUID(), subscription: PERSON_ARCHIVED_SUBSCRIPTION, status: 'applied' };
+    case CONSUMER_AGGREGATE_VERSION_TABLE:
+      return { subscription: SITE_CHANGED_SUBSCRIPTION, aggregate_type: 'site', aggregate_id: `isolation-${randomUUID()}`, last_version: 1 };
     default:
-      throw new TypeError(`timesheets has no unit table ${table}`);
+      throw new TypeError(`timesheets has no suite table ${table}`);
   }
 }
 
-/** Writes a fresh row of `table` for `tenant` through the timesheets repository, so its unit gate and changelog hooks run. */
+/** Writes a fresh row of `table` for `tenant`: unit tables through the timesheets repository, so its unit gate and changelog hooks run, platform tables by INSERT. */
 async function writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Promise<void> {
-  await built().repository.insert(tx, table, rowFor(table, tenant));
+  const row = rowFor(table, tenant);
+  if (!CONSUMER_PLATFORM_TABLES.includes(table)) {
+    await built().repository.insert(tx, table, row);
+    return;
+  }
+  const values: Row = { tenant_id: tx.tenantId, ...row };
+  const columns = Object.keys(values);
+  const placeholders = columns.map((_, index) => `$${String(index + 1)}`);
+  await tx.query(
+    `INSERT INTO ${qualified(table)} (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${placeholders.join(', ')})`,
+    Object.values(values),
+  );
 }
 
 /** Every row of `table` visible in `tx`; RLS is the only filter. */
@@ -152,6 +184,53 @@ async function countIn(tenant: TenantFixture, sql: string, values: unknown[] = [
   return rows[0]?.n ?? 0;
 }
 
+/** The fixture site of `tenantId`; throws TypeError when no fixture has that tenant. */
+function fixtureOf(tenantId: string): TenantFixture {
+  const fixture = fixtureForTenant(tenantId);
+  if (fixture === undefined) {
+    throw new TypeError(`No fixture site has tenant ${tenantId}`);
+  }
+  return fixture;
+}
+
+/** An archive of `personId` by `origin`'s site, published under `origin`'s tenant. */
+function archiveFrom(origin: TenantFixture, personId: string) {
+  return testEnvelope({
+    topic: PERSON_ARCHIVED_TOPIC,
+    tenantId: origin.tenantId,
+    aggregateId: personId,
+    aggregateVersion: 1,
+    payload: {
+      personId,
+      archiveId: cfUuid(),
+      siteId: origin.siteId,
+      effectiveFrom: ARCHIVE_EFFECTIVE_FROM,
+      archivedAt: ARCHIVED_AT,
+    },
+  });
+}
+
+/** An archive of {@link SHARED_PERSON_ID}, whose sheets every seeded tenant holds, by the fixture site of `tenantId`. */
+function sharedPersonArchive(tenantId: string) {
+  return archiveFrom(fixtureOf(tenantId), SHARED_PERSON_ID);
+}
+
+/** A contract-valid site.changed envelope re-announcing the fixture site of `tenantId` at version 2 with one more domain. */
+function siteChangedEnvelope(tenantId: string): EventEnvelope<SiteChangedPayload> {
+  const fixture = fixtureOf(tenantId);
+  const payload = registryPayloads().find((entry) => entry.siteId === fixture.siteId);
+  if (payload === undefined) {
+    throw new TypeError(`No registry payload has site ${fixture.siteId}`);
+  }
+  return testEnvelope({
+    topic: SITE_CHANGED_TOPIC,
+    tenantId,
+    aggregateId: fixture.siteId,
+    aggregateVersion: 2,
+    payload: { ...payload, domains: [...(payload.domains ?? []), `isolation.${fixture.siteId}.opt2.test`] },
+  });
+}
+
 describeWithPg('timesheets tenant isolation', () => {
   beforeAll(async () => {
     handle = await createTimesheetsSchema();
@@ -163,7 +242,7 @@ describeWithPg('timesheets tenant isolation', () => {
         for (const day of sheet.days) await repo.insert(tx, TIMESHEET_DAY.table, day);
       });
     }
-    service = await buildTestApp({ db: handle.app });
+    service = await buildTestApp({ db: handle.app, publisher });
   });
 
   afterAll(async () => {
@@ -185,11 +264,16 @@ describeWithPg('timesheets tenant isolation', () => {
     { describe, it, expect, beforeAll },
     {
       db: () => handle,
-      name: 'timesheets unit tables',
-      tables: tables.map(({ table }) => table),
+      name: 'timesheets tenant tables',
+      tables: SUITE_TABLES,
       writeAs,
       readAs,
       rowFor,
+      events: [
+        { app: () => service?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: siteChangedEnvelope, publisher },
+        // Tenant A's user pools reach no other fixture tenant, so the fan-out keeps a tenant A archive in tenant A.
+        { app: () => service?.app, subscription: PERSON_ARCHIVED_SUBSCRIPTION, envelopeFor: sharedPersonArchive, publisher },
+      ],
     },
   );
 
@@ -271,23 +355,6 @@ describeWithPg('timesheets tenant isolation', () => {
   });
 
   describe('people.person.archived.v1 fan-out', () => {
-    /** An archive of `personId` by `origin`'s site, published under `origin`'s tenant. */
-    function archiveFrom(origin: TenantFixture, personId: string) {
-      return testEnvelope({
-        topic: PERSON_ARCHIVED_TOPIC,
-        tenantId: origin.tenantId,
-        aggregateId: personId,
-        aggregateVersion: 1,
-        payload: {
-          personId,
-          archiveId: cfUuid(),
-          siteId: origin.siteId,
-          effectiveFrom: ARCHIVE_EFFECTIVE_FROM,
-          archivedAt: ARCHIVED_AT,
-        },
-      });
-    }
-
     function push(envelope: TenantlessEnvelope): Promise<InjectResponse> {
       return pushTo(built().service.app, PERSON_ARCHIVED_SUBSCRIPTION, envelope);
     }

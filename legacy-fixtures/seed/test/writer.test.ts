@@ -11,7 +11,7 @@ import { readDataset, writeDataset, type DatasetPart, type Manifest } from '../s
 
 const CONFIG_PATH = fileURLToPath(new URL('../seed.config.json', import.meta.url));
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
-const MASA_ARRAYS = ['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients'];
+const MASA_ARRAYS = ['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients', 'formResponses', 'commenters', 'comments'];
 const PART_NAME = /^dataset-\d{4}\.json$/;
 
 let config: SeedConfig;

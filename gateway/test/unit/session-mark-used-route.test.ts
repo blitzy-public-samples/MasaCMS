@@ -100,6 +100,7 @@ async function markUsedApp(
       return markUsed(cookies, tokens, call);
     },
     usedSince: unexpected('bridge.usedSince'),
+    carry: unexpected('bridge.carry'),
     end: unexpected('bridge.end'),
   };
   const app = await createService({

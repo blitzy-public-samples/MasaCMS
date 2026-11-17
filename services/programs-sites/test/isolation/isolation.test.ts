@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { CONSUMER_AGGREGATE_VERSION_TABLE, INBOX_TABLE, type EventEnvelope } from '@opt2/platform/events';
 import {
   PLATFORM_TABLE_GROUPS,
   TENANT_A,
@@ -11,12 +12,15 @@ import {
   TENANT_LIST,
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
+  createCapturingPublisher,
   createThrowawaySchema,
   crossTenantPairs,
   defineIsolationSuite,
   expectPlatformTables,
+  fixtureForTenant,
   pgAvailable,
   pushTo,
+  registryPayloads,
   seedRegistry,
   testEnvelope,
   withoutTenant,
@@ -57,6 +61,10 @@ const available = await pgAvailable();
 
 let schema: ThrowawaySchema | undefined;
 let required: RequiredColumns = new Map();
+/** Last site.changed version built for a push; seedRegistry stores version 1. */
+let siteVersion = 1;
+/** The app's publisher, created up front because the shared suite's event case takes it at registration. */
+const publisher = createCapturingPublisher();
 
 /** The schema the outer beforeAll created; throws when its creation failed. */
 function created(): ThrowawaySchema {
@@ -89,6 +97,20 @@ function cfId(seed: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 32)}`;
 }
 
+/** A uuid-formatted value derived from `seed`. */
+function uuidOf(seed: string): string {
+  const hex = digest(seed);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Rows derived from a seed of the platform tables a site.changed delivery writes in its tenant: receipt and ordering progress. */
+const CONSUMER_ROWS: ReadonlyMap<string, (seed: string) => Row> = new Map<string, (seed: string) => Row>([
+  [INBOX_TABLE, (seed) => ({ event_id: uuidOf(seed), subscription: SITE_CHANGED_SUBSCRIPTION, status: 'applied' })],
+  [CONSUMER_AGGREGATE_VERSION_TABLE, (seed) => ({ subscription: SITE_CHANGED_SUBSCRIPTION, aggregate_type: 'site', aggregate_id: cfId(seed), last_version: 1 })],
+]);
+/** Tables of the shared suite, so a delivery's effect in another tenant shows in its counts. */
+const SUITE_TABLES: readonly string[] = [...OWNED_TABLES.map(({ table }) => table), ...CONSUMER_ROWS.keys()];
+
 /** A value of canonical type `type` derived from `seed`; text exactly fills a `char(length)` column. */
 function valueFor(type: ColumnType, seed: string, length: number | null): unknown {
   switch (type) {
@@ -109,6 +131,8 @@ function valueFor(type: ColumnType, seed: string, length: number | null): unknow
 
 /** A `table` row of `tenant` with only its NOT NULL columns without a default set; `variant` keeps rows of one tenant distinct. */
 function rowOf(table: string, tenant: TenantFixture, variant: string): Row {
+  const consumerRow = CONSUMER_ROWS.get(table);
+  if (consumerRow !== undefined) return consumerRow(`${tenant.key}:${table}:${variant}`);
   const definition = DEFINITIONS.get(table);
   const columns = required.get(table);
   if (definition === undefined || columns === undefined) {
@@ -183,22 +207,48 @@ function fixtureSiteRow(fixture: TenantFixture): Row {
   };
 }
 
-/** Builds the programs-sites app over the throwaway schema. */
+/** Builds the programs-sites app over the throwaway schema, publishing through `publisher`. */
 function startApp(db: ThrowawaySchema['app']) {
-  return buildTestApp({ db });
+  return buildTestApp({ db, publisher });
 }
 
 type AppContext = Awaited<ReturnType<typeof startApp>>;
+
+let ctx: AppContext | undefined;
+
+/** The app the outer beforeAll built; throws when building it failed. */
+function service(): AppContext {
+  if (ctx === undefined) {
+    throw new Error('The programs-sites app was not built; see the beforeAll failure');
+  }
+  return ctx;
+}
+
+/** `tenantId`'s fixture registry state as the next site.changed version, so the consumer applies it rather than ignoring it as stale. */
+function siteChanged(tenantId: string): EventEnvelope {
+  const fixture = fixtureForTenant(tenantId);
+  const payload = registryPayloads().find(({ siteId }) => siteId === fixture?.siteId);
+  if (fixture === undefined || payload === undefined) {
+    throw new TypeError(`The fixture registry has no tenant ${tenantId}`);
+  }
+  siteVersion += 1;
+  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId, aggregateType: 'site', aggregateId: fixture.siteId, aggregateVersion: siteVersion, payload });
+}
 
 describe.skipIf(!available)('programs-sites tenant isolation', () => {
   beforeAll(async () => {
     schema = await createThrowawaySchema({ service: 'programs-sites', migrationsDir: MIGRATIONS_DIR });
     await seedRegistry(schema.app);
     required = await requiredColumns(schema);
+    ctx = await startApp(schema.app);
   });
 
   afterAll(async () => {
-    await schema?.drop();
+    try {
+      await ctx?.app.close();
+    } finally {
+      await schema?.drop();
+    }
   });
 
   it('creates the outbox, event, migration-kit, task and tenancy tables with RLS forced on the tenant-owned ones', async () => {
@@ -206,16 +256,17 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
   });
 
   // The shared suite also asserts the catalog: forced RLS with USING and WITH CHECK on every tenant table, sitemonitor_state
-  // included, and no schema role that is or inherits SUPERUSER or BYPASSRLS.
+  // included, and no schema role that is or inherits SUPERUSER or BYPASSRLS; plus the site.changed tenantless and tenant A delivery cases.
   defineIsolationSuite(
     { describe, it, expect, beforeAll },
     {
       db: () => schema,
       name: 'programs-sites owned tables',
-      tables: OWNED_TABLES.map(({ table }) => table),
+      tables: SUITE_TABLES,
       writeAs,
       readAs,
       rowFor: (table, tenant) => rowOf(table, tenant, 'probe'),
+      events: [{ app: () => ctx?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: siteChanged, publisher }],
     },
   );
 
@@ -279,16 +330,6 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
   });
 
   describe('site access through the app', () => {
-    let ctx: AppContext | undefined;
-
-    /** The app the beforeAll built; throws when building it failed. */
-    function service(): AppContext {
-      if (ctx === undefined) {
-        throw new Error('The programs-sites app was not built; see the beforeAll failure');
-      }
-      return ctx;
-    }
-
     /** Injects a request carrying a tenant A token of the ROLE_SET subject `subject`, with `form` as its urlencoded body. */
     async function inject(method: 'GET' | 'POST', url: string, subject: string, form?: Record<string, string>) {
       const headers = await headersFor(subject, { site: TENANT_A.siteId });
@@ -331,7 +372,6 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
 
     beforeAll(async () => {
       const db = created().app;
-      ctx = await startApp(db);
       // Opened after the build, whose onReady inserts every missing gate as `legacy`.
       await db.withMetadata((tx) =>
         tx.query(
@@ -351,10 +391,6 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
           await insertRow(tx, SITE.table, fixtureSiteRow(fixture));
         });
       }
-    });
-
-    afterAll(async () => {
-      await ctx?.app.close();
     });
 
     it('lists the site of every registered tenant for an s2 token', async () => {

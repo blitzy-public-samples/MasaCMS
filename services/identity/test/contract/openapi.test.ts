@@ -826,6 +826,10 @@ const CASES: Record<string, Case[]> = {
   getSessionAdminSite: [
     { name: "reports the session's selected site", method: 'GET', url: '/internal/v1/sessions/S-s2/admin-site', as: 'service:gateway', status: 200, verify: (body) => expect(record(body)).toHaveProperty('siteId') },
   ],
+  getSessionAdminState: [
+    { name: "reports the session's stored admin values", method: 'GET', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:gateway', status: 200, verify: (body) => expect(record(body)).not.toHaveProperty('blockLoginUntil') },
+    { name: 'refuses a caller other than the gateway', method: 'GET', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:web', status: 403 },
+  ],
   getSessionSnapshot: [
     {
       name: 'returns the login snapshot of the s2 session',

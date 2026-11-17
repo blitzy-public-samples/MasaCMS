@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import JSZip from 'jszip';
 import { LEGACY_JSON_CONTENT_TYPE, cfHash, cfUuid, legacyHeaders } from '@opt2/platform/legacy-compat';
 import { encodeRow, type CanonicalColumn } from '@opt2/platform/migration-kit';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -259,6 +260,30 @@ describe('normaliseStep representations', () => {
     expect(digest.export).toStrictEqual({ kind: 'file', sha256: record.response.sha256, contentType: 'application/pdf' });
   });
 
+  it('represents a ZIP download by its files when only the DOM is compared, whatever its entry times', async () => {
+    const zipType = 'application/zip; charset=UTF-8';
+    const download = async (date: Date): Promise<StepRecord> => {
+      const zip = new JSZip().file('wddx_rstcontent.xml', '<wddxPacket/>', { date });
+      const bytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      return stepRecord({ routeKey: 'admin:carch.export', contentType: zipType, bytes });
+    };
+    const capture = await download(new Date(Date.UTC(2026, 10, 16, 23, 43)));
+    const replay = await download(new Date(Date.UTC(2026, 10, 16, 23, 50)));
+    const scenario = comparing(['status', 'dom']);
+
+    const step = await normaliseOne(capture, scenario);
+
+    expect(replay.response.sha256).not.toBe(capture.response.sha256);
+    expect(step.export).toStrictEqual({
+      kind: 'zip',
+      contentType: zipType,
+      entries: [
+        { name: 'wddx_rstcontent.xml', sha256: createHash('sha256').update('<wddxPacket/>').digest('hex'), size: 13 },
+      ],
+    });
+    expect((await normaliseOne(replay, scenario)).export).toStrictEqual(step.export);
+  });
+
   it("reads a legacy body whose JSON escapes ' as \\'", async () => {
     const text = String.raw`{"apiversion":"v1","method":"findOne","data":{"title":"Masa\'s page"}}`;
     const step = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text }), comparing(['status', 'envelope']));
@@ -361,6 +386,41 @@ describe('scenario normalisationOverrides', () => {
     expect(kept.envelope).toHaveProperty('error.stacktrace');
     expect(dropped.envelope).toMatchObject({ error: raw.error });
     expect(dropped.envelope).not.toHaveProperty('error.stacktrace');
+  });
+
+  // cwebservice.edit repeats the generated client secret in its Example Usage link and that link's text.
+  const secret = createHash('sha256').update('opt2-client').digest('hex').toUpperCase();
+  const secretPage = (control: string): string =>
+    `<form name="form1">${control}</form>` +
+    `<a href="/_api/rest/v1/tenant-a/oauth2?client_secret=${secret}">oauth2?client_secret${secret}</a>` +
+    `<div class="alert alert-info">${secret}</div>`;
+  const secretTokenScenario = (): Scenario =>
+    comparing(['status', 'dom'], { normalisationOverrides: { extraTokenFields: ['clientsecret'] } });
+
+  it.each<[string, string]>([
+    ['a hidden input', `<input type="hidden" name="clientsecret" value="${secret}">`],
+    ['a textarea named in another case', `<textarea name="ClientSecret">${secret}</textarea>`],
+  ])('masks the value of %s an extraTokenFields name covers wherever the page repeats it', async (_label, control) => {
+    const record = stepRecord({ contentType: HTML_TYPE, text: secretPage(control) });
+    const plain = await normaliseOne(record, comparing(['status', 'dom']));
+    const masked = await normaliseOne(record, secretTokenScenario());
+    const token = rules.tokens.placeholder;
+    expect(plain.domModel?.links).toStrictEqual([
+      { href: `/_api/rest/v1/tenant-a/oauth2?client_secret=${secret}`, text: `oauth2?client_secret${secret}` },
+    ]);
+    expect(masked.domModel?.controls.map((control) => control.value)).toStrictEqual([token]);
+    expect(masked.domModel?.links).toStrictEqual([
+      { href: `/_api/rest/v1/tenant-a/oauth2?client_secret=${token}`, text: `oauth2?client_secret${token}` },
+    ]);
+    expect(masked.domModel?.alerts).toStrictEqual([{ kind: 'alert-info', text: token }]);
+    expect(JSON.stringify(masked)).not.toContain(secret);
+  });
+
+  it('leaves the page as served when the control an extraTokenFields name covers is empty', async () => {
+    const record = stepRecord({ contentType: HTML_TYPE, text: secretPage('<input name="clientsecret" value="">') });
+    const masked = await normaliseOne(record, secretTokenScenario());
+    expect(masked.domModel).toStrictEqual((await normaliseOne(record, comparing(['status', 'dom']))).domModel);
+    expect(masked.domModel?.alerts).toStrictEqual([{ kind: 'alert-info', text: secret }]);
   });
 });
 

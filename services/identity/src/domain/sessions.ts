@@ -554,11 +554,16 @@ export async function sessionState(deps: SessionDeps, sessionId: string): Promis
   return statusOf(located.row);
 }
 
+/** The admin state the session stored; `{}` when none is stored or the session is unknown, ended or expired. */
+export async function sessionAdminState(deps: SessionDeps, sessionId: string): Promise<Record<string, unknown>> {
+  const row = (await locateSession(deps, sessionId))?.row;
+  if (row === undefined || row.state !== 'active' || isExpired(deps, row, deps.clock.now()) || row.admin_state === null) return {};
+  return JSON.parse(row.admin_state) as Record<string, unknown>;
+}
+
 /** The admin site the session selected (`session.siteid` in its admin state); empty when none is stored or the session is unknown, ended or expired. */
 export async function sessionAdminSite(deps: SessionDeps, sessionId: string): Promise<string> {
-  const row = (await locateSession(deps, sessionId))?.row;
-  if (row === undefined || row.state !== 'active' || isExpired(deps, row, deps.clock.now()) || row.admin_state === null) return '';
-  const { siteid } = JSON.parse(row.admin_state) as Record<string, unknown>;
+  const { siteid } = await sessionAdminState(deps, sessionId);
   return typeof siteid === 'string' ? siteid : '';
 }
 

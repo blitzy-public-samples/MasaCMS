@@ -6,6 +6,11 @@
   "expiration": "",
   "rootDir": "/opt/ColdFusion2023/cfusion",
   "javaVersion": "17.0.12",
+  "dbProductName": "Microsoft SQL Server",
+  "dbProductVersion": "Microsoft SQL Server 2022 - 16.0.4305.5",
+  "serverJavaVersion": null,
+  "osName": "UNIX",
+  "osVersion": "6.12.105+",
   "applicationName": "mura0F1E2D3C4B5A69788796A5B4C3D2E1F0",
   "cfpmPackages": [
     "adminapi",

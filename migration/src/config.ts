@@ -83,8 +83,15 @@ export const migrationConfigSchema = z
       .object({ freezeAckTimeoutMs: positiveInt(), cfthreadWaitMs: positiveInt(), drainTimeoutMs: positiveInt() })
       .strict(),
     projection: z
-      .object({ defaultAwaitTimeoutMs: positiveInt(), batchRows: positiveInt(), idlePollMs: positiveInt() })
-      .strict(),
+      .object({
+        defaultAwaitTimeoutMs: positiveInt(),
+        batchRows: positiveInt(),
+        streamPagesPerCycle: positiveInt(),
+        idlePollMs: positiveInt(),
+        idleMaxPollMs: positiveInt(),
+      })
+      .strict()
+      .refine((projection) => projection.idleMaxPollMs >= projection.idlePollMs, { path: ['idleMaxPollMs'], message: 'must not be below idlePollMs' }),
     background: z.object({ bridgePollMs: positiveInt(), tasksReconcileMs: positiveInt() }).strict(),
     startupGuard: z.object({ table: text(), predicateSql: text(), appreloadKey: text() }).strict(),
     fileStore: z

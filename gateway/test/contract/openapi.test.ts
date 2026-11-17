@@ -136,13 +136,14 @@ const GATEWAY_OPERATION_IDS = [
   'edgeOptions',
 ];
 
-/** Identity operations behind the nine IdentityClient methods. */
+/** Identity operations behind the ten IdentityClient methods. */
 const IDENTITY_CALLED = [
   'mintUserToken',
   'authenticateRequest',
   'adoptSession',
   'getSessionState',
   'getSessionAdminSite',
+  'getSessionAdminState',
   'getSessionSnapshot',
   'endSession',
   'claimCsrfToken',
@@ -1187,6 +1188,7 @@ describe("the gateway's identity and migration calls against their producer cont
     identityResults.adopt = await identity.adopt({ describe: DESCRIBE, siteId: 'default' });
     identityResults.state = await identity.state(CONSUMER_SESSION);
     identityResults.adminSite = await identity.adminSite(CONSUMER_SESSION);
+    identityResults.adminState = await identity.adminState(CONSUMER_SESSION);
     identityResults.snapshot = await identity.snapshot(CONSUMER_SESSION);
     identityResults.claim = await identity.claim({ sessionId: CONSUMER_SESSION, token: CSRF_TOKEN, expires: '260630130000000', context: 'contract' });
     identityResults.settle = await identity.settle({ sessionId: CONSUMER_SESSION, consumed: [CSRF_TOKEN], released: [] });

@@ -458,7 +458,7 @@ describe('operations', () => {
 
   beforeAll(async () => {
     const db = createRecordingDb({
-      notes: [READ_NOTE, DELETED_NOTE].map((note) => ({ tenantId: TENANT_A.tenantId, row: noteToRow(note) })),
+      notes: [READ_NOTE, DELETED_NOTE, PUSHED_NOTE].map((note) => ({ tenantId: TENANT_A.tenantId, row: noteToRow(note) })),
       projections: [{ tenantId: TENANT_A.tenantId, row: READ_PROJECTION }],
     });
     // PostgreSQL formats the stored watermark's finished_at; the bound text already has that form.

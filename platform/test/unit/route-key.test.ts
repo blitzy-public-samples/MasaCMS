@@ -5,6 +5,8 @@ import {
   REST_CONSUMED_PARAMS_HEADER,
   ROUTE_FAMILIES,
   SAVEFORM_CONDITION,
+  SESSION_MANAGED_CONDITION,
+  STARTUP_SITE_CONDITION,
   SYNTHETIC_V1_PREFIXES,
   type RouteEntryPoint,
   type RouteKeyOptions,
@@ -215,9 +217,29 @@ describe('JSON API parameter merge', () => {
       headers: JSON_TYPE,
     });
     expect(result.key).toBe('api:content.save');
-    expect(result.params).toMatchObject({ a: 'query', b: 'form', c: 'body', d: '4', e: '', entityname: 'content' });
+    expect(result.params).toMatchObject({ a: 'query', b: 'form', c: 'body', d: '4', entityname: 'content' });
+    expect(result.params).not.toHaveProperty('e');
     expect(result.params).not.toHaveProperty('f');
     expect(result.params).not.toHaveProperty('g');
+  });
+
+  // Oracle: a JSON null is undefined to isDefined, param and structKeyExists, so each answers as if the key was never sent.
+  it.each<[string, string, Record<string, unknown>, string]>([
+    ['a null siteid the site checks skip', `${API}/content`, { siteid: null }, 'api:content.save'],
+    ['an empty siteid', `${API}/content`, { siteid: '' }, 'api:!invalidparameters'],
+    ['a null muraPointInTime', `${API}/content`, { muraPointInTime: null }, 'api:content.save'],
+    ['a null method, which leaves the path method', `${API}/findCrumbArray`, { method: null, entityname: 'content' }, 'api:findcrumbarray'],
+    ['a null siteid of a direct method, defaulted to the API site', `${API}/`, { method: 'findOne', entityname: 'content', siteid: null }, 'api:content.findone'],
+    ['an empty siteid of a direct method', `${API}/`, { method: 'findOne', entityname: 'content', siteid: '' }, 'api:!invalidparameters'],
+  ])('reads %s as legacy does', (_label, url, jsonBody, key) => {
+    expect(keyOf('POST', url, { jsonBody, headers: JSON_TYPE }, ONLY_DEFAULT)).toBe(key);
+  });
+
+  it('lets a JSON null replace a url value with an undefined key', () => {
+    const result = resultOf('POST', `${API}/?siteid=default&id=7`, { jsonBody: { method: 'findOne', entityname: 'content', id: null }, headers: JSON_TYPE }, ONLY_DEFAULT);
+    expect(result.key).toBe('api:content.findone');
+    expect(result.params).not.toHaveProperty('id');
+    expect(result.params).toMatchObject({ siteid: 'default' });
   });
 
   it('joins repeated query values with commas', () => {
@@ -317,6 +339,18 @@ describe('JSON API method resolution', () => {
     },
     { name: 'the ajax endpoint', url: '/_api/ajax/v1/default/content/', key: 'api:content.findall' },
     { name: 'a generic method without an entity', url: `${API}/?method=findAll`, key: 'api:.findall' },
+    { name: 'the file scope after a pool site id', url: `/_api/json/v1/umbrella/file/${UUID}`, key: 'api:!invalidmethodcall' },
+    { name: 'the file scope before new', url: `${API}/file/new`, key: 'api:!invalidmethodcall' },
+    { name: 'the file scope in another case', url: `${API}/File`, key: 'api:!invalidmethodcall' },
+    { name: 'the file scope as the first segment', url: '/_api/json/v1/file', opts: ONLY_DEFAULT, key: 'api:!invalidmethodcall' },
+    { name: 'the file scope as the method parameter', url: `${API}/?method=file`, key: 'api:!invalidmethodcall' },
+    { name: 'the file segment the entity route keeps as its entity', url: `${API}/file?method=zz`, key: 'api:file.findquery' },
+    { name: 'the file entity after a site id that is not a variable name', url: '/_api/json/v1/tenant-a/file/new', key: 'api:file.findnew' },
+    { name: 'the http built-in after a site id that is not a variable name', url: '/_api/json/v1/tenant-a/http', key: 'api:!invalidmethodcall' },
+    { name: 'the http built-in after the site id', url: `${API}/http`, key: 'api:!invalidmethodcall' },
+    { name: 'the http built-in on the entity route', url: `${API}/http?method=zz`, key: 'api:!invalidmethodcall' },
+    { name: 'findNew of the file entity by parameters', url: `${API}/?method=findNew&entityname=file`, key: 'api:file.findnew' },
+    { name: 'the plural file entity path', url: `${API}/files/new`, key: 'api:file.findnew' },
   ])('resolves $name to $key', ({ url, opts, key }) => {
     expect(keyOf('GET', url, {}, opts)).toBe(key);
   });
@@ -1269,6 +1303,75 @@ describe('variants', () => {
     expect(keyOf('POST', url, {}, opts)).toBe('api:processasyncobject');
   });
 
+  const SESSION: readonly VariantDeclaration[] = [
+    { route: 'rest:variationtargeting.save', variant: 'session', when: [SESSION_MANAGED_CONDITION] },
+  ];
+
+  // path_info keeps an index.cfm spelling the container does not map, and a second encoding (applicationSettings.cfm:179).
+  it.each<[string, string, boolean]>([
+    ['an upper-case index.cfm', '/INDEX.CFM/_api/rest/v1/default/variationTargeting', true],
+    ['a title-case index.cfm', '/Index.cfm/_api/rest/v1/default/variationTargeting', true],
+    ['an upper-case extension', '/index.CFM/_api/rest/v1/default/variationTargeting', true],
+    ['an upper-case index.cfm and API path', '/INDEX.CFM/_API/REST/v1/default/variationTargeting', true],
+    ['a double-encoded _api segment', '/%255Fapi/rest/v1/default/variationTargeting', true],
+    ['index.cfm and a double-encoded _api segment', '/index.cfm/%255Fapi/rest/v1/default/variationTargeting', true],
+    ['the lower-case index.cfm', '/index.cfm/_api/rest/v1/default/variationTargeting', false],
+    ['the bare path', '/_api/rest/v1/default/variationTargeting', false],
+    ['an upper-case API path', '/_API/REST/v1/default/variationTargeting', false],
+    ['an encoded _api segment', '/%5Fapi/rest/v1/default/variationTargeting', false],
+    ['index.cfm and an upper-case API path', '/index.cfm/_API/REST/v1/default/variationTargeting', false],
+  ])('decides {session} on a REST save behind %s', (_label, path, session) => {
+    const result = resultOf('POST', path, {}, { variants: SESSION });
+    expect(result.baseKey).toBe('rest:variationtargeting.save');
+    expect(result.key).toBe(session ? 'rest:variationtargeting.save{session}' : 'rest:variationtargeting.save');
+  });
+
+  it.each([
+    ['/masa/INDEX.CFM/_api/rest/v1/default/variationTargeting', 'session'],
+    ['/masa/index.cfm/_api/rest/v1/default/variationTargeting', undefined],
+    ['/masa/_api/rest/v1/default/variationTargeting', undefined],
+  ])('reads the path_info of %s after the context', (path, variant) => {
+    expect(resultOf('POST', path, {}, { variants: SESSION, context: '/masa' }).variant).toBe(variant);
+  });
+
+  const STARTUP_SITE: readonly VariantDeclaration[] = [
+    ...SESSION,
+    { route: 'rest:variationtargeting.save', variant: 'siteid', when: [STARTUP_SITE_CONDITION] },
+  ];
+
+  // mura.event init appends the form scope, then the url scope without overwriting (event.cfc:86-89); a JSON body is neither.
+  it.each<[string, string, Partial<RouteKeyRequest>, string | undefined]>([
+    ['a form siteid', '', { form: { siteid: 'default' } }, 'siteid'],
+    ['a url siteid', '?siteid=default', {}, 'siteid'],
+    ['a url siteid in another case', '?SiteID=default', {}, 'siteid'],
+    ['an empty form siteid over a url one', '?siteid=default', { form: { siteid: '' } }, undefined],
+    ['an empty url siteid', '?siteid=', {}, undefined],
+    ['a JSON body siteid', '', { jsonBody: { siteid: 'default' }, headers: JSON_TYPE }, undefined],
+    ['no siteid', '', { form: { title: 'x' } }, undefined],
+  ])('decides {siteid} on a REST save carrying %s', (_label, search, extra, variant) => {
+    const result = resultOf('POST', `/_api/rest/v1/default/variationTargeting${search}`, extra, { variants: STARTUP_SITE });
+    expect(result.baseKey).toBe('rest:variationtargeting.save');
+    expect(result.variant).toBe(variant);
+  });
+
+  it('lets an earlier {session} declaration win over {siteid}', () => {
+    const extra = { form: { siteid: 'default' } };
+    expect(keyOf('POST', '/INDEX.CFM/_api/rest/v1/default/variationTargeting', extra, { variants: STARTUP_SITE })).toBe(
+      'rest:variationtargeting.save{session}',
+    );
+  });
+
+  it('holds sessionManaged on every family but REST, and negates it under not', () => {
+    const variants: VariantDeclaration[] = [
+      { route: 'api:variationtargeting.save', variant: 'sessionless', when: [{ not: SESSION_MANAGED_CONDITION }] },
+      { route: 'admin:cusers.update', variant: 'session', when: [SESSION_MANAGED_CONDITION] },
+    ];
+    expect(keyOf('POST', '/INDEX.CFM/_api/json/v1/default/variationTargeting', {}, { variants })).toBe(
+      'api:variationtargeting.save',
+    );
+    expect(keyOf('POST', '/admin/?muraAction=cUsers.update', {}, { variants })).toBe('admin:cusers.update{session}');
+  });
+
   it.each<[VariantCondition, Record<string, string>, boolean]>([
     [{ param: 'action', in: ['Update', 'Delete'] }, { action: 'delete' }, true],
     [{ param: 'action', in: ['Update', 'Delete'] }, { action: 'Add' }, false],
@@ -1369,6 +1472,7 @@ describe('routeKeyForEntryPoint', () => {
       ],
     },
     { route: 'api:file.save', variant: 'upload=image', when: [IMAGE_UPLOAD_CONDITION] },
+    { route: 'rest:variationtargeting.save', variant: 'session', when: [SESSION_MANAGED_CONDITION] },
   ];
 
   it.each<{ name: string; entry: RouteEntryPoint; req: RouteKeyRequest; opts?: RouteKeyOptions; key: string }>([
@@ -1426,6 +1530,20 @@ describe('routeKeyForEntryPoint', () => {
       }),
       opts: { variants },
       key: 'api:file.save{upload=image}',
+    },
+    {
+      name: 'a REST save behind another index.cfm spelling',
+      entry: { kind: 'api', family: 'rest', method: 'save', entity: 'variationTargeting', frontController: 'INDEX.CFM' },
+      req: request('POST', '/INDEX.CFM/_api/rest/v1/default/variationTargeting'),
+      opts: { variants },
+      key: 'rest:variationtargeting.save{session}',
+    },
+    {
+      name: 'a REST save on the bare path',
+      entry: { kind: 'api', family: 'rest', method: 'save', entity: 'variationTargeting' },
+      req: request('POST', '/_api/rest/v1/default/variationTargeting'),
+      opts: { variants },
+      key: 'rest:variationtargeting.save',
     },
     {
       name: 'a page with doactions and a saveform',

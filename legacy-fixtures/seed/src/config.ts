@@ -58,7 +58,15 @@ export interface SiteConfig {
   programId: number | null;
   pools: SitePools;
   counts: SiteCounts;
+  /** `tsettings.PageLimit`; null keeps Masa's default, {@link MASA_DEFAULT_PAGE_LIMIT}. */
+  pageLimit: number | null;
 }
+
+/** Page limit of a Masa site that sets none [core/mura/settings/settingsBean.cfc:83]. */
+export const MASA_DEFAULT_PAGE_LIMIT = 1000;
+
+/** Largest `tsettings.PageLimit` (SQL Server `int`). */
+const MAX_PAGE_LIMIT = 2_147_483_647;
 
 /** Identities only the rollback rehearsal scenarios may touch. */
 export interface RehearsalReserve {
@@ -178,9 +186,16 @@ const poolsSchema = z.strictObject({
   contentPoolID: siteKeySchema.optional(),
 });
 
+// Masa shows the new-content and upload forms only while the site's pages number fewer than its page limit.
 function siteSchema(siteID: SiteKey, programId: z.ZodType<number | null>) {
   return z
-    .strictObject({ site: z.string().min(1), programId, pools: poolsSchema, counts: countsSchema })
+    .strictObject({
+      site: z.string().min(1),
+      programId,
+      pools: poolsSchema,
+      counts: countsSchema,
+      pageLimit: z.int().positive().max(MAX_PAGE_LIMIT).optional(),
+    })
     .transform(
       (raw): SiteConfig => ({
         siteID,
@@ -188,8 +203,16 @@ function siteSchema(siteID: SiteKey, programId: z.ZodType<number | null>) {
         programId: raw.programId,
         pools: raw.pools,
         counts: resolveCounts(siteID, raw.counts),
+        pageLimit: raw.pageLimit ?? null,
       }),
-    );
+    )
+    .refine((site) => site.counts.contentNodes < (site.pageLimit ?? MASA_DEFAULT_PAGE_LIMIT), {
+      path: ['pageLimit'],
+      error: (issue) => {
+        const site = issue.input as SiteConfig;
+        return `must exceed the site's ${site.counts.contentNodes} content nodes (Masa's default is ${MASA_DEFAULT_PAGE_LIMIT})`;
+      },
+    });
 }
 
 // The file lists group names; role-map.json grants each listed group the synthetic role of the same name.

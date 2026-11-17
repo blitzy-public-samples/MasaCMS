@@ -143,6 +143,8 @@ const OBJECTS_PATH = '/internal/v1/migration/objects';
 interface FeedPage {
   rows: ChangeRow[];
   complete: boolean;
+  /** Default '1000'. */
+  horizon?: string;
 }
 
 interface HarnessOptions {
@@ -151,6 +153,9 @@ interface HarnessOptions {
   /** Change-feed pages by `after` cursor; any other cursor reads one complete empty page. */
   feed?: Record<string, FeedPage>;
   batchRows?: number;
+  /** `projection.streamPagesPerCycle`; the committed value when unset. */
+  pages?: number;
+  signal?: AbortSignal;
 }
 
 /**
@@ -177,7 +182,7 @@ function harness(objects: StoredObject[], opts: HarnessOptions = {}) {
     return Promise.resolve({
       rows: page.rows.map((row) => ({ ...row, legacy: [] })),
       cursor: last === undefined ? params.after : cursorOf(last),
-      horizon: '1000',
+      horizon: page.horizon ?? '1000',
       complete: page.complete,
       operations: {},
     });
@@ -206,7 +211,15 @@ function harness(objects: StoredObject[], opts: HarnessOptions = {}) {
     owners: { getObject, changes } as unknown as OwnersClient,
     bridge: { filesPut, filesDelete } as unknown as BridgeClient,
     logger: { info } as unknown as Logger,
-    config: { ...CONFIG, projection: { ...CONFIG.projection, batchRows: opts.batchRows ?? CONFIG.projection.batchRows } },
+    config: {
+      ...CONFIG,
+      projection: {
+        ...CONFIG.projection,
+        batchRows: opts.batchRows ?? CONFIG.projection.batchRows,
+        streamPagesPerCycle: opts.pages ?? CONFIG.projection.streamPagesPerCycle,
+      },
+    },
+    signal: opts.signal,
   };
   return { deps, puts, consumed, deletes, files, sources, getObject, changes, filesPut, filesDelete, info };
 }
@@ -331,6 +344,9 @@ describe('executeFileOps', () => {
   const absent = (): OwnerCallError => new OwnerCallError('strategies-content', 'GET', OBJECTS_PATH, 404, { error: 'notFound' });
   const rewritten = `Projected legacy file ${smallPath} from ${keyOf(small)} as a later change recorded it: ${String(newer.bytes.byteLength)} bytes`;
   const removed = `Projected delete of legacy file ${smallPath}: a later change removed ${keyOf(small)}; 1 removed`;
+  const skipped = `Skipped legacy file ${smallPath} from ${keyOf(small)}: a later change of the key projects it`;
+  const differing = objectOf(TENANT_A, FILE_ID, '_small', 'jpg', 'bytes of a change the feed has not shown');
+  const none = { put: 0, deleted: 0, bytes: 0, superseded: 1 };
   /** A change of another table, whose images are not file objects. */
   const otherTable = (): ChangeRow => ({
     ...change('insert', null, original),
@@ -514,7 +530,7 @@ describe('executeFileOps', () => {
       [cursorOf(smallRow)]: { rows: firstRows, complete: false },
       [cursorOf(rowAt(firstRows, firstRows.length - 1))]: { rows: second(), complete: true },
     };
-    const h = harness(served, { store: [smallStored], feed, batchRows: 2 });
+    const h = harness(served, { store: [smallStored], feed, batchRows: 2, pages: 2 });
 
     await expect(executeFileOps(h.deps, [putSmall])).resolves.toEqual(expected);
     expect(h.files).toEqual(new Set(stored));
@@ -522,6 +538,21 @@ describe('executeFileOps', () => {
       ['strategies-content', { tenantId: TENANT_A, after: cursorOf(smallRow), limit: 2 }],
       ['strategies-content', { tenantId: TENANT_A, after: cursorOf(rowAt(firstRows, firstRows.length - 1)), limit: 2 }],
     ]);
+  });
+
+  it('stops reading the change feed at the page reaching the horizon of its first read, leaving later changes to later batches', async () => {
+    const before = otherTable();
+    const replaced = { ...change('update', small, newer), xid: '1000' };
+    const feed = {
+      [cursorOf(smallRow)]: { rows: [before], complete: false },
+      [cursorOf(before)]: { rows: [replaced], complete: false, horizon: '1100' },
+      [cursorOf(replaced)]: { rows: [change('delete', newer, null)], complete: true, horizon: '1100' },
+    };
+    const h = harness([newer], { store: [smallStored], feed, batchRows: 1, pages: 3 });
+
+    await expect(executeFileOps(h.deps, [putSmall])).resolves.toEqual({ put: 1, deleted: 0, bytes: newer.bytes.byteLength, superseded: 1 });
+    expect(h.files).toEqual(new Set([smallStored]));
+    expect(h.changes.mock.calls.map(([, params]) => params.after)).toEqual([cursorOf(smallRow), cursorOf(before)]);
   });
 
   it.each<[string, StoredObject[], object]>([
@@ -542,6 +573,80 @@ describe('executeFileOps', () => {
     expect(h.puts).toEqual([]);
     expect(h.files).toEqual(new Set());
     expect(h.filesDelete).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, number, object, string[], string]>([
+    ['skips the put, writing and deleting nothing, when the page budget ends first', 1, none, [smallStored], skipped],
+    ['deletes the file when the page budget reaches it', 2, { ...none, deleted: 1 }, [], removed],
+  ])('reads a later delete on the second page of the change feed: %s', async (_label, pages, expected, stored, log) => {
+    const before = otherTable();
+    const feed = {
+      [cursorOf(smallRow)]: { rows: [before], complete: false },
+      [cursorOf(before)]: { rows: [change('delete', small, null)], complete: true },
+    };
+    const h = harness([], { store: [smallStored], feed, pages });
+
+    await expect(executeFileOps(h.deps, [putSmall])).resolves.toEqual(expected);
+    expect(h.changes).toHaveBeenCalledTimes(pages);
+    expect(h.filesDelete).toHaveBeenCalledTimes(pages - 1);
+    expect(h.files).toEqual(new Set(stored));
+    expect(h.info.mock.calls).toEqual([[{ tenantId: TENANT_A }, log]]);
+  });
+
+  it.each<[string, StoredObject[], object, string[], string]>([
+    ['puts the current object that matches it', [newer], { ...none, put: 1, bytes: newer.bytes.byteLength }, [smallStored], rewritten],
+    ['skips the put when the current object differs from it too', [differing], none, [], skipped],
+    ['skips the put when the current object is absent', [], none, [], skipped],
+  ])('takes a later change read before the page budget ends as undecided: %s', async (_label, served, expected, stored, log) => {
+    const h = harness(served, { feed: { [cursorOf(smallRow)]: { rows: [change('update', small, newer)], complete: false } }, pages: 1 });
+
+    await expect(executeFileOps(h.deps, [putSmall])).resolves.toEqual(expected);
+    expect(h.changes).toHaveBeenCalledOnce();
+    expect(h.getObject).toHaveBeenCalledTimes(2);
+    expect(h.files).toEqual(new Set(stored));
+    expect(h.filesDelete).not.toHaveBeenCalled();
+    expect(h.info.mock.calls).toEqual([[{ tenantId: TENANT_A }, log]]);
+  });
+
+  it.each<[string, FeedPage]>([
+    ['a complete page', { rows: [change('insert', null, original)], complete: true }],
+    ["the first read's horizon", { rows: [{ ...change('insert', null, original), xid: '1000' }], complete: false, horizon: '1100' }],
+  ])('rethrows the put failure when reading reaches %s within the page budget without a later change of the key', async (_label, second) => {
+    const before = otherTable();
+    const h = harness([], { feed: { [cursorOf(smallRow)]: { rows: [before], complete: false }, [cursorOf(before)]: second }, pages: 3 });
+
+    const error = await executeFileOps(h.deps, [putSmall]).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(OwnerCallError);
+    expect(error).toMatchObject({ status: 404 });
+    expect(h.changes).toHaveBeenCalledTimes(2);
+    expect(h.info).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, number]>([
+    ['before the first page', 0],
+    ['after the first page', 1],
+  ])('reads no further page once the signal aborts %s, skipping the undecided put', async (_label, reads) => {
+    const controller = new AbortController();
+    const before = otherTable();
+    const feed = {
+      [cursorOf(smallRow)]: { rows: [before], complete: false },
+      [cursorOf(before)]: { rows: [change('delete', small, null)], complete: true },
+    };
+    const h = harness([], { store: [smallStored], feed, pages: 2, signal: controller.signal });
+    const read = h.changes.getMockImplementation() as NonNullable<ReturnType<typeof h.changes.getMockImplementation>>;
+    h.changes.mockImplementation(async (owner, params) => {
+      const page = await read(owner, params);
+      if (h.changes.mock.calls.length === reads) controller.abort();
+      return page;
+    });
+    if (reads === 0) controller.abort();
+
+    await expect(executeFileOps(h.deps, [putSmall])).resolves.toEqual(none);
+    expect(h.changes).toHaveBeenCalledTimes(reads);
+    expect(h.filesDelete).not.toHaveBeenCalled();
+    expect(h.files).toEqual(new Set([smallStored]));
+    expect(h.info.mock.calls).toEqual([[{ tenantId: TENANT_A }, skipped]]);
   });
 
   it('lets a bridge error answered before the object was sent propagate, without awaiting its end or reading the change feed', async () => {

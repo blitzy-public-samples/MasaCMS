@@ -56,6 +56,7 @@ import {
   type RelationSourceKey,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Struct = Record<string, unknown>;
 
@@ -393,6 +394,8 @@ async function loadBy(ctx: ContentRouteContext, call: JsonApiCall, key: Relation
 export const variationTargetingHandler: EntityHandler = Object.freeze({
   entity: ENTITY,
   config: CONFIG,
+  // validate reads `data.entityname`, not this route's entity, so the `variations` gate does not wrap it.
+  validate,
   findOne,
   findMany,
   findAll: findFeed,

@@ -1,4 +1,4 @@
-// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, end) and site.cfm's site list.
+// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, carried values, end) and site.cfm's site list.
 import { BRIDGE_ASSERTION_HEADER, isLegacySessionCookie, signBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
@@ -65,6 +65,19 @@ export interface UsedSinceResult {
   serverTime: string;
 }
 
+/** One `op=carry` entry: a legacy `session` key, its value and a revision that changes whenever the value does. */
+export interface CarriedValue {
+  name: string;
+  value: Readonly<Record<string, unknown>>;
+  revision: string;
+}
+
+/** `op=carry` answer: the names installed, those whose revision differed from the one installed last. */
+export interface CarryResult {
+  applied: string[];
+  serverTime: string;
+}
+
 /** `op=end` answer. */
 export interface EndResult {
   ended: true;
@@ -91,6 +104,8 @@ export interface BridgeClient {
   ): Promise<BridgeResult<MarkUsedResult>>;
   /** `op=usedSince`: ledger entries used at or after `since`, a legacy wire time. */
   usedSince(cookies: LegacyCookies, since: string, call: BridgeSessionCall): Promise<BridgeResult<UsedSinceResult>>;
+  /** `op=carry`: sets each value as its top-level `session` key unless its revision is the one installed last. */
+  carry(cookies: LegacyCookies, values: CarriedValue[], call: BridgeSessionCall): Promise<BridgeResult<CarryResult>>;
   /** `op=end`: logs the session out without a database write and invalidates it. */
   end(cookies: LegacyCookies, call: BridgeSessionCall): Promise<BridgeResult<EndResult>>;
 }
@@ -111,7 +126,7 @@ export interface SiteListClient {
   listSites(): Promise<string[]>;
 }
 
-type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'end';
+type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'end';
 
 interface OpSpec {
   method: 'GET' | 'POST';
@@ -237,6 +252,8 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
 
     usedSince: (cookies, since, call) =>
       send<UsedSinceResult>('usedSince', { method: 'GET', query: { since } }, cookies, call),
+
+    carry: (cookies, values, call) => send<CarryResult>('carry', { method: 'POST', json: { values } }, cookies, call),
 
     end: (cookies, call) => send<EndResult>('end', { method: 'POST' }, cookies, call),
   };

@@ -18,9 +18,6 @@ export const MIGRATED_SERVICES: readonly string[] = Object.freeze(['identity', '
 /** Area-owner value of an area no service owns. */
 export const NO_OWNER = 'none';
 
-/** `owningService` of a withheld item whose writes span owners and no proposal names one. */
-export const SPANNING_OWNER = 'spanning';
-
 /** Legacy table that stands for the file store in owner derivation: `tfiles` and the stored objects share its owner. */
 export const FILE_STORE_TABLE = 'tfiles';
 
@@ -46,7 +43,8 @@ export type RuntimeCategory =
   | 'auto-update'
   | 'cluster'
   | 'bean-metadata'
-  | 'theme-render';
+  | 'theme-render'
+  | 'framework-error';
 
 /** Stored value an item's owner depends on: an extended subtype's `baseTable` or a trash row's `objectClass`. */
 export type StoredDataOwner = 'baseTable' | 'objectClass';
@@ -54,7 +52,10 @@ export type StoredDataOwner = 'baseTable' | 'objectClass';
 /** Request predicates of an item's variant branch, as the write closure takes them: a value, `true` (present) or `false`/`null` (absent). */
 export type VariantPredicates = Readonly<Record<string, string | boolean | null>>;
 
-/** Where an item's `owningService` comes from. */
+/**
+ * Where an item's `owningService` comes from; `spanning` marks a withheld item whose writes span owners, or whose owner
+ * depends on stored data, recorded under the owner the plan's tables name for its area, else none.
+ */
 export type OwnerBasis = 'table-ownership' | 'aap-0.3.2' | 'named-input' | 'decision-list-proposal' | 'fixture-module' | 'spanning' | 'none';
 
 /** Cross-service write protocol a carried spanning item uses. */
@@ -74,8 +75,16 @@ export interface DispositionFacts {
   webRootFilesystem: boolean;
   runtimeCategory?: RuntimeCategory;
   storedDataOwner?: StoredDataOwner;
+  /** Route key of the branch a screen exists only to submit; the screen is withheld when the decision list withholds it. */
+  servesBranch?: string;
+  /** Legacy table holding the only data the item serves; a decision-list table keeps it on legacy. */
+  servesTable?: string;
   areaKey: string;
   fixtureModule?: string;
+  /** A table of the fixture schemas, carried to its owner by definition as the fixture routes that write it are. */
+  fixtureTable?: boolean;
+  /** Owners of the item's resolved write units, file store included; when absent they are derived from `writeSet` per table. */
+  writeOwners?: WriteSetOwners;
 }
 
 /** A rule result that differs from the outcome the AAP 0.3.2 tables expect; the computed side governs. */
@@ -146,7 +155,6 @@ const decisionListSchema = z.looseObject({
       entryPoints: z.array(z.looseObject({ routeKey: z.string().min(1) })).optional(),
       owners: z.array(z.string().min(1)),
       proposal: z.string().min(1),
-      proposedOwner: z.string().min(1).optional(),
     }),
   ),
   spanningControllers: z.array(z.looseObject({ controller: z.string().min(1) })),
@@ -229,9 +237,18 @@ export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   'admin:cperm': 'identity',
   'admin:cwebservice': 'identity',
   'admin:cusers': 'people',
+  // Group branches of `cusers`; a `{…}` key covers every variant of its action whose terms include its own.
+  'admin:cusers.update{type=1}': 'identity',
+  'admin:cusers.addtogroup': 'identity',
+  'admin:cusers.removefromgroup': 'identity',
+  'admin:cusers.editgroup': 'identity',
+  'admin:cusers.editgroupmembers': 'identity',
+  'admin:cusers.downloadgroupmembers': 'identity',
   'admin:ceditprofile': 'people',
   'admin:csettings': 'programs-sites',
   'admin:carch': 'strategies-content',
+  // emailTest checks the site's SMTP settings (admin/core/views/carch/emailTest.cfm:81-110).
+  'admin:carch.emailtest': 'communications',
   'admin:cchangesets': 'strategies-content',
   'admin:ccomments': 'strategies-content',
   'admin:ccategory': 'strategies-content',
@@ -265,6 +282,8 @@ export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   'api:feed': 'strategies-content',
   'api:stats': 'strategies-content',
   'api:variationtargeting': 'strategies-content',
+  // The core filebrowser module's site-asset file methods, the files `cfilemanager` browses.
+  'api:filebrowser': 'strategies-content',
   // AAP 0.3.2 JSON API methods.
   'api:login': 'identity',
   'api:logout': 'identity',
@@ -295,6 +314,15 @@ export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   widgets: NO_OWNER,
   // AAP 0.3.2 public front end; doaction values take their write-set owners.
   'page:render': 'reporting',
+  'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc': 'strategies-content',
+  // AAP 0.3.2 site-monitor steps: email sends and bounce collection run in emailManager, which writes through its DAOs.
+  'service:emailmanager': 'communications',
+  // Owners the site-monitor job table gives its steps; the others write decision-list tables or run plugin events.
+  'job:sitemonitor.email-send': 'communications',
+  'job:sitemonitor.changeset-publish': 'strategies-content',
+  'job:sitemonitor.bounces': 'communications',
+  'job:sitemonitor.feed-import': 'strategies-content',
+  'job:sitemonitor.cache-purge': 'strategies-content',
 });
 
 const ROSTER_WRITE: NamedSpanningOwner = Object.freeze({
@@ -311,7 +339,10 @@ export const NAMED_SPANNING_OWNERS: Readonly<Record<string, NamedSpanningOwner>>
   'admin:ceditprofile.update': ROSTER_WRITE,
 });
 
-/** Dispositions the AAP 0.3.2 tables expect, by route key (JSON API form) or area key; the rule result governs. */
+/**
+ * Dispositions the plan's tables expect, by route key (JSON API form), the variant key its variant includes, its
+ * action, or its area; the rule result governs. `cusers` and `csettings` expect only the actions their rows name.
+ */
 export const AAP_EXPECTED: Readonly<Record<string, Disposition>> = Object.freeze({
   // Admin circuits and variants.
   'admin:clogin': 'carry',
@@ -319,15 +350,32 @@ export const AAP_EXPECTED: Readonly<Record<string, Disposition>> = Object.freeze
   'admin:cmessage': 'carry',
   'admin:cperm': 'carry',
   'admin:cwebservice': 'carry',
-  'admin:cusers': 'carry',
+  'admin:cusers.default': 'carry',
+  'admin:cusers.list': 'carry',
+  'admin:cusers.listusers': 'carry',
+  'admin:cusers.search': 'carry',
+  'admin:cusers.advancedsearch': 'carry',
+  'admin:cusers.advancedsearchtocsv': 'carry',
+  'admin:cusers.download': 'carry',
+  'admin:cusers.edituser': 'carry',
+  'admin:cusers.editaddress': 'carry',
+  'admin:cusers.route': 'carry',
+  'admin:cusers.updateaddress': 'carry',
   'admin:cusers.update{type=1}': 'carry',
+  'admin:cusers.addtogroup': 'carry',
+  'admin:cusers.removefromgroup': 'carry',
+  'admin:cusers.editgroup': 'carry',
+  'admin:cusers.editgroupmembers': 'carry',
+  'admin:cusers.downloadgroupmembers': 'carry',
   'admin:cusers.update{type=2,action=add}': 'carry',
   'admin:cusers.update{type=2,action=update}': 'carry',
   'admin:cusers.update{type=2,action=delete}': 'decision',
   'admin:cusers.update{photo}': 'decision',
   'admin:ceditprofile': 'carry',
   'admin:ceditprofile.update{photo}': 'decision',
-  'admin:csettings': 'carry',
+  'admin:csettings.list': 'carry',
+  'admin:csettings.editsite': 'carry',
+  'admin:csettings.updatesite{action=update}': 'carry',
   'admin:csettings.updatesite{action=add}': 'decision',
   'admin:csettings.updatesite{action=delete}': 'decision',
   'admin:csettings.sitecopyselect': 'decision',
@@ -364,6 +412,7 @@ export const AAP_EXPECTED: Readonly<Record<string, Disposition>> = Object.freeze
   'admin:scaffold': 'legacy-served',
   'admin:razuna': 'legacy-served',
   // Route families.
+  api: 'carry',
   feed: 'carry',
   render: 'carry',
   variation: 'carry',
@@ -410,6 +459,7 @@ export const AAP_EXPECTED: Readonly<Record<string, Disposition>> = Object.freeze
   'api:declareentity': 'legacy-served',
   'api:undeclareentity': 'legacy-served',
   'api:checkschema': 'legacy-served',
+  'entity:ent:dyn:plugin-declared': 'legacy-served',
   // Public front end and application reload.
   'page:render': 'legacy-served',
   'page:login': 'legacy-served',
@@ -425,8 +475,42 @@ export const AAP_EXPECTED: Readonly<Record<string, Disposition>> = Object.freeze
   'page:forwardemail': 'legacy-served',
   'page:contactsend': 'legacy-served',
   'reload:application': 'legacy-served',
+  // Data-only methods of the comments proxy; a method that renders CFML is expected legacy-served.
+  'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc': 'carry',
   // SOAP v1 components.
   'soap:v1': 'retired',
+});
+
+/**
+ * Owners the plan's tables give an item where they differ from its area owner, keyed as `AAP_EXPECTED`: rows that
+ * name no service, and the owner of what a public `doaction` writes.
+ */
+export const PLAN_OWNERS: Readonly<Record<string, string>> = Object.freeze({
+  // Bundle-engine and plugin-runtime actions of `csettings`.
+  'admin:csettings.createbundle': NO_OWNER,
+  'admin:csettings.selectbundleoptions': NO_OWNER,
+  'admin:csettings.exporthtml': NO_OWNER,
+  'admin:csettings.editplugin': NO_OWNER,
+  'admin:csettings.deployplugin': NO_OWNER,
+  'admin:csettings.updateplugin': NO_OWNER,
+  'admin:csettings.updatepluginversion': NO_OWNER,
+  'admin:csettings.deleteplugin': NO_OWNER,
+  // Dynamic-entity methods, whose `tentity` table is on the decision list.
+  'api:declareentity': NO_OWNER,
+  'api:undeclareentity': NO_OWNER,
+  'api:checkschema': NO_OWNER,
+  // Public `doaction` values.
+  'page:login': 'identity',
+  'page:logout': 'identity',
+  'page:updateprofile': 'people',
+  'page:createprofile': 'people',
+  'page:saverate': 'strategies-content',
+  'page:saveform': 'strategies-content',
+  'page:return': 'communications',
+  'page:subscribe': 'communications',
+  'page:unsubscribe': 'communications',
+  'page:forwardemail': 'communications',
+  'page:contactsend': 'communications',
 });
 
 /** Service of each fixture module under `/legacy-fixtures/cfml/api.cfm/<module>/`. */
@@ -439,6 +523,9 @@ export const FIXTURE_MODULE_SERVICES: Readonly<Record<string, string>> = Object.
   communications: 'communications',
   esignature: 'e-signature',
 });
+
+/** The ten target services, the only values an `owningService` takes besides null. */
+export const TARGET_SERVICES: ReadonlySet<string> = new Set([...MIGRATED_SERVICES, ...Object.values(FIXTURE_MODULE_SERVICES)]);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Keys and owners
@@ -459,14 +546,53 @@ function jsonApiForm(key: string): string {
 
 const PATH_FAMILIES: ReadonlySet<string> = new Set(['cfm', 'apiother', 'static', 'opt2', 'bridge']);
 
-/** Area key of a route key: its circuit, entity or method, fixture module, path, or family, as `AREA_OWNERS` keys it. */
+const VARIANT_SUFFIX = /\{([^{}]*)\}$/;
+
+interface VariantKey {
+  key: string;
+  base: string;
+  terms: readonly string[];
+}
+
+/** The keys of `table` that name a variant, each with its base key and predicate terms. */
+function variantKeysOf(table: Readonly<Record<string, unknown>>): readonly VariantKey[] {
+  return Object.keys(table).flatMap((key) => {
+    const suffix = VARIANT_SUFFIX.exec(key);
+    return suffix === null ? [] : [{ key, base: key.slice(0, suffix.index), terms: (suffix[1] ?? '').split(',') }];
+  });
+}
+
+/** The variant key with the most terms whose base is `key`'s base and whose terms `key`'s variant all includes. */
+function coveringVariant(variants: readonly VariantKey[], key: string): string | undefined {
+  const suffix = VARIANT_SUFFIX.exec(key);
+  if (suffix === null) return undefined;
+  const base = key.slice(0, suffix.index);
+  const terms = new Set((suffix[1] ?? '').split(','));
+  let best: VariantKey | undefined;
+  for (const v of variants) {
+    if (v.base === base && v.terms.every((t) => terms.has(t)) && (best === undefined || v.terms.length > best.terms.length)) best = v;
+  }
+  return best?.key;
+}
+
+const AREA_VARIANTS = variantKeysOf(AREA_OWNERS);
+const EXPECTED_VARIANTS = variantKeysOf(AAP_EXPECTED);
+const PLAN_OWNER_VARIANTS = variantKeysOf(PLAN_OWNERS);
+
+/**
+ * Area key of a route key: the `AREA_OWNERS` variant key whose terms its variant includes, else its action when
+ * `AREA_OWNERS` names one, else its circuit, entity or method, fixture module, path, or family, as `AREA_OWNERS` keys it.
+ */
 export function areaKeyForRouteKey(routeKey: string): string {
-  const key = jsonApiForm(normaliseInventoryKey(routeKey)).replace(/\{[^{}]*\}$/, '');
+  const full = jsonApiForm(normaliseInventoryKey(routeKey));
+  const variant = coveringVariant(AREA_VARIANTS, full);
+  if (variant !== undefined) return variant;
+  const key = full.replace(VARIANT_SUFFIX, '');
   const colon = key.indexOf(':');
   if (colon < 0) return key;
   const family = key.slice(0, colon);
   const body = key.slice(colon + 1);
-  if (family === 'admin' || family === 'api') return `${family}:${body.split('.')[0] ?? ''}`;
+  if (family === 'admin' || family === 'api') return Object.hasOwn(AREA_OWNERS, key) ? key : `${family}:${body.split('.')[0] ?? ''}`;
   if (family === 'fixture') return `fixture:${body.split('/')[0] ?? ''}`;
   if (family === 'cfc') return `cfc:${body.split('?')[0] ?? ''}`;
   if (family === 'page' || PATH_FAMILIES.has(family)) return key;
@@ -508,16 +634,23 @@ function ownershipIndex(ownership: TableOwnership): OwnershipIndex {
   return index;
 }
 
+/** Ownership entry of a legacy table: its exact entry, else the first pattern entry whose prefix it starts with. */
+export function ownershipEntryOf(ownership: TableOwnership, table: string): OwnershipTable | undefined {
+  const index = ownershipIndex(ownership);
+  const key = tableKey(table);
+  return index.exact.get(key) ?? index.patterns.find((p) => key.startsWith(p.prefix))?.entry;
+}
+
 const EQUALS_PREDICATE = /^(?:owner\s+)?([a-z_]\w*)\s*=\s*'?([^']*?)'?$/i;
 const IN_PREDICATE = /^(?:owner\s+)?([a-z_]\w*)\s+in\s*\((.*)\)$/i;
 const CLASS_OWNER_PREDICATE = /^classMap\s+owner\s*=\s*(\S+)$/i;
 const BASE_TABLE_COLUMN = 'basetable';
 
 /** A parsed row predicate: a column with its allowed lower-case values, or the owner a trash class map assigns. */
-type RowPredicate = { column: string; values: string[] } | { classOwner: string };
+export type RowPredicate = { column: string; values: string[] } | { classOwner: string };
 
 /** Parsed form of `Type = 2`, `owner Type = 1`, `baseTable in ('…')` or `classMap owner = <service>`; null for any other text. */
-function parseRowPredicate(rowPredicate: unknown): RowPredicate | null {
+export function parseRowPredicate(rowPredicate: unknown): RowPredicate | null {
   if (typeof rowPredicate !== 'string') return null;
   const text = rowPredicate.trim();
   const classOwner = CLASS_OWNER_PREDICATE.exec(text)?.[1];
@@ -535,48 +668,61 @@ function requestAllows(predicate: RowPredicate | null, request: ReadonlyMap<stri
   return typeof value !== 'string' || predicate.values.includes(value.toLowerCase());
 }
 
-function coWritesAllow(predicate: RowPredicate | null, written: ReadonlySet<string>, directOwners: ReadonlySet<string>): boolean {
-  if (predicate === null) return true;
-  if ('classOwner' in predicate) return directOwners.has(predicate.classOwner);
-  return predicate.column !== BASE_TABLE_COLUMN || predicate.values.some((v) => written.has(tableKey(v)));
+/** The tables a branch also writes and their owners, a split table counted with the owners of the targets it resolves to. */
+export interface SplitCoWrites {
+  written: ReadonlySet<string>;
+  owners: ReadonlySet<string>;
 }
 
-type OwnershipTarget = OwnershipTable['targets'][number];
+function coWritesAllow(predicate: RowPredicate | null, coWrites: SplitCoWrites): boolean {
+  if (predicate === null) return true;
+  if ('classOwner' in predicate) return coWrites.owners.has(predicate.classOwner);
+  return predicate.column !== BASE_TABLE_COLUMN || predicate.values.some((v) => coWrites.written.has(tableKey(v)));
+}
+
+/** A target unit of an ownership entry. */
+export type OwnershipTarget = OwnershipTable['targets'][number];
+
+/** Whether the targets are picked by the owner a class map assigns the row, as ttrash rows are by objectClass. */
+export function selectedByClassOwner(targets: readonly OwnershipTarget[]): boolean {
+  return targets.some((t) => {
+    const predicate = parseRowPredicate(t.rowPredicate);
+    return predicate !== null && 'classOwner' in predicate;
+  });
+}
 
 // A baseTable or objectClass row belongs to the entity its branch also writes, so the co-written tables pick the
-// targets the request cannot; every target counts only when neither the request nor the co-writes select one.
-function splitTargets(
+// targets the request cannot. Every target counts when neither selects one, or when `coWrites` is null because the
+// rows are not those of an entity the branch writes.
+export function splitTargets(
   targets: readonly OwnershipTarget[],
   request: ReadonlyMap<string, string | boolean | null>,
-  written: ReadonlySet<string>,
-  directOwners: ReadonlySet<string>,
+  coWrites: SplitCoWrites | null,
 ): OwnershipTarget[] {
   const parsed = targets.map((target) => ({ target, predicate: parseRowPredicate(target.rowPredicate) }));
   const allowed = parsed.filter((p) => requestAllows(p.predicate, request));
   const pool = allowed.length > 0 ? allowed : parsed;
-  const coWritten = pool.filter((p) => coWritesAllow(p.predicate, written, directOwners));
+  const coWritten = coWrites === null ? [] : pool.filter((p) => coWritesAllow(p.predicate, coWrites));
   return (coWritten.length > 0 ? coWritten : pool).map((p) => p.target);
 }
 
 /**
  * Sorted owner services of the legacy tables `writeSet`. A split table keeps the targets the request `predicates`
- * allow, narrowed by the co-written tables for baseTable and trash-class splits, or all targets when none remain.
+ * allow, narrowed by the co-written tables and their owners for baseTable and trash-class splits, or all targets when
+ * none remain.
  */
 export function ownersOfWriteSet(
   writeSet: readonly string[],
   predicates: VariantPredicates,
   ownership: TableOwnership,
 ): WriteSetOwners {
-  const index = ownershipIndex(ownership);
   const request = new Map(Object.entries(predicates).map(([name, value]) => [name.toLowerCase(), value] as const));
   const written = new Set(writeSet.map(tableKey));
   const owners = new Set<string>();
-  const directOwners = new Set<string>();
   const decisionTables = new Set<string>();
   const splits: OwnershipTable[] = [];
   for (const table of writeSet) {
-    const key = tableKey(table);
-    const entry = index.exact.get(key) ?? index.patterns.find((p) => key.startsWith(p.prefix))?.entry;
+    const entry = ownershipEntryOf(ownership, table);
     if (entry === undefined) throw new Error(`table ownership assigns no owner to written table ${table}`);
     if (entry.owner === 'retired') continue;
     if (entry.owner === 'decision-list') {
@@ -585,11 +731,12 @@ export function ownersOfWriteSet(
       splits.push(entry);
     } else {
       owners.add(entry.owner);
-      directOwners.add(entry.owner);
     }
   }
+  // Class-owner splits read the owners every other split resolved to, so they resolve last.
+  splits.sort((a, b) => Number(selectedByClassOwner(a.targets)) - Number(selectedByClassOwner(b.targets)));
   for (const entry of splits) {
-    for (const target of splitTargets(entry.targets, request, written, directOwners)) owners.add(target.owner);
+    for (const target of splitTargets(entry.targets, request, { written, owners })) owners.add(target.owner);
   }
   return { owners: [...owners].sort(compareText), decisionTables: [...decisionTables].sort(compareText) };
 }
@@ -627,28 +774,37 @@ interface Resolved {
   named: NamedSpanningOwner | undefined;
   tableEntry: DecisionTable | undefined;
   variant: DecisionVariant | undefined;
+  /** The decision-list variant of the branch the item serves, when the decision list withholds it. */
+  servedVariant: DecisionVariant | undefined;
+  /** The table the item serves, when table ownership puts it on the decision list. */
+  servedTable: string | undefined;
+  /** The service the plan's tables name for the item's key or area; null when they name none. */
+  planned: string | null;
 }
 
-function ownerChoice(owners: readonly string[], area: string | undefined, named: NamedSpanningOwner | undefined): OwnerChoice {
+function ownerChoice(
+  owners: readonly string[],
+  area: string | undefined,
+  named: NamedSpanningOwner | undefined,
+  planned: string | null,
+): OwnerChoice {
   const [only] = owners;
   if (owners.length === 1 && only !== undefined) return { owningService: only, ownerBasis: 'table-ownership' };
   if (owners.length > 1) {
-    return named === undefined
-      ? { owningService: SPANNING_OWNER, ownerBasis: 'spanning' }
-      : { owningService: named.owner, ownerBasis: 'named-input' };
+    return named === undefined ? { owningService: planned, ownerBasis: 'spanning' } : { owningService: named.owner, ownerBasis: 'named-input' };
   }
-  if (area === undefined) return { owningService: null, ownerBasis: 'none' };
+  if (area === undefined) return planned === null ? { owningService: null, ownerBasis: 'none' } : { owningService: planned, ownerBasis: 'aap-0.3.2' };
   return { owningService: area === NO_OWNER ? null : area, ownerBasis: 'aap-0.3.2' };
 }
 
-function legacyServedBasis(facts: DispositionFacts, owner: OwnerChoice, area: string | undefined): string | undefined {
+function legacyServedBasis(facts: DispositionFacts, r: Resolved): string | undefined {
   if (facts.rendersCfml) return 'renders CFML through the theme and display-object runtime';
   if (facts.webRootFilesystem) return 'depends on the legacy web-root filesystem';
   if (facts.runtimeCategory !== undefined) return `depends on the CFML runtime (${facts.runtimeCategory})`;
+  if (r.servedTable !== undefined) return `serves decision-list table ${r.servedTable}, which the target never builds`;
+  const { owner, area } = r;
   const service = owner.owningService;
-  if (service !== null && service !== SPANNING_OWNER && !MIGRATED_SERVICES.includes(service)) {
-    return `owner ${service} is not a migrated domain`;
-  }
+  if (service !== null && !MIGRATED_SERVICES.includes(service)) return `owner ${service} is not a migrated domain`;
   if (service === null && area === NO_OWNER) return 'no service owns its area';
   return undefined;
 }
@@ -676,6 +832,16 @@ function holdingException(list: ExceptionsList, routeKey: string | null): Except
   );
 }
 
+/** Id of the first halted exceptions entry whose route key or `appliesTo` covers `routeKey`; null when none does. */
+export function haltingExceptionId(list: ExceptionsList, routeKey: string | null | undefined): string | null {
+  if (routeKey === null || routeKey === undefined) return null;
+  const key = normaliseInventoryKey(routeKey);
+  return (
+    list.entries.find((e) => e.status === 'halted' && [e.routeKey, ...(e.appliesTo ?? [])].some((pattern) => keyMatches(pattern, key)))?.id ??
+    null
+  );
+}
+
 function fixtureOutcome(facts: DispositionFacts, module: string): Outcome {
   const service = own(FIXTURE_MODULE_SERVICES, module.toLowerCase());
   if (service === undefined) throw new Error(`${facts.id}: fixture module ${module} maps to no service`);
@@ -689,6 +855,16 @@ function fixtureOutcome(facts: DispositionFacts, module: string): Outcome {
   };
 }
 
+/**
+ * Owner of a withheld item: a decision-list table has none, its proposed owner staying on the decision list; any other
+ * item takes the service the plan's tables name for it, never a proposal, with `basis` recording why it is withheld.
+ */
+function withheldOwner(facts: DispositionFacts, r: Resolved, basis: OwnerBasis): OwnerChoice {
+  if (facts.itemKind === 'table' && r.tableEntry !== undefined) return { owningService: null, ownerBasis: 'decision-list-proposal' };
+  if (basis === 'spanning') return { owningService: r.planned, ownerBasis: basis };
+  return r.planned === null ? { owningService: null, ownerBasis: 'none' } : { owningService: r.planned, ownerBasis: basis };
+}
+
 function carryBasis(owner: OwnerChoice): string {
   if (owner.ownerBasis === 'table-ownership') return `single owner ${owner.owningService ?? ''} among the migrated services`;
   if (owner.owningService === null) return 'writes nothing and depends on no legacy runtime';
@@ -697,6 +873,9 @@ function carryBasis(owner: OwnerChoice): string {
 
 function applyRule(facts: DispositionFacts, r: Resolved): Outcome {
   if (facts.fixtureModule !== undefined) return fixtureOutcome(facts, facts.fixtureModule);
+  if (facts.fixtureTable === true) {
+    return { disposition: 'carry', step: 5, basis: 'fixture table of a synthetic module, carried by definition', ...r.owner, withheld: false };
+  }
   if (!facts.reachable || facts.tableAbsent === true) {
     const basis = facts.reachable ? 'its table is absent from the live catalog' : 'unreachable over HTTP or the scheduler at the pinned SHA';
     return { disposition: 'retired', step: 1, basis, ...r.owner, withheld: false };
@@ -707,14 +886,12 @@ function applyRule(facts: DispositionFacts, r: Resolved): Outcome {
       disposition: 'decision',
       step: 2,
       basis: `writes decision-list table ${decisionTable}`,
-      owningService: r.tableEntry?.proposedOwner ?? null,
-      ownerBasis: r.tableEntry === undefined ? 'none' : 'decision-list-proposal',
+      ...withheldOwner(facts, r, 'aap-0.3.2'),
       withheld: r.tableEntry?.buildWithheld ?? true,
       ...(r.tableEntry === undefined ? {} : { decisionListRef: `opt2/decision-list.json#${r.tableEntry.table}` }),
     };
   }
   if (facts.storedDataOwner !== undefined || (r.written.owners.length > 1 && r.named === undefined)) {
-    const proposed = r.variant?.proposedOwner;
     return {
       disposition: 'decision',
       step: 3,
@@ -722,13 +899,22 @@ function applyRule(facts: DispositionFacts, r: Resolved): Outcome {
         facts.storedDataOwner === undefined
           ? `write set spans ${r.written.owners.join(', ')}; no input names the owner`
           : `owner depends on the stored ${facts.storedDataOwner}`,
-      owningService: proposed ?? SPANNING_OWNER,
-      ownerBasis: proposed === undefined ? 'spanning' : 'decision-list-proposal',
+      ...withheldOwner(facts, r, 'spanning'),
       withheld: true,
       ...(r.variant === undefined ? {} : { decisionListRef: `opt2/decision-list.json#${r.variant.routeKey}` }),
     };
   }
-  const served = legacyServedBasis(facts, r.owner, r.area);
+  if (r.servedVariant !== undefined) {
+    return {
+      disposition: 'decision',
+      step: 3,
+      basis: `serves only ${r.servedVariant.routeKey}, which the decision list withholds`,
+      ...withheldOwner(facts, r, 'aap-0.3.2'),
+      withheld: true,
+      decisionListRef: `opt2/decision-list.json#${(r.variant ?? r.servedVariant).routeKey}`,
+    };
+  }
+  const served = legacyServedBasis(facts, r);
   if (served !== undefined) return { disposition: 'legacy-served', step: 4, basis: served, ...r.owner, withheld: false };
   if (r.named !== undefined) {
     return {
@@ -743,6 +929,56 @@ function applyRule(facts: DispositionFacts, r: Resolved): Outcome {
   return { disposition: 'carry', step: 5, basis: carryBasis(r.owner), ...r.owner, withheld: false };
 }
 
+/** Owner the plan's tables give an area. */
+function areaOwner(areaKey: string): string | undefined {
+  return own(AREA_OWNERS, areaKey);
+}
+
+/** Entry of a plan table for a normalised route key, its covering variant key or its action, else for its area. */
+function planEntry<T>(table: Readonly<Record<string, T>>, variants: readonly VariantKey[], routeKey: string | null, areaKey: string): T | undefined {
+  if (routeKey !== null) {
+    const key = jsonApiForm(routeKey);
+    const variant = coveringVariant(variants, key);
+    const found = own(table, key) ?? (variant === undefined ? undefined : own(table, variant)) ?? own(table, key.replace(VARIANT_SUFFIX, ''));
+    if (found !== undefined) return found;
+  }
+  return own(table, areaKey);
+}
+
+/** Whether an item is a public front-end entry that renders through the CFML runtime. */
+function rendersFrontEnd(facts: Partial<Pick<DispositionFacts, 'itemKind' | 'rendersCfml'>>): boolean {
+  return facts.itemKind === 'front-end' && facts.rendersCfml === true;
+}
+
+/** Disposition the plan's tables expect; a front-end entry that renders CFML is legacy-served where its row carries. */
+function expectedDisposition(routeKey: string | null, areaKey: string, rendering: boolean): Disposition | undefined {
+  const planned = planEntry(AAP_EXPECTED, EXPECTED_VARIANTS, routeKey, areaKey);
+  return planned === 'carry' && rendering ? 'legacy-served' : planned;
+}
+
+/** Owner the plan's tables give an item: its `PLAN_OWNERS` entry, else its area owner. */
+function planOwner(routeKey: string | null, areaKey: string): string | undefined {
+  return planEntry(PLAN_OWNERS, PLAN_OWNER_VARIANTS, routeKey, areaKey) ?? areaOwner(areaKey);
+}
+
+/** Outcome the plan's tables expect for an item; the owner is null for a decision-list or ownerless item. */
+export interface PlanExpectation {
+  disposition: Disposition;
+  owningService: string | null;
+}
+
+/** The outcome an item's correction is computed against; null when the plan's tables expect none. */
+export function expectedOutcome(
+  facts: Pick<DispositionFacts, 'routeKey' | 'areaKey'> & Partial<Pick<DispositionFacts, 'itemKind' | 'rendersCfml'>>,
+): PlanExpectation | null {
+  const areaKey = normaliseInventoryKey(facts.areaKey);
+  const routeKey = facts.routeKey === undefined ? null : normaliseInventoryKey(facts.routeKey);
+  const disposition = expectedDisposition(routeKey, areaKey, rendersFrontEnd(facts));
+  if (disposition === undefined) return null;
+  const owner = planOwner(routeKey, areaKey);
+  return { disposition, owningService: disposition === 'decision' || owner === undefined || owner === NO_OWNER ? null : owner };
+}
+
 function correctionOf(
   facts: DispositionFacts,
   outcome: Outcome,
@@ -750,12 +986,12 @@ function correctionOf(
   areaKey: string,
 ): DispositionCorrection | undefined {
   const expected: DispositionCorrection['expected'] = {};
-  const lookupKey = r.routeKey === null ? undefined : jsonApiForm(r.routeKey);
-  const disposition = (lookupKey === undefined ? undefined : own(AAP_EXPECTED, lookupKey)) ?? own(AAP_EXPECTED, areaKey);
+  const disposition = expectedDisposition(r.routeKey, areaKey, rendersFrontEnd(facts));
   if (disposition !== undefined && disposition !== outcome.disposition) expected.disposition = disposition;
   const writes = facts.writeSet.length > 0 || facts.fileStoreWrite;
-  if (writes && r.written.owners.length === 1 && r.area !== undefined && r.area !== NO_OWNER && outcome.owningService !== r.area) {
-    expected.owningService = r.area;
+  const owner = planOwner(r.routeKey, areaKey);
+  if (writes && r.written.owners.length === 1 && owner !== undefined && owner !== NO_OWNER && outcome.owningService !== owner) {
+    expected.owningService = owner;
   }
   if (expected.disposition === undefined && expected.owningService === undefined) return undefined;
   return {
@@ -798,26 +1034,33 @@ function resolve(facts: DispositionFacts, ctx: DispositionContext, areaKey: stri
   const routeKey = facts.routeKey === undefined ? null : normaliseInventoryKey(facts.routeKey);
   const writeSet = facts.fileStoreWrite ? [...facts.writeSet, FILE_STORE_TABLE] : facts.writeSet;
   let written: WriteSetOwners;
+  let served: WriteSetOwners;
   try {
-    written = ownersOfWriteSet(writeSet, facts.variantPredicates ?? {}, ctx.ownership);
+    written = facts.writeOwners ?? ownersOfWriteSet(writeSet, facts.variantPredicates ?? {}, ctx.ownership);
+    served = ownersOfWriteSet(facts.servesTable === undefined ? [] : [facts.servesTable], {}, ctx.ownership);
   } catch (err) {
     throw new Error(`${facts.id}: ${(err as Error).message}`, { cause: err });
   }
-  const area = own(AREA_OWNERS, areaKey);
+  const area = areaOwner(areaKey);
   const candidate = routeKey === null ? undefined : own(NAMED_SPANNING_OWNERS, jsonApiForm(routeKey));
   const named =
     candidate !== undefined && written.owners.length > 1 && written.owners.every((o) => candidate.participants.includes(o))
       ? candidate
       : undefined;
   const [decisionTable] = written.decisionTables;
+  const plan = planOwner(routeKey, areaKey);
+  const planned = plan !== undefined && TARGET_SERVICES.has(plan) ? plan : null;
   return {
     routeKey,
     written,
-    owner: ownerChoice(written.owners, area, named),
+    owner: ownerChoice(written.owners, area, named, planned),
     area,
     named,
     tableEntry: decisionTable === undefined ? undefined : decisionTableEntry(ctx.decisionList, decisionTable),
     variant: decisionVariant(ctx.decisionList, routeKey),
+    servedVariant: facts.servesBranch === undefined ? undefined : decisionVariant(ctx.decisionList, normaliseInventoryKey(facts.servesBranch)),
+    servedTable: served.decisionTables[0],
+    planned,
   };
 }
 

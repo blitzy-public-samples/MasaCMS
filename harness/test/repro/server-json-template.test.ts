@@ -1,5 +1,17 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,12 +20,15 @@ import { portFor } from '../../src/repro/ports.js';
 
 interface RenderedServer {
   env?: Record<string, unknown>;
+  jvm?: { args?: unknown };
   web?: { http?: { port?: unknown } };
 }
 
 const LEGACY_START = readFileSync(repoPath('harness/repro/lib/legacy-start.sh'), 'utf8');
 const LEGACY_PORT = '20180';
 const RENDER_SCRIPT = 'set -euo pipefail; source "$1/harness/repro/lib/common.sh"; eval "$2"; render_server_json';
+const RESET_SCRIPT = 'set -euo pipefail; source "$1/harness/repro/lib/common.sh"; eval "$2"; LEGACY_TMP_DIR=$3 reset_legacy_tmp';
+const CAPTURED_JVM_ARGS = '--add-opens=java.base/sun.util.calendar=ALL-UNNAMED';
 
 /** The text of shell function `name` as legacy-start.sh defines it, from its header to its closing brace. */
 function shellFunction(name: string): string {
@@ -26,6 +41,24 @@ function shellFunction(name: string): string {
 const RENDERER = `${shellFunction('capture_value')}\n${shellFunction('render_server_json')}`;
 
 const tempDirs: string[] = [];
+
+/** A fresh directory under the OS temp directory, removed after the test. */
+function tempRoot(prefix: string): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(root);
+  return root;
+}
+
+/** The environment common.sh needs, rooted at `root`. */
+function shellEnv(root: string): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: root,
+    OPT2_STATE_DIR: path.join(root, 'state'),
+    OPT2_PRISTINE_DIR: path.join(root, 'pristine'),
+    PORT: LEGACY_PORT,
+  };
+}
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -44,10 +77,13 @@ function checkoutWithGatewayPort(root: string, gatewayPort: string): string {
   return checkout;
 }
 
-/** Runs render_server_json from this checkout, or from a copy with another gateway port, over a minimal capture. */
-function render(gatewayPort?: string): { result: SpawnSyncReturns<string>; serverJson: string } {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'opt2-server-json-test-'));
-  tempDirs.push(root);
+/**
+ * Runs render_server_json from this checkout, or from a copy with another gateway port, over a minimal capture;
+ * `tmpDir` is the legacy temp directory, `<root>/state/legacy-tmp` by default.
+ */
+function render(gatewayPort?: string, tmpDir?: string): { result: SpawnSyncReturns<string>; serverJson: string; tmp: string } {
+  const root = tempRoot('opt2-server-json-test-');
+  const tmp = tmpDir ?? path.join(root, 'state', 'legacy-tmp');
   const repo = gatewayPort === undefined ? REPO_ROOT : checkoutWithGatewayPort(root, gatewayPort);
   const capture = path.join(root, 'server-capture.json');
   writeFileSync(
@@ -55,24 +91,34 @@ function render(gatewayPort?: string): { result: SpawnSyncReturns<string>; serve
     JSON.stringify({
       serverHomeDirectory: '/srv/coldfusion-home',
       cfengine: 'adobe@2023.0.26+331018',
-      jvmArgs: '--add-opens=java.base/sun.util.calendar=ALL-UNNAMED',
+      jvmArgs: CAPTURED_JVM_ARGS,
     }),
   );
   const serverJson = path.join(root, 'server.json');
   const result = spawnSync('bash', ['-c', RENDER_SCRIPT, 'render', repo, RENDERER], {
     encoding: 'utf8',
-    env: {
-      PATH: process.env.PATH ?? '/usr/bin:/bin',
-      HOME: root,
-      OPT2_STATE_DIR: path.join(root, 'state'),
-      OPT2_PRISTINE_DIR: path.join(root, 'pristine'),
-      PORT: LEGACY_PORT,
-      CAPTURE_FILE: capture,
-      SERVER_JSON: serverJson,
-    },
+    env: { ...shellEnv(root), CAPTURE_FILE: capture, SERVER_JSON: serverJson, LEGACY_TMP_DIR: tmp },
     timeout: 20_000,
   });
-  return { result, serverJson };
+  return { result, serverJson, tmp };
+}
+
+/** Runs legacy-start.sh's reset_legacy_tmp on `dir`. */
+function resetTmp(root: string, dir: string): SpawnSyncReturns<string> {
+  return spawnSync('bash', ['-c', RESET_SCRIPT, 'reset', REPO_ROOT, shellFunction('reset_legacy_tmp'), dir], {
+    encoding: 'utf8',
+    env: shellEnv(root),
+    timeout: 20_000,
+  });
+}
+
+/** A root holding an outside directory with `keep.txt`, and the legacy temp directory path beside it. */
+function tmpLayout(): { root: string; dir: string; outside: string } {
+  const root = tempRoot('opt2-legacy-tmp-test-');
+  const outside = path.join(root, 'outside');
+  mkdirSync(outside);
+  writeFileSync(path.join(outside, 'keep.txt'), 'keep');
+  return { root, dir: path.join(root, 'legacy-tmp'), outside };
 }
 
 describe('server.json.template rendered by legacy-start.sh render_server_json', () => {
@@ -95,5 +141,59 @@ describe('server.json.template rendered by legacy-start.sh render_server_json', 
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/^opt2: gateway port 'gateway' from .*\/ports\.env is not a port number\n$/);
     expect(existsSync(serverJson)).toBe(false);
+  });
+
+  it('ends the JVM arguments with java.io.tmpdir set to the legacy temp directory', () => {
+    const { result, serverJson, tmp } = render();
+    expect(result.status, result.stderr).toBe(0);
+    const doc = JSON.parse(readFileSync(serverJson, 'utf8')) as RenderedServer;
+    expect(doc.jvm?.args).toBe(`${CAPTURED_JVM_ARGS} -Djava.io.tmpdir=${tmp}`);
+  });
+
+  it.each([' ', '"', "'", '\\'])('refuses a legacy temp directory holding %j and writes no server.json', (char) => {
+    const bad = path.join(os.tmpdir(), `opt2-legacy-tmp${char}x`);
+    const { result, serverJson } = render(undefined, bad);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`opt2: ${bad} holds whitespace, a quote or a backslash`);
+    expect(existsSync(serverJson)).toBe(false);
+  });
+});
+
+describe('legacy-start.sh reset_legacy_tmp', () => {
+  it.each<[string, (at: { dir: string; outside: string }) => void]>([
+    ['absent', () => undefined],
+    [
+      'a 0755 directory holding files, a subdirectory and links out of it',
+      ({ dir, outside }) => {
+        mkdirSync(path.join(dir, 'sub'), { recursive: true });
+        chmodSync(dir, 0o755);
+        writeFileSync(path.join(dir, 'masa-baseline.json'), '{}');
+        writeFileSync(path.join(dir, 'sub', 'form.json'), '{}');
+        symlinkSync(outside, path.join(dir, 'outside-dir'));
+        symlinkSync(path.join(outside, 'keep.txt'), path.join(dir, 'sub', 'outside-file'));
+      },
+    ],
+    ['a symbolic link to an outside directory', ({ dir, outside }) => symlinkSync(outside, dir)],
+    ['a regular file', ({ dir }) => writeFileSync(dir, 'x')],
+  ])('leaves an empty owner-only directory when it was %s', (_label, arrange) => {
+    const at = tmpLayout();
+    arrange(at);
+    const run = resetTmp(at.root, at.dir);
+    expect(run.status, run.stderr).toBe(0);
+    const stat = lstatSync(at.dir);
+    expect(stat.isDirectory()).toBe(true);
+    expect(stat.mode & 0o777).toBe(0o700);
+    expect(readdirSync(at.dir)).toEqual([]);
+    expect(readdirSync(at.outside)).toEqual(['keep.txt']);
+    expect(readFileSync(path.join(at.outside, 'keep.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('dies naming the directory when it cannot be created', () => {
+    const at = tmpLayout();
+    writeFileSync(path.join(at.root, 'file'), '');
+    const dir = path.join(at.root, 'file', 'legacy-tmp');
+    const run = resetTmp(at.root, dir);
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain(`opt2: cannot create the legacy temp directory ${dir}\n`);
   });
 });

@@ -250,6 +250,56 @@ describe('scenario ids', () => {
   });
 });
 
+describe('step extractions', () => {
+  const parsed = (extraction: Record<string, unknown>) =>
+    stepSchema.safeParse({ name: 'read', route: '/admin/', extract: { value: extraction } });
+
+  it.each([
+    { from: 'dom', selector: 'h2' },
+    { from: 'dom', selector: 'form[name=form1]', attr: 'action', param: 'userid' },
+    { from: 'dom', selector: 'input[name=extendSetID]', attr: 'value', path: 'extended' },
+    { from: 'dom', selector: '#mura-approval-apply', attr: 'onclick', pattern: "^applyApprovalAction\\('([^']+)'" },
+  ])('accepts %j', (extraction) => {
+    expect(parsed(extraction).data?.extract?.value).toStrictEqual(extraction);
+  });
+
+  it.each([
+    { from: 'dom', selector: 'input', path: '' },
+    { from: 'dom', path: 'extended' },
+    { from: 'body', path: 'data.id', selector: 'input' },
+    { from: 'dom', selector: 'h2', pattern: '(unclosed' },
+    { from: 'dom', selector: 'h2', pattern: '(?:[0-9A-F-]+)' },
+    { from: 'dom', selector: 'a', attr: 'href', param: 'userid', pattern: 'userid=(\\w+)' },
+  ])('rejects %j', (extraction) => {
+    expect(parsed(extraction).success).toBe(false);
+  });
+});
+
+describe('scenario normalisationOverrides', () => {
+  let base: Record<string, unknown>;
+  beforeAll(async () => {
+    base = { ...scenarioById(await loadCatalogue(VALID), 'GS-CO-05') };
+  });
+  const parsed = (overrides: unknown) => scenarioSchema.safeParse({ ...base, normalisationOverrides: overrides });
+
+  it.each<Record<string, string[]>>([
+    { domUnordered: ['select[name=userid]'] },
+    { domUnordered: ['select[name=userid]', 'ul.sortable'], domExclude: ['.badge'], extraTokenFields: ['secret'] },
+  ])('accepts %j', (overrides) => {
+    expect(parsed(overrides).data?.normalisationOverrides).toStrictEqual(overrides);
+  });
+
+  it.each<unknown>([
+    { domUnordered: [] },
+    { domUnordered: [''] },
+    { domUnordered: [1] },
+    { domUnordered: 'select' },
+    { domSorted: ['select'] },
+  ])('rejects %j', (overrides) => {
+    expect(parsed(overrides).success).toBe(false);
+  });
+});
+
 describe('stepSchema mergeHidden', () => {
   const save = { name: 'save', method: 'POST', route: '/admin/?muraAction=cArch.update', form: { title: 'FIXTURE' } };
 

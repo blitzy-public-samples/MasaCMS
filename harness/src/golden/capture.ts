@@ -430,7 +430,7 @@ export function redactRequest(request: RecordedRequest, rules: NormaliseRules): 
 }
 
 // Parts the reviewed response always shows; `export` joins only where the step compares it, so other downloads are
-// shown by digest and other text as normalised text.
+// shown by digest (a ZIP by its files) and other text as normalised text.
 const VIEW_KINDS: readonly CompareKind[] = ['status', 'headers', 'envelope', 'dom'];
 
 /** `scenario` with every step comparing the reviewed-response parts, for the separate view normalisation. */

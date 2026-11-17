@@ -49,6 +49,7 @@ import {
   type RelationSourceKey,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Struct = Record<string, unknown>;
 // Derived from the handler type: ../index.ts imports ../jsonapi.ts, which imports this folder.
@@ -475,6 +476,7 @@ async function loadBy(ctx: RouteContext, call: JsonApiCall, key: RelationSourceK
 export const feedHandler: EntityHandler = Object.freeze({
   entity: ENTITY,
   config: FEED,
+  validate,
   findOne,
   findMany,
   findAll,

@@ -62,7 +62,8 @@ const PATTERN_OF: Readonly<Record<PointKind, string>> = {
 };
 
 // `config.reconciliationPoints` lists point names only, so the version and legacy source of each kind are fixed here,
-// equal to the committed placeholder reports.
+// equal to the committed placeholder reports. A feed or fault run expects the version active when it began instead
+// ({@link activeVersionExpectation}).
 const POINT_DEFAULTS: Readonly<Record<PointKind, { expectedTableVersion: string; legacySource: LegacySource }>> = {
   'after-backfill': { expectedTableVersion: 'v0001', legacySource: 'snapshot' },
   'after-feed': { expectedTableVersion: 'v0001', legacySource: 'snapshot' },
@@ -124,6 +125,19 @@ export function resolvePoint(config: PointConfig, name: string): ResolvedPoint {
     expectedTableVersion: defaults.expectedTableVersion,
     rollback: match.kind === 'rollback-before' || match.kind === 'rollback-after',
   };
+}
+
+/**
+ * Expected version of a point a run reaches at whichever version is active (a feed or a fault): `active`, the one read when
+ * the run began, else the point's default; `tableVersionMatches` compares it with `tableVersion`, the version measured.
+ */
+export function activeVersionExpectation<D extends string | null>(
+  active: string | null,
+  pointDefault: D,
+  tableVersion: string | null,
+): { expectedTableVersion: string | D; tableVersionMatches: boolean } {
+  const expectedTableVersion = active === null ? pointDefault : active;
+  return { expectedTableVersion, tableVersionMatches: tableVersion !== null && tableVersion === expectedTableVersion };
 }
 
 /** Row count and checksum of one side of a unit entry. */

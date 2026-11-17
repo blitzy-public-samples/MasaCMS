@@ -327,8 +327,10 @@ beforeEach(() => {
     }
   });
   vi.mocked(createTenantResolver).mockResolvedValue({
+    prepare: () => Promise.resolve(),
     resolve: (_table, row) => ({ tenantId: tenantIdForSite(typeof row.SiteID === 'string' ? row.SiteID : 'tenant-b'), orphan: false }),
     siteTenants: () => [TENANT_A, TENANT_B],
+    readsOtherRows: () => false,
   } satisfies TenantResolver);
   vi.mocked(currentAuthority).mockResolvedValue(authorityWith([]));
   vi.mocked(describeUnitTable).mockImplementation((_deps, options) =>

@@ -69,7 +69,7 @@ const loadCustomImagesDefinition: ScreenDefinition = Object.freeze({
   gate: csettingsGate,
 });
 
-// updateSite stays on legacy: its Update branch writes the withheld trazunasettings table, and programs-sites serves
+// updateSite stays on legacy: its Update branch writes the decision-list table tentity, and programs-sites serves
 // none of its other branches. sitecopyresult has no target screen either; the gateway routes both to legacy.
 /** The carried csettings actions: the Sites list, Edit Site and the two custom image size fragments. */
 export const csettingsScreens: readonly ScreenDefinition[] = Object.freeze([

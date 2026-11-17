@@ -15,12 +15,15 @@ import {
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import {
+  CFML_TRUTHY,
   computeClosure,
   lineOf,
   memorySourceTree,
   parseCfmlComponent,
   resolveComponentPath,
+  sqlColumns,
   stripComments,
+  viaLabel,
   type CfmlComponent,
   type CfmlFunction,
   type ClosureContext,
@@ -110,6 +113,8 @@ export interface RouteEntry {
   /** Verbs that select the entry on their own; empty when path or `method` name selects it under any verb. */
   httpMethods: string[];
   predicate: RoutePredicate | null;
+  /** Request params the JSON API dispatcher assigns the entity before the method runs; absent when it assigns none. */
+  assignedParams?: Record<string, string>;
   /** 0 for a base key; 1.. is the order in which the platform tries the base's variants. */
   precedence: number;
   legacyAliases: string[];
@@ -178,6 +183,8 @@ export interface RouteExtraction {
   routes: RouteEntry[];
   counts: RouteCounts;
   fixtureRoutesStatus: FixtureRoutesStatus;
+  /** Fixture tree the `fix:` entries were read from; null when absent. */
+  fixtureTree: SourceTree | null;
 }
 
 /** Inputs of {@link extractRoutes}; `fixtureTree` undefined reads the working tree, null means no fixtures. */
@@ -586,6 +593,8 @@ interface Root {
   entryFunction?: boolean;
   /** Session effect the root stands for in place of the one its walk reports. */
   effect?: SessionEffects;
+  /** The root method runs on a bean populated from the request, holding these keys beyond the request's. */
+  populated?: readonly string[];
 }
 
 /** A request branch: the params it pins and the more specific branches it excludes. */
@@ -674,6 +683,7 @@ function indexFor(w: Walker, r: Root): ComponentIndex {
     resolveBean: (name) => base.resolveBean(name),
     ormTable: (p) => base.ormTable(p),
     parsed: (p) => (p === r.component ? masked : base.parsed(p)),
+    transient: (p) => base.transient?.(p) === true,
   };
   w.masked.set(key, index);
   return index;
@@ -724,6 +734,7 @@ function walk(w: Walker, r: Root, branch: Branch, keys: readonly string[]): Writ
     r.keep ?? null,
     r.drop ?? null,
     r.effect ?? null,
+    r.populated ?? null,
     branch.predicates ?? null,
     branch.excludePredicates ?? [],
     dropped,
@@ -735,7 +746,13 @@ function walk(w: Walker, r: Root, branch: Branch, keys: readonly string[]): Writ
   const tree = treeFor(w, r);
   const ctx: ClosureContext = overrides === undefined ? { tree, index } : { tree, index, overrides };
   let closure = computeClosure(
-    { component: r.component, method: r.method, predicates: branch.predicates, excludePredicates: branch.excludePredicates },
+    {
+      component: r.component,
+      method: r.method,
+      predicates: branch.predicates,
+      excludePredicates: branch.excludePredicates,
+      ...(r.populated === undefined ? {} : { populated: r.populated }),
+    },
     ctx,
   );
   if (r.effect !== undefined && closure.sessionEffects !== 'none') closure = { ...closure, sessionEffects: r.effect };
@@ -745,7 +762,9 @@ function walk(w: Walker, r: Root, branch: Branch, keys: readonly string[]): Writ
 
 function uniqueSorted<T>(items: readonly T[]): T[] {
   const byKey = new Map<string, T>();
-  for (const item of items) byKey.set(JSON.stringify(item), item);
+  // The call path and columns are facts about an item, not its identity: the first sighting's are kept.
+  const keyOf = (item: T): string => JSON.stringify(item, (k, v: unknown) => (k === 'via' || k === 'columns' ? undefined : v));
+  for (const item of items) if (!byKey.has(keyOf(item))) byKey.set(keyOf(item), item);
   return [...byKey.entries()].sort(([a], [b]) => compareText(a, b)).map(([, item]) => item);
 }
 
@@ -768,7 +787,7 @@ function mergeClosures(parts: readonly WriteClosure[]): WriteClosure {
   };
 }
 
-type Clause = Record<string, string | boolean>;
+type Clause = Record<string, Predicates[string]>;
 
 /** Alternatives of one condition as request-param clauses; null when it has no params form. */
 function atomClauses(c: VariantCondition): Clause[] | null {
@@ -781,11 +800,10 @@ function atomClauses(c: VariantCondition): Clause[] | null {
     }
     return out;
   }
-  if ('not' in c || 'multipartExtensionIn' in c) return null;
+  if ('not' in c || 'multipartExtensionIn' in c || 'sessionManaged' in c || 'startupSiteId' in c) return null;
   if ('equals' in c) return [{ [c.param]: c.equals }];
   if ('in' in c) return c.in.map((v) => ({ [c.param]: v }));
-  // `truthy` pins presence only: a literal value could decide guards the request does not.
-  return [{ [c.param]: true }];
+  return [{ [c.param]: 'nonEmpty' in c ? true : CFML_TRUTHY }];
 }
 
 /** Disjunctive normal form of a conjunction of conditions; null when one of them has no params form. */
@@ -816,13 +834,33 @@ function branchOf(decls: readonly VariantDeclaration[], at: number): Branch {
   return branch;
 }
 
-/** Request params and multipart parts that satisfy a variant's conditions; null when one cannot be synthesised. */
-function sampleOf(when: readonly VariantCondition[]): { params: Record<string, string>; files: Array<{ field: string; filename: string }> } | null {
+/** A request sample: params, multipart parts and, for a session-managed REST sample, the index.cfm spelling it is sent behind. */
+interface RequestSample {
+  params: Record<string, string>;
+  files: Array<{ field: string; filename: string }>;
+  frontController?: string;
+}
+
+/** The index.cfm spelling a session-managed sample is sent behind; the container maps only the lower-case one. */
+const SESSION_FRONT_CONTROLLER = 'INDEX.CFM';
+
+/** Request facts that satisfy a variant's conditions; null when one cannot be synthesised. */
+function sampleOf(when: readonly VariantCondition[]): RequestSample | null {
   const params: Record<string, string> = {};
   const files: Array<{ field: string; filename: string }> = [];
+  let frontController: string | undefined;
   const add = (c: VariantCondition): boolean => {
     if ('anyOf' in c) return c.anyOf[0] !== undefined && add(c.anyOf[0]);
     if ('not' in c) return false;
+    if ('sessionManaged' in c) {
+      frontController = SESSION_FRONT_CONTROLLER;
+      return true;
+    }
+    if ('startupSiteId' in c) {
+      // Legacy's own default site, which the synthetic API path addresses and every install has.
+      params.siteid ||= 'default';
+      return true;
+    }
     if ('multipartExtensionIn' in c) {
       files.push({ field: 'newfile', filename: `sample.${c.multipartExtensionIn[0] ?? 'bin'}` });
       return true;
@@ -833,7 +871,20 @@ function sampleOf(when: readonly VariantCondition[]): { params: Record<string, s
     else params[c.param] = 'true';
     return true;
   };
-  return when.every(add) ? { params, files } : null;
+  if (!when.every(add)) return null;
+  return frontController === undefined ? { params, files } : { params, files, frontController };
+}
+
+/** `entry` sent behind `frontController`: an API entry point names it, a path gets it as its first segment. */
+function behindFrontController(entry: RouteEntryPoint, frontController: string | undefined): RouteEntryPoint {
+  if (frontController === undefined) return entry;
+  if (entry.kind === 'api') return { ...entry, frontController };
+  return entry.kind === 'path' ? { ...entry, path: `/${frontController}${entry.path}` } : entry;
+}
+
+/** Whether a sessionless family's entry keeps legacy session management under `predicate` (applicationSettings.cfm:179). */
+function sessionlessUnder(sessionless: boolean, predicate: RoutePredicate | null): boolean {
+  return sessionless && !(predicate?.when.some((c) => 'sessionManaged' in c) ?? false);
 }
 
 /** A `validateCSRFTokens` call: its context and the short-circuits in front of it. */
@@ -1289,6 +1340,8 @@ export interface JsonApiRegistry {
   entities: JsonApiEntity[];
   /** Lower-cased entity alias → the entity it is served as (`contentnav` → `content`). */
   aliases: Readonly<Record<string, string>>;
+  /** Lower-cased served entity → the literal request params processRequest assigns before dispatch (`user` → `{ type: '2' }`). */
+  entityParams: Readonly<Record<string, Readonly<Record<string, string>>>>;
   /** Lower-cased names of the functions the component declares. */
   declared: ReadonlySet<string>;
   /** Lower-cased method → verbs of the entity-route switch that call it. */
@@ -1352,6 +1405,14 @@ export function parseJsonApi(tree: SourceTree): JsonApiRegistry {
   const aliases: Record<string, string> = {};
   const al = /listFindNoCase\(\s*'([^']+)'\s*,\s*params\.entityName\s*\)\s*\)\s*\{\s*params\.entityName\s*=\s*"(\w+)"/i.exec(pr.body);
   for (const name of (al?.[1] ?? '').split(',')) if (name.trim() !== '') aliases[name.trim().toLowerCase()] = al?.[2] ?? '';
+  // `if(params.entityName=="user"){ params.type=2; … }`: literal params a brace-free entity branch assigns.
+  const entityParams: Record<string, Record<string, string>> = {};
+  for (const m of pr.body.matchAll(/\bparams\.entityName\s*==\s*(["'])(\w+)\1\s*\)\s*\{([^{}]*)\}/gi)) {
+    const entity = (m[2] ?? '').toLowerCase();
+    for (const a of (m[3] ?? '').matchAll(/\bparams\.(\w+)\s*=\s*(?:(["'])([^"'\n]*)\2|(\d+))\s*;/gi)) {
+      entityParams[entity] = { ...(entityParams[entity] ?? {}), [(a[1] ?? '').toLowerCase()]: a[3] ?? a[4] ?? '' };
+    }
+  }
   const defaultMode = /param\s+name\s*=\s*"request\.muraAPIRequestMode"\s+default\s*=\s*"(\w+)"/i.exec(pr.body)?.[1];
   if (defaultMode === undefined) throw new Error(`${JSON_API_PATH}: processRequest sets no request.muraAPIRequestMode default`);
 
@@ -1389,6 +1450,7 @@ export function parseJsonApi(tree: SourceTree): JsonApiRegistry {
     publicMethodsSource: ref(JSON_API_PATH, publicMethodsLine, publicMethodsLine),
     entities,
     aliases,
+    entityParams,
     declared: new Set(unit.functions.map((f) => f.name.toLowerCase())),
     verbs,
     defaultMode,
@@ -1443,6 +1505,8 @@ function dynamicSchemaWrites(fn: CfmlFunction, unit: CfmlComponent): ClosureWrit
       trigger: 'request',
       whereParams: [],
       conditional: false,
+      columns: null,
+      via: [viaLabel(unit.path, fn.name)],
       dynamic: true,
     },
   ];
@@ -1469,6 +1533,100 @@ function dynamicEntityCalls(fn: CfmlFunction): { vars: string[]; calls: Map<stri
   return { vars, calls };
 }
 
+const REQUEST_VALUES = /^\s*\$\s*\.\s*event\s*\(\s*\)\s*\.\s*getAllValues\s*\(\s*\)\s*$/i;
+const QUOTED_KEY = /^\s*(["'])([\w$]+)\1\s*$/;
+
+/** The lower-cased keys a key expression of `fn` may name: a quoted key, or a local only ever assigned quoted keys. */
+function keyNames(fn: CfmlFunction, expr: string): string[] | null {
+  const quoted = QUOTED_KEY.exec(expr)?.[2];
+  if (quoted !== undefined) return [quoted.toLowerCase()];
+  const local = /^\s*([A-Za-z_$][\w$]*)\s*$/.exec(expr)?.[1];
+  if (local === undefined) return null;
+  const out: string[] = [];
+  const at = local.replace(/\$/g, '\\$');
+  for (const m of stripComments(fn.body).matchAll(new RegExp(String.raw`(?:^|[;{}])\s*(?:var\s+)?${at}\s*=(?!=)\s*([^;\n]*)`, 'gi'))) {
+    const rhs = (m[1] ?? '').trim();
+    const key = QUOTED_KEY.exec(rhs)?.[2];
+    // The entity's own primary key is a property the bean declares, so it adds no key of the request's.
+    if (key === undefined && !/^[A-Za-z_$][\w$]*\s*\.\s*getPrimaryKey\s*\(\s*\)$/i.test(rhs)) return null;
+    if (key !== undefined) out.push(key.toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * For each persistence method `fn` calls on the addressed entity, the keys beyond the request's that the entity holds
+ * when every such call runs on it right after `set($.event().getAllValues())` (setters it chains in between, and keys
+ * `fn` sets on the request with `$.event('k', v)`); undefined for a method one of whose calls may run otherwise.
+ */
+export function requestPopulations(fn: CfmlFunction): Map<string, string[] | undefined> {
+  const body = stripComments(fn.body);
+  const { vars } = dynamicEntityCalls(fn);
+  const heads = [DYNAMIC_BEAN, ...vars.map((v) => String.raw`(?<![\w$.])${v.replace(/\$/g, '\\$')}(?![\w$])`)];
+  const eventKeys: string[] = [];
+  let eventKnown = true;
+  for (const m of body.matchAll(/\$\s*\.\s*event\s*\(/gi)) {
+    const open = m.index + m[0].length - 1;
+    const args = splitTopLevel(body.slice(open + 1, matchBracket(body, open)));
+    if (args.length < 2) continue;
+    const keys = keyNames(fn, args[0] ?? '');
+    if (keys === null) eventKnown = false;
+    else eventKeys.push(...keys);
+  }
+  const out = new Map<string, string[] | undefined>();
+  let populated = false;
+  let set: string[] = [];
+  for (const m of body.matchAll(new RegExp(heads.join('|'), 'gi'))) {
+    // A new `getBean(entityName)` starts from a bean the request has not populated.
+    if (!vars.some((v) => v.toLowerCase() === m[0].toLowerCase())) populated = false;
+    let i = m.index + m[0].length;
+    for (;;) {
+      const member = /^\s*\.\s*([A-Za-z_$][\w$]*)\s*/.exec(body.slice(i, i + 200));
+      if (member === null || body[i + member[0].length] !== '(') break;
+      const name = (member[1] ?? '').toLowerCase();
+      const open = i + member[0].length;
+      const close = matchBracket(body, open);
+      const args = splitTopLevel(body.slice(open + 1, close));
+      i = close + 1;
+      if (name === 'set' && args.length === 1) {
+        populated = REQUEST_VALUES.test(args[0] ?? '');
+        set = [];
+      } else if (/^(load\w*|init|setallvalues)$/.test(name)) {
+        populated = false;
+      } else if (name === 'set' || name === 'setvalue') {
+        const keys = keyNames(fn, args[0] ?? '');
+        if (keys === null) populated = false;
+        else set.push(...keys);
+      } else if (/^set[\w$]+$/.test(name)) {
+        set.push(name.slice('set'.length));
+      } else if (PERSIST_METHOD.test(name)) {
+        const prev = out.has(name) ? out.get(name) : [];
+        out.set(name, populated && eventKnown && prev !== undefined ? [...new Set([...prev, ...set, ...eventKeys])].sort(compareText) : undefined);
+      }
+    }
+  }
+  return out;
+}
+
+/** Top-level comma-separated parts of an argument list, skipping strings and brackets. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] ?? '';
+    if (ch === '"' || ch === "'") i = skipString(text, i) - 1;
+    else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) {
+      parts.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  if (text.trim() !== '') parts.push(text.slice(from));
+  return parts;
+}
+
 /** Binds the persistence calls `fn` makes on the addressed entity to `component`, the bean the entity name resolves to. */
 function bindEntity(w: Walker, fn: CfmlFunction, component: string | null, entity: string, primary: string): EntityBinding {
   const { vars, calls } = dynamicEntityCalls(fn);
@@ -1478,6 +1636,7 @@ function bindEntity(w: Walker, fn: CfmlFunction, component: string | null, entit
   const ormWrites: ClosureWrite[] = [];
   let conditional: string | null = null;
   const text = w.tree.readText(JSON_API_PATH);
+  const populations = requestPopulations(fn);
   for (const [lower, offset] of calls) {
     if (!PERSIST_METHOD.test(lower)) continue;
     const found = findInChain(w, component, lower);
@@ -1485,12 +1644,24 @@ function bindEntity(w: Walker, fn: CfmlFunction, component: string | null, entit
       if (lower === primary.toLowerCase()) conditional = `${path.posix.basename(component, '.cfc')} defines no ${primary}; the call raises an error`;
       continue;
     }
-    roots.push({ component, method: found.fn.name });
+    const populated = populations.get(lower);
+    roots.push(populated === undefined ? { component, method: found.fn.name } : { component, method: found.fn.name, populated });
     const table = w.index.ormTable(component);
     if (table !== null && (lower === 'save' || lower === 'delete')) {
       const line = lineOf(text, offset);
       const op = lower === 'save' ? 'save' : 'delete';
-      ormWrites.push({ table, op, component, method: found.fn.name, source: ref(JSON_API_PATH, line, line), trigger: 'request', whereParams: [], conditional: false });
+      ormWrites.push({
+        table,
+        op,
+        component,
+        method: found.fn.name,
+        source: ref(JSON_API_PATH, line, line),
+        trigger: 'request',
+        whereParams: [],
+        conditional: false,
+        columns: null,
+        via: [viaLabel(JSON_API_PATH, fn.name), viaLabel(found.unit.path, found.fn.name)],
+      });
     }
   }
   return { roots, ormWrites, conditional, receivers };
@@ -1568,6 +1739,13 @@ const API_FAMILIES = ['api', 'rest'] as const;
 type ApiFamily = (typeof API_FAMILIES)[number];
 const API_ENDPOINTS: Readonly<Record<ApiFamily, string>> = Object.freeze({ api: '/_api/json/v1', rest: '/_api/rest/v1' });
 
+/** `<entity>/<id>/<suffix>` paths processRequest answers with a public method (jsonApiUtility.cfc:1011-1062). */
+const PATH_OPERATIONS: ReadonlyArray<{ suffix: string; method: string; entities: readonly string[] }> = Object.freeze([
+  { suffix: 'crumbs', method: 'findCrumbArray', entities: ['comment', 'content', 'category'] },
+  { suffix: 'relatedcontent', method: 'findRelatedContent', entities: ['content'] },
+  { suffix: 'history', method: 'findVersionHistory', entities: ['content'] },
+]);
+
 /** Display-object rendering calls whose output is CFML-rendered markup (processAsyncObject). */
 const DISPLAY_RENDER = /\.\s*(?:dspObjects?|dspObject_include|dspContentTypeBody)\s*\(/i;
 
@@ -1603,7 +1781,7 @@ async function withVariants(b: BuildContext, entryPoint: RouteEntryPoint, baseKe
     const sample = sampleOf(decl.when);
     if (sample === null) throw new Error(`variant ${expected} has a condition no request sample can satisfy`);
     const sampled = {
-      ...entryPoint,
+      ...behindFrontController(entryPoint, sample.frontController),
       params: { ...(entryPoint.params ?? {}), ...sample.params },
       multipartFileNames: [...(entryPoint.multipartFileNames ?? []), ...sample.files],
     } as RouteEntryPoint;
@@ -1619,7 +1797,7 @@ function ormClosure(writes: readonly ClosureWrite[]): WriteClosure {
   return { ...emptyClosure(), tables: [...new Set(writes.flatMap((w) => (w.table === null ? [] : [w.table])))], writes: [...writes] };
 }
 
-/** `api:`/`rest:` entries: entity × generic method, the other public methods, their variants and entity remote functions. */
+/** `api:`/`rest:` entries: entity × generic method, the other public methods, their variants, entity-path operations and entity remote functions. */
 async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonly RemoteFunctionEntity[]): Promise<RouteEntry[]> {
   const unit = b.w.index.parsed(JSON_API_PATH) ?? parseUnit(b.w.tree, JSON_API_PATH);
   const out: RouteEntry[] = [];
@@ -1659,6 +1837,8 @@ async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonl
           }
         }
         const roots = [...jRoots, ...binding.roots];
+        const params = reg.entityParams[served.toLowerCase()];
+        const assigned = params === undefined || Object.keys(params).length === 0 ? {} : { assignedParams: { ...params } };
         const conditions = [entity.condition === null ? null : `registered only when the ${entity.config ?? entity.condition} config is on`, binding.conditional];
         const conditional = conditions.filter((c): c is string => c !== null).join('; ') || null;
         const entryPoint: RouteEntryPoint = { kind: 'api', family, method, entity: entity.name };
@@ -1666,14 +1846,26 @@ async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonl
         const source = ref(JSON_API_PATH, fn.startLine, fn.endLine);
         out.push(
           ...(await withVariants(b, entryPoint, baseKey, (key, branch, predicate, precedence) => {
-            const facts = closureOf(roots, branch, [key, baseKey], sessionless, [ormClosure(binding.ormWrites)]);
+            const own = sessionlessUnder(sessionless, predicate);
+            const facts = closureOf(roots, branch, [key, baseKey], own, [ormClosure(binding.ormWrites)]);
             // Calls on the addressed entity inside the method itself are bound above; deeper ones stay reported.
             const unresolved = (facts.unresolved ?? []).filter(
               (u) => !(u.source.path === JSON_API_PATH && u.source.lines[0] >= fn.startLine && u.source.lines[0] <= fn.endLine && binding.receivers.test(u.expr)),
             );
             return newEntry(
               { id: key, kind: 'api-entity-method', family, routeKey: key, source, areaKey: areaKeyOf(baseKey) },
-              { ...facts, unresolved, entity: entity.name, method, httpMethods: reg.verbs[method.toLowerCase()] ?? [], predicate, precedence, conditional, sessionless },
+              {
+                ...facts,
+                ...assigned,
+                unresolved,
+                entity: entity.name,
+                method,
+                httpMethods: reg.verbs[method.toLowerCase()] ?? [],
+                predicate,
+                precedence,
+                conditional,
+                sessionless: own,
+              },
             );
           })),
         );
@@ -1721,14 +1913,14 @@ async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonl
                 render === null ? roots : [...roots, ...displayParamRoots(b.w, Object.keys(branch.predicates ?? {}))],
                 branch,
                 [key, platformKey],
-                sessionless,
+                sessionlessUnder(sessionless, predicate),
                 [ormClosure(dynamicSchemaWrites(fn, unit))],
                 render === null ? [] : rendered,
               ),
               method: name,
               predicate,
               precedence,
-              sessionless,
+              sessionless: sessionlessUnder(sessionless, predicate),
               rendersCfml: rendersCfmlEvidence !== null,
               rendersCfmlEvidence,
               runtimeCategory: runtime,
@@ -1736,6 +1928,36 @@ async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonl
           ),
         )),
       );
+    }
+
+    // Entity-path operations key as `<entity>.<method>` and run the public method's closure; an undeclared method has
+    // no path entry, its publicMethods entry already recording it as unreachable.
+    for (const op of PATH_OPERATIONS) {
+      if (!reg.declared.has(op.method.toLowerCase())) continue;
+      const fn = functionOf(unit, op.method);
+      const roots: Root[] = [{ component: JSON_API_PATH, method: fn.name, entryFunction: true }, ...serviceFactoryRoots(b.w, fn)];
+      const source = ref(JSON_API_PATH, fn.startLine, fn.endLine);
+      const area = areaKeyOf(`${family}:${op.method}`);
+      for (const entity of op.entities) {
+        const entryPoint: RouteEntryPoint = { kind: 'path', path: `${API_ENDPOINTS[family]}/default/${entity}/${SAMPLE_ID}/${op.suffix}` };
+        const baseKey = await b.key(entryPoint);
+        if (baseKey !== `${family}:${entity}.${op.method.toLowerCase()}`) throw new Error(`${entity}/<id>/${op.suffix} keys to ${baseKey}`);
+        out.push(
+          ...(await withVariants(b, entryPoint, baseKey, (key, branch, predicate, precedence) =>
+            newEntry(
+              { id: key, kind: 'api-entity-method', family, routeKey: key, source, areaKey: area },
+              {
+                ...closureOf(roots, branch, [key, baseKey], sessionless, [ormClosure(dynamicSchemaWrites(fn, unit))]),
+                entity,
+                method: op.method,
+                predicate,
+                precedence,
+                sessionless,
+              },
+            ),
+          )),
+        );
+      }
     }
 
     // Remote functions are routes of their own (`<entity>.~<fn>`): the gateway's route-key options are derived from these entries.
@@ -1754,13 +1976,13 @@ async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonl
             newEntry(
               { id: key, kind: 'api-entity-method', family, routeKey: key, source, areaKey: areaKeyOf(baseKey) },
               {
-                ...closureOf(roots, branch, [key, baseKey], sessionless),
+                ...closureOf(roots, branch, [key, baseKey], sessionlessUnder(sessionless, predicate)),
                 entity: entity.key,
                 method: fn.name,
                 predicate,
                 precedence,
                 conditional,
-                sessionless,
+                sessionless: sessionlessUnder(sessionless, predicate),
                 webRootFilesystem: webRoot,
               },
             ),
@@ -1824,14 +2046,18 @@ export function parseOAuth(tree: SourceTree): OAuthSpans {
   };
 }
 
-/** One OAuth entry, keyed through a REST request to its path. */
-async function oauthEntry(b: BuildContext, id: string, entryPoint: RouteEntryPoint, source: SourceRef, roots: readonly Root[]): Promise<RouteEntry> {
-  const routeKey = await b.key(entryPoint);
+/** One OAuth entry and one per declared variant (`<id>{<variant>}`), keyed through a REST request to its path. */
+async function oauthEntry(b: BuildContext, id: string, entryPoint: RouteEntryPoint, source: SourceRef, roots: readonly Root[]): Promise<RouteEntry[]> {
+  const baseKey = await b.key(entryPoint);
   const sessionless = entryPoint.kind === 'path' && entryPoint.path.toLowerCase().startsWith(b.sessionless.prefix.toLowerCase());
-  return newEntry(
-    { id, kind: 'oauth', family: routeKey.slice(0, routeKey.indexOf(':')) as RouteFamily, routeKey, source, areaKey: areaKeyOf(routeKey) },
-    { ...rootsClosure(b, roots, {}, [routeKey], sessionless), sessionless },
-  );
+  const family = baseKey.slice(0, baseKey.indexOf(':')) as RouteFamily;
+  return withVariants(b, entryPoint, baseKey, (key, branch, predicate, precedence) => {
+    const own = sessionlessUnder(sessionless, predicate);
+    return newEntry(
+      { id: `${id}${key.slice(baseKey.length)}`, kind: 'oauth', family, routeKey: key, source, areaKey: areaKeyOf(baseKey) },
+      { ...rootsClosure(b, roots, branch, [key, baseKey], own), predicate, precedence, sessionless: own },
+    );
+  });
 }
 
 /** `rte:` entries of the OAuth grant endpoints and the token-info endpoint. */
@@ -1840,15 +2066,15 @@ async function oauthEntries(b: BuildContext, spans: OAuthSpans): Promise<RouteEn
   const grantRoot: Root = { component: JSON_API_PATH, method: 'processRequest', keep: spans.grant, entryFunction: true };
   const out: RouteEntry[] = [];
   for (const name of spans.endpoints) {
-    out.push(await oauthEntry(b, OAUTH_IDS[name] ?? `rte:/${name}`, { kind: 'path', path: `${rest}/${name}/` }, spans.grantSource, [grantRoot]));
+    out.push(...(await oauthEntry(b, OAUTH_IDS[name] ?? `rte:/${name}`, { kind: 'path', path: `${rest}/${name}/` }, spans.grantSource, [grantRoot])));
   }
   const { segment, method, source } = spans.tokenInfo;
   const tokenInfo: RouteEntryPoint = { kind: 'path', path: `${rest}/${segment}`, query: { access_token: 'sample', client_id: SAMPLE_ID } };
   out.push(
-    await oauthEntry(b, OAUTH_IDS[segment] ?? `rte:${segment}`, tokenInfo, source, [
+    ...(await oauthEntry(b, OAUTH_IDS[segment] ?? `rte:${segment}`, tokenInfo, source, [
       { component: JSON_API_PATH, method, entryFunction: true },
       { component: JSON_API_PATH, method: 'processRequest', keep: spans.bearer, entryFunction: true },
-    ]),
+    ])),
   );
   return out;
 }
@@ -2576,14 +2802,27 @@ function fixtureIndex(tree: SourceTree, controller: FixtureController): Componen
 export const FIXTURE_SQL_DIR = 'legacy-fixtures/sql';
 
 /** sqlcmd variable `*.program.sql` scripts use for the per-program schema, and the schema `Program_<id>` tables fold to. */
-const PROGRAM_SCHEMA_VAR = '$(PROGRAM_SCHEMA)';
+export const PROGRAM_SCHEMA_VAR = '$(PROGRAM_SCHEMA)';
 export const PROGRAM_SCHEMA_FOLD = 'Program_N';
 
-/** A fixture stored procedure: the schema-qualified tables it writes and the fixture procedures it executes. */
+/**
+ * One write statement of a fixture procedure; `op` is `save` for a `MERGE`. `whereParams` are the lower-cased procedure
+ * parameters its `WHERE` clause names, and `columns` the columns it names, null when it names none.
+ */
+export interface FixtureWrite {
+  table: string;
+  op: ClosureWrite['op'];
+  source: SourceRef;
+  whereParams: string[];
+  columns: string[] | null;
+}
+
+/** A fixture stored procedure: the schema-qualified tables it writes, its write statements and the fixture procedures it executes. */
 export interface FixtureProcedure {
   name: string;
   source: SourceRef;
   writes: string[];
+  statements: FixtureWrite[];
   calls: string[];
 }
 
@@ -2595,7 +2834,7 @@ export interface FixtureSql {
 }
 
 /** SQL text with `--` and block comments blanked (strings kept), so offsets and lines stay. */
-function blankSqlComments(sql: string): string {
+export function blankSqlComments(sql: string): string {
   const out = sql.split('');
   for (let i = 0; i < sql.length; i++) {
     if (sql[i] === "'") {
@@ -2621,16 +2860,49 @@ function sqlName(raw: string): string {
   return bare === PROGRAM_SCHEMA_VAR ? PROGRAM_SCHEMA_FOLD : bare;
 }
 
-/** Schema-qualified name starting at `at`, or null when the text there is not one. */
-function qualifiedAt(text: string, at: number): string | null {
+/** Schema-qualified name starting at `at` and the offset just past it, or null when the text there is not one. */
+function qualifiedSpanAt(text: string, at: number): { name: string; end: number } | null {
   SQL_QUALIFIED.lastIndex = at;
   const m = SQL_QUALIFIED.exec(text);
-  return m === null ? null : `${sqlName(m[1] ?? '')}.${sqlName(m[2] ?? '')}`;
+  return m === null ? null : { name: `${sqlName(m[1] ?? '')}.${sqlName(m[2] ?? '')}`, end: at + m[0].length };
+}
+
+/** Schema-qualified name starting at `at`, or null when the text there is not one. */
+function qualifiedAt(text: string, at: number): string | null {
+  return qualifiedSpanAt(text, at)?.name ?? null;
+}
+
+const SQL_WRITE = /\b(INSERT\s+(?:INTO\s+)?|UPDATE\s+|DELETE\s+(?:FROM\s+)?|MERGE\s+(?:INTO\s+)?)(?=[[\w$])/gi;
+
+/** Write statements of a procedure whose `body` starts at offset `at` of `file`'s comment-blanked `text`; each ends at its `;` or the next write. */
+function procedureStatements(file: string, text: string, at: number, body: string): FixtureWrite[] {
+  const params = new Set([...(/^[\s\S]*?\bAS\b/i.exec(body)?.[0] ?? '').matchAll(/@(\w+)/g)].map((p) => (p[1] ?? '').toLowerCase()));
+  const verbs = [...body.matchAll(SQL_WRITE)];
+  return verbs.flatMap((m, i): FixtureWrite[] => {
+    const target = qualifiedSpanAt(body, m.index + m[0].length);
+    if (target === null) return [];
+    const next = verbs[i + 1]?.index ?? body.length;
+    const semi = body.indexOf(';', target.end);
+    const rest = body.slice(target.end, semi >= 0 && semi < next ? semi : next);
+    const where = /\bWHERE\b/i.exec(rest);
+    const bound = where === null ? [] : [...rest.slice(where.index).matchAll(/@(\w+)/g)].map((p) => (p[1] ?? '').toLowerCase());
+    const verb = (m[1] ?? '').slice(0, 6).toLowerCase();
+    const op = verb === 'insert' || verb === 'update' || verb === 'delete' ? verb : 'save';
+    return [
+      {
+        table: target.name,
+        op,
+        source: spanRef(file, text, at + m.index, at + target.end + rest.length),
+        whereParams: [...new Set(bound.filter((p) => params.has(p)))],
+        columns: op === 'save' ? null : sqlColumns(op, rest),
+      },
+    ];
+  });
 }
 
 /** Parses the fixture SQL scripts in `tree`; empty when the tree holds none. */
 export function parseFixtureSql(tree: SourceTree): FixtureSql {
-  const drafts: Array<{ name: string; source: SourceRef; body: string }> = [];
+  const drafts: Array<{ name: string; source: SourceRef; body: string; statements: FixtureWrite[] }> = [];
   const programTables = new Set<string>();
   for (const file of tree.list(FIXTURE_SQL_DIR, { ext: ['sql'], recursive: true })) {
     const text = blankSqlComments(tree.readText(file));
@@ -2644,19 +2916,16 @@ export function parseFixtureSql(tree: SourceTree): FixtureSql {
       const name = qualifiedAt(text, at);
       if (name === null) throw new Error(`${file}:${lineOf(text, at)}: a fixture procedure must be schema-qualified`);
       const end = batches.find((g) => g > at) ?? text.length;
-      drafts.push({ name, source: ref(file, lineOf(text, m.index ?? 0), lineOf(text, end)), body: text.slice(at, end) });
+      const body = text.slice(at, end);
+      drafts.push({ name, source: ref(file, lineOf(text, m.index ?? 0), lineOf(text, end)), body, statements: procedureStatements(file, text, at, body) });
     }
   }
   const bare = (q: string): string => q.slice(q.lastIndexOf('.') + 1).toLowerCase();
   const procedures = drafts.map((d): FixtureProcedure => {
-    const writes = new Set<string>();
-    for (const m of d.body.matchAll(/\b(?:INSERT\s+(?:INTO\s+)?|UPDATE\s+|DELETE\s+(?:FROM\s+)?|MERGE\s+(?:INTO\s+)?)(?=[[\w$])/gi)) {
-      const table = qualifiedAt(d.body, (m.index ?? 0) + m[0].length);
-      if (table !== null) writes.add(table);
-    }
+    const writes = [...new Set(d.statements.map((s) => s.table))].sort(compareText);
     // A procedure that names another fixture procedure, in an EXEC or a dynamic statement it builds, executes it.
     const calls = drafts.filter((o) => o.name !== d.name && new RegExp(String.raw`\b${bare(o.name)}\b`, 'i').test(d.body)).map((o) => o.name);
-    return { name: d.name, source: d.source, writes: [...writes].sort(compareText), calls: [...new Set(calls)].sort(compareText) };
+    return { name: d.name, source: d.source, writes, statements: d.statements, calls: [...new Set(calls)].sort(compareText) };
   });
   return { procedures: procedures.sort((a, b) => compareText(a.name, b.name)), programTables: [...programTables].sort(compareText) };
 }
@@ -2675,27 +2944,42 @@ function resolveProcedure(sql: FixtureSql, reference: string): FixtureProcedure[
   });
 }
 
-/** Tables a procedure writes, through the fixture procedures it executes. */
-function procedureWrites(sql: FixtureSql, start: FixtureProcedure): string[] {
+/** `start` and the fixture procedures it executes, breadth-first, each with the procedure names that lead to it. */
+function reachedProcedures(sql: FixtureSql, start: FixtureProcedure): Array<{ procedure: FixtureProcedure; path: string[] }> {
   const byName = new Map(sql.procedures.map((p) => [p.name, p]));
-  const seen = new Set<string>();
-  const writes = new Set<string>();
-  const visit = (p: FixtureProcedure): void => {
-    if (seen.has(p.name)) return;
-    seen.add(p.name);
-    p.writes.forEach((t) => writes.add(t));
-    for (const c of p.calls) {
+  const reached = [{ procedure: start, path: [start.name] }];
+  const seen = new Set([start.name]);
+  // The array iterator also yields the entries pushed while it runs.
+  for (const { procedure, path: chain } of reached) {
+    for (const c of procedure.calls) {
       const next = byName.get(c);
-      if (next !== undefined) visit(next);
+      if (next === undefined || seen.has(c)) continue;
+      seen.add(c);
+      reached.push({ procedure: next, path: [...chain, c] });
     }
-  };
-  visit(start);
-  return [...writes].sort(compareText);
+  }
+  return reached;
 }
 
-/** Stored procedures the visited fixture functions execute, from `EXEC` statements in their SQL strings, with their writes. */
-function procedureCallsOf(w: Walker, visited: readonly string[], sql: FixtureSql): ProcedureCall[] {
-  const calls: ProcedureCall[] = [];
+/** Tables a procedure writes, through the fixture procedures it executes. */
+function procedureWrites(sql: FixtureSql, start: FixtureProcedure): string[] {
+  return [...new Set(reachedProcedures(sql, start).flatMap((r) => r.procedure.writes))].sort(compareText);
+}
+
+/** An `EXEC` in a visited fixture function: the call, the procedures it resolves to, and the function as the walk visited it. */
+interface ProcedureSite {
+  call: ProcedureCall;
+  targets: FixtureProcedure[];
+  /** `component#method` as the closure's `visited` lists it. */
+  visited: string;
+  unitPath: string;
+  method: string;
+  line: number;
+}
+
+/** `EXEC` statements in the SQL strings of the visited fixture functions, with the procedures and writes they reach. */
+function procedureSitesOf(w: Walker, visited: readonly string[], sql: FixtureSql): ProcedureSite[] {
+  const sites: ProcedureSite[] = [];
   for (const v of visited) {
     const hash = v.lastIndexOf('#');
     const found = findInChain(w, v.slice(0, hash), v.slice(hash + 1));
@@ -2704,29 +2988,102 @@ function procedureCallsOf(w: Walker, visited: readonly string[], sql: FixtureSql
       const line = lineOf(found.unit.text, found.fn.offset + (m.index ?? 0));
       const procedure = (m[1] ?? '').replace(/[[\]]/g, '');
       const targets = resolveProcedure(sql, procedure);
-      calls.push({
+      const call: ProcedureCall = {
         procedure,
         source: ref(found.unit.path, line, line),
         resolved: targets.map((t) => t.name),
         writes: uniqueSorted(targets.flatMap((t) => procedureWrites(sql, t))),
-      });
+      };
+      sites.push({ call, targets, visited: v, unitPath: found.unit.path, method: found.fn.name, line });
     }
   }
-  return uniqueSorted(calls);
+  return sites;
 }
 
-/** Per-program tables written through a dynamic schema (`#arguments.schema#.finance_attachment`), folded to `Program_N`. */
-function programTableWrites(unresolved: readonly UnresolvedRef[], sql: FixtureSql): { tables: string[]; resolved: Set<UnresolvedRef> } {
-  const tables = new Set<string>();
-  const resolved = new Set<UnresolvedRef>();
+/** Offsets spanning whole lines `first`..`last` of `text`. */
+function linesSpan(text: string, [first, last]: readonly [number, number]): Span {
+  const starts = [0, ...[...text.matchAll(/\n/g)].map((m) => m.index + 1)];
+  return [starts[first - 1] ?? text.length, starts[last] ?? text.length];
+}
+
+/** Functions an entry reaches outside its cfthread bodies (roots walked with the bodies dropped) and inside them (each body walked alone). */
+function threadReach(w: Walker, roots: readonly Root[], closure: WriteClosure, keys: readonly string[]): { request: Set<string>; thread: Set<string> } {
+  if (closure.threads.length === 0) return { request: new Set(closure.visited), thread: new Set() };
+  const body = (t: ClosureThread): Span => linesSpan(w.tree.readText(t.component), t.source.lines);
+  const outside = roots.flatMap((r) => {
+    const drop = closure.threads.filter((t) => t.component === r.component).map(body);
+    return walk(w, { ...r, drop: [...(r.drop ?? []), ...drop] }, {}, keys).visited;
+  });
+  const inside = closure.threads.flatMap((t) =>
+    walk(w, { component: t.component, method: t.method, keep: body(t) }, {}, keys).visited.filter((v) => v !== `${t.component}#${t.method}`),
+  );
+  return { request: new Set(outside), thread: new Set(inside) };
+}
+
+/** Call path the closure records through the function labelled `label`, or the label alone when no evidence passes it. */
+function pathThrough(closure: WriteClosure, label: string): string[] {
+  for (const e of [...closure.writes, ...closure.unresolved, ...closure.fileStoreEvidence]) {
+    const at = e.via.indexOf(label);
+    if (at >= 0) return e.via.slice(0, at + 1);
+  }
+  return [label];
+}
+
+/**
+ * One write per statement of every fixture procedure an `EXEC` site reaches, sourced at the statement in its SQL
+ * script, under `thread` when the site runs in a cfthread body and `request` when it runs outside one.
+ */
+function procedureEvidence(w: Walker, roots: readonly Root[], closure: WriteClosure, sites: readonly ProcedureSite[], sql: FixtureSql, keys: readonly string[]): ClosureWrite[] {
+  if (sites.length === 0) return [];
+  const reach = threadReach(w, roots, closure, keys);
+  return sites.flatMap((s) => {
+    const owner = s.visited.slice(0, s.visited.lastIndexOf('#'));
+    const inBody = closure.threads.some((t) => t.component === owner && t.method === s.method && t.source.lines[0] <= s.line && s.line <= t.source.lines[1]);
+    const thread = inBody || reach.thread.has(s.visited);
+    const triggers: Array<ClosureWrite['trigger']> = [...(!inBody && (reach.request.has(s.visited) || !thread) ? ['request' as const] : []), ...(thread ? ['thread' as const] : [])];
+    const via = pathThrough(closure, viaLabel(s.unitPath, s.method));
+    return s.targets.flatMap((start) =>
+      reachedProcedures(sql, start).flatMap(({ procedure, path: chain }) =>
+        procedure.statements.flatMap((st) =>
+          triggers.map((trigger): ClosureWrite => ({
+            table: st.table,
+            op: st.op,
+            component: st.source.path,
+            method: '',
+            source: st.source,
+            trigger,
+            whereParams: [...st.whereParams],
+            conditional: false,
+            columns: st.columns === null ? null : [...st.columns],
+            via: [...via, ...chain],
+          })),
+        ),
+      ),
+    );
+  });
+}
+
+/** Per-program tables written through a dynamic schema (`#arguments.schema#.finance_attachment`), folded to `Program_N`, by the reference that names each. */
+function programTableWrites(unresolved: readonly UnresolvedRef[], sql: FixtureSql): { tables: string[]; resolved: Map<UnresolvedRef, string> } {
+  const resolved = new Map<UnresolvedRef, string>();
   for (const u of unresolved) {
     const m = u.kind === 'table' ? /^\[?#[^#]+#\]?\.\[?(\w+)\]?$/.exec(u.expr.trim()) : null;
     const table = m?.[1];
-    if (table === undefined || !sql.programTables.some((t) => t.toLowerCase() === table.toLowerCase())) continue;
-    tables.add(`${PROGRAM_SCHEMA_FOLD}.${sql.programTables.find((t) => t.toLowerCase() === table.toLowerCase()) ?? table}`);
-    resolved.add(u);
+    const created = table === undefined ? undefined : sql.programTables.find((t) => t.toLowerCase() === table.toLowerCase());
+    if (created !== undefined) resolved.set(u, `${PROGRAM_SCHEMA_FOLD}.${created}`);
   }
-  return { tables: [...tables].sort(compareText), resolved };
+  return { tables: [...new Set(resolved.values())].sort(compareText), resolved };
+}
+
+/** A dynamic-schema write with the `Program_N` table its reference folds to; any other write unchanged. */
+function foldProgramWrite(write: ClosureWrite, resolved: ReadonlyMap<UnresolvedRef, string>): ClosureWrite {
+  if (write.table !== null || write.dynamic !== true) return write;
+  const at = (u: UnresolvedRef): boolean => u.source.path === write.source.path && u.source.lines[0] === write.source.lines[0] && u.source.lines[1] === write.source.lines[1];
+  const tables = new Set([...resolved].filter(([u]) => at(u)).map(([, t]) => t));
+  const [table] = tables;
+  if (table === undefined || tables.size > 1) return write;
+  const { dynamic: _dynamic, ...rest } = write;
+  return { ...rest, table };
 }
 
 /** Reads the fixture front controller, its components and the fixture SQL from the working tree; null when the controller is absent. */
@@ -2762,8 +3119,10 @@ async function fixtureEntries(b: BuildContext, tree: SourceTree): Promise<RouteE
       const guards = route.guards.filter((g) => unit.functions.some((f) => f.name.toLowerCase() === g.toLowerCase()));
       const roots: Root[] = [{ component, method: fn.name }, ...guards.map((g) => ({ component, method: functionOf(unit, g).name }))];
       const closure = mergeClosures(roots.map((r) => walk(w, r, {}, [routeKey])));
-      const procedureCalls = procedureCallsOf(w, closure.visited, sql);
+      const sites = procedureSitesOf(w, closure.visited, sql);
+      const procedureCalls = uniqueSorted(sites.map((s) => s.call));
       const program = programTableWrites(closure.unresolved, sql);
+      const evidence = [...closure.writes.map((x) => foldProgramWrite(x, program.resolved)), ...procedureEvidence(w, roots, closure, sites, sql, [routeKey])];
       const csrf = entryCsrf(w, roots, closure, false, route.httpMethod);
       // A context naming a route segment the path lacks is the empty string the token is generated for.
       const segment = /^route\.(resource|id|action|tail)$/i.exec(csrf.csrfContext ?? '')?.[1]?.toLowerCase();
@@ -2774,6 +3133,8 @@ async function fixtureEntries(b: BuildContext, tree: SourceTree): Promise<RouteE
         {
           ...closureFields(closure),
           writeSet: uniqueSorted([...closure.tables, ...program.tables, ...procedureCalls.flatMap((c) => c.writes)]),
+          // Procedure and per-program writes are evidence too, so attachWriters records them on their tables.
+          closureEvidence: uniqueSorted(evidence),
           unresolved: closure.unresolved.filter((u) => !program.resolved.has(u)),
           roots: roots.map((r) => rootLabel(w, r)),
           procedureCalls,
@@ -2875,5 +3236,5 @@ export async function extractRoutes(tree: SourceTree, opts: ExtractRoutesOptions
     ids.add(r.id);
   }
   routes.sort((x, y) => compareText(x.id, y.id));
-  return { routes, counts: countRoutes(routes), fixtureRoutesStatus: fixtureTree === null ? 'absent' : 'present' };
+  return { routes, counts: countRoutes(routes), fixtureRoutesStatus: fixtureTree === null ? 'absent' : 'present', fixtureTree };
 }

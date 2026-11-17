@@ -129,7 +129,8 @@
             "admin/core/views/cemail/showreturns.cfm"
           ],
           "path": "admin/core/views/cemail/js.cfm",
-          "reason": "included"
+          "reason": "reviewed-partial",
+          "ref": "harness/inventory/view-partials.yaml#vp:cemail.js"
         }
       ],
       "gates": [
@@ -221,7 +222,7 @@
                 "basis": "write set spans identity, people; no input names the owner",
                 "computed": {
                   "disposition": "decision",
-                  "owningService": "spanning"
+                  "owningService": "identity"
                 },
                 "expected": {
                   "disposition": "carry"
@@ -248,7 +249,7 @@
                 "identity",
                 "people"
               ],
-              "owningService": "spanning",
+              "owningService": "identity",
               "precedence": 0,
               "predicate": null,
               "protocol": null,
@@ -280,7 +281,44 @@
               "unresolvedCalls": [],
               "withheld": true,
               "writeSet": [
-                "tusers"
+                {
+                  "condition": null,
+                  "legacyTable": "tusers",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      367,
+                      370
+                    ],
+                    "path": "core/mura/user/userUtility.cfc"
+                  },
+                  "unit": "identity.user_account",
+                  "via": [
+                    "clogin.login",
+                    "loginManager.login",
+                    "userUtility.loginByQuery"
+                  ]
+                },
+                {
+                  "condition": null,
+                  "legacyTable": "tusers",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      367,
+                      370
+                    ],
+                    "path": "core/mura/user/userUtility.cfc"
+                  },
+                  "unit": "people.person",
+                  "via": [
+                    "clogin.login",
+                    "loginManager.login",
+                    "userUtility.loginByQuery"
+                  ]
+                }
               ]
             }
           ],
@@ -514,8 +552,63 @@
               "unresolvedCalls": [],
               "withheld": false,
               "writeSet": [
-                "tusers",
-                "tusersmemb"
+                {
+                  "condition": null,
+                  "legacyTable": "tusersmemb",
+                  "op": "insert",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      348,
+                      352
+                    ],
+                    "path": "core/mura/user/userDAO.cfc"
+                  },
+                  "unit": "identity.membership",
+                  "via": [
+                    "cusers.update",
+                    "userManager.update",
+                    "userDAO.update"
+                  ]
+                },
+                {
+                  "condition": null,
+                  "legacyTable": "tusers",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      420,
+                      458
+                    ],
+                    "path": "core/mura/user/userDAO.cfc"
+                  },
+                  "unit": "identity.user_account",
+                  "via": [
+                    "cusers.update",
+                    "userManager.update",
+                    "userDAO.update"
+                  ]
+                },
+                {
+                  "condition": null,
+                  "legacyTable": "tusers",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      420,
+                      458
+                    ],
+                    "path": "core/mura/user/userDAO.cfc"
+                  },
+                  "unit": "people.person",
+                  "via": [
+                    "cusers.update",
+                    "userManager.update",
+                    "userDAO.update"
+                  ]
+                }
               ]
             },
             {
@@ -543,7 +636,7 @@
                 "identity",
                 "people"
               ],
-              "owningService": "spanning",
+              "owningService": "people",
               "precedence": 3,
               "predicate": {
                 "variant": "type=2,action=delete",
@@ -587,7 +680,44 @@
               "unresolvedCalls": [],
               "withheld": true,
               "writeSet": [
-                "tusers"
+                {
+                  "condition": null,
+                  "legacyTable": "tusers",
+                  "op": "delete",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      520,
+                      524
+                    ],
+                    "path": "core/mura/user/userDAO.cfc"
+                  },
+                  "unit": "identity.user_account",
+                  "via": [
+                    "cusers.update",
+                    "userManager.delete",
+                    "userDAO.delete"
+                  ]
+                },
+                {
+                  "condition": null,
+                  "legacyTable": "tusers",
+                  "op": "delete",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      520,
+                      524
+                    ],
+                    "path": "core/mura/user/userDAO.cfc"
+                  },
+                  "unit": "people.person",
+                  "via": [
+                    "cusers.update",
+                    "userManager.delete",
+                    "userDAO.delete"
+                  ]
+                }
               ]
             }
           ],
@@ -868,7 +998,7 @@
         "identity",
         "people"
       ],
-      "owningService": "spanning",
+      "owningService": null,
       "pattern": false,
       "patternId": null,
       "protocol": null,
@@ -935,7 +1065,7 @@
         "basis": "write set spans identity, people; no input names the owner",
         "computed": {
           "disposition": "decision",
-          "owningService": "spanning"
+          "owningService": "identity"
         },
         "expected": {
           "disposition": "legacy-served"
@@ -965,7 +1095,7 @@
         "identity",
         "people"
       ],
-      "owningService": "spanning",
+      "owningService": "identity",
       "predicate": null,
       "protocol": null,
       "reachable": true,
@@ -989,7 +1119,44 @@
       "windowed": true,
       "withheld": true,
       "writeSet": [
-        "tusers"
+        {
+          "condition": null,
+          "legacyTable": "tusers",
+          "op": "update",
+          "override": null,
+          "source": {
+            "lines": [
+              367,
+              370
+            ],
+            "path": "core/mura/user/userUtility.cfc"
+          },
+          "unit": "identity.user_account",
+          "via": [
+            "standardEventsHandler.standardDoActionsHandler",
+            "loginManager.login",
+            "userUtility.loginByQuery"
+          ]
+        },
+        {
+          "condition": null,
+          "legacyTable": "tusers",
+          "op": "update",
+          "override": null,
+          "source": {
+            "lines": [
+              367,
+              370
+            ],
+            "path": "core/mura/user/userUtility.cfc"
+          },
+          "unit": "people.person",
+          "via": [
+            "standardEventsHandler.standardDoActionsHandler",
+            "loginManager.login",
+            "userUtility.loginByQuery"
+          ]
+        }
       ]
     }
   ],

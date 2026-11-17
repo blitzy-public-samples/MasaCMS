@@ -227,19 +227,19 @@ describe('cChangesets before()', () => {
     expect(applyCchangesetsDefaults(rc)).toBe(rc);
   });
 
-  it('registers the carried actions behind the gate, leaving publish on legacy', () => {
+  it('registers the carried actions behind the gate, leaving publish and rollback on legacy', () => {
     expect(cchangesetsScreens.map(({ action, mode }) => `${action}:${mode}`)).toEqual([
       'list:page',
       'assignments:page',
       'edit:page',
       'save:page',
-      'rollback:redirect',
       'removeitem:redirect',
       'delete:redirect',
       'loadtagarray:fragment',
     ]);
     expect(cchangesetsScreens.every((screen) => screen.gate === cchangesetsGate)).toBe(true);
     expect(cchangesetsScreens.some((screen) => screen.action === 'publish')).toBe(false);
+    expect(cchangesetsScreens.some((screen) => screen.action === 'rollback')).toBe(false);
   });
 
   it("runs a page's load and render on the request before() leaves", async () => {
@@ -257,12 +257,12 @@ describe('cChangesets before()', () => {
   });
 
   it("runs a post action's submit on the defaulted request", async () => {
-    const route = routeKey('POST', 'strategies-content', `${changesetPath(CHANGESET_ID)}/rollback`);
-    const ctx = contextFor(changesetRequest('rollback', CSRF_FIELDS), { [route]: ok({ saved: true, errors: {}, redirect: null }) });
-    const rollback = registered('rollback');
-    if (rollback.mode !== 'redirect') throw new Error('rollback is a post action');
+    const route = routeKey('POST', 'strategies-content', `${changesetPath(CHANGESET_ID)}/delete`);
+    const ctx = contextFor(changesetRequest('delete', CSRF_FIELDS), { [route]: ok({ saved: true, errors: {}, redirect: null }) });
+    const deletion = registered('delete');
+    if (deletion.mode !== 'redirect') throw new Error('delete is a post action');
 
-    await expect(rollback.submit(ctx)).resolves.toMatchObject({ kind: 'redirect', action: 'cChangesets.edit' });
+    await expect(deletion.submit(ctx)).resolves.toMatchObject({ kind: 'redirect', action: 'cChangesets.list' });
     expect(ctx.gateway.calls[0]?.form).toMatchObject({ page: '1', keywords: '', tags: '', ...CSRF_FIELDS });
   });
 

@@ -3,12 +3,16 @@
  * each request is resolved as jsonApiUtility.processRequest resolves it (core/mura/client/api/json/v1/jsonApiUtility.cfc:368-1402)
  * through the shared route key, then answered by the entity and method handlers of ./jsonapi/.
  */
-import { AuthDenial, Roles, assertSiteMatches, suppliedSiteIdsOf, type Opt2RouteConfig } from '@opt2/platform/auth';
+import { AuthDenial, Roles, assertSiteMatches, suppliedSiteIdsOf, type DenialRenderer, type Opt2RouteConfig } from '@opt2/platform/auth';
 import {
   IMAGE_UPLOAD_CONDITION,
+  LEGACY_ERROR_PAGE_HTML,
+  LEGACY_ERROR_STATUS_TEXT,
   LEGACY_JSON_CONTENT_TYPE,
   LegacyApiError,
   LegacyServiceUnavailableError,
+  REST_CONSUMED_PARAMS_HEADER,
+  REST_CREDENTIAL_PARAMS,
   WWW_AUTHENTICATE,
   accessControlOriginDomains,
   acfKeyOrder,
@@ -35,6 +39,7 @@ import {
   serializeResponse,
   type ApiNameContext,
   type LegacyApiErrorType,
+  type LegacyJsonSerializer,
   type RouteKeyOptions,
   type RouteKeyResult,
   type SerializedLegacyResponse,
@@ -48,6 +53,7 @@ import {
   abandonOnDisconnect,
   csrfPreHandler,
   multipartFilesOf,
+  recordOutcomeReason,
   sendLegacyResponse,
   z,
   type FastifyInstance,
@@ -84,8 +90,8 @@ type Struct = Record<string, unknown>;
 /** API families in handleAPIRequest order (contentServer.cfc:593-636). */
 const FAMILIES: readonly JsonApiMode[] = Object.freeze(['json', 'ajax', 'rest']);
 
-/** Leads of the JSON API paths; the app routes them in any letter case (`noCasePathPrefixes`), as legacy compares them. */
-export const JSON_API_PREFIXES: readonly string[] = Object.freeze(FAMILIES.map((family) => `/_api/${family}/v1`));
+/** Leads of the JSON API paths, bare and behind `/index.cfm`; the app routes them in any letter case (`noCasePathPrefixes`), as legacy compares them. */
+export const JSON_API_PREFIXES: readonly string[] = Object.freeze(FAMILIES.flatMap((family) => [`/_api/${family}/v1`, `/index.cfm/_api/${family}/v1`]));
 
 /** Methods of the contract's JSON API operations. */
 const ROUTE_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
@@ -129,7 +135,7 @@ const READ_OPERATIONS: ReadonlySet<GenericOperation> = new Set(['findOne', 'find
 /** Public methods that write nothing, whose calls stop between reads once the client disconnects. */
 const READ_METHODS: ReadonlySet<string> = new Set(['findCrumbArray', 'findVersionHistory', 'findRelatedContent', 'findCalendarItems', 'getURLForImage']);
 
-/** configBean and settings values the endpoint URL, the route key, the CORS allow-list and the site URLs read. */
+/** configBean and settings values the endpoint URL, the route key, the CORS allow-list, the site URLs and the envelope read. */
 export interface JsonApiLegacySettings {
   /** configBean `adminSSL`. */
   readonly adminSSL: boolean;
@@ -143,6 +149,10 @@ export interface JsonApiLegacySettings {
   readonly adminDomain: string;
   /** configBean URL flags the site renderer resolves. */
   readonly urls: Pick<LegacySiteUrlConfig, 'siteIdInUrls' | 'indexFileInUrls' | 'hashUrls' | 'legacyIndexFileLocation' | 'siteAssetPath'>;
+  /** configBean `suppressAPIParams`: drops `params` from every envelope. */
+  readonly suppressAPIParams: boolean;
+  /** configBean `useDataNamespaceForAPI`: keeps a struct `data` under `data` unless the request's `useDataNamespace` says otherwise. */
+  readonly useDataNamespaceForAPI: boolean;
 }
 
 const BLANK = /^\s*$/;
@@ -191,6 +201,9 @@ const LEGACY_SETTINGS = z
     MURA_HASHURLS: flagSetting(false, false),
     MURA_LEGACYINDEXFILELOCATION: textSetting((v) => cfIsBoolean(v), 'must be a CFML boolean'),
     MURA_SITEDIR: z.preprocess(literal, z.string().optional()),
+    // No setter: serializeResponse reads the raw value with `&&` and `!`, which throw on a non-boolean (jsonApiUtility.cfc:1482,1493).
+    MURA_SUPPRESSAPIPARAMS: textSetting((v) => cfIsBoolean(v), 'must be a CFML boolean'),
+    MURA_USEDATANAMESPACEFORAPI: textSetting((v) => cfIsBoolean(v), 'must be a CFML boolean'),
   })
   .transform(
     (env): JsonApiLegacySettings => ({
@@ -207,6 +220,9 @@ const LEGACY_SETTINGS = z
         // configBean getSiteAssetPath().
         siteAssetPath: (env.MURA_SITEDIR ?? 'sites') === '' ? '' : `/${env.MURA_SITEDIR ?? 'sites'}`,
       },
+      suppressAPIParams: env.MURA_SUPPRESSAPIPARAMS === undefined || cfToBoolean(env.MURA_SUPPRESSAPIPARAMS),
+      // The site renderer's `useDataNamespaceForAPI` would override this (jsonApiUtility.cfc:13-15); no deployed renderer sets it.
+      useDataNamespaceForAPI: env.MURA_USEDATANAMESPACEFORAPI === undefined || cfToBoolean(env.MURA_USEDATANAMESPACEFORAPI),
     }),
   );
 
@@ -341,9 +357,13 @@ export interface ResolvedJsonApiCall {
   render?: { variation: boolean };
   /** Path segments after the API family, as the entity route rewrote them. */
   pathInfo: string[];
-  /** The merged params as resolution left them. */
+  /** The merged params as resolution left them, each JSON null left out as every read but the echo finds it undefined. */
   params: JsonApiParams;
-  /** The url scope without the reload key. */
+  /** The same params as the envelopes echo them, JSON nulls included; a struct value is the one the handlers receive. */
+  echoParams: Struct;
+  /** The url, form and JSON body scopes merged, as params stand before the REST credential block (jsonApiUtility.cfc:403-411). */
+  requestParams: Struct;
+  /** The url scope as onRequestStart leaves it, `mobileFormat` included, without the reload key. */
   url: Struct;
   /** The form scope packageIteratorArray reads: posted fields with the params structAppend copied in (845, 1239). */
   form: Struct;
@@ -442,7 +462,7 @@ function entityTarget(entity: string, op: string): JsonApiTarget {
   if (handler === undefined) return { kind: 'foreign' };
   const operation = canonicalMethodName(op) as GenericOperation;
   const fn = handler[operation];
-  // No handler of this folder ports the operation (e.g. the bean validator behind `validate`), so it fails closed.
+  // An operation its handler does not port fails closed.
   return fn === undefined ? { kind: 'refused', reason: `jsonapi-${entity}-${op}-not-ported` } : { kind: 'entity', operation, fn };
 }
 
@@ -499,7 +519,7 @@ function copiedParams(merged: CfStruct, key: RouteKeyResult, facts: JsonApiReque
   const params = structOf(structEntries(merged));
   // The REST credential block deletes the credentials it consumed (jsonApiUtility.cfc:472-835), which the key no longer holds.
   for (const [lower, [, value]] of merged) {
-    if (simpleText(value) !== undefined && !Object.hasOwn(key.params, lower)) params.delete(lower);
+    if (REST_CREDENTIAL_PARAMS.has(lower) && simpleText(value) !== undefined && !Object.hasOwn(key.params, lower)) params.delete(lower);
   }
   if (!restMode) {
     for (const name of ['csrf_token', 'csrf_token_expires']) {
@@ -533,16 +553,29 @@ function isTrue(value: unknown): boolean {
   return cfIsBoolean(value) && cfToBoolean(value);
 }
 
+/** The url scope after onRequestStart's `param url.mobileFormat default=false`, which runs without session management or under an admin preview (onRequestStart_include.cfm:271-306). */
+function startedQuery(query: unknown, restMode: boolean): Struct {
+  const url: Struct = isPlainObject(query) ? { ...query } : {};
+  const names = new Set(Object.keys(url).map((name) => name.toLowerCase()));
+  if ((restMode || names.has('muraadminpreview')) && !names.has('mobileformat')) url.mobileFormat = 'false';
+  return url;
+}
+
+/** A struct's entries without its JSON nulls, which isDefined, structKeyExists, param and argumentCollection all read as absent. */
+function definedEntries(struct: CfStruct): Array<readonly [string, unknown]> {
+  return structEntries(struct).filter(([, value]) => value !== null);
+}
+
 /**
  * How processRequest reaches remote function `name`, and the name as requested: on the bean `<id>/<function>` loads
  * (jsonApiUtility.cfc:1063-1080), else on a new bean as the segment after the entity (1165-1170) or as the `id`
- * doubleCheckEntityMethod invokes (1444-1456).
+ * doubleCheckEntityMethod invokes (1444-1456); the first and last delete `params.id` before the call (1082, 1453).
  */
-function remoteCallOf(pathInfo: readonly string[], key: RouteKeyResult, name: string): { requested: string; beanId?: string } {
+function remoteCallOf(pathInfo: readonly string[], key: RouteKeyResult, name: string): { requested: string; beanId?: string; dropsId: boolean } {
   const [, , third = '', fourth = ''] = pathInfo;
-  if (pathInfo.length === 4 && third.length === 35 && cfEq(fourth, name)) return { requested: fourth, beanId: third };
-  if (pathInfo.length > 2 && third.length !== 35 && cfEq(third, name)) return { requested: third };
-  return { requested: key.params.id ?? name };
+  if (pathInfo.length === 4 && third.length === 35 && cfEq(fourth, name)) return { requested: fourth, beanId: third, dropsId: true };
+  if (pathInfo.length > 2 && third.length !== 35 && cfEq(third, name)) return { requested: third, dropsId: false };
+  return { requested: key.params.id ?? name, dropsId: true };
 }
 
 /** processRequest's resolution of `facts` (jsonApiUtility.cfc:368-1306) through the shared route key, with the params, ids and path it leaves. */
@@ -574,17 +607,20 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
     hasAuthorization: restMode && headerText(facts.headers, 'authorization') !== undefined,
   };
 
-  const scopes = legacyScopesFrom({ query: facts.query, body: facts.body, headers: { 'content-type': contentType }, url: facts.url });
+  const scopes = legacyScopesFrom({ query: startedQuery(facts.query, restMode), body: facts.body, headers: { 'content-type': contentType }, url: facts.url });
   const apiSiteId = jsonApiSiteOf(segments, Object.fromEntries(scopes.form.entries), Object.fromEntries(scopes.url.entries), opts.siteExists);
   const reloadKey = opts.appReloadKey.toLowerCase();
   const urlEntries = scopes.url.entries.filter(([name]) => name.toLowerCase() !== reloadKey);
-  const jsonEntries = json && isPlainObject(scopes.jsonBody) ? Object.entries(scopes.jsonBody).map(([name, value]) => [name, value ?? ''] as const) : [];
-  const merged = structOf([...urlEntries, ...scopes.form.entries, ...jsonEntries]);
+  const fieldnames = json ? undefined : postedFieldNames(facts.body);
+  const formEntries = fieldnames === undefined ? scopes.form.entries : [...scopes.form.entries, ['fieldnames', fieldnames] as const];
+  // deserializeJSON keeps a JSON null as a key without a value, which structAppend copies into params (408-412).
+  const jsonEntries = json && isPlainObject(scopes.jsonBody) ? Object.entries(scopes.jsonBody) : [];
+  const merged = structOf([...urlEntries, ...formEntries, ...jsonEntries]);
   const copied = copiedParams(merged, key, facts, restMode);
   const params = resolvedParams(copied, key);
   const target = targetOf(key);
 
-  const requested = structGet(copied, 'method');
+  const requested = structGet(copied, 'method') ?? undefined;
   const dotted = typeof requested === 'string' && requested.includes('.') ? requested : undefined;
   const effective = key.params.method;
   const resolvedName = target.kind === 'entity' ? target.operation : target.kind === 'method' ? target.name : undefined;
@@ -606,8 +642,7 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
 
   const form = structOf(scopes.form.entries);
   // The entity route copies the resolved params into the form scope again before its switch (1239).
-  for (const [name, value] of structEntries(target.kind === 'entity' && !direct ? params : copied)) structSet(form, name, value);
-  const fieldnames = json ? undefined : postedFieldNames(facts.body);
+  for (const [name, value] of definedEntries(target.kind === 'entity' && !direct ? params : copied)) structSet(form, name, value);
   if (fieldnames !== undefined) structSet(form, 'fieldnames', fieldnames);
 
   const spelled = key.params.entityname ?? '';
@@ -629,6 +664,7 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
   }
   // Each remote dispatch sets `params.method` to the function name as requested (1064, 1166, 1451).
   if (remote !== undefined) structSet(params, 'method', remote.requested);
+  if (remote?.dropsId === true) params.delete('id');
   const ids = !direct && method === 'findMany' ? cfListToArray(id ?? '') : undefined;
   const render =
     target.kind === 'entity' && target.operation === 'findOne' && isTrue(structGet(params, 'render'))
@@ -652,7 +688,9 @@ export function resolveJsonApiCall(facts: JsonApiRequestFacts, opts: JsonApiReso
     ...(relatedContentSetId === undefined ? {} : { relatedContentSetId }),
     ...(render === undefined ? {} : { render }),
     pathInfo,
-    params: createJsonApiParams(structEntries(params)),
+    params: createJsonApiParams(definedEntries(params)),
+    echoParams: structRecord(params),
+    requestParams: structRecord(merged),
     url: structRecord(structOf(urlEntries)),
     form: structRecord(form),
     queryString,
@@ -882,14 +920,121 @@ async function callOf(resolved: ResolvedJsonApiCall, scope: CallScope): Promise<
 
 // ---- Responses ----
 
+/** Legacy's one API serializer: the API hints and those every registered entity adds, which error envelopes are written with. */
+const API_SERIALIZER = contentApiSerializer('content');
+
+/** Params as an envelope echoes them: method and cache ids dropped, keys in ACF's order. */
+function echoedParams(params: Struct): Struct {
+  return inAcfOrder(paramsWithoutMethod(params)) as Struct;
+}
+
+/** A JSON API answer; only onError's page sets `statusText`. */
+type JsonApiAnswer = SerializedLegacyResponse & { statusText?: string };
+
+/**
+ * onError's page with debugging off (onError_include.cfm:138-151) for echoed params holding a JSON null under a hinted key,
+ * on which the serializer raises (jsonSerializer.cfc:288-290) in the answer and again in processRequest's catch block.
+ * The headers set before serializing stay; the ETag, set after it, is never sent (jsonApiUtility.cfc:1471-1511).
+ */
+function unechoableAnswer(params: Struct, serializer: LegacyJsonSerializer, settings: JsonApiLegacySettings, wwwAuthenticate?: string): JsonApiAnswer | undefined {
+  if (settings.suppressAPIParams || !serializer.nullUnderHint(params)) return undefined;
+  const headers: Record<string, string> = { 'Content-Type': LEGACY_JSON_CONTENT_TYPE };
+  if (wwwAuthenticate !== undefined) headers['WWW-Authenticate'] = wwwAuthenticate;
+  return { status: 500, statusText: LEGACY_ERROR_STATUS_TEXT, headers, body: LEGACY_ERROR_PAGE_HTML };
+}
+
+/** What an error envelope reports beside its type; each defaults to the resolution's own. */
+interface ErrorAnswerOptions {
+  method?: string;
+  params?: Struct;
+  methodCtx?: ApiNameContext;
+  wwwAuthenticate?: string;
+  mura404?: boolean;
+}
+
 /** The error envelope of `type` as processRequest's catch blocks serialize it (jsonApiUtility.cfc:1318-1402). */
-function errorAnswer(resolved: ResolvedJsonApiCall, type: string, opts: { method?: string; mura404?: boolean } = {}): SerializedLegacyResponse {
+function errorAnswer(resolved: ResolvedJsonApiCall, type: string, settings: JsonApiLegacySettings, opts: ErrorAnswerOptions = {}): JsonApiAnswer {
+  const params = echoedParams(opts.params ?? resolved.echoParams);
+  const unechoable = unechoableAnswer(params, API_SERIALIZER, settings, opts.wwwAuthenticate);
+  if (unechoable !== undefined) return unechoable;
   return legacyErrorResponse(type, {
     method: opts.method ?? resolved.method,
-    params: resolved.params.toRecord(),
-    methodCtx: resolved.methodCtx,
+    params,
+    methodCtx: opts.methodCtx ?? resolved.methodCtx,
+    suppressAPIParams: settings.suppressAPIParams,
+    serializer: API_SERIALIZER,
+    ...(opts.wwwAuthenticate === undefined ? {} : { wwwAuthenticate: opts.wwwAuthenticate }),
     ...(opts.mura404 === true ? { mura404: true } : {}),
   });
+}
+
+/** The credential headers processRequest copies into params, in its order (jsonApiUtility.cfc:424-446). */
+const CREDENTIAL_HEADERS: ReadonlyArray<readonly [header: string, param: string]> = Object.freeze([
+  ['X-client_id', 'client_id'],
+  ['X-client_secret', 'client_secret'],
+  ['X-access_token', 'access_token'],
+  ['X-client-id', 'client_id'],
+  ['X-client-secret', 'client_secret'],
+  ['X-access-token', 'access_token'],
+] as const);
+
+/** CFML `isDefined('params.<name>')`: a key holding a value, a JSON null being none. */
+function isDefinedIn(params: CfStruct, name: string): boolean {
+  const value = structGet(params, name);
+  return value !== undefined && value !== null;
+}
+
+/** An OAuth endpoint path, as listFind compares its segments (jsonApiUtility.cfc:543-550). */
+function onOAuthPath(segments: readonly string[]): boolean {
+  const oauth = (segment: string | undefined): boolean => segment === 'oauth' || segment === 'oauth2';
+  return (segments.length === 6 && oauth(segments[4])) || (segments.length === 5 && (oauth(segments[3]) || oauth(segments[4])));
+}
+
+/** `params.method` as the credential block leaves it, before processRequest resolves one: 'undefined' when none was sent. */
+function credentialBlockMethod(params: CfStruct): string {
+  const requested = structGet(params, 'method');
+  if (requested === undefined || requested === null) return 'undefined';
+  return simpleText(requested) ?? 'invalid';
+}
+
+/** Exceptions-list entry of the credential lookups {@link restCredentialAnswer} leaves to identity. */
+const REST_CREDENTIALS_EXCEPTION = 'EX-JSONAPI-REST-CREDENTIALS';
+
+/** The REST credential block (jsonApiUtility.cfc:422-560) of a tokenless call: request-decided answers; identity's client and token lookups fail closed. */
+function restCredentialAnswer(
+  resolved: ResolvedJsonApiCall,
+  headers: JsonApiRequestFacts['headers'],
+  segments: readonly string[],
+  settings: JsonApiLegacySettings,
+): JsonApiAnswer {
+  const refuse = (what: string): never => {
+    throw new LegacyServiceUnavailableError(`REST credentials of ${what} are verified by identity (${REST_CREDENTIALS_EXCEPTION})`, 'auto', 'jsonapi-rest-credentials');
+  };
+  if (headerText(headers, REST_CONSUMED_PARAMS_HEADER) !== undefined) refuse('a session that ended after the exchange');
+  const params = structOf(Object.entries(resolved.requestParams));
+  for (const [header, name] of CREDENTIAL_HEADERS) {
+    const value = headerText(headers, header);
+    if (value !== undefined) structSet(params, name, value);
+  }
+  if (isDefinedIn(params, 'access_token')) refuse('an access token');
+  if (!isDefinedIn(params, 'client_id') && !isDefinedIn(params, 'refresh_token')) {
+    for (const name of ['client_id', 'client_secret', 'refresh_token']) params.delete(name);
+    const wwwAuthenticate = onOAuthPath(segments) ? WWW_AUTHENTICATE.bearerInvalidClientCredentials : WWW_AUTHENTICATE.basic;
+    return errorAnswer(resolved, 'authorization', settings, { method: 'Not Available', params: structRecord(params), wwwAuthenticate });
+  }
+  // `oauthClient.loadBy(clientid=params.client_id)` of a refresh token alone reads an undefined element.
+  if (!isDefinedIn(params, 'client_id')) {
+    return errorAnswer(resolved, 'server_error', settings, { method: credentialBlockMethod(params), params: structRecord(params) });
+  }
+  // No OAuth client has an empty client id, so its lookup finds none and params become `{method='getOAuthToken'}` (558-567).
+  if (simpleText(structGet(params, 'client_id')) === '') {
+    return errorAnswer(resolved, 'authorization', settings, {
+      method: 'getOAuthToken',
+      params: {},
+      wwwAuthenticate: WWW_AUTHENTICATE.bearerInvalidClientCredentials,
+    });
+  }
+  return refuse('an OAuth client');
 }
 
 /** Whether processRequest answers `type` from `catch (Any e)`, the one catch block that logs (jsonApiUtility.cfc:1388-1389). */
@@ -920,19 +1065,24 @@ function inAcfOrder(value: unknown): unknown {
 }
 
 /** processRequest's answer to a handler result (jsonApiUtility.cfc:891-898, 1307-1314, 1471-1511). */
-function resultAnswer(resolved: ResolvedJsonApiCall, result: JsonApiResult): SerializedLegacyResponse {
-  if (result.error !== undefined) return errorAnswer(resolved, result.error);
+function resultAnswer(resolved: ResolvedJsonApiCall, result: JsonApiResult, settings: JsonApiLegacySettings): JsonApiAnswer {
+  if (result.error !== undefined) return errorAnswer(resolved, result.error, settings);
   // A direct method whose result is JSON text answers it as the body (891-897).
   if (result.rawJson !== undefined) return { status: 200, headers: { 'Content-Type': LEGACY_JSON_CONTENT_TYPE }, body: result.rawJson };
   // Direct methods and the path methods always answer 200; the entity route answers 403 when the result carries errors.
   const routed = !resolved.direct && resolved.target.kind === 'entity';
   const status = result.status === 404 ? 404 : routed ? (result.status ?? 200) : 200;
-  const params = resolved.withParams ? { params: inAcfOrder(paramsWithoutMethod(resolved.params.toRecord())) as Struct } : {};
+  const serializer = contentApiSerializer(result.serializerEntity ?? resolved.entityName);
+  const params = resolved.withParams ? { params: echoedParams(resolved.echoParams) } : {};
+  const unechoable = params.params === undefined ? undefined : unechoableAnswer(params.params, serializer, settings);
+  if (unechoable !== undefined) return unechoable;
   return serializeResponse(buildEnvelope({ method: resolved.method, ...params, data: inAcfOrder(result.data) }), {
     statusCode: status,
     mura404: status === 404,
-    serializer: contentApiSerializer(result.serializerEntity ?? resolved.entityName),
+    serializer,
+    suppressAPIParams: settings.suppressAPIParams,
     useDataNamespace: useDataNamespaceOf(resolved),
+    useDataNamespaceForAPI: settings.useDataNamespaceForAPI,
     keyOrder: 'acf',
   });
 }
@@ -949,22 +1099,22 @@ function remoteHandler(fn: RemoteFunctionFn, beanId: string | undefined): JsonAp
 }
 
 /** The handler's answer, or the response processRequest's catch blocks give its exception. */
-async function dispatch(resolved: ResolvedJsonApiCall, fn: JsonApiHandlerFn, scope: CallScope): Promise<SerializedLegacyResponse> {
+async function dispatch(resolved: ResolvedJsonApiCall, fn: JsonApiHandlerFn, scope: CallScope): Promise<JsonApiAnswer> {
   const call = await callOf(resolved, scope);
   // delete's `var csrfcontext=arguments.id` reads an undefined argument (jsonApiUtility.cfc:3262).
   if (resolved.target.kind === 'entity' && resolved.target.operation === 'delete' && resolved.id === undefined) {
     logUnhandled(scope.request, new LegacyApiError('server_error', { method: resolved.method }));
-    return errorAnswer(resolved, 'server_error');
+    return errorAnswer(resolved, 'server_error', scope.settings);
   }
   try {
-    return resultAnswer(resolved, await fn(scope.ctx, call));
+    return resultAnswer(resolved, await fn(scope.ctx, call), scope.settings);
   } catch (err) {
     if (err instanceof LegacyApiError) {
       if (isUnhandled(err.type)) logUnhandled(scope.request, err);
-      return legacyErrorResponse(err.type, {
-        method: err.method ?? resolved.method,
-        params: err.params ?? resolved.params.toRecord(),
-        methodCtx: err.methodCtx ?? resolved.methodCtx,
+      return errorAnswer(resolved, err.type, scope.settings, {
+        ...(err.method === undefined ? {} : { method: err.method }),
+        ...(err.params === undefined ? {} : { params: err.params }),
+        ...(err.methodCtx === undefined ? {} : { methodCtx: err.methodCtx }),
         ...(err.wwwAuthenticate === undefined ? {} : { wwwAuthenticate: err.wwwAuthenticate }),
       });
     }
@@ -976,15 +1126,46 @@ async function dispatch(resolved: ResolvedJsonApiCall, fn: JsonApiHandlerFn, sco
     if (err instanceof LegacyServiceUnavailableError || err instanceof AuthDenial || err instanceof RequestAbortedError) throw err;
     // catch (Any e) logs the exception and reports params.method as the failing call had set it (1390-1400).
     logUnhandled(scope.request, err);
-    return errorAnswer(resolved, 'server_error');
+    return errorAnswer(resolved, 'server_error', scope.settings);
   }
+}
+
+/** renderAuthDenial under the configured suppressAPIParams: the denial's status, the url scope as params. */
+function denialAnswer(settings: JsonApiLegacySettings): DenialRenderer {
+  return (denial, request) => {
+    const url = isPlainObject(request.query) ? request.query : {};
+    const response = legacyErrorResponse(denial.type, {
+      method: scopeString(url, 'method'),
+      params: echoedParams({ ...url }),
+      suppressAPIParams: settings.suppressAPIParams,
+      serializer: API_SERIALIZER,
+      ...(denial.wwwAuthenticate === undefined ? {} : { wwwAuthenticate: denial.wwwAuthenticate }),
+    });
+    return { ...response, status: denial.statusCode };
+  };
+}
+
+/** `handle`, answering an AuthDenial it throws by `render` as the auth hooks answer one; service-kit's error handler would ignore the route's renderer. */
+function answeringDenials(
+  handle: (request: FastifyRequest, reply: FastifyReply) => Promise<FastifyReply>,
+  render: DenialRenderer,
+): (request: FastifyRequest, reply: FastifyReply) => Promise<FastifyReply> {
+  return async (request, reply) => {
+    try {
+      return await handle(request, reply);
+    } catch (err) {
+      if (!(err instanceof AuthDenial)) throw err;
+      recordOutcomeReason(request, err.reason);
+      return sendLegacyResponse(reply, await render(err, request));
+    }
+  };
 }
 
 // ---- Routes ----
 
 /**
  * Registers the contract's JSON API operations of every family (`/_api/{json,ajax,rest}/v1`, `…/{siteid}`,
- * `…/{siteid}/{path}`); every path and method shares one handler. Throws EnvValidationError for malformed settings.
+ * `…/{siteid}/{path}`, each also behind `/index.cfm`); every path and method shares one handler. Throws EnvValidationError for malformed settings.
  */
 export function registerJsonApiRoutes(
   app: FastifyInstance,
@@ -992,6 +1173,8 @@ export function registerJsonApiRoutes(
   settings: JsonApiLegacySettings = jsonApiLegacySettings(),
 ): void {
   const snapshots = new WeakMap<FastifyRequest, Promise<TenantRegistryEntry[]>>();
+  const renderDenial = denialAnswer(settings);
+  const answer = answeringDenials(handle, renderDenial);
   const sites = createSitesClient(app.opt2.client);
 
   /** The request's single registry read, which the Origin echo and the resolution share. */
@@ -1038,28 +1221,24 @@ export function registerJsonApiRoutes(
     );
     const user = request.opt2Auth.user;
     if (user !== undefined) {
-      assertSiteMatches(resolved.apiSiteId, user);
-      // An unregistered siteid only selects the `default` fallback; a registered one must be the token's site.
-      for (const supplied of suppliedSiteIdsOf(request)) {
+      // An unregistered siteid only selects the `default` fallback; a registered one, path element 4 included, must be the token's site.
+      for (const supplied of [pathSegmentsOf(request.url)[3] ?? '', ...suppliedSiteIdsOf(request)]) {
         if (lookup(supplied) !== undefined) assertSiteMatches(supplied, user);
       }
     }
-    // The REST family's credential block answers before any resolution (jsonApiUtility.cfc:536-555); the gateway exchanges
-    // REST credentials for the user token, so a REST call without one sent none.
+    // The REST family's credential block answers before any resolution (jsonApiUtility.cfc:422-560); the gateway exchanges
+    // valid REST credentials for the user token, so a REST call reaches here without one only as the block left it.
     if (resolved.mode === 'rest' && user === undefined) {
-      return sendLegacyResponse(
-        reply,
-        legacyErrorResponse('authorization', { method: 'Not Available', methodCtx: resolved.methodCtx, wwwAuthenticate: WWW_AUTHENTICATE.basic }),
-      );
+      return sendLegacyResponse(reply, restCredentialAnswer(resolved, clientHeadersOf(request), pathSegmentsOf(request.url), settings));
     }
     const { target } = resolved;
     switch (target.kind) {
       case 'error':
         if (isUnhandled(target.type)) logUnhandled(request, new LegacyApiError(target.type, { method: resolved.method }));
-        return sendLegacyResponse(reply, errorAnswer(resolved, target.type));
+        return sendLegacyResponse(reply, errorAnswer(resolved, target.type, settings));
       case 'foreign':
         // A key of another owner is no route of this service: the gateway routes it elsewhere.
-        return sendLegacyResponse(reply, errorAnswer(resolved, 'invalidMethodCall', { mura404: true }));
+        return sendLegacyResponse(reply, errorAnswer(resolved, 'invalidMethodCall', settings, { mura404: true }));
       case 'refused':
         throw new LegacyServiceUnavailableError(`JSON API ${resolved.key.key} is not served by strategies-content`, 'auto', target.reason);
       case 'entity':
@@ -1068,7 +1247,7 @@ export function registerJsonApiRoutes(
         break;
     }
     const site = lookup(resolved.params.string('siteid'));
-    if (site === undefined) return sendLegacyResponse(reply, errorAnswer(resolved, 'invalidParameters'));
+    if (site === undefined) return sendLegacyResponse(reply, errorAnswer(resolved, 'invalidParameters', settings));
     if (user !== undefined) assertSiteMatches(site.siteId, user);
     const apiSite = lookup(resolved.apiSiteId)?.siteId ?? resolved.apiSiteId;
     // The token's tenant; a browser call without a session token is anonymous in the verified registry's tenant of its site.
@@ -1081,7 +1260,7 @@ export function registerJsonApiRoutes(
 
   for (const prefix of JSON_API_PREFIXES) {
     for (const url of [prefix, `${prefix}/:siteid`, `${prefix}/:siteid/*`]) {
-      app.route({ method: [...ROUTE_METHODS], url, config: { opt2: { ...ROUTE_AUTH } }, onSend: allowOrigin, handler: handle });
+      app.route({ method: [...ROUTE_METHODS], url, config: { opt2: { ...ROUTE_AUTH, renderDenial } }, onSend: allowOrigin, handler: answer });
     }
   }
 }

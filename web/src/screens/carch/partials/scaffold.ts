@@ -1,5 +1,5 @@
-// Custom Entities pane of the Site Manager list (`admin/core/views/carch/scaffold.cfm`), the markup scaffolder.min.js
-// mounts its Vue 2 app and templates on (server-only).
+// The Custom Entities view `admin/core/views/carch/scaffold.cfm`, the `cArch.scaffold` page and the Site Manager list's
+// Custom Entities tab: the markup scaffolder.min.js mounts its Vue 2 app and templates on (server-only).
 import { cfListToArray } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeUrl, raw, type SafeHtml } from '@/lib/html';
@@ -53,7 +53,7 @@ function permissionsButton(ctx: ScaffoldCtx, siteId: string, depth: number): str
   ].join('\n');
 }
 
-/** The pane markup for `model.siteId`, exactly as the `carch.list` view's `<cfinclude>` emits it. */
+/** The view markup for `model.siteId`, as the `cArch.scaffold` page and the `carch.list` `<cfinclude>` emit it. */
 export function scaffold(ctx: ScaffoldCtx, model: ScaffoldModel): SafeHtml {
   const { adminDir } = legacySettings();
   return raw(`

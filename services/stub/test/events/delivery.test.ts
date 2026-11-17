@@ -1,4 +1,4 @@
-/** Push delivery of the stub's consumers against PostgreSQL: one effect per event, stale state versions, registry upserts and dead letters. */
+/** Push delivery of the stub's consumers against PostgreSQL: one effect per event, stale state versions, registry upserts, the note re-check and dead letters. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DEAD_LETTER_REASON_ATTRIBUTE, dlqTopicName, type EventEnvelope } from '@opt2/platform/events';
@@ -12,6 +12,7 @@ import {
 } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
+  TENANT_B,
   createCapturingPublisher,
   createThrowawaySchema,
   deliverDuplicate,
@@ -25,8 +26,9 @@ import {
   withoutTenant,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { newNote, noteCreatedPayload, type Note } from '../../src/domain/note.js';
+import { newNote, noteCreatedPayload, noteToRow, type Note } from '../../src/domain/note.js';
 import { NOTE_CREATED_SUBSCRIPTION, NOTE_CREATED_TOPIC, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/topics.js';
+import { createStubRepository, type StubRepository } from '../../src/repo/repository.js';
 import { TEST_CLOCK, buildDbApp, createFakeTaskPort, type TestApp } from '../helpers/app.js';
 
 type NotePayload = ReturnType<typeof noteCreatedPayload>;
@@ -53,6 +55,7 @@ const pg = await pgAvailable();
 const publisher = createCapturingPublisher();
 let schema: ThrowawaySchema | undefined;
 let service: TestApp<TenantDb> | undefined;
+let repository: StubRepository | undefined;
 
 beforeAll(async () => {
   if (!pg) return;
@@ -62,6 +65,7 @@ beforeAll(async () => {
     migrationsDir: fileURLToPath(new URL('../../db/migrations/', import.meta.url)),
   });
   await seedRegistry(schema.app, schema.schema);
+  repository = createStubRepository({ clock: TEST_CLOCK, schema: schema.schema });
   service = await buildDbApp(schema, { publisher, taskPort: createFakeTaskPort(), clock: TEST_CLOCK });
 });
 
@@ -77,10 +81,18 @@ beforeEach(() => {
   publisher.clear();
 });
 
-/** The stub app and throwaway schema the file's `beforeAll` built. */
-function built(): { app: StubApp; schema: ThrowawaySchema } {
-  if (schema === undefined || service === undefined) throw new Error('beforeAll built no stub app');
-  return { app: service.app, schema };
+/** The stub app, throwaway schema and repository the file's `beforeAll` built. */
+function built(): { app: StubApp; schema: ThrowawaySchema; repository: StubRepository } {
+  if (schema === undefined || service === undefined || repository === undefined) throw new Error('beforeAll built no stub app');
+  return { app: service.app, schema, repository };
+}
+
+/** A new note titled `title`, stored under `tenantId` through the stub repository as the create route stores it. */
+async function storedNote(tenantId: string, title: string): Promise<Note> {
+  const note = newNote({ title, body: '' }, TEST_CLOCK);
+  const { schema: db, repository: stub } = built();
+  await withTenant(db.app, tenantId, (tx) => stub.insert(tx, 'note', noteToRow(note)));
+  return note;
 }
 
 /** `name` qualified by the quoted throwaway schema. */
@@ -175,7 +187,7 @@ function statusCodes(responses: ReadonlyArray<{ statusCode: number }>): number[]
 
 describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
   it('duplicate delivery applies once', async () => {
-    const note = newNote({ title: 'duplicate', body: '' }, TEST_CLOCK);
+    const note = await storedNote(TENANT_A.tenantId, 'duplicate');
     const env = noteEnvelope(note, TENANT_A.tenantId);
 
     expect(statusCodes(await deliverDuplicate(built().app, NOTE_CREATED_SUBSCRIPTION, env))).toEqual([204, 204]);
@@ -187,7 +199,7 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
   });
 
   it('out-of-order delivery keeps the newest version', async () => {
-    const note = newNote({ title: 'out-of-order', body: '' }, TEST_CLOCK);
+    const note = await storedNote(TENANT_A.tenantId, 'out-of-order');
     const sequence = versionedSequence(noteEnvelope(note, TENANT_A.tenantId), [1, 2, 3], (version) => ({
       ...noteCreatedPayload(note),
       title: `v${String(version)}`,
@@ -239,7 +251,7 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
 
 describe.skipIf(!pg)('dlq-replay', () => {
   it('tenantless envelope is dead-lettered', async () => {
-    const note = newNote({ title: 'tenantless', body: '' }, TEST_CLOCK);
+    const note = await storedNote(TENANT_A.tenantId, 'tenantless');
     const env = noteEnvelope(note, TENANT_A.tenantId);
 
     expect((await pushTo(built().app, NOTE_CREATED_SUBSCRIPTION, withoutTenant(env))).statusCode).toBe(204);
@@ -251,7 +263,7 @@ describe.skipIf(!pg)('dlq-replay', () => {
   it('unregistered tenant is dead-lettered, then replays once', async () => {
     const site = 'tenant-dlq';
     const unknown = tenantIdForSite(site);
-    const note = newNote({ title: 'replayed', body: '' }, TEST_CLOCK);
+    const note = await storedNote(unknown, 'replayed');
     const env = noteEnvelope(note, unknown);
     const applied = [{ title: 'replayed', aggregate_version: 1, apply_count: 1, last_event_id: env.eventId }];
     const receipt = [{ event_id: env.eventId, status: 'applied' }];
@@ -271,5 +283,49 @@ describe.skipIf(!pg)('dlq-replay', () => {
     expect((await pushTo(built().app, NOTE_CREATED_SUBSCRIPTION, env)).statusCode).toBe(204);
     expect(await projection(unknown, note.noteId)).toEqual(applied);
     expect(await inboxRows(unknown, env.eventId)).toEqual(receipt);
+  });
+
+  it.each([
+    { label: 'the aggregateId of another note', aggregate: 'other', aggregateVersion: 2, rowVersion: 2 },
+    { label: 'an aggregateVersion other than its rowVersion', aggregate: 'own', aggregateVersion: 3, rowVersion: 1 },
+  ])('note envelope with $label is dead-lettered schema-invalid, leaving both notes', async ({ aggregate, aggregateVersion, rowVersion }) => {
+    const noteA = await storedNote(TENANT_A.tenantId, 'bound A');
+    const noteB = await storedNote(TENANT_A.tenantId, 'bound B');
+    for (const env of [noteEnvelope(noteA, TENANT_A.tenantId, 2), noteEnvelope(noteB, TENANT_A.tenantId)]) {
+      expect((await pushTo(built().app, NOTE_CREATED_SUBSCRIPTION, env)).statusCode).toBe(204);
+    }
+    const before = [await projection(TENANT_A.tenantId, noteA.noteId), await projection(TENANT_A.tenantId, noteB.noteId)];
+    expect(before.map((rows) => rows.map(({ title, aggregate_version }) => [title, aggregate_version]))).toEqual([
+      [['bound A', 2]],
+      [['bound B', 1]],
+    ]);
+    const receipts = await inboxRows(TENANT_A.tenantId);
+    // Unchecked, either envelope passes the version rule and overwrites note A's projection with a stale title.
+    const mismatched = testEnvelope({
+      topic: NOTE_CREATED_TOPIC,
+      tenantId: TENANT_A.tenantId,
+      aggregateType: 'note',
+      aggregateId: aggregate === 'other' ? noteB.noteId : noteA.noteId,
+      aggregateVersion,
+      payload: { ...noteCreatedPayload(noteA), title: 'stale A', rowVersion },
+    });
+
+    expect((await pushTo(built().app, NOTE_CREATED_SUBSCRIPTION, mismatched)).statusCode).toBe(204);
+
+    expect(noteDeadLetterReasons()).toEqual(['schema-invalid']);
+    expect([await projection(TENANT_A.tenantId, noteA.noteId), await projection(TENANT_A.tenantId, noteB.noteId)]).toEqual(before);
+    expect(await inboxRows(TENANT_A.tenantId)).toEqual(receipts);
+  });
+
+  it('note envelope re-tenanted to another registered tenant is dead-lettered tenant-mismatch', async () => {
+    const note = await storedNote(TENANT_A.tenantId, 'tenant A only');
+    const env = noteEnvelope(note, TENANT_B.tenantId);
+
+    expect((await pushTo(built().app, NOTE_CREATED_SUBSCRIPTION, env)).statusCode).toBe(204);
+
+    expect(noteDeadLetterReasons()).toEqual(['tenant-mismatch']);
+    expect(await projection(TENANT_B.tenantId, note.noteId)).toEqual([]);
+    expect(await inboxRows(TENANT_B.tenantId, env.eventId)).toEqual([]);
+    expect(await projection(TENANT_A.tenantId, note.noteId)).toEqual([]);
   });
 });

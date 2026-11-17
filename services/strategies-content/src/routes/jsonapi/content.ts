@@ -55,6 +55,7 @@ import {
   type RelationSourceKey,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Ctx = Parameters<JsonApiHandlerFn>[0];
 type Struct = Record<string, unknown>;
@@ -664,6 +665,7 @@ const remove: JsonApiHandlerFn = async (ctx, call) => {
 export const contentHandler: EntityHandler = Object.freeze({
   entity: ENTITY,
   config: CONTENT,
+  validate,
   findOne,
   findMany,
   findAll,

@@ -167,6 +167,22 @@ function isoNow() {
 	environment["rootDir"] = javaCast("string", server.coldfusion.rootdir);
 	// server.java exists only on Lucee; ACF 2018+ exposes the JVM properties under server.system.
 	environment["javaVersion"] = javaCast("string", structKeyExists(server, "java") ? server.java.version : server.system.properties["java.version"]);
+	// What the admin Version menu prints [admin/common/layouts/includes/nav.cfm:383-407]; null where its server key is absent.
+	dbVersion = application.mura.getBean("dbUtility").version();
+	environment["dbProductName"] = javaCast("string", dbVersion.database_productname);
+	environment["dbProductVersion"] = javaCast("string", dbVersion.database_version);
+	if (structKeyExists(server, "java") && structKeyExists(server.java, "version")) {
+		environment["serverJavaVersion"] = javaCast("string", server.java.version);
+	} else {
+		environment["serverJavaVersion"] = javaCast("null", "");
+	}
+	if (structKeyExists(server, "os") && structKeyExists(server.os, "name")) {
+		environment["osName"] = javaCast("string", server.os.name);
+		environment["osVersion"] = javaCast("string", server.os.version);
+	} else {
+		environment["osName"] = javaCast("null", "");
+		environment["osVersion"] = javaCast("null", "");
+	}
 	environment["applicationName"] = javaCast("string", application.applicationName);
 	if (len(cfpmFailure)) {
 		environment["cfpmPackages"] = javaCast("null", "");

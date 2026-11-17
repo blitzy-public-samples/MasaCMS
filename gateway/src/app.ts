@@ -38,6 +38,7 @@ import { createSiteRegistry } from './dispatcher/site-registry.js';
 import { createWriteWindowClient } from './dispatcher/write-window.js';
 import { jarIdleLimitMs, sessionTimeoutMinutes, trackJarActivity } from './session/activity.js';
 import { createBridgeClient, createSiteListClient, type BridgeClient } from './session/bridge-client.js';
+import { createSessionCarry } from './session/carry.js';
 import { createCsrfContinuity } from './session/csrf.js';
 import { createHydrator } from './session/hydration.js';
 import { createIdentityClient, type IdentityClient } from './session/identity-client.js';
@@ -219,6 +220,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const projectedOwners = projectedOwnersOf(ownership.units, () => state.active());
   const barrier = createSessionBarrier({ db, client: migrationClient, projectedOwners });
   const hydrator = createHydrator({ identity, bridge, jar, barrier, clock });
+  const carry = createSessionCarry({ identity, bridge, jar, clock });
   const resolver = createSessionResolver({
     identity,
     bridge,
@@ -269,6 +271,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     identity,
     stateCheck,
     hydrator,
+    carry,
     csrf,
     invalidation,
     facts,

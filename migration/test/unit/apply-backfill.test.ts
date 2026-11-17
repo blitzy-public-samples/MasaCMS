@@ -341,14 +341,24 @@ const owners: Pick<OwnersClient, 'apply' | 'putWatermark'> = {
 
 const SITE_TENANT = new Map(TENANT_LIST.map((fixture) => [fixture.siteId, fixture.tenantId]));
 
+/** Rows the resolver's last `prepare` covered; resolving any other row fails, as the real resolver fails for unprepared parents. */
+const prepared = new Set<object>();
+
 /** Rows of a known site go to its tenant; rows without one, or of a site the snapshot lacks, are umbrella orphans. */
 const resolver: TenantResolver = {
+  prepare(_table, rows) {
+    prepared.clear();
+    for (const row of rows) prepared.add(row);
+    return Promise.resolve();
+  },
   resolve(_table, row) {
+    if (!prepared.has(row)) throw new Error('resolve of a row the last prepare did not cover');
     const site = Object.entries(row).find(([column]) => lower(column) === 'siteid')?.[1];
     const tenantId = typeof site === 'string' ? SITE_TENANT.get(lower(site)) : undefined;
     return tenantId === undefined ? { tenantId: UMBRELLA_ID, orphan: true } : { tenantId, orphan: false };
   },
   siteTenants: () => [...SITE_TENANTS],
+  readsOtherRows: () => false,
 };
 
 function contextFor(): BackfillContext {
@@ -463,7 +473,11 @@ function installFakes(): void {
   vi.mocked(createTenantResolver).mockImplementation(() => Promise.resolve(resolver));
   vi.mocked(createUnitRowFilter).mockImplementation((_deps, options) => {
     const { rowPredicate } = targetOf(options.unit, options.legacyTable);
-    return Promise.resolve({ prepare: () => Promise.resolve(), accepts: (row) => Promise.resolve(takes(options.database, rowPredicate, row as Row)) });
+    return Promise.resolve({
+      prepare: () => Promise.resolve(),
+      accepts: (row) => Promise.resolve(takes(options.database, rowPredicate, row as Row)),
+      readsOtherRows: false,
+    });
   });
   vi.mocked(reconcileUnits).mockImplementation((ctx, options) =>
     Promise.resolve({

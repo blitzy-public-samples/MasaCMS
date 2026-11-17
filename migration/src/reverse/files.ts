@@ -1,12 +1,14 @@
 /** Reverse projection of strategies-content `content.file_object` changes onto the legacy `fileDir` store. */
 import { createHash } from 'node:crypto';
 
-import { decodeRow, formatCursor, type CanonicalColumn, type ChangeRow } from '@opt2/platform/migration-kit';
+import { compareXid, decodeRow, formatCursor, type CanonicalColumn, type ChangeRow } from '@opt2/platform/migration-kit';
 
 import { ownerBySchema } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import { InvalidStoredNameError, formatStoredName, parseObjectKey, storePath } from '../files/index.js';
 import { OwnerCallError } from '../owners/index.js';
+
+import { readHorizon } from './operations.js';
 
 // Named as `opt2/table-ownership.json` lists the table among its new tables; it is not a catalog unit, since no
 // cut-over group gates the manifest of `content-files`.
@@ -64,7 +66,7 @@ export interface FileDeleteOp {
 /** One legacy file-store operation of a projected batch. */
 export type FileOp = FilePutOp | FileDeleteOp;
 
-/** Batch summary: files written, files the bridge removed, bytes written, and puts that applied their key's later state instead. */
+/** Batch summary: files written, files the bridge removed, bytes written, and puts a later change of their key superseded. */
 export interface FileOpsResult {
   put: number;
   deleted: number;
@@ -72,8 +74,8 @@ export interface FileOpsResult {
   superseded: number;
 }
 
-/** Dependencies of {@link executeFileOps}. */
-export type FileOpsDeps = Pick<MigrationContext, 'bridge' | 'owners' | 'logger' | 'config'>;
+/** Dependencies of {@link executeFileOps}; `signal` stops reading a key's later state before its next page. */
+export type FileOpsDeps = Pick<MigrationContext, 'bridge' | 'owners' | 'logger' | 'config'> & { signal?: AbortSignal };
 
 /** No legacy site is known for the tenant of a file object, so its legacy directory cannot be chosen. */
 export class UnknownFileTenantError extends Error {
@@ -247,36 +249,69 @@ function imageStateOf(image: string | null, key: string): ObjectState | undefine
   return values.object_key === key ? { size: Number(values.size), sha256: values.sha256 as string } : undefined;
 }
 
+/** True when a put failed because the owner's object is no longer the one it was checked against. */
+function isReplaced(error: unknown): boolean {
+  return error instanceof FileObjectMismatchError || (error instanceof OwnerCallError && error.status === 404);
+}
+
+/** A key's state after the later changes read; `decided` when reading reached a complete page or its first read's horizon. */
+interface LaterState {
+  /** The last-committed touching change's object; null when it removed the key; undefined when no change read touches it. */
+  state: ObjectState | null | undefined;
+  decided: boolean;
+}
+
 /**
- * State of the put's key after the last later change touching it, read page by page from the owner's change feed after
- * the put's own change.
- * @returns the object that change's after-image records; null when it removed the key; undefined when no later change touches it.
+ * State of the put's key after the last-committed later change touching it, read after the put's own change in at most
+ * `projection.streamPagesPerCycle` pages, none once `signal` aborts, up to a complete page or the first read's horizon.
  */
-async function laterState(deps: Pick<FileOpsDeps, 'owners' | 'config'>, op: FilePutOp): Promise<ObjectState | null | undefined> {
+async function laterState(deps: Pick<FileOpsDeps, 'owners' | 'config' | 'signal'>, op: FilePutOp): Promise<LaterState> {
   const owner = ownerBySchema(deps.config, FILE_OBJECT_SCHEMA).name;
-  const limit = deps.config.projection.batchRows;
+  const { batchRows: limit, streamPagesPerCycle } = deps.config.projection;
   let state: ObjectState | null | undefined;
+  let frontier: string | undefined;
+  // Seq, not the cursor's (xid, seq), is the commit order of one key's changes.
+  let latest = -1n;
   let after = op.cursor;
-  for (;;) {
+  for (let pages = 0; pages < streamPagesPerCycle && deps.signal?.aborted !== true; pages += 1) {
     const page = await deps.owners.changes(owner, { tenantId: op.tenantId, after, limit });
+    frontier ??= page.horizon;
     for (const row of page.rows) {
-      if (row.table !== FILE_OBJECT_TABLE) continue;
+      if (row.table !== FILE_OBJECT_TABLE || BigInt(row.seq) < latest) continue;
       const written = imageStateOf(row.after, op.key);
-      if (written !== undefined) state = written;
-      else if (imageStateOf(row.before, op.key) !== undefined) state = null;
+      const touched = written ?? (imageStateOf(row.before, op.key) === undefined ? undefined : null);
+      if (touched === undefined) continue;
+      state = touched;
+      latest = BigInt(row.seq);
     }
-    if (page.complete) return state;
+    if (page.complete || compareXid(readHorizon(page), frontier) >= 0) return { state, decided: true };
     after = page.cursor;
+  }
+  return { state, decided: false };
+}
+
+/** Puts the later object `state`; false, writing nothing, when none was read or an undecided `state` is not the current object. */
+async function putLaterState(
+  deps: Pick<FileOpsDeps, 'bridge' | 'owners'>,
+  op: FilePutOp,
+  state: ObjectState | undefined,
+  decided: boolean,
+): Promise<boolean> {
+  if (state === undefined) return false;
+  try {
+    await putObject(deps, { ...op, ...state });
+    return true;
+  } catch (error) {
+    if (decided || !isReplaced(error)) throw error;
+    return false;
   }
 }
 
 /**
- * Applies the operations in order through the legacy bridge, streaming each put's bytes from strategies-content and
- * verifying them against the change row. A put whose object a later change replaced or removed applies the key's state
- * after the last such change instead: the current object checked against that change, or the file's removal. Every
- * operation is idempotent, so a batch interrupted part-way is safe to run again.
- * @throws FileObjectMismatchError or OwnerCallError when an object matches neither its change row nor the key's later
- *   state; UnsupportedFileStoreError when the legacy store is not `fileDir`.
+ * Applies the operations in order through the legacy bridge, idempotently; a put whose object a later change replaced or
+ * removed applies the key's later state, and is skipped, for a later batch to project, while that state is undecided.
+ * @throws FileObjectMismatchError or OwnerCallError when an object matches neither its change row nor the key's decided
+ *   later state; UnsupportedFileStoreError when the legacy store is not `fileDir`.
  */
 export async function executeFileOps(deps: FileOpsDeps, ops: readonly FileOp[]): Promise<FileOpsResult> {
   const result: FileOpsResult = { put: 0, deleted: 0, bytes: 0, superseded: 0 };
@@ -288,15 +323,14 @@ export async function executeFileOps(deps: FileOpsDeps, ops: readonly FileOp[]):
       deps.logger.info({ tenantId: op.tenantId }, `Projected delete of legacy file ${path}: ${String(deleted.length)} removed`);
       continue;
     }
-    let later: ObjectState | null | undefined;
+    let later: LaterState | undefined;
     try {
       await putObject(deps, op);
     } catch (error) {
-      const replaced = error instanceof FileObjectMismatchError || (error instanceof OwnerCallError && error.status === 404);
-      later = replaced ? await laterState(deps, op) : undefined;
-      if (later === undefined) throw error;
+      later = isReplaced(error) ? await laterState(deps, op) : undefined;
+      if (later === undefined || (later.decided && later.state === undefined)) throw error;
     }
-    if (later === null) {
+    if (later?.state === null) {
       const { deleted } = await deps.bridge.filesDelete(op.siteId, { name: op.name });
       result.superseded += 1;
       result.deleted += deleted.length;
@@ -307,10 +341,13 @@ export async function executeFileOps(deps: FileOpsDeps, ops: readonly FileOp[]):
       continue;
     }
     if (later !== undefined) {
-      await putObject(deps, { ...op, ...later });
       result.superseded += 1;
+      if (!(await putLaterState(deps, op, later.state, later.decided))) {
+        deps.logger.info({ tenantId: op.tenantId }, `Skipped legacy file ${path} from ${op.key}: a later change of the key projects it`);
+        continue;
+      }
     }
-    const size = later?.size ?? op.size;
+    const size = later?.state?.size ?? op.size;
     result.put += 1;
     result.bytes += size;
     deps.logger.info(

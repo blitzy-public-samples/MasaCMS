@@ -1,4 +1,4 @@
-/** The `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, admin-site and hydration reads and ending. */
+/** The `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, admin-site, admin-state and hydration reads and ending. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -38,6 +38,7 @@ const CONTRACT_PATHS = [
   '/internal/v1/sessions:adopt',
   '/internal/v1/sessions/{sid}/state',
   '/internal/v1/sessions/{sid}/admin-site',
+  '/internal/v1/sessions/{sid}/admin-state',
   '/internal/v1/sessions/{sid}/snapshot',
   '/internal/v1/sessions/{sid}:end',
 ];
@@ -155,7 +156,7 @@ async function send(method: Method, url: string, headers: Record<string, string>
 }
 
 /** A gateway call of the session route `op` of `sid`. */
-async function gateway(op: 'state' | 'admin-site' | 'snapshot' | 'end', sid: string, reason = 'logout') {
+async function gateway(op: 'state' | 'admin-site' | 'admin-state' | 'snapshot' | 'end', sid: string, reason = 'logout') {
   const headers = await headersFor('gateway');
   return op === 'end'
     ? send('POST', `/internal/v1/sessions/${sid}:end`, headers, { reason })
@@ -191,8 +192,8 @@ describe('route declarations', () => {
           requires: operation['x-opt2-requires'],
         })),
     );
-    expect(expected).toHaveLength(5);
-    expect(declared.filter((route) => route.method !== 'HEAD')).toHaveLength(5);
+    expect(expected).toHaveLength(6);
+    expect(declared.filter((route) => route.method !== 'HEAD')).toHaveLength(6);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
   });
 });
@@ -202,6 +203,7 @@ describe('auth denials', () => {
     ['POST', ADOPT, adoptBody('S-denied', { isLoggedIn: false })],
     ['GET', '/internal/v1/sessions/S-denied/state', undefined],
     ['GET', '/internal/v1/sessions/S-denied/admin-site', undefined],
+    ['GET', '/internal/v1/sessions/S-denied/admin-state', undefined],
     ['GET', '/internal/v1/sessions/S-denied/snapshot', undefined],
     ['POST', '/internal/v1/sessions/S-denied:end', { reason: 'logout' }],
   ])('refuse %s %s to callers other than the gateway, with or without a user token', async (method, url, payload) => {
@@ -356,6 +358,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
 
     expect((await gateway('state', sid)).json()).toEqual({ state: 'ended', epoch: 0, userId: '', siteId: '' });
     expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: '' });
+    expect((await gateway('admin-state', sid)).json()).toEqual({});
     expect(snapshot.statusCode).toBe(404);
     expect(snapshot.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid method call' } });
     expect((await gateway('end', sid)).json()).toEqual({ ended: true, epoch: 0 });
@@ -388,11 +391,33 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     await withTenant(db, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { siteid: 'tenant-b' }));
 
     expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: '' });
+    expect((await gateway('admin-state', sid)).json()).toEqual({});
   });
 
-  it.each<['state' | 'admin-site' | 'snapshot' | 'end', (sid: string) => unknown]>([
+  it.each<[string, Record<string, unknown> | undefined, Record<string, unknown>]>([
+    [
+      'the stored values, Site Manager state under mura included',
+      { siteid: 'tenant-b', mura: { flatViewArgs: { 'tenant-b': { tab: 1, sortby: 'lastupdate' } }, nextN: '20' } },
+      { siteid: 'tenant-b', mura: { flatViewArgs: { 'tenant-b': { tab: 1, sortby: 'lastupdate' } }, nextN: '20' } },
+    ],
+    ["the contract's values only, without login's internal block", { rb: 'en', blockLoginUntil: '2026-06-30T12:30:00.000' }, { rb: 'en' }],
+    ['{} when no admin state is stored', undefined, {}],
+  ])('reads an active session admin state as %s', async (_label, adminState, expected) => {
+    if (handle === undefined) throw new Error('PostgreSQL is not available');
+    const sid = nextSessionId();
+    await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
+    if (adminState !== undefined) await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, adminState));
+
+    const res = await gateway('admin-state', sid);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+  });
+
+  it.each<['state' | 'admin-site' | 'admin-state' | 'snapshot' | 'end', (sid: string) => unknown]>([
     ['state', () => ({ state: 'active', epoch: 1, userId: USER, siteId: SITE })],
     ['admin-site', () => ({ siteId: '' })],
+    ['admin-state', () => ({})],
     [
       'snapshot',
       (sid) => ({

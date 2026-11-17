@@ -272,8 +272,11 @@ export interface ReviewItem {
 const FIXTURE_SCHEMA = /^(?:program_(?:\d+|n)|synthetic)\./i;
 /** Dispositions whose items keep running on legacy, so their rows need no target code path. */
 const CODE_EXEMPT: ReadonlySet<string> = new Set(['legacy-served', 'decision', 'retired']);
-/** `ownerBasis` of an owner the decision list only proposes; the item is not owned until the user approves. */
-const PROPOSED_OWNER = 'decision-list-proposal';
+/**
+ * `ownerBasis` values of an owner that is not settled: one the decision list only proposes, or the planned owner of a
+ * write set that spans owners with no input naming one. The item is not owned until the user approves.
+ */
+const UNSETTLED_OWNER: ReadonlySet<string> = new Set(['decision-list-proposal', 'spanning']);
 
 function itemOf(
   entry: InventoryEntry,
@@ -287,11 +290,10 @@ function itemOf(
 }
 
 /**
- * Items `service` carries or owns (`owningService === service`, any disposition, unless the owner is only a
- * decision-list proposal) across entities, services, controllers with their actions and variants, front-end entries,
- * scheduled jobs and their steps, routes and tables; plus every table it owns through a split target unit. A
- * controller needs target code only when the service carries one of its actions. Ordered by inventory list, then
- * inventory order; ids are unique.
+ * Items `service` carries or owns (`owningService === service`, any disposition, unless that owner is unsettled) across
+ * entities, services, controllers with their actions and variants, front-end entries, scheduled jobs and their steps,
+ * routes and tables; plus every table it owns through a split target unit. A controller needs target code only when
+ * the service carries one of its actions. Ordered by inventory list, then inventory order; ids are unique.
  */
 export function carriedOrOwnedItems(service: string, inventory: Inventory, ownership: Ownership): ReviewItem[] {
   const items = new Map<string, ReviewItem>();
@@ -301,7 +303,7 @@ export function carriedOrOwnedItems(service: string, inventory: Inventory, owner
   const carries = (entry: InventoryEntry): boolean =>
     entry.owningService === service && entry.disposition === 'carry';
   const owns = (entry: InventoryEntry): boolean =>
-    entry.owningService === service && (entry.disposition === 'carry' || entry.ownerBasis !== PROPOSED_OWNER);
+    entry.owningService === service && (entry.disposition === 'carry' || !UNSETTLED_OWNER.has(entry.ownerBasis ?? ''));
   const addOwned = (entries: InventoryEntry[], category: ItemCategory): void => {
     for (const entry of entries) if (owns(entry)) add(itemOf(entry, category));
   };

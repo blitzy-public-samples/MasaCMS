@@ -113,6 +113,7 @@ describe('name lists', () => {
         'cookie',
         'file',
         'form',
+        'http',
         'local',
         'request',
         'server',

@@ -53,6 +53,21 @@ export class ProjectionTimeoutError extends LegacyServiceUnavailableError {
   }
 }
 
+/** A read the await depends on. */
+export type ProjectionRead = 'checkpoint' | 'tenant set' | 'cut-over authority';
+
+/** A read the await depends on failed, so no position can be reported applied; renders as the legacy 503. */
+export class ProjectionUnavailableError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'ProjectionUnavailableError';
+
+  constructor(
+    readonly read: ProjectionRead,
+    override readonly cause: unknown,
+  ) {
+    super(`Projection await could not read the ${read}`, 'auto', 'projection-unavailable');
+  }
+}
+
 /** Cancellation and remaining time of one read the call's budget bounds. */
 export interface ReadBudget {
   /** Aborts when the budget passes. */
@@ -80,7 +95,8 @@ export interface AwaiterDeps {
 export interface Awaiter {
   /**
    * Resolves once every position is applied in legacy.
-   * @throws ProjectionTimeoutError when the budget passes first; ServiceUnavailableError when an owner whose position is read is unavailable.
+   * @throws ProjectionTimeoutError when the budget passes first; ServiceUnavailableError when an owner whose position is read is unavailable;
+   * ProjectionUnavailableError when the checkpoint, tenant set or cut-over authority cannot be read.
    */
   awaitProjection(req: AwaitProjectionRequest): Promise<AwaitProjectionResult>;
 }
@@ -119,6 +135,16 @@ function pendingPositions(positions: WritePositions, tenants: readonly string[],
 /** Positions whose tenants have not been read yet. */
 function unread(positions: WritePositions): PendingPosition[] {
   return [...positions].map(([owner, xid]) => ({ owner, xid, tenantsBehind: [] }));
+}
+
+/** Runs `run`; a failure that is not already a legacy 503 becomes a ProjectionUnavailableError naming `read`. */
+async function failClosed<T>(read: ProjectionRead, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof LegacyServiceUnavailableError) throw error;
+    throw new ProjectionUnavailableError(read, error);
+  }
 }
 
 /** Runs `read` within the `remainingMs` left of a budget; on expiry its signal aborts, `expired()` is thrown and its late outcome is dropped. */
@@ -164,10 +190,16 @@ export function createAwaiter(deps: AwaiterDeps): Awaiter {
     return mergeWritePosition(req.positions, new Map(current));
   }
 
+  function readAuthority(budget: ReadBudget): Promise<CurrentAuthority> {
+    return failClosed('cut-over authority', () => deps.authority(budget));
+  }
+
   async function readPending(positions: WritePositions, budget: ReadBudget): Promise<PendingPosition[]> {
     const [tenants, checkpoints] = await Promise.all([
-      deps.tenants(budget),
-      deps.legacy.live().then((pool) => readCheckpoints(pool, { owners: [...positions.keys()] }, { signal: budget.signal })),
+      failClosed('tenant set', () => deps.tenants(budget)),
+      failClosed('checkpoint', () =>
+        deps.legacy.live().then((pool) => readCheckpoints(pool, { owners: [...positions.keys()] }, { signal: budget.signal })),
+      ),
     ]);
     return pendingPositions(positions, tenants, checkpoints);
   }
@@ -184,7 +216,7 @@ export function createAwaiter(deps: AwaiterDeps): Awaiter {
 
       const positions = await within((budget) => resolvePositions(req, budget));
       pending = unread(positions);
-      const projected = positions.size === 0 ? new Set<string>() : projectedOwners(await within((budget) => deps.authority(budget)), deps.catalog);
+      const projected = positions.size === 0 ? new Set<string>() : projectedOwners(await within(readAuthority), deps.catalog);
       // Gates reject target writes on `legacy` units and window imports are never projected, so other owners have nothing to await.
       const awaited: WritePositions = new Map([...positions].filter(([owner]) => projected.has(owner)));
       if (awaited.size > 0) pending = unread(awaited);

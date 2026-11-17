@@ -31,14 +31,14 @@ const NEW_CREDITS = `opt2-fault-${WINDOW_ID}`;
 const GATEWAY_URL = 'http://gateway.test';
 // Both target-authoritative in the committed v0002, whose content read still routes to legacy.
 const CONTENT_UNIT = 'content.content';
-const TARGET_UNIT = 'content.variation_targeting';
+const TARGET_UNIT = 'reporting.export_job';
 // No carry write entry writes it, so legacy-authoritative in every committed version.
 const COMMITTED_LEGACY_UNIT = 'content.commenter';
-// Outside every group of the content read's units, so legacy-authoritative under both cut-over doubles.
-const LEGACY_UNIT = 'people.person';
+// Outside every group of the content read's units and written by no carry write entry, so legacy-authoritative under both cut-over doubles.
+const LEGACY_UNIT = 'timesheets.timesheet';
 const DEFAULTS = windowImportInterrupted.paramsSchema.parse({});
 const CONTENT_READ_ROUTE = 'api:content.findone';
-/** Cut-over double: v0001 with the content read `target` and every group of its units target-authoritative. */
+/** Cut-over double: v0002 with the content read `target` and every group of its units target-authoritative. */
 const CONTENT_TARGET_VERSION = 'v0099';
 /** Cut-over double: v0001 with only the group of content.content target-authoritative, the content read still `legacy`. */
 const CONTENT_UNIT_ONLY_VERSION = 'v0098';
@@ -51,20 +51,25 @@ beforeAll(async () => {
   const groupsFile = path.join(cutoverDir, 'groups.json');
   await copyFile(CONFIG.paths.groupsFile, groupsFile);
   const groups = JSON.parse(await readFile(groupsFile, 'utf8')) as GroupsFile;
-  const v0001 = JSON.parse(await readFile(path.join(CONFIG.paths.cutoverDir, 'versions', 'v0001.json'), 'utf8')) as CutoverVersion;
-  const read = v0001.entries.find((entry) => entry.route === CONTENT_READ_ROUTE);
-  if (read === undefined || !read.units.includes(CONTENT_UNIT)) throw new Error(`v0001 has no ${CONTENT_READ_ROUTE} entry reading ${CONTENT_UNIT}`);
+  const committed = async (id: string): Promise<CutoverVersion> =>
+    JSON.parse(await readFile(path.join(CONFIG.paths.cutoverDir, 'versions', `${id}.json`), 'utf8')) as CutoverVersion;
+  const v0001 = await committed('v0001');
+  const v0002 = await committed('v0002');
+  const read = v0002.entries.find((entry) => entry.route === CONTENT_READ_ROUTE);
+  if (read === undefined || !read.units.includes(CONTENT_UNIT)) throw new Error(`v0002 has no ${CONTENT_READ_ROUTE} entry reading ${CONTENT_UNIT}`);
+  const targetGroup = groups.groups.find((group) => group.units.includes(TARGET_UNIT));
+  if (targetGroup === undefined || v0002.groupAuthority[targetGroup.id] !== 'target') throw new Error(`v0002 does not hold ${TARGET_UNIT} target-authoritative`);
   /** `target` for every group holding any of `units`. */
   const targetGroups = (units: readonly string[]): Record<string, 'target'> =>
     Object.fromEntries(groups.groups.filter((group) => group.units.some((unit) => units.includes(unit))).map((group) => [group.id, 'target']));
   const doubles: CutoverVersion[] = [
     { ...v0001, tableVersion: CONTENT_UNIT_ONLY_VERSION, previous: 'v0001', groupAuthority: { ...v0001.groupAuthority, ...targetGroups([CONTENT_UNIT]) } },
     {
-      ...v0001,
+      ...v0002,
       tableVersion: CONTENT_TARGET_VERSION,
-      previous: 'v0001',
-      groupAuthority: { ...v0001.groupAuthority, ...targetGroups(read.units) },
-      entries: v0001.entries.map((entry) => (entry === read ? { ...entry, state: 'target' } : entry)),
+      previous: 'v0002',
+      groupAuthority: { ...v0002.groupAuthority, ...targetGroups(read.units) },
+      entries: v0002.entries.map((entry) => (entry === read ? { ...entry, state: 'target' } : entry)),
     },
   ];
   await mkdir(path.join(cutoverDir, 'versions'));

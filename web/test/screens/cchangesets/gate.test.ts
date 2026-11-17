@@ -34,6 +34,7 @@ interface InventoryVariant {
   readonly disposition: string | null;
   readonly owningService: string | null;
   readonly responseMode: string | null;
+  readonly withheld: boolean;
 }
 
 interface InventoryController {
@@ -156,8 +157,8 @@ describe('CCHANGESETS_RC_DEFAULTS', () => {
 });
 
 describe('cchangesetsScreens', () => {
-  // publish writes the withheld tcontenteventreminders table, so it stays legacy-served.
-  it('registers the carried actions, leaving publish on legacy', () => {
+  // publish and rollback write the decision-list table tcontenteventreminders, so both are withheld on legacy.
+  it('registers the carried actions, leaving publish and rollback on legacy', () => {
     expect(cchangesetsScreens.map(({ action }) => action).sort()).toEqual([
       'assignments',
       'delete',
@@ -165,10 +166,11 @@ describe('cchangesetsScreens', () => {
       'list',
       'loadtagarray',
       'removeitem',
-      'rollback',
       'save',
     ]);
-    expect(inventoriedActions().get('publish')?.disposition).toBe('decision');
+    for (const action of ['publish', 'rollback']) {
+      expect(inventoriedActions().get(action), action).toMatchObject({ disposition: 'decision', withheld: true });
+    }
   });
 
   it('puts every action behind the gate for strategies-content', () => {
@@ -190,7 +192,6 @@ describe('cchangesetsScreens', () => {
       assignments: 'page',
       edit: 'page',
       save: 'page',
-      rollback: 'redirect',
       removeitem: 'redirect',
       delete: 'redirect',
       loadtagarray: 'fragment',

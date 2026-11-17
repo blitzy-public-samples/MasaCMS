@@ -1,5 +1,6 @@
 <cfscript>
-// Legacy bridge session ops: describe, hydrate and end the attached ColdFusion session, and read or extend its CSRF used-token ledger.
+// Legacy bridge session ops: describe, hydrate and end the attached ColdFusion session, read or extend its CSRF used-token
+// ledger, and carry into it the session values target routes keep.
 
 // Raises 400 badRequest unless the request uses the op's HTTP method.
 function requireMethod(required string method) {
@@ -50,6 +51,8 @@ op = url.op;
 body = {};
 // The session.mura keys userUtility.setUserStruct sets for a logged-in user, in describe's wire spelling.
 userKeys = ["userID", "username", "siteID", "subtype", "password", "fname", "lname", "email", "remoteID", "company", "lastlogin", "passwordCreated"];
+// The top-level session keys op=carry may set: values target routes keep that legacy-served admin views read.
+carriedKeys = ["flatViewArgs"];
 
 try {
 	switch (op) {
@@ -148,6 +151,35 @@ try {
 				app.raise(400, "badRequest", "since is required");
 			}
 			body = {"tokens": ledgerEntries(session.mura.csrfusedtokens, app.parseLegacyTime(url.since).getTime())};
+			break;
+
+		case "carry":
+			// Sets each value as its top-level session key unless its revision is the one installed last, so legacy's own
+			// writes to it stand until a target route changes it again.
+			requireMethod("POST");
+			requireSession();
+			input = app.readJsonBody();
+			values = structKeyExists(input, "values") ? input.values : "";
+			if (!isArray(values)) {
+				app.raise(400, "badRequest", "values must be an array");
+			}
+			for (entry in values) {
+				if (!isStruct(entry) || !structKeyExists(entry, "name") || !isSimpleValue(entry.name) || !arrayFind(carriedKeys, entry.name)
+					|| !structKeyExists(entry, "value") || !isStruct(entry.value)
+					|| !structKeyExists(entry, "revision") || !isSimpleValue(entry.revision) || !len(entry.revision)) {
+					app.raise(400, "badRequest", "values entries need a carried name, a struct value and a revision");
+				}
+			}
+			param name="session.opt2CarriedRevisions" default={};
+			applied = [];
+			for (entry in values) {
+				if (!structKeyExists(session.opt2CarriedRevisions, entry.name) || compare(session.opt2CarriedRevisions[entry.name], entry.revision) != 0) {
+					session[entry.name] = entry.value;
+					session.opt2CarriedRevisions[entry.name] = entry.revision;
+					arrayAppend(applied, entry.name);
+				}
+			}
+			body = {"applied": applied};
 			break;
 
 		case "end":

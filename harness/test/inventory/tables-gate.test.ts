@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
-import { computeClosure, memorySourceTree, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
+import { computeClosure, memorySourceTree, openSourceTree, parseCfmlComponent, viaLabel } from '../../src/inventory/closure.js';
 import type {
   CfmlComponent,
   ClosureWrite,
@@ -33,6 +33,7 @@ import {
 } from '../../src/inventory/tables.js';
 import type {
   LiveCatalogTable,
+  LiveColumn,
   TableColumn,
   TableEntry,
   TableExtraction,
@@ -532,7 +533,7 @@ function key(columns: string[]): Pick<TableEntry, 'hasPrimaryKey' | 'staticHasPr
   return { hasPrimaryKey: true, staticHasPrimaryKey: true, primaryKey: columns };
 }
 
-/** A static entry as extractTables leaves it, before the live catalog, writers and owners. */
+/** A static entry as extractTables leaves it, before the live catalog, writers and owners; static facts mirror `fields`. */
 function staticEntry(fields: Pick<TableEntry, 'table' | 'origin' | 'source' | 'createdBy' | 'columns'> & Partial<TableEntry>): TableEntry {
   return {
     id: `tbl:${fields.table}`,
@@ -544,7 +545,13 @@ function staticEntry(fields: Pick<TableEntry, 'table' | 'origin' | 'source' | 'c
     siteIdColumn: null,
     siteIdSource: null,
     hasPrimaryKey: false,
-    staticHasPrimaryKey: false,
+    staticColumns: fields.columns,
+    staticHasSiteId: fields.hasSiteId ?? false,
+    staticSiteIdColumn: fields.siteIdColumn ?? null,
+    staticSiteIdSource: fields.siteIdSource ?? null,
+    staticHasPrimaryKey: fields.hasPrimaryKey ?? false,
+    staticPrimaryKey: fields.primaryKey ?? [],
+    staticPrimaryKeySource: fields.primaryKeySource ?? null,
     bootstrapHasPrimaryKey: null,
     primaryKey: [],
     primaryKeySource: null,
@@ -567,7 +574,7 @@ function writer(fields: Pick<WriterEntry, 'component' | 'method' | 'source' | 'o
 }
 
 function closureWrite(table: string | null, op: WriterOp, component: string, method: string, source: SourceRef, extra: Partial<ClosureWrite> = {}): ClosureWrite {
-  return { table, op, component, method, source, trigger: 'request', whereParams: [], conditional: false, ...extra };
+  return { table, op, component, method, source, trigger: 'request', whereParams: [], conditional: false, columns: null, via: [viaLabel(component, method)], ...extra };
 }
 
 function closureOf(writes: ClosureWrite[], conditionalWrites: ConditionalWrite[] = []): WriteClosure {
@@ -954,7 +961,7 @@ describe('extractTables over schema statements and updates', () => {
       bootstrap: 4,
       migration: 3,
       orm: 2,
-      staticTotal: 9,
+      staticTotal: 7,
       retired: 2,
       liveStatic: 7,
       withSiteId: 4,
@@ -1215,15 +1222,27 @@ describe('mergeLiveCatalog', () => {
     ]);
     const liveCol = (name: string, type: string, length: number | null, nullable: boolean): TableColumn => ({ name, type, length, nullable, source: LIVE_TABLE_SOURCE });
     const liveOnly = (fields: Pick<TableEntry, 'table' | 'schema' | 'origin' | 'columns' | 'live'> & Partial<TableEntry>): TableEntry =>
-      staticEntry({ source: LIVE_TABLE_SOURCE, createdBy: [], staticHasPrimaryKey: null, liveStatus: 'live', ...fields });
+      staticEntry({
+        source: LIVE_TABLE_SOURCE,
+        createdBy: [],
+        staticColumns: [],
+        staticHasSiteId: null,
+        staticSiteIdColumn: null,
+        staticSiteIdSource: null,
+        staticHasPrimaryKey: null,
+        staticPrimaryKey: [],
+        staticPrimaryKeySource: null,
+        liveStatus: 'live',
+        ...fields,
+      });
+    // The folded entry takes the union of its instances' columns, and no key, since one instance has none.
     expect(byTable(merged, 'Program_N.tprogram')).toEqual(
       liveOnly({
         table: 'Program_N.tprogram',
         schema: 'Program_N',
         origin: 'fixture',
-        columns: [liveCol('programID', 'char', 35, false), liveCol('siteID', 'nvarchar', 25, false)],
+        columns: [liveCol('programID', 'char', 35, false), liveCol('siteID', 'nvarchar', 25, false), liveCol('extra', 'int', null, true)],
         ...site('siteID', LIVE_TABLE_SOURCE),
-        primaryKey: ['programID'],
         live: {
           present: true,
           instances: ['Program_1.tprogram', 'Program_2.tprogram'],
@@ -1253,6 +1272,72 @@ describe('mergeLiveCatalog', () => {
 
   it('resets to the static entries pending a live run when the catalog is null', () => {
     expect(mergeLiveCatalog(merged, null)).toEqual(extraction.tables);
+  });
+
+  describe('governing facts', () => {
+    const liveColumn = (name: string, type = 'nvarchar', length: number | 'max' | null = 25): LiveColumn => ({ name, type, length, nullable: true });
+    const catalogTable = (name: string, columns: LiveColumn[], primaryKey: string[]): LiveCatalogTable => ({
+      schema: 'dbo',
+      name,
+      columns,
+      primaryKey,
+      hasPrimaryKey: primaryKey.length > 0,
+      hasSiteId: columns.some((c) => c.name.toLowerCase() === 'siteid'),
+    });
+    const CATALOG: LiveCatalogTable[] = [
+      catalogTable('tfixture', ['fixtureID', 'SiteID', 'userID', 'name'].map((c) => liveColumn(c)).concat(liveColumn('notes', 'nvarchar', 'max')), ['userID']),
+      catalogTable('tFixtureNoPK', [liveColumn('fixtureID', 'char', 35), liveColumn('label'), liveColumn('SiteID')], ['fixtureID']),
+      catalogTable('tfixturestats', [liveColumn('statID', 'char', 35), liveColumn('siteid'), liveColumn('data', 'ntext', 1073741823)], []),
+    ];
+    let governed: TableEntry[];
+
+    beforeAll(() => {
+      governed = mergeLiveCatalog(extraction.tables, CATALOG);
+    });
+
+    it.each<[string, string, Pick<TableEntry, 'primaryKey' | 'hasPrimaryKey' | 'primaryKeySource' | 'hasSiteId' | 'siteIdColumn' | 'siteIdSource'>]>([
+      ['changed', 'tfixture', { primaryKey: ['userID'], hasPrimaryKey: true, primaryKeySource: LIVE_TABLE_SOURCE, hasSiteId: true, siteIdColumn: 'SiteID', siteIdSource: src(DDL, 4) }],
+      ['added', 'tfixturenopk', { primaryKey: ['fixtureID'], hasPrimaryKey: true, primaryKeySource: LIVE_TABLE_SOURCE, hasSiteId: true, siteIdColumn: 'SiteID', siteIdSource: LIVE_TABLE_SOURCE }],
+      ['removed', 'tfixturestats', { primaryKey: [], hasPrimaryKey: false, primaryKeySource: null, hasSiteId: true, siteIdColumn: 'siteid', siteIdSource: src(DDL, 18) }],
+    ])('takes a %s key and the siteID column of %s from the live catalog', (_change, table, expected) => {
+      expect(byTable(governed, table)).toMatchObject(expected);
+    });
+
+    it('takes the live columns, sourced at their static declaration or at the catalog, and drops columns the catalog lacks', () => {
+      expect(byTable(governed, 'tfixture').columns).toEqual([
+        col('fixtureID', 'nvarchar', 25, true, src(DDL, 3)),
+        col('SiteID', 'nvarchar', 25, true, src(DDL, 4)),
+        col('userID', 'nvarchar', 25, true, src(DDL, 5)),
+        col('name', 'nvarchar', 25, true, src(DDL, 6)),
+        col('notes', 'nvarchar', 'max', true, src(UPDATE_EXCERPT, 12)),
+      ]);
+      expect(byTable(governed, 'tfixturenopk').columns.map((c) => [c.name, c.source])).toEqual([
+        ['fixtureID', src(DDL, 11)],
+        ['label', src(DDL, 12)],
+        ['SiteID', LIVE_TABLE_SOURCE],
+      ]);
+    });
+
+    it('keeps the static facts beside the governing ones and restores them on reset', () => {
+      const statics = (t: TableEntry): unknown[] => [
+        t.staticColumns,
+        t.staticHasSiteId,
+        t.staticSiteIdColumn,
+        t.staticSiteIdSource,
+        t.staticHasPrimaryKey,
+        t.staticPrimaryKey,
+        t.staticPrimaryKeySource,
+      ];
+      for (const t of extraction.tables) expect(statics(byTable(governed, t.table)), t.table).toEqual(statics(t));
+      expect(byTable(governed, 'tfixturenopk')).toMatchObject({ staticHasSiteId: false, staticHasPrimaryKey: false, staticPrimaryKey: [] });
+      expect(mergeLiveCatalog(governed, null)).toEqual(extraction.tables);
+    });
+
+    it('keeps the static facts of a table the catalog does not hold', () => {
+      const entry = byTable(governed, 'tfixtureversioned');
+      expect([entry.live?.present, entry.liveStatus]).toEqual([false, 'live']);
+      expect({ ...entry, live: null, liveStatus: 'pending-run' }).toEqual(byTable(extraction.tables, 'tfixtureversioned'));
+    });
   });
 });
 
@@ -1371,8 +1456,8 @@ describe('attachWriters', () => {
           closureWrite(null, 'update', DAO, 'dynamicWrite', src(DAO, 44, 46), { dynamic: true }),
         ],
         [
-          { table: 'tfixture', condition: 'rc.purge eq true', source: purge },
-          { table: 'tfixture', condition: 'rc.rename', source: rename },
+          { table: 'tfixture', condition: 'rc.purge eq true', source: purge, via: [viaLabel(MANAGER, 'purgeSite')] },
+          { table: 'tfixture', condition: 'rc.rename', source: rename, via: [viaLabel(MANAGER, 'rename')] },
         ],
       ),
     },
@@ -1387,7 +1472,7 @@ describe('attachWriters', () => {
           closureWrite('tfixturenopk', 'update', DAO, 'relabel', daoRelabel, { conditional: true }),
           closureWrite('tusers', 'update', MANAGER, 'refreshLogin', relogin, { whereParams: ['userid'] }),
         ],
-        [{ table: 'dbo.tfixture', condition: 'arguments.force', source: purge }],
+        [{ table: 'dbo.tfixture', condition: 'arguments.force', source: purge, via: [viaLabel(MANAGER, 'purgeSite')] }],
       ),
     },
     {
@@ -1399,7 +1484,7 @@ describe('attachWriters', () => {
           closureWrite('Program_2.tprogram', 'insert', SETUP, '', src(SETUP, 5)),
           closureWrite('tfixture', 'insert', DAO, 'create', daoCreate, { conditional: true }),
         ],
-        [{ table: 'tfixture', condition: 'application.setupComplete', source: daoCreate }],
+        [{ table: 'tfixture', condition: 'application.setupComplete', source: daoCreate, via: [viaLabel(DAO, 'create')] }],
       ),
     },
     {

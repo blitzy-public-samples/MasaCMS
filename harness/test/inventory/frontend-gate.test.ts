@@ -917,7 +917,12 @@ describe('extractFrontEnd over the on-disk tree', () => {
       ['core/mura/user/sessionTrackingManager.cfc', 'trackSession'],
     ]);
     expect(render.closure.unresolved).toEqual([
-      { expr: "getHandler('standardMissing')", kind: 'method', source: spanOf(SERVER, 'getHandler("standardMissing")') },
+      {
+        expr: "getHandler('standardMissing')",
+        kind: 'method',
+        source: spanOf(SERVER, 'getHandler("standardMissing")'),
+        via: ['contentServer.handleRootRequest', 'contentServer.parseURLRoot'],
+      },
     ]);
   });
 
@@ -963,6 +968,7 @@ describe('extractFrontEnd over the on-disk tree', () => {
         table: 'tfixture',
         condition: "not arguments.$.getContentRenderer().validateCSRFTokens or arguments.$.validateCSRFTokens(context='login')",
         source: src(DAO, 20, 22),
+        via: ['standardEventsHandler.doAction', 'loginManager.login', 'userUtility.loginByQuery', 'fixtureDAO.update'],
       },
     ]);
     expect(login.visited).toEqual([
@@ -989,6 +995,7 @@ describe('extractFrontEnd over the on-disk tree', () => {
         method: 'deleteVersion',
         source: src('core/mura/user/userManager.cfc', 4),
         conditional: true,
+        via: ['standardEventsHandler.doAction', 'userManager.update', 'fileManager.deleteVersion'],
       },
     ]);
   });

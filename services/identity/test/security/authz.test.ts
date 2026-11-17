@@ -380,6 +380,7 @@ const EXPECTED: Readonly<Record<string, Row>> = {
   'GET /internal/v1/sessions/:sid/state': service(GATEWAY_ONLY, { method: 'GET', url: `/internal/v1/sessions/${UNKNOWN_SESSION}/state` }),
   'GET /internal/v1/sessions/:sid/snapshot': service(GATEWAY_ONLY, { method: 'GET', url: `/internal/v1/sessions/${UNKNOWN_SESSION}/snapshot` }),
   'GET /internal/v1/sessions/:sid/admin-site': service(GATEWAY_ONLY, { method: 'GET', url: `/internal/v1/sessions/${UNKNOWN_SESSION}/admin-site` }),
+  'GET /internal/v1/sessions/:sid/admin-state': service(GATEWAY_ONLY, { method: 'GET', url: `/internal/v1/sessions/${UNKNOWN_SESSION}/admin-state` }),
   'POST /internal/v1/sessions/:sid(.+)::end': service(GATEWAY_ONLY, {
     method: 'POST',
     url: `/internal/v1/sessions/${UNKNOWN_SESSION}:end`,

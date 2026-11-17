@@ -76,7 +76,7 @@ The legacy-served `cdashboard` screens read the table and write nothing to it.
 
 ## Schema and roles
 
-Schema `reporting` is created with its roles by `opt2-db bootstrap` (`migration/src/db-bootstrap/`). Its DDL is in `db/migrations/0001_platform.sql`, `db/migrations/0002_reporting.sql`, `db/migrations/0003_extensions.sql` and `db/migrations/0004_tenant_registry_deleted.sql`.
+Schema `reporting` is created with its roles by `opt2-db bootstrap` (`migration/src/db-bootstrap/`). Its DDL is in `db/migrations/0001_platform.sql`, `db/migrations/0002_reporting.sql`, `db/migrations/0003_extensions.sql`, `db/migrations/0004_tenant_registry_deleted.sql` and `db/migrations/0005_changelog_order.sql`.
 
 | Role | Attributes | Use |
 |---|---|---|

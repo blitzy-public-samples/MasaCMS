@@ -20,13 +20,10 @@ import {
   deleteComment,
   feedCommentValues,
   findCommentValues,
-  flagComment,
   getComments,
-  markAsSpam,
+  invokeCommentFunction,
   saveComment,
-  undeleteComment,
-  unmarkAsSpam,
-  type CommentCallOptions,
+  type CommentRemoteFunction,
   type CommentSaveSite,
   type CommentValues,
   type CommentValuesView,
@@ -66,6 +63,7 @@ import {
   type RemoteFunctionFn,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Ctx = Parameters<JsonApiHandlerFn>[0];
 type Struct = Record<string, unknown>;
@@ -433,43 +431,34 @@ async function remove(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   return jsonApiResultOf('', 'comment');
 }
 
-/** The bean's own remote functions run under the API request, and no manager try/catch swallows their failures. */
-const REMOTE_OPTIONS: CommentCallOptions = Object.freeze({ apiRequest: true, onSwallowedError: rethrow });
-
-/** The acting user in the call's verified tenant, which an anonymous actor does not carry itself. */
-function actorOf(call: JsonApiCall): Actor {
-  return { ...call.actor, tenantId: call.tenantId };
-}
-
-/** The comment a remote function changes: the one `loadBy` loaded, else a new bean's getCommentID(), a fresh id no comment holds. */
-function remoteCommentId(beanId: string | undefined): string {
-  return beanId ?? cfUuid();
-}
-
 /**
- * contentCommentBean's remote functions (contentCommentBean.cfc:317-428) by legacy name: `flag` adds one to the flag count
- * for any caller; the others set `isDeleted` or `isSpam` only under allowModuleAccess. Each write recounts the content's comments.
+ * contentCommentBean's remote functions (contentCommentBean.cfc:317-430) by legacy name, on the comment `loadBy` loaded or
+ * else a new bean of the API site (cfobject.cfc:138-149): `flag` for any caller, the others under allowModuleAccess; each
+ * write recounts the content's comments.
  */
-export const commentRemoteFunctions: Readonly<Record<string, RemoteFunctionFn>> = Object.freeze({
-  delete: async (ctx, call, beanId) => {
-    await deleteComment(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
-  },
-  undelete: async (ctx, call, beanId) => {
-    await undeleteComment(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
-  },
-  flag: (ctx, call, beanId) => flagComment(ctx.domain, call.tenantId, remoteCommentId(beanId), { actor: call.actor }),
-  markAsSpam: async (ctx, call, beanId) => {
-    await markAsSpam(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
-  },
-  unMarkAsSpam: async (ctx, call, beanId) => {
-    await unmarkAsSpam(ctx.domain, actorOf(call), remoteCommentId(beanId), REMOTE_OPTIONS);
-  },
-});
+function remoteFunction(fn: CommentRemoteFunction): RemoteFunctionFn {
+  return async (ctx, call, beanId) => {
+    // Sessionless REST: the bean's mura.event builds a site renderer, which throws before any write (contentRenderer.cfc:701).
+    if (call.mode === 'rest') return;
+    await invokeCommentFunction(ctx.domain, call.actor, {
+      fn,
+      tenantId: call.tenantId,
+      siteId: call.apiContext.siteId,
+      ...(beanId === undefined ? {} : { commentId: beanId }),
+    });
+  };
+}
+
+/** The comment remote functions by legacy name. */
+export const commentRemoteFunctions: Readonly<Record<string, RemoteFunctionFn>> = Object.freeze(
+  Object.fromEntries((['delete', 'undelete', 'flag', 'markAsSpam', 'unMarkAsSpam'] as const).map((name) => [name, remoteFunction(name)])),
+);
 
 /** The JSON API `comment` entity: public reads, writes under the comments module (`m:015`). */
 export const commentHandler: EntityHandler = {
   entity: 'comment',
   config,
+  validate,
   findOne,
   findMany,
   findAll: (ctx, call) => findFeed(ctx, call, 'findall'),

@@ -797,6 +797,15 @@ export function feedByRemoteId(tx: TenantTx, args: { siteId: string; remoteId: s
   return feedWhere(tx, p, `${ciEq(p, 'tcontentfeeds.remoteid', args.remoteId)} AND tcontentfeeds.siteid = ${p.add(args.siteId)}`);
 }
 
+/** How many feeds of a site readByName (`name`) or readByRemoteID (`remoteid`) match; only a single match loads its bean. */
+export async function feedMatchCount(tx: TenantTx, args: { siteId: string; column: 'name' | 'remoteid'; value: string }): Promise<number> {
+  await readable(tx, [FEED.unit]);
+  const p = new SqlParams();
+  const where = `${ciEq(p, `tcontentfeeds.${args.column}`, args.value)} AND tcontentfeeds.siteid = ${p.add(args.siteId)}`;
+  const rows = await run<{ total: number }>(tx, `SELECT count(*)::integer AS total FROM ${qualified(tx.schema, FEED.table)} tcontentfeeds WHERE ${where}`, p.values);
+  return rows[0]?.total ?? 0;
+}
+
 /** feedDAO.readItems: the items of a feed, of one type (`contentID` or `categoryID`) when given, in clustered order. */
 export async function feedItems(tx: TenantTx, args: { feedId: string; type?: string }): Promise<FeedItemFields[]> {
   await readable(tx, [FEED_ITEM.unit]);

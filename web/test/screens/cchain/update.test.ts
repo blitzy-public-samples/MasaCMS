@@ -1,9 +1,10 @@
-// cchain.update against cchain/update.cfm: the edit.cfm form, with dsp_secondary_menu.cfm's empty update toolbar.
+// cchain.update against cchain/update.cfm: the edit.cfm form, with dsp_secondary_menu.cfm's empty update toolbar;
+// the registered cchain.edit and cchain.update entries in the shell.
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, cfUuid } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toString } from '@/lib/html';
-import { cchainScreens, withCchainDefaults } from '@/screens/cchain';
+import { CCHAIN_RC_DEFAULTS, cchainScreens, withCchainDefaults } from '@/screens/cchain';
 import { loadCchainEdit, renderCchainEdit } from '@/screens/cchain/edit';
 import { loadCchainUpdate, renderCchainUpdate } from '@/screens/cchain/update';
 import type { ScreenContext } from '@/screens/registry';
@@ -200,5 +201,28 @@ describe('cchainScreens update entry', () => {
     const $ = cheerio.load(page.html);
     expect($('form[name=form1]')).toHaveLength(1);
     expectEmptyToolbar($);
+  });
+});
+
+describe('cchainScreens edit entry', () => {
+  it('renders the form in the shell with the edit toolbar, on the before() defaults', async () => {
+    const def = cchainScreens.find(({ action }) => action === 'edit');
+    if (def === undefined) throw new Error('cchain.edit is not registered');
+    const req = siteAdminRequest(SITE, { circuit: 'cchain', item: 'edit', rc: { chainid: CHAIN } });
+    const ctx = contextFor(req);
+
+    const page = await renderScreenPage(def, ctx);
+
+    expect(page.kind).toBe('document');
+    if (page.kind !== 'document') return;
+    expect(cheerio.load(page.html)('form[name=form1]')).toHaveLength(1);
+    expect(toolbarLinks(page.html)).toEqual([
+      { href: `./?muraAction=cchain.list&siteid=${SITE}`, text: 'Back to Approval Chains' },
+      { href: `./?muraAction=cchain.pending&siteid=${SITE}&chainID=${CHAIN}`, text: 'Pending Requests' },
+    ]);
+    expect(ctx.req.rc).toMatchObject({ ...CCHAIN_RC_DEFAULTS, chainid: CHAIN, siteid: SITE });
+    expect(contentCalls(ctx).filter(({ path }) => path.includes('/approval-chains/'))).toEqual([
+      { service: 'strategies-content', method: 'GET', path: CCHAIN_PATHS.edit },
+    ]);
   });
 });

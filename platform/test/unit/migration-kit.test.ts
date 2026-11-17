@@ -34,6 +34,7 @@ import {
   PLATFORM_INFRA_TABLES,
   UNIT_GATE_TABLE,
   WATERMARK_DIRECTIONS,
+  changelogOrderSql,
   changelogSql,
   isPlatformInfraTable,
   migrationBatchSql,
@@ -62,6 +63,7 @@ const INVALID_IDENTIFIERS: readonly (readonly [string, string])[] = [
 
 const GENERATORS: readonly (readonly [string, (schema: string) => string])[] = [
   ['changelogSql', changelogSql],
+  ['changelogOrderSql', changelogOrderSql],
   ['unitGateSql', unitGateSql],
   ['openOperationSql', openOperationSql],
   ['migrationBatchSql', migrationBatchSql],
@@ -187,6 +189,23 @@ describe('changelogSql', () => {
 
   it('ends with the tenant RLS of people.changelog and a newline', () => {
     expect(sql.endsWith(`\n${rlsSql('people', 'changelog')}\n`)).toBe(true);
+  });
+});
+
+describe('changelogOrderSql', () => {
+  it('indexes target rows by key and target updates by after-image, each hashed and ordered by cursor position', () => {
+    expect(changelogOrderSql('people')).toBe(
+      [
+        `CREATE INDEX changelog_key_order_idx ON people.changelog (tenant_id, "table", md5(key), xid, seq) WHERE origin = 'target';`,
+        `CREATE INDEX changelog_after_order_idx ON people.changelog (tenant_id, "table", md5(after), xid, seq) WHERE origin = 'target' AND op = 'update';`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('leaves changelogSql and migrationKitSql, which the 0001 migrations copy, without the order indexes', () => {
+    expect(changelogSql('people')).not.toContain('order_idx');
+    expect(migrationKitSql('people')).not.toContain('order_idx');
   });
 });
 

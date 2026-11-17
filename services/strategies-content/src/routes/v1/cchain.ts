@@ -169,7 +169,7 @@ export async function registerChainRoutes(app: FastifyInstance, ctx: ContentRout
     return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
-  /** cchain.update (update.cfm includes edit.cfm): the chain, the groups it can add and its members in order. */
+  /** cchain.edit and cchain.update (update.cfm includes edit.cfm): the chain, the groups it can add and its members in order. */
   app.get<{ Params: ChainParams; Reply: AdminViewModel }>(CHAIN_PATH, { config }, async (request) => {
     const { siteid, chainid } = request.params;
     const actor = await requireCircuitAccess(request, ctx, 'cchain', siteid);

@@ -10,6 +10,7 @@ import {
   type InventoryFinding,
   type RenderableInventory,
   type SourceRef,
+  type WriteRecordView,
 } from '../../src/inventory/render-md.js';
 
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
@@ -88,7 +89,8 @@ function miniInventory(): RenderableInventory {
             variants: [
               variant('ctl:cusers.update{type=2,action=add}'),
               variant('ctl:cusers.update{type=2,action=delete}', {
-                owningService: 'spanning',
+                owningService: 'people',
+                ownerBasis: 'spanning',
                 owners: ['identity', 'people'],
                 disposition: 'decision',
                 dispositionStep: 3,
@@ -245,9 +247,10 @@ function miniInventory(): RenderableInventory {
         id: 'tbl:tsettings',
         ...carry('programs-sites'),
         origin: 'bootstrap',
-        hasSiteId: true,
-        hasSiteIdLive: false,
+        hasSiteId: false,
+        staticHasSiteId: true,
         hasPrimaryKey: true,
+        staticHasPrimaryKey: false,
         bootstrapHasPrimaryKey: false,
         ruleSteps: [1],
         writers: [{}, {}],
@@ -259,8 +262,9 @@ function miniInventory(): RenderableInventory {
         owners: ['identity', 'people'],
         origin: 'bootstrap',
         hasSiteId: true,
+        staticHasSiteId: true,
         hasPrimaryKey: true,
-        hasPrimaryKeyLive: true,
+        staticHasPrimaryKey: true,
         bootstrapHasPrimaryKey: true,
         ruleSteps: [1, 3],
         writers: [{}],
@@ -340,12 +344,16 @@ const EXPECTED: readonly string[] = [
   '| --- | --- | --- | --- | --- | --- | --- |',
   '| 4 | `job:sitemonitor.bounces` | emailManager.trackBounces per site | communications | legacy-served (4) | proposed communications step | — |',
   '',
+  '## Write sets',
+  '',
+  'None.',
+  '',
   '## Tables',
   '',
   '| Id | Origin | siteID | PK | Owner(s) | Rule step(s) | Disposition (step) | Writers |',
   '| --- | --- | --- | --- | --- | --- | --- | --- |',
   '| `tbl:fb_*` | dynamic | pending-run | pending-run | — | 5 | decision (2, withheld) | 0 |',
-  '| `tbl:tsettings` | bootstrap | yes (live: no) | yes (bootstrap: no) | programs-sites | 1 | carry (5) | 2 |',
+  '| `tbl:tsettings` | bootstrap | no (static: yes) | yes (bootstrap: no) (static: no) | programs-sites | 1 | carry (5) | 2 |',
   '| `tbl:tusers` | bootstrap | yes | yes | identity, people | 1, 3 | carry (5) | 1 |',
   '',
   '## Relations and stored procedures',
@@ -442,6 +450,92 @@ describe('renderInventoryMarkdown', () => {
     expect(lines.slice(4, 7)).toEqual(['| Section | Item | Count |', '| --- | --- | --- |', '| relations | — | 3 |']);
   });
 
+  it('lists unreachable remote methods with source and guard after the public front end, and omits the section when absent', () => {
+    const guard = 'core/mura/Application.cfc:76-81';
+    const { lines } = renderInventoryMarkdown({
+      ...miniInventory(),
+      unreachableRemote: [
+        {
+          id: 'fe:unreachable:core/mura/content/contentcommentbean.cfc#flag',
+          source: src('core/mura/content/contentCommentBean.cfc', 512, 530),
+          guard,
+          ...carry('none'),
+          owningService: null,
+          owners: [],
+          disposition: 'retired',
+          dispositionStep: 1,
+        },
+      ],
+    });
+    const at = lines.indexOf('## Unreachable remote methods');
+    expect(lines.slice(at - 2, at + 6)).toEqual([
+      EXPECTED[EXPECTED.indexOf('## Site monitor') - 2],
+      '',
+      '## Unreachable remote methods',
+      '',
+      '| Id | Source | Guard | Owner | Disposition (step) |',
+      '| --- | --- | --- | --- | --- |',
+      `| \`fe:unreachable:core/mura/content/contentcommentbean.cfc#flag\` | \`core/mura/content/contentCommentBean.cfc:512-530\` | \`${guard}\` | — | retired (1) |`,
+      '',
+    ]);
+    expect(lines[at + 6]).toBe('## Site monitor');
+    expect(renderInventoryMarkdown(miniInventory()).lines).not.toContain('## Unreachable remote methods');
+  });
+
+  it('lists unoriented relations apart from the ordered relations, says so when there are none, and omits the section when absent', () => {
+    const heading = '## Unoriented relations (not ordered)';
+    const unorientedRelations = [
+      { id: 'rel:tmailinglist.mlid->tmailinglistmembers.mlid', kind: 'dao-join', source: src('core/mura/mailinglist/memberDAO.cfc', 42) },
+    ];
+    const { lines } = renderInventoryMarkdown({ ...miniInventory(), unorientedRelations });
+    expect(lines.indexOf(heading)).toBe(lines.indexOf('## Relations and stored procedures') + section(lines, '## Relations and stored procedures').length + 1);
+    expect(section(lines, heading)).toEqual([
+      '',
+      '| Id | Kind | Source |',
+      '| --- | --- | --- |',
+      '| `rel:tmailinglist.mlid->tmailinglistmembers.mlid` | dao-join | `core/mura/mailinglist/memberDAO.cfc:42` |',
+    ]);
+    expect(section(renderInventoryMarkdown({ ...miniInventory(), unorientedRelations: [] }).lines, heading)).toEqual(['', 'None.']);
+    expect(renderInventoryMarkdown(miniInventory()).lines).not.toContain(heading);
+  });
+
+  it('lists the units of each writing entry point, then every write record by unit, table and operation with merged sources', () => {
+    const inv = miniInventory();
+    const record = (unit: string, legacyTable: string | null, op: string, source: SourceRef): WriteRecordView => ({ unit, legacyTable, op, source });
+    const dao = 'core/mura/user/userDAO.cfc';
+    const login = record('identity.login_state', 'tusers', 'update', src('core/mura/user/userUtility.cfc', 367, 370));
+    const [job] = inv.scheduledJobs;
+    const [step] = job!.steps;
+    const { lines } = renderInventoryMarkdown({
+      ...inv,
+      controllers: [
+        { ...inv.controllers[2]!, actions: [{ variants: [variant('ctl:cusers.update{type=2,action=add}', { writeSet: [record('people.person', 'tusers', 'update', src(dao, 459, 470)), record('people.person', 'tusers', 'update', src(dao, 120, 130)), login] })] }] },
+      ],
+      routes: [{ ...inv.routes[0]!, id: 'api:user.save', writeSet: [record('people.person', 'tusers', 'update', src(dao, 120, 130)), record('file-store', null, 'write', src('core/mura/file/fileManager.cfc', 88))] }],
+      frontEnd: [{ ...inv.frontEnd[0]!, writeSet: [] }],
+      scheduledJobs: [{ ...job!, steps: [{ ...step!, writeSet: [login, record('identity.login_state', 'tusers', 'update', src(dao, 698, 701))] }] }],
+    });
+    expect(section(lines, '## Write sets')).toEqual([
+      '',
+      'Units each writing entry point reaches:',
+      '',
+      '| Id | Units |',
+      '| --- | --- |',
+      '| `api:user.save` | file-store, people.person |',
+      '| `ctl:cusers.update{type=2,action=add}` | identity.login_state, people.person |',
+      '| `job:sitemonitor.bounces` | identity.login_state |',
+      '',
+      'Sources of the write records, by unit, table and operation:',
+      '',
+      '| Unit | Table | Op | Sources |',
+      '| --- | --- | --- | --- |',
+      '| `file-store` | — | write | `core/mura/file/fileManager.cfc:88` |',
+      '| `identity.login_state` | `tusers` | update | `core/mura/user/userDAO.cfc:698-701; core/mura/user/userUtility.cfc:367-370` |',
+      '| `people.person` | `tusers` | update | `core/mura/user/userDAO.cfc:120-130, 459-470` |',
+      '',
+    ]);
+  });
+
   it('omits the findings section when the inventory carries none, and says so when the list is empty', () => {
     expect(renderInventoryMarkdown(miniInventory()).lines).not.toContain('## Findings');
     expect(renderInventoryMarkdown({ ...miniInventory(), findings: [] }).lines.slice(-3)).toEqual(['## Findings', '', 'None.']);
@@ -454,6 +548,7 @@ describe('renderInventoryMarkdown', () => {
       { kind: 'decision-list-mismatch', id: 'job:sitemonitor.bounces', detail: 'no matching action variant' },
       { kind: 'unkeyed-entry', id: 'tbl:tusers', source: { path: 'core/x.cfm', lines: [] } },
       { kind: 'count-difference', measure: 'withSiteIdStatic', aapFigure: 54, computed: 55 },
+      { kind: 'count-difference', measure: 'tables.withSiteId', aapFigure: 54, computed: 55, detail: 'live catalog 54' },
       { kind: 'unclassified-gate', id: 'ctl:nosuch' },
     ];
     const { lines } = renderInventoryMarkdown({ ...miniInventory(), findings });
@@ -468,6 +563,7 @@ describe('renderInventoryMarkdown', () => {
       `| decision-list-mismatch | \`job:sitemonitor.bounces\` | \`${SERVER}:689-699\` | no matching action variant |`,
       '| unkeyed-entry | `tbl:tusers` | `core/x.cfm` | — |',
       '| count-difference | `withSiteIdStatic` | — | AAP 54, computed 55 |',
+      '| count-difference | `tables.withSiteId` | — | AAP 54, computed 55; live catalog 54 |',
       '| unclassified-gate | `ctl:nosuch` | — | — |',
     ]);
   });
@@ -485,6 +581,7 @@ const SECTION_HEADINGS: readonly string[] = [
   '## OAuth, SOAP and fixture routes',
   '## Public front end',
   '## Site monitor',
+  '## Write sets',
   '## Tables',
   '## Relations and stored procedures',
   '## Findings',

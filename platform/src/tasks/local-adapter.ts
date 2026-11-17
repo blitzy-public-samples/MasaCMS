@@ -40,7 +40,7 @@ export const SCHEDULED_TASK_QUEUE_TABLE = 'scheduled_task_queue';
 /** Table holding the local adapter's per-queue pause state. */
 export const SCHEDULED_TASK_QUEUE_STATE_TABLE = 'scheduled_task_queue_state';
 
-/** Seconds a done, failed or deleted task name stays reserved, as Cloud Tasks keeps tombstones about an hour. */
+/** Seconds a done, failed or deleted task name stays reserved, as Cloud Tasks keeps tombstones about an hour; longer while its queue is paused. */
 export const LOCAL_TOMBSTONE_RETENTION_S = 3600;
 
 /** Seconds past a task's dispatch deadline after which its `running` lease may be reclaimed. */
@@ -286,12 +286,15 @@ UPDATE ${table} t SET status = 'running', attempts = t.attempts + 1,
 FROM due
 WHERE (t.tenant_id, t.queue, t.name) = (due.tenant_id, due.queue, due.name)
 RETURNING t.*`;
-  const purgeSql = `DELETE FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted') AND updated_at < $2::timestamp(3)`;
-  // Earliest instant the tenant holds a claimable row outside paused queues, a lease once strictly past, or a purgeable tombstone.
+  // A paused queue keeps its tombstones until resumed, so a suspended stack's queue tables hold still.
+  const purgeSql = `DELETE FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted') AND updated_at < $2::timestamp(3)
+  AND NOT (queue = ANY($3::text[]))`;
+  // Earliest instant the tenant holds, outside paused queues, a claimable row, a lease once strictly past, or a purgeable tombstone.
   const wakeSql = `SELECT LEAST(
   (SELECT min(schedule_time) FROM ${table} WHERE tenant_id = $1 AND status = 'pending' AND NOT (queue = ANY($2::text[]))),
   (SELECT min(lease_until) FROM ${table} WHERE tenant_id = $1 AND status = 'running' AND NOT (queue = ANY($2::text[]))) + interval '1 millisecond',
-  (SELECT min(updated_at) FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted')) + make_interval(secs => $3)
+  (SELECT min(updated_at) FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted') AND NOT (queue = ANY($2::text[])))
+    + make_interval(secs => $3)
 ) AS wake_at`;
 
   const inTenant = <T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(db, tenantId, fn);
@@ -552,7 +555,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
 
   /**
    * Claims due rows into free dispatch slots, tenant by tenant from a rotating start, starts their dispatches, purges
-   * expired tombstones and refreshes each scanned tenant's wake time; `due` limits it to those tenants.
+   * expired tombstones of unpaused queues and refreshes each scanned tenant's wake time; `due` limits it to those tenants.
    * Resolves after the claims, with whether it reached every tenant it was to scan.
    */
   async function scan(due?: ReadonlySet<string>): Promise<{ dispatches: Promise<void>[]; reachedAll: boolean }> {
@@ -587,7 +590,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
       try {
         ({ rows, wakeMs } = await inTenant(tenant, async (tx) => {
           const claimed = await tx.query<QueueRow>(claimSql, [nowTs, LEASE_MARGIN_S, paused, limit]);
-          await tx.query(purgeSql, [tx.tenantId, cutoff]);
+          await tx.query(purgeSql, [tx.tenantId, cutoff, paused]);
           const { rows: wake } = await tx.query<{ wake_at: Date | string | null }>(wakeSql, [
             tx.tenantId,
             paused,

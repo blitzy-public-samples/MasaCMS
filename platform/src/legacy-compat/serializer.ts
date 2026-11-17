@@ -255,6 +255,20 @@ export class LegacyJsonSerializer {
     return out.join('').replace(CONTROL_CHAR, '');
   }
 
+  /**
+   * Whether legacy's serializer would raise on `input`: a struct member that is null under a key with a hint is passed
+   * to serializeInput, whose required INPUT argument it then lacks (jsonSerializer.cfc:262-275); arrays skip nulls.
+   */
+  nullUnderHint(input: unknown): boolean {
+    if (Array.isArray(input)) return (input as unknown[]).some((item) => item !== null && item !== undefined && this.nullUnderHint(item));
+    if (input === null || typeof input !== 'object' || isSimpleValue(input) || isLegacyQuery(input)) return false;
+    return Object.entries(input as Record<string, unknown>).some(([key, value]) => {
+      const lower = key.toLowerCase();
+      if (this.#excluded.has(lower)) return false;
+      return value === null || value === undefined ? this.#hints.has(lower) : this.nullUnderHint(value);
+    });
+  }
+
   #define(key: string, hint: SerializerHint): this {
     const lower = key.toLowerCase();
     // jsonSerializer.cfc:138-140: the first definition of a key wins.

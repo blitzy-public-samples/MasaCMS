@@ -145,6 +145,24 @@ describe('LegacyJsonSerializer', () => {
   ])('rejects %s', (input, error) => {
     expect(() => new LegacyJsonSerializer().serialize(input)).toThrow(error);
   });
+
+  // ACF 2023 oracle with suppressAPIParams=false: {"data":{"title":null}} echoed answers the onError 500 page, {"x":null} and {"z":{"a":null}} serialize.
+  it.each<[unknown, boolean]>([
+    [{ x: null, z: { a: null } }, false],
+    [{ data: { title: null } }, true],
+    [{ Title: null }, true],
+    [{ code: undefined }, true],
+    [{ list: [null, { id: null }] }, true],
+    [{ list: [null, 1] }, false],
+    [[{ start: null }], true],
+    [{ secret: null }, false],
+    [legacyQuery(['CODE'], [{ code: null }]), false],
+    ['title', false],
+    [null, false],
+  ])('finds in %j a null under a hinted key: %s', (input, raises) => {
+    const serializer = referenceSerializer().exclude('secret').asString('secret');
+    expect(serializer.nullUnderHint(input)).toBe(raises);
+  });
 });
 
 describe('CFML predicates', () => {

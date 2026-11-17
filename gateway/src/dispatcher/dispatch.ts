@@ -22,6 +22,7 @@ import {
 import type { InflightSide, InflightStore } from '../cutover/inflight.js';
 import type { CutoverState } from '../cutover/state.js';
 import type { CutoverEntry, InventoryFacts, RoutingIndex } from '../cutover/types.js';
+import type { SessionCarry } from '../session/carry.js';
 import type { CsrfContinuity, CsrfHandle } from '../session/csrf.js';
 import type { Hydrator } from '../session/hydration.js';
 import type { IdentityClient } from '../session/identity-client.js';
@@ -99,6 +100,8 @@ export interface DispatcherDeps {
   identity: Pick<IdentityClient, 'adminSite' | 'snapshot'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
+  /** Installs the session values target routes keep in the legacy session of a legacy-bound admin request. */
+  carry: SessionCarry;
   csrf: CsrfContinuity;
   invalidation: Invalidation;
   /** Inventory facts legacy session effects are read from. */
@@ -585,7 +588,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     });
   };
 
-  /** Forwards to legacy behind the barrier, with the session's hydrated jar cookies and CSRF claims, inside any open window. */
+  /** Forwards to legacy behind the barrier, with the session's hydrated jar cookies, carried values and CSRF claims, inside any open window. */
   const toLegacy = async (ex: Exchange, route: Route, mode: SessionMode): Promise<FastifyReply> => {
     const { request, reply } = ex;
     const { outcome } = route;
@@ -635,6 +638,8 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       const claim = deps.csrf.beforeLegacy(input, result, mode);
       if (barrier === undefined) ex.csrfHandle = await claim;
       else await claimBehind(ex, barrier, claim);
+      // Only admin views read the carried Site Manager values from the legacy session.
+      if (sessionId !== undefined && result.family === 'admin') await deps.carry.beforeLegacy(sessionId, mode, { userAgent });
       ex.csrfStartedAt = clock.now();
     }
     const extras = [...setCookiesOf(resolution), ...(ex.csrfHandle?.setCookies ?? [])];

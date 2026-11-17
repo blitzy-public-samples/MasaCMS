@@ -197,5 +197,28 @@ describe.skipIf(!(await pgAvailable()))('carch.update', () => {
       expect(await updateObjectParams(fx.deps, NOBODY, SITE, { siteid: SITE_ID, contenthistid: histId, params: '{}' })).toBeNull();
       await expect(updateObjectParams(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contenthistid: histId, approved: 0, params: '{}' })).rejects.toThrow('Element REGIONID is undefined in ARGUMENTS.');
     });
+
+    it.each([
+      ['NULL params, as the seed backfills its form object', null],
+      ['saved params', '{"a":1}'],
+    ] as const)('drafts GS-CO-14’s form object params over a published version holding %s, which keeps them', async (_label, published) => {
+      const page = (await save({ parentid: HOME, type: 'Page', title: `Form host ${String(published)}`, approved: 1 })).bean;
+      const histId = page.contentHistId();
+      const form = cfId('F', published === null ? 1 : 2);
+      const object = { objectid: form, object: 'form', contentid: page.contentId(), name: 'OPT-2 Seed Contact Form', orderno: 1, siteid: SITE_ID, columnid: 2 };
+      await fx.inTenant((tx) => fx.repo.content.replaceObjects(tx, histId, [{ ...object, params: published }]));
+      const draft = await updateObjectParams(fx.deps, ADMIN, SITE, {
+        contenthistid: histId, objectid: form, regionid: '2', orderno: '1', siteid: SITE_ID, params: '{"source":"GS-CO-14 draft"}',
+        approved: '0', object: 'form', name: 'OPT-2 Seed Contact Form', changesetid: '', removepreviouschangeset: 'false', preview: '0',
+      });
+      const draftId = draft?.contentHistId();
+      expect(draftId).not.toBe(histId);
+      expect(await fx.rows('content_object', 'contenthistid = $1', [draftId])).toEqual([expect.objectContaining({ ...object, params: '{"source":"GS-CO-14 draft"}' })]);
+      expect(await fx.rows('content_object', 'contenthistid = $1', [histId])).toEqual([expect.objectContaining({ ...object, params: published })]);
+      expect((await content('contentid = $1', [page.contentId()])).map((v) => [v.contenthistid, v.active, v.approved])).toEqual([
+        [histId, 1, 1],
+        [draftId, 0, 0],
+      ]);
+    });
   });
 });

@@ -337,6 +337,17 @@ describe('storedProcedureCheck', () => {
     expect(check.result).toBe('confirmed');
   });
 
+  it('uses a given live check instead of querying the database, with the same verdict and findings', async () => {
+    const { db, calls } = fakeDb({ procedures: [LIVE_PROCEDURE] });
+    const queried = await storedProcedureCheck(trees.refuting, { expectedDbUpdates: 2, clock, db });
+    const taken = queried.live;
+    expect(taken).not.toBeNull();
+    calls.length = 0;
+    const replayed = await storedProcedureCheck(trees.refuting, { expectedDbUpdates: 2, live: taken, db });
+    expect(calls).toEqual([]);
+    expect(replayed).toEqual(queried);
+  });
+
   it('rejects a tree whose schema-update count differs from the pinned 37', async () => {
     await expect(storedProcedureCheck(trees.clean)).rejects.toThrow('expected 37 core/mura/dbUpdates/*.cfm files, found 1');
   });

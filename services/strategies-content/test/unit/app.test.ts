@@ -79,7 +79,7 @@ function resolveParameter(param: Json): Json {
   return resolved;
 }
 
-/** Every contract operation: `x-opt2-fastify-path` when given, else `{name}` as `:name` and a final `x-opt2-wildcard` parameter as `*`. */
+/** Every contract operation: each `x-opt2-fastify-path`, one or a list, when given, else `{name}` as `:name` and a final `x-opt2-wildcard` parameter as `*`. */
 function contractRoutes(): ContractRoute[] {
   const routes: ContractRoute[] = [];
   for (const [template, item] of Object.entries(OPENAPI.paths)) {
@@ -89,14 +89,16 @@ function contractRoutes(): ContractRoute[] {
       if (op === undefined) continue;
       const params = [...shared, ...((op.parameters as Json[] | undefined) ?? [])].map(resolveParameter);
       const wildcards = new Set(params.filter((p) => p.in === 'path' && p['x-opt2-wildcard'] === true).map((p) => String(p.name)));
-      const override = op['x-opt2-fastify-path'];
-      const url =
-        typeof override === 'string'
-          ? override
-          : template
-              .replace(/\{(\w+)\}$/, (whole: string, name: string) => (wildcards.has(name) ? '*' : whole))
-              .replace(/\{(\w+)\}/g, ':$1');
-      routes.push({ operationId: String(op.operationId), method: method.toUpperCase() as HttpMethod, url });
+      const override = op['x-opt2-fastify-path'] as string | string[] | undefined;
+      const urls =
+        override !== undefined
+          ? [override].flat()
+          : [
+              template
+                .replace(/\{(\w+)\}$/, (whole: string, name: string) => (wildcards.has(name) ? '*' : whole))
+                .replace(/\{(\w+)\}/g, ':$1'),
+            ];
+      for (const url of urls) routes.push({ operationId: String(op.operationId), method: method.toUpperCase() as HttpMethod, url });
     }
   }
   return routes;

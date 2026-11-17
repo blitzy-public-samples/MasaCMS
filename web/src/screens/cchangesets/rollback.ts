@@ -21,7 +21,7 @@ const EDIT_REDIRECT: SubmitResult = Object.freeze({
 // only a denial or a service failure leaves it.
 const takesRedirect = (status: number): boolean => status !== 401 && status !== 403 && status < 500;
 
-/** `cChangesets.rollback` without the circuit gate, which the circuit index adds. */
+/** `cChangesets.rollback` without the circuit gate; withheld, so the circuit index does not register it. */
 export const changesetRollbackScreen: Omit<RedirectDefinition, 'gate'> = Object.freeze({
   circuit: 'cchangesets',
   action: 'rollback',

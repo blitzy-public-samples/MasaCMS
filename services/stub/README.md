@@ -59,7 +59,7 @@ Every route declares its roles or `public`; an undeclared route fails start-up. 
 | `programs-sites.site.changed.v1` | Consumed | `stub.tenant_registry` row |
 
 - A duplicate delivery has one effect, through the `inbox` receipt. A state version at or below the last applied one is acked and ignored.
-- A missing, invalid or unregistered tenant, a tenant mismatch or a schema failure is published to `<subscription>.dlq` (for notes, `stub.stub.note.created.v1.dlq`) with a `reason` attribute and acked. `opt2-events replay` republishes it.
+- A missing, invalid or unregistered tenant, a tenant mismatch or a schema failure is published to `<subscription>.dlq` (for notes, `stub.stub.note.created.v1.dlq`) with a `reason` attribute and acked. `opt2-events replay` republishes it. A note event whose aggregate type, id or version is not `note`, its `noteId` and its `rowVersion` is a schema failure; one whose note is not stored under the envelope tenant is a tenant mismatch.
 - The sweep queue `stub-outbox-sweep` runs every 60 s and exists locally only; `opt2-tasks reconcile` includes it when `OPT2_ENV=local`.
 
 ## Platform-proof checks

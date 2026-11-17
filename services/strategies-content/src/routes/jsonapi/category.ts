@@ -68,6 +68,7 @@ import {
   type RelationSourceKey,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Struct = Record<string, unknown>;
 type CategoryRow = Awaited<ReturnType<ContentRepository['categories']['categoriesBySite']>>[number];
@@ -359,6 +360,7 @@ async function findCategories(ctx: ContentRouteContext, call: JsonApiCall): Prom
 export const categoryHandler: EntityHandler = Object.freeze({
   entity: CATEGORY.name,
   config: CATEGORY,
+  validate,
 
   /** findOne (2292-2384): the category with the id over the pool and own tenants, else a new bean. */
   async findOne(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
@@ -612,6 +614,7 @@ async function findAssignments(ctx: ContentRouteContext, call: JsonApiCall): Pro
 export const contentCategoryAssignHandler: EntityHandler = Object.freeze({
   entity: ASSIGNMENT.name,
   config: ASSIGNMENT,
+  validate,
 
   /** findOne: the id is no column, so the site's first assignment or the unloaded bean. */
   async findOne(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {

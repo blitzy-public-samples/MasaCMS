@@ -2,11 +2,13 @@
 import type { Readable } from 'node:stream';
 import type { Opt2RouteConfig } from '@opt2/platform/auth';
 import {
+  defaultSurfaceOf,
   legacyParamsOf,
   sendLegacyResponse,
   type FastifyInstance,
   type FastifyReply,
   type FastifyRequest,
+  type LegacySurface,
 } from '@opt2/platform/service-kit';
 import type { Actor } from '../../domain/context.js';
 import type { AdminRenderResult } from '../../legacy/admin-render.js';
@@ -145,6 +147,11 @@ function siteIdOf(request: FastifyRequest): string {
   const key = Object.keys(rc).find((name) => name.toLowerCase() === 'siteid');
   const value = key === undefined ? undefined : rc[key];
   return typeof value === 'string' && value !== '' ? value : (request.opt2Auth.user?.site ?? '');
+}
+
+/** createService's `surfaceOf`: the legacy admin error page under `/v1/raw/`, whose answers web relays as admin responses; the platform default elsewhere. */
+export function rawSurfaceOf(request: FastifyRequest): LegacySurface {
+  return request.url.startsWith('/v1/raw/') ? 'admin' : defaultSurfaceOf(request);
 }
 
 /** The handler of one raw entry: circuit gate, the entry's CSRF consume, then its legacy bytes unchanged. */

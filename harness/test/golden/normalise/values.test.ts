@@ -81,6 +81,8 @@ const TIMESTAMP_SAMPLES: Readonly<Record<TimestampClass, TimestampSample>> = {
   'cf-datetime': { instants: ['June, 30 2026 12:00:00', 'January, 15 2027 08:30:45 +0100'] },
   'http-date': { instants: ['Tue, 30 Jun 2026 12:00:00 GMT', 'Fri, 15 Jan 2027 08:30:45 GMT'] },
   'cookie-expires': { instants: ['Wed, 30-Jun-2027 12:00:00 GMT', 'Fri, 15-Jan-2027 08:30:45 GMT'] },
+  'file-stamp-minute': { instants: ['2026_11_16_23_43', '2027_01_15_08_30'] },
+  'file-stamp-date': { instants: ['2026_16_11', '2027_01_15'] },
   'iso-date': { instants: ['2026-06-30', '2027-01-15'] },
   'csrf-expires': { instants: ['260630131500000', '270115083045123'], key: CSRF_FIELD_EXPIRES },
   'admin-date': { instants: ['6/30/2026', '10/302/2026'] },
@@ -165,6 +167,31 @@ describe('timestamp classes', () => {
   it.each(['Café', '12345'])('leaves the non-timestamp %s unclassified and unchanged', (value) => {
     expect(timestampClassOf(value, rules)).toBeUndefined();
     expect(normaliseTimestamp(value, rules)).toBe(value);
+  });
+
+  // Masa's download filenames exported at two times: a settings bundle's minute stamp, a form export's date stamp.
+  it.each([
+    {
+      names: [
+        'export_sports_statua_corrupti_alias_claudeo_apud_tenant-a_2026_11_16_23_43.zip',
+        'export_sports_statua_corrupti_alias_claudeo_apud_tenant-a_2026_11_16_23_50.zip',
+      ],
+      normalised: 'export_sports_statua_corrupti_alias_claudeo_apud_tenant-a_<ts:file-stamp-minute>.zip',
+    },
+    {
+      names: ['opt_2_seed_contact_form_2026_16_11_tenant-a.zip', 'opt_2_seed_contact_form_2026_17_11_tenant-a.zip'],
+      normalised: 'opt_2_seed_contact_form_<ts:file-stamp-date>_tenant-a.zip',
+    },
+  ])('replaces the whole underscore stamp in $normalised whatever the export time', ({ names, normalised }) => {
+    for (const name of names) expect(normaliseText(name, createIdOrdinals(), rules)).toBe(normalised);
+  });
+
+  it('keeps a filename stamp that changed format class a difference', () => {
+    const minute = normaliseText('export_page_tenant-a_2026_11_16_23_43.zip', createIdOrdinals(), rules);
+    const date = normaliseText('export_page_tenant-a_2026_11_16.zip', createIdOrdinals(), rules);
+
+    expect(date).toBe('export_page_tenant-a_<ts:file-stamp-date>.zip');
+    expect(minute).toBe('export_page_tenant-a_<ts:file-stamp-minute>.zip');
   });
 });
 

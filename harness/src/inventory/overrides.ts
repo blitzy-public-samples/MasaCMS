@@ -10,6 +10,9 @@ export const ROLE_OVERRIDES_PATH: string = repoPath('harness/inventory/role-over
 /** Default location of the reviewed legacy table-writer overrides. */
 export const WRITER_OVERRIDES_PATH: string = repoPath('harness/inventory/writer-overrides.yaml');
 
+/** Default location of the reviewed admin view partials. */
+export const VIEW_PARTIALS_PATH: string = repoPath('harness/inventory/view-partials.yaml');
+
 /** How a legacy writer is reached: an inventoried request, an ACF task, a `cfthread`, or application start-up. */
 export const Trigger = z.enum(['request', 'scheduler', 'thread', 'appstart']);
 export type Trigger = z.infer<typeof Trigger>;
@@ -229,12 +232,16 @@ const writerFields = z.strictObject({
   noGroupJoin: z.boolean().optional(),
   preventedBy: PreventedBy.optional(),
   dynamic: z.boolean().optional(),
+  reaches: z.array(z.strictObject({ component: repoRelativePath, method: text })).min(1).optional(),
   reason: text,
 });
 
 type WriterFields = z.infer<typeof writerFields>;
 
-/** A reviewed legacy writer; it names its tables directly or through a scheduled job's steps. */
+/**
+ * A reviewed legacy writer; it names its tables directly or through a scheduled job's steps. `reaches` names the
+ * methods its unresolvable call runs, which the write closure walks as callees.
+ */
 export type WriterOverride = Omit<WriterFields, 'tables' | 'tablesFrom'> &
   ({ tables: string[]; tablesFrom?: undefined } | { tables?: undefined; tablesFrom: { job: string } });
 
@@ -303,7 +310,49 @@ export const writerOverridesSchema = z
 /** A validated writer-overrides document. */
 export type WriterOverrides = z.infer<typeof writerOverridesSchema>;
 
-/** Raised when an override file cannot be read, is not YAML, fails its schema or carries another source SHA. */
+/** `admin/core/views/<circuit>/<name>.cfm`; groups 1 and 2 are circuit and name. */
+const CIRCUIT_VIEW = /^admin\/core\/views\/([A-Za-z0-9_]+)\/([A-Za-z0-9_]+)\.cfm$/;
+
+const viewPartial = z
+  .strictObject({
+    id: z.string().regex(/^vp:[a-z0-9_]+\.[a-z0-9_]+$/i, 'must be vp:<circuit>.<name>'),
+    view: z.string().regex(CIRCUIT_VIEW, 'must be admin/core/views/<circuit>/<name>.cfm'),
+    /** The `cfinclude` of the view in each including view. */
+    includers: z.array(SourceRef).min(1),
+    reason: text,
+  })
+  .refine((p) => p.id.toLowerCase() === p.view.replace(CIRCUIT_VIEW, 'vp:$1.$2').toLowerCase(), {
+    message: 'must equal vp:<circuit>.<name> of view',
+    path: ['id'],
+  });
+
+/** Schema of `harness/inventory/view-partials.yaml`. */
+export const viewPartialsSchema = z
+  .strictObject({
+    sourceSha: commitSha,
+    partials: z.array(viewPartial),
+  })
+  .superRefine((doc, ctx) => {
+    flagDuplicateIds(ctx, doc.partials, ['partials']);
+    const views = new Set<string>();
+    doc.partials.forEach((p, index) => {
+      const key = p.view.toLowerCase();
+      if (views.has(key)) {
+        ctx.addIssue({ code: 'custom', message: `duplicate view ${p.view}`, path: ['partials', index, 'view'] });
+      }
+      views.add(key);
+    });
+  });
+
+/** A validated view-partials document. */
+export type ViewPartials = z.infer<typeof viewPartialsSchema>;
+/** A reviewed included view that renders only as part of its includers, so it is not an admin action. */
+export type ViewPartial = ViewPartials['partials'][number];
+
+/**
+ * Raised when an override file cannot be read, is not YAML, fails its schema, carries another source SHA or the source
+ * tree contradicts it.
+ */
 export class OverrideError extends Error {
   override name = 'OverrideError';
   readonly path: string;
@@ -346,6 +395,11 @@ export function parseWriterOverrides(text: string, sourceLabel: string): WriterO
   return parseWith(writerOverridesSchema, text, sourceLabel);
 }
 
+/** Validates view-partials YAML `text`; throws `OverrideError` naming `sourceLabel`. Does not check the pin. */
+export function parseViewPartials(text: string, sourceLabel: string): ViewPartials {
+  return parseWith(viewPartialsSchema, text, sourceLabel);
+}
+
 async function readOverrideFile(path: string): Promise<string> {
   try {
     return await readFile(path, 'utf8');
@@ -371,6 +425,13 @@ export async function loadRoleOverrides(path: string = ROLE_OVERRIDES_PATH): Pro
 /** Reads `path`, validates it and checks its `sourceSha` against the source pin; throws `OverrideError`. */
 export async function loadWriterOverrides(path: string = WRITER_OVERRIDES_PATH): Promise<WriterOverrides> {
   const document = parseWriterOverrides(await readOverrideFile(path), path);
+  assertPinned(document.sourceSha, path);
+  return document;
+}
+
+/** Reads `path`, validates it and checks its `sourceSha` against the source pin; throws `OverrideError`. */
+export async function loadViewPartials(path: string = VIEW_PARTIALS_PATH): Promise<ViewPartials> {
+  const document = parseViewPartials(await readOverrideFile(path), path);
   assertPinned(document.sourceSha, path);
   return document;
 }

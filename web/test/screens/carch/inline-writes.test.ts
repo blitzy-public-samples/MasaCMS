@@ -36,9 +36,12 @@ const CSRF_FIELDS = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CS
 const ENTRY_FIELDS = { contentid: CONTENT_ID, contenthistid: HIST_ID, ...CSRF_FIELDS };
 const SERVICE_ERROR = { apiversion: 'v1', method: 'carch', error: { message: 'Denied', code: 'denied' } };
 
-/** The legacy controller method of each carried inline write. */
+/** The legacy controller method of each inline write. */
 const LEGACY_ACTIONS = ['saveQuickEdit', 'saveCopyInfo', 'unlockFile', 'unlockNode', 'updateObjectParams'] as const;
 const RELAYED_ACTIONS = LEGACY_ACTIONS.filter((action) => action !== 'updateObjectParams');
+// Their content saves write the decision-list table tcontenteventreminders, so both stay withheld on legacy.
+const WITHHELD_ACTIONS = ['saveQuickEdit', 'updateObjectParams'] as const;
+const CARRIED_ACTIONS = LEGACY_ACTIONS.filter((action) => !(WITHHELD_ACTIONS as readonly string[]).includes(action));
 
 // The contract names no `/v1/sites/<site>/carch/<action>` path: the aborting writes are raw relays and
 // updateObjectParams posts to its version's object-params write.
@@ -169,7 +172,7 @@ async function answerOf(def: ScreenDefinition, ctx: ScreenContext): Promise<RawB
 }
 
 describe('carch inline write registration', () => {
-  it('registers each carried inline write once and leaves the withheld carch.copy to legacy', () => {
+  it('defines each inline write once and leaves the withheld carch.copy to legacy', () => {
     expect(inlineWriteScreens.map((def) => def.action).toSorted()).toEqual(
       LEGACY_ACTIONS.map((action) => action.toLowerCase()).toSorted(),
     );
@@ -180,11 +183,19 @@ describe('carch inline write registration', () => {
     expect(findScreen('cArch', 'copy', copy)).toBeUndefined();
   });
 
-  it.each(LEGACY_ACTIONS)('serves carch.%s in json mode under strategies-content from the carch barrel', (action) => {
+  it.each(CARRIED_ACTIONS)('serves carch.%s in json mode under strategies-content from the carch barrel', (action) => {
     const def = definition(action);
     expect(def).toMatchObject({ circuit: 'carch', action: action.toLowerCase(), mode: 'json', owner: SERVICE });
     expect(carchScreens).toContain(def);
     expect(findScreen('core:cArch', action, { siteid: SITE, approved: '0' })).toBe(def);
+  });
+
+  it.each(WITHHELD_ACTIONS)('defines carch.%s in json mode but leaves the withheld action to legacy', (action) => {
+    const def = definition(action);
+    expect(def).toMatchObject({ circuit: 'carch', action: action.toLowerCase(), mode: 'json', owner: SERVICE });
+    expect(carchScreens).not.toContain(def);
+    expect(carchScreens.some((candidate) => candidate.action === action.toLowerCase())).toBe(false);
+    expect(findScreen('core:cArch', action, { siteid: SITE, approved: '0' })).toBeUndefined();
   });
 
   it('leaves an approved carch.updateObjectParams to legacy', () => {

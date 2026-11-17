@@ -60,6 +60,7 @@ import {
   type RelationSourceKey,
   type SourceBeanGetter,
 } from './types.js';
+import { validate } from './validate.js';
 
 type Struct = Record<string, unknown>;
 type RouteContext = Parameters<JsonApiHandlerFn>[0];
@@ -630,6 +631,7 @@ async function deleteFileMetaDataCall(ctx: RouteContext, call: JsonApiCall): Pro
 export const fileHandler: EntityHandler = {
   entity: 'file',
   config: FILE_CONFIG,
+  validate,
   findOne: findOneHandler(FILE),
   findNew: findNewHandler(FILE),
   findMany: findManyHandler(FILE),
@@ -666,6 +668,7 @@ async function loadFileMetaDataBy(ctx: RouteContext, call: JsonApiCall, key: Rel
 export const fileMetaDataHandler: EntityHandler = {
   entity: 'fileMetaData',
   config: META_CONFIG,
+  validate,
   findOne: findOneHandler(META),
   findNew: findNewHandler(META),
   findMany: findManyHandler(META),

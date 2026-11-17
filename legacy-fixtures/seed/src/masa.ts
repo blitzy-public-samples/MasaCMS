@@ -21,6 +21,8 @@ export interface SiteRow {
   filePoolID: SiteKey;
   displayPoolID: SiteKey;
   contentPoolID: SiteKey;
+  /** `tsettings.PageLimit`; null keeps Masa's default. */
+  pageLimit: number | null;
 }
 
 /** Masa group (`tusers` Type 1) stored in a private user pool. */
@@ -156,6 +158,43 @@ export interface OAuthClientRow {
   userID: string;
 }
 
+/** One answered field of a form response (`tformresponsequestions`). */
+export interface FormResponseField {
+  name: string;
+  value: string;
+}
+
+/** Response to a site's Form (`tformresponsepackets`), answering every field of the form in page order. */
+export interface FormResponseRow {
+  responseID: string;
+  formID: string;
+  siteID: SiteKey;
+  entered: string;
+  fields: FormResponseField[];
+}
+
+/** Masa commenter (`tcontentcommentcommenters`): a public-pool member keyed by userID, or a visitor keyed by e-mail. */
+export interface CommenterRow {
+  commenterID: string;
+  name: string;
+  email: string;
+  remoteID: string;
+}
+
+/** Comment (`tcontentcomments`) on the page hosting a site's Form, posted under its commenter's name and e-mail; a reply names its parent. */
+export interface CommentRow {
+  commentID: string;
+  contentID: string;
+  siteID: SiteKey;
+  parentID: string | null;
+  commenterID: string;
+  name: string;
+  email: string;
+  comments: string;
+  entered: string;
+  isApproved: 0 | 1;
+}
+
 /** Masa part of the dataset, each array in load order. */
 export interface MasaData {
   sites: SiteRow[];
@@ -166,6 +205,9 @@ export interface MasaData {
   content: ContentRow[];
   files: FileRow[];
   oauthClients: OAuthClientRow[];
+  formResponses: FormResponseRow[];
+  commenters: CommenterRow[];
+  comments: CommentRow[];
 }
 
 /** Lookups over a `MasaData`, generated or read back from disk. */
@@ -226,6 +268,13 @@ const FORM_FIELDS = [
   { name: 'email', label: 'Email', fieldtype: 'textfield', isrequired: 1, validatetype: 'email' },
   { name: 'message', label: 'Message', fieldtype: 'textarea', isrequired: 0, validatetype: '' },
 ] as const;
+const FORM_RESPONSES = 12;
+// Per form host page: member commenters, then visitors, each posting in turn.
+const MEMBER_COMMENTERS = 2;
+const VISITOR_COMMENTERS = 2;
+const COMMENTS = 6;
+// The fifth comment replies to the second; the last awaits approval.
+const REPLY = { index: 4, parent: 1 } as const;
 
 interface Build {
   config: SeedConfig;
@@ -282,9 +331,14 @@ function slug(text: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
+/** Lower-case ASCII `<first>.<last>`, dropping an empty part; `fallback` when both are empty. */
+function dottedName(fname: string, lname: string, fallback: string): string {
+  return [asciiLower(fname), asciiLower(lname)].filter((part) => part.length > 0).join('.') || fallback;
+}
+
 /** Unused `<first>.<last>` username, numbered on a clash. */
 function takeUsername(b: Build, fname: string, lname: string): string {
-  const base = [asciiLower(fname), asciiLower(lname)].filter((part) => part.length > 0).join('.') || 'user';
+  const base = dottedName(fname, lname, 'user');
   let name = base;
   for (let n = 2; b.usernames.has(name); n += 1) name = `${base}${n}`;
   b.usernames.add(name);
@@ -314,7 +368,7 @@ function bit(value: boolean): 0 | 1 {
 }
 
 function buildSite(config: SeedConfig, siteID: SiteKey, position: number): SiteRow {
-  const { site, programId, pools } = config.sites[siteID];
+  const { site, programId, pools, pageLimit } = config.sites[siteID];
   return {
     siteID,
     site: clip(site, MAX.site),
@@ -329,6 +383,7 @@ function buildSite(config: SeedConfig, siteID: SiteKey, position: number): SiteR
     filePoolID: pools.filePoolID ?? siteID,
     displayPoolID: pools.displayPoolID ?? siteID,
     contentPoolID: pools.contentPoolID ?? siteID,
+    pageLimit,
   };
 }
 
@@ -793,6 +848,84 @@ function buildOAuthClients(b: Build, site: SiteRow, accounts: readonly UserRow[]
   }));
 }
 
+/** Responses to the site's Form, oldest first, each answering the form's fields in page order. */
+function buildFormResponses(b: Build, site: SiteRow, form: ContentRow): FormResponseRow[] {
+  const rng = fork(b, site.siteID, 'formResponses');
+  const { faker } = rng;
+  return instants(b, rng, FORM_RESPONSES).map((entered): FormResponseRow => {
+    const fname = faker.person.firstName();
+    const lname = faker.person.lastName();
+    const values: Record<(typeof FORM_FIELDS)[number]['name'], string> = {
+      fullname: clip(`${fname} ${lname}`, MAX.wide),
+      email: `${dottedName(fname, lname, 'respondent')}@${b.config.emailDomain}`,
+      message: faker.lorem.sentences(rng.int(1, 3)),
+    };
+    return {
+      responseID: newId(b, rng),
+      formID: form.contentID,
+      siteID: site.siteID,
+      entered,
+      fields: FORM_FIELDS.map(({ name }) => ({ name, value: values[name] })),
+    };
+  });
+}
+
+/** Visitor e-mail not in `taken`, numbered on a clash; records it. */
+function visitorEmail(b: Build, taken: Set<string>, fname: string, lname: string): string {
+  const base = dottedName(fname, lname, 'visitor');
+  let email = `${base}@${b.config.emailDomain}`;
+  for (let n = 2; taken.has(email); n += 1) email = `${base}${n}@${b.config.emailDomain}`;
+  taken.add(email);
+  return email;
+}
+
+/**
+ * Commenters of the page hosting the site's Form, public-pool `members` first, then visitors with e-mails outside
+ * `emails`, and their comments, oldest first, taking turns.
+ */
+function buildComments(
+  b: Build,
+  site: SiteRow,
+  host: ContentRow,
+  members: readonly UserRow[],
+  emails: Set<string>,
+): [commenters: CommenterRow[], comments: CommentRow[]] {
+  if (members.length < MEMBER_COMMENTERS) {
+    throw printable(new RangeError(`Site ${site.siteID} needs at least ${MEMBER_COMMENTERS} public-pool members to comment, got ${members.length}`));
+  }
+  const rng = fork(b, site.siteID, 'comments');
+  const { faker } = rng;
+  const commenters: CommenterRow[] = rng.pickMany(members, MEMBER_COMMENTERS).map((member) => ({
+    commenterID: newId(b, rng),
+    name: clip(`${member.fname} ${member.lname}`, MAX.person),
+    email: member.email,
+    remoteID: member.userID,
+  }));
+  for (let i = 0; i < VISITOR_COMMENTERS; i += 1) {
+    const fname = faker.person.firstName();
+    const lname = faker.person.lastName();
+    const email = visitorEmail(b, emails, fname, lname);
+    commenters.push({ commenterID: newId(b, rng), name: clip(`${fname} ${lname}`, MAX.person), email, remoteID: email });
+  }
+  const comments: CommentRow[] = [];
+  for (const [i, entered] of instants(b, rng, COMMENTS).entries()) {
+    const by = commenters[i % commenters.length] as CommenterRow;
+    comments.push({
+      commentID: newId(b, rng),
+      contentID: host.contentID,
+      siteID: site.siteID,
+      parentID: i === REPLY.index ? (comments[REPLY.parent] as CommentRow).commentID : null,
+      commenterID: by.commenterID,
+      name: by.name,
+      email: by.email,
+      comments: faker.lorem.sentences(rng.int(1, 3)),
+      entered,
+      isApproved: bit(i < COMMENTS - 1),
+    });
+  }
+  return [commenters, comments];
+}
+
 /** Generates the Masa part of the dataset; equal inputs yield identical output. */
 export function buildMasa(config: SeedConfig, random: SeedRandom, calendar: Calendar): MasaData {
   const { rehearsal } = config.reserved;
@@ -823,7 +956,21 @@ export function buildMasa(config: SeedConfig, random: SeedRandom, calendar: Cale
   for (const site of sites) categories.push(...buildCategories(b, site, categories));
   const files = buildFiles(b);
   const content = sites.flatMap((site) => buildContent(b, site, categories, files));
-  return { sites, groups, users, memberships, categories, content, files, oauthClients };
+  const formResponses: FormResponseRow[] = [];
+  const commenters: CommenterRow[] = [];
+  const comments: CommentRow[] = [];
+  const emails = new Set(users.map((user) => user.email));
+  for (const site of sites) {
+    const form = content.find((row) => row.siteID === site.siteID && row.type === 'Form');
+    const host = content.find((row) => row.siteID === site.siteID && row.formID !== undefined);
+    if (form === undefined || host === undefined) continue;
+    formResponses.push(...buildFormResponses(b, site, form));
+    const members = users.filter((user) => user.isPublic === 1 && user.siteID === site.publicUserPoolID);
+    const [siteCommenters, siteComments] = buildComments(b, site, host, members, emails);
+    commenters.push(...siteCommenters);
+    comments.push(...siteComments);
+  }
+  return { sites, groups, users, memberships, categories, content, files, oauthClients, formResponses, commenters, comments };
 }
 
 function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[]> {

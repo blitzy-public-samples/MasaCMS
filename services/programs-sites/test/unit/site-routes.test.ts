@@ -123,7 +123,7 @@ let app: FastifyInstance;
 let authenticateDelay: (() => Promise<void>) | undefined;
 /** Log records the service wrote during the current test. */
 let logLines: Record<string, unknown>[] = [];
-let sites: { [K in Exclude<keyof SitesDomain, 'emitStateEvents'>]: Mock<SitesDomain[K]> };
+let sites: { [K in Exclude<keyof SitesDomain, 'emitStateEvents' | 'targetOnlyColumns'>]: Mock<SitesDomain[K]> };
 
 const db: TenantDb = {
   schema: 'programs_sites',
@@ -210,7 +210,7 @@ beforeEach(async () => {
       destination: { write: (line: string) => logLines.push(JSON.parse(line) as Record<string, unknown>) },
     }),
   });
-  await registerSiteRoutes(app, { db, sites: { ...sites, emitStateEvents: vi.fn() } });
+  await registerSiteRoutes(app, { db, sites: { ...sites, emitStateEvents: vi.fn(), targetOnlyColumns: vi.fn() } });
   await app.ready();
 });
 

@@ -1,6 +1,7 @@
 // CFML source model and per-branch write closure for the legacy inventory (tables[].writers[], action write sets).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { cfIsBoolean, cfToBoolean } from '@opt2/platform/legacy-compat';
 import { isInsideRepo } from '../lib/paths.js';
 import type {
   SessionEffects,
@@ -969,7 +970,29 @@ interface Region {
   end: number;
   cond?: GuardCondition;
   thread?: { name: string; open: number; close: number };
+  /** A body that may run any number of times (`loop`: a loop or nested function) or stop part-way (`try`). */
+  block?: 'loop' | 'try';
+  /** What must hold for a loop body to run at all; it prunes the body when false and is otherwise ignored. */
+  entry?: GuardCondition;
 }
+
+/** A statement that leaves the function or request: `abort`, `return`, `throw`/`rethrow` or `location`. */
+interface Exit {
+  at: number;
+  kind: 'abort' | 'return' | 'throw' | 'location';
+}
+
+const EXIT_WORDS: Readonly<Record<string, Exit['kind']>> = {
+  abort: 'abort',
+  cfabort: 'abort',
+  return: 'return',
+  throw: 'throw',
+  rethrow: 'throw',
+  cfthrow: 'throw',
+  location: 'location',
+  cflocation: 'location',
+};
+const LOOP_WORDS = new Set(['for', 'while', 'do']);
 
 /** Readable source form of a guard condition. */
 export function describeCondition(c: GuardCondition): string {
@@ -1010,11 +1033,68 @@ function literalValue(t: Token | undefined): string | null {
   return null;
 }
 
+/** The expression a tag attribute holds: the inside of a whole `#…#`, a number as written, else undefined. */
+function attributeExpr(value: string | undefined): string | undefined {
+  const t = value?.trim() ?? '';
+  if (/^#[^#]+#$/.test(t)) return t.slice(1, -1).trim();
+  return /^[-+]?(\d+\.?\d*|\.\d+)$/.test(t) ? t : undefined;
+}
+
+/** What must hold for a `<cfloop>` body to run once: its index range is not empty, its array has an item, or its condition holds. */
+function tagLoopEntry(attrs: Readonly<Record<string, string>>): GuardCondition | undefined {
+  if (attrs.condition !== undefined) return attrs.condition.trim() === '' ? undefined : exprCond(stripHashes(attrs.condition));
+  if (attrs.array !== undefined) {
+    const array = attributeExpr(attrs.array);
+    return array === undefined ? undefined : exprCond(`arrayLen(${array}) gte 1`);
+  }
+  const from = attributeExpr(attrs.from);
+  const to = attributeExpr(attrs.to);
+  const step = attrs.step === undefined ? '1' : attributeExpr(attrs.step);
+  if (from === undefined || to === undefined || step === undefined || !/^[-+]?(\d+\.?\d*|\.\d+)$/.test(step) || Number(step) === 0) return undefined;
+  return exprCond(Number(step) > 0 ? `(${to}) gte (${from})` : `(${from}) gte (${to})`);
+}
+
+/**
+ * What must hold for a script loop body to run once: a `while` condition, or a `for` condition with its loop
+ * variable replaced by the literal the header starts it at.
+ */
+function scriptLoopEntry(word: string, header: string): GuardCondition | undefined {
+  if (word === 'while') return header.trim() === '' ? undefined : exprCond(header);
+  if (word !== 'for') return undefined;
+  const toks = tokenize(header, 0, header.length);
+  const pairs = bracketPairs(toks);
+  const semis: number[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    const p = pairs[i] ?? -1;
+    if (p > i) i = p;
+    else if (isP(toks[i], ';')) semis.push(i);
+  }
+  if (semis.length !== 2) return undefined;
+  const [s1 = 0, s2 = 0] = semis;
+  const cond = toks.slice(s1 + 1, s2);
+  if (cond.length === 0) return undefined;
+  const init = toks.slice(isWord(toks[0], 'var') ? 1 : 0, s1);
+  const name = init.length === 3 && init[0]?.k === 'id' && isP(init[1], '=') ? init[0].v.toLowerCase() : undefined;
+  const start = name === undefined ? null : literalValue(init[2]);
+  const from = cond[0]?.s ?? 0;
+  let text = '';
+  let at = from;
+  cond.forEach((t, i) => {
+    const loopVar = t.k === 'id' && t.v.toLowerCase() === name && !isP(cond[i - 1], '.') && !isP(cond[i + 1], '(');
+    if (!loopVar) return;
+    text += header.slice(at, t.s) + (start === null ? '' : `(${init[2]?.v ?? ''})`);
+    at = t.e;
+  });
+  if (name !== undefined && start === null && at !== from) return undefined;
+  text += header.slice(at, cond[cond.length - 1]?.e ?? at);
+  return exprCond(text);
+}
+
 const BLOCK_WORDS = new Set(['for', 'while', 'do', 'try', 'catch', 'finally', 'else', 'transaction', 'lock', 'savecontent']);
 const ATTRIBUTE_BLOCKS = new Set(['transaction', 'lock', 'savecontent']);
 
-/** Guard and thread regions of the cfscript between `from` and `to` of `text`. */
-function scriptRegions(text: string, from: number, to: number, out: Region[]): void {
+/** Guard, thread and block regions of the cfscript between `from` and `to` of `text`, and its exit statements. */
+function scriptRegions(text: string, from: number, to: number, out: Region[], exits: Exit[]): void {
   const toks = tokenize(text, from, to);
   const pairs = bracketPairs(toks);
   const startOf = (i: number): number => toks[i]?.s ?? to;
@@ -1032,11 +1112,34 @@ function scriptRegions(text: string, from: number, to: number, out: Region[]): v
     let i = from0;
     while (i < end) i = stmt(i, end);
   };
+  /** Marks the brace body opening at `j` as a nested function; returns the index past it, or -1 when none opens there. */
+  const nested = (j: number, end: number): number => {
+    const brace = toks[j];
+    if (brace === undefined || !isP(brace, '{')) return -1;
+    const c = closeOf(j, end);
+    out.push({ start: brace.e, end: startOf(c), block: 'loop' });
+    return c + 1;
+  };
   const simple = (i: number, end: number): number => {
     let j = i;
     while (j < end) {
       if (isP(toks[j], ';')) return j + 1;
       if (j > i && isP(toks[j], '}')) return j;
+      // Closure bodies run when and as often as their callee chooses.
+      if (isWord(toks[j], 'function') && isP(toks[j + 1], '(')) {
+        const past = nested(closeOf(j + 1, end) + 1, end);
+        if (past >= 0) {
+          j = past;
+          continue;
+        }
+      }
+      if (isP(toks[j], '=') && isP(toks[j + 1], '>') && toks[j]?.e === toks[j + 1]?.s) {
+        const past = nested(j + 2, end);
+        if (past >= 0) {
+          j = past;
+          continue;
+        }
+      }
       j = skipBracket(j, end);
     }
     return end;
@@ -1148,7 +1251,8 @@ function scriptRegions(text: string, from: number, to: number, out: Region[]): v
       if (w === 'function') {
         let j = i + 1;
         while (j < end && !isP(toks[j], '{') && !isP(toks[j], ';')) j = skipBracket(j, end);
-        return isP(toks[j], '{') ? closeOf(j, end) + 1 : j + 1;
+        const past = nested(j, end);
+        return past >= 0 ? past : j + 1;
       }
       if (BLOCK_WORDS.has(w)) {
         let j = i + 1;
@@ -1159,13 +1263,23 @@ function scriptRegions(text: string, from: number, to: number, out: Region[]): v
         if (w === 'catch' && isP(toks[j], '{')) {
           return branch(j, end, exprCond(`catch${header >= 0 ? text.slice(startOf(i + 1), endOf(header)) : ''}`));
         }
-        if (isP(toks[j], '{')) {
+        const block: Region['block'] = LOOP_WORDS.has(w) ? 'loop' : w === 'try' ? 'try' : undefined;
+        const entry = block === 'loop' && header >= 0 ? scriptLoopEntry(w, text.slice(endOf(i + 1), startOf(header))) : undefined;
+        const region = (start: number, stop: number): Region => ({ start, end: stop, block, ...(entry === undefined ? {} : { entry }) });
+        const brace = toks[j];
+        if (brace !== undefined && isP(brace, '{')) {
           const c = closeOf(j, end);
+          if (block !== undefined) out.push(region(brace.e, startOf(c)));
           seq(j + 1, c);
           return c + 1;
         }
-        return j >= end ? end : stmt(j, end);
+        if (j >= end) return end;
+        const next = stmt(j, end);
+        if (block !== undefined) out.push(region(startOf(j), endOf(next - 1)));
+        return next;
       }
+      const exit = EXIT_WORDS[w];
+      if (exit !== undefined && !isP(toks[i + 1], '.') && !(isP(toks[i + 1], '=') && !isP(toks[i + 2], '='))) exits.push({ at: t.s, kind: exit });
     }
     return simple(i, end);
   };
@@ -1177,8 +1291,8 @@ function stripHashes(expr: string): string {
   return t.length > 1 && t.startsWith('#') && t.endsWith('#') ? t.slice(1, -1).trim() : t;
 }
 
-/** Guard and thread regions of tag-syntax `text`, descending into `<cfscript>` blocks. */
-function tagRegions(text: string, out: Region[]): void {
+/** Guard, thread and block regions of tag-syntax `text` and its exit tags, descending into `<cfscript>` blocks. */
+function tagRegions(text: string, out: Region[], exits: Exit[]): void {
   interface SwitchFrame {
     k: 'switch';
     subject: string;
@@ -1190,7 +1304,8 @@ function tagRegions(text: string, out: Region[]): void {
     | { k: 'case'; sw: SwitchFrame | undefined; values: Array<string | null>; start: number }
     | { k: 'default'; sw: SwitchFrame | undefined; start: number }
     | { k: 'catch'; text: string; start: number }
-    | { k: 'thread'; name: string; open: number; start: number };
+    | { k: 'thread'; name: string; open: number; start: number }
+    | { k: 'loop' | 'try' | 'output'; block: Region['block']; start: number; entry?: GuardCondition };
   const frames: Frame[] = [];
   const innermost = (k: Frame['k']): number => {
     for (let i = frames.length - 1; i >= 0; i--) if (frames[i]?.k === k) return i;
@@ -1200,7 +1315,7 @@ function tagRegions(text: string, out: Region[]): void {
     const f = frames[innermost('switch')];
     return f?.k === 'switch' ? f : undefined;
   };
-  const re = /<(\/?)cf(if|elseif|else|switch|case|defaultcase|catch|thread|script)\b/gi;
+  const re = /<(\/?)cf(if|elseif|else|switch|case|defaultcase|catch|thread|script|loop|try|output|abort|return|throw|rethrow|location)\b/gi;
   for (let m = re.exec(text); m !== null; m = re.exec(text)) {
     const at = m.index;
     const end = tagEnd(text, at);
@@ -1209,11 +1324,32 @@ function tagRegions(text: string, out: Region[]): void {
     const selfClosing = /\/\s*$/.test(rawInner);
     const inner = rawInner.replace(/\/\s*$/, '');
     re.lastIndex = end;
+    const exit = m[1] === '/' ? undefined : EXIT_WORDS[name];
+    if (exit !== undefined) {
+      exits.push({ at, kind: exit });
+      continue;
+    }
+    if (name === 'loop' || name === 'try' || name === 'output') {
+      if (m[1] !== '/') {
+        const attrs = name === 'try' ? {} : parseAttributes(inner);
+        const block: Region['block'] = name === 'try' ? 'try' : name === 'loop' || attrs.query !== undefined || attrs.group !== undefined ? 'loop' : undefined;
+        const entry = name === 'loop' ? tagLoopEntry(attrs) : undefined;
+        if (!selfClosing) frames.push({ k: name, block, start: end, ...(entry === undefined ? {} : { entry }) });
+      } else {
+        const idx = innermost(name);
+        const f = frames[idx];
+        if (f !== undefined && (f.k === 'loop' || f.k === 'try' || f.k === 'output')) {
+          if (f.block !== undefined) out.push({ start: f.start, end: at, block: f.block, ...(f.entry === undefined ? {} : { entry: f.entry }) });
+          frames.splice(idx);
+        }
+      }
+      continue;
+    }
     if (m[1] !== '/') {
       if (name === 'script') {
         const close = indexOfCi(text, '</cfscript', end);
         const stop = close < 0 ? text.length : close;
-        scriptRegions(text, end, stop, out);
+        scriptRegions(text, end, stop, out, exits);
         re.lastIndex = stop;
       } else if (name === 'if') {
         frames.push({ k: 'if', chain: [exprCond(inner)], start: end, isElse: false });
@@ -1271,25 +1407,96 @@ function tagRegions(text: string, out: Region[]): void {
 // Guard evaluation over request parameters
 // ---------------------------------------------------------------------------------------------------------------
 
-/** Request predicates: a value, `true` (present and non-empty) or `false`/`null` (absent or empty). */
-export type Predicates = Readonly<Record<string, string | boolean | null>>;
+/** A predicate that holds when the parameter is present and CFML-true, as the gateway matches a `truthy` variant. */
+export interface TruthyPredicate {
+  readonly truthy: true;
+}
 
-type PredicateValue = string | boolean | null;
+/** The one {@link TruthyPredicate} value. */
+export const CFML_TRUTHY: TruthyPredicate = Object.freeze({ truthy: true });
 
-/** A name the request reaches the code under: a struct (`rc.p`), an event (`event.getValue('p')`) or a Mura scope (`$.event('p')`). */
+/**
+ * Request predicates: a value (present and equal), `true` (present and non-empty), {@link CFML_TRUTHY} (present and
+ * CFML-true) or `false`/`null` (absent or empty).
+ */
+export type Predicates = Readonly<Record<string, PredicateValue>>;
+
+export type PredicateValue = string | boolean | null | TruthyPredicate;
+
+/** Whether `p` is the CFML-truthy predicate kind. */
+export function isTruthyPredicate(p: PredicateValue | undefined): p is TruthyPredicate {
+  return typeof p === 'object' && p !== null;
+}
+
+/** CFML truthiness of request text as the gateway reads it: a CFML boolean that converts to true. */
+export function cfTruthyText(s: string): boolean {
+  return cfIsBoolean(s) && cfToBoolean(s);
+}
+
+/**
+ * A name the request reaches the code under: a struct (`rc.p`), an event (`event.getValue('p')`), a Mura scope
+ * (`$.event('p')`) or a bean populated from the request (`bean.getP()`), whose `component` holds keys of its own.
+ */
 interface Alias {
   name: string;
-  kind: 'struct' | 'event' | 'scope';
+  kind: 'struct' | 'event' | 'scope' | 'bean';
+  /** A bean's component. */
+  component?: string;
+  /** Lower-cased keys a bean holds a value of its own for, beyond those its component declares. */
+  extra?: readonly string[];
+  /** Body offsets a bean alias applies in: from `since` (its population) up to `until` (a reload or reassignment). */
+  since?: number;
+  until?: number;
+  /** A bean not populated from the request: it holds a value of its own for every key. */
+  opaque?: boolean;
+  /** Known values of keys, as expressions over the request, wherever the alias applies. */
+  values?: Readonly<Record<string, Ex>>;
+  /** Key writes in the body that refine `values` per offset. */
+  defs?: readonly KeyDef[];
+  /** The bean alias and offset whose values a population copied. */
+  copyFrom?: { name: string; at: number };
+  /** Component of a never-loaded instance: a key without a value of its own holds the literal its init chain sets. */
+  fresh?: string;
 }
+
+/**
+ * A write of one key of a bean at body offset `at`: the CFML expression it stores (null when unknown; key `*` for
+ * every key), and whether it is a statement of its own, so that it runs whenever its enclosing guards hold.
+ */
+interface KeyDef {
+  key: string;
+  at: number;
+  expr: string | null;
+  stmt: boolean;
+}
+
+/**
+ * Keys a bean component holds a value of its own for (declared properties, `variables.instance` assignments and
+ * its own keyed setter calls up its chain) and the functions it defines. Stored extended attributes, merged under
+ * their own names, are taken not to shadow the request's control parameters.
+ */
+interface BeanFacts {
+  held: ReadonlySet<string>;
+  defined: ReadonlySet<string>;
+  /** Literal values the init chain gives keys unconditionally, as a fresh instance holds them. */
+  initial: Readonly<Record<string, Ex>>;
+  /** By lower-cased getter name, the ORM mapping flag an inherited zero-argument mapping getter returns. */
+  mapping: Readonly<Record<string, Ex>>;
+}
+
+/** CFML truthiness of an unlisted string: true, false, or not a CFML boolean. */
+type CfTruth = 'T' | 'F' | 'N';
 
 type Val =
   | { k: 'u' }
   | { k: 'a' }
-  | { k: 'x' }
+  | { k: 'x'; cf?: CfTruth }
   | { k: 'p' }
   | { k: 's'; v: string }
   | { k: 'n'; v: number }
-  | { k: 'b'; v: boolean };
+  | { k: 'b'; v: boolean }
+  // An empty array or struct literal.
+  | { k: 'c'; c: 'array' | 'struct' };
 
 type Tri = 'T' | 'F' | 'U';
 
@@ -1304,6 +1511,8 @@ type Ex =
   | { t: 'cmp'; op: CmpOp; a: Ex; b: Ex }
   | { t: 'and' | 'or'; a: Ex; b: Ex }
   | { t: 'not'; e: Ex }
+  // One of several values, one per path that reaches the read.
+  | { t: 'one'; of: Ex[] }
   | { t: 'unk' };
 
 const U: Val = { k: 'u' };
@@ -1322,11 +1531,16 @@ interface Seg {
 /** Recursive-descent parser for the CFML expressions this module can decide; anything else becomes unknown. */
 class GuardParser {
   private i = 0;
+  private readonly aliases: readonly Alias[];
+  private readonly formals: ReadonlyMap<string, Val>;
 
   constructor(
     private readonly toks: readonly Token[],
-    private readonly aliases: readonly Alias[],
-  ) {}
+    private readonly env: GuardEnv,
+  ) {
+    this.aliases = env.aliases;
+    this.formals = env.formals;
+  }
 
   parse(): Ex {
     try {
@@ -1491,6 +1705,10 @@ class GuardParser {
       this.i++;
       return { t: 'lit', v: { k: 'n', v: Number(t.v) } };
     }
+    if ((isP(t, '[') && isP(this.peek(1), ']')) || (isP(t, '{') && isP(this.peek(1), '}'))) {
+      this.i += 2;
+      return { t: 'lit', v: { k: 'c', c: t.v === '[' ? 'array' : 'struct' } };
+    }
     if (t.k === 'id') {
       const w = t.v.toLowerCase();
       if ((w === 'true' || w === 'false') && !isP(this.peek(1), '.') && !isP(this.peek(1), '(')) {
@@ -1547,12 +1765,80 @@ class GuardParser {
     return this.aliases.some((a) => a.kind === kind && a.name === path);
   }
 
+  /** Whether the bean alias named `path` holds a value of its own for `key`; undefined when `path` names none. */
+  private beanHolds(path: string, key: string): boolean | undefined {
+    const alias = this.aliases.find((a) => a.kind === 'bean' && a.name === path);
+    if (alias?.component === undefined) return undefined;
+    return alias.opaque === true || this.env.facts(alias.component).held.has(key) || (alias.extra ?? []).includes(key);
+  }
+
+  /** The value bean `path` is known to hold for `key`: one it was given, else a fresh instance's init literal. */
+  private knownValue(path: string, key: string): Ex | undefined {
+    const alias = this.aliases.find((a) => a.kind === 'bean' && a.name === path);
+    const given = alias?.values?.[key];
+    if (given !== undefined) return given;
+    return alias?.fresh === undefined ? undefined : this.env.facts(alias.fresh).initial[key];
+  }
+
+  /** Whether bean `path` is a never-loaded instance, whose keys are its component's and those written since. */
+  private isFresh(path: string): boolean {
+    return this.aliases.some((a) => a.kind === 'bean' && a.name === path && a.fresh !== undefined);
+  }
+
+  /**
+   * Key `key` of bean `path`: its known value, else the request's parameter unless the bean holds a value of its own
+   * for it; a fresh instance has no other keys.
+   */
+  private beanValue(path: string, key: string): Ex {
+    const known = this.knownValue(path, key);
+    if (known !== undefined) return known;
+    return this.beanHolds(path, key) === false && !this.isFresh(path) ? { t: 'ref', p: key } : UNK;
+  }
+
+  /**
+   * Whether bean `path` has key `key`: yes for a known value, as the request has it, unknown for a key the bean
+   * holds itself; a fresh instance lacks every key it does not hold.
+   */
+  private beanHas(path: string, key: string): Ex {
+    const known = this.knownValue(path, key);
+    if (known !== undefined && known.t !== 'unk') return { t: 'lit', v: { k: 'b', v: true } };
+    if (this.beanHolds(path, key) !== false) return UNK;
+    return this.isFresh(path) ? { t: 'lit', v: { k: 'b', v: false } } : { t: 'has', p: key };
+  }
+
+  /** A member call on bean `path`: its values view, a keyed read or existence test, or an implicit `get<Key>()`. */
+  private beanCall(path: string, call: Seg, lit: (e: Ex | undefined) => string | undefined): Ex {
+    const alias = this.aliases.find((a) => a.kind === 'bean' && a.name === path);
+    const args = call.call ?? [];
+    if (alias?.component === undefined) return UNK;
+    const key = args.length === 1 ? lit(args[0])?.toLowerCase() : undefined;
+    if (call.name === 'getallvalues' && args.length === 0) {
+      if (call.index === undefined) return { t: 'alias', name: path };
+      const indexKey = lit(call.index)?.toLowerCase();
+      return indexKey === undefined ? UNK : this.beanValue(path, indexKey);
+    }
+    if (call.index !== undefined) return UNK;
+    if (call.name === 'getvalue' || call.name === 'get') return key === undefined ? UNK : this.beanValue(path, key);
+    if (call.name === 'valueexists') return key === undefined ? UNK : this.beanHas(path, key);
+    const prop = /^get([\w$]+)$/.exec(call.name)?.[1];
+    const implicit = prop !== undefined && args.length === 0 && !this.env.facts(alias.component).defined.has(call.name);
+    return implicit ? this.beanValue(path, prop) : UNK;
+  }
+
+  /** A zero-argument mapping getter called on the body's own receiver: the flag its component metadata fixes. */
+  private mappingFlag(call: Seg): Ex | undefined {
+    const receiver = this.env.receiver;
+    if (receiver === undefined || call.index !== undefined || call.call?.length !== 0) return undefined;
+    return this.env.facts(receiver).mapping[call.name];
+  }
+
   /** Maps a reference chain onto request parameters, builtins or unknown. */
   private interpret(segs: readonly Seg[]): Ex {
     const last = segs[segs.length - 1];
     if (last === undefined) return UNK;
     const head = segs.slice(0, -1);
-    const plainHead = head.every((s) => s.call === undefined && s.index === undefined);
+    const plain = (s: Seg): boolean => s.call === undefined && s.index === undefined;
+    const plainHead = head.every(plain);
     const headPath = head.map((s) => s.name).join('.');
     const lit = (e: Ex | undefined): string | undefined => (e?.t === 'lit' && e.v.k === 's' ? e.v.v : undefined);
     if (segs.length === 1 && last.call !== undefined && last.index === undefined) {
@@ -1565,33 +1851,68 @@ class GuardParser {
         case 'lcase':
         case 'ucase':
           return { t: 'fn', f: 'case', e: a0 ?? UNK };
+        case 'arraynew':
+          return { t: 'lit', v: { k: 'c', c: 'array' } };
+        case 'structnew':
+          return { t: 'lit', v: { k: 'c', c: 'struct' } };
+        case 'isarray':
+        case 'isstruct':
+        case 'issimplevalue':
+        case 'isjson':
+        case 'arraylen':
+        case 'arrayisempty':
+        case 'structisempty':
+          return last.call.length === 1 ? kindTest(last.name, a0 ?? UNK) : UNK;
         case 'structkeyexists': {
-          const key = lit(a1);
-          return a0?.t === 'alias' && key !== undefined ? { t: 'has', p: key.toLowerCase() } : UNK;
+          const key = lit(a1)?.toLowerCase();
+          if (a0?.t !== 'alias' || key === undefined) return UNK;
+          return this.aliasNamed(a0.name, 'bean') ? this.beanHas(a0.name, key) : { t: 'has', p: key };
         }
         case 'isdefined': {
           const target = lit(a0)?.toLowerCase();
           if (target === undefined) return UNK;
           for (const a of this.aliases) {
             const rest = target.startsWith(`${a.name}.`) ? target.slice(a.name.length + 1) : '';
-            if (a.kind === 'struct' && /^[\w$]+$/.test(rest)) return { t: 'has', p: rest };
+            if (!/^[\w$]+$/.test(rest)) continue;
+            if (a.kind === 'struct') return { t: 'has', p: rest };
+            if (a.kind === 'bean') return this.beanHas(a.name, rest);
           }
           return UNK;
         }
         default:
-          return UNK;
+          return this.mappingFlag(last) ?? this.beanCall('this', last, lit);
       }
     }
-    if (!plainHead) return UNK;
+    if (!plainHead) {
+      // `<bean>.getAllValues().key`: the values view of a bean, `this` when the call has no receiver.
+      const view = head[head.length - 1];
+      const base = head.slice(0, -1);
+      if (view?.name !== 'getallvalues' || view.call?.length !== 0 || view.index !== undefined || !base.every(plain) || last.call !== undefined) return UNK;
+      const viewPath = base.length === 0 ? 'this' : base.map((s) => s.name).join('.');
+      const key = last.index === undefined ? last.name : lit(last.index)?.toLowerCase();
+      return key === undefined ? UNK : this.beanValue(viewPath, key);
+    }
     const fullPath = segs.map((s) => s.name).join('.');
     if (last.call === undefined && last.index === undefined) {
+      const local = segs.length === 1 || (segs.length === 2 && headPath === 'local') ? this.env.locals?.(last.name) : undefined;
+      if (local !== undefined) return local;
       if (this.aliasNamed(fullPath, 'struct')) return { t: 'alias', name: fullPath };
-      return head.length > 0 && this.aliasNamed(headPath, 'struct') ? { t: 'ref', p: last.name } : UNK;
+      if (head.length > 0 && this.aliasNamed(headPath, 'struct')) return { t: 'ref', p: last.name };
+      if (this.aliasNamed(fullPath, 'bean')) return { t: 'alias', name: fullPath };
+      if (head.length > 0 && this.aliasNamed(headPath, 'bean')) return this.beanValue(headPath, last.name);
+      const formal = segs.length === 1 || headPath === 'arguments' ? this.formals.get(last.name) : undefined;
+      return segs.length <= 2 && formal !== undefined ? { t: 'lit', v: formal } : UNK;
     }
     if (last.call === undefined && last.index !== undefined) {
       const key = lit(last.index);
-      return key !== undefined && this.aliasNamed(fullPath, 'struct') ? { t: 'ref', p: key.toLowerCase() } : UNK;
+      if (key === undefined) return UNK;
+      if (this.aliasNamed(fullPath, 'struct')) return { t: 'ref', p: key.toLowerCase() };
+      return this.aliasNamed(fullPath, 'bean') ? this.beanValue(fullPath, key.toLowerCase()) : UNK;
     }
+    const receiver = headPath === '' ? 'this' : headPath;
+    const flag = receiver === 'this' ? this.mappingFlag(last) : undefined;
+    if (flag !== undefined) return flag;
+    if (this.aliasNamed(receiver, 'bean')) return this.beanCall(receiver, last, lit);
     const key = lit(last.call?.[0]);
     if (key === undefined || last.index !== undefined) return UNK;
     if (this.aliasNamed(headPath, 'event')) {
@@ -1605,9 +1926,47 @@ class GuardParser {
   }
 }
 
-function parseGuard(text: string, aliases: readonly Alias[]): Ex {
-  const toks = tokenize(text, 0, text.length).filter((t) => !isP(t, '#'));
-  return toks.length === 0 ? UNK : new GuardParser(toks, aliases).parse();
+const guardTokens = new Map<string, readonly Token[]>();
+
+function parseGuard(text: string, env: GuardEnv): Ex {
+  let toks = guardTokens.get(text);
+  if (toks === undefined) {
+    toks = tokenize(text, 0, text.length).filter((t) => !isP(t, '#'));
+    guardTokens.set(text, toks);
+  }
+  return toks.length === 0 ? UNK : new GuardParser(toks, env).parse();
+}
+
+/** A boolean literal. */
+function boolLit(b: boolean): Ex {
+  return { t: 'lit', v: { k: 'b', v: b } };
+}
+
+/** `isArray`, `isStruct`, `isSimpleValue`, `isJSON`, `arrayLen`, `arrayIsEmpty` or `structIsEmpty` of a literal; unknown otherwise. */
+function kindTest(name: string, e: Ex): Ex {
+  if (e.t === 'one') return oneOf(e.of.map((o) => kindTest(name, o)));
+  if (e.t !== 'lit') return UNK;
+  const v = e.v;
+  const simple = v.k === 's' || v.k === 'n' || v.k === 'b';
+  switch (name) {
+    case 'isarray':
+      return v.k === 'c' ? boolLit(v.c === 'array') : simple ? boolLit(false) : UNK;
+    case 'isstruct':
+      return v.k === 'c' ? boolLit(v.c === 'struct') : simple ? boolLit(false) : UNK;
+    case 'issimplevalue':
+      return v.k === 'c' ? boolLit(false) : simple ? boolLit(true) : UNK;
+    case 'isjson':
+      // Only the empty string is certain not to parse; CFML accepts more than strict JSON.
+      return v.k === 's' && v.v.trim() === '' ? boolLit(false) : UNK;
+    case 'arraylen':
+      return v.k === 'c' && v.c === 'array' ? { t: 'lit', v: { k: 'n', v: 0 } } : UNK;
+    case 'arrayisempty':
+      return v.k === 'c' && v.c === 'array' ? boolLit(true) : UNK;
+    case 'structisempty':
+      return v.k === 'c' && v.c === 'struct' ? boolLit(true) : UNK;
+    default:
+      return UNK;
+  }
 }
 
 function toNum(v: Val): number | undefined {
@@ -1636,7 +1995,7 @@ function toText(v: Val): string {
 
 /** CFML `eq`: numeric when both sides are numbers, boolean when one side is a boolean, else case-insensitive text. */
 function cfEq(a: Val, b: Val): Tri {
-  if (a.k === 'u' || b.k === 'u') return 'U';
+  if (a.k === 'u' || b.k === 'u' || a.k === 'c' || b.k === 'c') return 'U';
   const x: Val = a.k === 'a' ? { k: 's', v: '' } : a;
   const y: Val = b.k === 'a' ? { k: 's', v: '' } : b;
   if (x.k === 'x' || y.k === 'x') {
@@ -1662,8 +2021,10 @@ function cfEq(a: Val, b: Val): Tri {
 function truthy(v: Val): Tri {
   switch (v.k) {
     case 'u':
-    case 'x':
+    case 'c':
       return 'U';
+    case 'x':
+      return v.cf === undefined ? 'U' : v.cf === 'T' ? 'T' : 'F';
     case 'a':
       return 'F';
     case 'p':
@@ -1679,9 +2040,23 @@ function notTri(t: Tri): Tri {
   return t === 'T' ? 'F' : t === 'F' ? 'T' : 'U';
 }
 
-/** Value of one parameter in an enumerated world: absent, a known string, or some other non-empty string. */
-type WorldValue = { k: 'a' } | { k: 's'; v: string } | { k: 'x' };
+/**
+ * Value of one parameter in an enumerated world: absent, a known string, or some other non-empty string, split by
+ * its CFML truthiness where a truthy predicate constrains the parameter.
+ */
+type WorldValue = { k: 'a' } | { k: 's'; v: string } | { k: 'x'; cf?: CfTruth };
 type World = ReadonlyMap<string, WorldValue>;
+
+/** The alternatives a value expression stands for: those of a `one`, else itself. */
+function alternatives(e: Ex): Ex[] {
+  return e.t === 'one' ? e.of.flatMap(alternatives) : [e];
+}
+
+/** The verdict every alternative agrees on, else unknown. */
+function agreed(ts: readonly Tri[]): Tri {
+  const first = ts[0];
+  return first !== undefined && ts.every((t) => t === first) ? first : 'U';
+}
 
 function exValue(e: Ex, w: World): Val {
   switch (e.t) {
@@ -1689,10 +2064,16 @@ function exValue(e: Ex, w: World): Val {
       return e.v;
     case 'ref':
       return w.get(e.p) ?? U;
+    case 'one': {
+      const vs = e.of.map((o) => exValue(o, w));
+      const first = vs[0];
+      return first !== undefined && vs.every((v) => JSON.stringify(v) === JSON.stringify(first)) ? first : U;
+    }
     case 'fn': {
+      if (e.e.t === 'one') return exValue({ t: 'one', of: alternatives(e.e).map((o) => ({ ...e, e: o })) }, w);
       const v = exValue(e.e, w);
       if (e.f === 'len') {
-        if (v.k === 'u') return U;
+        if (v.k === 'u' || v.k === 'c') return U;
         if (v.k === 'a') return { k: 'n', v: 0 };
         if (v.k === 'x' || v.k === 'p') return { k: 'p' };
         return { k: 'n', v: toText(v).length };
@@ -1718,6 +2099,8 @@ function exTruth(e: Ex, w: World): Tri {
     }
     case 'not':
       return notTri(exTruth(e.e, w));
+    case 'one':
+      return agreed(e.of.map((o) => exTruth(o, w)));
     case 'and': {
       const a = exTruth(e.a, w);
       if (a === 'F') return 'F';
@@ -1731,12 +2114,16 @@ function exTruth(e: Ex, w: World): Tri {
       return b === 'T' ? 'T' : a === 'F' && b === 'F' ? 'F' : 'U';
     }
     case 'cmp': {
+      if (e.a.t === 'one' || e.b.t === 'one') {
+        const bs = alternatives(e.b);
+        return agreed(alternatives(e.a).flatMap((a) => bs.map((b) => exTruth({ ...e, a, b }, w))));
+      }
       const a = exValue(e.a, w);
       const b = exValue(e.b, w);
       if (e.op === 'eq') return cfEq(a, b);
       if (e.op === 'neq') return notTri(cfEq(a, b));
       if (e.op === 'contains' || e.op === 'ncontains') {
-        if (a.k === 'u' || b.k === 'u' || a.k === 'x' || b.k === 'x' || a.k === 'p' || b.k === 'p') return 'U';
+        if (a.k === 'u' || b.k === 'u' || a.k === 'x' || b.k === 'x' || a.k === 'p' || b.k === 'p' || a.k === 'c' || b.k === 'c') return 'U';
         const has = toText(a).toLowerCase().includes(toText(b).toLowerCase());
         return (e.op === 'contains') === has ? 'T' : 'F';
       }
@@ -1754,6 +2141,7 @@ function exTruth(e: Ex, w: World): Tri {
 function exParams(e: Ex, out: Set<string>): Set<string> {
   if (e.t === 'ref' || e.t === 'has') out.add(e.p);
   else if (e.t === 'fn' || e.t === 'not') exParams(e.e, out);
+  else if (e.t === 'one') e.of.forEach((o) => exParams(o, out));
   else if (e.t === 'cmp' || e.t === 'and' || e.t === 'or') {
     exParams(e.a, out);
     exParams(e.b, out);
@@ -1764,6 +2152,7 @@ function exParams(e: Ex, out: Set<string>): Set<string> {
 function exLiterals(e: Ex, out: Set<string>): Set<string> {
   if (e.t === 'lit') out.add(toText(e.v));
   else if (e.t === 'fn' || e.t === 'not') exLiterals(e.e, out);
+  else if (e.t === 'one') e.of.forEach((o) => exLiterals(o, out));
   else if (e.t === 'cmp' || e.t === 'and' || e.t === 'or') {
     exLiterals(e.a, out);
     exLiterals(e.b, out);
@@ -1775,15 +2164,26 @@ function sameText(a: string, b: string): boolean {
   return cfEq({ k: 's', v: a }, { k: 's', v: b }) === 'T';
 }
 
-/** Whether a world value satisfies one predicate value. */
+/** Whether a world value satisfies one predicate value; a value, `''` included, needs the parameter present, as the gateway matches it. */
 function atomHolds(v: WorldValue, p: PredicateValue): boolean {
-  if (typeof p === 'string') return v.k === 'a' ? p === '' : v.k === 's' && sameText(v.v, p);
+  if (isTruthyPredicate(p)) return v.k === 's' ? cfTruthyText(v.v) : v.k === 'x' && v.cf === 'T';
+  if (typeof p === 'string') return v.k === 's' && sameText(v.v, p);
   if (p === true) return v.k === 'x' || (v.k === 's' && v.v !== '');
   return v.k === 'a' || (v.k === 's' && v.v === '');
 }
 
 /** Whether an exclusion atom holds given only the entry predicate on the same parameter. */
 function atomUnderPredicate(pinned: PredicateValue, atom: PredicateValue): Tri {
+  if (isTruthyPredicate(atom)) {
+    if (typeof pinned === 'string') return cfTruthyText(pinned) ? 'T' : 'F';
+    if (isTruthyPredicate(pinned)) return 'T';
+    return pinned === true ? 'U' : 'F';
+  }
+  if (isTruthyPredicate(pinned)) {
+    // A CFML-true value is present and non-empty.
+    if (typeof atom === 'string') return cfTruthyText(atom) ? 'U' : 'F';
+    return atom === true ? 'T' : 'F';
+  }
   if (typeof pinned === 'string') {
     if (typeof atom === 'string') return sameText(pinned, atom) ? 'T' : 'F';
     return (atom === true) === (pinned !== '') ? 'T' : 'F';
@@ -1834,7 +2234,9 @@ function decide(e: Ex, predicates: ReadonlyMap<string, PredicateValue>, exclusio
       const v = c.get(p);
       if (typeof v === 'string') add(v);
     }
-    return [{ k: 'a' }, { k: 's', v: '' }, ...[...texts.values()].map((v): WorldValue => ({ k: 's', v })), { k: 'x' }];
+    const truthyAtom = isTruthyPredicate(pinned) || clauses.some((c) => isTruthyPredicate(c.get(p)));
+    const others: WorldValue[] = truthyAtom ? [{ k: 'x', cf: 'T' }, { k: 'x', cf: 'F' }, { k: 'x', cf: 'N' }] : [{ k: 'x' }];
+    return [{ k: 'a' }, { k: 's', v: '' }, ...[...texts.values()].map((v): WorldValue => ({ k: 's', v })), ...others];
   };
   const domains = constrained.map(domain);
   const seen = new Set<Tri>();
@@ -1860,12 +2262,31 @@ function decide(e: Ex, predicates: ReadonlyMap<string, PredicateValue>, exclusio
   return seen.has('T') ? 'T' : seen.has('F') ? 'F' : 'U';
 }
 
-function conditionEx(c: GuardCondition, aliases: readonly Alias[]): Ex {
+/** What a guard is read against: the request aliases in scope, the known literal formals and the bean facts. */
+interface GuardEnv {
+  aliases: readonly Alias[];
+  formals: ReadonlyMap<string, Val>;
+  facts: (component: string) => BeanFacts;
+  /** The component the body runs on, whose mapping flags its own unqualified getters read. */
+  receiver?: string;
+  /** The body's analysis, for the values of its tracked beans at each offset. */
+  analysis?: Analysis;
+  /** Writes of the body's tracked locals, by name. */
+  localDefs?: ReadonlyMap<string, readonly KeyDef[]>;
+  /** Value of a tracked local where the guard is read; undefined for a name that is none. */
+  locals?: (name: string) => Ex | undefined;
+  /** Whether the write at `x` cannot run on the way to `site`: a guard or loop entry around it alone is false. */
+  dead?: (x: number, site: number) => boolean;
+  /** The truth a guard leaf of the body is known to have where it is read. */
+  fixed?: FixedAtom;
+}
+
+function conditionEx(c: GuardCondition, env: GuardEnv): Ex {
   switch (c.k) {
     case 'expr':
-      return parseGuard(c.text, aliases);
+      return parseGuard(c.text, env);
     case 'case': {
-      const subject = parseGuard(c.subject, aliases);
+      const subject = parseGuard(c.subject, env);
       return c.values.reduce<Ex>(
         (acc, v) => {
           const test: Ex = v === null ? UNK : { t: 'cmp', op: 'eq', a: subject, b: { t: 'lit', v: { k: 's', v } } };
@@ -1875,11 +2296,11 @@ function conditionEx(c: GuardCondition, aliases: readonly Alias[]): Ex {
       );
     }
     case 'not':
-      return { t: 'not', e: conditionEx(c.of, aliases) };
+      return { t: 'not', e: conditionEx(c.of, env) };
     case 'and':
     case 'or':
       return c.of.reduce<Ex>(
-        (acc, x) => ({ t: c.k, a: acc, b: conditionEx(x, aliases) }),
+        (acc, x) => ({ t: c.k, a: acc, b: conditionEx(x, env) }),
         { t: 'lit', v: { k: 'b', v: c.k === 'and' } },
       );
   }
@@ -1916,7 +2337,10 @@ interface RawCall {
   offset: number;
 }
 
-/** A SQL write statement in a function body; `table` is null when the target is an unresolved expression. */
+/**
+ * A SQL write statement in a function body; `table` is null when the target is an unresolved expression.
+ * `columns` lists the lower-cased columns an `INSERT (…)` or `UPDATE … SET` names, null when the statement names none statically.
+ */
 export interface SqlWrite {
   table: string | null;
   op: 'insert' | 'update' | 'delete';
@@ -1925,6 +2349,7 @@ export interface SqlWrite {
   whereParams: string[];
   tableExpr: string;
   offset: number;
+  columns: string[] | null;
   dynamic?: true;
   thread?: ThreadSpan;
 }
@@ -1937,10 +2362,13 @@ interface Assignment {
 
 interface Analysis {
   regions: Region[];
+  exits: Exit[];
   calls: RawCall[];
   writes: SqlWrite[];
   assignments: Assignment[];
   returns: string[];
+  /** Offsets of the body flagged 1 where text never runs. */
+  literal: Uint8Array;
   lineAt(pos: number): number;
 }
 
@@ -2064,7 +2492,7 @@ function chainCalls(body: string, literal: Uint8Array): RawCall[] {
   return calls.sort((a, b) => a.offset - b.offset);
 }
 
-/** End of the expression starting at `from`: `;`, a newline or (in tags) `>` at depth 0. */
+/** End of the expression starting at `from`: `;`, a newline not continued by `.member`, or (in tags) `>` at depth 0. */
 function expressionEnd(text: string, from: number, tagged: boolean): number {
   let depth = 0;
   let i = from;
@@ -2078,7 +2506,12 @@ function expressionEnd(text: string, from: number, tagged: boolean): number {
     else if (')]}'.includes(c)) {
       if (depth === 0) return i;
       depth--;
-    } else if (depth === 0 && (c === ';' || c === '\n' || (tagged && c === '>'))) {
+    } else if (depth === 0 && c === '\n') {
+      const next = afterSpace(text, i);
+      if (text.charAt(next) !== '.' || !isIdentStart(text.charAt(next + 1))) return i;
+      i = next;
+      continue;
+    } else if (depth === 0 && (c === ';' || (tagged && c === '>'))) {
       return i;
     }
     i++;
@@ -2094,11 +2527,13 @@ function findAssignments(body: string, literal: Uint8Array): Assignment[] {
   const found: Assignment[] = [];
   const re = /(<cfset\s+|(?:^|[;{}\n])[ \t]*)(?:var\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=(?!=)/dgi;
   for (const m of body.matchAll(re)) {
-    if (literal[m.indices?.[2]?.[0] ?? m.index] === 1) continue;
+    const at = m.indices?.[2]?.[0] ?? m.index;
+    if (literal[at] === 1) continue;
     const lvalue = (m[2] ?? '').toLowerCase().replace(/^local\./, '');
     const start = m.index + m[0].length;
     const rhs = cleanRhs(body.slice(start, expressionEnd(body, start, (m[1] ?? '').toLowerCase().startsWith('<cfset'))));
-    if (rhs !== '') found.push({ lvalue, rhs, offset: m.index });
+    // The offset of the assigned name, which lies inside every region that holds the statement.
+    if (rhs !== '') found.push({ lvalue, rhs, offset: at });
   }
   return found;
 }
@@ -2115,7 +2550,7 @@ function findReturns(body: string, literal: Uint8Array): string[] {
 }
 
 /** Text spans holding SQL: `<cfquery>` bodies and string literals given to queryExecute, `sql=` or setSql. */
-function sqlSpans(body: string): Array<{ start: number; end: number; tag: boolean }> {
+export function sqlSpans(body: string): Array<{ start: number; end: number; tag: boolean }> {
   const spans: Array<{ start: number; end: number; tag: boolean }> = [];
   for (const m of body.matchAll(/<cfquery\b/gi)) {
     const start = tagEnd(body, m.index);
@@ -2127,6 +2562,27 @@ function sqlSpans(body: string): Array<{ start: number; end: number; tag: boolea
     spans.push({ start: quoteAt + 1, end: Math.max(quoteAt + 1, skipString(body, quoteAt) - 1), tag: false });
   }
   return spans.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * String literals a function assigns (`x = '…'`, `x &= '…'`) to a variable it hands to queryExecute,
+ * `execute(sql=…)` or setSql as the SQL text, as script `Query` objects are given SQL built up in a local.
+ */
+function sqlVariableSpans(body: string, literal: Uint8Array): Array<{ start: number; end: number; tag: boolean }> {
+  const names = new Set<string>();
+  for (const m of body.matchAll(/(?:\bqueryExecute\s*\(\s*|\bexecute\s*\(\s*sql\s*=\s*|\bsetSql\s*\(\s*)((?:local\.)?[A-Za-z_$][\w$]*)\s*[,)]/gi)) {
+    if (literal[m.index] !== 1) names.add((m[1] ?? '').toLowerCase().replace(/^local\./, ''));
+  }
+  const spans: Array<{ start: number; end: number; tag: boolean }> = [];
+  for (const name of names) {
+    const n = name.replace(/\$/g, '\\$');
+    for (const m of body.matchAll(new RegExp(String.raw`(?<![\w$.])(?:var\s+)?(?:local\.)?${n}\s*&?=\s*(["'])`, 'gi'))) {
+      if (literal[m.index] === 1) continue;
+      const quoteAt = m.index + m[0].length - 1;
+      spans.push({ start: quoteAt + 1, end: Math.max(quoteAt + 1, skipString(body, quoteAt) - 1), tag: false });
+    }
+  }
+  return spans;
 }
 
 function readTableRef(text: string, from: number, end: number): number {
@@ -2166,15 +2622,113 @@ function whereParamsOf(clause: string, placeholders: boolean): string[] {
   return [...new Set(hits.sort((a, b) => a[0] - b[0]).map(([, n]) => n))];
 }
 
+/** `text` with every `<cf…>` and `</cf…>` tag replaced by `sep` padded to the tag's length. */
+function maskCfTags(text: string, sep: string): string {
+  let out = '';
+  let last = 0;
+  for (const m of text.matchAll(/<\/?cf[a-z]/gi)) {
+    if (m.index < last) continue;
+    const end = tagEnd(text, m.index);
+    out += text.slice(last, m.index) + sep.padEnd(end - m.index, ' ');
+    last = end;
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * Top-level comma-separated items of SQL `text` from `from`, skipping strings, `#…#` expressions and brackets.
+ * The scan ends at an unmatched `)` (`paren`), at a top-level `where`/`from` keyword when `clause` is set, or at the end.
+ */
+function sqlItems(text: string, from: number, clause: boolean): { items: string[]; end: 'paren' | 'clause' | 'eof' } {
+  const items: string[] = [];
+  let depth = 0;
+  let start = from;
+  let i = from;
+  let end: 'paren' | 'clause' | 'eof' = 'eof';
+  while (i < text.length) {
+    const c = text.charAt(i);
+    if (c === '"' || c === "'") {
+      i = skipString(text, i);
+      continue;
+    }
+    if (c === '#') {
+      i = text.charAt(i + 1) === '#' ? i + 2 : skipInterpolation(text, i + 1, text.length);
+      continue;
+    }
+    if (isIdentStart(c)) {
+      let e = i + 1;
+      while (isIdentPart(text.charAt(e))) e++;
+      const word = text.slice(i, e).toLowerCase();
+      if (clause && depth === 0 && (word === 'where' || word === 'from') && text.charAt(i - 1) !== '.') {
+        end = 'clause';
+        break;
+      }
+      i = e;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') {
+      if (depth === 0) {
+        end = 'paren';
+        break;
+      }
+      depth--;
+    } else if (c === ',' && depth === 0) {
+      items.push(text.slice(start, i));
+      start = i + 1;
+    }
+    i++;
+  }
+  items.push(text.slice(start, i));
+  return { items: items.map((s) => s.trim()).filter((s) => s !== ''), end };
+}
+
+const COLUMN_NAME = /^\[?([A-Za-z_][\w$]*)\]?$/;
+const SET_TARGET = /^(?:\[?[A-Za-z_][\w$]*\]?\s*\.\s*)?\[?([A-Za-z_][\w$]*)\]?\s*[-+*/%&|^]?=(?!=)/;
+const SET_DYNAMIC = /^\s*[-+*/%&|^]?=(?!=)/;
+
+/**
+ * Lower-cased columns a write statement names: the `INSERT` column list or the `UPDATE … SET` targets (every
+ * conditional `<cfif>` alternative included). `rest` is the statement text after its table reference; null when the
+ * statement is a `DELETE` or names no static column list.
+ */
+export function sqlColumns(op: SqlWrite['op'], rest: string): string[] | null {
+  const names: string[] = [];
+  if (op === 'insert') {
+    const open = /^\s*\(/.exec(rest);
+    if (open === null) return null;
+    const { items, end } = sqlItems(maskCfTags(rest, ' '), open[0].length, false);
+    if (end !== 'paren') return null;
+    for (const item of items) {
+      const name = COLUMN_NAME.exec(item)?.[1];
+      if (name === undefined) return null;
+      names.push(name.toLowerCase());
+    }
+  } else if (op === 'update') {
+    const set = /^\s+set\b/i.exec(rest);
+    if (set === null) return null;
+    // A tag separates SET items as a comma does, so each `<cfif>`/`<cfelse>` alternative is its own item.
+    for (const item of sqlItems(maskCfTags(rest, ','), set[0].length, true).items) {
+      if (item.startsWith('#') && SET_DYNAMIC.test(item.slice(skipInterpolation(item, 1, item.length)))) return null;
+      const name = SET_TARGET.exec(item)?.[1];
+      if (name !== undefined) names.push(name.toLowerCase());
+    }
+  }
+  return names.length === 0 ? null : [...new Set(names)];
+}
+
 function threadAt(regions: readonly Region[], offset: number, lineAt: (pos: number) => number): ThreadSpan | undefined {
   let inner: Region | undefined;
   for (const r of regions) if (r.thread !== undefined && r.start <= offset && offset < r.end && (inner === undefined || r.start >= inner.start)) inner = r;
   return inner?.thread === undefined ? undefined : { name: inner.thread.name, line: lineAt(inner.thread.open), endLine: lineAt(inner.thread.close) };
 }
 
-function sqlWrites(body: string, regions: readonly Region[], lineAt: (pos: number) => number): SqlWrite[] {
+function sqlWrites(body: string, regions: readonly Region[], lineAt: (pos: number) => number, literal: Uint8Array): SqlWrite[] {
   const writes: SqlWrite[] = [];
-  for (const span of sqlSpans(body)) {
+  const spans = sqlSpans(body);
+  const starts = new Set(spans.map((s) => s.start));
+  for (const s of sqlVariableSpans(body, literal)) if (!starts.has(s.start)) spans.push(s);
+  for (const span of spans.sort((a, b) => a.start - b.start)) {
     const text = body.slice(0, span.end);
     const re = /\b(insert\s+into|update|delete\s+from|delete)\s+/gi;
     re.lastIndex = span.start;
@@ -2208,6 +2762,7 @@ function sqlWrites(body: string, regions: readonly Region[], lineAt: (pos: numbe
         whereParams: where === null ? [] : whereParamsOf(stmtText.slice(where.index), !span.tag),
         tableExpr: st.ref.trim(),
         offset: st.at,
+        columns: sqlColumns(st.op, stmtText),
       };
       if (dynamic) write.dynamic = true;
       const thread = threadAt(regions, st.at, lineAt);
@@ -2226,15 +2781,18 @@ function analyse(fn: CfmlFunction, syntax: CfmlUnit['syntax']): Analysis {
   const index = new LineIndex(fn.body);
   const lineAt = (pos: number): number => fn.bodyLine + index.line(pos) - 1;
   const regions: Region[] = [];
-  if (syntax === 'script') scriptRegions(fn.body, 0, fn.body.length, regions);
-  else tagRegions(fn.body, regions);
+  const exits: Exit[] = [];
+  if (syntax === 'script') scriptRegions(fn.body, 0, fn.body.length, regions, exits);
+  else tagRegions(fn.body, regions, exits);
   const literal = literalMask(fn.body, fn.mode ?? (syntax === 'script' ? 'script' : 'tag'));
   const analysis: Analysis = {
     regions,
+    exits: exits.filter((e) => literal[e.at] !== 1),
     calls: chainCalls(fn.body, literal),
-    writes: sqlWrites(fn.body, regions, lineAt),
+    writes: sqlWrites(fn.body, regions, lineAt, literal),
     assignments: findAssignments(fn.body, literal),
     returns: findReturns(fn.body, literal),
+    literal,
     lineAt,
   };
   analyses.set(fn, analysis);
@@ -2248,6 +2806,15 @@ function literalString(expr: string | undefined): string | undefined {
   if (skipString(t, 0) !== t.length) return undefined;
   const inner = unquote(t);
   return interpolates(inner) ? undefined : inner.replace(/##/g, '#');
+}
+
+/** Value of a literal CFML expression: a plain string, a number or `true`/`false`; undefined for anything else. */
+function literalVal(expr: string | undefined): Val | undefined {
+  const s = literalString(expr);
+  if (s !== undefined) return { k: 's', v: s };
+  const t = expr?.trim() ?? '';
+  if (/^(true|false)$/i.test(t)) return { k: 'b', v: t.toLowerCase() === 'true' };
+  return /^[-+]?(\d+\.?\d*|\.\d+)$/.test(t) ? { k: 'n', v: Number(t) } : undefined;
 }
 
 /** Table named by a literal `variables.table = '…'` assignment in the component, or its `table` attribute. */
@@ -2272,7 +2839,7 @@ export function extractSqlWrites(fn: CfmlFunction, component?: CfmlUnit): SqlWri
   const syntax = component?.syntax ?? (detectMode(fn.body) === 'script' ? 'script' : 'tag');
   const own = component === undefined ? undefined : declaredTable(component);
   return analyse(fn, syntax).writes.map((w) => {
-    const copy: SqlWrite = { ...w, whereParams: [...w.whereParams] };
+    const copy: SqlWrite = { ...w, whereParams: [...w.whereParams], columns: w.columns === null ? null : [...w.columns] };
     if (w.dynamic === true && own !== undefined && SELF_TABLE.test(stripHashes(w.tableExpr).replace(/\s+/g, '').toLowerCase())) {
       copy.table = own;
       delete copy.dynamic;
@@ -2294,6 +2861,8 @@ export interface ComponentIndex {
   ormTable(path: string): string | null;
   /** Parsed component at `path`; null when absent or not a component. */
   parsed(path: string): CfmlComponent | null;
+  /** Whether the factory hands out a new instance of the component at `path` per call (a DI1 transient); absent means never. */
+  transient?(path: string): boolean;
 }
 
 /** Context of extraction and closure: the archive tree, the component index and the reviewed writer overrides. */
@@ -2326,14 +2895,25 @@ export interface CallSite {
 /** Why a reference was left unresolved. */
 export type UnresolvedKind = 'bean' | 'component' | 'method' | 'receiver' | 'table' | 'include';
 
+/** What an expression evaluates to; `item` is the entity component a feed or iterator yields. */
 type Resolution =
-  | { kind: 'resolved'; path: string; from: string; bean?: string }
+  | { kind: 'resolved'; path: string; from: string; bean?: string; item?: string }
   | { kind: 'unresolved'; why: UnresolvedKind; name?: string }
   | { kind: 'unknown' };
+
+type Resolved = Extract<Resolution, { kind: 'resolved' }>;
 
 const UNKNOWN: Resolution = { kind: 'unknown' };
 const FLUENT = /^(init|loadby|set[A-Za-z_$]*|add[A-Za-z_$]*)$/i;
 const GETTER = /^get[A-Za-z_$]/;
+/** Methods of an ORM entity, feed or iterator that hand on the entity they yield. */
+const COLLECTION = /^(getfeed|getiterator)$/i;
+/** Iterator methods that return one yielded entity. */
+const ITEM = /^(next|previous|peek)$/i;
+/** Script components ColdFusion provides (`new Query()`), which run no CFML of the source tree. */
+const BUILTIN_COMPONENTS = new Set(['dbinfo', 'feed', 'ftp', 'http', 'imap', 'ldap', 'mail', 'pdf', 'pop', 'query', 'storedproc']);
+/** Start-up template whose `application.<name>` assignments stand for those names in every request. */
+const APP_START_TEMPLATE = 'core/appcfc/onApplicationStart_include.cfm';
 
 /** Path of the component a dotted name addresses from `fromPath`: `mura.*` is `core/mura/*`, bare names are siblings. */
 export function resolveComponentPath(name: string, fromPath: string, tree: SourceTree): string | null {
@@ -2384,6 +2964,17 @@ function isInjector(fn: CfmlFunction): boolean {
   return fn.name.toLowerCase() === 'init' || /^set[A-Za-z_$]/.test(fn.name);
 }
 
+/**
+ * Whether `fn` keeps the lower-cased `name` out of the variables scope: a formal, a `var` or `local.` declaration or a
+ * loop variable; with `assigned`, any assignment of it in `fn` counts as well.
+ */
+function holdsLocally(fn: CfmlFunction, syntax: CfmlUnit['syntax'], name: string, assigned: boolean): boolean {
+  if (fn.args.some((a) => a.name.toLowerCase() === name)) return true;
+  if (assigned && analyse(fn, syntax).assignments.some((a) => a.lvalue === name)) return true;
+  const n = name.replace(/\$/g, '\\$');
+  return new RegExp(String.raw`\bvar\s+${n}\b|\blocal\.${n}\b|\bfor\s*\(\s*(?:var\s+)?${n}\s+in\b|\b(?:item|index)\s*=\s*["']${n}["']`, 'i').test(fn.body);
+}
+
 /** Where resolution happens: the component whose variables and `this` apply, and the function being read. */
 interface Scope {
   receiver: string;
@@ -2392,7 +2983,25 @@ interface Scope {
 }
 
 const templateCache = new WeakMap<SourceTree, Map<string, CfmlTemplate>>();
+const functionIndex = new WeakMap<CfmlUnit, Map<string, CfmlFunction>>();
+
+/** The functions of `unit` by lower-cased name, the first of a name winning. */
+function functionsByName(unit: CfmlUnit): ReadonlyMap<string, CfmlFunction> {
+  let byName = functionIndex.get(unit);
+  if (byName === undefined) {
+    byName = new Map();
+    for (const f of unit.functions) {
+      const lower = f.name.toLowerCase();
+      if (!byName.has(lower)) byName.set(lower, f);
+    }
+    functionIndex.set(unit, byName);
+  }
+  return byName;
+}
 const chainCache = new WeakMap<ComponentIndex, Map<string, string[]>>();
+const returnCache = new WeakMap<ComponentIndex, Map<string, Resolution>>();
+/** Return inferences in progress, innermost last; `partial` marks one a cycle cut short. */
+const returnStack: Array<{ key: string; partial: boolean }> = [];
 
 /** Resolves receivers, functions and assignments over one context, memoising per tree and index. */
 class Resolver {
@@ -2447,7 +3056,7 @@ class Resolver {
     const lower = name.toLowerCase();
     for (const p of this.chain(from)) {
       const unit = this.unit(p);
-      const fn = unit?.functions.find((f) => f.name.toLowerCase() === lower);
+      const fn = unit === null ? undefined : functionsByName(unit).get(lower);
       if (unit !== null && fn !== undefined) return { unit, fn };
     }
     return null;
@@ -2457,12 +3066,20 @@ class Resolver {
     return this.findFunction(from, 'onMissingMethod') !== null;
   }
 
-  /** First non-trivial assignment of `lvalue` (lower-case) in the current unit, then up the receiver's chain. */
-  componentAssignment(scope: Scope, lvalue: string): { rhs: string; unit: CfmlUnit; fn: CfmlFunction } | null {
+  /**
+   * First non-trivial assignment of `lvalue` (lower-case) in the current unit, then up the receiver's chain; `keep`
+   * limits the functions searched.
+   */
+  componentAssignment(
+    scope: Scope,
+    lvalue: string,
+    keep?: (fn: CfmlFunction) => boolean,
+  ): { rhs: string; unit: CfmlUnit; fn: CfmlFunction } | null {
     const units = [scope.unit, ...this.chain(scope.receiver).map((p) => this.unit(p))];
     for (const unit of units) {
       if (unit === null) continue;
       for (const fn of unit.functions) {
+        if (keep !== undefined && !keep(fn)) continue;
         const hit = analyse(fn, unit.syntax).assignments.find((a) => a.lvalue === lvalue && !isTrivialValue(a.rhs));
         if (hit !== undefined) return { rhs: hit.rhs, unit, fn };
       }
@@ -2473,6 +3090,86 @@ class Resolver {
   private bean(name: string): Resolution {
     const p = this.ctx.index.resolveBean(name);
     return p === null ? { kind: 'unresolved', why: 'bean', name } : { kind: 'resolved', path: p, from: p, bean: name };
+  }
+
+  /** `application.<name>`: its bean, else the component the start-up template assigns to it. */
+  private application(name: string, seen: Set<string>): Resolution {
+    const direct = this.bean(name);
+    const unit = direct.kind === 'resolved' ? null : this.unit(APP_START_TEMPLATE);
+    if (unit === null) return direct;
+    const lvalue = `application.${name.toLowerCase()}`;
+    for (const fn of unit.functions) {
+      for (const a of analyse(fn, unit.syntax).assignments) {
+        if (a.lvalue !== lvalue || isTrivialValue(a.rhs)) continue;
+        const r = this.expr(a.rhs, { receiver: unit.path, unit, fn }, seen);
+        if (r.kind === 'resolved') return r;
+      }
+    }
+    return direct;
+  }
+
+  /**
+   * An unscoped `name` a component function neither takes, declares nor assigns: the variables-scope value the
+   * component assigns as `variables.<name>`, or as `<name>` in a function that does not keep it local.
+   */
+  private unscoped(scope: Scope, name: string, seen: Set<string>): Resolution | null {
+    if (scope.unit.syntax === 'template' || holdsLocally(scope.fn, scope.unit.syntax, name, true)) return null;
+    const assigned =
+      this.componentAssignment(scope, `variables.${name}`) ??
+      this.componentAssignment(scope, name, (fn) => fn !== scope.fn && !holdsLocally(fn, scope.unit.syntax, name, false));
+    if (assigned === null) return null;
+    return this.expr(assigned.rhs, { receiver: scope.receiver, unit: assigned.unit, fn: assigned.fn }, seen);
+  }
+
+  /**
+   * What `out.<name>(…)` returns: the receiver itself for `return this`, else the first return expression that
+   * resolves. A feed or iterator of an entity hands on the entity, which its `next()`/`previous()` return.
+   */
+  private returned(out: Resolved, name: string): Resolution {
+    if (out.item !== undefined && ITEM.test(name)) return { kind: 'resolved', path: out.item, from: out.item };
+    const found = this.findFunction(out.from, name);
+    if (found === null) return UNKNOWN;
+    const r = this.returnOf({ receiver: out.path, unit: found.unit, fn: found.fn });
+    if (r.kind !== 'resolved') return UNKNOWN;
+    if (r.path === out.path) return out.from === out.path ? out : { ...out, from: out.path };
+    const yielded = out.item ?? (COLLECTION.test(name) && this.ctx.index.ormTable(out.path) !== null ? out.path : undefined);
+    return yielded !== undefined && COLLECTION.test(name) ? { ...r, item: yielded } : r;
+  }
+
+  /**
+   * The first return expression of `scope.fn` that resolves on `scope.receiver`, memoised per index; a return that
+   * leads back into an inference in progress counts as unknown, and the inferences it cut short are not memoised.
+   */
+  private returnOf(scope: Scope): Resolution {
+    let cache = returnCache.get(this.ctx.index);
+    if (cache === undefined) {
+      cache = new Map();
+      returnCache.set(this.ctx.index, cache);
+    }
+    const key = `${scope.receiver}|${scope.unit.path}|${scope.fn.name}|${scope.fn.offset}`;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    const open = returnStack.findIndex((f) => f.key === key);
+    if (open >= 0) {
+      for (const f of returnStack.slice(open + 1)) f.partial = true;
+      return UNKNOWN;
+    }
+    const frame = { key, partial: false };
+    returnStack.push(frame);
+    try {
+      let out: Resolution = UNKNOWN;
+      for (const rhs of analyse(scope.fn, scope.unit.syntax).returns) {
+        const r = this.expr(rhs, scope, new Set());
+        if (r.kind === 'resolved') {
+          out = r;
+          break;
+        }
+      }
+      if (!frame.partial) cache.set(key, out);
+      return out;
+    } finally {
+      returnStack.pop();
+    }
   }
 
   private getter(receiver: string, getterName: string, seen: Set<string>, bare: boolean): Resolution {
@@ -2488,9 +3185,16 @@ class Resolver {
     return UNKNOWN;
   }
 
+  /** The first non-trivial assignment of `lvalue` in the function that resolves, else the first one's result; null when none. */
   private local(scope: Scope, lvalue: string, seen: Set<string>): Resolution | null {
-    const hit = analyse(scope.fn, scope.unit.syntax).assignments.find((a) => a.lvalue === lvalue && !isTrivialValue(a.rhs));
-    return hit === undefined ? null : this.expr(hit.rhs, scope, seen);
+    let first: Resolution | null = null;
+    for (const a of analyse(scope.fn, scope.unit.syntax).assignments) {
+      if (a.lvalue !== lvalue || isTrivialValue(a.rhs)) continue;
+      const r = this.expr(a.rhs, scope, seen);
+      if (r.kind === 'resolved') return r;
+      first ??= r;
+    }
+    return first;
   }
 
   /** Resolves a whole expression such as `createObject("component","mura.x").init()` or `arguments.userDAO`. */
@@ -2528,9 +3232,11 @@ class Resolver {
       next = factory + 1;
     } else if (chain.kind === 'new') {
       const p = resolveComponentPath(s0.name, scope.unit.path, this.ctx.tree);
-      res = p === null ? { kind: 'unresolved', why: 'component', name: s0.name } : { kind: 'resolved', path: p, from: p };
+      if (p !== null) res = { kind: 'resolved', path: p, from: p };
+      else if (!BUILTIN_COMPONENTS.has(s0.name.toLowerCase())) res = { kind: 'unresolved', why: 'component', name: s0.name };
     } else if (s0.args !== undefined) {
       const lower = s0.name.toLowerCase();
+      const entity = lower === 'getfeed' ? literalString(s0.args[0]?.expr) : undefined;
       if (lower === 'createobject') {
         const type = literalString(s0.args[0]?.expr)?.toLowerCase();
         const name = literalString(s0.args[1]?.expr);
@@ -2538,6 +3244,13 @@ class Resolver {
         if (type === 'component') res = p === null ? { kind: 'unresolved', why: 'component', name } : { kind: 'resolved', path: p, from: p };
       } else if (s0.args.length === 0 && GETTER.test(s0.name)) {
         res = this.getter(scope.receiver, s0.name, seen, true);
+      } else if (entity !== undefined) {
+        // `getFeed('<entity>')` is the feed of `getBean('<entity>')`.
+        const bean = this.bean(entity);
+        res = bean.kind === 'resolved' ? this.returned(bean, s0.name) : bean;
+      } else {
+        const self = this.selfFunction(scope, s0.name);
+        if (self !== null) res = this.returned({ kind: 'resolved', path: scope.receiver, from: self.from }, s0.name);
       }
     } else if (!s0.indexed) {
       const w = s0.name.toLowerCase();
@@ -2549,7 +3262,7 @@ class Resolver {
         const parent = scope.unit.syntax === 'template' ? null : this.parent(scope.unit.path);
         if (parent !== null) res = { kind: 'resolved', path: scope.receiver, from: parent };
       } else if (w === 'application' && plain1 && s1 !== undefined) {
-        res = this.bean(s1.name);
+        res = this.application(s1.name, seen);
         next = 2;
       } else if (w === 'variables' && plain1 && s1 !== undefined) {
         let lvalue = `variables.${s1.name.toLowerCase()}`;
@@ -2567,9 +3280,14 @@ class Resolver {
           res = this.bean(lvalue.slice(lvalue.lastIndexOf('.') + 1));
         }
       } else if ((w === 'arguments' || w === 'local') && plain1 && s1 !== undefined) {
-        next = 2;
-        const localName = w === 'arguments' ? `arguments.${s1.name.toLowerCase()}` : s1.name.toLowerCase();
-        const r = this.local(scope, localName, seen);
+        // The longest plain path assigned in the function, as `arguments.rc.bean`, then its shorter prefixes.
+        let k = upto;
+        while (k > 2 && segs.slice(0, k).some((s) => s.args !== undefined || s.indexed === true)) k--;
+        let r: Resolution | null = null;
+        for (; k >= 2 && r === null; k--) {
+          r = this.local(scope, segs.slice(w === 'arguments' ? 0 : 1, k).map((s) => s.name.toLowerCase()).join('.'), seen);
+          next = k;
+        }
         if (r !== null) res = r;
         else if (w === 'arguments' && isInjector(scope.fn)) res = this.bean(s1.name);
       } else {
@@ -2583,19 +3301,43 @@ class Resolver {
             break;
           }
         }
+        if (k === 0 && !/^(?:request|session|form|url|cgi|cookie|server|client)$/.test(w)) {
+          const r = this.unscoped(scope, w, seen);
+          if (r !== null) res = r;
+        }
       }
     }
-    for (let k = next; k < upto && res.kind === 'resolved'; k++) {
+    res = this.members(res, segs, next, upto, seen);
+    if (res.kind === 'resolved') return res;
+    // A `get<Bean>()` accessor names its bean whatever its receiver, so an unresolved chain resumes at the last one.
+    for (let k = upto - 1; k >= next; k--) {
       const s = segs[k];
-      if (s === undefined || s.args === undefined || s.indexed === true) {
-        res = UNKNOWN;
-      } else if (s.args.length === 0 && GETTER.test(s.name)) {
-        res = this.getter(res.path, s.name, seen, false);
-      } else if (!FLUENT.test(s.name)) {
-        res = UNKNOWN;
+      if (s?.args?.length === 0 && s.indexed !== true && GETTER.test(s.name) && this.ctx.index.resolveBean(s.name.slice(3)) !== null) {
+        return this.members(this.getter(scope.receiver, s.name, seen, false), segs, k + 1, upto, seen);
       }
     }
     return res;
+  }
+
+  /**
+   * `res` carried through the members of `segs[from..upto)`: getters, fluent calls, an entity's feed or iterator, and
+   * any other method by what it returns; unknown at a property or an index.
+   */
+  private members(res: Resolution, segs: readonly ChainSegment[], from: number, upto: number, seen: Set<string>): Resolution {
+    let out = res;
+    for (let k = from; k < upto && out.kind === 'resolved'; k++) {
+      const s = segs[k];
+      if (s === undefined || s.args === undefined || s.indexed === true) {
+        out = UNKNOWN;
+      } else if (COLLECTION.test(s.name) && (out.item !== undefined || this.ctx.index.ormTable(out.path) !== null)) {
+        out = this.returned(out, s.name);
+      } else if (s.args.length === 0 && GETTER.test(s.name)) {
+        out = this.getter(out.path, s.name, seen, false);
+      } else if (!FLUENT.test(s.name)) {
+        out = this.returned(out, s.name);
+      }
+    }
+    return out;
   }
 
   /** Names callable without a receiver: functions up the receiver's chain and those the current template defines. */
@@ -2614,6 +3356,8 @@ interface ResolvedCall {
   /** Lookup start for the target method (the parent for `super`, a template for its own functions). */
   from: string | null;
   regions: Region[];
+  /** Receiver as written in normal form (`exprKey`): `''` for an unqualified call, null for `new`. */
+  receiver: string | null;
 }
 
 function regionsAt(regions: readonly Region[], offset: number): Region[] {
@@ -2672,7 +3416,8 @@ function resolveCalls(resolver: Resolver, scope: Scope): ResolvedCall[] {
     if (guard !== undefined) site.guard = guard;
     const thread = threadAt(analysis.regions, call.offset, analysis.lineAt);
     if (thread !== undefined) site.thread = thread;
-    out.push({ site, resolution, from, regions });
+    const receiver = call.chain.kind === 'new' && call.k === 0 ? null : call.k === 0 ? '' : exprKey(chainText(call.chain, call.k, body));
+    out.push({ site, resolution, from, regions, receiver });
   }
   return out;
 }
@@ -2702,9 +3447,18 @@ export interface ClosureEntry {
   excludePredicates?: readonly Predicates[];
   /** Trigger of the writes the entry reaches outside threads; defaults to `request`. */
   trigger?: Trigger;
+  /**
+   * The entry method runs on a bean its caller populated from the request (`bean.set(<request values>)`): the
+   * lower-cased keys the caller set on it, or on the request values, beyond those the request carries.
+   */
+  populated?: readonly string[];
 }
 
-/** One table write the closure reaches; `table` is null for an unresolved dynamic target. */
+/**
+ * One table write the closure reaches; `table` is null for an unresolved dynamic target.
+ * `via` is the call path from the entry to the writing method (an ORM save or delete ends with the entity's method);
+ * `columns` lists the lower-cased columns the statement or override names, null when it names none (ORM, `DELETE`).
+ */
 export interface ClosureWrite {
   table: string | null;
   op: WriterOp;
@@ -2714,23 +3468,33 @@ export interface ClosureWrite {
   trigger: Trigger;
   whereParams: string[];
   conditional: boolean;
+  columns: string[] | null;
+  via: string[];
   override?: string;
   dynamic?: true;
 }
 
-/** A write reached only under a guard the predicates cannot decide. */
+/** A write reached only under a guard the predicates cannot decide, with the call path of its write. */
 export interface ConditionalWrite {
   table: string;
   condition: string;
   source: SourceRef;
+  via: string[];
 }
 
-/** A call that writes or deletes stored file objects. */
+/**
+ * A call or file operation that writes or deletes stored file objects; `via` ends with the called file-store method,
+ * or with the function holding the operation.
+ */
 export interface FileStoreEvidence {
   component: string;
+  /** The file-store method called, or the operation and its path operand, as `cffile:delete(file)`. */
   method: string;
   source: SourceRef;
   conditional: boolean;
+  via: string[];
+  /** What a file operation does to the stored object; absent for a file-store method, whose name decides it. */
+  op?: 'write' | 'delete';
 }
 
 /** A thread body reached by the closure. */
@@ -2741,11 +3505,15 @@ export interface ClosureThread {
   source: SourceRef;
 }
 
-/** A reference the walk could not follow; settled by a writer override or a settled call, else reported for review. */
+/**
+ * A reference the walk could not follow; settled by a writer override or a settled call, else reported for review.
+ * `via` is the call path from the entry to the method holding the reference.
+ */
 export interface UnresolvedRef {
   expr: string;
   kind: UnresolvedKind;
   source: SourceRef;
+  via: string[];
 }
 
 /** Union of everything a branch writes, with the evidence and gaps behind it; every array is sorted. */
@@ -2769,15 +3537,227 @@ interface WalkNode {
   method: string;
   aliases: readonly Alias[];
   literals: Readonly<Record<string, string>>;
+  /**
+   * Tracked formals the call passed, with their literal value or null when unknown; a formal it omits takes its
+   * literal default. Absent for a node whose caller is unknown (the entry, an override's reach, onMissingMethod).
+   */
+  formals?: Readonly<Record<string, Val | null>>;
+  /** Lower-cased formals, sorted, whose bound value is a path in the file store. */
+  storePaths?: readonly string[];
   thread: boolean;
   relogin: boolean;
   conditions: readonly string[];
+  /** Call path of the caller that enqueued the node, empty for the entry; not part of the node's identity. */
+  trail: readonly string[];
+}
+
+/** Call-path label of a function: `<file name without extension>.<function>`, or `<file>.(template)` for a template body. */
+export function viaLabel(unitPath: string, fnName: string): string {
+  return `${path.posix.basename(unitPath).replace(/\.cf[cm]$/i, '')}.${fnName === '' ? '(template)' : fnName}`;
 }
 
 // fileDAO.cfc:111-209 writes originals and renditions; the delete paths flag or purge stored objects.
 const FILE_STORE_METHODS = new Set(['create', 'deleteversion', 'deleteall', 'purgedeleted', 'deleteifnotused']);
 const FILE_WRITER_METHODS = new Set(['writefile', 'movefile', 'copyfile', 'renamefile', 'uploadfile', 'appendfile']);
+// getCustomImage writes custom-size renditions, a cache rebuilt from the stored image whenever one is missing
+// (processImgCfimage.cfc:207-262), so none is a stored object.
+const RENDITION_CACHE_METHODS = new Set(['getcustomimage']);
 const SESSION_RANK: Record<SessionEffects, number> = { none: 0, relogin: 1, login: 2, logout: 3 };
+
+// ---------------------------------------------------------------------------------------------------------------
+// File operations on the file store
+// ---------------------------------------------------------------------------------------------------------------
+
+/** A path operand of a file operation and what the operation does to the object it names. */
+interface FileOperand {
+  /** Position of a builtin's operand, or the tag attribute holding it. */
+  at: number | string;
+  /** Names a builtin's operand may be passed by. */
+  names: readonly string[];
+  op: 'write' | 'delete';
+}
+
+/** One path operand of a builtin call or tag in a function body that writes or deletes the object it names. */
+interface FileOperation {
+  name: string;
+  op: 'write' | 'delete';
+  /** The operand as a CFML expression; a tag attribute is given as a string literal. */
+  path: string;
+  offset: number;
+}
+
+/** A path operand at a builtin position or a tag attribute; a tag attribute is its own name. */
+const operand = (at: number | string, op: FileOperand['op'], ...names: string[]): FileOperand => ({ at, names: names.length > 0 ? names : [String(at)], op });
+
+/** Builtins writing or deleting the file or directory their path operands name. */
+const FILE_FUNCTIONS: Readonly<Record<string, readonly FileOperand[]>> = {
+  filewrite: [operand(0, 'write', 'file', 'filepath')],
+  fileappend: [operand(0, 'write', 'file', 'filepath')],
+  filedelete: [operand(0, 'delete', 'file', 'filepath')],
+  filemove: [operand(0, 'delete', 'source'), operand(1, 'write', 'destination')],
+  filecopy: [operand(1, 'write', 'destination')],
+  fileupload: [operand(0, 'write', 'destination')],
+  fileuploadall: [operand(0, 'write', 'destination')],
+  imagewrite: [operand(1, 'write', 'destination')],
+  directorydelete: [operand(0, 'delete', 'path')],
+  directoryrename: [operand(0, 'delete', 'oldpath', 'path'), operand(1, 'write', 'newpath')],
+  directorycopy: [operand(1, 'write', 'destination')],
+};
+
+/** Tag actions writing or deleting the file or directory their path attributes name; `*` is any action of the tag. */
+const FILE_TAGS: Readonly<Record<string, Readonly<Record<string, readonly FileOperand[]>>>> = {
+  file: {
+    write: [operand('file', 'write')],
+    append: [operand('file', 'write')],
+    delete: [operand('file', 'delete')],
+    upload: [operand('destination', 'write')],
+    uploadall: [operand('destination', 'write')],
+    copy: [operand('destination', 'write')],
+    move: [operand('source', 'delete'), operand('destination', 'write')],
+    rename: [operand('source', 'delete'), operand('destination', 'write')],
+  },
+  image: { '*': [operand('destination', 'write')] },
+  directory: { delete: [operand('directory', 'delete')], rename: [operand('directory', 'delete'), operand('newdirectory', 'write')] },
+  zip: { unzip: [operand('destination', 'write')], zip: [operand('file', 'write')], delete: [operand('file', 'write')] },
+};
+
+/** A configured file-store root: the global or site `fileDir` or `assetDir`. */
+const FILE_STORE_ROOT = /\bget(?:File|Asset)Dir\s*\(/i;
+const PATH_REFERENCE = /(?<![\w$.])([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*)*)(\s*\()?/g;
+
+const fileOperationCache = new WeakMap<CfmlFunction, FileOperation[]>();
+
+/** The path operands of the builtins and tags of `fn` that write or delete files or directories. */
+function fileOperations(fn: CfmlFunction, analysis: Analysis): FileOperation[] {
+  const cached = fileOperationCache.get(fn);
+  if (cached !== undefined) return cached;
+  const ops: FileOperation[] = [];
+  for (const call of analysis.calls) {
+    const seg = call.chain.segs[call.k];
+    if (call.chain.kind !== 'name' || call.k !== 0 || call.chain.segs.length !== 1 || seg?.args === undefined) continue;
+    for (const o of FILE_FUNCTIONS[seg.name.toLowerCase()] ?? []) {
+      const args = seg.args;
+      const arg = args.find((a) => a.name !== undefined && o.names.includes(a.name.toLowerCase())) ?? (typeof o.at === 'number' && args[o.at]?.name === undefined ? args[o.at] : undefined);
+      if (arg !== undefined) ops.push({ name: `${seg.name}(${o.names[0] ?? ''})`, op: o.op, path: arg.expr, offset: call.offset });
+    }
+  }
+  for (const m of fn.body.matchAll(/<cf(file|image|directory|zip)\b/gi)) {
+    if (analysis.literal[m.index] === 1) continue;
+    const tag = (m[1] ?? '').toLowerCase();
+    const attrs = parseAttributes(fn.body.slice(m.index + m[0].length, Math.max(m.index + m[0].length, tagEnd(fn.body, m.index) - 1)));
+    const action = (attrs.action ?? '').toLowerCase();
+    for (const o of FILE_TAGS[tag]?.[action] ?? FILE_TAGS[tag]?.['*'] ?? []) {
+      const value = attrs[String(o.at)];
+      if (value !== undefined && value !== '') ops.push({ name: `cf${tag}:${action}(${String(o.at)})`, op: o.op, path: `"${value.replace(/"/g, '""')}"`, offset: m.index });
+    }
+  }
+  ops.sort((a, b) => a.offset - b.offset);
+  fileOperationCache.set(fn, ops);
+  return ops;
+}
+
+/** `expr` with each string literal replaced by the expressions it interpolates, so that only code remains. */
+function codeOf(expr: string): string {
+  let out = '';
+  let i = 0;
+  while (i < expr.length) {
+    const c = expr.charAt(i);
+    if (c !== '"' && c !== "'") {
+      out += c;
+      i++;
+      continue;
+    }
+    const parts: string[] = [];
+    i = skipString(expr, i, expr.length, (from, to) => parts.push(codeOf(expr.slice(from, Math.max(from, to - 1)))));
+    out += ` ${parts.join(' ')} `;
+  }
+  return out;
+}
+
+/**
+ * Whether the CFML path expression `expr` of `fn` names an object in the file store: it is built on a configured
+ * file-store root, directly or through the locals assigned to it, or on a formal in `storePaths` or declared with such
+ * a default. Temp and upload paths are built on no root, so they never qualify.
+ */
+function storePath(expr: string, fn: CfmlFunction, analysis: Analysis, storePaths: ReadonlySet<string>, seen: Set<Assignment>): boolean {
+  const code = codeOf(expr);
+  if (FILE_STORE_ROOT.test(code)) return true;
+  const formal = (name: string): boolean => {
+    if (storePaths.has(name)) return true;
+    const declared = fn.args.find((a) => a.name.toLowerCase() === name)?.default;
+    return declared !== undefined && FILE_STORE_ROOT.test(codeOf(declared));
+  };
+  for (const m of code.matchAll(PATH_REFERENCE)) {
+    const head = (m[1] ?? '').toLowerCase();
+    const members = (m[2] ?? '').replace(/\s+/g, '').toLowerCase();
+    if (m[3] !== undefined && members === '') continue;
+    const first = members.slice(1).split('.')[0] ?? '';
+    let names: string[];
+    if (head === 'arguments' && first !== '') {
+      if (formal(first)) return true;
+      names = [`arguments.${first}`];
+    } else if (head === 'local' && first !== '') {
+      names = [members.slice(1), first];
+    } else {
+      if (fn.args.some((a) => a.name.toLowerCase() === head) && formal(head)) return true;
+      names = [head + members, head];
+    }
+    for (const a of analysis.assignments) {
+      if (!names.includes(a.lvalue) || seen.has(a)) continue;
+      seen.add(a);
+      if (storePath(a.rhs, fn, analysis, storePaths, seen)) return true;
+    }
+  }
+  return false;
+}
+
+const storeRootCache = new WeakMap<CfmlFunction, boolean>();
+const storePathCache = new WeakMap<CfmlFunction, Map<string, boolean>>();
+
+/** {@link storePath} memoised per function and `storePaths`; false at once when neither `fn` nor `storePaths` names a root. */
+function isStorePath(expr: string, fn: CfmlFunction, analysis: Analysis, storePaths: ReadonlySet<string>): boolean {
+  let roots = storeRootCache.get(fn);
+  if (roots === undefined) {
+    roots = FILE_STORE_ROOT.test(fn.body) || fn.args.some((a) => a.default !== undefined && FILE_STORE_ROOT.test(a.default));
+    storeRootCache.set(fn, roots);
+  }
+  if (!roots && storePaths.size === 0) return false;
+  let memo = storePathCache.get(fn);
+  if (memo === undefined) {
+    memo = new Map();
+    storePathCache.set(fn, memo);
+  }
+  const key = `${[...storePaths].join(',')}\u0000${expr}`;
+  let hit = memo.get(key);
+  if (hit === undefined) {
+    hit = storePath(expr, fn, analysis, storePaths, new Set());
+    memo.set(key, hit);
+  }
+  return hit;
+}
+
+/**
+ * Lower-cased formals of `callee`, sorted, that a call binds to file-store paths: arguments `isStore` accepts, and
+ * the caller's own `storePaths` passed on by `argumentCollection=arguments`; undefined when it binds none.
+ */
+function storePathFormals(
+  args: readonly CallArgument[],
+  callee: CfmlFunction,
+  isStore: (expr: string) => boolean,
+  storePaths: ReadonlySet<string>,
+): string[] | undefined {
+  const out = new Set<string>();
+  args.forEach((a, i) => {
+    const named = a.name?.toLowerCase();
+    if (named === 'argumentcollection') {
+      if (a.expr.replace(/\s+/g, '').toLowerCase() === 'arguments') for (const f of storePaths) out.add(f);
+      return;
+    }
+    const formal = named ?? callee.args[i]?.name.toLowerCase();
+    if (formal !== undefined && isStore(a.expr)) out.add(formal);
+  });
+  return out.size === 0 ? undefined : [...out].sort(compareText);
+}
 
 function baseName(p: string): string {
   return path.posix.basename(p).toLowerCase();
@@ -2785,13 +3765,29 @@ function baseName(p: string): string {
 
 function aliasKey(aliases: readonly Alias[]): string {
   return aliases
-    .map((a) => `${a.kind}:${a.name}`)
+    .map((a) =>
+      a.kind === 'bean'
+        ? `bean:${a.name}:${a.component ?? ''}:${(a.extra ?? []).join('+')}${a.opaque === true ? ':opaque' : ''}${a.fresh === undefined ? '' : `:fresh=${a.fresh}`}${a.values === undefined ? '' : `:${JSON.stringify(Object.entries(a.values).sort(([x], [y]) => compareText(x, y)))}`}`
+        : `${a.kind}:${a.name}`,
+    )
     .sort(compareText)
     .join(',');
 }
 
-function addAlias(list: Alias[], name: string, kind: Alias['kind']): void {
-  if (!list.some((a) => a.name === name)) list.push({ name, kind });
+/** The tracking state a bean alias hands on: whether it is opaque or fresh and the values it knows. */
+type BeanState = Pick<Alias, 'component' | 'extra' | 'opaque' | 'values' | 'fresh'>;
+
+function addAlias(list: Alias[], name: string, kind: Alias['kind'], bean?: BeanState): void {
+  if (list.some((a) => a.name === name)) return;
+  if (kind !== 'bean' || bean === undefined) {
+    list.push({ name, kind });
+    return;
+  }
+  const alias: Alias = { name, kind, component: bean.component, extra: [...(bean.extra ?? [])].sort(compareText) };
+  if (bean.opaque === true) alias.opaque = true;
+  if (bean.fresh !== undefined) alias.fresh = bean.fresh;
+  if (bean.values !== undefined && Object.keys(bean.values).length > 0) alias.values = bean.values;
+  list.push(alias);
 }
 
 function structAlias(list: Alias[], name: string): void {
@@ -2829,6 +3825,1089 @@ function templateAliases(out: Alias[]): Alias[] {
   return out;
 }
 
+const factsCache = new WeakMap<ComponentIndex, Map<string, BeanFacts>>();
+
+/** Keys `component` and its ancestors hold a value of their own for, and the functions they define. */
+function beanFacts(resolver: Resolver, component: string): BeanFacts {
+  let cache = factsCache.get(resolver.ctx.index);
+  if (cache === undefined) {
+    cache = new Map();
+    factsCache.set(resolver.ctx.index, cache);
+  }
+  const hit = cache.get(component);
+  if (hit !== undefined) return hit;
+  const held = new Set<string>();
+  const defined = new Set<string>();
+  for (const p of resolver.chain(component)) {
+    const unit = resolver.unit(p);
+    if (unit === null) continue;
+    for (const prop of unit.properties) held.add(prop.name.toLowerCase());
+    for (const fn of unit.functions) {
+      defined.add(fn.name.toLowerCase());
+      const analysis = analyse(fn, unit.syntax);
+      for (const a of analysis.assignments) {
+        const key = /^variables\.instance\.([\w$]+)/.exec(a.lvalue)?.[1];
+        if (key !== undefined) held.add(key);
+      }
+      for (const m of fn.body.matchAll(/\bvariables\.instance\s*\[\s*(["'])([\w$]+)\1\s*\]\s*=(?!=)/gi)) held.add((m[2] ?? '').toLowerCase());
+      for (const c of analysis.calls) {
+        const seg = c.chain.segs[c.k];
+        const own = c.k === 0 || (c.k === 1 && c.chain.segs[0]?.name.toLowerCase() === 'this');
+        if (!own || seg === undefined) continue;
+        const key = setterKey(seg.name, seg.args ?? []);
+        if (typeof key === 'string') held.add(key);
+      }
+    }
+  }
+  const facts: BeanFacts = { held, defined, initial: initialValues(resolver, component), mapping: mappingFlags(resolver, component) };
+  cache.set(component, facts);
+  return facts;
+}
+
+/** ORM mapping flags the bean records per entity from its component metadata, with the value an absent attribute leaves. */
+const MAPPING_FLAG_DEFAULTS: Readonly<Record<string, boolean>> = Object.freeze({ usetrash: false, historical: false });
+
+/** Body of a getter returning `application.objectMappings[variables.entityName].<flag>`, after an optional `param`. */
+const MAPPING_GETTER =
+  /^\s*(?:param\s+name\s*=\s*(["'])application\.objectMappings\.#variables\.entityName#\.[\w$]+\1[^;]*;\s*)?return\s+application\.objectMappings\s*\[\s*variables\.entityName\s*\]\s*\.\s*([\w$]+)\s*;?\s*$/i;
+
+/** A metadata attribute as a CFML boolean; undefined for a value that is none. */
+function cfBoolean(value: string | undefined): boolean | undefined {
+  const v = value?.trim().toLowerCase();
+  if (v === 'true' || v === 'yes') return true;
+  if (v === 'false' || v === 'no') return false;
+  return v !== undefined && /^-?\d+(?:\.\d+)?$/.test(v) ? Number(v) !== 0 : undefined;
+}
+
+/**
+ * The mapping flags the metadata of `component` fixes, by the lower-cased name of the inherited getter returning
+ * each; none unless its whole chain is in the source tree. A flag is the component's own attribute, else its
+ * default, and `historical` also holds when a property up the chain is historical.
+ */
+function mappingFlags(resolver: Resolver, component: string): Record<string, Ex> {
+  const out: Record<string, Ex> = {};
+  const units = resolver.chain(component).flatMap((p) => resolver.unit(p) ?? []);
+  const own = units[0];
+  const root = units[units.length - 1];
+  if (own === undefined || root === undefined || own.syntax === 'template' || root.syntax === 'template') return out;
+  const ext = (root as CfmlComponent).declaration.attrs.extends;
+  if (ext !== undefined && ext !== '') return out;
+  const attrs = (own as CfmlComponent).declaration.attrs;
+  const historicalProperty = units.some((u) => u.properties.some((p) => cfBoolean(p.attrs.historical) === true));
+  const seen = new Set<string>();
+  units.forEach((unit, depth) => {
+    for (const fn of unit.functions) {
+      const name = fn.name.toLowerCase();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const flag = depth > 0 && fn.args.length === 0 ? MAPPING_GETTER.exec(fn.body)?.[2]?.toLowerCase() : undefined;
+      const fallback = flag === undefined ? undefined : MAPPING_FLAG_DEFAULTS[flag];
+      if (flag === undefined || fallback === undefined) continue;
+      const declared = attrs[flag];
+      const value = flag === 'historical' && historicalProperty ? true : declared === undefined ? fallback : cfBoolean(declared);
+      if (value !== undefined) out[name] = boolLit(value);
+    }
+  });
+  return out;
+}
+
+/**
+ * The literals the init chain of `component` leaves in `variables.instance`: inits run base first through
+ * `super.init()`, and a key keeps a literal only when the last init to touch it assigns one unconditionally after
+ * its own `super.init()`, with no call of that init changing the key and no bulk rewrite of the instance.
+ */
+function initialValues(resolver: Resolver, component: string): Readonly<Record<string, Ex>> {
+  const chain = resolver.chain(component);
+  const lastUnit = resolver.unit(chain[chain.length - 1] ?? '');
+  const ext = lastUnit === null || lastUnit.syntax === 'template' ? undefined : (lastUnit as CfmlComponent).declaration.attrs.extends;
+  // An ancestor outside the source tree may set anything.
+  if (lastUnit === null || (ext !== undefined && ext !== '')) return {};
+  const runs: Array<{ unit: CfmlUnit; fn: CfmlFunction; superAt: number }> = [];
+  for (const p of chain) {
+    const unit = resolver.unit(p);
+    const fn = unit?.functions.find((f) => f.name.toLowerCase() === 'init');
+    if (unit === null || unit === undefined || fn === undefined) continue;
+    const superCall = analyse(fn, unit.syntax).calls.find((c) => c.k === 1 && c.chain.segs[0]?.name.toLowerCase() === 'super' && c.chain.segs[1]?.name.toLowerCase() === 'init');
+    runs.push({ unit, fn, superAt: superCall?.offset ?? -1 });
+    if (superCall === undefined) break;
+  }
+  const out = new Map<string, Ex>();
+  for (const { unit, fn, superAt } of runs.reverse()) {
+    const analysis = analyse(fn, unit.syntax);
+    const body = fn.body;
+    if (/\bstruct(?:append|clear|insert|update|delete)\s*\(\s*variables\.instance\b|\bvariables\.instance\s*\[/i.test(body)) out.clear();
+    for (const a of analysis.assignments) {
+      if (a.lvalue === 'variables.instance') {
+        out.clear();
+        continue;
+      }
+      const key = /^variables\.instance\.([\w$]+)(\.)?/.exec(a.lvalue);
+      if (key?.[1] === undefined) continue;
+      const v = key[2] === undefined ? literalVal(a.rhs) : undefined;
+      const settled = v !== undefined && a.offset > superAt && regionsAt(analysis.regions, a.offset).length === 0;
+      out.set(key[1], settled ? { t: 'lit', v } : UNK);
+    }
+    // What the init's calls do to the instance, through its own methods or those it hands itself to.
+    const scope: Scope = { receiver: component, unit, fn };
+    for (const c of analysis.calls) {
+      const seg = c.chain.segs[c.k];
+      if (seg?.args === undefined) continue;
+      const own = c.k === 0 || (c.k === 1 && c.chain.segs[0]?.name.toLowerCase() === 'this');
+      const key = own ? setterKey(seg.name, seg.args) : undefined;
+      if (key === null || (own && seg.name.toLowerCase() === 'set' && seg.args.length === 1)) {
+        out.clear();
+        continue;
+      }
+      if (key !== undefined) {
+        out.set(key, UNK);
+        continue;
+      }
+      const callee = own || seg.args.some((a) => exprKey(a.expr) === 'this') ? calleeOf(resolver, scope, c.chain, c.k) : null;
+      const formal = callee === null ? undefined : own ? 'this' : passedFormal(seg.args, callee.fn, ['this']);
+      if (callee === null || formal === undefined) continue;
+      const m = formalMutation(resolver, callee, formal);
+      if (m.wholesale) out.clear();
+      for (const k of m.keys) out.set(k, UNK);
+    }
+  }
+  return Object.fromEntries([...out].filter(([, v]) => v.t !== 'unk'));
+}
+
+/**
+ * The key a bean call sets: `setX(v)` and `setValue('x', v)`/`set('x', v)` name one; null when the call may set any
+ * key (`setAllValues`, a computed key); undefined when it sets none (`set(struct)` is a population, judged apart).
+ */
+function setterKey(name: string, args: readonly CallArgument[]): string | null | undefined {
+  const lower = name.toLowerCase();
+  if (lower === 'setallvalues') return null;
+  if (lower === 'set' || lower === 'setvalue') {
+    if (args.length < 2) return undefined;
+    return literalString(args[0]?.expr)?.toLowerCase() ?? null;
+  }
+  const prop = /^set([\w$]+)$/.exec(lower)?.[1];
+  return prop;
+}
+
+/** The keys of `keys` a bean of `component` does not already hold, unique and sorted. */
+function extraKeys(resolver: Resolver, component: string | undefined, keys: Iterable<string>): string[] {
+  const held = component === undefined ? new Set<string>() : beanFacts(resolver, component).held;
+  return [...new Set([...keys].map((k) => k.toLowerCase()))].filter((k) => k !== '' && !held.has(k)).sort(compareText);
+}
+
+/** Normal form of a receiver or argument expression: no whitespace, lower-cased, without a `local.` scope. */
+function exprKey(text: string): string {
+  return text.replace(/\s+/g, '').toLowerCase().replace(/^local\./, '');
+}
+
+/** The bean alias a values expression (`x` or `x.getAllValues()`) reads; undefined when it reads none. */
+function sourceBean(expr: string, aliases: readonly Alias[]): Alias | undefined {
+  const e = exprKey(expr);
+  return aliases.find((a) => a.kind === 'bean' && a.component !== undefined && (e === a.name || e === `${a.name}.getallvalues()`));
+}
+
+/** The expression a keyed setter call stores: `propertyValue`, the argument after the key, or the only one of `setX(v)`. */
+function setterValue(name: string, args: readonly CallArgument[]): string | null {
+  const lower = name.toLowerCase();
+  const named = args.find((a) => a.name?.toLowerCase() === 'propertyvalue');
+  const arg = named ?? (lower === 'set' || lower === 'setvalue' ? args[1] : args.length === 1 ? args[0] : undefined);
+  return arg?.expr ?? null;
+}
+
+/** Whether the expression starting at `offset` begins a statement of its own. */
+function atStatement(body: string, offset: number): boolean {
+  let i = offset - 1;
+  while (i >= 0 && isSpace(body.charAt(i))) i--;
+  return i < 0 || ';{}'.includes(body.charAt(i)) || /<cfset$/i.test(body.slice(Math.max(0, i - 5), i + 1));
+}
+
+/**
+ * Keys a bean factory function (`getBean` of a base component) may set on the instance it hands out: those of its
+ * keyed setter calls; null when it may set any.
+ */
+function factoryKeys(factory: Scope): string[] | null {
+  const keys = new Set<string>();
+  for (const c of analyse(factory.fn, factory.unit.syntax).calls) {
+    const seg = c.chain.segs[c.k];
+    if (seg?.args === undefined) continue;
+    const key = setterKey(seg.name, seg.args);
+    if (key === null || (seg.name.toLowerCase() === 'set' && seg.args.length === 1)) return null;
+    if (key !== undefined) keys.add(key);
+  }
+  return [...keys];
+}
+
+/** Keys a request-values expression brings into a bean it populates; null when `expr` is not one. */
+function requestSource(resolver: Resolver, expr: string, aliases: readonly Alias[]): string[] | null {
+  const e = exprKey(expr);
+  for (const a of aliases) {
+    if (a.kind === 'struct' && e === a.name) return [];
+    if (a.kind === 'event' && e === `${a.name}.getallvalues()`) return [];
+    if (a.kind === 'scope' && e === `${a.name}.event().getallvalues()`) return [];
+    if (a.kind === 'bean' && a.component !== undefined && (e === a.name || e === `${a.name}.getallvalues()`)) {
+      return [...beanFacts(resolver, a.component).held, ...(a.extra ?? [])];
+    }
+  }
+  return null;
+}
+
+/**
+ * Keys a function sets on the value one of its formals (or `this`) receives, whether it may rewrite it wholesale,
+ * and whether it keeps the value in its component (`variables.x = formal`), making the receiver a view of it.
+ */
+interface Mutation {
+  keys: readonly string[];
+  wholesale: boolean;
+  escapes: boolean;
+}
+
+const NO_MUTATION: Mutation = Object.freeze({ keys: [], wholesale: false, escapes: false });
+const mutationCache = new WeakMap<ComponentIndex, WeakMap<CfmlFunction, Map<string, Mutation>>>();
+/** Mutation analyses in progress, innermost last; `partial` marks one a cycle cut short, whose result is not cached. */
+const mutationStack: Array<{ fn: CfmlFunction; key: string; partial: boolean }> = [];
+/** Member calls that reload or bulk-rewrite their receiver's values. */
+const REWRITES = /^(load|loadby|init|setallvalues)$/;
+
+/** The function a call of `scope.fn` reaches, with the receiver it runs on, when the walk can locate it. */
+function calleeOf(resolver: Resolver, scope: Scope, chain: Chain, k: number): Scope | null {
+  const seg = chain.segs[k];
+  if (seg === undefined || (chain.kind === 'new' && k === 0)) return null;
+  if (k === 0) {
+    const self = resolver.selfFunction(scope, seg.name);
+    const found = self === null ? null : resolver.findFunction(self.from, seg.name);
+    return found === null ? null : { receiver: scope.receiver, unit: found.unit, fn: found.fn };
+  }
+  const r = resolver.value(chain, k, scope, new Set());
+  if (r.kind !== 'resolved') return null;
+  const found = resolver.findFunction(r.from, seg.name);
+  return found === null ? null : { receiver: r.path, unit: found.unit, fn: found.fn };
+}
+
+/** Index of the argument of `args` passing one of `names`, with the callee formal it binds; undefined when none does. */
+function passedFormal(args: readonly CallArgument[], callee: CfmlFunction, names: readonly string[]): string | undefined {
+  for (const [i, a] of args.entries()) {
+    if (!names.includes(exprKey(a.expr))) continue;
+    const named = a.name?.toLowerCase();
+    if (named === 'argumentcollection') continue;
+    const formal = named === undefined ? callee.args[i] : callee.args.find((f) => f.name.toLowerCase() === named);
+    if (formal !== undefined) return formal.name.toLowerCase();
+  }
+  return undefined;
+}
+
+/**
+ * Keys a body writes straight into its own `variables.instance`, and whether it replaces or overwrites it in bulk.
+ * Writes under computed names (display-region object lists, extended attributes merged without overwriting) are
+ * taken to add keys of their own rather than change one written by name; an init's property loop is judged apart.
+ */
+function instanceWrites(body: string, analysis: Analysis): { keys: string[]; wholesale: boolean } {
+  const keys = new Set<string>();
+  let wholesale = false;
+  for (const a of analysis.assignments) {
+    if (a.lvalue === 'variables.instance') wholesale = true;
+    const key = /^variables\.instance\.([\w$]+)/.exec(a.lvalue)?.[1];
+    if (key !== undefined) keys.add(key);
+  }
+  const code = (re: RegExp): RegExpExecArray[] => [...body.matchAll(re)].filter((m) => analysis.literal[m.index] !== 1);
+  for (const m of code(/\bvariables\.instance\s*\[\s*(["'])([\w$]+)\1\s*\]\s*=(?!=)/gi)) keys.add((m[2] ?? '').toLowerCase());
+  for (const m of code(/\bstruct(?:insert|update|delete)\s*\(\s*variables\.instance\s*,\s*(["'])([\w$]+)\1/gi)) keys.add((m[2] ?? '').toLowerCase());
+  if (code(/\bstructclear\s*\(\s*variables\.instance\s*\)/gi).length > 0) wholesale = true;
+  for (const m of code(/\bstructappend\s*\(\s*variables\.instance\s*,/gi)) {
+    const open = body.lastIndexOf('(', m.index + m[0].length);
+    const close = matchBracket(body, open);
+    const args = close < 0 ? [] : splitArgs(body.slice(open + 1, close));
+    if (!/^false$/i.test(args[2]?.expr.trim() ?? '')) wholesale = true;
+  }
+  return { keys: [...keys], wholesale };
+}
+
+/**
+ * What `scope.fn` does to the value formal `formal` receives (`this` for the receiver itself): the keys it assigns or
+ * sets on it, and whether it reloads, repopulates or bulk-rewrites it, through the callees it passes the value to.
+ */
+function formalMutation(resolver: Resolver, scope: Scope, formal: string): Mutation {
+  let byFn = mutationCache.get(resolver.ctx.index);
+  if (byFn === undefined) {
+    byFn = new WeakMap();
+    mutationCache.set(resolver.ctx.index, byFn);
+  }
+  let cache = byFn.get(scope.fn);
+  if (cache === undefined) {
+    cache = new Map();
+    byFn.set(scope.fn, cache);
+  }
+  const cacheKey = `${scope.receiver}|${formal}`;
+  const hit = cache.get(cacheKey);
+  if (hit !== undefined) return hit;
+  const open = mutationStack.findIndex((f) => f.fn === scope.fn && f.key === cacheKey);
+  if (open >= 0) {
+    // A cycle back into an analysis in progress, which collects its own effects itself; the frames between see only part.
+    for (const f of mutationStack.slice(open + 1)) f.partial = true;
+    return NO_MUTATION;
+  }
+  const frame = { fn: scope.fn, key: cacheKey, partial: false };
+  mutationStack.push(frame);
+  try {
+    const out = analyseMutation(resolver, scope, formal);
+    if (!frame.partial) cache.set(cacheKey, out);
+    return out;
+  } finally {
+    mutationStack.pop();
+  }
+}
+
+function analyseMutation(resolver: Resolver, scope: Scope, formal: string): Mutation {
+  const self = formal === 'this';
+  const names = self ? ['this'] : [formal, `arguments.${formal}`];
+  const analysis = analyse(scope.fn, scope.unit.syntax);
+  const body = scope.fn.body;
+  const keys = new Set<string>();
+  let wholesale = false;
+  let escapes = false;
+  const merge = (m: Mutation): void => {
+    m.keys.forEach((k) => keys.add(k));
+    wholesale ||= m.wholesale;
+  };
+  for (const a of analysis.assignments) {
+    const name = names.find((n) => a.lvalue.startsWith(`${n}.`));
+    if (name !== undefined) keys.add(a.lvalue.slice(name.length + 1).split('.')[0] ?? '');
+    else if (!self && /^(?:variables|this)\./.test(a.lvalue) && names.includes(exprKey(a.rhs))) escapes = true;
+  }
+  if (self) {
+    const own = instanceWrites(body, analysis);
+    own.keys.forEach((k) => keys.add(k));
+    wholesale ||= own.wholesale;
+  }
+  const calls = analysis.calls.flatMap((c) => {
+    const seg = c.chain.segs[c.k];
+    const receiver = c.chain.kind === 'new' && c.k === 0 ? null : c.k === 0 ? '' : exprKey(chainText(c.chain, c.k, body));
+    return seg?.args === undefined ? [] : [{ c, seg, args: seg.args, receiver }];
+  });
+  /** A setter or bulk call on the value itself, or on a receiver that keeps it. */
+  const onValue = (seg: ChainSegment, args: readonly CallArgument[]): boolean => {
+    const lower = seg.name.toLowerCase();
+    if (REWRITES.test(lower) || (lower === 'set' && args.length === 1)) {
+      wholesale = true;
+      return true;
+    }
+    const key = setterKey(seg.name, args);
+    if (key === null) wholesale = true;
+    else if (key !== undefined) keys.add(key);
+    return key !== undefined;
+  };
+  const views = new Set<string>();
+  for (const { c, seg, args, receiver } of calls) {
+    const own = receiver !== null && (names.includes(receiver) || (self && receiver === ''));
+    if (own) {
+      if (onValue(seg, args)) continue;
+      // A defined getter may still write the instance, as `getAllValues()` merges stored extend sets.
+      const callee = calleeOf(resolver, scope, c.chain, c.k);
+      if (callee !== null) merge(formalMutation(resolver, callee, 'this'));
+      continue;
+    }
+    if (!args.some((a) => names.includes(exprKey(a.expr)))) continue;
+    const callee = calleeOf(resolver, scope, c.chain, c.k);
+    const passed = callee === null ? undefined : passedFormal(args, callee.fn, names);
+    if (callee === null || passed === undefined) continue;
+    const m = formalMutation(resolver, callee, passed);
+    merge(m);
+    if (m.escapes && receiver !== null && receiver !== '' && receiver !== 'this') views.add(receiver);
+  }
+  for (const { c, seg, args, receiver } of calls) {
+    if (receiver === null || !views.has(receiver)) continue;
+    const key = setterKey(seg.name, args);
+    if (key === null) wholesale = true;
+    else if (key !== undefined) keys.add(key);
+    else if (!REWRITES.test(seg.name.toLowerCase())) {
+      const callee = calleeOf(resolver, scope, c.chain, c.k);
+      if (callee !== null) merge(formalMutation(resolver, callee, 'this'));
+    }
+  }
+  // A kept value takes the keys the component sets on itself.
+  if (escapes) merge(formalMutation(resolver, scope, 'this'));
+  for (const n of names) {
+    const at = n.replace(/[.$]/g, (ch) => `\\${ch}`);
+    if (new RegExp(String.raw`\bstruct(?:append|clear)\s*\(\s*${at}\s*[,)]`, 'i').test(body)) wholesale = true;
+    for (const m of body.matchAll(new RegExp(String.raw`\bstruct(?:insert|update|delete)\s*\(\s*${at}\s*,\s*([^,)]*)`, 'gi'))) {
+      const key = literalString(m[1]?.trim());
+      if (key === undefined) wholesale = true;
+      else keys.add(key.toLowerCase());
+    }
+  }
+  keys.delete('');
+  return { keys: [...keys].sort(compareText), wholesale, escapes };
+}
+
+/**
+ * Request-populated beans as the body of `scope.fn` sees them: the inherited ones and the locals it populates
+ * (`l = x.set(<request values>)`, `l.set(<request values>)`), each with the keys the body sets on it. A local applies
+ * from its population on; a bean stops applying past a reload, a wholesale rewrite or a reassignment to anything but
+ * its own values view (`data = data.getAllValues()`, or `x.getAllValues()` of a bean `x.set(data)` copied it into).
+ */
+function beanAliases(resolver: Resolver, scope: Scope, inherited: readonly Alias[]): Alias[] {
+  const analysis = analyse(scope.fn, scope.unit.syntax);
+  const body = scope.fn.body;
+  const out = inherited.filter((a) => a.kind !== 'bean');
+  const calls = analysis.calls.flatMap((c) => {
+    const seg = c.chain.segs[c.k];
+    return seg?.args === undefined ? [] : [{ c, seg, receiver: c.k === 0 ? '' : exprKey(chainText(c.chain, c.k, body)) }];
+  });
+
+  const formals = new Set(scope.fn.args.map((a) => a.name.toLowerCase()));
+  /** The names a local is read under: `arguments.x.y` and `x.y` for a path through a formal, else `x` and `local.x`. */
+  const formsOf = (name: string): [string, string] => {
+    if (name.startsWith('arguments.')) return [name, name.slice('arguments.'.length)];
+    return formals.has(name.split('.')[0] ?? '') ? [`arguments.${name}`, name] : [name, `local.${name}`];
+  };
+
+  /**
+   * The bean an expression populates from the request (`x.set(<request values>)`, optionally followed by keyed
+   * setters), with the keys it then holds beyond its component's; null when it is no such population.
+   */
+  const population = (text: string): { component: string | null; extra: string[]; source?: Alias } | null => {
+    const rhs = text.trim();
+    const chain = parseChainAt(rhs, 0, /^new\s/i.test(rhs) ? 'new' : 'name');
+    const at = chain.segs.findIndex((s) => s.name.toLowerCase() === 'set' && s.args?.length === 1 && s.args[0]?.name === undefined);
+    if (at < 0) return null;
+    const expr = chain.segs[at]?.args?.[0]?.expr ?? '';
+    const extra = requestSource(resolver, expr, inherited);
+    if (extra === null) return null;
+    for (const s of chain.segs.slice(at + 1)) {
+      const key = s.args === undefined ? null : setterKey(s.name, s.args);
+      if (typeof key !== 'string') return null;
+      extra.push(key);
+    }
+    const r = resolver.expr(rhs, scope, new Set());
+    const source = sourceBean(expr, inherited);
+    return { component: r.kind === 'resolved' ? r.path : null, extra, ...(source === undefined ? {} : { source }) };
+  };
+
+  /**
+   * The transient bean an expression creates, `getBean('x')`, `new X()` or `createObject(…)`, optionally
+   * initialised, loaded and given keyed setters: its component, whether it is fresh, and the keys the chain sets.
+   */
+  const creation = (text: string, at: number): { component: string; fresh: boolean; defs: KeyDef[] } | null => {
+    const rhs = text.trim();
+    const kind = /^new\s/i.test(rhs) ? 'new' : 'name';
+    const chain = parseChainAt(rhs, 0, kind);
+    const last = chain.segs[chain.segs.length - 1];
+    if (last === undefined || last.e !== rhs.length) return null;
+    const factoryAt = kind === 'new' ? 0 : chain.segs.findLastIndex((s) => s.args !== undefined && /^get(bean|entity)$/i.test(s.name));
+    const object = kind === 'name' && factoryAt < 0 && chain.segs[0]?.name.toLowerCase() === 'createobject' && chain.segs[0].args !== undefined;
+    const start = object ? 0 : factoryAt;
+    if (start < 0) return null;
+    let fresh = !object;
+    const defs: KeyDef[] = [];
+    // A factory of the caller's own may set keys on the instance it hands out.
+    const factory = kind === 'name' && factoryAt >= 0 ? calleeOf(resolver, scope, chain, factoryAt) : null;
+    const preset = factory === null ? [] : factoryKeys(factory);
+    if (preset === null) fresh = false;
+    else preset.forEach((key) => defs.push({ key, at, expr: null, stmt: true }));
+    for (const s of chain.segs.slice(start + 1)) {
+      const lower = s.name.toLowerCase();
+      if (s.args === undefined) return null;
+      if (lower === 'init' || lower === 'load' || lower === 'loadby') {
+        // Both replace the values any earlier setter of the chain gave.
+        fresh = lower === 'init';
+        defs.length = 0;
+        continue;
+      }
+      const key = setterKey(s.name, s.args);
+      if (typeof key !== 'string') return null;
+      defs.push({ key, at, expr: setterValue(s.name, s.args), stmt: true });
+    }
+    const r = resolver.expr(rhs, scope, new Set());
+    if (r.kind !== 'resolved') return null;
+    // DI1 hands out a new instance only for a transient; any other bean is shared state.
+    if (factoryAt >= 0 && kind === 'name' && resolver.ctx.index.transient?.(r.path) !== true) return null;
+    return { component: r.path, fresh, defs };
+  };
+
+  /**
+   * Keys the body sets on the bean named by `names`, the first offset past `from` where it stops applying, and the
+   * key writes that track its values; a `tracked` bean also stops at a population from the request.
+   */
+  const fate = (
+    names: readonly string[],
+    from: number,
+    component: string | undefined,
+    tracked = false,
+  ): { keys: string[]; until?: number; defs: KeyDef[] } => {
+    const keys = new Set<string>();
+    const defs: KeyDef[] = [];
+    let until = Number.POSITIVE_INFINITY;
+    const cut = (at: number): void => {
+      if (at > from) until = Math.min(until, at);
+    };
+    const apply = (m: Mutation, at: number, def: number): void => {
+      m.keys.forEach((k) => {
+        keys.add(k);
+        defs.push({ key: k, at: def, expr: null, stmt: false });
+      });
+      if (m.wholesale) cut(at);
+    };
+    const stmtAt = (c: RawCall): boolean => atStatement(body, c.chain.segs[0]?.s ?? c.offset);
+    /** A getter the bean does not define, which its generic accessor answers without writing. */
+    const implicitRead = (name: string): boolean =>
+      /^(get|has|is)[\w$]*$/i.test(name) && component !== undefined && !beanFacts(resolver, component).defined.has(name.toLowerCase());
+    /** The method a member call on the bean runs: as the resolver finds it, else on the bean's own component. */
+    const methodOf = (c: RawCall, name: string): Scope | null => {
+      const found = calleeOf(resolver, scope, c.chain, c.k);
+      if (found !== null || component === undefined) return found;
+      const own = resolver.findFunction(component, name);
+      return own === null ? null : { receiver: component, unit: own.unit, fn: own.fn };
+    };
+    const copies = new Set(
+      calls
+        .filter(({ seg, receiver }) => {
+          const arg = exprKey(seg.args?.[0]?.expr ?? '');
+          return receiver !== '' && seg.name.toLowerCase() === 'set' && seg.args?.length === 1 && names.some((n) => arg === n || arg === `${n}.getallvalues()`);
+        })
+        .map(({ receiver }) => receiver),
+    );
+    const views = new Set<string>();
+    for (const { c, seg, receiver } of calls) {
+      if (c.chain.kind === 'new' && c.k === 0) continue;
+      const own =
+        names.some((n) => receiver === n || (receiver.startsWith(`${n}.`) && /^set[\w$]*\(/.test(receiver.slice(n.length + 1)))) ||
+        (names.includes('this') && (c.k === 0 || receiver === 'this'));
+      if (!own) {
+        if (!(seg.args ?? []).some((a) => names.includes(exprKey(a.expr)))) continue;
+        const callee = calleeOf(resolver, scope, c.chain, c.k);
+        const passed = callee === null ? undefined : passedFormal(seg.args ?? [], callee.fn, names);
+        if (callee === null || passed === undefined) continue;
+        const m = formalMutation(resolver, callee, passed);
+        apply(m, seg.e, seg.s);
+        if (m.escapes && receiver !== '' && receiver !== 'this') {
+          views.add(receiver);
+          defs.push({ key: '*', at: seg.s, expr: null, stmt: false });
+        }
+        continue;
+      }
+      const lower = seg.name.toLowerCase();
+      if (REWRITES.test(lower)) {
+        cut(seg.e);
+        continue;
+      }
+      if (lower === 'set' && seg.args?.length === 1) {
+        const extra = requestSource(resolver, seg.args[0]?.expr ?? '', inherited);
+        if (extra === null) cut(seg.e);
+        else if (tracked) cut(seg.s);
+        else {
+          extra.forEach((k) => keys.add(k));
+          // A later population from the request replaces the values the bean holds.
+          if (seg.s !== from) defs.push({ key: '*', at: seg.s, expr: null, stmt: false });
+        }
+        continue;
+      }
+      const key = setterKey(seg.name, seg.args ?? []);
+      if (key === null) cut(seg.e);
+      else if (key !== undefined) {
+        keys.add(key);
+        defs.push({ key, at: seg.s, expr: setterValue(seg.name, seg.args ?? []), stmt: stmtAt(c) });
+      } else if (!implicitRead(seg.name)) {
+        const callee = methodOf(c, seg.name);
+        if (callee !== null) apply(formalMutation(resolver, callee, 'this'), seg.e, seg.s);
+      }
+    }
+    for (const { c, seg, receiver } of calls) {
+      if (!views.has(receiver)) continue;
+      const key = setterKey(seg.name, seg.args ?? []);
+      if (key === null) cut(seg.e);
+      else if (key !== undefined) {
+        keys.add(key);
+        defs.push({ key, at: seg.s, expr: null, stmt: false });
+      } else if (!REWRITES.test(seg.name.toLowerCase())) {
+        const callee = calleeOf(resolver, scope, c.chain, c.k);
+        if (callee !== null) apply(formalMutation(resolver, callee, 'this'), seg.e, seg.s);
+      }
+    }
+    for (const a of analysis.assignments) {
+      // A copy of the reference lets later writes through it bypass the tracked values.
+      if (names.includes(exprKey(a.rhs))) defs.push({ key: '*', at: a.offset, expr: null, stmt: false });
+      const name = names.find((n) => a.lvalue === n || a.lvalue.startsWith(`${n}.`));
+      if (name === undefined || (a.offset === from && a.lvalue === name)) continue;
+      if (a.lvalue !== name) {
+        const path = a.lvalue.slice(name.length + 1).split('.');
+        const key = path[0] ?? '';
+        keys.add(key);
+        defs.push({ key, at: a.offset, expr: path.length === 1 ? a.rhs : null, stmt: true });
+        continue;
+      }
+      const view = /^(.+)\.getallvalues\(\)$/.exec(exprKey(a.rhs))?.[1];
+      if (view !== undefined && (names.includes(view) || copies.has(view))) continue;
+      const again = population(a.rhs);
+      if (again !== null && again.component !== null && again.component === component) {
+        again.extra.forEach((k) => keys.add(k));
+        defs.push({ key: '*', at: a.offset, expr: null, stmt: false });
+        continue;
+      }
+      const at = body.indexOf(a.rhs, a.offset);
+      cut(at < 0 ? a.offset : at + a.rhs.length);
+    }
+    for (const n of names) {
+      const at = n.replace(/[.$]/g, (ch) => `\\${ch}`);
+      for (const m of body.matchAll(new RegExp(String.raw`\bstruct(?:append|clear)\s*\(\s*(?:local\.)?${at}\s*[,)]`, 'gi'))) cut(m.index);
+      for (const m of body.matchAll(new RegExp(String.raw`\bstruct(?:insert|update|delete)\s*\(\s*(?:local\.)?${at}\s*,\s*([^,)]*)`, 'gi'))) {
+        const key = literalString(m[1]?.trim());
+        if (key === undefined) cut(m.index);
+        else {
+          keys.add(key.toLowerCase());
+          defs.push({ key: key.toLowerCase(), at: m.index, expr: null, stmt: false });
+        }
+      }
+    }
+    keys.delete('');
+    const kept = defs.filter((d) => d.key !== '');
+    return until === Number.POSITIVE_INFINITY ? { keys: [...keys], defs: kept } : { keys: [...keys], until, defs: kept };
+  };
+  const bounded = (a: Alias, since: number | undefined, until: number | undefined): Alias => ({
+    ...a,
+    ...(since === undefined ? {} : { since }),
+    ...(until === undefined ? {} : { until }),
+  });
+
+  /** The alias list entry for one name, carrying the tracking state and the body's key writes. */
+  const tracking = (a: Alias, defs: readonly KeyDef[], copyFrom: Alias['copyFrom']): Alias => {
+    const out0: Alias = { ...a };
+    if (defs.length > 0) out0.defs = defs;
+    if (copyFrom !== undefined) out0.copyFrom = copyFrom;
+    return out0;
+  };
+
+  const groups = new Map<string, Alias[]>();
+  for (const a of inherited) {
+    if (a.kind !== 'bean') continue;
+    const key = `${a.component ?? ''}|${(a.extra ?? []).join('+')}|${a.name.replace(/^arguments\./, '')}|${aliasKey([{ ...a, name: '' }])}`;
+    groups.set(key, [...(groups.get(key) ?? []), a]);
+  }
+  for (const members of groups.values()) {
+    const component = members[0]?.component;
+    const { keys, until, defs } = fate(
+      members.map((m) => m.name),
+      -1,
+      component,
+    );
+    for (const m of members) {
+      const list: Alias[] = [];
+      addAlias(list, m.name, 'bean', { component, extra: extraKeys(resolver, component, [...(m.extra ?? []), ...keys]), opaque: m.opaque, values: m.values, fresh: m.fresh });
+      for (const a of list) out.push(tracking(bounded(a, undefined, until), defs, undefined));
+    }
+  }
+
+  interface Local {
+    component: string;
+    extra: string[];
+    from: number;
+    source?: Alias;
+    /** A created bean: whether it is a never-loaded instance, and the keys its creating chain sets. */
+    made?: { fresh: boolean; defs: KeyDef[] };
+  }
+  /** Populated (`locals`) and created (`created`) beans by the first name they are written under. */
+  const locals = new Map<string, Local>();
+  const created = new Map<string, Local>();
+  const note = (into: Map<string, Local>, written: string, local: Local | null): void => {
+    if (local === null || !/^[\w$]+(?:\.[\w$]+)*$/.test(written) || written === 'this') return;
+    const forms = formsOf(written);
+    if (inherited.some((a) => forms.includes(a.name))) return;
+    const prev = into.get(forms[0]);
+    if (prev === undefined || local.from < prev.from) into.set(forms[0], { ...local, extra: [...new Set([...(prev?.extra ?? []), ...local.extra])] });
+  };
+  /** A population's local: an unresolved receiver takes the class of the bean it copies, as a manager fills its own entity. */
+  const populated = (component: string | null, extra: string[], from: number, source: Alias | undefined): Local | null => {
+    const c = component ?? source?.component ?? null;
+    return c === null ? null : { component: c, extra, from, ...(source === undefined ? {} : { source }) };
+  };
+  for (const a of analysis.assignments) {
+    const pop = population(a.rhs);
+    if (pop !== null) {
+      note(locals, a.lvalue, populated(pop.component, pop.extra, a.offset, pop.source));
+      continue;
+    }
+    const made = creation(a.rhs, a.offset);
+    if (made !== null) note(created, a.lvalue, { component: made.component, extra: [], from: a.offset, made: { fresh: made.fresh, defs: made.defs } });
+  }
+  for (const { c, seg, receiver } of calls) {
+    if (seg.name.toLowerCase() !== 'set' || seg.args?.length !== 1 || seg.args[0]?.name !== undefined || receiver === '') continue;
+    const expr = seg.args[0]?.expr ?? '';
+    const extra = requestSource(resolver, expr, inherited);
+    if (extra === null) continue;
+    const r = resolver.value(c.chain, c.k, scope, new Set());
+    note(locals, receiver, populated(r.kind === 'resolved' ? r.path : null, extra, seg.s, sourceBean(expr, inherited)));
+  }
+  for (const [name, l] of locals) {
+    const forms = formsOf(name);
+    const { keys, until, defs } = fate(forms, l.from, l.component);
+    const list: Alias[] = [];
+    for (const n of forms) {
+      // A copy of a fresh instance lands on a bean of unknown keys.
+      const opaque = l.source?.opaque === true || l.source?.fresh !== undefined ? true : undefined;
+      addAlias(list, n, 'bean', { component: l.component, extra: extraKeys(resolver, l.component, [...l.extra, ...keys]), opaque });
+    }
+    const copyFrom = l.source === undefined ? undefined : { name: l.source.name, at: l.from };
+    for (const a of list) out.push(tracking(bounded(a, l.from, until), defs, copyFrom));
+  }
+  for (const [name, l] of created) {
+    const forms = formsOf(name);
+    const { keys, until, defs } = fate(forms, l.from, l.component, true);
+    const made = l.made?.defs ?? [];
+    for (const n of forms) {
+      // A fresh instance holds its component's keys and those written since; a loaded one may hold any.
+      const a: Alias =
+        l.made?.fresh === true
+          ? { name: n, kind: 'bean', component: l.component, extra: extraKeys(resolver, l.component, [...keys, ...made.map((d) => d.key)]), fresh: l.component }
+          : { name: n, kind: 'bean', component: l.component, extra: [], opaque: true };
+      out.push(tracking(bounded(a, l.from, until), [...made, ...defs], undefined));
+    }
+  }
+  return out;
+}
+
+/** Whether region `r` holds body offset `at`. */
+function holdsOffset(r: Region, at: number): boolean {
+  return r.start <= at && at < r.end;
+}
+
+/** The truth a guard leaf is known to have where it is read, if any. */
+type FixedAtom = (atom: GuardCondition) => boolean | undefined;
+
+/**
+ * Whether the GuardCondition formula can hold for some truth assignment of its leaf conditions, taken as independent
+ * atoms except those `fixed` settles.
+ */
+function satisfiable(c: GuardCondition, fixed?: FixedAtom): boolean {
+  const atoms: GuardCondition[] = [];
+  const truth = new Map<GuardCondition, boolean>();
+  collectAtoms(c, atoms, truth, fixed);
+  if (atoms.length > 14) return true;
+  for (let mask = 0; mask < 1 << atoms.length; mask++) {
+    for (let i = 0; i < atoms.length; i++) truth.set(atoms[i] as GuardCondition, (mask & (1 << i)) !== 0);
+    if (holdsUnder(c, truth)) return true;
+  }
+  return false;
+}
+
+/** The free leaves of `x` into `atoms`, and the truth of those `fixed` settles into `truth`. */
+function collectAtoms(x: GuardCondition, atoms: GuardCondition[], truth: Map<GuardCondition, boolean>, fixed: FixedAtom | undefined): void {
+  if (x.k === 'expr' || x.k === 'case') {
+    if (atoms.includes(x) || truth.has(x)) return;
+    const known = fixed?.(x);
+    if (known === undefined) atoms.push(x);
+    else truth.set(x, known);
+  } else if (x.k === 'not') collectAtoms(x.of, atoms, truth, fixed);
+  else for (const y of x.of) collectAtoms(y, atoms, truth, fixed);
+}
+
+/** Truth of `x` under a truth assignment of its leaves. */
+function holdsUnder(x: GuardCondition, truth: ReadonlyMap<GuardCondition, boolean>): boolean {
+  if (x.k === 'expr' || x.k === 'case') return truth.get(x) === true;
+  if (x.k === 'not') return !holdsUnder(x.of, truth);
+  if (x.k === 'and') {
+    for (const y of x.of) if (!holdsUnder(y, truth)) return false;
+    return true;
+  }
+  for (const y of x.of) if (holdsUnder(y, truth)) return true;
+  return false;
+}
+
+const holdingCache = new WeakMap<Analysis, Map<number, readonly Region[]>>();
+
+/** The regions of `analysis` that hold body offset `x`. */
+function regionsHolding(analysis: Analysis, x: number): readonly Region[] {
+  let byOffset = holdingCache.get(analysis);
+  if (byOffset === undefined) {
+    byOffset = new Map();
+    holdingCache.set(analysis, byOffset);
+  }
+  let hit = byOffset.get(x);
+  if (hit === undefined) {
+    hit = analysis.regions.filter((r) => holdsOffset(r, x));
+    byOffset.set(x, hit);
+  }
+  return hit;
+}
+
+/**
+ * The guards around body offset `x` that neither `at` nor `from` lies in, or null when a loop, try block or thread
+ * around `x` but not `at` may skip it (`exit` judges a throw, which a try block catches, and a loop's own exits).
+ */
+function outerGuards(analysis: Analysis, x: number, at: number, from: number, exit?: Exit['kind']): GuardCondition[] | null {
+  const conds: GuardCondition[] = [];
+  for (const r of regionsHolding(analysis, x)) {
+    if (holdsOffset(r, at)) continue;
+    if (r.thread !== undefined) return null;
+    if (exit === undefined ? r.block !== undefined : r.block === 'loop' || (exit === 'throw' && r.block === 'try')) return null;
+    if (r.cond !== undefined && !(from >= 0 && holdsOffset(r, from))) conds.push(r.cond);
+  }
+  return conds;
+}
+
+/**
+ * Whether every path that reaches `at` (from body offset `from`, else from the start) runs one of `defs` there:
+ * the formula "no def ran and no earlier exit was taken" over the guards that enclose each def or exit but neither
+ * `at` nor `from` cannot hold. A def counts only as a statement of its own outside loops, try blocks and threads
+ * that do not enclose `at`; exits in loops or threads do not count, nor a throw inside a try block.
+ */
+function coversPath(analysis: Analysis, defs: readonly KeyDef[], at: number, fixed?: FixedAtom, from = -1): boolean {
+  const negated: GuardCondition[] = [];
+  let killers = 0;
+  for (const d of defs) {
+    if (!d.stmt || d.at >= at || d.at <= from) continue;
+    const conds = outerGuards(analysis, d.at, at, from);
+    if (conds === null) continue;
+    if (conds.length === 0) return true;
+    killers++;
+    negated.push({ k: 'not', of: { k: 'and', of: conds } });
+  }
+  if (killers === 0) return false;
+  for (const e of analysis.exits) {
+    if (e.at >= at || e.at <= from) continue;
+    if (regionsHolding(analysis, e.at).some((r) => r.thread !== undefined)) continue;
+    const conds = outerGuards(analysis, e.at, at, from, e.kind);
+    if (conds === null) continue;
+    if (conds.length === 0) return true;
+    negated.push({ k: 'not', of: { k: 'and', of: conds } });
+  }
+  return !satisfiable({ k: 'and', of: negated }, fixed);
+}
+
+/** The writes of `writes` whose value may still stand at `at`: those no later write of them overwrites on every path. */
+function standing(analysis: Analysis, writes: readonly KeyDef[], at: number, fixed?: FixedAtom): readonly KeyDef[] {
+  if (writes.length < 2) return writes;
+  return writes.filter((d) => d.at > at || !coversPath(analysis, writes, at, fixed, d.at));
+}
+
+/** What resolving tracked bean values at an offset needs: the body's analysis and the guard environment. */
+interface ValueContext {
+  analysis: Analysis;
+  formals: ReadonlyMap<string, Val>;
+  facts: (component: string) => BeanFacts;
+  dead?: (x: number, site: number) => boolean;
+  fixed?: FixedAtom;
+}
+
+/** One expression for several alternatives, flattened and de-duplicated. */
+function oneOf(options: readonly Ex[]): Ex {
+  const seen = new Map<string, Ex>();
+  for (const o of options.flatMap(alternatives)) seen.set(JSON.stringify(o), o);
+  const unique = [...seen.values()];
+  return unique.length === 1 && unique[0] !== undefined ? unique[0] : { t: 'one', of: unique };
+}
+
+/** A bean alias without its in-body tracking state. */
+function untracked(a: Alias): Alias {
+  const { defs: _defs, copyFrom: _copyFrom, values: _values, fresh: _fresh, ...rest } = a;
+  return rest;
+}
+
+/**
+ * The aliases that apply at body offset `at`, each tracked bean with the values its key writes leave there: per
+ * key, the value of every write that may reach `at`, and the prior value (inherited, fresh or copied) unless every
+ * path to `at` writes the key. A key any reaching value of which is unknown is unknown.
+ */
+function trackedAt(all: readonly Alias[], at: number, vc: ValueContext): readonly Alias[] {
+  const live = aliasesAt(all, at);
+  if (!live.some((a) => a.defs !== undefined || a.copyFrom !== undefined)) return live;
+  return live.map((a) => (a.defs === undefined && a.copyFrom === undefined ? a : valuedAt(a, all, at, vc, 0)));
+}
+
+/** Whether body offset `x` lies in a loop that also holds `at`, so a write there may run again before `at`. */
+function sharesLoop(analysis: Analysis, x: number, at: number): boolean {
+  return analysis.regions.some((r) => r.block === 'loop' && holdsOffset(r, x) && holdsOffset(r, at));
+}
+
+/** The writes of `defs` that may run before `at`: earlier ones, or later ones in a loop around both, unless dead. */
+function reachingDefs(defs: readonly KeyDef[], since: number, at: number, vc: ValueContext): KeyDef[] {
+  return defs.filter((d) => d.at >= since && (d.at < at || sharesLoop(vc.analysis, d.at, at)) && vc.dead?.(d.at, at) !== true);
+}
+
+/** The value a key write stores, as far as it is tracked: a literal or a request parameter, else unknown. */
+function storedValue(d: KeyDef, all: readonly Alias[], vc: ValueContext): Ex {
+  if (d.expr === null) return UNK;
+  const v = parseGuard(d.expr, { aliases: aliasesAt(all, d.at).map(untracked), formals: vc.formals, facts: vc.facts });
+  return v.t === 'lit' || v.t === 'ref' ? v : UNK;
+}
+
+const valuedCache = new WeakMap<Alias, Map<number, Alias>>();
+
+/** Tracked bean `a` of `all` as it stands at `at`; a copy reads its source where it was made, up to a few copies deep. */
+function valuedAt(a: Alias, all: readonly Alias[], at: number, vc: ValueContext, depth: number): Alias {
+  let byOffset = valuedCache.get(a);
+  if (byOffset === undefined) {
+    byOffset = new Map();
+    valuedCache.set(a, byOffset);
+  }
+  let hit = byOffset.get(at);
+  if (hit === undefined) {
+    hit = valueAt(a, all, at, vc, depth);
+    byOffset.set(at, hit);
+  }
+  return hit;
+}
+
+function valueAt(a: Alias, all: readonly Alias[], at: number, vc: ValueContext, depth: number): Alias {
+  const { defs: _defs, copyFrom, values: inherited, fresh, ...rest } = a;
+  let prior: Readonly<Record<string, Ex>> = inherited ?? {};
+  let base = fresh;
+  if (copyFrom !== undefined) {
+    const source = depth < 4 ? aliasesAt(all, copyFrom.at).find((s) => s.kind === 'bean' && s.name === copyFrom.name) : undefined;
+    const copied = source === undefined ? undefined : valuedAt(source, all, copyFrom.at, vc, depth + 1);
+    prior = copied?.values ?? {};
+    base = copied?.fresh;
+  }
+  const reaching = reachingDefs(a.defs ?? [], a.since ?? -1, at, vc);
+  // A write of every key leaves nothing known; a fresh instance may then hold any key.
+  if (reaching.some((d) => d.key === '*')) return base === undefined ? rest : { ...rest, opaque: true };
+  const initial = base === undefined ? {} : vc.facts(base).initial;
+  const values: Record<string, Ex> = {};
+  for (const key of new Set([...Object.keys(prior), ...reaching.map((d) => d.key)])) {
+    const writes = reaching.filter((d) => d.key === key);
+    const given = prior[key];
+    if (writes.length === 0) {
+      if (given !== undefined) values[key] = given;
+      continue;
+    }
+    const options = standing(vc.analysis, writes, at, vc.fixed).map((d) => storedValue(d, all, vc));
+    if (!coversPath(vc.analysis, writes, at, vc.fixed)) options.push(given ?? initial[key] ?? UNK);
+    // An unknown value is kept as such, so that no init literal stands in for it.
+    values[key] = options.some((o) => alternatives(o).some((x) => x.t === 'unk')) ? UNK : oneOf(options);
+  }
+  const out: Alias = { ...rest };
+  if (Object.keys(values).length > 0) out.values = values;
+  if (base !== undefined) out.fresh = base;
+  return out;
+}
+
+/** The aliases that apply at body offset `at`. */
+function aliasesAt(aliases: readonly Alias[], at: number): readonly Alias[] {
+  return aliases.some((a) => a.since !== undefined || a.until !== undefined)
+    ? aliases.filter((a) => (a.since === undefined || at >= a.since) && (a.until === undefined || at < a.until))
+    : aliases;
+}
+
+/** Builtins that read their arguments without changing them or keeping a reference to them. */
+const PURE_FUNCTIONS = new Set([
+  'arraycontains', 'arrayfind', 'arrayfindnocase', 'arrayisempty', 'arraylen', 'arraytolist', 'compare', 'comparenocase',
+  'dateformat', 'deserializejson', 'encodeforhtml', 'encodeforurl', 'find', 'findnocase', 'hash', 'htmleditformat', 'int',
+  'isarray', 'isboolean', 'isdate', 'isjson', 'isnull', 'isnumeric', 'isobject', 'isquery', 'issimplevalue', 'isstruct',
+  'isvalid', 'lcase', 'left', 'len', 'listcontains', 'listcontainsnocase', 'listfind', 'listfindnocase', 'listfirst',
+  'listgetat', 'listlast', 'listlen', 'mid', 'numberformat', 'replace', 'replacenocase', 'right', 'serializejson',
+  'structcount', 'structisempty', 'structkeyarray', 'structkeyexists', 'structkeylist', 'timeformat', 'tostring', 'trim',
+  'ucase', 'urlencodedformat', 'val', 'yesnoformat',
+]);
+
+/** Name of the call whose argument list directly holds body offset `at`; null when no call's parentheses hold it. */
+function enclosingCall(body: string, literal: Uint8Array, at: number): string | null {
+  let depth = 0;
+  for (let i = at - 1; i >= 0; i--) {
+    if (literal[i] === 1) continue;
+    const c = body.charAt(i);
+    if (c === ')' || c === ']' || c === '}') depth++;
+    else if (c === '(' || c === '[' || c === '{') {
+      if (depth > 0) {
+        depth--;
+        continue;
+      }
+      if (c !== '(') return null;
+      let e = i - 1;
+      while (e >= 0 && isSpace(body.charAt(e))) e--;
+      let s = e;
+      while (s >= 0 && isIdentPart(body.charAt(s))) s--;
+      return e > s && body.charAt(s) !== '.' ? body.slice(s + 1, e + 1).toLowerCase() : null;
+    } else if (depth === 0 && (c === ';' || c === '=' || c === '>' || c === '<' || c === '#')) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether every use of local `name` in `body` leaves its value to the plain assignments `defs`: no compound or
+ * keyed write, no member call, no use that names it in a string (`<cfquery name="x">`, `cfparam`), no loop or
+ * catch variable, and, unless every value it is given is a scalar literal, no read but as a direct argument of a
+ * builtin that keeps no reference.
+ */
+function localSafe(body: string, literal: Uint8Array, name: string, defs: readonly KeyDef[]): boolean {
+  const n = name.replace(/\$/g, '\\$');
+  const ref = String.raw`(?<![\w$.])(?:local\s*\.\s*)?${n}(?![\w$])`;
+  if (new RegExp(String.raw`(["'])(?:local\.)?${n}\1`, 'i').test(body)) return false;
+  if (new RegExp(String.raw`\bfor\s*\(\s*(?:var\s+)?${ref}\s+in\b|\bcatch\s*\(\s*[\w$.]+\s+${ref}\s*\)|\bparam\s+(?:name\s*=\s*)?${ref}`, 'i').test(body)) return false;
+  const scalar = defs.every((d) => literalVal(d.expr ?? undefined) !== undefined);
+  const assigned = new Set(defs.map((d) => d.at));
+  for (const m of body.matchAll(new RegExp(ref, 'gi'))) {
+    const at = m.index;
+    if (literal[at] === 1) continue;
+    let b = at - 1;
+    while (b >= 0 && isSpace(body.charAt(b))) b--;
+    if (/^(\+\+|--)$/.test(body.slice(Math.max(0, b - 1), b + 1))) return false;
+    let i = afterSpace(body, at + m[0].length);
+    let path = false;
+    for (;;) {
+      if (body.charAt(i) === '[') {
+        const close = matchBracket(body, i);
+        if (close < 0) return false;
+        i = afterSpace(body, close + 1);
+      } else if (body.charAt(i) === '.' && isIdentStart(body.charAt(afterSpace(body, i + 1)))) {
+        i = afterSpace(body, i + 1);
+        while (isIdentPart(body.charAt(i))) i++;
+        i = afterSpace(body, i);
+        if (body.charAt(i) === '(') return false;
+      } else {
+        break;
+      }
+      path = true;
+    }
+    const next = body.slice(i, i + 2);
+    if (/^(\+\+|--|[-+*/&%^]=)/.test(next)) return false;
+    if (next.charAt(0) === '=' && next.charAt(1) !== '=') {
+      if (path || !assigned.has(at)) return false;
+      continue;
+    }
+    if (path || scalar) continue;
+    // A `<cfloop array|collection|list="#x#">` only iterates it.
+    if (body.charAt(i) === '#' && /\b(?:array|collection|list)\s*=\s*["']#$/i.test(body.slice(Math.max(0, at - 16), at))) continue;
+    const callee = enclosingCall(body, literal, at);
+    if (callee === null || !PURE_FUNCTIONS.has(callee)) return false;
+  }
+  return true;
+}
+
+const localsCache = new WeakMap<CfmlFunction, ReadonlyMap<string, readonly KeyDef[]>>();
+
+/**
+ * Locals of `fn` whose values the walk tracks, with their writes: names declared `var` or written as `local.x`
+ * (never formals) that `localSafe` admits, in a body that includes no template and neither evaluates code nor
+ * touches the local scope as a whole.
+ */
+function trackedLocals(fn: CfmlFunction, syntax: CfmlUnit['syntax']): ReadonlyMap<string, readonly KeyDef[]> {
+  const cached = localsCache.get(fn);
+  if (cached !== undefined) return cached;
+  const out = new Map<string, KeyDef[]>();
+  localsCache.set(fn, out);
+  const analysis = analyse(fn, syntax);
+  const body = fn.body;
+  const code = (re: RegExp): RegExpExecArray[] => [...body.matchAll(re)].filter((m) => analysis.literal[m.index] !== 1);
+  if (fn.includes.length > 0 || code(/(?<![\w$.])(?:evaluate|setvariable)\s*\(|(?<![\w$.])local\b(?!\s*\.\s*[A-Za-z_$])/gi).length > 0) return out;
+  const formals = new Set(fn.args.map((a) => a.name.toLowerCase()));
+  const names = new Set<string>();
+  for (const m of code(/(?<![\w$.])var\s+([A-Za-z_$][\w$]*)/gi)) names.add((m[1] ?? '').toLowerCase());
+  for (const m of code(/(?<![\w$.])local\s*\.\s*([A-Za-z_$][\w$]*)\s*=(?!=)/gi)) names.add((m[1] ?? '').toLowerCase());
+  for (const name of names) {
+    if (formals.has(name)) continue;
+    const defs = analysis.assignments.filter((a) => a.lvalue === name).map((a): KeyDef => ({ key: name, at: a.offset, expr: a.rhs, stmt: true }));
+    if (defs.length > 0 && localSafe(body, analysis.literal, name, defs)) out.set(name, defs);
+  }
+  return out;
+}
+
+/** Value of tracked local `defs` at body offset `at`: one per write that may reach it, unknown unless every path writes it. */
+function localValue(defs: readonly KeyDef[], all: readonly Alias[], at: number, vc: ValueContext): Ex {
+  const reaching = reachingDefs(defs, -1, at, vc);
+  const options = standing(vc.analysis, reaching, at, vc.fixed).map((d) => storedValue(d, all, vc));
+  if (!coversPath(vc.analysis, reaching, at, vc.fixed)) options.push(UNK);
+  return options.some((o) => alternatives(o).some((x) => x.t === 'unk')) ? UNK : oneOf(options);
+}
+
+
 const relevantCache = new WeakMap<CfmlFunction, Set<string>>();
 
 /** Formals whose literal value matters: used as a dynamic write table or passed on to another call. */
@@ -2849,30 +4928,115 @@ function relevantFormals(fn: CfmlFunction, syntax: CfmlUnit['syntax']): Set<stri
   return out;
 }
 
-/** Callee request aliases and literal bindings from the actual arguments of a call. */
+const trackedCache = new WeakMap<CfmlFunction, Set<string>>();
+
+/** Texts of a guard condition: its expressions and switch subjects. */
+function conditionTexts(c: GuardCondition, out: string[] = []): string[] {
+  if (c.k === 'expr') out.push(c.text);
+  else if (c.k === 'case') out.push(c.subject);
+  else if (c.k === 'not') conditionTexts(c.of, out);
+  else c.of.forEach((x) => conditionTexts(x, out));
+  return out;
+}
+
+/** Whether the body of `fn` may give formal `name` a value other than the one the call passed. */
+function mayReassign(body: string, name: string): boolean {
+  const n = name.replace(/\$/g, '\\$');
+  return [
+    new RegExp(String.raw`(?<![\w$.])(?:arguments\s*\.\s*|local\s*\.\s*|var\s+)?${n}\s*(?:[-+*/&]?=(?!=)|\+\+|--)`, 'i'),
+    new RegExp(String.raw`(?:\+\+|--)\s*(?:arguments\s*\.\s*)?${n}(?![\w$])`, 'i'),
+    new RegExp(String.raw`\b(?:name|index|item|key|variable|returnvariable|result)\s*=\s*["'](?:arguments\.|local\.)?${n}["']`, 'i'),
+    new RegExp(String.raw`\bparam\s+(?:name\s*=\s*)?["']?(?:arguments\.)?${n}(?![\w$])`, 'i'),
+    new RegExp(String.raw`\bfor\s*\(\s*(?:var\s+)?${n}\s+in\b`, 'i'),
+  ].some((re) => re.test(body));
+}
+
+/**
+ * Formals whose literal value the walk tracks: read by a guard or passed on to another call, and never given another
+ * value in the body (nor the whole `arguments` scope rewritten).
+ */
+function trackedFormals(fn: CfmlFunction, syntax: CfmlUnit['syntax']): Set<string> {
+  const cached = trackedCache.get(fn);
+  if (cached !== undefined) return cached;
+  const formals = new Set(fn.args.map((a) => a.name.toLowerCase()));
+  const used = new Set<string>();
+  const analysis = analyse(fn, syntax);
+  for (const r of analysis.regions) {
+    for (const text of r.cond === undefined ? [] : conditionTexts(r.cond)) {
+      const toks = tokenize(text, 0, text.length);
+      toks.forEach((t, i) => {
+        const name = t.k === 'id' ? t.v.toLowerCase() : '';
+        if (!formals.has(name) || isP(toks[i + 1], '(')) return;
+        const bare = !isP(toks[i - 1], '.');
+        const scoped = isP(toks[i - 1], '.') && isWord(toks[i - 2], 'arguments') && !isP(toks[i - 3], '.');
+        if (bare || scoped) used.add(name);
+      });
+    }
+  }
+  for (const c of analysis.calls) {
+    for (const a of c.chain.segs[c.k]?.args ?? []) {
+      const name = /^(?:arguments\.)?([\w$]+)$/i.exec(a.expr.replace(/\s+/g, ''))?.[1]?.toLowerCase();
+      if (name !== undefined && formals.has(name)) used.add(name);
+    }
+  }
+  const body = fn.body.replace(/<cfargument\b[^>]*>/gi, '');
+  const rewritesAll = /\barguments\s*\[|\bstruct(?:append|delete|clear|insert|update)\s*\(\s*arguments\b/i.test(body);
+  const out = new Set([...used].filter((f) => !rewritesAll && !mayReassign(body, f)));
+  trackedCache.set(fn, out);
+  return out;
+}
+
+/** Known literal values of the tracked formals of `fn` at a node: what the call passed, else the literal default. */
+function formalValues(fn: CfmlFunction, syntax: CfmlUnit['syntax'], bound: WalkNode['formals']): Map<string, Val> {
+  const out = new Map<string, Val>();
+  if (bound === undefined) return out;
+  const tracked = trackedFormals(fn, syntax);
+  for (const a of fn.args) {
+    const f = a.name.toLowerCase();
+    if (!tracked.has(f)) continue;
+    const v = Object.hasOwn(bound, f) ? bound[f] : literalVal(a.default);
+    if (v !== null && v !== undefined) out.set(f, v);
+  }
+  return out;
+}
+
+function formalsKey(entries: Iterable<readonly [string, Val | null]> | undefined): string {
+  if (entries === undefined) return '-';
+  return [...entries]
+    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+    .sort(compareText)
+    .join(',');
+}
+
+/** Callee request aliases and literal bindings from the actual arguments of a call, read against the caller's aliases there. */
 function bindArguments(
   args: readonly CallArgument[],
   callee: CfmlFunction,
   calleeSyntax: CfmlUnit['syntax'],
   node: WalkNode,
-): { aliases: Alias[]; literals: Record<string, string> } {
+  callerAliases: readonly Alias[],
+  callerFormals: ReadonlyMap<string, Val>,
+): { aliases: Alias[]; literals: Record<string, string>; formals: Record<string, Val | null> } {
   const aliases: Alias[] = [];
   addAlias(aliases, 'request.context', 'struct');
   const literals: Record<string, string> = {};
+  const bound: Record<string, Val | null> = {};
   const formals = callee.args;
   const relevant = relevantFormals(callee, calleeSyntax);
+  const tracked = trackedFormals(callee, calleeSyntax);
   args.forEach((a, i) => {
     const expr = a.expr.replace(/\s+/g, '').toLowerCase();
     const named = a.name?.toLowerCase();
     if (named === 'argumentcollection') {
-      const alias = node.aliases.find((al) => al.name === expr && al.kind === 'struct');
+      for (const f of tracked) bound[f] = null;
+      const alias = callerAliases.find((al) => al.name === expr && al.kind === 'struct');
       if (alias !== undefined) structAlias(aliases, 'arguments');
       if (expr === 'arguments') {
-        for (const al of node.aliases) {
+        for (const al of callerAliases) {
           const rest = al.name.startsWith('arguments.') ? al.name.slice('arguments.'.length) : '';
           if (rest !== '' && formals.some((f) => f.name.toLowerCase() === rest.split('.')[0])) {
-            addAlias(aliases, al.name, al.kind);
-            addAlias(aliases, rest, al.kind);
+            addAlias(aliases, al.name, al.kind, al);
+            addAlias(aliases, rest, al.kind, al);
           }
         }
       }
@@ -2881,14 +5045,18 @@ function bindArguments(
     const formal = named === undefined ? formals[i] : formals.find((f) => f.name.toLowerCase() === named);
     if (formal === undefined) return;
     const fname = formal.name.toLowerCase();
-    const alias = node.aliases.find((al) => al.name === expr);
+    const alias = callerAliases.find((al) => al.name === expr);
+    if (tracked.has(fname)) {
+      const passed = /^(?:arguments\.)?([\w$]+)$/.exec(expr)?.[1];
+      bound[fname] = alias !== undefined ? null : (literalVal(a.expr) ?? (passed === undefined ? undefined : callerFormals.get(passed)) ?? null);
+    }
     if (alias !== undefined) {
       if (alias.kind === 'struct') {
         structAlias(aliases, `arguments.${fname}`);
         structAlias(aliases, fname);
       } else {
-        addAlias(aliases, `arguments.${fname}`, alias.kind);
-        addAlias(aliases, fname, alias.kind);
+        addAlias(aliases, `arguments.${fname}`, alias.kind, alias);
+        addAlias(aliases, fname, alias.kind, alias);
       }
       return;
     }
@@ -2899,7 +5067,7 @@ function bindArguments(
     // A passed argument replaces the formal's default even when its value is unknown, which binds as ''.
     literals[fname] = value ?? '';
   });
-  return { aliases, literals };
+  return { aliases, literals, formals: bound };
 }
 
 function nodeKey(n: WalkNode): string {
@@ -2907,7 +5075,9 @@ function nodeKey(n: WalkNode): string {
     .map(([k, v]) => `${k}=${v}`)
     .sort(compareText)
     .join(',');
-  return [n.receiver, n.from, n.method.toLowerCase(), aliasKey(n.aliases), literals, n.thread ? 't' : '', n.relogin ? 'r' : ''].join('|');
+  const formals = formalsKey(n.formals === undefined ? undefined : Object.entries(n.formals));
+  const storePaths = (n.storePaths ?? []).join(',');
+  return [n.receiver, n.from, n.method.toLowerCase(), aliasKey(n.aliases), literals, formals, n.thread ? 't' : '', n.relogin ? 'r' : '', storePaths].join('|');
 }
 
 function compareBy<T>(...keys: Array<(x: T) => string | number>): (a: T, b: T) => number {
@@ -2954,14 +5124,15 @@ class ClosureAccumulator {
   }
 
   unresolvedRef(u: UnresolvedRef): void {
-    this.unresolved.set(JSON.stringify([u.source, u.expr, u.kind]), u);
+    const key = JSON.stringify([u.source, u.expr, u.kind]);
+    if (!this.unresolved.has(key)) this.unresolved.set(key, u);
   }
 
   result(): WriteClosure {
     const writes = [...this.writes.values()];
     const conditionalWrites = writes
       .filter((w): w is ClosureWrite & { condition: string; table: string } => w.conditional && w.table !== null)
-      .map((w) => ({ table: w.table, condition: w.condition, source: w.source }))
+      .map((w) => ({ table: w.table, condition: w.condition, source: w.source, via: [...w.via] }))
       .sort(compareBy<ConditionalWrite>((c) => c.table, (c) => c.source.path, (c) => c.source.lines[0], (c) => c.condition));
     const tables = [...new Set(writes.flatMap((w) => (w.table === null ? [] : [w.table])))].sort(compareText);
     const evidence = [...this.evidence.values()].sort(
@@ -3023,8 +5194,9 @@ function sourceRef(p: string, from: number, to: number): SourceRef {
 /**
  * Union of the table and file-store writes a branch reaches: breadth-first over `(component, method)` from the
  * entry, pruning guards the predicates decide false and recording undecidable ones as conditional writes.
+ * `visitedVia`, when given, receives the first call path of each `visited` key.
  */
-export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteClosure {
+export function computeClosure(entry: ClosureEntry, ctx: ClosureContext, visitedVia?: Map<string, readonly string[]>): WriteClosure {
   const resolver = new Resolver(ctx);
   const predicates = lowerKeys(entry.predicates);
   const exclusions = (entry.excludePredicates ?? []).map(lowerKeys);
@@ -3039,7 +5211,12 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
     if (settledBy === undefined) acc.unresolvedRef(u);
     else acc.overrides.add(settledBy.id);
   };
-  const decided = new Map<string, Tri>();
+  /** The settled call naming `site` in its span that rules out its writes (unreachable, not CFML, non-write); the walk stops there. */
+  const prunedCall = (p: string, site: CallSite): SettledCall | undefined =>
+    settledCalls
+      .get(p)
+      ?.find((s) => s.resolution !== 'counted' && s.source.lines[0] <= site.line && site.line <= s.source.lines[1] && s.calls.includes(site.text));
+  const decided = new WeakMap<GuardEnv, Map<string, Tri>>();
   const condIds = new WeakMap<GuardCondition, number>();
   let nextCondId = 0;
 
@@ -3051,25 +5228,131 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
     }
     return id;
   };
-  const decideConds = (conds: readonly GuardCondition[], aliases: readonly Alias[], key: string): Tri => {
-    const cacheKey = `${key}|${conds.map(condId).join(',')}`;
-    let tri = decided.get(cacheKey);
-    if (tri === undefined) {
-      const c: GuardCondition = conds.length === 1 && conds[0] !== undefined ? conds[0] : { k: 'and', of: conds };
-      tri = decide(conditionEx(c, aliases), predicates, exclusions);
-      decided.set(cacheKey, tri);
+  const scoped = new WeakMap<GuardEnv, Map<number, readonly Alias[]>>();
+  const localMemo = new WeakMap<GuardEnv, Map<string, Ex>>();
+  /** The aliases of a node that apply at body offset `at`, tracked beans with their values there. */
+  const scopedAliases = (nodeEnv: GuardEnv, at: number): readonly Alias[] => {
+    const analysis = nodeEnv.analysis;
+    if (analysis === undefined) return aliasesAt(nodeEnv.aliases, at);
+    let byOffset = scoped.get(nodeEnv);
+    if (byOffset === undefined) {
+      byOffset = new Map();
+      scoped.set(nodeEnv, byOffset);
     }
-    return tri;
+    let hit = byOffset.get(at);
+    if (hit === undefined) {
+      hit = trackedAt(nodeEnv.aliases, at, { ...nodeEnv, analysis });
+      byOffset.set(at, hit);
+    }
+    return hit;
   };
-  /** Joint verdict of the guards around an offset, with the texts of the undecided ones. */
-  const evaluate = (regions: readonly Region[], aliases: readonly Alias[]): { tri: Tri; texts: string[] } => {
-    const conds = regions.flatMap((r) => (r.cond === undefined ? [] : [r.cond]));
-    if (conds.length === 0) return { tri: 'T', texts: [] };
-    const key = aliasKey(aliases);
-    const tri = decideConds(conds, aliases, key);
+  /** A node's guard environment as it stands at body offset `at`: the aliases there, and its tracked locals' values. */
+  const envAt = (nodeEnv: GuardEnv, at: number): GuardEnv => {
+    const aliases = scopedAliases(nodeEnv, at);
+    const defs = nodeEnv.localDefs;
+    const analysis = nodeEnv.analysis;
+    if (defs === undefined || defs.size === 0 || analysis === undefined) return aliases === nodeEnv.aliases ? nodeEnv : { ...nodeEnv, aliases };
+    const vc: ValueContext = { ...nodeEnv, analysis };
+    let memo = localMemo.get(nodeEnv);
+    if (memo === undefined) {
+      memo = new Map();
+      localMemo.set(nodeEnv, memo);
+    }
+    const known = memo;
+    const locals = (name: string): Ex | undefined => {
+      const d = defs.get(name);
+      if (d === undefined) return undefined;
+      const key = `${name}@${at}`;
+      let v = known.get(key);
+      if (v === undefined) {
+        v = localValue(d, nodeEnv.aliases, at, vc);
+        known.set(key, v);
+      }
+      return v;
+    };
+    return { ...nodeEnv, aliases, locals };
+  };
+  const condExs = new WeakMap<GuardEnv, Map<Region, Ex>>();
+  /** A region's guard in a node, read where the region opens. */
+  const regionEx = (r: Region & { cond: GuardCondition }, nodeEnv: GuardEnv): Ex => {
+    let byRegion = condExs.get(nodeEnv);
+    if (byRegion === undefined) {
+      byRegion = new Map();
+      condExs.set(nodeEnv, byRegion);
+    }
+    let ex = byRegion.get(r);
+    if (ex === undefined) {
+      ex = conditionEx(r.cond, envAt(nodeEnv, r.start));
+      byRegion.set(r, ex);
+    }
+    return ex;
+  };
+  const verdicts = new WeakMap<GuardEnv, Map<Region, Tri>>();
+  const pending = new Set<Region>();
+  const atomRegions = new WeakMap<Analysis, Map<GuardCondition, Region>>();
+  /**
+   * Verdict of one region alone in a node, read where it opens: false when its loop entry fails, else its guard's
+   * verdict. A region met again while its own verdict is in progress counts as undecided.
+   */
+  const regionTri = (r: Region, nodeEnv: GuardEnv): Tri => {
+    if (r.cond === undefined && r.entry === undefined) return 'T';
+    let byRegion = verdicts.get(nodeEnv);
+    if (byRegion === undefined) {
+      byRegion = new Map();
+      verdicts.set(nodeEnv, byRegion);
+    }
+    const hit = byRegion.get(r);
+    if (hit !== undefined) return hit;
+    if (pending.has(r)) return 'U';
+    pending.add(r);
+    try {
+      let tri: Tri = r.cond === undefined ? 'U' : 'T';
+      if (r.entry !== undefined && decide(conditionEx(r.entry, envAt(nodeEnv, r.start)), predicates, exclusions) === 'F') tri = 'F';
+      else if (r.cond !== undefined) tri = decide(regionEx(r as Region & { cond: GuardCondition }, nodeEnv), predicates, exclusions);
+      byRegion.set(r, tri);
+      return tri;
+    } finally {
+      pending.delete(r);
+    }
+  };
+  /** Whether a write at body offset `x` cannot run on the way to `site`: a region around it but not `site` is false alone. */
+  const deadIn = (nodeEnv: GuardEnv, analysis: Analysis) => (x: number, site: number): boolean =>
+    regionsHolding(analysis, x).some((r) => !holdsOffset(r, site) && (r.cond !== undefined || r.entry !== undefined) && regionTri(r, nodeEnv) === 'F');
+  /** The truth of a guard leaf that is the whole guard of a region, when that region alone is decided. */
+  const fixedIn = (nodeEnv: GuardEnv, analysis: Analysis): FixedAtom => {
+    let owners = atomRegions.get(analysis);
+    if (owners === undefined) {
+      owners = new Map();
+      for (const r of analysis.regions) if (r.cond !== undefined && (r.cond.k === 'expr' || r.cond.k === 'case') && !owners.has(r.cond)) owners.set(r.cond, r);
+      atomRegions.set(analysis, owners);
+    }
+    const byAtom = owners;
+    return (atom) => {
+      const r = byAtom.get(atom);
+      const tri = r === undefined ? 'U' : regionTri(r, nodeEnv);
+      return tri === 'T' ? true : tri === 'F' ? false : undefined;
+    };
+  };
+  /** Joint verdict of the guards around body offset `at`, each read where its region opens, with the texts of the undecided ones. */
+  const evaluate = (regions: readonly Region[], nodeEnv: GuardEnv, _at: number): { tri: Tri; texts: string[] } => {
+    if (regions.some((r) => r.entry !== undefined && regionTri(r, nodeEnv) === 'F')) return { tri: 'F', texts: [] };
+    const guarded = regions.filter((r): r is Region & { cond: GuardCondition } => r.cond !== undefined);
+    if (guarded.length === 0) return { tri: 'T', texts: [] };
+    let joint = decided.get(nodeEnv);
+    if (joint === undefined) {
+      joint = new Map();
+      decided.set(nodeEnv, joint);
+    }
+    const key = guarded.map((r) => condId(r.cond)).join(',');
+    let tri = joint.get(key);
+    if (tri === undefined) {
+      const parts = guarded.map((r) => regionEx(r, nodeEnv));
+      tri = decide(parts.reduce<Ex>((acc, e) => ({ t: 'and', a: acc, b: e }), { t: 'lit', v: { k: 'b', v: true } }), predicates, exclusions);
+      joint.set(key, tri);
+    }
     if (tri !== 'U') return { tri, texts: [] };
-    const texts = conds.filter((c) => decideConds([c], aliases, key) !== 'T').map(describeCondition);
-    return { tri, texts: texts.length > 0 ? texts : [describeCondition({ k: 'and', of: conds })] };
+    const texts = guarded.filter((r) => regionTri(r, nodeEnv) !== 'T').map((r) => describeCondition(r.cond));
+    return { tri, texts: texts.length > 0 ? texts : [describeCondition({ k: 'and', of: guarded.map((r) => r.cond) })] };
   };
 
   const locate = (n: WalkNode): { unit: CfmlUnit; fn: CfmlFunction } | null => {
@@ -3098,15 +5381,18 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
     entryUnit.functions.find((f) => f.name.toLowerCase() === entry.method.toLowerCase()) ??
     resolver.findFunction(entry.component, entry.method)?.fn;
   if (entryFn === undefined) throw new Error(`closure entry ${entry.component} has no method ${JSON.stringify(entry.method)}`);
+  const rootAliases = entryAliases(entryFn);
+  if (entry.populated !== undefined) addAlias(rootAliases, 'this', 'bean', { component: entry.component, extra: extraKeys(resolver, entry.component, entry.populated) });
   enqueue({
     receiver: entry.component,
     from: entry.component,
     method: entryFn.name,
-    aliases: entryAliases(entryFn),
+    aliases: rootAliases,
     literals: {},
     thread: false,
     relogin: false,
     conditions: [],
+    trail: [],
   });
 
   for (let head = 0; head < queue.length; head++) {
@@ -3115,10 +5401,24 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
     const loc = locate(node);
     if (loc === null) continue;
     const { unit, fn } = loc;
+    // First path in walk order to reach this node; a later unconditional path that supersedes it brings its own.
+    const via: readonly string[] = [...node.trail, viaLabel(unit.path, fn.name)];
     const analysis = analyse(fn, unit.syntax);
+    const env: GuardEnv = {
+      aliases: beanAliases(resolver, { receiver: node.receiver, unit, fn }, node.aliases),
+      formals: formalValues(fn, unit.syntax, node.formals),
+      facts: (component) => beanFacts(resolver, component),
+      receiver: node.receiver,
+      analysis,
+      localDefs: trackedLocals(fn, unit.syntax),
+    };
+    env.dead = deadIn(env, analysis);
+    env.fixed = fixedIn(env, analysis);
     const owner = unit.syntax === 'template' ? unit.path : node.receiver;
     const triggerOf = (inThread: boolean): Trigger => (node.thread || inThread ? 'thread' : baseTrigger);
-    acc.visited.add(`${owner}#${fn.name}`);
+    const visitedKey = `${owner}#${fn.name}`;
+    acc.visited.add(visitedKey);
+    if (visitedVia !== undefined && !visitedVia.has(visitedKey)) visitedVia.set(visitedKey, via);
 
     const lowerName = fn.name.toLowerCase();
     const matching = [
@@ -3139,10 +5439,27 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
             trigger: node.thread ? 'thread' : o.trigger === 'request' ? baseTrigger : o.trigger,
             whereParams: Array.isArray(o.keyScope) ? [...o.keyScope] : [],
             conditional: conditions.length > 0,
+            columns: o.columns === undefined ? null : o.columns.map((col) => col.toLowerCase()),
+            via: [...via],
             override: o.id,
           },
           conditions,
         );
+      }
+      for (const r of o.reaches ?? []) {
+        const callee = resolver.findFunction(r.component, r.method);
+        if (callee === null) throw new Error(`writer override ${o.id} reaches ${r.component}#${r.method}, which the source tree does not define`);
+        enqueue({
+          receiver: r.component,
+          from: r.component,
+          method: callee.fn.name,
+          aliases: [{ name: 'request.context', kind: 'struct' }],
+          literals: {},
+          thread: node.thread,
+          relogin: node.relogin,
+          conditions,
+          trail: via,
+        });
       }
     }
     // A reviewed override for this method stands for the writes it cannot resolve, so its gaps are not reported.
@@ -3158,7 +5475,7 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
     }
 
     for (const r of analysis.regions) {
-      if (r.thread === undefined || evaluate(regionsAt(analysis.regions, r.thread.open), node.aliases).tri === 'F') continue;
+      if (r.thread === undefined || evaluate(regionsAt(analysis.regions, r.thread.open), env, r.thread.open).tri === 'F') continue;
       acc.thread({
         name: r.thread.name,
         component: owner,
@@ -3168,7 +5485,7 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
     }
 
     for (const w of analysis.writes) {
-      const verdict = evaluate(regionsAt(analysis.regions, w.offset), node.aliases);
+      const verdict = evaluate(regionsAt(analysis.regions, w.offset), env, w.offset);
       if (verdict.tri === 'F') continue;
       const conditions = [...node.conditions, ...verdict.texts];
       const source = sourceRef(unit.path, w.line, w.endLine);
@@ -3182,17 +5499,41 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
         trigger: triggerOf(w.thread !== undefined),
         whereParams: [...w.whereParams],
         conditional: conditions.length > 0,
+        columns: w.columns === null ? null : [...w.columns],
+        via: [...via],
       };
       if (table === null) {
         write.dynamic = true;
-        unresolvedRef({ expr: w.tableExpr, kind: 'table', source });
+        unresolvedRef({ expr: w.tableExpr, kind: 'table', source, via: [...via] });
       }
       acc.write(write, conditions);
     }
 
-    for (const c of resolveCalls(resolver, { receiver: node.receiver, unit, fn })) {
-      const verdict = evaluate(c.regions, node.aliases);
+    const storePaths = new Set(node.storePaths ?? []);
+    const isStore = (expr: string): boolean => isStorePath(expr, fn, analysis, storePaths);
+    for (const f of fileOperations(fn, analysis)) {
+      if (!isStore(f.path)) continue;
+      const verdict = evaluate(regionsAt(analysis.regions, f.offset), env, f.offset);
       if (verdict.tri === 'F') continue;
+      const line = analysis.lineAt(f.offset);
+      acc.fileStore({
+        component: owner,
+        method: f.name,
+        source: sourceRef(unit.path, line, line),
+        conditional: node.conditions.length > 0 || verdict.texts.length > 0,
+        via: [...via],
+        op: f.op,
+      });
+    }
+
+    for (const c of resolveCalls(resolver, { receiver: node.receiver, unit, fn })) {
+      const verdict = evaluate(c.regions, env, c.site.offset);
+      if (verdict.tri === 'F') continue;
+      const pruned = c.resolution.kind === 'resolved' ? prunedCall(unit.path, c.site) : undefined;
+      if (pruned !== undefined) {
+        acc.overrides.add(pruned.id);
+        continue;
+      }
       const conditions = [...node.conditions, ...verdict.texts];
       const source = sourceRef(unit.path, c.site.line, c.site.line);
       const inThread = node.thread || c.site.thread !== undefined;
@@ -3200,11 +5541,29 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
       const lowerMethod = method.toLowerCase();
       const calleeName = (c.site.resolved === null ? (c.site.target.bean ?? '') : path.posix.basename(c.site.resolved, '.cfc')).toLowerCase();
       const callerName = path.posix.basename(unit.path, '.cfc').toLowerCase();
-      if (
+      const found = c.resolution.kind === 'resolved' ? locate({ ...node, receiver: c.resolution.path, from: c.from ?? c.resolution.path, method }) : null;
+      /** Call path through the called method: its defining unit when located, else the receiver as written. */
+      const calleeVia = (): string[] => [
+        ...via,
+        found !== null
+          ? viaLabel(found.unit.path, found.fn.name)
+          : c.site.resolved !== null
+            ? viaLabel(c.site.resolved, method)
+            : c.site.target.bean !== undefined
+              ? `${c.site.target.bean}.${method}`
+              : c.site.text,
+      ];
+      const storeCall =
         ((calleeName === 'filemanager' || calleeName === 'filedao') && FILE_STORE_METHODS.has(lowerMethod)) ||
-        ((callerName === 'filemanager' || callerName === 'filedao') && calleeName === 'filewriter' && FILE_WRITER_METHODS.has(lowerMethod))
-      ) {
-        acc.fileStore({ component: c.site.resolved ?? c.site.target.bean ?? c.site.text, method, source, conditional: conditions.length > 0 });
+        ((callerName === 'filemanager' || callerName === 'filedao') && calleeName === 'filewriter' && FILE_WRITER_METHODS.has(lowerMethod));
+      if (storeCall) {
+        acc.fileStore({
+          component: c.site.resolved ?? c.site.target.bean ?? c.site.text,
+          method,
+          source,
+          conditional: conditions.length > 0,
+          via: calleeVia(),
+        });
       }
       const relogin =
         lowerMethod === 'login' &&
@@ -3215,7 +5574,7 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
       if (c.resolution.kind !== 'resolved') {
         const reportable = c.resolution.kind === 'unresolved' || lowerMethod === 'save' || lowerMethod === 'delete';
         if (reportable && !settled) {
-          unresolvedRef({ expr: c.site.text, kind: c.resolution.kind === 'unresolved' ? c.resolution.why : 'receiver', source });
+          unresolvedRef({ expr: c.site.text, kind: c.resolution.kind === 'unresolved' ? c.resolution.why : 'receiver', source, via: [...via] });
         }
         continue;
       }
@@ -3225,54 +5584,89 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
         const table = ctx.index.ormTable(target);
         if (table !== null) {
           acc.write(
-            { table, op: lowerMethod, component: target, method, source, trigger: inThread ? 'thread' : baseTrigger, whereParams: [], conditional: conditions.length > 0 },
+            {
+              table,
+              op: lowerMethod,
+              component: target,
+              method,
+              source,
+              trigger: inThread ? 'thread' : baseTrigger,
+              whereParams: [],
+              conditional: conditions.length > 0,
+              columns: null,
+              via: calleeVia(),
+            },
             conditions,
           );
         }
       }
-      const found = locate({ ...node, receiver: target, from, method });
       if (found === null) {
         if (resolver.unit(from) === null) {
-          if (!settled) unresolvedRef({ expr: c.site.text, kind: 'component', source });
+          if (!settled) unresolvedRef({ expr: c.site.text, kind: 'component', source, via: [...via] });
         } else if (resolver.hasOnMissingMethod(from)) {
-          enqueue({ receiver: target, from, method: 'onMissingMethod', aliases: [{ name: 'request.context', kind: 'struct' }], literals: {}, thread: inThread, relogin: node.relogin || relogin, conditions });
+          enqueue({
+            receiver: target,
+            from,
+            method: 'onMissingMethod',
+            aliases: [{ name: 'request.context', kind: 'struct' }],
+            literals: {},
+            thread: inThread,
+            relogin: node.relogin || relogin,
+            conditions,
+            trail: via,
+          });
         } else if (!/^(get|set|has)[A-Za-z_$]/.test(method) && !settled) {
-          unresolvedRef({ expr: c.site.text, kind: 'method', source });
+          unresolvedRef({ expr: c.site.text, kind: 'method', source, via: [...via] });
         }
         continue;
       }
-      const bound = bindArguments(c.site.args, found.fn, found.unit.syntax, node);
+      const callerAliases = scopedAliases(env, c.site.offset);
+      const bound = bindArguments(c.site.args, found.fn, found.unit.syntax, node, callerAliases, env.formals);
+      // The callee runs on a request-populated bean when called on one, or on the caller's own when it calls itself.
+      const self = c.receiver === '' || c.receiver === 'this' || c.receiver === 'super' ? 'this' : c.receiver;
+      const onBean = self === null ? undefined : callerAliases.find((a) => a.kind === 'bean' && a.name === self);
+      if (onBean !== undefined) addAlias(bound.aliases, 'this', 'bean', onBean);
+      // A call already cited as a file-store write stands for the file operations of its callee; a rendition-cache
+      // call writes no stored object.
+      const renditionCall = (calleeName === 'filemanager' || calleeName === 'processimgcfimage') && RENDITION_CACHE_METHODS.has(lowerMethod);
+      const calleeStorePaths = storeCall || renditionCall ? undefined : storePathFormals(c.site.args, found.fn, isStore, storePaths);
       enqueue({
         receiver: target,
         from,
         method: found.fn.name,
         aliases: bound.aliases,
         literals: bound.literals,
+        formals: bound.formals,
+        ...(calleeStorePaths === undefined ? {} : { storePaths: calleeStorePaths }),
         thread: inThread,
         relogin: node.relogin || relogin,
         conditions,
+        trail: via,
       });
     }
 
     for (const inc of fn.includes) {
       const regions = regionsAt(analysis.regions, inc.offset);
-      const verdict = evaluate(regions, node.aliases);
+      const verdict = evaluate(regions, env, inc.offset);
       if (verdict.tri === 'F') continue;
       const template = resolveTemplatePath(inc.template, unit.path, ctx.tree);
       if (template === null) {
-        if (!settled) unresolvedRef({ expr: inc.template, kind: 'include', source: sourceRef(unit.path, inc.line, inc.line) });
+        if (!settled) unresolvedRef({ expr: inc.template, kind: 'include', source: sourceRef(unit.path, inc.line, inc.line), via: [...via] });
         continue;
       }
-      const aliases = templateAliases([...node.aliases]);
+      // An included template shares the includer's scopes, so it sees the aliases that apply at the include.
+      const aliases = templateAliases(scopedAliases(env, inc.offset).map(({ since: _since, until: _until, ...a }) => a));
       enqueue({
         receiver: node.receiver,
         from: template,
         method: '',
         aliases,
         literals: {},
+        ...(node.storePaths === undefined ? {} : { storePaths: node.storePaths }),
         thread: node.thread || threadAt(analysis.regions, inc.offset, analysis.lineAt) !== undefined,
         relogin: node.relogin,
         conditions: [...node.conditions, ...verdict.texts],
+        trail: via,
       });
     }
   }

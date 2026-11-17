@@ -30,6 +30,7 @@ import {
   fixtureForTenant,
   isAck,
   pushTo,
+  registryPayloads,
   seedRegistry,
   testEnvelope,
   testPgConfig,
@@ -287,6 +288,14 @@ function unregisteredSiteEnvelope(tenantId: string) {
   return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId, aggregateId: siteId, aggregateVersion: 1, payload });
 }
 
+/** A `programs-sites.site.changed.v1` envelope of the seeded registry state of `tenantId`'s fixture site, at version 2 over the seeded 1. */
+function fixtureSiteEnvelope(tenantId: string) {
+  const siteId = fixtureForTenant(tenantId)?.siteId;
+  const payload = registryPayloads().find((candidate) => candidate.siteId === siteId);
+  if (siteId === undefined || payload === undefined) throw new TypeError(`No tenant fixture has tenant ${tenantId}`);
+  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId, aggregateId: siteId, aggregateVersion: 2, payload });
+}
+
 /** Injects `method url` as `actor` through the gateway, sending `form` urlencoded when given. */
 async function send(method: Method, url: string, actor: TestActor, form?: Record<string, string>): Promise<InjectResponse> {
   const { app } = built().testApp;
@@ -401,7 +410,6 @@ describe.skipIf(!PG_AVAILABLE)('people tenant isolation', () => {
     });
   });
 
-  // Its event case is the tenantless identity.group.changed.v1 delivery, so the cases below do not repeat it.
   defineIsolationSuite(
     { describe, it, expect, beforeAll },
     {
@@ -411,12 +419,15 @@ describe.skipIf(!PG_AVAILABLE)('people tenant isolation', () => {
       writeAs,
       readAs,
       rowFor,
-      event: {
-        app: () => testApp?.app,
-        subscription: GROUP_NAME_SUBSCRIPTION,
-        envelopeFor: (tenantId) => groupEnvelope(fixtureForTenant(tenantId) ?? TENANT_A),
-        publisher,
-      },
+      events: [
+        {
+          app: () => testApp?.app,
+          subscription: GROUP_NAME_SUBSCRIPTION,
+          envelopeFor: (tenantId) => groupEnvelope(fixtureForTenant(tenantId) ?? TENANT_A),
+          publisher,
+        },
+        { app: () => testApp?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: fixtureSiteEnvelope, publisher },
+      ],
     },
   );
 

@@ -1,7 +1,9 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Tenant isolation of the reporting schema, its export routes, its signed export URLs and its export-run task against PostgreSQL. */
+/** Tenant isolation of the reporting schema, its export routes, its signed export URLs, its export-run task and its site registry consumer against PostgreSQL. */
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
+import { CONSUMER_AGGREGATE_VERSION_TABLE, INBOX_TABLE } from '@opt2/platform/events';
 import { cfUuid, errorSpec } from '@opt2/platform/legacy-compat';
 import type { CanonicalValue, Mapping } from '@opt2/platform/migration-kit';
 import { CLOUD_TASKS_HEADERS, QUEUES, TaskTenantMismatchError, type TaskWireBody } from '@opt2/platform/tasks';
@@ -122,8 +124,16 @@ function migratedRow([mapping, [sample]]: LegacySamples, tenant: TenantFixture):
   return { tenant_id: tenant.tenantId, ...mapping.toTarget({ ...sample, siteID: tenant.siteId, ...Object.fromEntries(keys) }) };
 }
 
-/** A fresh row of owned `table` for `tenant` that meets every constraint of 0002_reporting.sql and 0003_extensions.sql. */
+/** Fresh rows of the platform tenant tables the site registry consumer writes, which the shared suite inserts directly. */
+const CONSUMER_ROWS: ReadonlyMap<string, () => Row> = new Map<string, () => Row>([
+  [INBOX_TABLE, () => ({ event_id: randomUUID(), subscription: SITE_CHANGED_SUBSCRIPTION, status: 'applied' })],
+  [CONSUMER_AGGREGATE_VERSION_TABLE, () => ({ subscription: SITE_CHANGED_SUBSCRIPTION, aggregate_type: 'site', aggregate_id: cfUuid(), last_version: 1 })],
+]);
+
+/** A fresh row of owned or consumer `table` for `tenant` that meets every constraint of its migration. */
 function rowFor(table: string, tenant: TenantFixture): Row {
+  const consumerRow = CONSUMER_ROWS.get(table);
+  if (consumerRow !== undefined) return consumerRow();
   const migrated = MIGRATED_SAMPLES.get(table);
   if (migrated !== undefined) return migratedRow(migrated, tenant);
   switch (table) {
@@ -138,9 +148,19 @@ function rowFor(table: string, tenant: TenantFixture): Row {
   }
 }
 
-/** Writes a fresh row of `table` for `tenant` through the reporting repository, so its unit gate and changelog hooks run. */
+/** Writes a fresh row of `table` for `tenant`: owned tables through the reporting repository, so its unit gate and changelog hooks run; consumer tables directly. */
 async function writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Promise<void> {
-  await repo().insert(tx, table, rowFor(table, tenant));
+  const row = rowFor(table, tenant);
+  if (!CONSUMER_ROWS.has(table)) {
+    await repo().insert(tx, table, row);
+    return;
+  }
+  const names = ['tenant_id', ...Object.keys(row)];
+  const placeholders = names.map((_, index) => `$${String(index + 1)}`);
+  await tx.query(`INSERT INTO "${tx.schema}"."${table}" (${names.map((name) => `"${name}"`).join(', ')}) VALUES (${placeholders.join(', ')})`, [
+    tx.tenantId,
+    ...Object.values(row),
+  ]);
 }
 
 /** Every row of `table` visible in `tx`; RLS is the only filter. */
@@ -148,11 +168,11 @@ async function readAs(tx: TenantTx, table: string): Promise<unknown[]> {
   return (await tx.query(`SELECT * FROM "${tx.schema}"."${table}"`)).rows;
 }
 
-/** A contract-valid site.changed envelope of the fixture site of `tenantId`. */
+/** A contract-valid site.changed envelope of the fixture site of `tenantId`, at version 2 over the seeded 1. */
 function siteChangedOf(tenantId: string) {
   const fixture = fixtureForTenant(tenantId);
   if (fixture === undefined) throw new TypeError(`No tenant fixture has tenant ${tenantId}`);
-  return siteChangedEnvelope(fixture.siteId);
+  return siteChangedEnvelope(fixture.siteId, 2);
 }
 
 /** Export job ids stored under `tenant`, read under its RLS, sorted. */
@@ -196,7 +216,7 @@ async function create(url: string, tenant: TenantFixture, definitionId: string):
   return t.app.inject({ method: 'POST', url, headers, payload: { definitionId, format: 'csv' } });
 }
 
-/** The tenantless-event case of the shared suite over reporting's site registry consumer. */
+/** The event cases of the shared suite over reporting's site registry consumer. */
 const SITE_CHANGED_EVENT: IsolationEventOptions = {
   app: () => handle?.app,
   subscription: SITE_CHANGED_SUBSCRIPTION,
@@ -246,8 +266,8 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
     { describe, it, expect, beforeAll },
     {
       db: () => handle?.throwaway,
-      name: 'reporting owned tables',
-      tables: OWNED_TABLES.map(({ table }) => table),
+      name: 'reporting owned and consumer tables',
+      tables: [...OWNED_TABLES.map(({ table }) => table), ...CONSUMER_ROWS.keys()],
       writeAs,
       readAs,
       rowFor,

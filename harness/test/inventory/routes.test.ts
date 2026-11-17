@@ -11,6 +11,7 @@ import {
   PUBLIC_METHODS,
   REGISTERED_ENTITIES,
   SAVEFORM_CONDITION,
+  SESSION_MANAGED_CONDITION,
   VARIATION_ENTITY,
 } from '@opt2/platform/legacy-compat';
 import type { RouteEntryPoint, RouteKeyOptions, VariantDeclaration } from '@opt2/platform/legacy-compat';
@@ -51,6 +52,7 @@ import {
   parseOAuth,
   parseRouteFamilies,
   parseSessionlessPrefix,
+  requestPopulations,
   soapEntries,
 } from '../../src/inventory/routes.js';
 import type {
@@ -62,6 +64,7 @@ import type {
   WriterOverrides,
 } from '../../src/inventory/routes.js';
 import { STARTUP_PATH } from '../../src/inventory/services.js';
+import { attachWriters, extractFixtureTables } from '../../src/inventory/tables.js';
 import { assertOutsideRepo } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 
@@ -906,6 +909,16 @@ const FAMILY_POINTS: ReadonlyArray<readonly [string, RouteEntryPoint, RouteKeyOp
   ['rte:tokeninfo', { kind: 'path', path: '/_api/rest/v1/default/tokeninfo', query: { access_token: 'sample', client_id: SAMPLE_ID } }, {}, 'rest:tokeninfo'],
 ];
 
+/** Entity-path operations of processRequest: entity, path suffix after the id, and the public method it runs. */
+const PATH_OPERATIONS: ReadonlyArray<readonly [string, string, string]> = [
+  ['comment', 'crumbs', 'findCrumbArray'],
+  ['content', 'crumbs', 'findCrumbArray'],
+  ['category', 'crumbs', 'findCrumbArray'],
+  ['content', 'relatedcontent', 'findRelatedContent'],
+  ['content', 'history', 'findVersionHistory'],
+];
+
+
 /** The entry point an entry stands for, with the key options it is keyed under. */
 function entryPointOf(e: RouteEntry): { point: RouteEntryPoint; options: RouteKeyOptions } {
   const sample = e.predicate === null ? {} : VARIANT_SAMPLES[e.predicate.variant];
@@ -914,6 +927,10 @@ function entryPointOf(e: RouteEntry): { point: RouteEntryPoint; options: RouteKe
   if (e.kind === 'fixture') {
     const at = e.id.lastIndexOf('@');
     return { point: { kind: 'fixture', httpMethod: e.id.slice(at + 1).toUpperCase(), path: `${FIXTURE_PREFIX}/${e.id.slice(4, at).replaceAll('{id}', SAMPLE_ID)}` }, options: KEY_OPTIONS };
+  }
+  const operation = PATH_OPERATIONS.find(([entity, , method]) => e.kind === 'api-entity-method' && e.entity === entity && e.method === method);
+  if (operation !== undefined) {
+    return { point: { kind: 'path', path: `/_api/${family === 'rest' ? 'rest' : 'json'}/v1/default/${operation[0]}/${SAMPLE_ID}/${operation[1]}` }, options: KEY_OPTIONS };
   }
   if (e.kind === 'api-entity-method' && e.id.includes('.~')) {
     return { point: { kind: 'path', path: `/_api/${family === 'rest' ? 'rest' : 'json'}/v1/default/${e.entity ?? ''}/${SAMPLE_ID}/${e.method ?? ''}` }, options: KEY_OPTIONS };
@@ -1169,7 +1186,44 @@ describe('parseJsonApi and assertPinnedRegistry', () => {
     const relogin = ja("request.muraAPIRequestMode == 'json'");
     expect(reg.selfSave).toMatchObject({ mode: 'json', entityName: 'user', source: src(JSON_API_PATH, relogin, relogin + 2) });
     expect([reg.declared.has('submitform'), reg.declared.has('swagger'), reg.declared.has('getoauthtokeninfo')]).toEqual([false, true, true]);
+    expect(reg.entityParams).toEqual({});
     expect(() => assertPinnedRegistry(reg)).not.toThrow();
+  });
+
+  /** processRequest's per-entity primary-key branch, modelled on jsonApiUtility.cfc:1207-1214. */
+  const ENTITY_TYPE_BRANCH = [
+    "\t\tif (params.entityName == 'content') {",
+    "\t\t\tvar primaryKey = 'contentid';",
+    '\t\t} else if (params.entityName == "group") {',
+    '\t\t\tparams.type = 1;',
+    "\t\t\tvar primaryKey = 'userid';",
+    '\t\t} else if (params.entityName == "user") {',
+    '\t\t\tparams.type = 2;',
+    "\t\t\tparams.scope = 'person';",
+    '\t\t}',
+  ].join('\n');
+
+  it.each([
+    ['literal params of each entity branch', ENTITY_TYPE_BRANCH, { group: { type: '1' }, user: { type: '2', scope: 'person' } }],
+    [
+      'no branch holding a nested block or a non-literal value',
+      "\t\tif (params.entityName == 'site') {\n\t\t\tparams.id = params.siteid;\n\t\t\tif (len(pathInfo[3])) { params.relatedEntity = 'x'; }\n\t\t}",
+      {},
+    ],
+  ])('parseJsonApi reads %s', (_name, branch, expected) => {
+    const source = memorySourceTree({ [JSON_API_PATH]: replaceOnce(JSON_API, '\t\tswitch (method) {', `${branch}\n\t\tswitch (method) {`) });
+    expect(parseJsonApi(source).entityParams).toEqual(expected);
+  });
+
+  it('gives the entity routes of both families the params processRequest assigns their entity', async () => {
+    const source = archiveTree({ [JSON_API_PATH]: replaceOnce(JSON_API, '\t\tswitch (method) {', `${ENTITY_TYPE_BRANCH}\n\t\tswitch (method) {`) });
+    const routes = new Map((await extractFrom(source)).routes.map((r) => [r.id, r] as const));
+    expect(['api:user.save', 'rest:user.delete', 'api:group.save', 'api:content.save'].map((id) => routes.get(id)?.assignedParams)).toEqual([
+      { type: '2', scope: 'person' },
+      { type: '2', scope: 'person' },
+      { type: '1' },
+      undefined,
+    ]);
   });
 
   it('assertPinnedRegistry names every difference from the pinned JSON API', () => {
@@ -1246,9 +1300,9 @@ describe('parseOAuth', () => {
 describe('extractRoutes over the archive excerpt', () => {
   it('builds every kind of entry once, sorted by id, with the fixture routes present', () => {
     const ids = extraction.routes.map((r) => r.id);
-    expect(extraction.counts).toEqual({ families: 13, apiEntityMethods: 333, apiMethods: 34, oauth: 3, soap: 2, fixture: 14 });
+    expect(extraction.counts).toEqual({ families: 13, apiEntityMethods: 343, apiMethods: 34, oauth: 3, soap: 2, fixture: 14 });
     expect(countRoutes(extraction.routes)).toEqual(extraction.counts);
-    expect(ids).toHaveLength(399);
+    expect(ids).toHaveLength(409);
     expect(new Set(ids).size).toBe(ids.length);
     expect([...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))).toEqual(ids);
     expect(extraction.fixtureRoutesStatus).toBe('present');
@@ -1256,7 +1310,7 @@ describe('extractRoutes over the archive excerpt', () => {
 
   it('keys every keyed entry exactly as inventoryRouteKey keys the entry point it stands for', async () => {
     const keyed = extraction.routes.filter((r) => r.routeKey !== null && r.reachable);
-    expect(keyed).toHaveLength(392);
+    expect(keyed).toHaveLength(402);
     for (const e of keyed) {
       const { point, options } = entryPointOf(e);
       expect((await inventoryRouteKey(point, options)).key, e.id).toBe(e.routeKey);
@@ -1461,7 +1515,20 @@ describe('JSON API entity and method entries', () => {
     const saveLine = ja('entity.set(form).save();');
     expect(entryOf('api:file.save')).toMatchObject({
       writeSet: ['tfiles'],
-      closureEvidence: [{ table: 'tfiles', op: 'save', component: FILE_BEAN, method: 'save', source: src(JSON_API_PATH, saveLine), trigger: 'request', whereParams: [], conditional: false }],
+      closureEvidence: [
+        {
+          table: 'tfiles',
+          op: 'save',
+          component: FILE_BEAN,
+          method: 'save',
+          source: src(JSON_API_PATH, saveLine),
+          trigger: 'request',
+          whereParams: [],
+          conditional: false,
+          columns: null,
+          via: ['jsonApiUtility.save', 'fileBean.save'],
+        },
+      ],
       conditional: null,
     });
     expect(entryOf('api:file.delete').writeSet).toEqual(['tfiles']);
@@ -1516,6 +1583,8 @@ describe('JSON API entity and method entries', () => {
       trigger: 'request',
       whereParams: ['userid'],
       conditional: false,
+      columns: null,
+      via: ['jsonApiUtility.delete'],
       override: 'wov:user-delete-memberships',
     });
     expect(entryOf('rest:user.delete').overrides).toEqual(['wov:user-delete-memberships']);
@@ -1593,7 +1662,19 @@ describe('JSON API entity and method entries', () => {
     expect(entryOf('api:checkschema')).toMatchObject({
       writeSet: [DECLARED_ENTITY_TABLES],
       closureEvidence: [
-        { table: DECLARED_ENTITY_TABLES, op: 'update', component: JSON_API_PATH, method: 'checkSchema', source: src(JSON_API_PATH, check), trigger: 'request', whereParams: [], conditional: false, dynamic: true },
+        {
+          table: DECLARED_ENTITY_TABLES,
+          op: 'update',
+          component: JSON_API_PATH,
+          method: 'checkSchema',
+          source: src(JSON_API_PATH, check),
+          trigger: 'request',
+          whereParams: [],
+          conditional: false,
+          columns: null,
+          via: ['jsonApiUtility.checkSchema'],
+          dynamic: true,
+        },
       ],
     });
   });
@@ -1621,6 +1702,42 @@ describe('JSON API entity and method entries', () => {
     });
   });
 
+  it.each((['api', 'rest'] as const).flatMap((family) => PATH_OPERATIONS.map(([entity, suffix, method]) => [family, entity, suffix, method] as const)))(
+    'key the %s path %s/<id>/%s as the entity operation running %s, with the closure of that public method',
+    async (family, entity, suffix, method) => {
+      const key = `${family}:${entity}.${method.toLowerCase()}`;
+      const point: RouteEntryPoint = { kind: 'path', path: `/_api/${family === 'rest' ? 'rest' : 'json'}/v1/default/${entity}/${SAMPLE_ID}/${suffix}` };
+      expect((await inventoryRouteKey(point, KEY_OPTIONS)).key).toBe(key);
+      const own = entryOf(`${family}:${method.toLowerCase()}`);
+      expect(entryOf(key)).toMatchObject({
+        kind: 'api-entity-method',
+        family,
+        routeKey: key,
+        entity,
+        method,
+        httpMethods: [],
+        sessionless: family === 'rest',
+        predicate: null,
+        precedence: 0,
+        source: own.source,
+        areaKey: own.areaKey,
+        roots: own.roots,
+        writeSet: own.writeSet,
+        conditionalWrites: own.conditionalWrites,
+        unresolved: own.unresolved,
+        csrfValidation: own.csrfValidation,
+      });
+    },
+  );
+
+  it('add no path entry for an operation whose public method jsonApiUtility does not declare', async () => {
+    const source = archiveTree({ [JSON_API_PATH]: replaceOnce(JSON_API, 'function findVersionHistory(', 'function findHistoryElsewhere(') });
+    const ids = (await extractFrom(source)).routes.map((r) => r.id);
+    expect(ids.filter((id) => id.endsWith('.findversionhistory'))).toEqual([]);
+    expect(ids.filter((id) => id.endsWith('.findcrumbarray'))).toHaveLength(6);
+    expect(ids).toEqual(expect.arrayContaining(['api:findversionhistory', 'rest:findversionhistory']));
+  });
+
   it('add remote-function routes for the start-up and module entities that inherit the bean base', () => {
     const remote = extraction.routes.filter((r) => r.id.includes('.~')).map((r) => [r.id, r.entity, r.method, r.conditional, r.webRootFilesystem, r.writeSet]);
     expect(remote).toEqual([
@@ -1636,6 +1753,38 @@ describe('JSON API entity and method entries', () => {
       roots: [`${FEED_BEAN}#getRemoteFeed`],
       areaKey: 'api:feed',
     });
+  });
+});
+
+describe('requestPopulations', () => {
+  const POPULATE = 'var entity = $.getBean(arguments.entityName).set($.event().getAllValues());';
+  it.each<[string, string, Record<string, string[] | undefined>]>([
+    ['a save on the request-populated entity', `${POPULATE}\n\t\tentity.save();`, { save: [] }],
+    ['a reload before the save', `${POPULATE}\n\t\tentity.loadBy(id=arguments.id);\n\t\tentity.save();`, { save: undefined }],
+    [
+      'a reload then a repopulation',
+      `${POPULATE}\n\t\tentity.loadBy(id=arguments.id);\n\t\tentity.set(\n\t\t\t$.event().getAllValues()\n\t\t);\n\t\tentity.save();`,
+      { save: [] },
+    ],
+    ['chained setters before the save', `${POPULATE}\n\t\tentity.setBody('[]').setApproved(1).save();`, { save: ['approved', 'body'] }],
+    ['a keyed set before the save', `${POPULATE}\n\t\tentity.set('notify', 'x');\n\t\tentity.save();`, { save: ['notify'] }],
+    ['a computed keyed set', `${POPULATE}\n\t\tentity.set(arguments.k, 'x');\n\t\tentity.save();`, { save: undefined }],
+    ['keys set on the request', `$.event('id', createUUID());\n\t\t${POPULATE}\n\t\tentity.save();`, { save: ['id'] }],
+    [
+      'a request key named by a local of literal or primary-key values',
+      `${POPULATE}\n\t\tif (arguments.entityName == 'feed') {\n\t\t\tvar pk = 'feedid';\n\t\t} else {\n\t\t\tvar pk = entity.getPrimaryKey();\n\t\t}\n\t\t$.event(pk, arguments.id);\n\t\tentity.save();`,
+      { save: ['feedid'] },
+    ],
+    ['a request key named by an unknown expression', `$.event(arguments.k, 1);\n\t\t${POPULATE}\n\t\tentity.save();`, { save: undefined }],
+    ['a population from another struct', 'var entity = $.getBean(arguments.entityName).set(form);\n\t\tentity.save();', { save: undefined }],
+    ['a fresh bean saved unpopulated', `${POPULATE}\n\t\tentity = $.getBean(arguments.entityName);\n\t\tentity.save();`, { save: undefined }],
+    ['one of two saves unpopulated', `${POPULATE}\n\t\tentity.save();\n\t\tentity.loadBy(id=1).save();`, { save: undefined }],
+    ['a delete after a load', 'var entity = $.getBean(arguments.entityName).loadBy(id=arguments.id);\n\t\tentity.delete();', { delete: undefined }],
+  ])('%s', (_label, body, expected) => {
+    const unit = parseCfmlComponent(JSON_API_PATH, `component {\n\tfunction save(siteid, entityName, id) {\n\t\tvar $ = getBean('$').init(arguments.siteid);\n\t\t${body}\n\t}\n}\n`);
+    const fn = unit?.functions.find((f) => f.name === 'save');
+    if (fn === undefined) throw new Error('fixture has no save function');
+    expect(Object.fromEntries(requestPopulations(fn))).toEqual(expected);
   });
 });
 
@@ -1663,6 +1812,26 @@ describe('OAuth entries', () => {
       writeSet: [],
       sessionless: true,
     });
+  });
+
+  it('add a session-managed entry per declared {session} variant, keyed behind a non-lower-case index.cfm', async () => {
+    const session = (route: string): VariantDeclaration => ({ route, variant: 'session', when: [SESSION_MANAGED_CONDITION] });
+    const result = await extractFrom(archiveTree({}), { variants: [...VARIANTS, session('rest:oauth'), session('rest:tokeninfo')] });
+    const byId = new Map(result.routes.map((r) => [r.id, r]));
+    for (const [id, key] of [['rte:/oauth', 'rest:oauth'], ['rte:tokeninfo', 'rest:tokeninfo']] as const) {
+      const base = byId.get(id);
+      expect(base).toMatchObject({ routeKey: key, predicate: null, precedence: 0, sessionless: true });
+      expect(byId.get(`${id}{session}`)).toEqual({
+        ...base,
+        id: `${id}{session}`,
+        routeKey: `${key}{session}`,
+        predicate: { variant: 'session', when: [SESSION_MANAGED_CONDITION] },
+        precedence: 1,
+        sessionless: false,
+      });
+    }
+    expect(byId.has('rte:/oauth2{session}')).toBe(false);
+    expect(result.counts.oauth).toBe(5);
   });
 });
 
@@ -1884,17 +2053,39 @@ describe('fixture routes', () => {
     const blackout = lineWith(textOf(FIXTURES, TIMESHEETS_SQL), 'CREATE OR ALTER PROCEDURE');
     expect(parseFixtureSql(fixtureTree)).toEqual({
       procedures: [
-        { name: 'Program_N.usp_finance_rollup', source: src(FINANCE_SQL, rollup, go(FINANCE_SQL, rollup)), writes: ['Program_N.finance_rollup'], calls: ['synthetic.usp_audit_append'] },
+        {
+          name: 'Program_N.usp_finance_rollup',
+          source: src(FINANCE_SQL, rollup, go(FINANCE_SQL, rollup)),
+          writes: ['Program_N.finance_rollup'],
+          statements: [
+            { table: 'Program_N.finance_rollup', op: 'delete', source: src(FINANCE_SQL, lineWith(textOf(FIXTURES, FINANCE_SQL), 'DELETE FROM')), whereParams: [], columns: null },
+            { table: 'Program_N.finance_rollup', op: 'save', source: src(FINANCE_SQL, lineWith(textOf(FIXTURES, FINANCE_SQL), 'MERGE INTO')), whereParams: [], columns: null },
+          ],
+          calls: ['synthetic.usp_audit_append'],
+        },
         {
           name: 'synthetic.usp_audit_append',
           source: src(ESIGNATURE_SQL, 1, textOf(FIXTURES, ESIGNATURE_SQL).split('\n').length),
           writes: ['synthetic.audit_entry'],
+          statements: [
+            { table: 'synthetic.audit_entry', op: 'insert', source: src(ESIGNATURE_SQL, 3), whereParams: [], columns: ['entry'] },
+            { table: 'synthetic.audit_entry', op: 'update', source: src(ESIGNATURE_SQL, 4), whereParams: ['entry'], columns: ['verified'] },
+          ],
           calls: ['synthetic.usp_person_archived_blackout'],
         },
         {
           name: 'synthetic.usp_person_archived_blackout',
           source: src(TIMESHEETS_SQL, blackout, go(TIMESHEETS_SQL, blackout)),
           writes: ['synthetic.timesheet_transition'],
+          statements: [
+            {
+              table: 'synthetic.timesheet_transition',
+              op: 'insert',
+              source: src(TIMESHEETS_SQL, lineWith(textOf(FIXTURES, TIMESHEETS_SQL), 'INSERT INTO synthetic.timesheet_transition')),
+              whereParams: [],
+              columns: ['userid', 'note'],
+            },
+          ],
           calls: ['synthetic.usp_audit_append'],
         },
       ],
@@ -1966,6 +2157,96 @@ describe('fixture routes', () => {
       procedureCalls: [{ procedure: 'synthetic.usp_person_archived_blackout', resolved: ['synthetic.usp_person_archived_blackout'] }],
     });
     expect(entryOf('fix:finance/records/{id}@get')).toMatchObject({ writeSet: [], procedureCalls: [], unresolved: [] });
+  });
+
+  /** A write of a fixture procedure statement as `closureEvidence` records it. */
+  const statementWrite = (table: string, op: string, file: string, line: number, extra: Record<string, unknown>): Record<string, unknown> => ({
+    table,
+    op,
+    component: file,
+    method: '',
+    source: src(file, line),
+    trigger: 'request',
+    whereParams: [],
+    conditional: false,
+    columns: null,
+    ...extra,
+  });
+  const auditWrites = (trigger: string, via: readonly string[]): Array<Record<string, unknown>> => [
+    statementWrite('synthetic.audit_entry', 'insert', ESIGNATURE_SQL, 3, { trigger, columns: ['entry'], via: [...via, 'synthetic.usp_audit_append'] }),
+    statementWrite('synthetic.audit_entry', 'update', ESIGNATURE_SQL, 4, { trigger, whereParams: ['entry'], columns: ['verified'], via: [...via, 'synthetic.usp_audit_append'] }),
+  ];
+  const transitionWrite = (trigger: string, via: readonly string[]): Record<string, unknown> =>
+    statementWrite('synthetic.timesheet_transition', 'insert', TIMESHEETS_SQL, lineWith(textOf(FIXTURES, TIMESHEETS_SQL), 'INSERT INTO synthetic.timesheet_transition'), {
+      trigger,
+      columns: ['userid', 'note'],
+      via: [...via, 'synthetic.usp_person_archived_blackout'],
+    });
+  const sqlEvidence = (id: string): RouteEntry['closureEvidence'] => entryOf(id).closureEvidence.filter((w) => w.component.startsWith('legacy-fixtures/sql/'));
+
+  it('record each statement of the procedures an EXEC reaches as closure evidence, through the procedures they execute', () => {
+    expect(sqlEvidence('fix:people/persons/{id}/archive@post')).toEqual([
+      ...auditWrites('request', ['people.archive', 'synthetic.usp_person_archived_blackout']),
+      transitionWrite('request', ['people.archive']),
+    ]);
+    const rollup = (op: string, needle: string): Record<string, unknown> =>
+      statementWrite('Program_N.finance_rollup', op, FINANCE_SQL, lineWith(textOf(FIXTURES, FINANCE_SQL), needle), { via: ['finance.createRecord', 'Program_N.usp_finance_rollup'] });
+    expect(sqlEvidence('fix:finance/records@post')).toEqual([
+      rollup('delete', 'DELETE FROM'),
+      rollup('save', 'MERGE INTO'),
+      ...auditWrites('request', ['finance.createRecord', 'Program_N.usp_finance_rollup']),
+      transitionWrite('request', ['finance.createRecord', 'Program_N.usp_finance_rollup', 'synthetic.usp_audit_append']),
+    ]);
+  });
+
+  it('record a procedure an EXEC runs only inside a cfthread body under the thread trigger', () => {
+    expect(sqlEvidence('fix:reporting/exports@post')).toEqual([
+      ...auditWrites('thread', ['reporting.startExport', 'reporting.runExport']),
+      transitionWrite('thread', ['reporting.startExport', 'reporting.runExport', 'synthetic.usp_audit_append']),
+    ]);
+  });
+
+  it('fold a dynamic-schema write of a per-program table to its Program_N table, leaving other dynamic writes unresolved', () => {
+    const writes = entryOf('fix:finance/records@post').closureEvidence.filter((w) => w.component === FINANCE);
+    const line = (needle: string): number => lineWith(textOf(FIXTURES, FINANCE), needle);
+    expect(writes.find((w) => w.source.lines[0] === line('].finance_record ('))).toEqual(
+      expect.objectContaining({ table: 'Program_N.finance_record', op: 'insert', method: 'createRecord', source: src(FINANCE, line('].finance_record (')), trigger: 'request' }),
+    );
+    expect(writes.find((w) => w.source.lines[0] === line('].finance_record ('))).not.toHaveProperty('dynamic');
+    expect(writes.find((w) => w.source.lines[0] === line('finance_note'))).toMatchObject({ table: null, dynamic: true });
+  });
+
+  it('give every fixture table its procedure and per-program writers through attachWriters', () => {
+    // Each fixture entry's evidence in the closure shape attachWriters reads, as generate.ts hands it over.
+    const evidence = extraction.routes
+      .filter((r) => r.kind === 'fixture')
+      .map((r) => ({
+        entryRouteKey: r.routeKey,
+        trigger: 'request' as const,
+        closure: {
+          tables: r.writeSet,
+          writes: r.closureEvidence,
+          conditionalWrites: r.conditionalWrites,
+          fileStore: r.fileStoreWrite,
+          fileStoreEvidence: r.fileStoreEvidence,
+          sessionEffects: r.sessionEffects,
+          threads: r.threads,
+          unresolved: r.unresolved,
+          overrides: r.overrides,
+          visited: [],
+        },
+      }));
+    const attached = attachWriters(extractFixtureTables(fixtureTree), evidence, { sourceSha: SHA, writers: [] });
+    const writersOf = (table: string): Array<[string, string, number, string, string, string[]]> =>
+      (attached.tables.find((t) => t.table === table)?.writers ?? []).map((w) => [w.component, w.method, w.source.lines[0], w.op, w.trigger, w.routeKeys]);
+    expect(attached.tables.map((t) => t.table)).toEqual(['Program_N.blackout', 'Program_N.finance_record', 'Program_N.finance_rollup', 'synthetic.person_archive']);
+    expect(writersOf('Program_N.finance_rollup')).toEqual([
+      [FINANCE_SQL, '(template)', lineWith(textOf(FIXTURES, FINANCE_SQL), 'DELETE FROM'), 'delete', 'request', ['fixture:finance/records@post']],
+      [FINANCE_SQL, '(template)', lineWith(textOf(FIXTURES, FINANCE_SQL), 'MERGE INTO'), 'save', 'request', ['fixture:finance/records@post']],
+    ]);
+    expect(writersOf('Program_N.finance_record')).toEqual([[FINANCE, 'createRecord', lineWith(textOf(FIXTURES, FINANCE), '].finance_record ('), 'insert', 'request', ['fixture:finance/records@post']]]);
+    expect(writersOf('synthetic.person_archive')).toEqual([[PEOPLE, 'archive', lineWith(textOf(FIXTURES, PEOPLE), 'INSERT INTO synthetic.person_archive'), 'insert', 'request', ['fixture:people/persons/{id}/archive@post']]]);
+    expect([...new Set(attached.unmatched.map((u) => u.table))]).toEqual(['synthetic.audit_entry', 'synthetic.export_job', 'synthetic.timesheet_transition']);
   });
 
   it('read a guard function’s CSRF check per HTTP method and empty a context naming a segment the path lacks', () => {

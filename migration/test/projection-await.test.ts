@@ -24,7 +24,7 @@ import { buildApp } from '../src/server.js';
 
 import { buildTestContext, type TestContext } from './helpers/context.js';
 import type { MutableClock } from './helpers/env.js';
-import { createFakeLegacyDb, type FakeLegacyDb, type Row } from './helpers/fake-legacy-db.js';
+import { createFakeLegacyDb, sqlError, type FakeLegacyDb, type Row, type StatementRecord } from './helpers/fake-legacy-db.js';
 import {
   FIXTURE_GROUP_IDS,
   TABLES,
@@ -108,10 +108,14 @@ function legacySizeIds(legacy: FakeLegacyDb): unknown[] {
   return legacy.rows(TABLES.timagesizes.qualified).map((row) => row.sizeID);
 }
 
-/** Stand-alone checkpoint reads sent to legacy, as the awaiter polls them. */
+/** A stand-alone checkpoint read, as the awaiter polls it. */
+function isCheckpointRead(statement: StatementRecord): boolean {
+  return statement.sql.startsWith('SELECT owner, tenant_id,') && statement.sql.includes(CHECKPOINT_TABLE);
+}
+
+/** Stand-alone checkpoint reads sent to legacy. */
 function checkpointReads(legacy: FakeLegacyDb): number {
-  return legacy.statements.filter((statement) => statement.sql.startsWith('SELECT owner, tenant_id,') && statement.sql.includes(CHECKPOINT_TABLE))
-    .length;
+  return legacy.statements.filter(isCheckpointRead).length;
 }
 
 async function tenantCheckpoint(legacy: FakeLegacyDb, owner: string = OWNER): Promise<CheckpointRow | undefined> {
@@ -140,7 +144,7 @@ function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
-/** Holds the projector's `beforeBatch` hook while closed, standing for a delayed projector. */
+/** Holds the projector's `beforeFirstBatch` hook while closed, standing for a delayed projector. */
 function createBatchGate() {
   let release: () => void = () => undefined;
   let passage = Promise.resolve();
@@ -155,13 +159,13 @@ function createBatchGate() {
       release();
       passage = Promise.resolve();
     },
-    /** Resolves when the next batch reaches the gate. */
+    /** Resolves when the next cycle's first batch reaches the gate. */
     nextArrival(): Promise<void> {
       return new Promise<void>((resolve) => {
         onArrival = resolve;
       });
     },
-    beforeBatch(): Promise<void> {
+    beforeFirstBatch(): Promise<void> {
       onArrival?.();
       onArrival = undefined;
       return passage;
@@ -225,7 +229,7 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
       bridge: false,
       clock: realTimeClock(),
     });
-    projector = createProjector(tc.ctx, { hooks: { beforeBatch: () => gate.beforeBatch() }, startupGuard: DIRECT_COMMIT });
+    projector = createProjector(tc.ctx, { hooks: { beforeFirstBatch: () => gate.beforeFirstBatch() }, startupGuard: DIRECT_COMMIT });
   });
 
   afterAll(async () => {
@@ -417,6 +421,16 @@ describe(`POST ${AWAIT_PATH} on the migration app`, () => {
     await storeCheckpoint(tc.legacy, OWNER, '400');
 
     const res = await postAwait({ positions: { [OWNER]: POSITION }, timeoutMs: 200 });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual(JSON.parse(apiUnavailableResponse().body));
+  });
+
+  it('answers the legacy 503 when the checkpoint table cannot be read', async () => {
+    await storeCheckpoint(tc.legacy, OWNER, '501');
+    tc.legacy.failNext(isCheckpointRead, sqlError(208, `Invalid object name '${CHECKPOINT_TABLE}'.`));
+
+    const res = await postAwait({ positions: { [OWNER]: POSITION }, timeoutMs: 1000 });
 
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual(JSON.parse(apiUnavailableResponse().body));

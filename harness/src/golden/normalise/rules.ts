@@ -392,10 +392,14 @@ const exportsSchema = z.strictObject({
     dates: z.literal('iso-before-timestamp-rule'),
   }),
   pdf: z.strictObject({ parser: z.literal('pdfjs-dist'), compare: z.literal('text-per-page'), whitespace: whitespaceMode }),
+  zip: z.strictObject({
+    parser: z.literal('jszip'),
+    compare: z.array(z.enum(['entries', 'contentType', 'contentDispositionFilename'])).min(1),
+  }),
   file: z.strictObject({ compare: z.array(z.enum(['sha256', 'contentType', 'contentDispositionFilename'])).min(1) }),
-  neverCompareBytes: z.array(z.enum(['csv', 'xlsx', 'pdf'])),
+  neverCompareBytes: z.array(z.enum(['csv', 'xlsx', 'pdf', 'zip'])),
 });
-/** CSV, XLSX, PDF and downloaded-file comparison. */
+/** CSV, XLSX, PDF, ZIP and downloaded-file comparison. */
 export type ExportRules = z.infer<typeof exportsSchema>;
 
 const transitionsSchema = z.strictObject({
@@ -580,6 +584,7 @@ function emptyApplied(): AppliedOverrides {
     dropHeaders: [],
     applyRules: [],
     domExclude: [],
+    domUnordered: [],
     sortArrays: [],
     csvKeyOrder: [],
   };
@@ -602,6 +607,7 @@ const overridesSchema = z
       dropHeaders: overrideOperation('header-names'),
       applyRules: overrideOperation('rule-ids'),
       domExclude: overrideOperation('css-selectors'),
+      domUnordered: overrideOperation('css-selectors'),
       sortArrays: overrideOperation('json-paths'),
       csvKeyOrder: overrideOperation('step-key-columns'),
     }) satisfies z.ZodType<Record<OverrideOperation, unknown>>,

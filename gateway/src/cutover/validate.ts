@@ -273,6 +273,18 @@ function writeClosures(inventory: InventoryDoc, closure: WriteClosure): Map<stri
   return new Map([...byKey].map(([key, units]) => [key, [...units].sort()]));
 }
 
+/** Per normalised route, the keys of its variants declared on the `condition` keyword alone. */
+function conditionVariantKeys(variants: VariantsFile, condition: 'sessionManaged' | 'startupSiteId'): Map<string, string[]> {
+  const byRoute = new Map<string, string[]>();
+  for (const v of variants.variants) {
+    const [only, ...more] = v.when;
+    if (only === undefined || more.length > 0 || !(condition in only)) continue;
+    const route = normaliseRouteKey(v.route);
+    byRoute.set(route, [...(byRoute.get(route) ?? []), `${route}{${normaliseRouteKey(v.variant)}}`]);
+  }
+  return byRoute;
+}
+
 /** Ids of the generated groups whose writeEntries list each normalised key. */
 function writeEntryGroups(groups: GroupsFile): Map<string, string[]> {
   const byKey = new Map<string, string[]>();
@@ -311,6 +323,10 @@ interface VersionView {
   readonly withheld: Set<string>;
   readonly heldBack: Set<string>;
   readonly declaredVariants: Set<string>;
+  /** Per normalised route, the keys of its variants declared on `sessionManaged` alone. */
+  readonly sessionVariants: Map<string, readonly string[]>;
+  /** Per normalised route, the keys of its variants declared on `startupSiteId` alone. */
+  readonly siteIdVariants: Map<string, readonly string[]>;
   readonly decisionTables: readonly string[];
   readonly writeClosures: Map<string, readonly string[]>;
   readonly carriedWrites: ReadonlySet<string>;
@@ -342,6 +358,8 @@ function viewOf(table: CutoverTable, ctx: ValidationContext): VersionView {
     declaredVariants: new Set(
       ctx.variants.variants.map((v) => `${normaliseRouteKey(v.route)}{${normaliseRouteKey(v.variant)}}`),
     ),
+    sessionVariants: conditionVariantKeys(ctx.variants, 'sessionManaged'),
+    siteIdVariants: conditionVariantKeys(ctx.variants, 'startupSiteId'),
     decisionTables: ctx.decisionList.tables.map((table) => table.table),
     writeClosures: writeClosures(ctx.inventory, closure),
     carriedWrites: new Set(carryWriteEntries(ctx, closure).keys()),
@@ -487,6 +505,25 @@ function heldBackFindings(view: VersionView): Finding[] {
   return findings;
 }
 
+/**
+ * A `target` `rest:` entry needs a `legacy` entry of a `sessionManaged` variant, which legacy serves session-managed,
+ * and of a `startupSiteId` variant, which legacy fails in onRequestStart.
+ */
+function restLegacyVariantFindings(view: VersionView): Finding[] {
+  const findings: Finding[] = [];
+  for (const [route, entries] of view.entriesByKey) {
+    if (familyOf(route) !== 'rest' || VARIANT_SUFFIX.test(route) || !entries.some((entry) => entry.state === 'target')) continue;
+    const legacy = (key: string): boolean => view.entriesByKey.get(key)?.every((entry) => entry.state === 'legacy') ?? false;
+    if (!(view.sessionVariants.get(route) ?? []).some(legacy)) {
+      findings.push({ rule: 'rest-session-legacy', route, message: 'target rest entry has no legacy sessionManaged variant entry' });
+    }
+    if (!(view.siteIdVariants.get(route) ?? []).some(legacy)) {
+      findings.push({ rule: 'rest-siteid-legacy', route, message: 'target rest entry has no legacy startupSiteId variant entry' });
+    }
+  }
+  return findings;
+}
+
 function writerFindings(view: VersionView): Finding[] {
   const byUnit = nonRequestWritersByUnit(view.ctx);
   const findings: Finding[] = [];
@@ -607,6 +644,7 @@ export function validateVersion(table: CutoverTable, ctx: ValidationContext): Fi
     ...routeOnceFindings(view),
     ...table.entries.flatMap((entry) => entryFindings(view, entry)),
     ...heldBackFindings(view),
+    ...restLegacyVariantFindings(view),
     ...writerFindings(view),
     ...rollbackFindings(view),
     ...chainFindings(view),

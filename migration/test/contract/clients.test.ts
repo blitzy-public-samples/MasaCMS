@@ -124,6 +124,13 @@ function migrationKitCases(owner: DataOwner): ClientCase[] {
       check: (result) => expect(result).toMatchObject({ owner, position: '42' }),
     },
     {
+      name: 'position listing the registered tenants',
+      run: (owners) => owners.position(owner, { registeredTenants: true }),
+      answer: () => jsonAnswer(200, { owner, position: '42', outbox: null, inbox: null, registeredTenants: [TENANT] }),
+      operations: [`${owner} GET /internal/v1/migration/position`],
+      check: (result) => expect(result).toMatchObject({ owner, registeredTenants: [TENANT] }),
+    },
+    {
       name: 'watermark',
       run: (owners) => owners.watermark(owner, legacyTable, 'forward'),
       answer: () => jsonAnswer(200, [watermark]),

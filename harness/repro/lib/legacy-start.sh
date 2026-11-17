@@ -60,6 +60,8 @@ COMMANDBOX_DIR="$OPT2_STATE_DIR/commandbox"
 SERVER_JSON="$COMMANDBOX_DIR/server.json"
 TASKS_BEFORE="$COMMANDBOX_DIR/tasks-before.json"
 TASKS_IMPORT="$COMMANDBOX_DIR/tasks-import.json"
+# opt2-legacy's java.io.tmpdir, hence Masa's getTempDirectory(); emptied before every start.
+LEGACY_TMP_DIR="$OPT2_STATE_DIR/legacy-tmp"
 STARTUP_ROUTE_KEY=startup:legacy-start
 SURVEY_TASK_PREFIX=opt2-survey-
 START_TIMEOUT_S="${OPT2_LEGACY_START_TIMEOUT_S:-900}"
@@ -144,6 +146,9 @@ render_server_json() {
   [[ $LEGACY_PORT =~ ^[1-9][0-9]*$ ]] || die "legacy port '$LEGACY_PORT' is not a port number"
   [[ ${OPT2_PORT_GATEWAY:-} =~ ^[1-9][0-9]*$ ]] ||
     die "gateway port '${OPT2_PORT_GATEWAY:-}' from $REPRO_DIR/ports.env is not a port number"
+  # CommandBox splits jvm.args on whitespace and unwraps quotes, so the path must hold neither.
+  [[ $LEGACY_TMP_DIR != *[[:space:]\"\'\\]* ]] ||
+    die "$LEGACY_TMP_DIR holds whitespace, a quote or a backslash, which server.json jvm.args cannot carry"
   # shellcheck disable=SC2016 # JavaScript source
   node -e '
 const fs = require("fs");
@@ -169,7 +174,8 @@ fs.writeFileSync(temp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
 fs.renameSync(temp, out);
 ' -- "$REPRO_DIR/server.json.template" "$SERVER_JSON" \
     @SERVER_NAME@ "$LEGACY_SERVER_NAME" @CFENGINE@ "$engine" @SERVER_HOME@ "$home" @WEBROOT@ "$REPO" \
-    @HOST@ 127.0.0.1 @PORT@ "$LEGACY_PORT" @JVM_ARGS@ "$jvm" @GATEWAY_PORT@ "$OPT2_PORT_GATEWAY" ||
+    @HOST@ 127.0.0.1 @PORT@ "$LEGACY_PORT" @JVM_ARGS@ "$jvm" @GATEWAY_PORT@ "$OPT2_PORT_GATEWAY" \
+    @LEGACY_TMP_DIR@ "$LEGACY_TMP_DIR" ||
     die "cannot render $SERVER_JSON"
 }
 
@@ -236,6 +242,13 @@ stop_legacy() {
     fi
   fi
   wait_port_closed "$LEGACY_PORT" 120
+}
+
+# Recreates $LEGACY_TMP_DIR empty with mode 0700, so the started server's temp directory holds only what it writes.
+reset_legacy_tmp() {
+  # rm never follows a symbolic link, the directory itself included; --one-file-system keeps it off other mounts.
+  rm -rf --one-file-system -- "${LEGACY_TMP_DIR:?}" || die "cannot empty the legacy temp directory $LEGACY_TMP_DIR"
+  mkdir -m 0700 -- "$LEGACY_TMP_DIR" || die "cannot create the legacy temp directory $LEGACY_TMP_DIR"
 }
 
 # Opens the start-up window over every content unit, unless a holder already leases them.
@@ -426,10 +439,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 open_window
 
-log_step c "stop ColdFusion and release a foreign $LEGACY_SERVER_NAME registration"
+log_step c "stop ColdFusion, empty its temp directory and release a foreign $LEGACY_SERVER_NAME registration"
 # A ONCE task due before the stop has had its run or never runs, though its exported status stays Running.
 stopped_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 stop_legacy
+reset_legacy_tmp
 # Once ColdFusion is stopped, so a running opt2-legacy is stopped through its registration before it is released.
 release_foreign_registration
 

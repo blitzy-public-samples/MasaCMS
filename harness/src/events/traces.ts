@@ -1,11 +1,11 @@
-// Finds the people-archive seam trace in the collector's OTLP-JSON export and validates captured log lines.
+// Finds the people-archive seam trace and classifies CLIENT spans in the collector's OTLP-JSON export; validates captured log lines.
 import { randomBytes } from 'node:crypto';
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { subscriptionName } from '@opt2/platform/events';
-import { validateLogRecord } from '@opt2/platform/logging';
+import { REDACTED, validateLogRecord } from '@opt2/platform/logging';
 import {
   checkTraceContinuity,
   spansFromOtlpJsonLines,
@@ -195,15 +195,16 @@ export interface FindSeamTraceOptions {
   archivePath?: RegExp;
 }
 
-// spansFromOtlpJsonLines keeps neither span attributes nor start times, so only those two fields are read here.
+// spansFromOtlpJsonLines keeps neither span attributes nor start times, so those are read here directly.
 interface OtlpAttribute {
   key?: unknown;
-  value?: { stringValue?: unknown } | null;
+  value?: { stringValue?: unknown; intValue?: unknown } | null;
 }
 
 interface OtlpSpanFields {
   traceId?: unknown;
   spanId?: unknown;
+  kind?: unknown;
   startTimeUnixNano?: unknown;
   attributes?: unknown;
 }
@@ -490,6 +491,110 @@ export function findSeamTrace(lines: Iterable<string>, opts: FindSeamTraceOption
     candidates: tally.evaluated,
     problems,
   };
+}
+
+/** CLIENT spans of one trace by destination; `bridge` are legacy-port calls into the legacy bridge, `unresolved` name no port or URL. */
+export interface ClientSpanCounts {
+  legacy: number;
+  bridge: number;
+  stub: number;
+  other: number;
+  unresolved: number;
+}
+
+/** Ports that {@link classifyClientSpans} attributes destinations to. */
+export interface ClientSpanPorts {
+  legacyPort: number;
+  stubPort: number;
+}
+
+/** {@link ClientSpanCounts} and each bridge call as its path and unmasked `op`, any other query parameter dropped. */
+export interface ClientSpanClassification {
+  counts: ClientSpanCounts;
+  bridgeCalls: string[];
+}
+
+// OTLP numbers span kinds one above the API's SpanKind; the JSON exporter may also write the enum name.
+const OTLP_CLIENT_KINDS: ReadonlySet<unknown> = new Set([SpanKind.CLIENT + 1, 'SPAN_KIND_CLIENT']);
+const PORT_ATTRIBUTES = ['server.port', 'net.peer.port'] as const;
+const URL_ATTRIBUTES = ['url.full', 'http.url'] as const;
+const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
+
+function attributeText(attributes: readonly (OtlpAttribute | null)[], keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = attributes.find((attribute) => attribute?.key === key)?.value;
+    const raw = value?.intValue ?? value?.stringValue;
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      return String(raw);
+    }
+  }
+  return undefined;
+}
+
+/** The span's URL attribute, when it holds a parseable URL. */
+function attributeUrl(attributes: readonly (OtlpAttribute | null)[]): URL | undefined {
+  const text = attributeText(attributes, URL_ATTRIBUTES);
+  return text !== undefined && URL.canParse(text) ? new URL(text) : undefined;
+}
+
+/** Destination of one CLIENT span: port from its port attributes, else its URL; path from `url.path`, else its URL. */
+function clientDestination(
+  attributes: readonly (OtlpAttribute | null)[],
+  ports: ClientSpanPorts,
+): { destination: keyof ClientSpanCounts; bridgeCall?: string } {
+  const url = attributeUrl(attributes);
+  const portText = attributeText(attributes, PORT_ATTRIBUTES);
+  let port: number | undefined;
+  if (portText !== undefined && /^[0-9]+$/.test(portText)) {
+    port = Number(portText);
+  } else if (url !== undefined) {
+    port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+  }
+  if (port === undefined) {
+    return { destination: 'unresolved' };
+  }
+  if (port !== ports.legacyPort) {
+    return { destination: port === ports.stubPort ? 'stub' : 'other' };
+  }
+  const path = attributeText(attributes, ['url.path']) ?? url?.pathname;
+  if (path === undefined || !path.toLowerCase().startsWith(BRIDGE_PREFIX)) {
+    return { destination: 'legacy' };
+  }
+  const op = new URLSearchParams(url?.search ?? attributeText(attributes, ['url.query'])).get('op');
+  const named = op !== null && op !== REDACTED;
+  return { destination: 'bridge', bridgeCall: named ? `${path}?op=${encodeURIComponent(op)}` : path };
+}
+
+/** CLIENT spans of trace `traceId` in OTLP-JSON export `lines`, by destination; a malformed line holding the id throws. */
+export function classifyClientSpans(
+  lines: Iterable<string>,
+  traceId: string,
+  ports: ClientSpanPorts,
+): ClientSpanClassification {
+  const counts: ClientSpanCounts = { legacy: 0, bridge: 0, stub: 0, other: 0, unresolved: 0 };
+  const bridgeCalls: string[] = [];
+  for (const line of lines) {
+    if (!line.includes(traceId)) {
+      continue;
+    }
+    const request = JSON.parse(line) as OtlpRequest | null;
+    for (const resourceSpans of request?.resourceSpans ?? []) {
+      for (const scope of resourceSpans.scopeSpans ?? resourceSpans.instrumentationLibrarySpans ?? []) {
+        for (const span of scope.spans ?? []) {
+          if (span.traceId !== traceId || !OTLP_CLIENT_KINDS.has(span.kind)) {
+            continue;
+          }
+          const attributes = Array.isArray(span.attributes) ? (span.attributes as (OtlpAttribute | null)[]) : [];
+          const { destination, bridgeCall } = clientDestination(attributes, ports);
+          counts[destination] += 1;
+          if (bridgeCall !== undefined) {
+            bridgeCalls.push(bridgeCall);
+          }
+        }
+      }
+    }
+  }
+  return { counts, bridgeCalls };
 }
 
 const LOG_RECORD_SCHEMA = 'platform/contracts/log-record.v1.json';

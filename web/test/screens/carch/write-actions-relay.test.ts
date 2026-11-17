@@ -58,7 +58,9 @@ const FIELDS = { contentid: CONTENT_ID, contenthistid: HIST_ID, ...CSRF_FIELDS }
 const ABORTED: RawBody = { status: 200, contentType: HTML_TYPE, body: '' };
 const SERVICE_ERROR = { apiversion: 'v1', method: 'carch', error: { message: 'Denied', code: 'denied' } };
 
-// Inventoried response mode of each carried action (opt2/inventory/legacy-inventory.json).
+// Inventoried response mode of each defined action (opt2/inventory/legacy-inventory.json); savequickedit and
+// updateobjectparams are withheld, so the carch barrel leaves them to legacy, and the halted loadsiteflat has no
+// definition.
 const MODES: Readonly<Record<string, ScreenMode>> = {
   approvalaction: 'json',
   assocfiles: 'fragment',
@@ -80,7 +82,6 @@ const MODES: Readonly<Record<string, ScreenMode>> = {
   loadquickedit: 'fragment',
   loadrelatedcontent: 'fragment',
   loadselectedrelatedcontent: 'fragment',
-  loadsiteflat: 'fragment',
   loadsitemanager: 'json',
   loadsitesection: 'json',
   loadtagarray: 'json',
@@ -218,7 +219,7 @@ async function invoke(def: ScreenDefinition, ctx: ScreenContext): Promise<RawBod
 }
 
 describe('carch write and relay definitions', () => {
-  it('registers each carried action once', () => {
+  it('defines each action once', () => {
     expect(DEFINITIONS.map((def) => def.action).sort()).toEqual([...ACTIONS].sort());
   });
 

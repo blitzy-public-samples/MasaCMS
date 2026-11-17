@@ -17,23 +17,29 @@ import type { OpenBehaviour } from '../helpers/migration-double.js';
 import { cutoverTable, entry } from '../helpers/versions.js';
 
 const SAVE_RATE = 'page:saverate';
+const TRACK_OPEN = 'trackopen:open';
 const RATING_UNIT = 'content.content_rating';
+const EMAIL_STAT_UNIT = 'communications.email_stat';
 const MAILING_UNIT = 'communications.mailing_list_member';
 const OPEN_PATH = '/internal/v1/windows';
 const NO_FACTS: InventoryFacts = { get: () => undefined, routes: () => [] };
 
-/** One target-authoritative and one legacy-authoritative legacy-write entry. */
+/** Two target-authoritative and one legacy-authoritative legacy-write entries. */
 const TABLE = cutoverTable({
   tableVersion: 'v0101',
   entries: [
     entry({ route: SAVE_RATE, owningService: 'strategies-content', kind: 'legacy-write', units: [RATING_UNIT], disposition: 'legacy-served' }),
+    entry({ route: TRACK_OPEN, owningService: 'communications', kind: 'legacy-write', units: [EMAIL_STAT_UNIT], disposition: 'legacy-served' }),
     entry({ route: 'page:subscribe', owningService: 'communications', kind: 'legacy-write', units: [MAILING_UNIT], disposition: 'legacy-served' }),
   ],
-  groupAuthority: { [`grp:${RATING_UNIT}`]: 'target', [`grp:${MAILING_UNIT}`]: 'legacy' },
+  groupAuthority: { [`grp:${RATING_UNIT}`]: 'target', [`grp:${EMAIL_STAT_UNIT}`]: 'target', [`grp:${MAILING_UNIT}`]: 'legacy' },
 });
 
-/** Form of a rating POST; the inventory scopes `page:saverate` writes by siteid, userid and contentid. */
+/** Form of a rating POST; the inventory scopes `page:saverate` writes by the whole table. */
 const RATE_FORM = { doaction: 'saveRate', siteid: 'tenant-a', contentid: 'C1', userid: 'U1', rate: '5' };
+
+/** An email-open tracking request; the inventory scopes `trackopen:open` writes by the email address. */
+const TRACK_OPEN_URL = '/index.cfm/_api/email/trackopen?emailid=E1&email=member%40example.com';
 
 const CONTENT_UNIT = 'content.content';
 const TARGETING_UNIT = 'content.variation_targeting';
@@ -134,13 +140,16 @@ describe('legacy-write dispatch through the gateway', () => {
 
     const windowed = await post(gw, RATE_FORM, 'req-rate');
     expect(windowed.statusCode).toBe(200);
-    expect(gw.legacy.requests).toHaveLength(2);
+    const keyed = await gw.app.inject({ method: 'GET', url: TRACK_OPEN_URL, headers: { 'x-request-id': 'req-open' } });
+    expect(keyed.statusCode).toBe(200);
+    expect(gw.legacy.requests).toHaveLength(3);
     expect(gw.migration.windows).toEqual([
+      expect.objectContaining({ routeKey: SAVE_RATE, units: [RATING_UNIT], scope: { table: true }, requestId: 'req-rate' }),
       expect.objectContaining({
-        routeKey: SAVE_RATE,
-        units: [RATING_UNIT],
-        scope: { keys: { siteid: 'tenant-a', userid: 'U1', contentid: 'C1' } },
-        requestId: 'req-rate',
+        routeKey: TRACK_OPEN,
+        units: [EMAIL_STAT_UNIT],
+        scope: { keys: { email: 'member@example.com' } },
+        requestId: 'req-open',
       }),
     ]);
   });
@@ -233,6 +242,79 @@ describe('legacy-write dispatch through the gateway', () => {
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe('/tenant-a/rated/');
     expect(gw.migration.windows.map((window) => window.completion)).toEqual([{ forwarded: true, legacyStatus: 302 }]);
+  });
+
+  it.each([
+    ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/variationtargeting', 'rest:variationtargeting.save{session}'],
+    ['DELETE', '/Index.cfm/_api/rest/v1/tenant-a/variationtargeting/A1B2C3D4-E5F6-7890-ABCDEF1234567890', 'rest:variationtargeting.delete{session}'],
+  ])('under v0002 serves a session-managed REST %s %s on legacy inside a window of its {session} legacy-write', async (method, url, routeKey) => {
+    gateway = await buildTestGateway({ version: 'v0002', services: ['strategies-content'] });
+    const gw = gateway;
+
+    const res = await gw.app.inject({ method, url, headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: 'siteid=tenant-a' });
+
+    expect(res.statusCode).toBe(200);
+    // v0002 runs target-primary, so the gateway adopts the session legacy opened for the call.
+    expect(gw.legacy.requests.map((req) => [req.method, req.url])).toEqual([
+      [method, url],
+      ['GET', '/gateway/legacy-bridge/cfml/session.cfm?op=describe'],
+    ]);
+    expect(gw.migration.windows).toEqual([
+      expect.objectContaining({
+        routeKey,
+        units: ['content.variation_targeting'],
+        scope: { table: true },
+        completion: { forwarded: true, legacyStatus: 200 },
+      }),
+    ]);
+    expect(gw.targets['strategies-content']?.requests).toEqual([]);
+  });
+
+  it.each([
+    ['POST', '/_api/rest/v1/tenant-a/variationtargeting', 'siteid=tenant-a', 'rest:variationtargeting.save{siteid}'],
+    ['DELETE', '/_api/rest/v1/tenant-a/variationtargeting/A1B2C3D4-E5F6-7890-ABCDEF1234567890?siteid=tenant-a', '', 'rest:variationtargeting.delete{siteid}'],
+  ])('under v0002 serves a sessionless REST %s %s carrying a siteid on legacy inside a window of its {siteid} legacy-write, never asking identity', async (method, url, payload, routeKey) => {
+    gateway = await buildTestGateway({ version: 'v0002', services: ['strategies-content'] });
+    const gw = gateway;
+    const basic = `Basic ${Buffer.from('rest-user:rest-secret').toString('base64')}`;
+    gw.identity.restSession(basic, { sessionId: 'ids-rest', userId: 'U-REST', siteId: 'tenant-a', adminSite: '', roles: ['systemUser'] });
+
+    const res = await gw.app.inject({ method, url, headers: { authorization: basic, 'content-type': 'application/x-www-form-urlencoded' }, payload });
+
+    expect(res.statusCode).toBe(200);
+    // v0002 runs target-primary, so the gateway asks the bridge after legacy's answer, as for every legacy-served call.
+    expect(gw.legacy.requests.map((req) => [req.method, req.url])).toEqual([
+      [method, url],
+      ['GET', '/gateway/legacy-bridge/cfml/session.cfm?op=describe'],
+    ]);
+    expect(gw.migration.windows).toEqual([
+      expect.objectContaining({
+        routeKey,
+        units: ['content.variation_targeting'],
+        completion: { forwarded: true, legacyStatus: 200 },
+      }),
+    ]);
+    expect(gw.identity.authentications).toEqual([]);
+    expect(gw.targets['strategies-content']?.requests).toEqual([]);
+  });
+
+  it('under v0002 keeps a sessionless REST variation-targeting save on strategies-content, outside any window', async () => {
+    gateway = await buildTestGateway({ version: 'v0002', services: ['strategies-content'] });
+    const gw = gateway;
+    const basic = `Basic ${Buffer.from('rest-user:rest-secret').toString('base64')}`;
+    gw.identity.restSession(basic, { sessionId: 'ids-rest', userId: 'U-REST', siteId: 'tenant-a', adminSite: '', roles: ['systemUser'] });
+
+    const res = await gw.app.inject({
+      method: 'POST',
+      url: '/index.cfm/_api/rest/v1/tenant-a/variationtargeting',
+      headers: { authorization: basic, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'variationid=V1',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(gw.targets['strategies-content']?.requests.map((req) => req.url)).toEqual(['/index.cfm/_api/rest/v1/tenant-a/variationtargeting']);
+    expect(gw.legacy.requests).toEqual([]);
+    expect(gw.migration.windows).toEqual([]);
   });
 
   it('registers the windowed request in flight with its window id and removes the row once legacy answered', async () => {

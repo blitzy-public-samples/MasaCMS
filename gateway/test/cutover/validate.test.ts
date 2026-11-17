@@ -488,6 +488,63 @@ describe('validateVersion', () => {
     expect(rulesOf(t, ctx)).toEqual(expected);
   });
 
+  const REST_READ = 'rest:content.findone';
+  const REST_SESSION = `${REST_READ}{session}`;
+  const REST_SITEID = `${REST_READ}{siteid}`;
+  type When = VariantsFile['variants'][number]['when'];
+  /** The fixture context with a REST read and its `{session}` and `{siteid}` variants, each unless its `when` is null. */
+  const restCtx = (
+    session: When | null = [{ sessionManaged: true }],
+    siteId: When | null = [{ startupSiteId: true }],
+  ): ValidationContext => {
+    const inv = inventory();
+    const declared = [
+      ...(session === null ? [] : [{ route: REST_READ, variant: 'session', when: session }]),
+      ...(siteId === null ? [] : [{ route: REST_READ, variant: 'siteid', when: siteId }]),
+    ];
+    const keys = [REST_READ, ...declared.map((v) => `${REST_READ}{${v.variant}}`)];
+    return context({
+      inventory: { ...inv, routes: [...inv.routes, ...keys.map((key) => route(key, 'api-entity-method', 'rest', 'carry', 'strategies-content'))] },
+      variants: { ...variants, variants: [...variants.variants, ...declared] },
+      prior: V1,
+    });
+  };
+  const restVersion = (read: CutoverEntry['state'], session?: CutoverEntry['state'], siteId?: CutoverEntry['state']): CutoverTable =>
+    adding(
+      V2,
+      extra(REST_READ, 'strategies-content', { tableVersion: 'v0002', state: read }),
+      ...(session === undefined ? [] : [extra(REST_SESSION, 'strategies-content', { tableVersion: 'v0002', state: session })]),
+      ...(siteId === undefined ? [] : [extra(REST_SITEID, 'strategies-content', { tableVersion: 'v0002', state: siteId })]),
+    );
+
+  it.each<[string, CutoverTable, string[], ValidationContext]>([
+    ['a target rest entry with its legacy session and siteid variants', restVersion('target', 'legacy', 'legacy'), [], restCtx()],
+    ['a legacy rest entry without either variant', restVersion('legacy'), [], restCtx(null, null)],
+    ['a target rest entry without a session variant', restVersion('target', undefined, 'legacy'), ['rest-session-legacy'], restCtx(null)],
+    ['a target rest entry whose session variant is target', restVersion('target', 'target', 'legacy'), ['rest-session-legacy'], restCtx()],
+    [
+      'a target rest entry whose session variant needs another condition',
+      restVersion('target', 'legacy', 'legacy'),
+      ['rest-session-legacy'],
+      restCtx([{ sessionManaged: true }, { param: 'x', nonEmpty: true }]),
+    ],
+    [
+      'a target rest entry without a siteid variant',
+      restVersion('target', 'legacy'),
+      ['rest-siteid-legacy'],
+      restCtx(undefined, null),
+    ],
+    ['a target rest entry whose siteid variant is target', restVersion('target', 'legacy', 'target'), ['rest-siteid-legacy'], restCtx()],
+    [
+      'a target rest entry whose siteid variant needs another condition',
+      restVersion('target', 'legacy', 'legacy'),
+      ['rest-siteid-legacy'],
+      restCtx(undefined, [{ startupSiteId: true }, { param: 'x', nonEmpty: true }]),
+    ],
+  ])('holds %s to rest-session-legacy and rest-siteid-legacy', (_name, t, expected, ctx) => {
+    expect(rulesOf(t, ctx)).toEqual(expected);
+  });
+
   const FORM = 'page:saveform';
   const formCtx = (() => {
     const inv = inventory();

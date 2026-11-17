@@ -26,7 +26,7 @@ const WINDOW_ID = '6A1B2C3D-4E5F-4061-7283940516273849';
 const WIRE_TIME = '2026-06-30T12:00:00.123';
 const SERVER_TIME = new Date(WIRE_TIME).toISOString();
 const CURSOR = { theTime: '2026-06-30 12:00:00.000', lastMonitored: '2026-06-30 11:45:00.000' };
-const BOUNCE_UNITS = ['communications.email_return_stat', 'communications.email_stat'];
+const BOUNCE_UNITS = ['communications.email_stat'];
 const NOW = Date.parse('2026-06-30T12:00:05.000Z');
 /** A `deadlineAt` `ms` after the harness clock's start. */
 const deadlineIn = (ms: number): string => new Date(NOW + ms).toISOString();

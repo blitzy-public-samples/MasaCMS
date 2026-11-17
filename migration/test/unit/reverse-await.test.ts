@@ -6,10 +6,19 @@ import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { ConnectionPool } from 'mssql';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CurrentAuthority } from '../../src/cutover/index.js';
+import { GatewayCallError, type CurrentAuthority } from '../../src/cutover/index.js';
 import { OwnerCallError, type DataOwner } from '../../src/owners/index.js';
-import type { LegacyEffect } from '../../src/reverse/apply-legacy.js';
-import { ProjectionTimeoutError, createAwaiter, type AwaitProjectionRequest, type PendingPosition, type ReadBudget } from '../../src/reverse/await.js';
+import { CHECKPOINT_TABLE, type LegacyEffect } from '../../src/reverse/apply-legacy.js';
+import {
+  ProjectionTimeoutError,
+  ProjectionUnavailableError,
+  createAwaiter,
+  type AwaitProjectionRequest,
+  type PendingPosition,
+  type ProjectionRead,
+  type ReadBudget,
+} from '../../src/reverse/await.js';
+import { connectionLost, sqlError } from '../helpers/fake-legacy-db.js';
 
 const TENANT_A = '3f9c3a52-1c1b-5d4e-8f00-0a1b2c3d4e5f';
 const TENANT_B = '7d2e9b10-4a6c-5f8e-9b11-1c2d3e4f5a6b';
@@ -45,14 +54,19 @@ function authorityOf(targetUnits: string[]): CurrentAuthority {
 /** A dependency read that can be made to never answer on its own. */
 type Stalled = 'position' | 'authority' | 'tenants' | 'live' | 'checkpoints';
 
+/** A read whose failure fails the await closed. */
+type Failing = Exclude<Stalled, 'position'>;
+
 interface HarnessOptions {
   targetUnits?: string[];
   tenants?: string[];
   checkpoints?: Checkpoint[];
   current?: Record<string, string>;
-  /** Read that never answers from its `stallFrom`-th call on (default the first); a cancelled checkpoint read rejects as the driver does. */
+  /** Read that never answers from its `stallFrom`-th call on (default the first); a cancelled read rejects as its driver does. */
   stall?: Stalled;
   stallFrom?: number;
+  /** Read that rejects with `error` on every call. */
+  fail?: { read: Failing; error: Error };
   /** Clock and sleep follow vitest's fake timers instead of the sleep-driven clock. */
   fakeTimers?: boolean;
   /** Milliseconds the clock moves while a checkpoint read runs. */
@@ -60,6 +74,12 @@ interface HarnessOptions {
 }
 
 const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
+
+/** Never answers; once `signal` aborts, rejects with the AbortError a signalled driver raises. */
+const untilAborted = <T>(signal: AbortSignal | undefined): Promise<T> =>
+  new Promise<T>((_resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })), { once: true });
+  });
 
 /** Awaiter over fakes: `sleep` advances the clock, and `onSleep` lets a test change checkpoints between polls. */
 function harness(opts: HarnessOptions = {}) {
@@ -72,6 +92,9 @@ function harness(opts: HarnessOptions = {}) {
   const stalls = (read: Stalled): boolean => {
     reads[read] += 1;
     return opts.stall === read && reads[read] >= (opts.stallFrom ?? 1);
+  };
+  const failIf = (read: Failing): void => {
+    if (opts.fail?.read === read) throw opts.fail.error;
   };
   /** Budgets and options the dependencies were called with, and the checkpoint requests cancelled. */
   const seen: { position?: { timeoutMs?: number }; authority?: ReadBudget; tenants?: ReadBudget; cancels: number } = { cancels: 0 };
@@ -92,6 +115,7 @@ function harness(opts: HarnessOptions = {}) {
         async query() {
           log.push(`checkpoints:${owners.join(',')}`);
           now += opts.readTakesMs ?? 0;
+          failIf('checkpoints');
           if (stalls('checkpoints')) {
             return new Promise((_resolve, reject) => {
               cancelled = () => reject(Object.assign(new Error('Canceled.'), { code: 'ECANCEL' }));
@@ -128,7 +152,8 @@ function harness(opts: HarnessOptions = {}) {
   });
   const authority = vi.fn(async (budget?: ReadBudget) => {
     seen.authority = budget;
-    if (stalls('authority')) return never<CurrentAuthority>();
+    failIf('authority');
+    if (stalls('authority')) return untilAborted<CurrentAuthority>(budget?.signal);
     return authorityOf(opts.targetUnits ?? ['programs_sites.image_size']);
   });
   const sleep = vi.fn(async (ms: number) => {
@@ -139,13 +164,19 @@ function harness(opts: HarnessOptions = {}) {
   });
 
   const awaiter = createAwaiter({
-    legacy: { live: async () => (stalls('live') ? never<ConnectionPool>() : pool) },
+    legacy: {
+      live: async () => {
+        failIf('live');
+        return stalls('live') ? never<ConnectionPool>() : pool;
+      },
+    },
     owners: { position },
     authority,
     catalog: { ownerOf: (unit) => UNIT_OWNERS[unit] as DataOwner },
     tenants: async (budget) => {
       seen.tenants = budget;
-      return stalls('tenants') ? never<string[]>() : (opts.tenants ?? [TENANT_A]);
+      failIf('tenants');
+      return stalls('tenants') ? untilAborted<string[]>(budget.signal) : (opts.tenants ?? [TENANT_A]);
     },
     clock: { now: () => (opts.fakeTimers === true ? new Date() : new Date(now)) },
     sleep,
@@ -376,6 +407,38 @@ describe('createAwaiter', () => {
     h.position.mockRejectedValueOnce(answer);
 
     await expect(h.awaiter.awaitProjection({ owners: ['people'] })).rejects.toBe(answer);
+  });
+
+  it.each<{ fail: Failing; error: Error; read: ProjectionRead }>([
+    { fail: 'checkpoints', error: sqlError(208, `Invalid object name '${CHECKPOINT_TABLE}'.`), read: 'checkpoint' },
+    { fail: 'live', error: connectionLost(), read: 'checkpoint' },
+    { fail: 'tenants', error: sqlError(208, "Invalid object name 'dbo.tsettings'."), read: 'tenant set' },
+    { fail: 'authority', error: new GatewayCallError('cutoverStatus', 500, { error: 'internal' }), read: 'cut-over authority' },
+  ])('fails closed with ProjectionUnavailableError, a legacy 503, when the $fail read rejects', async ({ fail, error, read }) => {
+    const h = harness({ fail: { read: fail, error } });
+
+    const outcome: unknown = await h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900' }) }).catch((e: unknown) => e);
+
+    expect(outcome).toBeInstanceOf(ProjectionUnavailableError);
+    expect(outcome).toBeInstanceOf(LegacyServiceUnavailableError);
+    const unavailable = outcome as ProjectionUnavailableError;
+    expect(unavailable.cause).toBe(error);
+    expect(unavailable).toMatchObject({
+      name: 'ProjectionUnavailableError',
+      read,
+      surface: 'auto',
+      reason: 'projection-unavailable',
+      message: `Projection await could not read the ${read}`,
+    });
+    expect(unavailable.message).not.toContain(error.message);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it('passes a legacy 503 that a read raises through unchanged', async () => {
+    const refused = new ServiceUnavailableError('gateway', Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8100'), { code: 'ECONNREFUSED' }));
+    const h = harness({ fail: { read: 'authority', error: refused } });
+
+    await expect(h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900' }) })).rejects.toBe(refused);
   });
 
   it('returns at once for an empty request without reading authority', async () => {

@@ -12,6 +12,7 @@ import {
   dlqReplaySubscriptionName,
   dlqTopicName,
   encodeEnvelope,
+  envelopeAttributes,
   eventTypeOf,
   originalAttributes,
   subscriptionName,
@@ -20,7 +21,7 @@ import {
   type EventEnvelope,
   type RawMessage,
 } from '@opt2/platform/events';
-import { buildEnvelope, legacyErrorResponse, serializeResponse } from '@opt2/platform/legacy-compat';
+import { buildEnvelope, cfUuid, legacyErrorResponse, serializeResponse } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, pubsubEmulatorAvailable, testEnvelope, withoutTenant } from '@opt2/platform/testing';
 
@@ -201,6 +202,7 @@ const PROJECT = 'opt2-dlq-unit';
 const GATEWAY_URL = 'http://127.0.0.1:8500';
 const PROJECTION_PATH = /^\/opt2\/stub\/notes\/([^/]+)\/projection$/;
 const PROJECTED_AT = '2026-06-30 08:00:01.000';
+const NOTE_CREATED_AT = '2026-06-30 07:59:59.000';
 const EVENT_ID = '09de93ab-5c1f-4b7e-9a2d-e516ce81f350';
 
 const CLOCK_START = Date.parse('2026-06-30T08:00:00');
@@ -385,21 +387,34 @@ function legacyResponse({ status, headers, body }: { status: number; headers: Re
   return new Response(body, { status, headers });
 }
 
+/** The stub's create answer for a new note of `siteid` stamped `created`, after its version 1 event reached the bus. */
+function createdNote(bus: FakeBus, siteid: string, input: { title?: unknown; body?: unknown }, created: string): Response {
+  const note = { noteId: cfUuid(), title: String(input.title), body: String(input.body ?? ''), created, rowVersion: 1 };
+  const event = testEnvelope({ topic: TOPIC, tenantId: tenantIdForSite(siteid), aggregateId: note.noteId, payload: note });
+  bus.publish(TOPIC, { data: encodeEnvelope(event), attributes: envelopeAttributes(event), orderingKey: note.noteId });
+  return legacyResponse(serializeResponse(buildEnvelope({ method: 'save', params: { siteid }, data: note })));
+}
+
 /**
- * The gateway's `GET /opt2/stub/notes/{noteId}/projection` over the bus's effect rows, whose counts are numbers. The
- * user token is minted for `siteid` (`default` when absent), so the row is read in that site's tenant. Answers the
+ * The gateway's `POST /opt2/stub/notes`, whose note event the bus's consumer projects at once, and its
+ * `GET /opt2/stub/notes/{noteId}/projection` over the bus's effect rows, whose counts are numbers. The user token is
+ * minted for `siteid` (`default` when absent), so a row is written and read in that site's tenant. Reads answer the
  * stub's envelope, which quotes the counts as digits, or the legacy 404 envelope; any other request answers 500.
  */
-function fakeGateway(bus: FakeBus): { fetch: FetchLike; requests: URL[] } {
+function fakeGateway(bus: FakeBus, options: { created?: string } = {}): { fetch: FetchLike; requests: URL[] } {
   const requests: URL[] = [];
   const fetch: FetchLike = async (input, init) => {
     const url = new URL(input);
     requests.push(url);
-    const noteId = PROJECTION_PATH.exec(url.pathname)?.[1];
-    if ((init.method ?? 'GET') !== 'GET' || url.origin !== GATEWAY_URL || noteId === undefined) {
-      return new Response(`unexpected ${init.method ?? 'GET'} ${url.href}`, { status: 500 });
-    }
+    const method = init.method ?? 'GET';
     const siteid = url.searchParams.get('siteid') ?? 'default';
+    if (method === 'POST' && url.origin === GATEWAY_URL && url.pathname === STUB_NOTES_PATH) {
+      return createdNote(bus, siteid, JSON.parse(String(init.body)) as Row, options.created ?? NOTE_CREATED_AT);
+    }
+    const noteId = PROJECTION_PATH.exec(url.pathname)?.[1];
+    if (method !== 'GET' || url.origin !== GATEWAY_URL || noteId === undefined) {
+      return new Response(`unexpected ${method} ${url.href}`, { status: 500 });
+    }
     const params = { siteid, noteId: decodeURIComponent(noteId) };
     const row = bus.effectRows(tenantIdForSite(siteid)).find((effect) => effect.note_id === params.noteId);
     if (row === undefined) {
@@ -512,7 +527,7 @@ interface DlqStack {
 }
 
 /**
- * The bus, its adapters and the check's deps, whose stub target reads through a tenant-a reader on the fake gateway.
+ * The bus, its adapters and the check's deps, whose stub target creates and reads notes through a tenant-a reader on the fake gateway.
  * The env names that gateway for a default reader, and an empty emulator host so nothing probes a live one.
  */
 function dlqStack(
@@ -524,7 +539,7 @@ function dlqStack(
   const clock = fakeClock();
   const { fetch, requests } = fakeGateway(bus);
   const deps: DlqDeps = {
-    target: stubDlqTarget({ now: clock.now, reader: readerOn(fetch) }),
+    target: stubDlqTarget({ reader: readerOn(fetch) }),
     pubsub,
     exec: runner.exec,
     fetch,
@@ -572,39 +587,116 @@ describe('stubDlqTarget', () => {
     expect(target.effectUnit).toBe('stub.note_projection');
   });
 
-  it('builds a fresh contract-valid envelope for the topic in the chosen tenant', () => {
-    const target = stubDlqTarget({ tenantId: TENANT_B.tenantId, now: () => CLOCK_START });
-    const first = target.buildEnvelope();
-    const second = target.buildEnvelope();
+  it('builds the next version of a note it creates through the reader, once that note is projected', async () => {
+    const bus = new FakeBus();
+    const { fetch, requests } = fakeGateway(bus);
+    const target = stubDlqTarget({ tenantId: TENANT_B.tenantId, reader: readerOn(fetch, TENANT_B.siteId) });
+    const first = await target.buildEnvelope({});
+    const second = await target.buildEnvelope({});
+
+    const [created, createdSecond] = bus.publishedTo(TOPIC).map((message) => decoded(message) as EventEnvelope);
     expect(validateEnvelope(first).ok).toBe(true);
     expect(first.eventType).toBe(eventTypeOf(target.topic));
-    expect(first.tenantId).toBe(TENANT_B.tenantId);
-    expect(first.payload).toMatchObject({ noteId: first.aggregateId, created: '2026-06-30 08:00:00.000', rowVersion: 1 });
-    expect(second.eventId).not.toBe(first.eventId);
+    expect(first).toMatchObject({ tenantId: TENANT_B.tenantId, aggregateType: 'note', aggregateId: created?.aggregateId, aggregateVersion: 2 });
+    expect(first.payload).toEqual({ ...(created?.payload as Row), rowVersion: 2 });
+    expect(first.payload).toMatchObject({ title: 'DLQ replay check', body: 'Dead-letter replay evidence.', created: NOTE_CREATED_AT });
+    expect(first.eventId).not.toBe(created?.eventId);
+    expect(second.aggregateId).toBe(createdSecond?.aggregateId);
     expect(second.aggregateId).not.toBe(first.aggregateId);
+    expect(second.eventId).not.toBe(first.eventId);
+    expect(requests.map((url) => url.pathname)).toEqual([
+      STUB_NOTES_PATH,
+      `${STUB_NOTES_PATH}/${first.aggregateId}/projection`,
+      STUB_NOTES_PATH,
+      `${STUB_NOTES_PATH}/${second.aggregateId}/projection`,
+    ]);
+    expect(requests.map((url) => url.searchParams.get('siteid'))).toEqual(Array(4).fill(TENANT_B.siteId));
   });
 
   it.each([
-    { label: 'its apply count', applyCount: 3, expected: 3 },
-    { label: 'no application while the gateway answers 404', applyCount: null, expected: 0 },
-  ])('counts its tenant note projection through the reader as $label', async ({ applyCount, expected }) => {
-    const { bus, deps, requests } = dlqStack();
-    const target = deps.target!;
-    const noteId = target.buildEnvelope().aggregateId;
-    const row = (note: string, count: number): Row => ({
+    { label: 'none while the projection keeps its built count', applied: null, expected: 0 },
+    { label: 'each application since the build', applied: 5, expected: 2 },
+  ])('versions past the projected version and counts $label, through the reader', async ({ applied, expected }) => {
+    const bus = new FakeBus();
+    const gateway = fakeGateway(bus);
+    const row = (note: string, version: number, count: number): Row => ({
       note_id: note,
       title: 'note',
-      aggregate_version: 1,
+      aggregate_version: version,
       apply_count: count,
       last_event_id: EVENT_ID,
     });
-    if (applyCount !== null) bus.seedEffect(TENANT_A.tenantId, row(noteId, applyCount));
-    bus.seedEffect(TENANT_A.tenantId, row('OTHER-NOTE', 7));
-    bus.seedEffect(TENANT_B.tenantId, row(noteId, 5));
+    // The created note's projection already stands at version 4 with 3 applications when it is first read.
+    const fetch: FetchLike = async (input, init) => {
+      const response = await gateway.fetch(input, init);
+      if ((init.method ?? 'GET') === 'POST') {
+        const { data } = (await response.clone().json()) as { data: { noteid: string } };
+        bus.seedEffect(TENANT_A.tenantId, row(data.noteid, 4, 3));
+      }
+      return response;
+    };
+    const target = stubDlqTarget({ reader: readerOn(fetch) });
+    const envelope = await target.buildEnvelope({});
+    const noteId = envelope.aggregateId;
+    if (applied !== null) bus.seedEffect(TENANT_A.tenantId, row(noteId, 5, applied));
+    bus.seedEffect(TENANT_A.tenantId, row('OTHER-NOTE', 1, 7));
+    bus.seedEffect(TENANT_B.tenantId, row(noteId, 1, 9));
 
-    await expect(target.effectCount(noteId, deps)).resolves.toBe(expected);
-    expect(projectionReads(requests)).toEqual([[noteId, TENANT_A.siteId]]);
+    expect(envelope.aggregateVersion).toBe(5);
+    expect(envelope.payload).toMatchObject({ noteId, rowVersion: 5 });
+    await expect(target.effectCount(noteId, {})).resolves.toBe(expected);
+    await expect(target.effectCount('ABSENT-NOTE', {})).resolves.toBe(0);
+    expect(projectionReads(gateway.requests)).toEqual([
+      [undefined, TENANT_A.siteId],
+      [noteId, TENANT_A.siteId],
+      [noteId, TENANT_A.siteId],
+      ['ABSENT-NOTE', TENANT_A.siteId],
+    ]);
     expect(vi.mocked(adminLogin)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'waits out the projection of its created note', missing: 2, sleeps: [POLL.intervalMs, POLL.intervalMs], error: null },
+    {
+      label: 'rejects a created note not projected within the poll bound',
+      missing: Number.POSITIVE_INFINITY,
+      sleeps: [POLL.intervalMs, POLL.intervalMs, POLL.intervalMs],
+      error: new RegExp(`^stub note [0-9A-F-]{35} was not projected within ${POLL.timeoutMs} ms$`),
+    },
+  ])('$label', async ({ missing, sleeps, error }) => {
+    const bus = new FakeBus();
+    const gateway = fakeGateway(bus);
+    let misses = 0;
+    const notFound = legacyErrorResponse('invalidMethodCall', { method: 'findProjection', mura404: true });
+    const fetch: FetchLike = async (input, init) => {
+      if (!PROJECTION_PATH.test(new URL(input).pathname) || misses >= missing) return gateway.fetch(input, init);
+      misses += 1;
+      return legacyResponse(notFound);
+    };
+    const clock = fakeClock();
+    const pending = stubDlqTarget({ reader: readerOn(fetch) }).buildEnvelope({ now: clock.now, sleep: clock.sleep, poll: POLL });
+    if (error === null) await expect(pending).resolves.toMatchObject({ aggregateVersion: 2 });
+    else await expect(pending).rejects.toThrow(error);
+    expect(clock.sleeps).toEqual(sleeps);
+  });
+
+  it.each([
+    { label: 'a refused create', status: 403, body: '{"error":{"code":"invalid_request"}}', error: 'stub note not created' },
+    { label: 'a non-JSON create answer', status: 200, body: '<html>', error: 'stub note create answer is not JSON' },
+    { label: 'a create answer without the note', status: 200, body: '{"apiversion":"v1","data":{"noteid":"N"}}', error: 'stub note create answer is malformed' },
+  ])('rejects $label without reading a projection', async ({ status, body, error }) => {
+    const requests: URL[] = [];
+    const fetch: FetchLike = async (input) => {
+      requests.push(new URL(input));
+      return new Response(body, { status, headers: { 'content-type': 'application/json;charset=utf-8' } });
+    };
+    await expect(stubDlqTarget({ reader: readerOn(fetch) }).buildEnvelope({})).rejects.toThrow(`${error} (status ${status}): ${body}`);
+    expect(requests.map((url) => url.href)).toEqual([`${GATEWAY_URL}${STUB_NOTES_PATH}?siteid=${TENANT_A.siteId}`]);
+  });
+
+  it('rejects a created note whose payload fails the topic schema', async () => {
+    const { fetch } = fakeGateway(new FakeBus(), { created: '2026-06-30T07:59:59Z' });
+    await expect(stubDlqTarget({ reader: readerOn(fetch) }).buildEnvelope({})).rejects.toThrow(`stub note payload fails ${TOPIC}`);
   });
 
   it('refuses a reader of another tenant', () => {
@@ -624,8 +716,8 @@ describe('stubDlqTarget', () => {
     vi.mocked(loadSecretStore).mockReturnValue(SECRETS);
     const readDeps: SeamDeps = { ...deps, secrets: injected ? SECRETS : undefined };
     const target = stubDlqTarget({ tenantId: TENANT_B.tenantId });
-    const noteId = target.buildEnvelope().aggregateId;
-    bus.seedEffect(TENANT_B.tenantId, { note_id: noteId, title: 'note', aggregate_version: 1, apply_count: 2, last_event_id: EVENT_ID });
+    const { aggregateId: noteId } = await target.buildEnvelope(readDeps);
+    bus.seedEffect(TENANT_B.tenantId, { note_id: noteId, title: 'note', aggregate_version: 2, apply_count: 3, last_event_id: EVENT_ID });
 
     await expect(target.effectCount(noteId, readDeps)).resolves.toBe(2);
     await expect(target.effectCount('ABSENT-NOTE', readDeps)).resolves.toBe(0);
@@ -635,6 +727,8 @@ describe('stubDlqTarget', () => {
     ]);
     expect(vi.mocked(loadSecretStore).mock.calls).toEqual(injected ? [] : [[deps.env]]);
     expect(projectionReads(requests)).toEqual([
+      [undefined, TENANT_B.siteId],
+      [noteId, TENANT_B.siteId],
       [noteId, TENANT_B.siteId],
       ['ABSENT-NOTE', TENANT_B.siteId],
     ]);
@@ -643,13 +737,13 @@ describe('stubDlqTarget', () => {
     expect(vi.mocked(adminLogin)).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects every read of a default reader whose login fails, without reading', async () => {
+  it('rejects every build and read of a default reader whose login fails, without a gateway request', async () => {
     const { deps, requests } = dlqStack();
     answerLogin(false, 200);
     const target = stubDlqTarget();
     const username = SECRETS.username(TENANT_A.siteId, 'system-user');
     const failure = `admin login as ${username} through the gateway failed (status 200)`;
-    await expect(target.effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(failure);
+    await expect(target.buildEnvelope({ ...deps, secrets: SECRETS })).rejects.toThrow(failure);
     await expect(target.effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(failure);
     expect(vi.mocked(adminLogin)).toHaveBeenCalledTimes(1);
     expect(requests).toEqual([]);
@@ -658,9 +752,9 @@ describe('stubDlqTarget', () => {
   it('asks for a reader when its tenant has no fixture site', async () => {
     const { deps } = dlqStack();
     const tenantId = tenantIdForSite('unseeded-site');
-    await expect(stubDlqTarget({ tenantId }).effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(
-      `tenant ${tenantId} has no fixture site; pass a reader`,
-    );
+    const failure = `tenant ${tenantId} has no fixture site; pass a reader`;
+    await expect(stubDlqTarget({ tenantId }).buildEnvelope({ ...deps, secrets: SECRETS })).rejects.toThrow(failure);
+    await expect(stubDlqTarget({ tenantId }).effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(failure);
     expect(vi.mocked(adminLogin)).not.toHaveBeenCalled();
   });
 });
@@ -700,13 +794,16 @@ describe('readStubProjection', () => {
 
 describe('runDlqCheck', () => {
   it('dead-letters a tenant-less envelope with a reason and no effect, then one replay applies it exactly once', async () => {
-    const { bus, pubsub, runner, clock, deps } = dlqStack();
+    const { bus, pubsub, runner, clock, requests, deps } = dlqStack();
     const result = await runDlqCheck(deps);
     expect(failuresOf(result)).toEqual([]);
     expect(result.passed).toBe(true);
     const { evidence } = result;
 
-    const onTopic = bus.publishedTo(TOPIC);
+    const [noteEvent, ...onTopic] = bus.publishedTo(TOPIC);
+    expect(requests[0]?.pathname).toBe(STUB_NOTES_PATH);
+    expect(decoded(noteEvent!)).toMatchObject({ tenantId: TENANT_A.tenantId, aggregateId: evidence.aggregateId, aggregateVersion: 1 });
+    expect(decoded(noteEvent!).eventId).not.toBe(evidence.eventId);
     const tenantless = onTopic.filter((message) => decoded(message).tenantId === undefined);
     expect(tenantless).toHaveLength(1);
     expect(tenantless[0]?.attributes).not.toHaveProperty('tenantId');
@@ -717,7 +814,7 @@ describe('runDlqCheck', () => {
     expect(letter?.attributes[DEAD_LETTER_REASON_ATTRIBUTE]).toBe(EXPECTED_DLQ_REASON);
     expect(evidence.rejection).toEqual({ reason: EXPECTED_DLQ_REASON, effectAfter: 0 });
     const valid = decoded(corrected!) as EventEnvelope;
-    expect(valid.tenantId).toBe(TENANT_A.tenantId);
+    expect(valid).toMatchObject({ tenantId: TENANT_A.tenantId, aggregateVersion: 2, payload: { noteId: valid.aggregateId, rowVersion: 2 } });
     expect(decoded(letter!)).toEqual(withoutTenant(valid));
 
     expect(runner.calls.map((call) => [call.file, ...call.args.slice(0, 3)])).toEqual([
@@ -732,8 +829,9 @@ describe('runDlqCheck', () => {
     expect(replayed).toHaveLength(1);
     expect(replayed[0]?.attributes).toEqual(originalAttributes(corrected!.attributes));
     expect(replayed[0]?.attributes).not.toHaveProperty(DEAD_LETTER_REASON_ATTRIBUTE);
+    // The note's own event applied once before the check, the replayed copy once after it.
     expect(bus.effectRows(TENANT_A.tenantId)).toEqual([
-      expect.objectContaining({ note_id: evidence.aggregateId, apply_count: 1, last_event_id: evidence.eventId }),
+      expect.objectContaining({ note_id: evidence.aggregateId, aggregate_version: 2, apply_count: 2, last_event_id: evidence.eventId }),
     ]);
 
     expect(evidence).toMatchObject({
@@ -765,7 +863,10 @@ describe('runDlqCheck', () => {
     expect(vi.mocked(adminLogin).mock.calls).toEqual([
       [expect.objectContaining({ baseUrl: GATEWAY_URL }), { username, password: SECRETS.secret(`seed:${username}`) }],
     ]);
-    expect(projectionReads(requests)).toEqual(Array(5).fill([result.evidence.aggregateId, TENANT_A.siteId]));
+    expect(projectionReads(requests)).toEqual([
+      [undefined, TENANT_A.siteId],
+      ...Array(6).fill([result.evidence.aggregateId, TENANT_A.siteId]),
+    ]);
   });
 
   it('fails when the consumer applies the tenant-less envelope instead of dead-lettering it', async () => {
@@ -841,7 +942,9 @@ describe('runDlqCheck', () => {
     const result = await runDlqCheck(deps);
     expect(result.passed).toBe(false);
     expect(failuresOf(result)).toEqual([`precondition: dlq replay backlog not empty (${id})`]);
-    expect(bus.publishedTo(TOPIC)).toEqual([]);
+    // Only the built note's own event; neither copy of the checked event.
+    expect(bus.publishedTo(TOPIC).map((message) => decoded(message).aggregateVersion)).toEqual([1]);
+    expect(bus.publishedTo(TOPIC).map((message) => decoded(message).eventId)).not.toContain(result.evidence.eventId);
     expect(bus.queued(REPLAY_SUBSCRIPTION).map((message) => message.id)).toEqual([id]);
     expect(pubsub.pulls).toEqual([{ subscription: REPLAY_SUBSCRIPTION, timeoutMs: PRECONDITION_PULL_MS }]);
     expect(runner.calls).toEqual([]);
@@ -895,7 +998,8 @@ describe('runDlqCheck', () => {
     expect(result.evidence.effect).toEqual(effect);
     expect(result.evidence.secondReplay).toEqual(secondReplay);
     expect(runs).toBe(run);
-    expect(requests).toHaveLength(reads);
+    // The build's create and projection read, then the check's effect reads.
+    expect(requests).toHaveLength(2 + reads);
     expect(clock.sleeps).toEqual(sleeps);
   });
 

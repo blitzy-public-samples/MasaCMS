@@ -66,6 +66,8 @@ interface ContractOperation {
   transport: unknown;
   /** Its `x-opt2-route-keys` and `x-opt2-legacy-actions`. */
   legacyNames: string[];
+  /** `METHOD path` keys of the routes serving it: each `x-opt2-fastify-path`, one or a list, in contract form, else `key`. */
+  served: string[];
 }
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
@@ -86,6 +88,7 @@ const OPERATIONS: readonly ContractOperation[] = Object.entries(OPENAPI.paths).f
     if (op === undefined) return [];
     const method = verb.toUpperCase();
     const names = [op['x-opt2-route-keys'], op['x-opt2-legacy-actions']].flatMap((list) => (Array.isArray(list) ? list.map(String) : []));
+    const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
     return [
       {
         key: `${method} ${path}`,
@@ -96,6 +99,7 @@ const OPERATIONS: readonly ContractOperation[] = Object.entries(OPENAPI.paths).f
         public: op['x-opt2-public'],
         transport: op['x-opt2-transport'],
         legacyNames: names,
+        served: fastifyPath === undefined ? [`${method} ${path}`] : [fastifyPath].flat().map((url) => `${method} ${contractPath(url)}`),
       },
     ];
   }),
@@ -127,7 +131,7 @@ function contractPath(url: string): string {
 
 /** Registered routes of `app` keyed `METHOD path` in contract form, without HEAD twins of GET routes the contract does not declare. */
 function registeredRoutes(app: TestApp['app']): Map<string, RouteMatrixEntry> {
-  const declared = new Set(OPERATIONS.map((op) => op.key));
+  const declared = new Set(OPERATIONS.flatMap((op) => op.served));
   const keyed = new Map<string, RouteMatrixEntry>(collectRouteMatrix(app).routes.map((route) => [`${route.method} ${contractPath(route.url)}`, route]));
   for (const key of [...keyed.keys()]) {
     if (key.startsWith('HEAD ') && keyed.has(key.replace(/^HEAD /, 'GET ')) && !declared.has(key)) keyed.delete(key);
@@ -278,7 +282,7 @@ describe('contract document', () => {
 describe('route parity', () => {
   it('registers exactly the contract operations', () => {
     const registered = registeredRoutes(full.app);
-    const declared = new Set(OPERATIONS.map((op) => op.key));
+    const declared = new Set(OPERATIONS.flatMap((op) => op.served));
     expect([...registered.keys()].filter((key) => !declared.has(key)).sort(), 'routes registered but not in contract').toEqual([]);
     expect([...declared].filter((key) => !registered.has(key)).sort(), 'contract operations no route registers').toEqual([]);
   });
@@ -287,12 +291,14 @@ describe('route parity', () => {
     const registered = registeredRoutes(full.app);
     const mismatches: Record<'requires' | 'public' | 'transport', Json[]> = { requires: [], public: [], transport: [] };
     for (const op of OPERATIONS) {
-      const route = registered.get(op.key);
-      if (route === undefined) continue;
-      const [app, contract] = [roleSet(route.requires), roleSet(op.requires)];
-      if (app.join() !== contract.join()) mismatches.requires.push({ route: op.key, app, contract });
-      if (Boolean(route.public) !== Boolean(op.public)) mismatches.public.push({ route: op.key, app: route.public, contract: op.public });
-      if (route.transport !== op.transport) mismatches.transport.push({ route: op.key, app: route.transport, contract: op.transport });
+      for (const key of op.served) {
+        const route = registered.get(key);
+        if (route === undefined) continue;
+        const [app, contract] = [roleSet(route.requires), roleSet(op.requires)];
+        if (app.join() !== contract.join()) mismatches.requires.push({ route: key, app, contract });
+        if (Boolean(route.public) !== Boolean(op.public)) mismatches.public.push({ route: key, app: route.public, contract: op.public });
+        if (route.transport !== op.transport) mismatches.transport.push({ route: key, app: route.transport, contract: op.transport });
+      }
     }
     expect(mismatches.requires, 'x-opt2-requires').toEqual([]);
     expect(mismatches.public, 'x-opt2-public').toEqual([]);

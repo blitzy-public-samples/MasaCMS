@@ -9,14 +9,22 @@ import type { OrderedReader, RowSource } from './keyed.js';
 const LABEL_LIMIT = 120;
 
 /**
- * One distinct row whose occurrence count differs between the inputs. `row` is an `after` occurrence when
- * `added > 0`, else a `before` one, so the caller can insert or delete one occurrence by value without decoding.
+ * One distinct row whose occurrence count differs between the inputs, or under `kept` any both hold. `row` is an `after`
+ * occurrence when `added > 0`, else a `before` one, so the caller can insert or delete one occurrence by value without decoding.
  */
 export interface MultisetChange {
   encoding: string;
   added: number;
   removed: number;
   row: CanonicalRow;
+  /** Under the `kept` option, the occurrences both inputs hold and one of each side; absent when either side has none. */
+  kept?: { count: number; before: CanonicalRow; after: CanonicalRow };
+}
+
+/** Options of a multiset diff. */
+export interface MultisetDiffOptions {
+  /** Also reports the occurrences both inputs hold, yielding a distinct row whose count did not change too. */
+  kept?: boolean;
 }
 
 /** Adjacent occurrences of one distinct encoding in one input. */
@@ -59,12 +67,13 @@ function total(deltas: readonly MultisetDelta[]): number {
   return deltas.reduce((sum, delta) => sum + delta.count, 0);
 }
 
-function changeOf(old: Run, now: Run): MultisetChange | undefined {
+function changeOf(old: Run, now: Run, kept: boolean): MultisetChange | undefined {
   const delta = diffMultiset(occurrences(old.encoding, old.count), occurrences(now.encoding, now.count));
   const added = total(delta.added);
   const removed = total(delta.removed);
-  if (added === 0 && removed === 0) return undefined;
-  return { encoding: now.encoding, added, removed, row: added > 0 ? now.row : old.row };
+  if (added === 0 && removed === 0 && !kept) return undefined;
+  const change: MultisetChange = { encoding: now.encoding, added, removed, row: added > 0 ? now.row : old.row };
+  return kept ? { ...change, kept: { count: Math.min(old.count, now.count), before: old.row, after: now.row } } : change;
 }
 
 function removal(old: Run): MultisetChange {
@@ -83,7 +92,9 @@ function addition(now: Run): MultisetChange {
 export async function* diffMultisetStreams(
   before: RowSource<CanonicalRow>,
   after: RowSource<CanonicalRow>,
+  options: MultisetDiffOptions = {},
 ): AsyncGenerator<MultisetChange> {
+  const kept = options.kept === true;
   const left = orderedReader(before, { side: 'before', compare: compareRows, strict: false, describe });
   const right = orderedReader(after, { side: 'after', compare: compareRows, strict: false, describe });
   try {
@@ -100,7 +111,7 @@ export async function* diffMultisetStreams(
         yield addition(now);
         now = await nextNew();
       } else {
-        const change = changeOf(old, now);
+        const change = changeOf(old, now, kept);
         if (change !== undefined) yield change;
         old = await nextOld();
         now = await nextNew();

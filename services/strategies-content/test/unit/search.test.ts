@@ -1,5 +1,6 @@
 /** Search (GS-CO-06) over the recording pool: carch.search, public search, JSON API content findQuery and the cnav.searchsitedata raw route. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, type TenantFixture } from '@opt2/platform/testing';
 import { actorFromClaims, type Actor } from '../../src/domain/context.js';
 import {
@@ -583,15 +584,32 @@ describe('cnav.searchsitedata raw route', () => {
     expect([response.statusCode, response.body]).toEqual([200, renderSearchSiteDataJson(VERIFIED).body]);
   });
 
-  it.each<[string, number, unknown, number, string]>([
-    ['a missing search string', 200, { sites: LISTED }, 500, 'server_error'],
-    ['identity refusing the session', 401, {}, 401, 'invalid_request'],
-    ['identity unavailable', 503, {}, 503, 'server_error'],
-    ['a malformed identity answer', 200, { nope: true }, 503, 'server_error'],
-  ])('answers %s with the legacy error envelope', async (name, status, body, expected, code) => {
+  // Own oracle: cnav.searchsitedata without searchString answers 500 "An Error Occurred", text/html;charset=UTF-8.
+  it.each<[string, 'GET' | 'POST', string, number, unknown, number]>([
+    ['a missing search string', 'GET', '', 200, { sites: LISTED }, 500],
+    ['a posted form without a search string', 'POST', '', 200, { sites: LISTED }, 500],
+    ['identity unavailable', 'GET', '&searchString=Tenant', 503, {}, 503],
+    ['a malformed identity answer', 'GET', '&searchString=Tenant', 200, { nope: true }, 503],
+  ])('answers %s with the legacy admin error page', async (_name, method, query, status, body, expected) => {
     Object.assign(identity, { status, body });
-    const query = name === 'a missing search string' ? '' : '&searchString=Tenant';
-    const response = await t.app.inject({ method: 'GET', url: `${URL}?siteid=${SITE_A}${query}`, headers: await contentHeaders('s2') });
-    expect([response.statusCode, (response.json() as { error?: { code?: string } }).error?.code]).toEqual([expected, code]);
+    const headers = await contentHeaders('s2');
+    const response = await t.app.inject(
+      method === 'GET'
+        ? { method, url: `${URL}?siteid=${SITE_A}${query}`, headers }
+        : { method, url: `${URL}?siteid=${SITE_A}`, headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, payload: '' },
+    );
+    expect([response.statusCode, response.statusMessage, response.headers['content-type'], response.body]).toEqual([
+      expected,
+      LEGACY_ERROR_STATUS_TEXT,
+      LEGACY_HTML_CONTENT_TYPE,
+      LEGACY_ERROR_PAGE_HTML,
+    ]);
+    expect([response.headers.generator, response.headers['strict-transport-security']]).toEqual(['Masa CMS 7.6.1', 'max-age=1200']);
+  });
+
+  it('answers identity refusing the session with the legacy 401 envelope', async () => {
+    Object.assign(identity, { status: 401, body: {} });
+    const response = await t.app.inject({ method: 'GET', url: `${URL}?siteid=${SITE_A}&searchString=Tenant`, headers: await contentHeaders('s2') });
+    expect([response.statusCode, response.json<{ error?: { code?: string } }>().error?.code]).toEqual([401, 'invalid_request']);
   });
 });

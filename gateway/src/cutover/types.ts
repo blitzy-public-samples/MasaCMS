@@ -94,6 +94,8 @@ export interface RouteFacts {
   route: string;
   csrfValidation: CsrfValidation;
   csrfContext?: string;
+  /** Every route recording the key runs without session management (applicationSettings.cfm:179); unset when none records it. */
+  sessionless?: boolean;
   responseMode?: ResponseMode;
   contentType?: string;
   writeSet: string[];
@@ -138,6 +140,8 @@ export type FindingRule =
   | 'job-state'
   | 'halted-is-legacy-write'
   | 'halted-read-legacy'
+  | 'rest-session-legacy'
+  | 'rest-siteid-legacy'
   | 'unprevented-writer'
   | 'rollback-evidence'
   | 'source-sha'
@@ -249,6 +253,8 @@ export interface InventoryRoute extends Omit<InventoryEntryPoint, 'routeKey'> {
   readonly family: RouteFamily;
   readonly csrfValidation: CsrfValidation | null;
   readonly csrfContext: string | null;
+  /** Legacy serves the route without session management. */
+  readonly sessionless?: boolean;
 }
 
 /** A public front-end entry point with the CSRF facts of its branch. */

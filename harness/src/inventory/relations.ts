@@ -12,7 +12,7 @@ import { ENTITY_SCAN_ROOT, ormEntityIndex, type EntityEntry, type OrmEntityIndex
 import { tableKey, type TableEntry } from './tables.js';
 
 /** Evidence kind; the names are the ones `migration/src/order/dependency-order.ts` reads. */
-export type RelationKind = 'orm-fk' | 'dao-join' | 'fixture-fk' | 'program-fold';
+export type RelationKind = 'orm-fk' | 'dao-join' | 'fixture-fk' | 'program-fold' | 'tenant-parent';
 
 /** `fieldtype` of the beanORM relation property an `orm-fk` relation comes from. */
 export type Cardinality = 'many-to-one' | 'one-to-many' | 'one-to-one';
@@ -86,6 +86,7 @@ export interface RelationCounts {
   daoJoin: number;
   fixtureFk: number;
   programFold: number;
+  tenantParent: number;
   unknownOrientation: number;
   relationsDropped: number;
 }
@@ -118,7 +119,7 @@ const PROGRAM_TABLE = /^program_(?:\d+|n)\./i;
 const PROGRAM_SITE_TABLE = 'synthetic.program_site';
 const OWNERSHIP_FILE = 'opt2/table-ownership.json';
 const NO_LINE: [number, number] = [1, 1];
-const KIND_RANK: Readonly<Record<RelationKind, number>> = { 'orm-fk': 0, 'fixture-fk': 1, 'program-fold': 2, 'dao-join': 3 };
+const KIND_RANK: Readonly<Record<RelationKind, number>> = { 'orm-fk': 0, 'fixture-fk': 1, 'program-fold': 2, 'dao-join': 3, 'tenant-parent': 4 };
 const ORIENTATION_RANK: Readonly<Record<Orientation, number>> = { declared: 0, 'primary-key': 1, unknown: 2 };
 
 function compareText(a: string, b: string): number {
@@ -166,14 +167,16 @@ function derivesTenant(childHasSiteId: boolean | null | undefined, orientation: 
   return orientation !== 'unknown' && childHasSiteId === false;
 }
 
-/** The preferred record of each id: declared kinds first, then known orientation, then the lowest source. */
+/** The preferred record of each id: a known orientation first, then declared kinds, then orientation, then the lowest source. */
 function bestPerId(relations: Iterable<Relation>): Relation[] {
   const best = new Map<string, Relation>();
+  const unknown = (r: Relation): number => (r.orientation === 'unknown' ? 1 : 0);
   for (const r of relations) {
     const held = best.get(r.id);
     const better =
       held === undefined ||
-      (KIND_RANK[r.kind] - KIND_RANK[held.kind] ||
+      (unknown(r) - unknown(held) ||
+        KIND_RANK[r.kind] - KIND_RANK[held.kind] ||
         ORIENTATION_RANK[r.orientation] - ORIENTATION_RANK[held.orientation] ||
         compareSource(r.source, held.source)) < 0;
     if (better) best.set(r.id, r);
@@ -550,6 +553,12 @@ function sanitiseSql(sql: string, tag: boolean): string {
 const IDENT = String.raw`(?:\[[^\]\r\n]+\]|[A-Za-z_][\w$]*)`;
 const QUALIFIED = String.raw`${IDENT}(?:\s*\.\s*${IDENT}){1,2}`;
 const PREDICATE = new RegExp(String.raw`(?<![\w$.\]])(${QUALIFIED})\s*=(?!=)\s*(${QUALIFIED})(?![\w$.[(])`, 'g');
+/** `x [NOT] IN (SELECT [DISTINCT] y FROM …`: a semi-join of column `x` to the subquery's column `y`. */
+const SEMI_JOIN = new RegExp(
+  String.raw`(?<![\w$.\]])(${QUALIFIED}|${IDENT})\s+(?:not\s+)?in\s*\(\s*select\s+(?:distinct\s+)?(${QUALIFIED}|${IDENT})\s+from\s`,
+  'gi',
+);
+const QUALIFIED_REF = new RegExp(String.raw`^${QUALIFIED}$`);
 const TABLE_REF = new RegExp(String.raw`${IDENT}(?:\s*\.\s*${IDENT}){0,2}`, 'y');
 const ALIAS = new RegExp(String.raw`(?:as\s+)?(${IDENT})`, 'iy');
 const FROM_OR_JOIN = /\b(from|join)\b/gi;
@@ -599,9 +608,9 @@ function skipHints(s: string, i: number): number {
 
 /**
  * Aliases of the `FROM` lists and `JOIN` items of one span, lower-cased, to their table keys. A derived table, or an
- * alias bound to two tables, maps to null and resolves to nothing.
+ * alias bound to two tables, maps to null and resolves to nothing. `tables`, when given, collects every table key named.
  */
-function aliasesOf(sql: string): Map<string, string | null> {
+function aliasesOf(sql: string, tables?: Set<string>): Map<string, string | null> {
   const aliases = new Map<string, string | null>();
   const bind = (alias: string, table: string | null): void => {
     const key = lower(unbracket(alias));
@@ -620,6 +629,7 @@ function aliasesOf(sql: string): Map<string, string | null> {
         const ref = TABLE_REF.exec(sql);
         if (ref === null || SQL_WORDS.has(lower(ref[0]))) break;
         table = sqlTableKey(ref[0]);
+        tables?.add(table);
         i = TABLE_REF.lastIndex;
       }
       i = skipHints(sql, i);
@@ -666,6 +676,23 @@ function joinSide(ref: string, aliases: ReadonlyMap<string, string | null>, tabl
   if (bound === null) return null;
   const table = tables.get(bound ?? sqlTableKey(qualifier.join('.')));
   return table === undefined ? null : { table, column: columnCase(table, column) };
+}
+
+/** One side of a semi-join: a qualified reference as {@link joinSide} reads it, else the only `scope` table with the column. */
+function semiJoinSide(
+  ref: string,
+  scope: ReadonlySet<string>,
+  aliases: ReadonlyMap<string, string | null>,
+  tables: ReadonlyMap<string, TableEntry>,
+): JoinSide | null {
+  if (QUALIFIED_REF.test(ref)) return joinSide(ref, aliases, tables);
+  const column = unbracket(ref);
+  if (SQL_WORDS.has(lower(column))) return null;
+  const [only, ...more] = [...scope].flatMap((key) => {
+    const table = tables.get(key);
+    return table?.columns.some((c) => lower(c.name) === lower(column)) === true ? [table] : [];
+  });
+  return only === undefined || more.length > 0 ? null : { table: only, column: columnCase(only, column) };
 }
 
 /** Lower-cased key columns per table key: the sole primary key, and every key the table's entities declare. */
@@ -722,13 +749,24 @@ function daoJoinsOf(model: Model): Relation[] {
       const body = text.slice(span.start, span.end);
       const sql = sanitiseSql(span.tag ? body : unescapeQuotes(body, text.charAt(span.start - 1)), span.tag);
       const aliases = aliasesOf(sql);
-      for (const m of sql.matchAll(PREDICATE)) {
-        const a = joinSide(m[1] ?? '', aliases, model.tables);
-        const b = joinSide(m[2] ?? '', aliases, model.tables);
+      const record = (a: JoinSide | null, b: JoinSide | null, at: number): void => {
         if (a === null || b === null || sameColumn({ table: a.table.table, column: a.column }, { table: b.table.table, column: b.column })) {
-          continue;
+          return;
         }
-        out.push(joinRelation(a, b, keys, point(file, lineAt(span.start + m.index))));
+        out.push(joinRelation(a, b, keys, point(file, lineAt(span.start + at))));
+      };
+      for (const m of sql.matchAll(PREDICATE)) {
+        record(joinSide(m[1] ?? '', aliases, model.tables), joinSide(m[2] ?? '', aliases, model.tables), m.index);
+      }
+      for (const m of sql.matchAll(SEMI_JOIN)) {
+        const outerRef = m[1] ?? '';
+        const open = sql.indexOf('(', m.index + outerRef.length);
+        const close = parenEnd(sql, open);
+        const inner = new Set<string>();
+        const outer = new Set<string>();
+        aliasesOf(sql.slice(open + 1, close), inner);
+        aliasesOf(blank(sql, open, close), outer);
+        record(semiJoinSide(outerRef, outer, aliases, model.tables), semiJoinSide(m[2] ?? '', inner, aliases, model.tables), m.index);
       }
     }
   }
@@ -737,8 +775,9 @@ function daoJoinsOf(model: Model): Relation[] {
 
 /**
  * Join predicates `a.x = b.y` in the comment-stripped SQL of every `core/mura/**.cfc`: `JOIN … ON` items and
- * old-style comma joins, with aliases resolved. Only pairs of inventoried tables are kept; each edge keeps its lowest
- * `(path, line)`. `entities` adds their declared keys to the tables' own for orientation.
+ * old-style comma joins, with aliases resolved, and `x [NOT] IN (SELECT y FROM …)` semi-joins, whose unqualified column
+ * belongs to the only table in its scope that has it. Only pairs of inventoried tables are kept; each edge keeps its
+ * lowest `(path, line)`. `entities` adds their declared keys to the tables' own for orientation.
  */
 export function extractDaoJoins(tree: SourceTree, tables: readonly TableEntry[], entities: readonly EntityEntry[] = []): Relation[] {
   return bestPerId(daoJoinsOf(createModel(tree, entities, ormEntityIndex(entities), tables)));
@@ -750,7 +789,7 @@ export function extractDaoJoins(tree: SourceTree, tables: readonly TableEntry[],
 
 const keyList = z.array(z.string().min(1));
 
-/** The key fields of a fixture entry that `tableOwnershipSchema` passes through unvalidated. */
+/** The key fields of a fixture or tenant-parent entry that `tableOwnershipSchema` passes through unvalidated. */
 const fixtureEntrySchema = z.looseObject({
   table: z.string().min(1),
   primaryKey: keyList.optional(),
@@ -857,6 +896,36 @@ export function fixtureRelations(ownership: FixtureOwnership): Relation[] {
   return bestPerId(out);
 }
 
+/**
+ * `tenant-parent` edges of the ownership file's Masa entries: each stated `tenantParent.join`, from the child to the
+ * parent whose row gives it its tenant (`tenantResolution: parent:<table>`), sourced at the child entry. A code
+ * relation of the same columns takes precedence in {@link extractRelations}.
+ */
+export function tenantParentRelations(ownership: FixtureOwnership): Relation[] {
+  const out: Relation[] = [];
+  for (const raw of ownership.tables) {
+    if (FIXTURE_TABLE.test(raw.table) || raw.tenantParent === undefined) continue;
+    const child = fixtureEntrySchema.parse(raw);
+    const parent = child.tenantParent?.table ?? '';
+    const join = tenantParentColumns(child, parent);
+    if (join === null) continue;
+    out.push(
+      relation({
+        kind: 'tenant-parent',
+        child: { table: child.table, columns: [join.child] },
+        parent: { table: parent, columns: [join.parent] },
+        source: entrySource(child),
+        cfc: null,
+        cardinality: null,
+        orientation: 'declared',
+        parentKey: { basis: 'ownership', component: null },
+        tenantDerivation: derivesTenant(child.hasSiteId, 'declared'),
+      }),
+    );
+  }
+  return bestPerId(out);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Union
 // ---------------------------------------------------------------------------------------------------------------
@@ -882,16 +951,16 @@ function endpoints(r: Relation): string {
 }
 
 /**
- * The deduplicated union of the ORM, DAO-join and fixture relations, each list sorted by id. Edges are re-keyed to
- * the inventory's table names; one touching a table the inventory does not list is dropped and counted. Join edges
- * of unknown orientation go to `unoriented`, except where an oriented edge joins the same two columns.
+ * The deduplicated union of the ORM, DAO-join, fixture and tenant-parent relations, each list sorted by id. Edges are
+ * re-keyed to the inventory's table names; one touching a table the inventory does not list is dropped and counted.
+ * Join edges of unknown orientation go to `unoriented`, except where an oriented edge joins the same two columns.
  */
 export function extractRelations(inputs: RelationInputs): RelationExtraction {
   const { entities, tables, tree, ownership } = inputs;
   const model = createModel(tree, entities, inputs.index ?? ormEntityIndex(entities), tables);
   const dropped = new Set<string>();
   const kept: Relation[] = [];
-  for (const r of [...ormRelationsOf(model), ...daoJoinsOf(model), ...fixtureRelations(ownership)]) {
+  for (const r of [...ormRelationsOf(model), ...daoJoinsOf(model), ...fixtureRelations(ownership), ...tenantParentRelations(ownership)]) {
     const child = model.tables.get(tableKey(r.child.table));
     const parent = model.tables.get(tableKey(r.parent.table));
     if (child === undefined || parent === undefined) dropped.add(r.id);
@@ -912,6 +981,7 @@ export function extractRelations(inputs: RelationInputs): RelationExtraction {
       daoJoin: count('dao-join'),
       fixtureFk: count('fixture-fk'),
       programFold: count('program-fold'),
+      tenantParent: count('tenant-parent'),
       unknownOrientation: unoriented.length,
       relationsDropped: dropped.size,
     },

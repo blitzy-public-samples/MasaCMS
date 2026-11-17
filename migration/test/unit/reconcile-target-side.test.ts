@@ -3,16 +3,26 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { encodeRow, type CanonicalColumn, type CanonicalValue, type ExportResponse, type ExportTable } from '@opt2/platform/migration-kit';
+import {
+  compareEncodings,
+  encodeRow,
+  type CanonicalColumn,
+  type CanonicalValue,
+  type ExportResponse,
+  type ExportTable,
+  type PositionResponse,
+} from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { compareCanonicalRows, type CanonicalRow } from '../../src/extract/index.js';
-import { OwnerCallError, type ExportParams, type OwnersClient } from '../../src/owners/index.js';
+import { OwnerCallError, type ExportParams, type OwnersClient, type PositionParams } from '../../src/owners/index.js';
 import { toUnitRow, type UnitTableShape } from '../../src/reconcile/legacy-side.js';
 import {
   TargetShapeError,
   readTargetObjects,
+  readTargetOnlyRows,
+  readTargetTenants,
   readTargetUnitRows,
   type ReconcileTargetDeps,
   type TargetUnitRows,
@@ -403,5 +413,70 @@ describe('readTargetObjects', () => {
       { key: `${TENANT}/F1.pdf`, size: 10, sha256: 'ef' },
       { key: `${TENANT}/F2.pdf`, size: 0, sha256: '01' },
     ]);
+  });
+});
+
+describe('readTargetOnlyRows', () => {
+  const SOURCE = { owner: 'communications' as const, unit: 'communications.scheduled_task' };
+  const TASK_COLUMNS: CanonicalColumn[] = [
+    { name: 'scheduled_task_id', type: 's' },
+    { name: 'status', type: 's' },
+  ];
+  const task = (id: string, status: string): Values => ({ scheduled_task_id: id, status });
+
+  it.each([undefined, 1])('reads every exported table of the unit as one keyless multiset sorted by encoding (sortRunBytes %s)', async (sortRunBytes) => {
+    const idColumns: CanonicalColumn[] = [{ name: 'id', type: 'i' }];
+    const { deps, calls } = ownersServing([
+      page([exportTable('scheduled_task', TASK_COLUMNS, [{ values: task('T2', 'scheduled') }, { values: task('T1', 'done') }])], 'cursor-1'),
+      page([exportTable('other_table', idColumns, [{ values: { id: '7' } }]), exportTable('scheduled_task', TASK_COLUMNS, [{ values: task('T1', 'done') }])], null),
+    ]);
+
+    const result = await readTargetOnlyRows(deps, SOURCE, TENANT, { sortRunBytes, spillDir });
+    const rows = await drain(result);
+
+    expect(calls).toEqual([['communications', { unit: 'communications.scheduled_task', tenantId: TENANT }]]);
+    expect(result).toMatchObject({ count: 4, objects: null });
+    const done = encodeRow(TASK_COLUMNS, task('T1', 'done'));
+    const encodings = [done, done, encodeRow(TASK_COLUMNS, task('T2', 'scheduled')), encodeRow(idColumns, { id: '7' })].sort(compareEncodings);
+    expect(rows).toEqual(encodings.map((encoding) => ({ table: SOURCE.unit, key: encoding, keyValues: [], encoding, row: {} })));
+    expect(await readdir(spillDir)).toEqual([]);
+  });
+
+  it('removes the rows it spilled when a later export page fails', async () => {
+    const failure = new OwnerCallError('communications', 'GET', '/internal/v1/migration/export', 503, { error: 'unavailable' });
+    async function* exportPages(): AsyncGenerator<ExportResponse> {
+      yield await Promise.resolve(page([exportTable('scheduled_task', TASK_COLUMNS, [{ values: task('T1', 'done') }, { values: task('T2', 'done') }])], 'cursor-1'));
+      throw failure;
+    }
+    const deps = { owners: { exportPages } as unknown as OwnersClient };
+
+    await expect(readTargetOnlyRows(deps, SOURCE, TENANT, { sortRunBytes: 1, spillDir })).rejects.toBe(failure);
+    expect(await readdir(spillDir)).toEqual([]);
+  });
+});
+
+describe('readTargetTenants', () => {
+  /** A fake owners client whose `position` answers `answer` and records each call. */
+  function ownersAnswering(answer: Partial<PositionResponse>): { deps: ReconcileTargetDeps; calls: [string, PositionParams | undefined][] } {
+    const calls: [string, PositionParams | undefined][] = [];
+    const position = (owner: string, params?: PositionParams): Promise<PositionResponse> => {
+      calls.push([owner, params]);
+      return Promise.resolve({ owner, position: '42', outbox: null, inbox: null, ...answer });
+    };
+    return { deps: { owners: { position } as unknown as OwnersClient }, calls };
+  }
+
+  it("asks the owner's position for its registered tenants and returns them", async () => {
+    const other = tenantIdForSite('tenant-b');
+    const { deps, calls } = ownersAnswering({ registeredTenants: [TENANT, other] });
+
+    await expect(readTargetTenants(deps, 'timesheets')).resolves.toEqual([TENANT, other]);
+    expect(calls).toEqual([['timesheets', { registeredTenants: true }]]);
+  });
+
+  it('fails when the owner answers without the registered tenants', async () => {
+    const { deps } = ownersAnswering({});
+
+    await expect(readTargetTenants(deps, 'finance')).rejects.toThrow('Owner finance answered its position without the registered tenants it was asked for');
   });
 });

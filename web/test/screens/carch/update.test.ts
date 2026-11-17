@@ -1,7 +1,7 @@
 // cArch.update against admin/core/controllers/carch.cfc update() and carch/update.cfm over strategies-content's raw
 // update: the relayed redirects and aborted bodies, the rejected save's editor inside the layout, the close document,
-// the session values the service reports, the gate, fail-closed relays, and the action served through the real raw
-// handler and registry.
+// the session values the service reports, the gate, fail-closed relays, and the withheld action that the registry and
+// the real raw handler leave to legacy.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runGate, secure } from '@/lib/access-gate';
@@ -153,23 +153,23 @@ const unaborted = (errors: Struct, data: Struct, headers: Readonly<Record<string
 });
 
 describe('carch.update registration', () => {
-  it('serves the base action in fragment mode behind the carch before() gate, from the carch barrel', () => {
+  it('defines the base action in fragment mode behind the carch before() gate, outside the carch barrel', () => {
     expect(updateScreen).toMatchObject({ circuit: 'carch', action: 'update', mode: 'fragment' });
     expect(updateScreen.owner).toBe('strategies-content');
     expect(updateScreen.gate).toBe(carchGate);
-    expect(carchScreens).toContain(updateScreen);
-    expect(findScreen('cArch', 'update', { action: 'add', siteid: SITE }, [])).toBe(updateScreen);
-    expect(findScreen('core:carch', 'UPDATE', { action: 'add' }, [{ field: 'newfile', filename: 'guide.pdf' }])).toBe(
-      updateScreen,
-    );
+    expect(carchScreens).not.toContain(updateScreen);
+    expect(carchScreens.some((def) => def.action === 'update')).toBe(false);
   });
 
   it.each([
+    ['a content save', { action: 'add', siteid: SITE }, []],
+    ['a save with a non-image upload', { action: 'add' }, [{ field: 'newfile', filename: 'guide.pdf' }]],
     ['an image upload', { action: 'multiFileUpload' }, [{ field: 'files', filename: 'photo.JPG' }]],
     ['an approval', { action: 'add', approved: '1' }, []],
     ['a notification', { action: 'add', notify: 'user@example.com' }, []],
   ])('leaves %s to legacy', (_label, rc, uploads) => {
     expect(findScreen('carch', 'update', rc, uploads)).toBeUndefined();
+    expect(findScreen('core:cArch', 'UPDATE', rc, uploads)).toBeUndefined();
   });
 });
 
@@ -824,33 +824,19 @@ describe('carch.update through the raw handler', () => {
     fake.requests.filter((request) => `${request.method} ${request.path}` === SAVE_ADMIN_STATE);
   const updatePosts = () => fake.requests.filter((request) => request.path.endsWith(PATH));
 
-  it('relays the save and persists the session values the service reports', async () => {
+  it.each([
+    ['an admin save', { user: 'admin' }],
+    ['an anonymous save', {}],
+  ] as const)('answers 404 for %s, which stays on legacy, without calling the service', async (_label, who) => {
     const form = { siteid: SITE, action: 'add', contentid: '', parentid: ROOT_CONTENT_ID, ...CSRF_FIELDS };
-    const request = await adminRequest('/admin-raw/carch/update', { user: 'admin', form });
+    const request = await adminRequest('/admin-raw/carch/update', { ...who, form });
 
     const response = await handleAdminRaw(request, { circuit: 'carch', action: 'update' });
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(LIST_LOCATION);
-    expect(response.headers.get('pragma')).toBe('no-cache');
+    expect(response.status).toBe(404);
     expect(response.headers.has(EFFECTS)).toBe(false);
-    const [post] = updatePosts();
-    expect(post?.form).toMatchObject(form);
-    const saved = savedStates().map((state) => state.json as Struct);
-    expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({ openSectionList: ROOT_CONTENT_ID });
-    expect(saved[0]?.mura).not.toHaveProperty('editBean');
-  });
-
-  it('sends an anonymous save to the login form without calling the service', async () => {
-    const form = { siteid: SITE, action: 'add', contentid: '', parentid: ROOT_CONTENT_ID, ...CSRF_FIELDS };
-    const request = await adminRequest('/admin-raw/carch/update', { form });
-
-    const response = await handleAdminRaw(request, { circuit: 'carch', action: 'update' });
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
     expect(updatePosts()).toEqual([]);
+    expect(savedStates()).toEqual([]);
   });
 
   it('answers 404 for an approval, which stays on legacy, without calling the service', async () => {

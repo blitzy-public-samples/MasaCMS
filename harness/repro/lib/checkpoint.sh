@@ -53,9 +53,11 @@ _ck_pg() {
   PGPASSWORD="$PG_PASSWORD" PGOPTIONS="$options" "$tool" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" "$@"
 }
 
-# _ck_restore <tenant|-> <dump> <pg_restore args…>: restores <dump> via _ck_pg, dying with row-free diagnostics only.
+# _ck_restore <tenant|-> <dump> <pg_restore args…>: restores <dump> via _ck_pg, dying with row-free diagnostics only. A
+# single-transaction restore that a deadlock with a running process aborted is repeated, up to 5 attempts in all.
 _ck_restore() {
   local tenant=$1 dump=$2 err toc line id rest desc names entry code at="" status=0 sqlstate=unclassified
+  local attempt attempts=5 delay
   local q='"[^"]*"' word='[A-Za-z_][A-Za-z0-9_$]*'
   local -a ids=()
   local -a descs=("TABLE DATA" "SEQUENCE SET" "SEQUENCE OWNED BY" "FK CONSTRAINT" "CHECK CONSTRAINT" "ROW SECURITY"
@@ -64,18 +66,31 @@ _ck_restore() {
     [23503]="insert or update on table $q violates foreign key constraint $q"
     [23502]="null value in column $q of relation $q violates not-null constraint"
     [23514]="new row for relation $q violates check constraint $q"
-    [42501]="new row violates row-level security policy for table $q")
+    [42501]="new row violates row-level security policy for table $q"
+    [40P01]="deadlock detected")
   shift 2
-  # --verbose adds the `from TOC entry <id>` line naming the failing entry.
-  err="$(_ck_pg "$tenant" pg_restore --verbose "$@" "$dump" 2>&1 >/dev/null)" || status=$?
-  if ((status == 0)); then return 0; fi
-  while IFS= read -r line; do
-    if [[ $line =~ ^pg_restore:\ from\ TOC\ entry\ ([0-9]+)\; ]]; then ids+=("${BASH_REMATCH[1]}"); fi
-    [[ $line == "pg_restore: error: "* ]] || continue
-    for code in "${!states[@]}"; do
-      if [[ $line =~ ERROR:\ +${states[$code]}$ ]]; then sqlstate=$code; fi
-    done
-  done <<<"$err"
+  for ((attempt = 1; ; attempt++)); do
+    status=0
+    sqlstate=unclassified
+    ids=()
+    # --verbose adds the `from TOC entry <id>` line naming the failing entry.
+    err="$(_ck_pg "$tenant" pg_restore --verbose "$@" "$dump" 2>&1 >/dev/null)" || status=$?
+    if ((status == 0)); then return 0; fi
+    while IFS= read -r line; do
+      if [[ $line =~ ^pg_restore:\ from\ TOC\ entry\ ([0-9]+)\; ]]; then ids+=("${BASH_REMATCH[1]}"); fi
+      [[ $line == "pg_restore: error: "* ]] || continue
+      for code in "${!states[@]}"; do
+        if [[ $line =~ ERROR:\ +${states[$code]}$ ]]; then sqlstate=$code; fi
+      done
+    done <<<"$err"
+    # The running gateway's heartbeat locks gateway tables in the opposite order to --clean. A deadlock with it rolls
+    # the whole single transaction back, so repeating the restore is safe.
+    if [[ $sqlstate != 40P01 ]] || ((attempt == attempts)) || ! _ck_contains --single-transaction "$@"; then break; fi
+    delay=$((2 ** (attempt - 1)))
+    printf 'opt2: pg_restore of %s rolled back after a deadlock (sqlstate 40P01); attempt %s of %s in %ss\n' \
+      "$dump" "$((attempt + 1))" "$attempts" "$delay" >&2
+    sleep "$delay"
+  done
   # The TOC listing, unlike the error output, names each entry's schema.
   if ((${#ids[@]} > 0)) && toc="$(pg_restore -l "$dump" 2>/dev/null)"; then
     while IFS= read -r line; do
@@ -524,7 +539,8 @@ for (const unit of report.units ?? []) {
   const files = unit.files ?? null;
   const same = unit.legacyCount === unit.targetCount && unit.legacySha256 === unit.targetSha256 && unit.differenceCount === 0 &&
     (files === null || (files.differenceCount === 0 && files.legacyObjects === files.targetObjects));
-  if (!same) lines.push(`opt2: checkpoint unit ${unit.unit} (${unit.legacyTable ?? "objects"}, tenant ${unit.tenantId}) differs from Sk`);
+  const table = unit.legacyTable ?? (files === null ? "no legacy table" : "objects");
+  if (!same) lines.push(`opt2: checkpoint unit ${unit.unit} (${table}, tenant ${unit.tenantId}) differs from Sk`);
 }
 if (report.result !== "zero-difference") lines.push(`opt2: checkpoint reconciliation result is ${report.result}: ${file}`);
 if (lines.length > 0) process.stderr.write(`${lines.join("\n")}\n`);

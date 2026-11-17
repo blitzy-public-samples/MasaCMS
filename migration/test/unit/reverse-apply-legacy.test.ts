@@ -1,5 +1,6 @@
 // Unit tests for the reverse projector's legacy writers, checkpoint store and change decoding, over a recording SQL Server fake.
 import { Buffer } from 'node:buffer';
+import { readFileSync } from 'node:fs';
 
 import { encodeRow, type CanonicalColumn, type CanonicalValue, type ChangeOp, type ProjectedChangeRow } from '@opt2/platform/migration-kit';
 import sql from 'mssql';
@@ -26,7 +27,9 @@ import {
   type LegacyChange,
   type LegacyEffect,
 } from '../../src/reverse/apply-legacy.js';
+import { createFakeLegacyDb } from '../helpers/fake-legacy-db.js';
 
+const SYNC_SQL = readFileSync(new URL('../../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
 const TENANT = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
 const OPERATION = 'a0000000-0000-4000-8000-00000000000a';
 
@@ -252,6 +255,8 @@ describe('projector checkpoint', () => {
   };
   const OWING_RECORD = { ...RECORD, pending_effects: JSON.stringify(EFFECTS), ready_horizon: '18446744073709550999' };
   const OWING_ROW: CheckpointRow = { ...ROW, pendingEffects: EFFECTS, readyHorizon: '18446744073709550999' };
+  /** An upsert at the stored cursor that applied no row. */
+  const HORIZON_ONLY = '@rowsApplied = 0 AND cursor_xid = CAST(@cursorXid AS decimal(20,0)) AND cursor_seq = CAST(@cursorSeq AS bigint)';
 
   it('lives in the opt2_sync schema of the legacy database', () => {
     expect(CHECKPOINT_TABLE).toBe('opt2_sync.projector_checkpoint');
@@ -339,7 +344,7 @@ describe('projector checkpoint', () => {
     await expect(upsertCheckpoint(tx.scope, write)).resolves.toEqual(expected);
     expect(tx.request).toHaveBeenCalledTimes(1);
     expect(tx.statements()[0]?.split('\n')).toEqual([
-      `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = @batchId, rows_applied = @rowsApplied, updated_at = SYSDATETIME(), pending_effects = @pendingEffects, ready_horizon = CASE WHEN @pendingEffects IS NULL THEN NULL WHEN pending_effects IS NULL THEN applied_horizon ELSE ready_horizon END WHERE owner = @owner AND tenant_id = @tenantId;`,
+      `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = CASE WHEN ${HORIZON_ONLY} THEN batch_id ELSE @batchId END, rows_applied = CASE WHEN ${HORIZON_ONLY} THEN rows_applied ELSE @rowsApplied END, updated_at = SYSDATETIME(), pending_effects = @pendingEffects, ready_horizon = CASE WHEN @pendingEffects IS NULL THEN NULL WHEN pending_effects IS NULL THEN applied_horizon ELSE ready_horizon END WHERE owner = @owner AND tenant_id = @tenantId;`,
       `IF @@ROWCOUNT = 0 INSERT INTO ${CHECKPOINT_TABLE} (owner, tenant_id, cursor_xid, cursor_seq, applied_horizon, batch_id, rows_applied, updated_at, pending_effects) VALUES (@owner, @tenantId, CAST(@cursorXid AS decimal(20,0)), CAST(@cursorSeq AS bigint), CAST(@appliedHorizon AS decimal(20,0)), @batchId, @rowsApplied, SYSDATETIME(), @pendingEffects);`,
       `${SELECT} WHERE owner = @owner AND tenant_id = @tenantId;`,
     ]);
@@ -352,6 +357,42 @@ describe('projector checkpoint', () => {
       batchId: { type: sql.NVarChar(64), value: 'batch-7' },
       rowsApplied: { type: sql.Int, value: 2 },
       pendingEffects: { type: sql.NVarChar(sql.MAX), value: bound },
+    });
+  });
+
+  describe('over the checkpoint table the shipped batch creates', () => {
+    const STORED = { owner: 'people', tenantId: TENANT, cursorXid: '10', cursorSeq: '1', appliedHorizon: '11', batchId: 'batch-1', rowsApplied: 2, pendingEffects: [] };
+
+    async function checkpointTable() {
+      const legacy = createFakeLegacyDb();
+      const pool = await legacy.live();
+      await pool.request().batch(SYNC_SQL);
+      await upsertCheckpoint(pool, STORED);
+      return pool;
+    }
+
+    it.each([
+      { label: 'a horizon-only advance keeps the batch id and row count of the batch before', cursorSeq: '1', rowsApplied: 0, batchId: 'batch-1', rows: 2 },
+      { label: 'an advance past the stored cursor records its own batch', cursorSeq: '2', rowsApplied: 0, batchId: 'batch-2', rows: 0 },
+      { label: 'a batch applying rows records its own batch', cursorSeq: '2', rowsApplied: 1, batchId: 'batch-2', rows: 1 },
+    ])('$label', async ({ cursorSeq, rowsApplied, batchId, rows }) => {
+      const pool = await checkpointTable();
+
+      const stored = await upsertCheckpoint(pool, { ...STORED, cursorSeq, appliedHorizon: '20', batchId: 'batch-2', rowsApplied });
+
+      expect(stored).toMatchObject({ cursorXid: '10', cursorSeq, appliedHorizon: '20', batchId, rowsApplied: rows });
+      await expect(readCheckpoint(pool, 'people', TENANT)).resolves.toEqual(stored);
+    });
+
+    it('lets the effects a horizon-only advance still owes be cleared by the batch id it returns', async () => {
+      const pool = await checkpointTable();
+      await upsertCheckpoint(pool, { ...STORED, cursorSeq: '2', appliedHorizon: '15', batchId: 'batch-2', rowsApplied: 1, pendingEffects: EFFECTS });
+
+      const advanced = await upsertCheckpoint(pool, { ...STORED, cursorSeq: '2', appliedHorizon: '20', batchId: 'batch-3', rowsApplied: 0, pendingEffects: EFFECTS });
+      await clearPendingEffects(pool, advanced);
+
+      expect(advanced).toMatchObject({ batchId: 'batch-2', rowsApplied: 1, pendingEffects: EFFECTS, readyHorizon: '11' });
+      await expect(readCheckpoint(pool, 'people', TENANT)).resolves.toMatchObject({ appliedHorizon: '20', batchId: 'batch-2', pendingEffects: [], readyHorizon: null });
     });
   });
 

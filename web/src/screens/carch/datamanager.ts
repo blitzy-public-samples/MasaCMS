@@ -332,8 +332,8 @@ async function renderDataManager(ctx: ScreenContext, data: DataManagerData): Pro
   const { req, rb } = ctx;
   const { model, branch } = data;
   const bean = structOf(model.rc, 'contentBean');
-  const [info] = rowsOf(model.rc, 'rsDataInfo');
-  if (info === undefined) throw new TypeError(`${SERVICE} returned an empty rc.rsDataInfo for carch.datamanager`);
+  // getDownloadselect's aggregate always yields one row, which the model carries as that row's struct.
+  const info = structOf(model.rc, 'rsDataInfo');
   await ctx.csrf.prefetch(carchSecondaryMenuCsrfContexts(req.rc));
   const menuFlags = {
     hasLockableNodes: flagOf(model.rc, 'hasLockableNodes'),

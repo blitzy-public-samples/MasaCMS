@@ -24,6 +24,7 @@ import { REMOTE_FEED_LIMIT_BYTES, RemoteFeedTooLargeError, createFeed, importRem
 import { feedItemRemoteId, parseFeedXml, rssChannelItems } from '../../src/legacy/remote-feed.js';
 import { adminCsrf, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { cfeedRawActions, registerFeedAdminRoutes, type FeedAdminRouteContext } from '../../src/routes/v1/cfeed.js';
+import { rawSurfaceOf } from '../../src/routes/v1/raw.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
@@ -82,6 +83,7 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
       }),
       clock: fx.deps.clock,
       verifierOverride: testVerifier(SERVICE),
+      surfaceOf: rawSurfaceOf,
       pool: fx.handle.app,
       logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
     });

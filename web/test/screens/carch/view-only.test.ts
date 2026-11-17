@@ -139,10 +139,14 @@ const VIEW_ONLY: ReadonlyArray<readonly [string, PageScreen<never>]> = [
   ['lockcheck', lockcheckScreen as PageScreen<never>],
 ];
 
+// imagedetails is halted on the exceptions list and variationtargeting withheld on the decision list.
+const KEPT_ON_LEGACY: ReadonlySet<string> = new Set(['imagedetails', 'variationtargeting']);
+
 describe.each(VIEW_ONLY)('cArch.%s', (action, screen) => {
-  it('is registered among carchScreens', () => {
+  it('is registered among carchScreens unless legacy keeps it', () => {
     expect(screen.action).toBe(action);
-    expect(carchScreens).toContain(screen);
+    expect(carchScreens.includes(screen)).toBe(!KEPT_ON_LEGACY.has(action));
+    expect(carchScreens.some((def) => def.action === action)).toBe(!KEPT_ON_LEGACY.has(action));
   });
 
   it('sends an anonymous request to the controller secure() redirect before any read', async () => {

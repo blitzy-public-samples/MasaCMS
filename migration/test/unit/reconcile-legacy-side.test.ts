@@ -25,7 +25,9 @@ import { DIFFERENCE_LIMIT } from '../../src/reconcile/compare.js';
 import { reconcileUnits, type ReconcileContext, type ReconcileSources } from '../../src/reconcile/index.js';
 import { readTargetUnitRows } from '../../src/reconcile/target-side.js';
 import {
+  JoinLookups,
   createTenantResolver,
+  createUnitRowFilter,
   describeUnitTable,
   fileUnitIds,
   objectLegacyPath,
@@ -652,7 +654,20 @@ describe('createTenantResolver', () => {
     ['unknown program', 'Program_7.timesheet', {}, { tenantId: UMBRELLA, orphan: true }],
   ])('resolves by %s', async (_case, table, row, expected) => {
     const { deps, database } = setup();
-    expect((await createTenantResolver(deps, { database })).resolve(table, row)).toEqual(expected);
+    const tenants = await createTenantResolver(deps, { database });
+    await tenants.prepare(table, [row]);
+    expect(tenants.resolve(table, row)).toEqual(expected);
+  });
+
+  it.each([
+    ['a site column', 'tusers', false],
+    ['a parent row', 'tusersmemb', true],
+    ['a grandparent row', 'tmembnotes', true],
+    ['synthetic.program_site', 'Program_1.timesheet', true],
+  ])('tells a rule placing by %s whether it reads other rows', async (_case, table, expected) => {
+    const { deps, database } = setup();
+    const tenants = await createTenantResolver(deps, { database });
+    expect(tenants.readsOtherRows(table)).toBe(expected);
   });
 
   it('places program rows under the umbrella when the fixtures are not loaded', async () => {
@@ -669,6 +684,21 @@ describe('createTenantResolver', () => {
     const { deps, database } = setup();
     const tenants = await createTenantResolver(deps, { database });
     expect(() => tenants.resolve(table, {})).toThrow(message);
+  });
+});
+
+describe('createUnitRowFilter', () => {
+  it.each([
+    ['no predicate', 'identity.membership', 'tusersmemb', false],
+    ['a row column', 'people.person', 'tusers', false],
+    ['a column the table holds', 'content.extend_subtype', 'tclassextend', false],
+    ["the owner's row", 'people.user_address', 'tuseraddresses', true],
+    ['a join chain', 'content.extend_set', 'tclassextendsets', true],
+    ['a class map deciding by other rows', 'identity.trash', 'ttrash', true],
+  ])('tells a unit selecting by %s whether it reads other rows', async (_case, unit, legacyTable, expected) => {
+    const { deps, database } = setup();
+    const filter = await createUnitRowFilter(deps, { unit, legacyTable, database, lookups: new JoinLookups(deps) });
+    expect(filter.readsOtherRows).toBe(expected);
   });
 });
 
@@ -793,12 +823,14 @@ describe('readLegacyUnitRows', () => {
     const real = await createTenantResolver(deps, { database });
     let resolved = 0;
     const tenants: TenantResolver = {
+      prepare: (table, rows) => real.prepare(table, rows),
       resolve: (table, row) => {
         resolved += 1;
         if (resolved > 1) throw new Error('resolver failed');
         return real.resolve(table, row);
       },
       siteTenants: () => real.siteTenants(),
+      readsOtherRows: (table) => real.readsOtherRows(table),
     };
     const shape = await describeUnitTable(deps, { unit: 'content.content', legacyTable: 'tcontent', database });
     const spillDir = await mkdtemp(join(dir, 'spill-'));
@@ -809,7 +841,12 @@ describe('readLegacyUnitRows', () => {
   it('builds its own lookups for a resolver it did not create', async () => {
     const { deps, database } = setup();
     const real = await createTenantResolver(deps, { database });
-    const tenants: TenantResolver = { resolve: (table, row) => real.resolve(table, row), siteTenants: () => real.siteTenants() };
+    const tenants: TenantResolver = {
+      prepare: (table, rows) => real.prepare(table, rows),
+      resolve: (table, row) => real.resolve(table, row),
+      siteTenants: () => real.siteTenants(),
+      readsOtherRows: (table) => real.readsOtherRows(table),
+    };
     const shape = await describeUnitTable(deps, { unit: 'people.user_address', legacyTable: 'tuseraddresses', database });
     const byTenant = await collect(await readLegacyUnitRows(deps, shape, { database, tenants }));
     expect(keysOf(byTenant, 'addressID')).toEqual({ [A]: ['A1'] });
@@ -1092,6 +1129,7 @@ describe('reconciling through spilled sides', () => {
         });
       }
     },
+    position: (owner: string) => Promise.resolve({ owner, position: '1', outbox: null, inbox: null, registeredTenants: [] }),
   } as unknown as OwnersClient;
 
   const UNITS = ['people.person', 'programs_sites.system_object', 'timesheets.timesheet'];
@@ -1223,6 +1261,7 @@ describe('reconciling object columns through the owners exports', () => {
         const table = { unit: params.unit, legacyTable: unit.legacyTable, targetTable: 'schema.table', keyless: false, columns: unit.columns, rows };
         yield await Promise.resolve({ unit: params.unit, tenantId: params.tenantId, next: null, tables: [table], objects: tenant.objects });
       },
+      position: (owner: string) => Promise.resolve({ owner, position: '1', outbox: null, inbox: null, registeredTenants: [] }),
     } as unknown as OwnersClient;
   }
 
@@ -1257,7 +1296,9 @@ describe('reconciling object columns through the owners exports', () => {
 
     const report = await reconcile(served, tables);
 
-    expect(report).toMatchObject({ result: 'zero-difference', units: [] });
+    expect(report.result).toBe('zero-difference');
+    expect(new Set(report.units.map((entry) => entry.unit))).toEqual(new Set(UNITS));
+    expect(report.units.every((entry) => entry.legacyCount + entry.targetCount + (entry.files?.legacyObjects ?? 0) + (entry.files?.targetObjects ?? 0) === 0)).toBe(true);
   });
 
   it.each<[string, (objects: Manifest) => Manifest, object]>([

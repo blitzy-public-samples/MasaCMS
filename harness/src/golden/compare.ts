@@ -102,7 +102,7 @@ export interface ParityDifference extends Difference {
 /** What {@link classifyScenario} decides for one scenario. */
 export interface ScenarioVerdict {
   result: ParityResult;
-  /** Why the scenario failed, halted or was skipped; `null` otherwise. */
+  /** Why the scenario failed, halted (a withheld one included) or was skipped; `null` otherwise. */
   reason: string | null;
   differences: ParityDifference[];
   /** The halted case's entry, else the first entry excusing a difference. */
@@ -705,9 +705,9 @@ function plural(n: number, noun: string): string {
 
 /**
  * Classifies one scenario. Precedence: skipped; nothing to compare, a failed run, or evidence of another scenario,
- * SHA or version (`fail`); any difference neither masked nor excused (`fail`); a halted case (`halted`); a withheld
- * variant (`withheld`); then `excepted`, `known-issue`, `pass`. A browser scenario compares `opts.browser`'s
- * exchanges with `golden` in place of `replay`.
+ * SHA or version (`fail`); any difference neither masked nor excused (`fail`); a withheld variant (`withheld`, with
+ * any halted case's reason and entry); a halted case (`halted`); then `excepted`, `known-issue`, `pass`. A browser
+ * scenario compares `opts.browser`'s exchanges with `golden` in place of `replay`.
  * Throws `GoldenConfigError` when a withheld route key is not on the decision list.
  */
 export function classifyScenario(
@@ -754,11 +754,14 @@ export function classifyScenario(
   if (counted.length > 0) {
     return verdict('fail', plural(counted.length, 'unlisted difference'), differences, exceptionId);
   }
-  if (observed.halted.length > 0 || haltSteps.length > 0 || declaresHalted(scenario)) {
-    const reason = observed.halted[0]?.reason ?? haltSteps.find((step) => step.gap !== undefined)?.gap?.reason;
-    return verdict('halted', reason ?? 'declared halted; served by legacy', differences, exceptionId);
-  }
-  if (refs.length > 0 || declaresWithheld(scenario)) return verdict('withheld', null, differences, exceptionId);
+  const halted = observed.halted.length > 0 || haltSteps.length > 0 || declaresHalted(scenario);
+  const haltReason = halted
+    ? (observed.halted[0]?.reason ??
+      haltSteps.find((step) => step.gap !== undefined)?.gap?.reason ??
+      'declared halted; served by legacy')
+    : null;
+  if (refs.length > 0 || declaresWithheld(scenario)) return verdict('withheld', haltReason, differences, exceptionId);
+  if (halted) return verdict('halted', haltReason, differences, exceptionId);
   if (excepted.length > 0) return verdict('excepted', null, differences, exceptionId);
   if (differences.length > 0) return verdict('known-issue', null, differences);
   return verdict('pass', null, differences);

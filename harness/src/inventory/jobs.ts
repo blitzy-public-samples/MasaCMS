@@ -6,6 +6,7 @@ import {
   parseAttributes,
   resolveComponentPath,
   stripComments,
+  viaLabel,
   type CfmlFunction,
   type CfmlUnit,
   type ClosureContext,
@@ -1024,15 +1025,15 @@ function entryGap(ctx: ClosureContext, component: string, method: string): Unres
 
 // The write set is the closure as computed, conditional writes included. The plan's expectation that the cache purge
 // writes no table is compared downstream through `expected`, never imposed here.
-/** Merged scheduler-triggered closure of the distinct methods a step calls. */
-function stepClosure(ctx: ClosureContext, calls: readonly ActionCall[]): WriteClosure {
+/** Merged scheduler-triggered closure of the distinct methods a step calls; `via` is the call path of the calling function. */
+function stepClosure(ctx: ClosureContext, calls: readonly ActionCall[], via: readonly string[]): WriteClosure {
   const parts: WriteClosure[] = [];
   const gaps: UnresolvedRef[] = [];
   const entered = new Set<string>();
   for (const c of calls) {
     const source = ref(CONTENT_SERVER_PATH, c.line, c.line);
     if (c.component === null) {
-      gaps.push({ expr: c.text, kind: 'bean', source });
+      gaps.push({ expr: c.text, kind: 'bean', source, via: [...via] });
       continue;
     }
     const key = `${c.component}#${c.method.toLowerCase()}`;
@@ -1040,7 +1041,7 @@ function stepClosure(ctx: ClosureContext, calls: readonly ActionCall[]): WriteCl
     entered.add(key);
     const gap = entryGap(ctx, c.component, c.method);
     if (gap === null) parts.push(computeClosure({ component: c.component, method: c.method, trigger: SCHEDULER_TRIGGER }, ctx));
-    else gaps.push({ expr: c.text, kind: gap, source });
+    else gaps.push({ expr: c.text, kind: gap, source, via: [...via] });
   }
   return mergeClosures(parts, gaps);
 }
@@ -1222,7 +1223,7 @@ async function siteMonitorJob(ctx: ClosureContext, opts: JobRouteKeyOptions | un
   const steps: ScheduledJobStep[] = facts.map((f, i) => {
     const spec = f.name === f.span.key ? specOf(f.span.key) : undefined;
     const gate = f.calls.find((c) => c.gate !== null)?.gate ?? null;
-    const closure = stepClosure(ctx, f.calls);
+    const closure = stepClosure(ctx, f.calls, [viaLabel(CONTENT_SERVER_PATH, block.fn.name)]);
     const [from, to] = f.source.lines;
     const spanOverrides = writers
       .filter((o) => o.source.path === CONTENT_SERVER_PATH && o.source.lines[0] >= from && o.source.lines[1] <= to)

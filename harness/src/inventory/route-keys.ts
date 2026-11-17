@@ -39,13 +39,15 @@ const variantCondition: z.ZodType<VariantCondition> = z.lazy(() =>
       z.strictObject({ param: paramName, nonEmpty: z.literal(true) }),
       z.strictObject({ param: paramName, truthy: z.literal(true) }),
       z.strictObject({ multipartExtensionIn: z.array(z.string().min(1)) }),
+      z.strictObject({ sessionManaged: z.literal(true) }),
+      z.strictObject({ startupSiteId: z.literal(true) }),
       z.strictObject({ anyOf: z.array(variantCondition) }),
       z.strictObject({ not: variantCondition }),
     ],
     {
       error:
         'must be exactly one of {param, equals}, {param, in}, {param, nonEmpty: true}, {param, truthy: true}, ' +
-        '{multipartExtensionIn}, {anyOf} or {not}',
+        '{multipartExtensionIn}, {sessionManaged: true}, {startupSiteId: true}, {anyOf} or {not}',
     },
   ),
 );

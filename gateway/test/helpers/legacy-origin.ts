@@ -16,7 +16,7 @@ import {
   type BridgeAssertionPayload,
 } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
-import type { EndResult, HydrateResult, MarkUsedResult, UsedSinceResult } from '../../src/session/bridge-client.js';
+import type { CarryResult, EndResult, HydrateResult, MarkUsedResult, UsedSinceResult } from '../../src/session/bridge-client.js';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from '../../src/session/identity-client.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from './env.js';
 import {
@@ -83,6 +83,10 @@ export interface LegacySession {
   ended: boolean;
   /** Successful `op=hydrate` calls. */
   hydrations: number;
+  /** Top-level session keys `op=carry` set, such as `flatViewArgs`. */
+  values: Record<string, unknown>;
+  /** `session.opt2CarriedRevisions`: the revision `op=carry` installed last, by key. */
+  carriedRevisions: Map<string, string>;
 }
 
 /** A new session with its legacy `Set-Cookie` values and the `Cookie` header that attaches it. */
@@ -453,6 +457,34 @@ function usedSince(ctx: OpContext): UsedSinceResult {
   return { tokens: ledgerEntries(session.used, requireTime(since).getTime()), serverTime: formatWireTime(ctx.now) };
 }
 
+/** The top-level session keys `op=carry` may set. */
+const CARRIED_KEYS: ReadonlySet<string> = new Set(['flatViewArgs']);
+
+/** `op=carry`: after checking every entry, sets each value whose revision differs from the one installed last. */
+function carry(ctx: OpContext): CarryResult {
+  requireMethod(ctx.req, 'POST');
+  const session = requireSession(ctx);
+  const values = structValue(readJsonBody(ctx.req), 'values') ?? '';
+  if (!Array.isArray(values)) throw badRequest('values must be an array');
+  const entries = (values as unknown[]).map((entry) => {
+    const name = isRecord(entry) ? structValue(entry, 'name') : undefined;
+    const value = isRecord(entry) ? structValue(entry, 'value') : undefined;
+    const revision = isRecord(entry) ? structValue(entry, 'revision') : undefined;
+    if (!isSimple(name) || !CARRIED_KEYS.has(String(name)) || !isRecord(value) || !isSimple(revision) || String(revision) === '') {
+      throw badRequest('values entries need a carried name, a struct value and a revision');
+    }
+    return { name: String(name), value, revision: String(revision) };
+  });
+  const applied: string[] = [];
+  for (const { name, value, revision } of entries) {
+    if (session.carriedRevisions.get(name) === revision) continue;
+    session.values = mergeStruct(session.values, { [name]: value });
+    session.carriedRevisions.set(name, revision);
+    applied.push(name);
+  }
+  return { applied, serverTime: formatWireTime(ctx.now) };
+}
+
 /** `op=end`: `setUserStruct()` with no user, then `sessionInvalidate()`; no database write. */
 function end(ctx: OpContext): EndResult {
   requireMethod(ctx.req, 'POST');
@@ -474,6 +506,7 @@ const SESSION_OPS: ReadonlyMap<string, (ctx: OpContext) => object> = new Map<str
   ['hydrate', hydrate],
   ['markUsed', markUsed],
   ['usedSince', usedSince],
+  ['carry', carry],
   ['end', end],
 ]);
 
@@ -574,6 +607,8 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
       siteId: partial.siteId ?? 'default',
       ended: partial.ended ?? false,
       hydrations: partial.hydrations ?? 0,
+      values: partial.values ?? {},
+      carriedRevisions: partial.carriedRevisions ?? new Map<string, string>(),
     };
     sessions.set(legacySessionId, session);
     return {

@@ -625,6 +625,10 @@ describe('parseWriterOverrides', () => {
       { 'writers.4.trigger': 'thread', 'writers.4.preventedBy': 'fixture-export-threads' },
     ],
     ['a dynamic writer that still names a table', { 'writers.3.tables': ['ttrash'] }],
+    [
+      'a writer that reaches the saves of its run-time beans',
+      { 'writers.3.reaches': [{ component: 'core/mura/content/contentBean.cfc', method: 'save' }] },
+    ],
     ['a logout session effect', { 'writers.1.sessionEffects': 'logout' }],
     ['a sourceSha other than the pinned one', { sourceSha: OTHER_SHA }],
   ])('accepts a document with %s', (_label, edits) => {
@@ -736,6 +740,19 @@ describe('parseWriterOverrides', () => {
       'a non-boolean dynamic flag',
       { 'writers.3.dynamic': 'yes' },
       ['writers.3.dynamic: Invalid input: expected boolean, received string'],
+    ],
+    ['an empty reaches list', { 'writers.3.reaches': [] }, [`writers.3.reaches: ${NO_ITEMS}`]],
+    [
+      'a reached component outside the repository',
+      { 'writers.3.reaches': [{ component: '../core/mura/content/contentBean.cfc', method: 'save' }] },
+      [`writers.3.reaches.0.component: ${PATH_MESSAGE}`],
+    ],
+    [
+      'a reached method with an unknown key',
+      {
+        'writers.3.reaches': [{ component: 'core/mura/content/contentBean.cfc', method: 'save', table: 'tcontent' }],
+      },
+      ['writers.3.reaches.0: Unrecognized key: "table"'],
     ],
     [
       'a source whose lines start at zero',

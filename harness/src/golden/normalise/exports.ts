@@ -1,10 +1,11 @@
-// Export and download models of the golden normaliser: CSV cells, XLSX cells per sheet, PDF text per page and
-// downloaded-file digests. Bytes of CSV, XLSX and PDF bodies are never compared.
+// Export and download models of the golden normaliser: CSV cells, XLSX cells per sheet, PDF text per page, ZIP entry
+// digests and downloaded-file digests. Bytes of CSV, XLSX, PDF and ZIP bodies are never compared.
 import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { parse } from 'csv-parse/sync';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { GoldenConfigError } from '../errors.js';
@@ -42,6 +43,21 @@ export interface PdfModel {
   pages: string[];
 }
 
+/** ZIP entry by normalised name and content; a directory `<name>/` or expanded nested archive `<name>!/` is empty. */
+export interface ZipEntry {
+  name: string;
+  sha256: string;
+  size: number;
+}
+
+/** ZIP download as its entries; `filename` from Content-Disposition when compared. */
+export interface ZipModel {
+  kind: 'zip';
+  contentType: string;
+  entries: ZipEntry[];
+  filename?: string;
+}
+
 /** Any other download, by content digest and content type; `filename` from Content-Disposition when compared. */
 export interface FileModel {
   kind: 'file';
@@ -51,7 +67,7 @@ export interface FileModel {
 }
 
 /** Normalised model of an export or download body. */
-export type ExportModel = CsvModel | XlsxModel | PdfModel | FileModel;
+export type ExportModel = CsvModel | XlsxModel | PdfModel | ZipModel | FileModel;
 
 /** Which model a body is compared by. */
 export type ExportKind = ExportModel['kind'];
@@ -75,7 +91,15 @@ const KIND_BY_MEDIA_TYPE: ReadonlyMap<string, ExportKind> = new Map([
   ['text/csv', 'csv'],
   ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'],
   ['application/pdf', 'pdf'],
+  ['application/zip', 'zip'],
+  ['application/x-zip-compressed', 'zip'],
 ]);
+
+/** Levels of archives nested in a ZIP download that are read as archives; one nested deeper is a file by its digest. */
+export const ZIP_NESTING_LIMIT = 3;
+
+const ZIP_NAME = /\.zip$/i;
+const NESTED_ENTRY_SEPARATOR = '!/';
 
 // pdfjs loads the standard 14 fonts a PDF references without embedding (pdfkit's Helvetica) from this directory.
 const STANDARD_FONT_DATA_URL = join(
@@ -241,6 +265,74 @@ export function fileModel(input: FileModelInput): FileModel {
   return { kind: 'file', sha256, contentType: input.contentType };
 }
 
+/** A ZIP entry as read: its raw name (`<outer>!/<inner>` when nested) and bytes. */
+interface ZipFile {
+  name: string;
+  content: Buffer;
+}
+
+/**
+ * Raw entries of archive `bytes` at nesting `depth`, named under `prefix`, with nested archives expanded and no implied
+ * directories; undefined when `bytes` is not a ZIP.
+ */
+async function zipEntries(bytes: Buffer, prefix: string, depth: number): Promise<ZipFile[] | undefined> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(bytes, { checkCRC32: true, createFolders: false });
+  } catch {
+    return undefined;
+  }
+  const files: ZipFile[] = [];
+  for (const entry of Object.values(zip.files)) {
+    // JSZip gives a directory no unsafeOriginalName; its name ends in '/', so it is never expanded.
+    const name = `${prefix}${entry.unsafeOriginalName ?? entry.name}`;
+    const content = await entry.async('nodebuffer');
+    const nestedPrefix = `${name}${NESTED_ENTRY_SEPARATOR}`;
+    const nested =
+      depth < ZIP_NESTING_LIMIT && ZIP_NAME.test(name) ? await zipEntries(content, nestedPrefix, depth + 1) : undefined;
+    // An expanded archive is listed itself, so one holding no entries is still compared.
+    if (nested === undefined) files.push({ name, content });
+    else files.push({ name: nestedPrefix, content: Buffer.alloc(0) }, ...nested);
+  }
+  return files;
+}
+
+// A byte order mark stays part of the text, so it is compared.
+const UTF8_TEXT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** `content` as text when it is valid UTF-8 without NUL bytes; undefined for binary content. */
+function textContent(content: Buffer): string | undefined {
+  if (content.includes(0)) return undefined;
+  try {
+    return UTF8_TEXT.decode(content);
+  } catch {
+    return undefined;
+  }
+}
+
+function zipEntry(file: ZipFile, state: IdOrdinals, rules: NormaliseRules): ZipEntry {
+  const name = normaliseString(file.name, state, rules);
+  const text = textContent(file.content);
+  const content = text === undefined ? file.content : Buffer.from(normaliseString(text, state, rules), 'utf8');
+  return { name, sha256: sha256Hex(content), size: content.length };
+}
+
+/**
+ * ZIP `bytes` as entries sorted by raw name, text content normalised before hashing; ids are numbered in that order,
+ * name before content. Entry times and order are not compared. Undefined when not a ZIP; `contentType` kept verbatim.
+ */
+export async function zipModel(
+  bytes: Buffer,
+  contentType: string,
+  state: IdOrdinals,
+  rules: NormaliseRules,
+): Promise<ZipModel | undefined> {
+  const files = await zipEntries(bytes, '', 0);
+  if (files === undefined) return undefined;
+  files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { kind: 'zip', contentType, entries: files.map((file) => zipEntry(file, state, rules)) };
+}
+
 /**
  * Model kind for a response content type, by its media type alone (the rules declare no content-type mappings);
  * unlisted types are compared as files.
@@ -264,6 +356,23 @@ function bodyBytes(response: ExportResponse): Buffer {
     : Buffer.from(response.bytesBase64, 'base64');
 }
 
+/** `model` with the normalised Content-Disposition filename when `compare` names it and the response carries one. */
+function withFilename<T extends ZipModel | FileModel>(
+  model: T,
+  compare: readonly string[],
+  response: ExportResponse,
+  state: IdOrdinals,
+  rules: NormaliseRules,
+): T {
+  const filename = compare.includes('contentDispositionFilename') ? dispositionFilename(response.headers) : undefined;
+  return filename === undefined ? model : { ...model, filename: normaliseString(filename, state, rules) };
+}
+
+function downloadedFileModel(response: ExportResponse, state: IdOrdinals, rules: NormaliseRules): FileModel {
+  const model = fileModel({ sha256: response.sha256, contentType: response.contentType });
+  return withFilename(model, rules.exports.file.compare, response, state, rules);
+}
+
 /** Model of a recorded export or download response, by the kind its content type selects; `csvKeyColumns` as {@link csvModel}. */
 export async function exportModel(
   response: ExportResponse,
@@ -278,12 +387,26 @@ export async function exportModel(
       return xlsxModel(bodyBytes(response), state, rules);
     case 'pdf':
       return pdfModel(bodyBytes(response), state, rules);
-    case 'file': {
-      const model = fileModel({ sha256: response.sha256, contentType: response.contentType });
-      const filename = rules.exports.file.compare.includes('contentDispositionFilename')
-        ? dispositionFilename(response.headers)
-        : undefined;
-      return filename === undefined ? model : { ...model, filename: normaliseString(filename, state, rules) };
+    case 'zip': {
+      const model = await zipModel(bodyBytes(response), response.contentType, state, rules);
+      return model === undefined
+        ? downloadedFileModel(response, state, rules)
+        : withFilename(model, rules.exports.zip.compare, response, state, rules);
     }
+    case 'file':
+      return downloadedFileModel(response, state, rules);
   }
+}
+
+/** Model of a byte body whose step compares no export: a ZIP by its files, any other body by its digest. */
+export async function byteBodyModel(
+  response: ExportResponse,
+  state: IdOrdinals,
+  rules: NormaliseRules,
+): Promise<ZipModel | FileModel> {
+  const zip =
+    exportKindFor(response.contentType) === 'zip'
+      ? await zipModel(bodyBytes(response), response.contentType, state, rules)
+      : undefined;
+  return zip ?? fileModel({ sha256: response.sha256, contentType: response.contentType });
 }

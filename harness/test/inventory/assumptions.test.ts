@@ -264,12 +264,11 @@ describe('evaluateAssumptions without live evidence', () => {
     );
     expect(evidence('A1')).toContain('differs from the planning figure 54 by -53');
     expect(evidence('A1')).toContain('no per-site table sets in Masa: every Masa table is in `dbo`');
-    expect(evidence('A1')).toContain('the only dynamic table patterns are none');
     expect(evidence('A1')).toContain('the inventory lists no fixture `synthetic.program_site`');
     expect(evidence('A2')).toBe(
       '`opt2/inventory/legacy-inventory.json` `controllers[]`: 3 circuits, 4 actions (0 view-only), 5 variants; ' +
         'every variant has a disposition and a rule step; ' +
-        'migrated domains (identity, people, programs-sites, strategies-content): 2 carry variants',
+        'migrated domains (identity, people, programs-sites, strategies-content): 2 carry, 2 decision variants',
     );
     expect(evidence('A3')).toBe(
       '0 `CREATE PROCEDURE`/`PROC`/`FUNCTION`/`TRIGGER` statements in `core/setup/db/mssql.sql` and in all 37 ' +
@@ -382,7 +381,6 @@ describe('evaluateAssumptions without live evidence', () => {
       'the planning figure 54 omitted `tcontentfilemetadata`, whose `siteID` comes from its base ' +
         '`core/mura/bean/beanORMVersioned.cfc:80`',
     );
-    expect(a1.staticEvidence).toContain('the only dynamic table patterns are `fb_*`');
     expect(a1.staticEvidence).toContain(
       'fixtures add 2 per-program tables, created in `Program_1` and `Program_2` and mapped to `tenant-a` and ' +
         '`tenant-b` through `synthetic.program_site` (`legacy-fixtures/sql/010_program_site.sql:1-8`)',
@@ -398,6 +396,20 @@ describe('evaluateAssumptions without live evidence', () => {
     const a1 = rowById(evaluateAssumptions(inv), 'A1');
     expect(a1.staticEvidence).toContain(text);
     expect(a1.staticEvidence).toContain('`tables[]` marks 1 Masa table with `siteID`');
+  });
+
+  it.each([
+    { label: 'no dynamic table', patterns: [], text: 'the inventory lists no dynamic table' },
+    {
+      label: 'two dynamic table patterns',
+      patterns: ['fb_*', 'tentity-declared:*'],
+      text: 'the only dynamic table patterns are `fb_*` and `tentity-declared:*`',
+    },
+  ])('names the dynamic table patterns of an inventory with $label', ({ patterns, text }) => {
+    const inv = copy();
+    inv.tables.push(...patterns.map((table) => tableEntry({ table, origin: 'dynamic' })));
+    const a1 = rowById(evaluateAssumptions(inv), 'A1');
+    expect(a1.staticEvidence).toContain(`(\`default\`, \`umbrella\`, \`tenant-a\`, \`tenant-b\`), and ${text};`);
   });
 
   it('refutes the front-end scope assumption when an action has no variant or a variant has no disposition', () => {
@@ -423,11 +435,12 @@ describe('evaluateAssumptions without live evidence', () => {
   });
 
   it.each<{ label: string; mutate: (inv: AssumptionsInventory) => void; text: string }>([
-    { label: 'the mini inventory', mutate: () => undefined, text: '2 carry variants' },
+    { label: 'the mini inventory', mutate: () => undefined, text: '2 carry, 2 decision variants' },
     {
       label: 'no migrated owner',
       mutate: (inv) => {
-        for (const id of ['ctl:cusers.listusers', 'ctl:cusers.update{type=2,action=add}']) {
+        const ids = ['ctl:cusers.listusers', 'ctl:cusers.update{type=2,action=add}', 'ctl:clogin.login', 'ctl:cusers.update{type=2,action=delete}'];
+        for (const id of ids) {
           variantOf(inv, id).owningService = 'communications';
         }
       },
@@ -438,7 +451,7 @@ describe('evaluateAssumptions without live evidence', () => {
       mutate: (inv) => {
         variantOf(inv, 'ctl:cusers.listusers').disposition = 'proposed';
       },
-      text: '1 carry, 1 proposed variants',
+      text: '1 carry, 2 decision, 1 proposed variants',
     },
   ])('tallies the migrated-domain variants of $label', ({ mutate, text }) => {
     const inv = copy();

@@ -51,6 +51,8 @@ export interface IdentitySessionSpec {
   legacySessionId?: string;
   /** `session.siteid`, the admin site the session selected; defaults to `''`. */
   adminSite?: string;
+  /** The admin session values the session stored; defaults to `{}`. */
+  adminState?: Schemas['AdminSessionState'];
 }
 
 /** One identity session the double holds. */
@@ -63,6 +65,8 @@ export interface IdentitySession {
   siteId: string;
   /** `session.siteid`, the admin site the session selected; `''` when none. */
   adminSite: string;
+  /** The admin session values `getSessionAdminState` answers while the session is active. */
+  adminState: Schemas['AdminSessionState'];
   /** Roles minted into every token of the session. */
   roles: SessionRoles;
   mode: IdentitySessionMode;
@@ -290,6 +294,7 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
       userId: spec.userId,
       siteId: spec.siteId ?? DEFAULT_SITE_ID,
       adminSite: spec.adminSite ?? '',
+      adminState: spec.adminState ?? {},
       roles: spec.roles ?? [],
       mode: spec.mode,
       s2: spec.s2,
@@ -379,6 +384,8 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
       },
       legacySessionId,
       adminSite: previous?.adminSite ?? adminSite,
+      // A rebuilt session keeps its admin values but session.mura's, which the new user struct replaces.
+      adminState: Object.fromEntries(Object.entries(previous?.adminState ?? {}).filter(([key]) => key !== 'mura')),
     });
     return { sessionId, epoch, setCookie: [] };
   };
@@ -438,6 +445,11 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
       case 'adminSite': {
         const session = sessions.get(sid);
         answer(req, res, { siteId: session?.state === 'active' ? session.adminSite : '' } satisfies Schemas['SessionAdminSite']);
+        return;
+      }
+      case 'adminState': {
+        const session = sessions.get(sid);
+        answer(req, res, session?.state === 'active' ? session.adminState : {});
         return;
       }
       case 'snapshot': {

@@ -228,6 +228,10 @@ function filePartsOf(rc: Rc, uploads: readonly UploadPart[] | undefined): readon
 function holds(cond: VariantCondition, rc: Rc, files: readonly UploadPart[]): boolean {
   if ('anyOf' in cond) return cond.anyOf.some((c) => holds(c, rc, files));
   if ('not' in cond) return !holds(cond.not, rc, files);
+  // An admin request is always session-managed (applicationSettings.cfm:179).
+  if ('sessionManaged' in cond) return true;
+  // rc's form value overwrites its url value, the one start-up's event keeps too (event.cfc:86-89).
+  if ('startupSiteId' in cond) return (rcValue(rc, 'siteid') ?? '').length > 0;
   if ('multipartExtensionIn' in cond) {
     const extensions = new Set(cond.multipartExtensionIn.map((e) => e.toLowerCase()));
     return files.some(({ filename }) => {
@@ -271,10 +275,12 @@ function notBuilt(circuit: string, action: string, key: string, ...when: readonl
   });
 }
 
-// Every withheld or halted variant declared for an action web registers, with the gateway's conditions; a registered
-// base must never answer a request that one of these matches.
+// Every withheld or halted variant declared for an action web has a screen for, with the gateway's conditions; a
+// registered base must never answer a request that one of these matches.
 /** Branches evaluated before any registered variant; a match means web does not serve the request. */
 export const NOT_BUILT_VARIANTS: readonly NotBuiltVariant[] = Object.freeze([
+  notBuilt('clogin', 'main', 'status=sendlogin', equals('status', 'sendLogin')),
+  notBuilt('clogin', 'login', 'status=sendlogin', equals('status', 'sendLogin')),
   notBuilt('cusers', 'update', 'photo', PHOTO_CONDITION),
   notBuilt(
     'cusers',
@@ -311,6 +317,7 @@ export const NOT_BUILT_VARIANTS: readonly NotBuiltVariant[] = Object.freeze([
   notBuilt('carch', 'multifileupload', 'upload=image', IMAGE_UPLOAD_CONDITION),
   notBuilt('carch', 'updateobjectparams', 'approved=1', truthy('approved')),
   notBuilt('carch', 'variationtargeting', 'notify', nonEmpty('notify')),
+  notBuilt('carch', 'approvalaction', 'action=approve', equals('action', 'approve')),
 ]);
 
 

@@ -689,6 +689,17 @@ describe('loadInventoryFacts', () => {
     expect(unlisted?.keyScope).toEqual(['userid']);
   });
 
+  it.each([
+    ['rest:variationtargeting.save', true],
+    ['rest:variationtargeting.save{session}', false],
+    ['rest:variationtargeting.delete{session}', false],
+    ['api:content.save', false],
+    ['admin:carch.approvalaction', undefined],
+  ] as const)('records %s as sessionless %s from its inventory routes', (key, expected) => {
+    expect(facts.get(key)).toBeDefined();
+    expect(facts.get(key)?.sessionless).toBe(expected);
+  });
+
   it("includes an entry point's own session effect", () => {
     expect(facts.get('admin:clogin.logout')?.sessionEffects).toContain('logout');
   });
@@ -713,6 +724,16 @@ describe('loadInventoryFacts', () => {
   ])('derives entity remote functions: %s', async (_label, routes, expected) => {
     const doc = withValue(INVENTORY, ['routes'], [...INVENTORY.routes, ...routes]);
     expect((await fixtureFacts(doc)).entityRemoteFunctions).toStrictEqual(expected);
+  });
+
+  it.each([
+    ['sessionless only when every route recording the key is', [true, false], false],
+    ['sessionless when every route recording the key is', [true, true], true],
+    ['unset when no route records it', [undefined, undefined], undefined],
+  ] as const)('takes a key two routes carry as %s', async (_label, [first, second], expected) => {
+    const route = (sessionless: boolean | undefined) => ({ ...apiRoute('rest:comment.save'), ...(sessionless === undefined ? {} : { sessionless }) });
+    const doc = withValue(INVENTORY, ['routes'], [...INVENTORY.routes, route(first), route(second)]);
+    expect((await fixtureFacts(doc)).get('rest:comment.save')?.sessionless).toBe(expected);
   });
 
   it('merges the write sets of every item carrying a key, deduplicated and sorted', () => {

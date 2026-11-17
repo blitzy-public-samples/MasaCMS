@@ -1,21 +1,26 @@
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GoldenConfigError } from '../../../src/golden/errors.js';
 import {
+  ZIP_NESTING_LIMIT,
   csvModel,
   exportKindFor,
   exportModel,
   fileModel,
   pdfModel,
   xlsxModel,
+  zipModel,
   type CsvModel,
   type ExportKind,
   type XlsxModel,
+  type ZipModel,
 } from '../../../src/golden/normalise/exports.js';
 import { createIdOrdinals } from '../../../src/golden/normalise/ids.js';
 import { loadRules, type NormaliseRules } from '../../../src/golden/normalise/rules.js';
@@ -28,6 +33,7 @@ const fixture = (name: string): string =>
 const USERS_CSV_SHA256 = 'cca9eec959ce8ce6e8542495acd16cb4115994885bcc251537b6c1b913b3b23f';
 const TINY_PDF_SHA256 = 'bb7ad3f693a1c54b3f72e48e9c3b1165b314778e28504ed2e94c15852c5a5964';
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const ZIP_TYPE = 'application/zip; charset=UTF-8';
 const TIMESTAMP_COLUMNS = ['CREATED', 'LASTUPDATE', 'LASTLOGIN', 'PASSWORDCREATED'] as const;
 const JDBC_TIMESTAMP = /(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d+)/g;
 const SHIFT_MS = 3 * 86_400_000 + 7 * 60_000;
@@ -117,6 +123,48 @@ async function workbookBytes(props: WorkbookProps, detailName = 'Ines Arkin'): P
     { error: '#N/A' },
   ]);
   return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+/** One archive member: a file's content, or null for a directory. */
+type ZipMember = readonly [name: string, content: string | Buffer | null];
+
+const ZIP_DATE_A = new Date(Date.UTC(2026, 10, 16, 23, 43, 2));
+const ZIP_DATE_B = new Date(Date.UTC(2026, 10, 16, 23, 50, 4));
+// An archive holding no entries: its end-of-central-directory record alone.
+const EMPTY_ZIP = Buffer.from(`504b0506${'00'.repeat(18)}`, 'hex');
+
+/** ZIP bytes holding `members` alone, no folder their paths imply, in the given order, every entry stamped `date`. */
+async function zipBytes(members: readonly ZipMember[], date: Date, compression: 'STORE' | 'DEFLATE' = 'DEFLATE') {
+  const zip = new JSZip();
+  for (const [name, content] of members) {
+    if (content === null) zip.file(name, null, { dir: true, date, createFolders: false });
+    else zip.file(name, content, { date, createFolders: false });
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression });
+}
+
+/** A settings bundle in Masa's layout: data files beside nested asset and cache archives, entries stamped `date`. */
+async function bundleBytes(date: Date, options: { reverse?: boolean; assetText?: string } = {}): Promise<Buffer> {
+  const members: ZipMember[] = [
+    ['wddx_rstcontent.xml', '<wddxPacket version="1.0"><data/></wddxPacket>'],
+    ['assetfiles.zip', await zipBytes([['empty.txt', options.assetText ?? 'empty']], date)],
+    ['extensions.txt', 'extensions'],
+    ['cachefiles.zip', await zipBytes([['file/', null], [`file/${DETAIL_ID}.txt`, 'empty']], date)],
+  ];
+  return zipBytes(options.reverse === true ? members.reverse() : members, date);
+}
+
+const WDDX_AT_A = '2026-11-17T00:13:09+00:00';
+const WDDX_AT_B = '2026-11-17T01:09:17+00:00';
+
+/** A one-row WDDX recordset as Masa's settings bundle writes it. */
+function wddx(contentHistId: string, lastUpdate: string, title = 'Home'): string {
+  return (
+    "<wddxPacket version='1.0'><header/><data><recordset rowCount='1' fieldNames='CONTENTHISTID,LASTUPDATE,TITLE'>" +
+    `<field name='CONTENTHISTID'><string>${contentHistId}</string></field>` +
+    `<field name='LASTUPDATE'><dateTime>${lastUpdate}</dateTime></field>` +
+    `<field name='TITLE'><string>${title}</string></field></recordset></data></wddxPacket>`
+  );
 }
 
 describe('csvModel', () => {
@@ -407,6 +455,173 @@ describe('pdfModel', () => {
   });
 });
 
+describe('zipModel', () => {
+  const entry = (name: string, content: string) => ({ name, sha256: sha256Hex(content), size: content.length });
+
+  it('lists each nested archive, then its files and directories under its prefix, and normalises names', async () => {
+    expect(await zipModel(await bundleBytes(ZIP_DATE_A), ZIP_TYPE, createIdOrdinals(), rules)).toStrictEqual({
+      kind: 'zip',
+      contentType: ZIP_TYPE,
+      entries: [
+        entry('assetfiles.zip!/', ''),
+        entry('assetfiles.zip!/empty.txt', 'empty'),
+        entry('cachefiles.zip!/', ''),
+        entry('cachefiles.zip!/file/', ''),
+        entry('cachefiles.zip!/file/<id:1>.txt', 'empty'),
+        entry('extensions.txt', 'extensions'),
+        entry('wddx_rstcontent.xml', '<wddxPacket version="1.0"><data/></wddxPacket>'),
+      ],
+    });
+  });
+
+  it('compares the content of each file, never entry times, entry order or bytes', async () => {
+    const a = await bundleBytes(ZIP_DATE_A);
+    const b = await bundleBytes(ZIP_DATE_B, { reverse: true });
+
+    expect(Buffer.compare(a, b)).not.toBe(0);
+    expect(await zipModel(b, ZIP_TYPE, createIdOrdinals(), rules)).toStrictEqual(
+      await zipModel(a, ZIP_TYPE, createIdOrdinals(), rules),
+    );
+  });
+
+  it('tells archives apart when one byte of a nested file differs', async () => {
+    const capture = (await zipModel(await bundleBytes(ZIP_DATE_A), ZIP_TYPE, createIdOrdinals(), rules)) as ZipModel;
+    const changed = await bundleBytes(ZIP_DATE_A, { assetText: 'emptY' });
+    const replay = (await zipModel(changed, ZIP_TYPE, createIdOrdinals(), rules)) as ZipModel;
+
+    const same = replay.entries.map((e, i) => e.sha256 === capture.entries[i]?.sha256);
+    expect(same).toStrictEqual([true, false, true, true, true, true, true]);
+    expect(replay).not.toStrictEqual(capture);
+  });
+
+  it.each<{ label: string; top?: ZipMember[]; nested?: ZipMember[]; added: string }>([
+    { label: 'an empty directory', top: [['empty/', null]], added: 'empty/' },
+    { label: 'a directory of a nested archive', nested: [['empty/', null]], added: 'inner.zip!/empty/' },
+    { label: 'an empty nested archive', top: [['extra.zip', EMPTY_ZIP]], added: 'extra.zip!/' },
+  ])('tells archives apart when one holds $label more', async ({ top = [], nested = [], added }) => {
+    const archive = async (extraTop: readonly ZipMember[], extraNested: readonly ZipMember[]) => {
+      const inner = await zipBytes([['data.txt', 'data'], ...extraNested], ZIP_DATE_A);
+      const bytes = await zipBytes([['manifest.txt', 'same payload'], ['inner.zip', inner], ...extraTop], ZIP_DATE_A);
+      return zipModel(bytes, ZIP_TYPE, createIdOrdinals(), rules);
+    };
+    const capture = await archive([], []);
+    const replay = await archive(top, nested);
+
+    expect(replay).not.toStrictEqual(capture);
+    expect(replay?.entries.filter((e) => e.name === added)).toStrictEqual([entry(added, '')]);
+    expect(replay?.entries.filter((e) => e.name !== added)).toStrictEqual(capture?.entries);
+  });
+
+  it('lists only the files of an archive whose paths imply folders it holds no entries for', async () => {
+    const bytes = await zipBytes([['a/b/c.txt', 'c'], ['a/d.txt', 'd']], ZIP_DATE_A);
+    const synthesised = await JSZip.loadAsync(bytes, { createFolders: true });
+
+    expect(Object.keys(synthesised.files).sort()).toStrictEqual(['a/', 'a/b/', 'a/b/c.txt', 'a/d.txt']);
+    expect((await zipModel(bytes, ZIP_TYPE, createIdOrdinals(), rules))?.entries).toStrictEqual([
+      entry('a/b/c.txt', 'c'),
+      entry('a/d.txt', 'd'),
+    ]);
+  });
+
+  it.each([
+    { label: 'a CF UUID and an ISO timestamp', replay: wddx(cfUuid(), WDDX_AT_B), equal: true },
+    { label: 'a non-volatile value', replay: wddx(DETAIL_ID, WDDX_AT_A, 'Home page'), equal: false },
+    { label: 'a byte order mark', replay: `\uFEFF${wddx(DETAIL_ID, WDDX_AT_A)}`, equal: false },
+  ])('compares text files by normalised content; differing in $label, equal is $equal', async ({ replay, equal }) => {
+    const model = async (xml: string) => {
+      const bytes = await zipBytes([['wddx_rstcontent.xml', xml], ['extensions.txt', 'extensions']], ZIP_DATE_A);
+      return zipModel(bytes, ZIP_TYPE, createIdOrdinals(), rules);
+    };
+    const capture = await model(wddx(DETAIL_ID, WDDX_AT_A));
+
+    expect(isDeepStrictEqual(await model(replay), capture)).toBe(equal);
+  });
+
+  it('numbers ids in raw-name order, name before content, so entries sharing an id share its ordinal', async () => {
+    const [shared, other, named] = [cfUuid(), cfUuid(), cfUuid()];
+    const bytes = await zipBytes(
+      [
+        ['wddx_rsthierarchy.xml', `<string>${other}</string><string>${shared}</string>`],
+        ['wddx_rstcontent.xml', `<string>${shared}</string><dateTime>${WDDX_AT_A}</dateTime>`],
+        [`file/${named}.txt`, other],
+        [`pack/${other}.zip`, await zipBytes([[`${shared}.txt`, named]], ZIP_DATE_A)],
+        [`dir/${shared}/`, null],
+      ],
+      ZIP_DATE_A,
+    );
+
+    expect((await zipModel(bytes, ZIP_TYPE, createIdOrdinals(), rules))?.entries).toStrictEqual([
+      entry('dir/<id:1>/', ''),
+      entry('file/<id:2>.txt', '<id:3>'),
+      entry('pack/<id:3>.zip!/', ''),
+      entry('pack/<id:3>.zip!/<id:1>.txt', '<id:2>'),
+      entry('wddx_rstcontent.xml', '<string><id:1></string><dateTime><ts:serializer></dateTime>'),
+      entry('wddx_rsthierarchy.xml', '<string><id:3></string><string><id:1></string>'),
+    ]);
+  });
+
+  it.each([
+    { label: 'a NUL byte', content: Buffer.concat([PNG_BYTES, Buffer.from(DETAIL_ID)]) },
+    { label: 'invalid UTF-8', content: Buffer.concat([Buffer.from(DETAIL_ID), Buffer.from([0xc3, 0x28])]) },
+  ])('compares a file holding $label by its raw digest and size', async ({ content }) => {
+    const bytes = await zipBytes([['image.bin', content]], ZIP_DATE_A);
+
+    expect((await zipModel(bytes, ZIP_TYPE, createIdOrdinals(), rules))?.entries).toStrictEqual([
+      { name: 'image.bin', sha256: sha256Hex(content), size: content.length },
+    ]);
+  });
+
+  it(`keeps archives nested past ZIP_NESTING_LIMIT (${ZIP_NESTING_LIMIT}) and a non-archive .zip as files`, async () => {
+    // levelN.zip holds levelN+1.zip; the last level holds leaf.txt.
+    const names = Array.from({ length: ZIP_NESTING_LIMIT + 1 }, (_name, i) => `level${i + 1}.zip`);
+    const leaf = await zipBytes([['leaf.txt', 'leaf']], ZIP_DATE_A);
+    let archive = leaf;
+    for (const name of names.slice(1).reverse()) archive = await zipBytes([[name, archive]], ZIP_DATE_A);
+    const bytes = await zipBytes([[names[0] as string, archive], ['broken.zip', 'not an archive']], ZIP_DATE_A);
+
+    const model = await zipModel(bytes, ZIP_TYPE, createIdOrdinals(), rules);
+
+    const expanded = names.slice(0, ZIP_NESTING_LIMIT).map((_name, i) => `${names.slice(0, i + 1).join('!/')}!/`);
+    const deepest = `${expanded.at(-1)}${names[ZIP_NESTING_LIMIT]}`;
+    expect(model?.entries).toStrictEqual([
+      entry('broken.zip', 'not an archive'),
+      ...expanded.map((name) => entry(name, '')),
+      { name: deepest, sha256: sha256Hex(leaf), size: leaf.length },
+    ]);
+  });
+
+  it.each<{ label: string; bytes: () => Promise<Buffer> }>([
+    { label: 'bytes that are no archive', bytes: async () => Buffer.from('PK\u0003\u0004 not an archive') },
+    { label: 'an empty body', bytes: async () => Buffer.alloc(0) },
+    {
+      label: 'a truncated archive',
+      bytes: async () => {
+        const whole = await bundleBytes(ZIP_DATE_A);
+        return whole.subarray(0, Math.floor(whole.length / 2));
+      },
+    },
+    {
+      label: 'an archive whose file fails its CRC-32',
+      bytes: async () => {
+        const stored = await zipBytes([['data.txt', 'FIXTURE-CONTENT']], ZIP_DATE_A, 'STORE');
+        const at = stored.indexOf('FIXTURE-CONTENT');
+        stored[at] = 'X'.charCodeAt(0);
+        return stored;
+      },
+    },
+  ])('falls back to the file model, filename included, for $label', async ({ bytes }) => {
+    const body = await bytes();
+    const response = recorded(ZIP_TYPE, { bytesBase64: body.toString('base64') }, sha256Hex(body));
+    response.headers['content-disposition'] = 'attachment;filename="bundle.zip"';
+
+    expect(await zipModel(body, ZIP_TYPE, createIdOrdinals(), rules)).toBeUndefined();
+    expect(await exportModel(response, createIdOrdinals(), rules)).toStrictEqual({
+      ...fileModel({ bytes: body, contentType: ZIP_TYPE }),
+      filename: 'bundle.zip',
+    });
+  });
+});
+
 describe('fileModel', () => {
   it('hashes the body bytes and keeps the content type', () => {
     expect(fileModel({ bytes: tinyPdf, contentType: 'application/pdf' })).toStrictEqual({
@@ -442,7 +657,9 @@ describe('exportKindFor', () => {
     ['application/pdf', 'pdf'],
     ['application/octet-stream', 'file'],
     ['image/png', 'file'],
-    ['application/zip', 'file'],
+    ['application/zip', 'zip'],
+    [ZIP_TYPE, 'zip'],
+    ['application/x-zip-compressed', 'zip'],
     ['', 'file'],
   ])('compares %j as %s', (contentType, kind) => {
     expect(exportKindFor(contentType)).toBe(kind);
@@ -460,6 +677,8 @@ describe('exportModel', () => {
     const xlsx = recorded(XLSX_TYPE, { bytesBase64: workbook.toString('base64') }, sha256Hex(workbook));
     const pdf = recorded('application/pdf', { bytesBase64: tinyPdf.toString('base64') }, TINY_PDF_SHA256);
     const png = recorded('image/png', { bytesBase64: PNG_BYTES.toString('base64') }, sha256Hex(PNG_BYTES));
+    const bundle = await bundleBytes(ZIP_DATE_A);
+    const zip = recorded(ZIP_TYPE, { bytesBase64: bundle.toString('base64') }, sha256Hex(bundle));
 
     expect(await exportModel(csv, createIdOrdinals(), rules)).toStrictEqual(
       csvModel(usersCsv, createIdOrdinals(), rules),
@@ -472,6 +691,9 @@ describe('exportModel', () => {
     );
     expect(await exportModel(png, createIdOrdinals(), rules)).toStrictEqual(
       fileModel({ bytes: PNG_BYTES, contentType: 'image/png' }),
+    );
+    expect(await exportModel(zip, createIdOrdinals(), rules)).toStrictEqual(
+      await zipModel(bundle, ZIP_TYPE, createIdOrdinals(), rules),
     );
     const headerless = { contentType: 'application/zip', sha256: sha256Hex(PNG_BYTES) };
     expect(await exportModel(headerless, createIdOrdinals(), rules)).toStrictEqual(fileModel(headerless));
@@ -502,6 +724,47 @@ describe('exportModel', () => {
     });
   });
 
+  it('compares a ZIP download by its files, content type and Content-Disposition filename', async () => {
+    const bundle = await bundleBytes(ZIP_DATE_A);
+    const zip = recorded(ZIP_TYPE, { bytesBase64: bundle.toString('base64') }, sha256Hex(bundle));
+    zip.headers['content-disposition'] = `attachment;filename="export_${DETAIL_ID}.zip"`;
+
+    const model = await exportModel(zip, createIdOrdinals(), rules);
+
+    // The cache archive names the same id first, so the filename continues its ordinal.
+    const files = await zipModel(bundle, ZIP_TYPE, createIdOrdinals(), rules);
+    expect(model).toStrictEqual({ ...files, filename: 'export_<id:1>.zip' });
+  });
+
+  it.each([
+    {
+      label: 'settings bundle',
+      capture: 'attachment;filename="export_page_tenant-a_2026_11_16_23_43.zip"',
+      replay: 'attachment;filename="export_page_tenant-a_2026_11_16_23_50.zip"',
+      otherClass: 'attachment;filename="export_page_tenant-a_2026_11_16.zip"',
+      filename: 'export_page_tenant-a_<ts:file-stamp-minute>.zip',
+    },
+    {
+      label: 'form export',
+      capture: 'attachment;filename=opt_2_seed_contact_form_2026_16_11_tenant-a.zip',
+      replay: 'attachment;filename=opt_2_seed_contact_form_2026_17_11_tenant-a.zip',
+      otherClass: 'attachment;filename=opt_2_seed_contact_form_2026_16_11_23_43_tenant-a.zip',
+      filename: 'opt_2_seed_contact_form_<ts:file-stamp-date>_tenant-a.zip',
+    },
+  ])('compares the $label filename by its stamp class, whatever the export time', async (c) => {
+    const bundle = await bundleBytes(ZIP_DATE_A);
+    const model = async (disposition: string) => {
+      const zip = recorded(ZIP_TYPE, { bytesBase64: bundle.toString('base64') }, sha256Hex(bundle));
+      zip.headers['content-disposition'] = disposition;
+      return exportModel(zip, createIdOrdinals(), rules);
+    };
+    const capture = await model(c.capture);
+
+    expect(capture).toMatchObject({ kind: 'zip', filename: c.filename });
+    expect(await model(c.replay)).toStrictEqual(capture);
+    expect(await model(c.otherClass)).not.toStrictEqual(capture);
+  });
+
   it('follows the export switches of the rules', async () => {
     const switched: NormaliseRules = {
       ...rules,
@@ -509,17 +772,24 @@ describe('exportModel', () => {
         ...rules.exports,
         csv: { ...rules.exports.csv, whitespace: 'collapse-and-trim' },
         xlsx: { ...rules.exports.xlsx, sheetNames: 'ignore' },
+        zip: { ...rules.exports.zip, compare: ['entries', 'contentType'] },
         file: { compare: ['sha256', 'contentType'] },
       },
     };
     const png = recorded('image/png', { bytesBase64: PNG_BYTES.toString('base64') }, sha256Hex(PNG_BYTES));
     png.headers['content-disposition'] = 'attachment; filename="photo.png"';
+    const bundle = await bundleBytes(ZIP_DATE_A);
+    const zip = recorded(ZIP_TYPE, { bytesBase64: bundle.toString('base64') }, sha256Hex(bundle));
+    zip.headers['content-disposition'] = 'attachment; filename="bundle.zip"';
 
     expect(column(csvModel(usersCsv, createIdOrdinals(), switched), 'JOBTITLE')[0]).toBe('Editor');
     const xlsx = await xlsxModel(await workbookBytes(PROPS_A), createIdOrdinals(), switched);
     expect(xlsx.sheets.map((sheet) => sheet.name)).toStrictEqual(['', '']);
     expect(await exportModel(png, createIdOrdinals(), switched)).toStrictEqual(
       fileModel({ bytes: PNG_BYTES, contentType: 'image/png' }),
+    );
+    expect(await exportModel(zip, createIdOrdinals(), switched)).toStrictEqual(
+      await zipModel(bundle, ZIP_TYPE, createIdOrdinals(), switched),
     );
   });
 });

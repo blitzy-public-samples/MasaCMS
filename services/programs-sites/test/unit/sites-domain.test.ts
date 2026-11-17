@@ -1317,39 +1317,45 @@ describe('emitStateEvents', () => {
     expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: true, value: payload });
   });
 
-  it.each<{ op: 'insert' | 'update'; last: bigint; rowVersion: string; reads: boolean }>([
-    { op: 'insert', last: 60n, rowVersion: '61', reads: true },
-    { op: 'insert', last: 12n, rowVersion: '42', reads: true },
-    { op: 'update', last: 60n, rowVersion: '42', reads: false },
-  ])('stores and announces a site $op after announced version $last at $rowVersion', async ({ op, last, rowVersion, reads }) => {
-    const { domain, repo } = harness([siteRow('tenant-a', { row_version: '41' })]);
-    const tx = tenantTx(TENANT_A);
-    vi.mocked(lastAnnouncedVersion).mockResolvedValue(last);
-
-    await domain.emitStateEvents(tx, change({ op }), write);
-
-    expect(vi.mocked(lastAnnouncedVersion).mock.calls).toEqual(reads ? [[tx, 'tenant-a']] : []);
-    expect(repo.update).toHaveBeenCalledExactlyOnceWith(tx, 'site', { siteid: 'tenant-a' }, { row_version: rowVersion }, write);
-    expect(announced()).toEqual([{ tenantId: TENANT_A, siteId: 'tenant-a', rowVersion: BigInt(rowVersion), origin: 'migration-feed' }]);
-  });
-
-  it.each(['insert', 'update'] as const)('advances the applied site row version under the apply write and announces a site %s with its origin', async (op) => {
-    const { domain, repo } = harness([siteRow('tenant-a', { row_version: '41' })]);
+  it.each(['insert', 'update'] as const)('announces an applied site %s at the row version it was written with, writing nothing more', async (op) => {
+    const { domain, repo } = harness([siteRow('tenant-a', { row_version: '42' })]);
     const tx = tenantTx(TENANT_A);
 
-    await domain.emitStateEvents(tx, change({ op, origin: 'backfill' }), write);
+    await domain.emitStateEvents(tx, change({ op, origin: 'backfill', after: { siteid: 'tenant-a', row_version: '42' } }), write);
 
-    expect(repo.update).toHaveBeenCalledExactlyOnceWith(tx, 'site', { siteid: 'tenant-a' }, { row_version: '42' }, write);
+    expect(writesOf(repo)).toEqual([]);
     expect(announced()).toEqual([{ tenantId: TENANT_A, siteId: 'tenant-a', rowVersion: 42n, origin: 'backfill' }]);
     expect(vi.mocked(writeSiteChanged).mock.calls[0]?.[0]).toBe(tx);
   });
+});
 
-  it('fails when the applied site is missing from the apply transaction', async () => {
-    const { domain } = harness([]);
+describe('targetOnlyColumns', () => {
+  const write: WriteContext = { origin: 'migration-feed' };
 
-    await expect(domain.emitStateEvents(tenantTx(TENANT_A), change(), write)).rejects.toThrow(
-      'Applied site tenant-a is missing from its apply transaction',
-    );
-    expect(announced()).toEqual([]);
+  it.each<{ name: string; before: Record<string, unknown> | undefined; unit: string; expected: Record<string, unknown> }>([
+    { name: 'a new site at row version 1', before: undefined, unit: SITE.unit, expected: { row_version: '1' } },
+    { name: 'a changed site one past its stored row version', before: { siteid: 'tenant-a', row_version: '41' }, unit: SITE.unit, expected: { row_version: '42' } },
+    { name: 'nothing for another unit', before: undefined, unit: 'programs_sites.image_size', expected: {} },
+  ])('writes $name', async ({ before, unit, expected }) => {
+    const { domain, repo } = harness([]);
+    const pending = { unit, table: 'site', row: { siteid: 'tenant-a' }, ...(before === undefined ? {} : { before }) };
+
+    expect(await domain.targetOnlyColumns(tenantTx(TENANT_A), pending, write)).toEqual(expected);
+    expect(writesOf(repo)).toEqual([]);
+  });
+
+  it.each<{ name: string; before: Record<string, unknown> | undefined; last: bigint; rowVersion: string; reads: boolean }>([
+    { name: 'a site created again', before: undefined, last: 60n, rowVersion: '61', reads: true },
+    { name: 'a new site', before: undefined, last: 0n, rowVersion: '1', reads: true },
+    { name: 'a changed site', before: { siteid: 'tenant-a', row_version: '41' }, last: 60n, rowVersion: '42', reads: false },
+  ])('writes $name after announced version $last at row version $rowVersion', async ({ before, last, rowVersion, reads }) => {
+    const { domain, repo } = harness([]);
+    const tx = tenantTx(TENANT_A);
+    vi.mocked(lastAnnouncedVersion).mockResolvedValue(last);
+    const pending = { unit: SITE.unit, table: 'site', row: { siteid: 'tenant-a' }, ...(before === undefined ? {} : { before }) };
+
+    expect(await domain.targetOnlyColumns(tx, pending, write)).toEqual({ row_version: rowVersion });
+    expect(vi.mocked(lastAnnouncedVersion).mock.calls).toEqual(reads ? [[tx, 'tenant-a']] : []);
+    expect(writesOf(repo)).toEqual([]);
   });
 });

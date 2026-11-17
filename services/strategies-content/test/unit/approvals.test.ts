@@ -542,7 +542,11 @@ describe('saveChain', () => {
 
   it.each([
     ['a single listed group leaves its own requests unwritten', APPROVERS, ['editors', 'ungrouped']],
-    ['two listed groups compare every request with the joined list, so the second group\u2019s request moves too', `${APPROVERS},${EDITORS}`, ['editors', 'seeded', 'ungrouped']],
+    [
+      'two listed groups compare every request with the joined list, so the second group\u2019s request moves too and the first group\u2019s, already holding it, stays unwritten',
+      `${APPROVERS},${EDITORS}`,
+      ['editors', 'ungrouped'],
+    ],
   ])('re-points the chain\u2019s requests to the first group: %s, binding the list as one value', async (_label, groupId, rewritten) => {
     const ids = { seeded: REQUEST, editors: newId(), ungrouped: newId(), otherChain: newId() };
     store.add('approval_request', approvalRequestRow({ requestid: ids.editors, chainid: CHAIN, groupid: EDITORS }));

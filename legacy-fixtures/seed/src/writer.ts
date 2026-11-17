@@ -49,6 +49,9 @@ const MASA_ORDER: { readonly [K in keyof MasaData]: null } = {
   content: null,
   files: null,
   oauthClients: null,
+  formResponses: null,
+  commenters: null,
+  comments: null,
 };
 const MASA_ARRAYS = Object.keys(MASA_ORDER) as (keyof MasaData)[];
 

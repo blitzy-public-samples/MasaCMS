@@ -33,6 +33,7 @@ let origin: string;
 let seedDir: string;
 let answers: Answer[];
 let posts: { cookie: string | undefined }[];
+let agents: (string | undefined)[];
 
 /** Answers a login POST the way Masa does for `answer`. */
 function answerLogin(res: ServerResponse, answer: Answer): void {
@@ -54,8 +55,10 @@ function answerLogin(res: ServerResponse, answer: Answer): void {
 beforeEach(async () => {
   answers = [];
   posts = [];
+  agents = [];
   let pages = 0;
   server = createServer((req, res) => {
+    agents.push(req.headers['user-agent']);
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (req.method === 'POST' && url.pathname === '/admin/index.cfm') {
       req.resume().on('end', () => {
@@ -147,5 +150,15 @@ describe('seed-legacy.mjs admin login', () => {
     expect(run.stderr).toBe('admin login failed: HTTP 500; retrying once\nseed-legacy: admin login failed: session not accepted\n');
     expect(run.stderr).not.toContain(PASSWORD);
     expect(posts).toHaveLength(2);
+  });
+
+  it('names itself on every request, so Masa keeps its admin session for the configured timeout', async () => {
+    answers = ['success'];
+
+    const run = await runScript();
+
+    expect(run.code).toBe(0);
+    expect(agents.length).toBeGreaterThan(0);
+    expect(new Set(agents)).toStrictEqual(new Set(['opt2-seed-legacy']));
   });
 });

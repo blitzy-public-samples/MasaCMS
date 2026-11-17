@@ -9,7 +9,8 @@ import {
 import type { InventoryDoc, InventoryWriter } from '../../src/cutover/types.js';
 
 const INVENTORY_PATH = fileURLToPath(new URL('../../../opt2/inventory/legacy-inventory.json', import.meta.url));
-const OVERRIDE_PREFIX = 'harness/inventory/writer-overrides.yaml#wov:';
+// A table writer records the bare id of the reviewed override it comes from.
+const OVERRIDE_PREFIX = 'wov:';
 
 const inventory = JSON.parse(readFileSync(INVENTORY_PATH, 'utf8')) as InventoryDoc;
 const writerRows = inventory.tables.flatMap((table) => table.writers.map((writer) => ({ table: table.table, writer })));
@@ -25,22 +26,76 @@ const OVERRIDE_REVIEWED = [
 ];
 const conditionEntries = PREVENTED_WRITERS.filter((entry) => entry.match.condition !== undefined);
 const SETTINGS_DAO = 'core/mura/settings/settingsDAO.cfc';
+const PUBLISHER = 'core/mura/publisher.cfc';
+const EXTEND_MANAGER = 'core/mura/extend/extendManager.cfc';
+const SITEMONITOR_RUN = 'sitemonitor:run';
+const STARTUP = 'application.setupComplete';
+const BUNDLE_GUARD = 'fileExists(local.bundleLoc) && application.contentGateway.getPageCount(projectSiteID).counter == 1';
+const PROJECT_SITE_GUARD = "projectSiteID != 'default' && !application.settingsManager.siteExists(projectSiteID)";
+const PLUGIN_GUARD = 'application.configBean.getValue("autoDiscoverPlugins") && !isdefined("url.safemode")';
+// The generator records no writer these entries close: the dbUpdates include is an unresolved call (finding
+// fe:appreload), and only the siteMonitor run, never start-up, reaches the fromMuraTrash re-saves.
+const NO_GENERATED_RECORD = ['startup-db-updates', 'trash-restore-bean'];
+
+/** Whether an appstart record's condition opens with the start-up branch `guard` reaching it. */
+const inStartupBranch = (writer: InventoryWriter, guard: string): boolean =>
+  writer.trigger === 'appstart' && writer.condition !== null && `${writer.condition} && `.startsWith(`${STARTUP} && ${guard} && `);
+
+/** Expected resolution of the generated records each conditionIncludes, routeKey or statement match is written for. */
+const GENERATED_RULES: ReadonlyArray<{ id: string; clause: string; selects: (writer: InventoryWriter) => boolean }> = [
+  {
+    id: 'native-sitemonitor-task',
+    clause: 'scheduler writers the siteMonitor run reaches',
+    selects: (writer) => writer.trigger === 'scheduler' && writer.routeKeys.includes(SITEMONITOR_RUN),
+  },
+  { id: 'startup-deploy-bundle', clause: 'the deploy-bundle branch', selects: (writer) => inStartupBranch(writer, BUNDLE_GUARD) },
+  {
+    id: 'startup-deploy-bundle',
+    clause: 'the reviewed bundleable-bean save at start-up',
+    selects: (writer) => writer.trigger === 'appstart' && writer.override === 'wov:sql-bundle-restore-bundleable-save',
+  },
+  { id: 'startup-project-site', clause: 'the project-site branch', selects: (writer) => inStartupBranch(writer, PROJECT_SITE_GUARD) },
+  { id: 'startup-plugin-discovery', clause: 'the plugin-discovery branch', selects: (writer) => inStartupBranch(writer, PLUGIN_GUARD) },
+  {
+    id: 'startup-theme-site-sizes',
+    clause: 'the reviewed theme-config site save at start-up',
+    selects: (writer) =>
+      writer.trigger === 'appstart' &&
+      ['wov:ext-loadconfigxml-site-save', 'wov:ext-loadconfigxml-site-razuna-save'].includes(writer.override ?? ''),
+  },
+];
 
 /** Inventory records whose reviewed override names the prevented-writer id. */
 const reviewedRecords = (id: string): InventoryWriter[] =>
   writerRows.filter(({ writer }) => writer.override === `${OVERRIDE_PREFIX}${id}`).map(({ writer }) => writer);
 
-/** Id of the entry a non-request inventory record must resolve to, or `undefined`; condition entries outrank settingsDAO.update. */
+const reviewedRows = nonRequestRows.filter(({ writer }) => OVERRIDE_REVIEWED.some((id) => writer.override === `${OVERRIDE_PREFIX}${id}`));
+
+/** Id of the reviewed record whose span holds this extracted statement on its table, component and trigger. */
+const reviewingId = (table: string, writer: InventoryWriter): string | undefined =>
+  reviewedRows
+    .find(
+      (row) =>
+        row.table === table &&
+        row.writer.component === writer.component &&
+        row.writer.trigger === writer.trigger &&
+        row.writer.source.lines[0] <= writer.source.lines[0] &&
+        writer.source.lines[1] <= row.writer.source.lines[1],
+    )
+    ?.writer.override?.slice(OVERRIDE_PREFIX.length);
+
+/** Id of the entry a non-request inventory record must resolve to, or `undefined`. */
 function expectedEntry(table: string, writer: InventoryWriter): string | undefined {
   const reviewed = OVERRIDE_REVIEWED.find((id) => writer.override === `${OVERRIDE_PREFIX}${id}`);
   if (reviewed !== undefined) return reviewed;
   if (table === 'synthetic.export_job' && writer.trigger === 'thread') return 'fixture-export-threads';
+  const inSpan = reviewingId(table, writer);
+  if (inSpan !== undefined) return inSpan;
   const byCondition = conditionEntries.find(
     (entry) => entry.trigger === writer.trigger && entry.match.condition === writer.condition,
   );
   if (byCondition !== undefined) return byCondition.id;
-  const themeSiteSizes = writer.trigger === 'appstart' && writer.component === SETTINGS_DAO && writer.method === 'update';
-  return themeSiteSizes ? 'startup-theme-site-sizes' : undefined;
+  return GENERATED_RULES.find((rule) => rule.selects(writer))?.id;
 }
 
 describe('PREVENTED_WRITERS', () => {
@@ -62,9 +117,31 @@ describe('PREVENTED_WRITERS', () => {
       expect(Object.isFrozen(entry)).toBe(true);
       expect(Object.isFrozen(entry.match)).toBe(true);
       if (entry.match.lines) expect(Object.isFrozen(entry.match.lines)).toBe(true);
+      if (entry.match.conditionIncludes) expect(Object.isFrozen(entry.match.conditionIncludes)).toBe(true);
       if (entry.alsoMatch) expect(Object.isFrozen(entry.alsoMatch)).toBe(true);
+      for (const match of entry.alsoMatch ?? []) expect(Object.isFrozen(match)).toBe(true);
     }
   });
+
+  it.each(PREVENTED_WRITERS.filter((entry) => !NO_GENERATED_RECORD.includes(entry.id)).map((entry) => [entry.id] as const))(
+    '%s matches at least one non-request inventory writer',
+    (id) => {
+      expect(nonRequestRows.some(({ writer }) => isPreventedWriter(writer)?.id === id)).toBe(true);
+    },
+  );
+
+  it.each(NO_GENERATED_RECORD.map((id) => [id] as const))('%s matches no generated inventory writer', (id) => {
+    expect(nonRequestRows.filter(({ writer }) => isPreventedWriter(writer)?.id === id)).toEqual([]);
+  });
+
+  it.each(GENERATED_RULES.map((rule) => [rule.id, rule.clause, rule] as const))(
+    '%s matches every inventory writer of %s, and there is one',
+    (id, _clause, rule) => {
+      const records = nonRequestRows.filter(({ writer }) => rule.selects(writer)).map(({ writer }) => writer);
+      expect(records.length).toBeGreaterThan(0);
+      for (const record of records) expect(isPreventedWriter(record)?.id).toBe(id);
+    },
+  );
 
   it.each(PREVENTED_WRITERS.filter((entry) => OVERRIDE_REVIEWED.includes(entry.id)).map((entry) => [entry.id, entry] as const))(
     '%s matches its reviewed inventory writer records',
@@ -78,11 +155,11 @@ describe('PREVENTED_WRITERS', () => {
     },
   );
 
+  // The generated inventory records each writer's extracted branch condition, so it may record none of these reviewed ones.
   it.each(conditionEntries.map((entry) => [entry.id, entry] as const))(
     '%s matches every non-request inventory writer recording its condition',
     (id, entry) => {
       const records = nonRequestRows.filter(({ writer }) => writer.condition === entry.match.condition).map(({ writer }) => writer);
-      expect(records.length, `no inventory writer records the condition of ${id}`).toBeGreaterThan(0);
       for (const record of records) {
         expect(record.trigger).toBe(entry.trigger);
         expect(isPreventedWriter(record)?.id).toBe(id);
@@ -90,11 +167,9 @@ describe('PREVENTED_WRITERS', () => {
     },
   );
 
-  it('matches every thread writer of synthetic.export_job, the job procedure included', () => {
+  it('matches every thread writer of synthetic.export_job', () => {
     const threadRows = nonRequestRows.filter(({ table, writer }) => table === 'synthetic.export_job' && writer.trigger === 'thread');
-    expect(threadRows.map(({ writer }) => writer.component)).toContain(
-      'legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql',
-    );
+    expect(threadRows.map(({ writer }) => writer.component)).toContain('legacy-fixtures/cfml/modules/reporting.cfc');
     for (const { writer } of threadRows) expect(isPreventedWriter(writer)?.id).toBe('fixture-export-threads');
   });
 
@@ -134,6 +209,16 @@ describe('isPreventedWriter', () => {
       'fixture-export-threads',
     ],
     [
+      'an alsoMatch component',
+      {
+        component: 'legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql',
+        method: '(template)',
+        trigger: 'thread',
+        source: { lines: [50, 59] },
+      },
+      'fixture-export-threads',
+    ],
+    [
       'a condition whatever the component',
       {
         component: 'core/mura/publisher.cfc',
@@ -144,18 +229,47 @@ describe('isPreventedWriter', () => {
       'startup-db-updates',
     ],
     [
-      'a condition ahead of a later component entry',
+      'guard conjuncts of a start-up branch',
+      { component: PUBLISHER, trigger: 'appstart', condition: `${STARTUP} && ${BUNDLE_GUARD} && len(arguments.toSiteID)` },
+      'startup-deploy-bundle',
+    ],
+    [
+      'guard conjuncts in every disjunct, in any order',
       {
-        component: SETTINGS_DAO,
-        method: 'update',
+        component: 'core/mura/content/contentUtility.cfc',
         trigger: 'appstart',
-        condition: 'ProjectSiteID is not default and that site does not exist (core/appcfc/onApplicationStart_include.cfm:771)',
+        condition: `${STARTUP} && ${PROJECT_SITE_GUARD} && a || !application.settingsManager.siteExists(projectSiteID) && (b || c) && projectSiteID != 'default'`,
       },
       'startup-project-site',
     ],
     [
-      'a component and method without a condition',
-      { component: SETTINGS_DAO, method: 'update', trigger: 'appstart', condition: null },
+      'guard conjuncts ahead of a later component entry',
+      { component: SETTINGS_DAO, method: 'update', trigger: 'appstart', condition: `${STARTUP} && ${PROJECT_SITE_GUARD} && x` },
+      'startup-project-site',
+    ],
+    [
+      'guard conjuncts with quoted text',
+      { component: 'core/mura/plugin/pluginManager.cfc', trigger: 'appstart', condition: `${STARTUP} && ${PLUGIN_GUARD} && name neq '.svn'` },
+      'startup-plugin-discovery',
+    ],
+    [
+      'a route key among several',
+      {
+        component: 'core/mura/content/changeset/changesetManager.cfc',
+        method: 'publish',
+        trigger: 'scheduler',
+        routeKeys: ['admin:cchangesets.publish', SITEMONITOR_RUN],
+      },
+      'native-sitemonitor-task',
+    ],
+    [
+      'the bundleable-bean save statement',
+      { component: PUBLISHER, method: 'getToWork', trigger: 'appstart', source: { lines: [171, 190] } },
+      'startup-deploy-bundle',
+    ],
+    [
+      'the theme-config site save statement',
+      { component: EXTEND_MANAGER, method: 'loadConfigXML', trigger: 'appstart', source: { lines: [2016, 2018] } },
       'startup-theme-site-sizes',
     ],
   ])('matches on %s', (_case, writer, id) => {
@@ -205,16 +319,41 @@ describe('isPreventedWriter', () => {
       'another settingsDAO method without a condition',
       { component: SETTINGS_DAO, method: 'create', trigger: 'appstart', condition: null },
     ],
+    ['settingsDAO.update outside a closed branch', { component: SETTINGS_DAO, method: 'update', trigger: 'appstart', condition: null }],
     [
       'the theme-config image-size upsert',
       {
         component: 'core/mura/settings/settingsImageSizeBean.cfc',
         method: 'save',
         trigger: 'appstart',
-        condition: null,
-        source: { lines: [190, 190] },
+        condition: `${STARTUP} && len(variables.themeConfig) && IsValid('xml', variables.themeConfig)`,
+        source: { lines: [190, 195] },
       },
     ],
+    [
+      'another theme-config statement',
+      { component: EXTEND_MANAGER, method: 'loadConfigXML', trigger: 'appstart', source: { lines: [1943, 1957] } },
+    ],
+    ['a null condition where the entry names guard conjuncts', { component: PUBLISHER, trigger: 'appstart', condition: null }],
+    [
+      'one of two guard conjuncts',
+      { component: SETTINGS_DAO, method: 'create', trigger: 'appstart', condition: `${STARTUP} && projectSiteID != 'default' && x` },
+    ],
+    [
+      'guard conjuncts missing from one disjunct',
+      { component: PUBLISHER, trigger: 'appstart', condition: `${STARTUP} && ${BUNDLE_GUARD} && a || b` },
+    ],
+    ['guard conjuncts inside a negation', { component: PUBLISHER, trigger: 'appstart', condition: `${STARTUP} && !(${BUNDLE_GUARD})` }],
+    [
+      'guard conjuncts inside quoted text',
+      { component: PUBLISHER, trigger: 'appstart', condition: `${STARTUP} && x eq ' && ${BUNDLE_GUARD} && '` },
+    ],
+    ['guard conjuncts under another trigger', { component: PUBLISHER, trigger: 'scheduler', condition: `${STARTUP} && ${BUNDLE_GUARD}` }],
+    [
+      'route keys without the siteMonitor run',
+      { component: 'core/mura/content/changeset/changesetManager.cfc', trigger: 'scheduler', routeKeys: ['admin:cchangesets.publish'] },
+    ],
+    ['the siteMonitor route key under another trigger', { component: PUBLISHER, trigger: 'appstart', routeKeys: [SITEMONITOR_RUN] }],
   ])('returns undefined for %s', (_case, writer) => {
     expect(isPreventedWriter(writer)).toBeUndefined();
   });

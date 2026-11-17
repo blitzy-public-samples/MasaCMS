@@ -377,9 +377,13 @@ function a1Static(inv: AssumptionsInventory): Evidence {
   const patterns = inv.tables.filter((t) => t.origin === 'dynamic').map((t) => code(t.table));
   const refutations: string[] = [];
   if (outside.length === 0 && embedding.length === 0) {
+    const dynamicTables =
+      patterns.length > 0
+        ? `the only dynamic table patterns are ${patterns.join(' and ')}`
+        : 'the inventory lists no dynamic table';
     items.push(
       `no per-site table sets in Masa: every Masa table is in ${code('dbo')}, no table name embeds a site id ` +
-        `(${codeList(KNOWN_SITE_IDS)}), and the only dynamic table patterns are ${patterns.join(' and ') || 'none'}`,
+        `(${codeList(KNOWN_SITE_IDS)}), and ${dynamicTables}`,
     );
   } else {
     if (outside.length > 0) refutations.push(`Masa tables outside ${code('dbo')}: ${codeList(outside)}`);

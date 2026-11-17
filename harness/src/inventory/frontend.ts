@@ -16,6 +16,7 @@ import {
   parseCfmTemplate,
   parseCfmlComponent,
   stripComments,
+  viaLabel,
   type CfmlComponent,
   type CfmlFunction,
   type CfmlUnit,
@@ -711,6 +712,7 @@ function overlayContext(ctx: ClosureContext, file: string, source: string): Clos
         resolveBean: (name) => index.resolveBean(name),
         ormTable: (p) => index.ormTable(p),
         parsed: (p) => (p === file ? unit : index.parsed(p)),
+        transient: (p) => index.transient?.(p) === true,
       },
     };
   }
@@ -894,28 +896,34 @@ function dispatchTargets(name: string, kind: string, ctx: ClosureContext): Closu
 /** Root-branch closure with every name-dispatched event method it reaches, to a fixpoint. */
 function renderChainClosure(root: Branch, predicates: Predicates, ctx: ClosureContext, bodies: VisitedBodies): WriteClosure {
   const rootEntry: ClosureEntry = { component: root.unit.path, method: root.fn.name, predicates };
-  const closures: WriteClosure[] = [computeClosure(rootEntry, branchContext(root, ctx))];
+  const rootPaths = new Map<string, readonly string[]>();
+  const closures: WriteClosure[] = [computeClosure(rootEntry, branchContext(root, ctx), rootPaths)];
+  /** Call path of each visited method, per closure in `closures`. */
+  const paths: Array<Map<string, readonly string[]>> = [rootPaths];
   const unresolved: UnresolvedRef[] = [];
   const scanned = new Set<string>([branchKey(root)]);
   const entered = new Set<string>([branchKey(root)]);
-  const dispatch = (unit: CfmlUnit, body: string, bodyLine: number): void => {
+  const dispatch = (unit: CfmlUnit, body: string, bodyLine: number, via: readonly string[]): void => {
     for (const m of body.matchAll(DISPATCH_CALL)) {
       const kind = m[1] ?? 'Handler';
       const dispatched = m[3] ?? '';
       const targets = dispatchTargets(dispatched, kind, ctx);
       if (targets.length === 0) {
         const line = bodyLine + lineOf(body, m.index) - 1;
-        unresolved.push({ expr: `get${kind}('${dispatched}')`, kind: 'method', source: span(unit.path, line, line) });
+        unresolved.push({ expr: `get${kind}('${dispatched}')`, kind: 'method', source: span(unit.path, line, line), via: [...via] });
       }
       for (const target of targets) {
         const key = `${target.component}#${target.method}`.toLowerCase();
         if (entered.has(key)) continue;
         entered.add(key);
-        closures.push(computeClosure({ ...target, predicates }, ctx));
+        const targetPaths = new Map<string, readonly string[]>();
+        paths.push(targetPaths);
+        closures.push(computeClosure({ ...target, predicates }, ctx, targetPaths));
       }
     }
   };
-  for (const [from, to] of root.keep) dispatch(root.unit, root.unit.text.slice(from, to), lineOf(root.unit.text, from));
+  const rootVia = [viaLabel(root.unit.path, root.fn.name)];
+  for (const [from, to] of root.keep) dispatch(root.unit, root.unit.text.slice(from, to), lineOf(root.unit.text, from), rootVia);
   for (let i = 0; i < closures.length; i++) {
     for (const visited of closures[i]?.visited ?? []) {
       if (scanned.has(visited.toLowerCase())) continue;
@@ -924,7 +932,9 @@ function renderChainClosure(root: Branch, predicates: Predicates, ctx: ClosureCo
       const name = visited.slice(visited.lastIndexOf('#') + 1).toLowerCase();
       const unit = bodies.unit(owner);
       const fn = unit?.functions.find((f) => f.name.toLowerCase() === name);
-      if (unit !== null && unit !== undefined && fn !== undefined) dispatch(unit, fn.body, fn.bodyLine);
+      if (unit !== null && unit !== undefined && fn !== undefined) {
+        dispatch(unit, fn.body, fn.bodyLine, paths[i]?.get(visited) ?? [viaLabel(unit.path, fn.name)]);
+      }
     }
   }
   return mergeClosures(closures, unresolved);

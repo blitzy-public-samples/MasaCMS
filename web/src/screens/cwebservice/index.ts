@@ -60,8 +60,7 @@ const listDefinition: PageScreen<WebServiceListData> = Object.freeze({
   render: renderList,
 });
 
-// The inventory has no route key for this view-only action, since save.cfm includes edit.cfm, so the gateway keeps
-// it on legacy; it is registered for the reproduced screen all the same, in the mode of its view.
+// A view-only action: cwebservice.cfc has no edit method, so FW/1 renders edit.cfm, which save.cfm also includes.
 const editDefinition: PageScreen<WebServiceEditState> = Object.freeze({
   ...CWEBSERVICE,
   action: 'edit',

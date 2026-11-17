@@ -26,6 +26,7 @@ import {
   type EnvironmentSettings,
   type PhaseBlock,
   type ProbeRow,
+  type VersionMenu,
 } from '../../src/baseline/environment.js';
 import { UsageError, runCli } from '../../src/lib/cli.js';
 import { assertReadOnlySql, type ReadOnlyMssql } from '../../src/lib/mssql.js';
@@ -99,6 +100,17 @@ const LOCAL_RECORDED: Record<string, string> = {
   psql: '16.15',
 };
 
+/** Version menu values `probeServices` derives from the fixture. */
+const FIXTURE_VERSION_MENU: VersionMenu = {
+  appServerProductName: 'ColdFusion Server',
+  appServerVersion: '2023,0,13,330833',
+  dbProductName: 'Microsoft SQL Server',
+  dbProductVersion: 'Microsoft SQL Server 2022 - 16.0.4305.5',
+  javaVersion: null,
+  osName: 'UNIX',
+  osVersion: '6.12.105+',
+};
+
 /** Settings `probeServices` derives from the fixture with the base environment. */
 const FIXTURE_SETTINGS: EnvironmentSettings = {
   timeZone: 'America/New_York',
@@ -137,6 +149,7 @@ const FIXTURE_SETTINGS: EnvironmentSettings = {
   edition: 'Developer',
   expiration: '',
   defaultHashAlgorithm: 'CFMX_COMPAT',
+  versionMenu: FIXTURE_VERSION_MENU,
 };
 
 const REAL_NODE_VERSION = Object.getOwnPropertyDescriptor(process, 'version') ?? {
@@ -779,7 +792,20 @@ describe('probeServices', () => {
       edition: null,
       cluster: { broadcastClusterCommands: null, peerCount: null, clusterSafe: false },
       startup: { projectSiteID: null, applyDbUpdates: null, writersClosed: false },
+      versionMenu: null,
     });
+  });
+
+  it.each<[string, Record<string, unknown>, VersionMenu | null, string[]]>([
+    ['a server.java version', { serverJavaVersion: '11.0.2' }, { ...FIXTURE_VERSION_MENU, javaVersion: '11.0.2' }, []],
+    ['no server.os name', { osName: null, osVersion: null }, { ...FIXTURE_VERSION_MENU, osName: null, osVersion: null }, []],
+    ['no database version', { dbProductVersion: undefined }, null, ['coldfusion']],
+    ['an OS name that is no text', { osName: { name: 'UNIX' } }, { ...FIXTURE_VERSION_MENU, osName: null }, ['coldfusion']],
+  ])('records the Version menu values for %s', async (_name, patch, expected, failedIds) => {
+    const { settings, failed } = await probeServices(rig({ routes: info(patch) }).deps);
+
+    expect(settings.versionMenu).toEqual(expected);
+    expect(failed).toEqual(failedIds);
   });
 
   it.each<[string, Record<string, unknown>, string, Partial<ProbeRow>, string[]]>([
@@ -855,7 +881,7 @@ describe('probeServices', () => {
         recorded: null,
         status: 'unavailable',
         detail:
-          'no productVersion in the answer; run.cfm?info=1 lacks or mistypes: productVersion, productLevel, edition, javaVersion, testboxEnabled, testboxInstalled, ping, siteMonitorTaskRegistered, timeZone, utcTotalOffset, cfpmPackages, cluster',
+          'no productVersion in the answer; run.cfm?info=1 lacks or mistypes: productVersion, productLevel, edition, javaVersion, dbProductName, dbProductVersion, serverJavaVersion, osName, osVersion, testboxEnabled, testboxInstalled, ping, siteMonitorTaskRegistered, timeZone, utcTotalOffset, cfpmPackages, cluster',
       },
     ],
     ['a ping that is no flag', info({ ping: 'maybe' }), { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: ping' }],

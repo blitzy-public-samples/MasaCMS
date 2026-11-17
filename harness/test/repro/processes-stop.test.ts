@@ -526,7 +526,7 @@ describe('lock_holder_live', () => {
   });
 });
 
-describe('lock_acquire up and another checkout', () => {
+describe('lock_acquire up, then lock_claim_stack, and another checkout', () => {
   it.each<{ start: RecordedStart; cleared: boolean }>([
     { start: 'other', cleared: true },
     { start: 'own', cleared: false },
@@ -535,7 +535,9 @@ describe('lock_acquire up and another checkout', () => {
     const other = { checkout: path.join(root, 'other'), pid: proc.pid, startTime: recordedStart(start, proc) };
     const file = writeRunLock({ ...other, acquiredAt: '2026-01-01T00:00:00.000Z' });
 
-    const run = await runLockLib('lock_acquire up\nprintf "%s %s\\n" "$$" "$(_opt2_proc_start_time "$$")"');
+    const run = await runLockLib(
+      'lock_acquire up\nlock_claim_stack\nprintf "%s %s\\n" "$$" "$(_opt2_proc_start_time "$$")"',
+    );
 
     const lock = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
     if (cleared) {

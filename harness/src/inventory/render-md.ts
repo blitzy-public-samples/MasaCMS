@@ -1,6 +1,6 @@
 // Markdown rendering of the legacy inventory (opt2/inventory/legacy-inventory.md); every value comes from the inventory.
 import { sortKeysDeep } from '../lib/report.js';
-import { SPANNING_OWNER, type Disposition, type DispositionStep } from './disposition.js';
+import type { Disposition, DispositionStep, OwnerBasis } from './disposition.js';
 
 /** Title of the rendering; `writeMarkdown` adds the `Source SHA:` line below it. */
 export const INVENTORY_TITLE = 'Legacy inventory (Masa CMS 7.6.1)';
@@ -27,6 +27,7 @@ export interface SourcedItem {
 export interface DisposedItem extends SourcedItem {
   owningService: string | null;
   owners?: readonly string[];
+  ownerBasis?: OwnerBasis;
   disposition: Disposition | null;
   dispositionStep: DispositionStep | null;
   withheld?: boolean;
@@ -43,8 +44,21 @@ export interface CsrfFacts {
   csrfContext: string | null;
 }
 
+/** One record of an item's `writeSet`: the unit a write reaches, its legacy table (null for the file store) and source. */
+export interface WriteRecordView {
+  unit: string;
+  legacyTable: string | null;
+  op: string;
+  source: SourceRef;
+}
+
+/** An entry point whose write set the write-set section lists. */
+export interface WritingItem extends SourcedItem {
+  writeSet?: readonly WriteRecordView[];
+}
+
 /** One controller action variant, the unit the admin table lists. */
-export interface ControllerVariantView extends DisposedItem, CsrfFacts {
+export interface ControllerVariantView extends DisposedItem, CsrfFacts, WritingItem {
   routeKey: string | null;
   responseMode: string | null;
   contentType: string | null;
@@ -61,17 +75,22 @@ export interface ControllerView extends DisposedItem {
 export type RouteKind = 'api-family' | 'job' | 'static' | 'api-entity-method' | 'api-method' | 'oauth' | 'fixture' | 'soap';
 
 /** One `routes[]` entry. */
-export interface RouteView extends DisposedItem, CsrfFacts {
+export interface RouteView extends DisposedItem, CsrfFacts, WritingItem {
   kind: RouteKind;
   routeKey: string | null;
   decisionListRef: string | null;
 }
 
 /** One `frontEnd[]` entry. */
-export interface FrontEndView extends DisposedItem, CsrfFacts {
+export interface FrontEndView extends DisposedItem, CsrfFacts, WritingItem {
   entry: string;
   windowed: boolean;
   sessionEffects: string;
+}
+
+/** One `unreachableRemote[]` entry: a remote method an aborting `onRequestStart` keeps HTTP from. */
+export interface UnreachableRemoteView extends DisposedItem {
+  guard: string;
 }
 
 /** A run-time rule of a scheduled job with its sources. */
@@ -105,21 +124,22 @@ export interface ScheduledJobView extends DisposedItem {
     purgeWindow?: JobRuleView | null;
     bounceDedupeIneffective?: boolean;
   };
-  steps: readonly (DisposedItem & {
-    order: number;
-    call: string;
-    targetMechanism: string | null;
-    stateThisRun: string | null;
-  })[];
+  steps: readonly (DisposedItem &
+    WritingItem & {
+      order: number;
+      call: string;
+      targetMechanism: string | null;
+      stateThisRun: string | null;
+    })[];
 }
 
 /** One `tables[]` entry. */
 export interface TableView extends DisposedItem {
   origin: string;
   hasSiteId: boolean | null;
-  hasSiteIdLive?: boolean | null;
+  staticHasSiteId?: boolean | null;
   hasPrimaryKey: boolean | null;
-  hasPrimaryKeyLive?: boolean | null;
+  staticHasPrimaryKey?: boolean | null;
   bootstrapHasPrimaryKey: boolean | null;
   ruleSteps: readonly number[];
   writers: readonly unknown[];
@@ -154,10 +174,12 @@ export interface RenderableInventory {
     dispatcher?: SourceRef | null;
   };
   frontEnd: readonly FrontEndView[];
+  unreachableRemote?: readonly UnreachableRemoteView[];
   scheduledJobs: readonly ScheduledJobView[];
   routes: readonly RouteView[];
   tables: readonly TableView[];
   relations: readonly (SourcedItem & { kind: string })[];
+  unorientedRelations?: readonly (SourcedItem & { kind: string })[];
   storedProcedureCheck: {
     static: { count: number };
     live: { total: number | null };
@@ -203,11 +225,13 @@ function yesNo(value: boolean | null | undefined): string {
   return value ? 'yes' : 'no';
 }
 
-/** Owner cell: the owning service, else the spanned owners. */
+/** Owner cell: the spanned owners of a spanning item, else the owning service, else the owners. */
 function ownerCell(item: DisposedItem): string {
-  if (item.owningService !== null && item.owningService !== SPANNING_OWNER) return text(item.owningService);
   const owners = item.owners ?? [];
-  return owners.length > 0 ? `spans ${text(owners.join(', '))}` : EMPTY;
+  const spans = owners.length > 0 ? `spans ${text(owners.join(', '))}` : null;
+  if (item.ownerBasis === 'spanning' && spans !== null) return spans;
+  if (item.owningService !== null) return text(item.owningService);
+  return spans ?? EMPTY;
 }
 
 function exceptionOf(item: DisposedItem): string | null {
@@ -263,6 +287,7 @@ const COUNT_ORDER: Readonly<Record<string, readonly string[]>> = {
   controllers: ['circuits', 'base', 'actions', 'viewOnlyActions', 'variants'],
   coreMuraActionFiles: [],
   frontEnd: [],
+  unreachableRemote: [],
   scheduledJobs: ['jobs', 'siteMonitorSteps'],
   routes: ['families', 'apiEntityMethods', 'apiMethods', 'oauth', 'soap', 'fixture'],
   tables: [
@@ -414,6 +439,13 @@ function frontEndSection(entries: readonly FrontEndView[]): string[] {
   );
 }
 
+function unreachableRemoteSection(entries: readonly UnreachableRemoteView[]): string[] {
+  return table(
+    ['Id', 'Source', 'Guard', 'Owner', 'Disposition (step)'],
+    entries.map((u) => [code(u.id), code(sourceText(u.source)), code(u.guard), ownerCell(u), dispositionCell(u)]),
+  );
+}
+
 const SEMANTIC_LABELS: readonly (readonly [keyof ScheduledJobView['semantics'], string])[] = [
   ['cursor', 'Cursor'],
   ['catchUp', 'Catch-up'],
@@ -467,9 +499,71 @@ function jobLines(job: ScheduledJobView): string[] {
   return lines;
 }
 
-// A static flag with the live catalog's value beside it when that differs.
-function withLive(cell: string, flag: boolean | null, live: boolean | null | undefined): string {
-  return live === null || live === undefined || live === flag ? cell : `${cell} (live: ${yesNo(live)})`;
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** `path:a-b, c; path2:d` with paths in code-unit order and each path's spans by first then last line. */
+function sourcesText(sources: readonly SourceRef[]): string {
+  const byPath = new Map<string, Map<string, readonly number[]>>();
+  for (const s of sources) {
+    const spans = byPath.get(s.path) ?? new Map<string, readonly number[]>();
+    spans.set(s.lines.join('-'), s.lines);
+    byPath.set(s.path, spans);
+  }
+  return [...byPath.keys()]
+    .sort(compareText)
+    .map((p) => {
+      const spans = [...(byPath.get(p)?.values() ?? [])].sort((a, b) => (a[0] ?? 0) - (b[0] ?? 0) || (a[1] ?? 0) - (b[1] ?? 0));
+      const lines = spans.flatMap((l) => (l[0] === undefined ? [] : [l[1] === undefined || l[1] === l[0] ? String(l[0]) : `${String(l[0])}-${String(l[1])}`]));
+      return lines.length === 0 ? p : `${p}:${lines.join(', ')}`;
+    })
+    .join('; ');
+}
+
+/** The units each writing entry point reaches, then the sources of every write record by unit, table and operation. */
+function writeSetsSection(inv: RenderableInventory): string[] {
+  const writers: WritingItem[] = [
+    ...inv.controllers.flatMap((c) => c.actions.flatMap((a) => a.variants)),
+    ...inv.routes,
+    ...inv.frontEnd,
+    ...inv.scheduledJobs.flatMap((j) => j.steps),
+  ]
+    .filter((item) => (item.writeSet?.length ?? 0) > 0)
+    .sort((a, b) => compareText(a.id, b.id));
+  if (writers.length === 0) return ['None.'];
+  const records = new Map<string, { unit: string; table: string | null; op: string; sources: SourceRef[] }>();
+  for (const item of writers) {
+    for (const w of item.writeSet ?? []) {
+      const key = JSON.stringify([w.unit, w.legacyTable ?? '', w.op]);
+      const record = records.get(key) ?? { unit: w.unit, table: w.legacyTable, op: w.op, sources: [] };
+      record.sources.push(w.source);
+      records.set(key, record);
+    }
+  }
+  const byWrite = [...records.values()].sort(
+    (a, b) => compareText(a.unit, b.unit) || compareText(a.table ?? '', b.table ?? '') || compareText(a.op, b.op),
+  );
+  return [
+    'Units each writing entry point reaches:',
+    '',
+    ...table(
+      ['Id', 'Units'],
+      writers.map((item) => [code(item.id), text([...new Set((item.writeSet ?? []).map((w) => w.unit))].sort(compareText).join(', '))]),
+    ),
+    '',
+    'Sources of the write records, by unit, table and operation:',
+    '',
+    ...table(
+      ['Unit', 'Table', 'Op', 'Sources'],
+      byWrite.map((r) => [code(r.unit), code(r.table), text(r.op), code(sourcesText(r.sources))]),
+    ),
+  ];
+}
+
+// A governing flag with the static value beside it when the live catalog changed it.
+function withStatic(cell: string, flag: boolean | null, staticFlag: boolean | null | undefined): string {
+  return staticFlag === null || staticFlag === undefined || staticFlag === flag ? cell : `${cell} (static: ${yesNo(staticFlag)})`;
 }
 
 function tablesSection(tables: readonly TableView[]): string[] {
@@ -485,8 +579,8 @@ function tablesSection(tables: readonly TableView[]): string[] {
       return [
         code(t.id),
         text(t.origin),
-        withLive(yesNo(t.hasSiteId), t.hasSiteId, t.hasSiteIdLive),
-        withLive(pk, t.hasPrimaryKey, t.hasPrimaryKeyLive),
+        withStatic(yesNo(t.hasSiteId), t.hasSiteId, t.staticHasSiteId),
+        withStatic(pk, t.hasPrimaryKey, t.staticHasPrimaryKey),
         owners.length > 0 ? text(owners.join(', ')) : ownerCell(t),
         t.ruleSteps.length > 0 ? t.ruleSteps.join(', ') : EMPTY,
         dispositionCell(t),
@@ -509,13 +603,22 @@ function relationsSection(inv: RenderableInventory): string[] {
   ];
 }
 
+/** Join edges with no key side, listed apart from the relations the dependency order reads. */
+function unorientedRelationsSection(relations: readonly (SourcedItem & { kind: string })[]): string[] {
+  if (relations.length === 0) return ['None.'];
+  return table(
+    ['Id', 'Kind', 'Source'],
+    relations.map((r) => [code(r.id), text(r.kind), code(sourceText(r.source))]),
+  );
+}
+
 // Source of every item by id, for findings that name an item without its source.
 function sourceIndex(inv: RenderableInventory): Map<string, SourceRef> {
   const index = new Map<string, SourceRef>();
   const add = (item: SourcedItem): void => {
     if (item.source && !index.has(item.id)) index.set(item.id, item.source);
   };
-  for (const list of [inv.entities, inv.services, inv.frontEnd, inv.routes, inv.tables, inv.relations]) list.forEach(add);
+  for (const list of [inv.entities, inv.services, inv.frontEnd, inv.unreachableRemote ?? [], inv.routes, inv.tables, inv.relations, inv.unorientedRelations ?? []]) list.forEach(add);
   for (const c of inv.controllers) {
     add(c);
     for (const a of c.actions) a.variants.forEach(add);
@@ -539,7 +642,8 @@ function findingsSection(inv: RenderableInventory, findings: readonly InventoryF
         f.aapFigure === undefined && f.computed === undefined
           ? null
           : `AAP ${String(f.aapFigure ?? EMPTY)}, computed ${String(f.computed ?? EMPTY)}`;
-      return [text(f.kind), code(id), code(source), text(f.detail ?? figures)];
+      const detail = f.detail === null || f.detail === undefined ? figures : figures === null ? f.detail : `${figures}; ${f.detail}`;
+      return [text(f.kind), code(id), code(source), text(detail)];
     }),
   );
 }
@@ -560,9 +664,16 @@ export function renderInventoryMarkdown(inv: RenderableInventory): { title: stri
     ['## Admin controllers', '', ...controllersSection(inv)],
     ...routeSections(inv.routes),
     ['## Public front end', '', ...frontEndSection(inv.frontEnd)],
+    ...(inv.unreachableRemote === undefined
+      ? []
+      : [['## Unreachable remote methods', '', ...unreachableRemoteSection(inv.unreachableRemote)]]),
     ['## Site monitor', '', ...inv.scheduledJobs.flatMap((job, i) => [...(i > 0 ? [''] : []), ...jobLines(job)])],
+    ['## Write sets', '', ...writeSetsSection(inv)],
     ['## Tables', '', ...tablesSection(inv.tables)],
     ['## Relations and stored procedures', '', ...relationsSection(inv)],
+    ...(inv.unorientedRelations === undefined
+      ? []
+      : [['## Unoriented relations (not ordered)', '', ...unorientedRelationsSection(inv.unorientedRelations)]]),
   ];
   if (inv.findings !== undefined) sections.push(['## Findings', '', ...findingsSection(inv, inv.findings)]);
   return { title: INVENTORY_TITLE, lines: sections.flatMap((s, i) => (i === 0 ? s : ['', ...s])) };

@@ -38,6 +38,9 @@ const STATE_LABEL = '${OPT2_STATE_DIR}';
 /** Reason the gateway matrix gives a case it skipped because the legacy fixtures are unavailable (`golden/catalogue.ts`). */
 const FIXTURES_UNAVAILABLE = 'skipped: fixtures unavailable';
 
+/** Reason prefix the gateway matrix gives a case whose route the active cut-over version serves from legacy (`gateway-matrix.ts`). */
+const LEGACY_SERVED = 'skipped: legacy-served';
+
 /** One service package whose `test/isolation` results feed the report. */
 export interface IsolationPackage {
   service: string;
@@ -100,7 +103,10 @@ function matching(...patterns: RegExp[]): TitleMatcher {
  * own phrasings of the same case, and `crossTenantEffects` takes any remaining assertion that names an event topic.
  */
 export const ISOLATION_CATEGORIES: Readonly<Record<IsolationCategory, TitleMatcher>> = Object.freeze({
-  tenantlessRejected: matching(/\b(?:without a tenant|tenant-?less)\b.*\bdead-letter/i),
+  tenantlessRejected: matching(
+    /\b(?:without a tenant|tenant-?less)\b.*\bdead-letter/i,
+    /\bdead-letter.*\b(?:without a tenant|tenant-?less)\b/i,
+  ),
   fanoutRegistryOnly: matching(/\bfan(?:-out| out|s[- ]out)\b/i),
   grant: matching(/\bgrant to tenant \S+ admits tenant \S+ and not tenant \S+$/),
   pooledConnectionReuse: matching(/\bpooled connection reused after a tenant \S+ transaction\b/),
@@ -296,7 +302,8 @@ export type ConsumerIsolationRow = {
   tenantlessRejected: boolean;
   /** Null when the topic declares no `x-opt2-tenant-fanout`. */
   fanoutRegistryOnly: boolean | null;
-  crossTenantEffects: number;
+  /** Failed assertions naming the subscription or its topic; null when no effect or fan-out assertion names either. */
+  crossTenantEffects: number | null;
 };
 
 /** The end-to-end gateway figures; counts are null when the result file is absent. */
@@ -451,8 +458,8 @@ function namesSubscription(fullName: string, subscription: ConsumerSubscription)
 }
 
 /**
- * The consumer row of `subscription` and its findings. Per event category, the consumer package's assertions naming the
- * subscription or its topic apply; when none does, every assertion of that category in the package applies.
+ * The consumer row of `subscription` and its findings, from the consumer package's assertions naming the subscription or
+ * its topic only. A category with no such assertion is a finding: tenantless and fan-out read false, effects read null.
  */
 function consumerRow(
   subscription: ConsumerSubscription,
@@ -464,32 +471,34 @@ function consumerRow(
   };
   const summary = summaries.get(subscription.consumer);
   if (summary === undefined) found(`consumer ${subscription.consumer} is not one of the isolation packages`);
-  const applicable = (category: AssertionCategory): IsolationAssertion[] => {
-    const all = summary === undefined ? [] : ofCategory(summary, category);
-    const named = all.filter((assertion) => namesSubscription(assertion.fullName, subscription));
-    return named.length > 0 ? named : all;
-  };
+  const naming = `naming ${subscription.subscription} or ${subscription.topic} in its consumer package`;
+  const named = (category: AssertionCategory): IsolationAssertion[] =>
+    summary === undefined
+      ? []
+      : ofCategory(summary, category).filter((assertion) => namesSubscription(assertion.fullName, subscription));
 
-  const tenantless = applicable('tenantlessRejected');
-  const fanout = subscription.fanout ? applicable('fanoutRegistryOnly') : [];
-  const effects = applicable('crossTenantEffects');
+  const tenantless = named('tenantlessRejected');
+  const fanout = subscription.fanout ? named('fanoutRegistryOnly') : [];
+  const effects = named('crossTenantEffects');
   const tenantlessRejected = passedAll(tenantless);
   const fanoutRegistryOnly = subscription.fanout ? passedAll(fanout) : null;
   if (!tenantlessRejected) {
-    found(tenantless.length === 0 ? 'no tenantless-event assertion in its consumer package' : 'tenantless-event assertions did not all pass');
+    found(tenantless.length === 0 ? `no tenantless-event assertion ${naming}` : 'tenantless-event assertions did not all pass');
   }
   if (fanoutRegistryOnly === false) {
     found(
       fanout.length === 0
-        ? `fan-out topic ${subscription.topic} has no fan-out assertion in its consumer package`
+        ? `fan-out topic ${subscription.topic} has no fan-out assertion ${naming}`
         : 'fan-out assertions did not all pass',
     );
   }
+  const effectEvidence = [...fanout, ...effects];
+  if (effectEvidence.length === 0) found(`no cross-tenant effect assertion ${naming}`);
   return {
     subscription: subscription.subscription,
     tenantlessRejected,
     fanoutRegistryOnly,
-    crossTenantEffects: failedCount([...new Set([...tenantless, ...fanout, ...effects])]),
+    crossTenantEffects: effectEvidence.length === 0 ? null : failedCount([...tenantless, ...effectEvidence]),
   };
 }
 
@@ -501,7 +510,7 @@ function serviceOfCatalogObject(object: string): string | undefined {
   )?.service;
 }
 
-/** The end-to-end figures and their findings; fixture-unavailable skips are collected into `skipped` instead. */
+/** The end-to-end figures and their findings; fixture-unavailable and legacy-served skips are collected into `skipped` instead. */
 function endToEndOf(result: EndToEndResult | null, findings: IsolationFinding[], skipped: string[]): EndToEndIsolation {
   const found = (detail: string): void => {
     findings.push({ scope: 'endToEnd', detail });
@@ -512,7 +521,8 @@ function endToEndOf(result: EndToEndResult | null, findings: IsolationFinding[],
   }
   const { gateway } = result;
   for (const c of gateway.cases) {
-    if (c.result === 'skipped' && c.reason === FIXTURES_UNAVAILABLE) skipped.push(c.id);
+    const allowed = c.reason === FIXTURES_UNAVAILABLE || c.reason?.startsWith(`${LEGACY_SERVED} `) === true;
+    if (c.result === 'skipped' && allowed) skipped.push(c.id);
     else if (c.result !== 'pass') found(`case ${c.id} ${c.result}${c.reason === undefined ? '' : `: ${c.reason}`}`);
   }
   if (gateway.crossTenantReads > 0) found(`${gateway.crossTenantReads} cross-tenant reads through the gateway`);
@@ -559,7 +569,7 @@ export function buildIsolationReport(input: IsolationReportInput): IsolationBuil
   const endToEnd = endToEndOf(input.endToEnd, findings, endToEndSkipped);
   const counts = [
     ...services.flatMap((row) => [row.crossTenantReads, row.crossTenantWrites, row.pooledConnectionReuse.rowsSeen]),
-    ...consumers.map((row) => row.crossTenantEffects),
+    ...consumers.map((row) => row.crossTenantEffects ?? 0),
     endToEnd.crossTenantReads ?? 0,
     endToEnd.crossTenantWrites ?? 0,
   ];

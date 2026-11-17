@@ -30,8 +30,11 @@ import type { SessionStateChecker } from './state-check.js';
 /** Legacy `siteid` fallback when a request names no site (contentServer.cfc:610-622). */
 const DEFAULT_SITE_ID = 'default';
 
-/** Identity's target-primary `JSESSIONID` names the session id; `CFID` and `CFTOKEN` carry no id. */
+/** Identity's target-primary `JSESSIONID` names the session id; `CFID` carries no id. */
 const TARGET_SESSION_COOKIE = 'JSESSIONID';
+
+/** Carries that session id where legacy sets no `JSESSIONID` (ColdFusion sessions without J2EE session variables). */
+const TARGET_SESSION_FALLBACK_COOKIE = 'CFTOKEN';
 
 /** The client request facts session resolution reads; header names are lower-cased, as Node delivers them. */
 export interface SessionRequestInput {
@@ -175,9 +178,9 @@ function adoptedJar(
   };
 }
 
-/** The identity session id identity-issued cookies name through `JSESSIONID`, or undefined when they carry none. */
+/** The identity session id identity-issued cookies name through `JSESSIONID`, else `CFTOKEN`; undefined when they carry none. */
 export function sessionIdFromTargetCookies(cookies: ReadonlyMap<string, string>): string | undefined {
-  const value = cookies.get(TARGET_SESSION_COOKIE);
+  const value = cookies.get(TARGET_SESSION_COOKIE) || cookies.get(TARGET_SESSION_FALLBACK_COOKIE);
   return value === undefined || value === '' ? undefined : sessionIdForJsessionid(value);
 }
 
@@ -270,17 +273,19 @@ function legacyAnswer(outcome: RestAuthOutcome): SessionResolution {
   return { kind: 'response', status: answer.status, headers: answer.headers, body: answer.body };
 }
 
-/** `Set-Cookie` values handing the browser identity's issued cookies under the jar's legacy names and attributes. */
+/**
+ * `Set-Cookie` values handing the browser identity's issued cookies under the jar's legacy names and attributes only,
+ * so it holds no cookie legacy would not set; where legacy set no `JSESSIONID`, `CFTOKEN` carries its session id.
+ */
 function reissue(jarCookies: JarCookies, issuedSetCookies: readonly string[]): string[] {
   const issued = absorbLegacySetCookies(issuedSetCookies);
   const values: Record<string, string> = {};
-  const unmatched: JarCookies = {};
-  for (const [key, cookie] of Object.entries(issued.sessionCookies)) {
-    values[key] = cookie.value;
-    // A cookie legacy never set keeps identity's own form, so the session id still reaches the browser.
-    if (!Object.hasOwn(jarCookies, key)) unmatched[key] = cookie;
+  for (const [key, cookie] of Object.entries(issued.sessionCookies)) values[key] = cookie.value;
+  const sessionValue = values[TARGET_SESSION_COOKIE];
+  if (sessionValue !== undefined && !Object.hasOwn(jarCookies, TARGET_SESSION_COOKIE)) {
+    values[TARGET_SESSION_FALLBACK_COOKIE] = sessionValue;
   }
-  return [...targetSetCookiesFrom(jarCookies, values), ...legacySetCookiesFrom(unmatched), ...issued.otherSetCookies];
+  return [...targetSetCookiesFrom(jarCookies, values), ...issued.otherSetCookies];
 }
 
 /** Creates the session resolver over identity, the legacy bridge, the jar and the session-state checker. */
@@ -644,16 +649,18 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
         if (found !== undefined) return session(found.sessionId, found.epoch, 'target-primary', found.row, []);
         return adoptUnmapped ? adoptIntoTarget(request, siteId) : none();
       }
-      // Restoring a mapped session is not adopting an unmapped one, so `adopt` does not gate it.
-      const restored = await restoredSession(request, siteId);
-      if (restored !== undefined) return restored;
       const sent = requestCookies(request);
-      if (isEmpty(sent)) return none();
-      // Cookies known to attach a legacy session map without a describe; only an adoption needs describe's answer.
+      // Cookies known to attach a legacy session are legacy's, so they map without a switch back or a describe;
+      // only an adoption needs describe's answer.
       const known = knownAttachment(sent);
       if (known !== undefined) {
         const found = await mappedSession(known);
         if (found !== undefined || !adoptUnmapped) return found ?? none();
+      } else {
+        // Restoring a mapped session is not adopting an unmapped one, so `adopt` does not gate it.
+        const restored = await restoredSession(request, siteId);
+        if (restored !== undefined) return restored;
+        if (isEmpty(sent)) return none();
       }
       const described = await describeOnce(request, sent);
       if (described.body.sessionId !== known) {

@@ -66,7 +66,7 @@ Both print one JSON summary line; exit 0, 1 or 2 as above (`opt2-db` also exits 
 
 | Loop | Interval | Gated by `opt2-ops` suspension |
 |---|---|---|
-| Reverse projector | Continuous; `projection.idlePollMs` 250 ms when idle | No: legacy-bound reads wait on the barrier it advances |
+| Reverse projector | Continuous: at once after a backlog and when an await starts, `projection.idlePollMs` 250 ms after an active cycle and while an await waits, backing off by doubling to `projection.idleMaxPollMs` 5000 ms while idle; each stream reads at most `projection.streamPagesPerCycle` (1) pages per cycle and leaves the rest as backlog | No: legacy-bound reads wait on the barrier it advances |
 | Window recovery and transition resume | Once at start-up | No |
 | Window import retries | `windows.importRetryMs` 5 s | Yes |
 | Legacy bridge poll (`scheduler.cfm?op=describe`) | `background.bridgePollMs` 60 s | Yes; a request inside the Masa application, so ColdFusion never reaches its three-day idle expiry |
@@ -196,7 +196,7 @@ Masa's start-up rewrites `tcontent` rows of type `File` or `Link` that are activ
 | `service-restarted-mid-apply` | An owner restarted while receiving batches |
 | `pubsub-redelivery` | State-event outbox rows republished with their original `eventId` |
 | `window-import-interrupted` | A window import failed after legacy committed |
-| `projector-delay` | Sleep before each projector batch (default 3 s; used by GS-BR-01) |
+| `projector-delay` | Sleep once per projector cycle before its first batch (default 3 s; used by GS-BR-01) |
 | `forced-reinit` | A `tcontent` row matching the start-up predicate, converted by the guard |
 
 ### People-roster rollback (`src/rollback/`)

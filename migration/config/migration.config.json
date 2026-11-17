@@ -13,7 +13,7 @@
   },
   "windows": { "openBudgetMs": 30000, "importRetryMs": 5000, "gatewayLeaseMs": 120000 },
   "transition": { "freezeAckTimeoutMs": 30000, "cfthreadWaitMs": 600000, "drainTimeoutMs": 300000 },
-  "projection": { "defaultAwaitTimeoutMs": 5000, "batchRows": 1000, "idlePollMs": 250 },
+  "projection": { "defaultAwaitTimeoutMs": 5000, "batchRows": 1000, "streamPagesPerCycle": 1, "idlePollMs": 250, "idleMaxPollMs": 5000 },
   "background": { "bridgePollMs": 60000, "tasksReconcileMs": 300000 },
   "startupGuard": {
     "table": "tcontent",

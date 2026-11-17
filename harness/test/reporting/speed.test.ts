@@ -401,7 +401,8 @@ describe('speed report helpers', () => {
   });
 
   it.each([
-    ['identity', 0, 0],
+    // identity endpoints: ctl:clogin.login (variant owner) and fe:doaction=login.
+    ['identity', 0, 2],
     ['people', 0, 2],
     ['programs-sites', 0, 0],
     ['strategies-content', 0, 1],
@@ -413,7 +414,8 @@ describe('speed report helpers', () => {
   });
 
   it.each([
-    ['identity', 2, 2, 'class other than not-entity'],
+    // identity endpoints: the mini inventory's two plus ctl:cperm.main and fe:oauth.token.
+    ['identity', 2, 4, 'class other than not-entity'],
     ['programs-sites', 0, 0, 'class other than not-entity'],
     ['strategies-content', 0, 2, 'class other than not-entity'],
     ['communications', 0, 1, 'owned fixture tables'],
@@ -533,7 +535,7 @@ describe('buildSpeedReport', () => {
     const report = build();
     expect(rowOf(report, 'identity')).toMatchObject({
       entities: { value: 2, label: 'measured' },
-      endpoints: { value: 2, label: 'measured' },
+      endpoints: { value: 4, label: 'measured' },
       typescriptLines: { value: TS_LINES.identity, label: 'measured' },
     });
     expect(rowOf(report, 'people')).toMatchObject({
@@ -613,7 +615,7 @@ describe('renderSpeedMarkdown', () => {
     expect(rows.map((line) => line.split(' | ')[0])).toEqual(TEN_SERVICES.map((service) => `| ${service}`));
     expect(rows).toContain(
       '| identity | 2.5 (measured) | 0.25 (estimated) | 146,851 (measured) | — (unavailable) | 2 (measured) | ' +
-        '2 (measured) | 200 (measured) | 14 (measured) | 92% (measured) | 0.02 (derived) | 1.25 (derived) |',
+        '4 (measured) | 200 (measured) | 14 (measured) | 92% (measured) | 0.02 (derived) | 1.25 (derived) |',
     );
     expect(lines).toContain('| Commit timestamps | never used |');
     expect(lines).toContain(`| cloc | \`opt2/inventory/cloc.json\` | yes | sourceSha ${SHA}; matches the pin: true |`);
@@ -743,7 +745,7 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
       cfmlLines: { value: SAMPLE_CFML, label: 'measured' },
       fixtureSqlLines: { value: null, label: 'unavailable' },
       entities: { value: 0, label: 'measured' },
-      endpoints: { value: 0, label: 'measured' },
+      endpoints: { value: 2, label: 'measured' },
       typescriptLines: { value: SAMPLE_TS, label: 'measured' },
       hoursPer1000CfmlLines: { value: 0.02, label: 'derived' },
       hoursPerEntity: { value: null, label: 'unavailable' },

@@ -232,7 +232,7 @@ describe('cArch.datamanager responses panel', () => {
     [
       'a form without responses',
       {},
-      model({ rsDataInfo: [{ CountEntered: 0, firstEntered: null, lastEntered: null }], rsData: [] }),
+      model({ rsDataInfo: { firstentered: null, lastentered: null, countentered: 0 }, rsData: [] }),
       {},
       'No data to display for this form',
       0,
@@ -362,6 +362,144 @@ describe('cArch.datamanager in-view writes', () => {
     expect(write?.form).toEqual(relayedRc);
     expect(write?.headers).toBeUndefined();
     expect($('.mura-header h1').text()).toBe('Form Data');
+  });
+});
+
+describe('cArch.datamanager over a seeded form and its responses', () => {
+  const SEEDED = '75CFADFF-8ECE-DBCF-0A633A519B114133';
+  const LATER = '75CFAE21-8ECE-DBCF-0A633A519B114177';
+  const UPDATED_MESSAGE = 'GS-CO-14 updated message';
+  /** The edit link's query: the download form's full-day range, the sort it applies and no filter. */
+  const EDIT_RC = {
+    date1: '',
+    hour1: '0',
+    minute1: '0',
+    date2: '',
+    hour2: '23',
+    minute2: '59',
+    responseid: SEEDED,
+    action: 'edit',
+    sortBy: 'Entered',
+    sortDirection: 'asc',
+    filterBy: '',
+    keywords: '',
+  };
+  /** A response row as strategies-content serves it: the packet the seed stores through dataCollectionManager. */
+  const responseRow = (id: string, entered: string, fullname: string, email: string, message: string): Struct => ({
+    responseID: id,
+    entered,
+    data: { responseid: id, FIELDNAMES: 'fullname,email,message', fullname, email, message },
+  });
+  const SEEDED_ROW = responseRow(
+    SEEDED,
+    '2026-05-14 08:31:00.0',
+    'Trenton Kuhn-Rice',
+    'trenton.kuhnrice@seed.opt2.test',
+    'Acceptus sto voluptates.',
+  );
+  const LATER_ROW = responseRow(
+    LATER,
+    '2026-06-30 16:40:00.0',
+    'Dale Stamm',
+    'dale.stamm@seed.opt2.test',
+    'Capillus astrum conicio.',
+  );
+  /** `listFormResponses` of the seeded form-builder Form with its 12 responses, with `rc` overrides. */
+  const seeded = (rc: Struct = {}): FakeReply =>
+    model({
+      contentBean: {
+        ...(carchDatamanagerData.rc.contentBean as Struct),
+        title: 'OPT-2 Seed Contact Form',
+        body: JSON.stringify({ datasets: {}, form: { formattributes: { muraormentities: 0 }, pages: [[]] } }),
+        responseDisplayFields: '',
+        sortBy: '',
+        sortDirection: '',
+      },
+      rsDataInfo: { firstentered: SEEDED_ROW.entered, lastentered: LATER_ROW.entered, countentered: 12 },
+      fieldnames: 'email,fullname,message',
+      rsData: [],
+      ...rc,
+    });
+  /** The controls of form1 as the browser submits them, by name. */
+  const submitted = ($: cheerio.CheerioAPI): Record<string, string> =>
+    Object.fromEntries(
+      $('form[name="form1"]')
+        .find('input, textarea')
+        .toArray()
+        .map((el) => [$(el).attr('name') ?? '', String($(el).val() ?? '')]),
+    );
+
+  it('renders the response list header with the form title and its record count', async () => {
+    const $ = await page(contextFor({}, seeded()));
+    expect($('.mura-item-metadata .label').toArray().map((el) => $(el).text())).toEqual([
+      'Title: OPT-2 Seed Contact Form',
+      'Total Records Available: 12',
+    ]);
+    expect($('div#manage-data > form[name="download"]')).toHaveLength(1);
+  });
+
+  it('renders the edit form of a seeded response with the CSRF pair of its response id', async () => {
+    const ctx = contextFor(EDIT_RC, seeded({ rsData: [SEEDED_ROW] }));
+    const $ = await page(ctx);
+    const form = $('form[name="form1"]');
+    expect(form.find('label').toArray().map((el) => $(el).text())).toEqual([
+      'Date/Time Entered',
+      'email',
+      'fullname',
+      'message',
+    ]);
+    expect(['email', 'fullname', 'message'].map((name) => form.find(`input[name="${name}"]`).val())).toEqual([
+      'trenton.kuhnrice@seed.opt2.test',
+      'Trenton Kuhn-Rice',
+      'Acceptus sto voluptates.',
+    ]);
+    expect(hiddenFields($, 'form1')).toMatchObject({
+      responseID: SEEDED,
+      fieldlist: 'email,fullname,message',
+      sortBy: 'Entered',
+      sortDirection: 'asc',
+      entered: SEEDED_ROW.entered,
+      action: 'update',
+      [CSRF_FIELD_TOKEN]: tokenOf(SEEDED),
+      [CSRF_FIELD_EXPIRES]: FIXED_CSRF.expires,
+    });
+    expect(strategiesCalls(ctx.gateway).filter((call) => call.method === 'POST')).toEqual([]);
+  });
+
+  it('posts the edit form as its update, then lists the range with the updated response', async () => {
+    const edit = await page(contextFor(EDIT_RC, seeded({ rsData: [SEEDED_ROW] })));
+    // The gateway hands a page POST to web as the query of its GET.
+    const posted = { ...submitted(edit), message: UPDATED_MESSAGE };
+    const updated = { ...SEEDED_ROW, data: { ...(SEEDED_ROW.data as Struct), message: UPDATED_MESSAGE } };
+    const ctx = contextFor(posted, seeded({ rsData: [updated, LATER_ROW] }), { [WRITE]: WRITTEN });
+    const $ = await page(ctx);
+    const [write, read] = strategiesCalls(ctx.gateway);
+    expect([write?.method, write?.path, read?.method, read?.path]).toEqual([
+      'POST',
+      WRITE_PATH,
+      'GET',
+      CARCH_PATHS.datamanager,
+    ]);
+    expect(write?.form).toMatchObject({
+      action: 'update',
+      responseID: SEEDED,
+      message: UPDATED_MESSAGE,
+      [CSRF_FIELD_TOKEN]: tokenOf(SEEDED),
+    });
+    const grid = $('div#manage-data table.mura-table-grid');
+    expect(grid.find('thead th').toArray().map((el) => $(el).text())).toEqual([
+      '',
+      'Date/Time Entered',
+      'email',
+      'fullname',
+      'message',
+    ]);
+    const cells = grid.find('tbody tr').first().find('td').toArray();
+    expect(cells.slice(2).map((el) => $(el).text())).toEqual([
+      'trenton.kuhnrice@seed.opt2.test',
+      'Trenton Kuhn-Rice',
+      UPDATED_MESSAGE,
+    ]);
   });
 });
 

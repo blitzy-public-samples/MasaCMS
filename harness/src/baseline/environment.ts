@@ -90,7 +90,25 @@ export type NativeTaskCapture = {
   detail: string | null;
 };
 
-/** Settings recorded by `--phase services`; `up.sh` reads `timeZone`, `ping`, `startup.writersClosed` and `mysqlFallback`. */
+/** Values the admin Version menu prints [admin/common/layouts/includes/nav.cfm:383-407]; null where legacy finds the server key absent. */
+export type VersionMenu = {
+  /** `server.coldfusion.productname`. */
+  appServerProductName: string;
+  /** `server.coldfusion.productversion`. */
+  appServerVersion: string;
+  /** `dbUtility.version().database_productname`. */
+  dbProductName: string;
+  /** `dbUtility.version().database_version`. */
+  dbProductVersion: string;
+  /** `server.java.version`. */
+  javaVersion: string | null;
+  /** `server.os.name`. */
+  osName: string | null;
+  /** `server.os.version`. */
+  osVersion: string | null;
+};
+
+/** Settings recorded by `--phase services`; `up.sh` reads `timeZone`, `ping`, `startup.writersClosed` and `mysqlFallback`; web reads `versionMenu`. */
 export type EnvironmentSettings = {
   timeZone: string | null;
   utcTotalOffset: number | null;
@@ -108,6 +126,8 @@ export type EnvironmentSettings = {
   edition: string | null;
   expiration: string | null;
   defaultHashAlgorithm: string | null;
+  /** Null when `run.cfm?info=1` could not be read or lacks one of its values. */
+  versionMenu: VersionMenu | null;
 };
 
 /** Merged state of both phases, kept in `<state>/baseline/environment.json`. */
@@ -516,6 +536,7 @@ type FieldCheck = (value: unknown, parent: Record<string, unknown>) => boolean;
 const hasText = (value: unknown): boolean => (text(value) ?? '').trim() !== '';
 const isFlag = (value: unknown): boolean => flag(value) !== null;
 const isCount = (value: unknown): boolean => count(value) !== null;
+const textOrNull = (value: unknown): boolean => value === null || text(value) !== null;
 
 /** Required top-level fields of the `run.cfm?info=1` answer, by producer name. */
 const INFO_FIELDS: Readonly<Record<string, FieldCheck>> = {
@@ -523,6 +544,11 @@ const INFO_FIELDS: Readonly<Record<string, FieldCheck>> = {
   productLevel: hasText,
   edition: hasText,
   javaVersion: hasText,
+  dbProductName: hasText,
+  dbProductVersion: hasText,
+  serverJavaVersion: textOrNull,
+  osName: textOrNull,
+  osVersion: textOrNull,
   testboxEnabled: isFlag,
   testboxInstalled: isFlag,
   ping: isFlag,
@@ -670,6 +696,26 @@ function infoRows(info: Attempt<Record<string, unknown>>): Record<'coldfusion' |
   };
 }
 
+/** The Version menu values of the lower-cased `info` answer; null while one the menu always prints is missing. */
+function versionMenu(v: Record<string, unknown>): VersionMenu | null {
+  const appServerProductName = text(v.productname);
+  const appServerVersion = text(v.productversion);
+  const dbProductName = text(v.dbproductname);
+  const dbProductVersion = text(v.dbproductversion);
+  if (appServerProductName === null || appServerVersion === null || dbProductName === null || dbProductVersion === null) {
+    return null;
+  }
+  return {
+    appServerProductName,
+    appServerVersion,
+    dbProductName,
+    dbProductVersion,
+    javaVersion: text(v.serverjavaversion),
+    osName: text(v.osname),
+    osVersion: text(v.osversion),
+  };
+}
+
 function dbtypeDeviation(dbtype: string): string {
   const which = dbtype === 'mysql' ? 'the MySQL fallback is in use' : dbtype === 'unset' ? 'MURA_DBTYPE is unset' : `MURA_DBTYPE is ${dbtype}`;
   return `${which}: a baseline deviation, and the migration stages stop, because SQL Server (mssql) is the only supported source`;
@@ -785,6 +831,7 @@ export async function probeServices(deps: EnvironmentDeps = {}): Promise<Service
     edition: text(v.edition),
     expiration: text(v.expiration),
     defaultHashAlgorithm: config.MURA_DEFAULTHASHALGORITHM ?? null,
+    versionMenu: info.ok ? versionMenu(info.value) : null,
   };
   return { services: { recordedAt, probes }, settings, failed };
 }

@@ -8,7 +8,7 @@ import { openSourceTree } from '../../src/inventory/closure.js';
 import type { SourceTree } from '../../src/inventory/closure.js';
 import { extractEntities, ormEntityIndex } from '../../src/inventory/entities.js';
 import type { EntityEntry, EntityExtraction } from '../../src/inventory/entities.js';
-import { extractDaoJoins, extractOrmRelations, extractRelations, fixtureRelations } from '../../src/inventory/relations.js';
+import { extractDaoJoins, extractOrmRelations, extractRelations, fixtureRelations, tenantParentRelations } from '../../src/inventory/relations.js';
 import type {
   Cardinality,
   FixtureOwnership,
@@ -736,6 +736,32 @@ describe('extractDaoJoins', () => {
     expect(() => lineIn(inline(GATEWAY), gatewayNeedle)).not.toThrow();
     expect(byRelationId(extractDaoJoins(tree, tables, extraction.entities), id).source).toEqual(at(DAO, daoLine(daoNeedle)));
   });
+
+  /** DAO joins of one component holding `sql` as its only query, written under a fresh case root. */
+  async function caseJoins(label: string, sql: string): Promise<Relation[]> {
+    const caseRoot = path.join(root, 'semi-join-cases', label.replace(/\W+/g, '-'));
+    await mkdir(path.join(caseRoot, path.dirname(TRUNCATED_DAO)), { recursive: true });
+    await writeFile(path.join(caseRoot, TRUNCATED_DAO), `<cfcomponent output="false">\n<cfquery name="rs">\n${sql}\n</cfquery>\n</cfcomponent>\n`, 'utf8');
+    return extractDaoJoins(openSourceTree(caseRoot), tables);
+  }
+
+  it.each<[string, string]>([
+    ['qualified on both sides', 'SELECT p.label FROM tfixturenopk p WHERE p.fixtureID IN (SELECT f.fixtureID FROM tfixture f)'],
+    ['unqualified on both sides, negated and distinct', "DELETE FROM tfixturenopk WHERE fixtureID NOT IN (SELECT DISTINCT fixtureID FROM tfixture WHERE name <> '')"],
+    ['with the key side outside the subquery', 'SELECT name FROM tfixture WHERE tfixture.fixtureID in (select tfixturenopk.fixtureID from tfixturenopk)'],
+  ])('records a semi-join %s, oriented to the key side at the line of its outer column', async (label, sql) => {
+    expect(await caseJoins(label, sql)).toEqual([
+      daoJoin('rel:tfixturenopk.fixtureid->tfixture.fixtureid', 'tfixturenopk.fixtureID', 'tfixture.fixtureID', at(TRUNCATED_DAO, 3), 'primary-key', 'table-key', true),
+    ]);
+  });
+
+  it.each<[string, string]>([
+    ['whose unqualified column two outer tables have', 'SELECT f.name FROM tfixture f, tfixturestats s WHERE siteid IN (SELECT SiteID FROM tsettings)'],
+    ['whose unqualified column the subquery table lacks', 'SELECT p.label FROM tfixturenopk p WHERE p.fixtureID IN (SELECT label FROM tfixture)'],
+    ['on a dynamic subquery table', 'SELECT p.label FROM tfixturenopk p WHERE fixtureID IN (SELECT fixtureID FROM #variables.table#)'],
+  ])('ignores a semi-join %s', async (label, sql) => {
+    expect(await caseJoins(label, sql)).toEqual([]);
+  });
 });
 
 describe('fixtureRelations', () => {
@@ -846,7 +872,62 @@ describe('fixtureRelations', () => {
   });
 });
 
+const NOPK_SOURCE: RelationSource = { path: BOOTSTRAP_DDL_PATH, lines: [10, 13] };
+
+/** A Masa ownership entry without a site column whose tenant comes from `parent` through `join`. */
+function tenantEntry(table: string, parent: string, join: string): FixtureOwnership['tables'][number] {
+  return { table, hasSiteId: false, tenantParent: { table: parent, join }, source: NOPK_SOURCE };
+}
+
+describe('tenantParentRelations', () => {
+  it('relates a Masa entry to its stated tenant parent, oriented as the file states it, at the entry source', () => {
+    expect(tenantParentRelations({ tables: [tenantEntry('tfixturenopk', 'tfixture', 'tfixture.fixtureID = tfixturenopk.label')] })).toEqual([
+      {
+        id: 'rel:tfixturenopk.label->tfixture.fixtureid',
+        kind: 'tenant-parent',
+        child: side('tfixturenopk.label'),
+        parent: side('tfixture.fixtureID'),
+        source: NOPK_SOURCE,
+        cfc: null,
+        cardinality: null,
+        orientation: 'declared',
+        parentKey: { basis: 'ownership', component: null },
+        tenantDerivation: true,
+      },
+    ]);
+  });
+
+  it.each<[string, FixtureOwnership['tables']]>([
+    ['the fixture entries, which fixtureRelations relates', OWNERSHIP.tables],
+    ['a join naming another table', [tenantEntry('tfixturenopk', 'tfixture', 'tother.fixtureID = tfixture.fixtureID')]],
+    ['a join without two sides', [tenantEntry('tfixturenopk', 'tfixture', 'fixtureID')]],
+  ])('yields none for %s', (_label, entries) => {
+    expect(tenantParentRelations({ tables: entries })).toEqual([]);
+  });
+
+  it('rejects a Masa tenant parent without a join', () => {
+    expect(() => tenantParentRelations({ tables: [{ table: 'tfixturenopk', tenantParent: { table: 'tfixture' } }] })).toThrow(z.ZodError);
+  });
+});
+
 describe('extractRelations', () => {
+  it('adds a stated tenant parent over an unoriented join of its columns, and keeps the code record of an oriented one', () => {
+    const tenantParents = [
+      tenantEntry('tfixturenopk', 'tusers', 'tfixturenopk.label = tusers.UserID'),
+      tenantEntry('tfixture', 'tfixturestats', 'tfixture.fixtureID = tfixturestats.statID'),
+      tenantEntry('tfixturenopk', 'tfixture', 'tfixturenopk.fixtureID = tfixture.fixtureID'),
+    ];
+    const result = extractRelations({ ...inputs, ownership: { tables: [...OWNERSHIP.tables, ...tenantParents] } });
+    const coded = 'rel:tfixturenopk.fixtureid->tfixture.fixtureid';
+    expect(byRelationId(result.relations, coded)).toEqual(byRelationId(union.relations, coded));
+    expect(result.relations.filter((r) => r.kind === 'tenant-parent').map((r) => [r.id, r.tenantDerivation])).toEqual([
+      ['rel:tfixture.fixtureid->tfixturestats.statid', false],
+      ['rel:tfixturenopk.label->tusers.userid', true],
+    ]);
+    expect(ids(result.unoriented)).toEqual(ids(union.unoriented).filter((id) => id !== 'rel:tfixture.fixtureid->tfixturestats.statid'));
+    expect(result.counts).toMatchObject({ relations: union.counts.relations + 2, tenantParent: 2, unknownOrientation: union.counts.unknownOrientation - 1 });
+  });
+
   it('unites the three sources re-keyed to inventory table names, each list sorted by rel: id', () => {
     expect(ids(union.relations)).toEqual([
       'rel:program_n.timesheet->synthetic.program_site.program_id',
@@ -918,6 +999,7 @@ describe('extractRelations', () => {
       daoJoin: 2,
       fixtureFk: 2,
       programFold: 2,
+      tenantParent: 0,
       unknownOrientation: 2,
       relationsDropped: 5,
     });
@@ -958,7 +1040,7 @@ describe('extractRelations', () => {
     expect(extractRelations({ entities: [], tables: [], tree, ownership: { tables: [] } })).toEqual({
       relations: [],
       unoriented: [],
-      counts: { relations: 0, ormFk: 0, daoJoin: 0, fixtureFk: 0, programFold: 0, unknownOrientation: 0, relationsDropped: 0 },
+      counts: { relations: 0, ormFk: 0, daoJoin: 0, fixtureFk: 0, programFold: 0, tenantParent: 0, unknownOrientation: 0, relationsDropped: 0 },
       dropped: [],
     });
   });

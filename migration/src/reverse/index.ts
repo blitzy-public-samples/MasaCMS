@@ -20,7 +20,10 @@ export interface Projector {
   awaitProjection(req: AwaitProjectionRequest): Promise<AwaitProjectionResult>;
 }
 
-/** Creates the projector loop and its awaiter; the awaiter reads the loop's tenant set, or the live `tsettings` before the first cycle. */
+/**
+ * Creates the projector loop and its awaiter; the awaiter reads the loop's tenant set, or the live `tsettings` before the
+ * first cycle, and each await holds a demand on the loop while it waits.
+ */
 export function createProjector(ctx: MigrationContext, opts: { hooks?: ProjectorHooks; startupGuard: StartupGuardRunner }): Projector {
   const loop = createProjectorLoop(ctx, { hooks: opts.hooks ?? {}, startupGuard: opts.startupGuard });
   const awaiter = createAwaiter({
@@ -36,6 +39,13 @@ export function createProjector(ctx: MigrationContext, opts: { hooks?: Projector
     start: () => loop.start(),
     stop: () => loop.stop(),
     runOnce: () => loop.runOnce(),
-    awaitProjection: (req) => awaiter.awaitProjection(req),
+    async awaitProjection(req) {
+      const release = loop.demand();
+      try {
+        return await awaiter.awaitProjection(req);
+      } finally {
+        release();
+      }
+    },
   };
 }

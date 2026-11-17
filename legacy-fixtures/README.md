@@ -98,7 +98,7 @@ The ColdFusion process also reads these variables on its start command:
 
 - `POST /legacy-fixtures/cfml/seed.cfm?part=<part>[&offset=<n>][&limit=<n>][&businessDate=<yyyy-mm-dd>][&fixtures=false]`, with a dataset part file as the JSON body (`rows`, `offset`, and `credentials` for parts that need them).
 - Only an S2 session from loopback is admitted (otherwise 401); any other method answers 400 `invalidMethodCall`.
-- Masa parts `sites`, `groups`, `users`, `memberships`, `categories`, `content`, `files` and `oauthClients` (bare or `masa.<name>`) go through Masa managers. Fixture parts `fixtures.<schema>.<table>` or `fixtures:<schema>.<table>` go through the module's `usp_seed_*` procedure.
+- Masa parts `sites`, `groups`, `users`, `memberships`, `categories`, `content`, `files`, `oauthClients`, `formResponses`, `commenters` and `comments` (bare or `masa.<name>`) go through Masa managers. `formResponses` rows go through `dataCollectionManager.update`, the data manager's Update path, which keeps their `responseID` and `entered`; `commenters` through the commenter bean; `comments` through `contentManager.saveComment` without notification, each kept on its seeded commenter rather than one keyed to the seeding admin. Fixture parts `fixtures.<schema>.<table>` or `fixtures:<schema>.<table>` go through the module's `usp_seed_*` procedure.
 - `offset` is a dataset-wide row index, as in `manifest.json` and the part file. It defaults to the body's `offset`; one outside the part answers 400 `invalidParameters`. `limit` defaults to the rest of the part.
 - Finance parts (`Program_<id>.finance_record`, `finance_record_version`, `finance_attachment`) require `businessDate`, the dataset's `businessDate` in `manifest.json` (`2026-06-30` with the committed `seed.config.json`). It is the `@now` of the `usp_finance_rollup` run that follows in the same transaction. Missing or malformed, it answers 400 `invalidParameters`. Other parts ignore it.
 - Example, the second of `tenant-a`'s three 1,000-row finance-record parts (`chunkRows: 1000`): `POST /legacy-fixtures/cfml/seed.cfm?part=fixtures.Program_1.finance_record&offset=1000&limit=1000&businessDate=2026-06-30`, with that part file (`array: fixtures.Program_1.finance_record`, `offset: 1000`) as the body.
@@ -106,6 +106,7 @@ The ColdFusion process also reads these variables on its start command:
 - A Masa row's `siteID`, and each pool id of a `sites` row, must be a string of 1–25 ASCII letters, digits, `_` or `-`, as Masa's add-site form admits. Otherwise the part answers 400 `invalidParameters` naming the row offset and field, and writes nothing.
 - The response reports `{part, offset, limit, total, inserted}`, so a repeated part inserts nothing new. A content node holding only its leading versions gets the rest and counts as inserted; one whose stored history differs answers 400 `invalidParameters`. Credentials are never echoed.
 - A `users` or `oauthClients` part also brings existing seeded accounts to the credentials it carries, so a regenerated `credentials.json` holds after a reload; an account already on them is not rewritten.
+- A `sites` row's `pageLimit` is the site's `tsettings.PageLimit`: passed to `settingsManager.create` for a new site, and set through `settingsManager.update` on an existing site whose limit differs. A row without one leaves Masa's limit as it is. A `pageLimit` that is not an integer from 1 to 2,147,483,647 answers 400 `invalidParameters` naming the row offset, and writes nothing.
 - `harness/repro/lib/seed-legacy.mjs` posts every `manifest.json` part in order (fixture parts are skipped under `--fixtures false`), with `part`, `offset`, `limit`, `businessDate` from `manifest.json`, and `fixtures`.
 
 ## Routes
@@ -255,13 +256,16 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 - `reserved.rehearsal` reserves 10 `tenant-a` persons with open timesheet days and the usernames `rh-create-01` to `rh-create-10`. Only GS-PE-RH-01/02/03 may use them; `harness/src/golden/coverage.ts` fails on any other use.
 - `scenarioPasswords` names the passwords golden scenarios post for accounts they create. `npm run generate` gives each name a random password, kept across runs, in the credentials' `generated` section, which `${secret:generated:<name>}` reads. `harness/test/golden/catalogue-seed-refs.test.ts` fails when the list and the catalogue's names differ.
 - Each seeded site has the domain `<siteID>.localhost` and the alias `localhost`. Public requests to `<siteID>.localhost` bind to the site; its admin pages served on `localhost` call the JSON API on their own origin. Host `localhost` still binds to `default`, whose `orderNo` is 1.
+- A site's `pageLimit` sets its Masa page limit; a site without one keeps Masa's default, 1,000. Masa hides the new-content and upload forms once a site's pages reach the limit, so `tenant-a` sets 10,000, and a site whose `contentNodes` do not stay below its limit is rejected.
 
 | Site (tenant) | Pools | Size |
 |---|---|---|
-| `umbrella` | Pool site | 1,000 pooled members, 100 categories, pooled files |
+| `umbrella` | Pool site | 1,000 pooled members, 100 categories, pooled files, 10 content nodes with versions |
 | `tenant-a` (`Program_1`) | `publicUserPoolID`, `categoryPoolID`, `filePoolID`, `displayPoolID` = `umbrella`; own private user pool and content | 2,000 system users and 50 groups, 5,000 content nodes with versions, 20,000 timesheet days, 3,000 finance records, 500 survey responses, 200 export jobs |
 | `tenant-b` (`Program_2`) | None | 200 users, 300 content nodes, 2,000 timesheet days, 300 finance records |
 | `default` | As installed | The installed `admin` (S2) and `qa_editor` accounts; not generated |
+
+- Each of `tenant-a` and `tenant-b` holds one Form, `OPT-2 Seed Contact Form`, placed in region 2 of its host page `OPT-2 Seed Contact Page`, with 12 form responses. The host page carries 6 comments from 4 commenters: two public-pool members keyed by user id, then two visitors keyed by e-mail. The fifth comment replies to the second, and the last awaits approval. GS-CO-14 reads the responses in the data manager, and GS-CO-20 reads the comments.
 
 Commands, from `seed/`:
 

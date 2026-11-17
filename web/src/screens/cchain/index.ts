@@ -3,6 +3,7 @@ import type { GateDecision, ScreenGate } from '@/lib/access-gate';
 import { administersRequestedSite, assignContext, type RequestContext } from '@/lib/request-context';
 import type { PageScreen, RedirectScreen, ScreenContext, ScreenDefinition, SubmitResult } from '../registry';
 import { submitCchainDelete } from './delete';
+import { loadCchainEdit, renderCchainEdit } from './edit';
 import { loadCchainList, renderCchainList } from './list';
 import { loadCchainPending, renderCchainPending } from './pending';
 import { submitCchainSave } from './save';
@@ -65,13 +66,13 @@ function redirectScreen(action: string, submit: (ctx: ScreenContext) => Promise<
   });
 }
 
-// `cchain.edit` has no inventoried route key (edit.cfm counts as update.cfm's include), so the gateway keeps it on
-// legacy and web registers no screen for it; its view is served through `cchain.update`. `dsp_secondary_menu` and
-// `js` are partials the views include, not actions.
-/** The carried cchain actions: the Approval Chains list, Pending Requests, the update view, save and delete. */
+// `cchain.update` renders edit.cfm, which it includes. `dsp_secondary_menu` and `js` are partials the views include,
+// not actions.
+/** The carried cchain actions: the Approval Chains list, Pending Requests, the edit and update views, save, delete. */
 export const cchainScreens: readonly ScreenDefinition[] = Object.freeze([
   pageScreen('list', loadCchainList, renderCchainList),
   pageScreen('pending', loadCchainPending, renderCchainPending),
+  pageScreen('edit', loadCchainEdit, renderCchainEdit),
   pageScreen('update', loadCchainUpdate, renderCchainUpdate),
   redirectScreen('save', submitCchainSave),
   redirectScreen('delete', submitCchainDelete),

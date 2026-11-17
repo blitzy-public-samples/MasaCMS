@@ -1,10 +1,11 @@
-// Unit tests for the dependency order of the legacy tables, over the fixture inventory and catalog and over inline inventories.
+// Unit tests for the dependency order of the legacy tables, over the fixture inventory and catalog, inline inventories and the committed inventory.
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { parseProgramTable } from '@opt2/platform/migration-kit';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { loadConfig } from '../../src/config.js';
 import {
   DependencyOrderError,
   EXPECTED_HEAD,
@@ -28,7 +29,7 @@ import type {
   TableRef,
   TenantFrom,
 } from '../../src/order/index.js';
-import { UnitCatalogError, UnknownLegacyTableError } from '../../src/owners/index.js';
+import { UnitCatalogError, UnknownLegacyTableError, loadUnitCatalog } from '../../src/owners/index.js';
 import type { DataOwner, LegacyTableOwner, Unit } from '../../src/owners/index.js';
 import { resolveReportTarget } from '../../src/reports/index.js';
 import type { ReportClock, ReportTarget } from '../../src/reports/index.js';
@@ -162,21 +163,22 @@ const MAIN_CATALOG = fakeCatalog(MAIN_TABLES, MAIN_UNITS);
 /** Table, schema, owner, tenant source and parents of each entry, in order. */
 const MAIN_ENTRIES: readonly (readonly [string, string, string, TenantFrom, readonly string[]])[] = [
   ['tsettings', 'dbo', 'programs-sites', 'siteID', []],
+  ['tusers', 'dbo', 'split', 'siteID', ['tsettings']],
+  ['tpermissions', 'dbo', 'identity', 'siteID', ['tsettings', 'tusers']],
+  ['tusersmemb', 'dbo', 'identity', 'parent', ['tusers']],
+  // A parent loads with its earliest child: the category pool ahead of the interests that reference it.
+  ['tcontentcategories', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
+  ['tusersinterests', 'dbo', 'people', 'parent', ['tcontentcategories', 'tusers']],
+  ['tcontent', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
+  ['tcontentcategoryassign', 'dbo', 'strategies-content', 'parent', ['tcontent', 'tcontentcategories']],
+  ['tapprovalchains', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
+  ['tapprovalrequests', 'dbo', 'strategies-content', 'parent', ['tapprovalchains']],
+  ['tjobqueue', 'dbo', 'reporting', 'umbrella', []],
   ['synthetic.program_site', 'synthetic', 'programs-sites', 'siteID', ['tsettings']],
   ['Program_1.grant', 'Program_1', 'finance', 'parent', ['synthetic.program_site']],
   ['Program_1.award', 'Program_1', 'finance', 'parent', ['Program_1.grant', 'synthetic.program_site']],
   ['Program_2.grant', 'Program_2', 'finance', 'parent', ['synthetic.program_site']],
   ['Program_2.award', 'Program_2', 'finance', 'parent', ['Program_2.grant', 'synthetic.program_site']],
-  ['tapprovalchains', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
-  ['tapprovalrequests', 'dbo', 'strategies-content', 'parent', ['tapprovalchains']],
-  ['tcontent', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
-  ['tcontentcategories', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
-  ['tcontentcategoryassign', 'dbo', 'strategies-content', 'parent', ['tcontent', 'tcontentcategories']],
-  ['tjobqueue', 'dbo', 'reporting', 'umbrella', []],
-  ['tusers', 'dbo', 'split', 'siteID', ['tsettings']],
-  ['tpermissions', 'dbo', 'identity', 'siteID', ['tsettings', 'tusers']],
-  ['tusersinterests', 'dbo', 'people', 'parent', ['tcontentcategories', 'tusers']],
-  ['tusersmemb', 'dbo', 'identity', 'parent', ['tusers']],
 ];
 
 const PAIR_INVENTORY: OrderInventory = {
@@ -207,6 +209,78 @@ const CYCLES_KEYS: Readonly<Record<string, readonly string[]>> = {
 };
 
 const CYCLES_CATALOG = fakeCatalog(ownedBy('surveys', CYCLES_KEYS));
+
+const PEOPLE_SPLIT: FakeTable = { owner: 'split', owners: ['identity', 'people'] };
+
+const HEAD_TABLES: Readonly<Record<string, FakeTable>> = {
+  tsettings: { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['SiteID'] },
+  tusers: { ...PEOPLE_SPLIT, keyColumns: ['UserID'] },
+  tuserstags: { ...PEOPLE_SPLIT, keyColumns: ['tagID'] },
+  tclassextenddatauseractivity: { ...PEOPLE_SPLIT, keyColumns: ['dataID'] },
+  ...ownedBy('identity', { tusersmemb: ['UserID', 'GroupID'], tpermissions: ['ContentID', 'GroupID'], tuserremotesessions: ['userID'], tuserstrikes: ['username'] }),
+  ...ownedBy('strategies-content', {
+    tcontent: ['tcontent_ID'],
+    tfiles: ['fileID'],
+    tcontentobjects: ['ContentHistID', 'ObjectID'],
+    tcontentcategories: ['categoryID'],
+    tapprovalchains: ['chainID'],
+    tchangesets: ['changesetID'],
+  }),
+  temails: { owner: 'communications', owners: ['communications'], keyColumns: ['EmailID'] },
+  'synthetic.program_site': { owner: 'programs-sites', keyColumns: ['program_id'] },
+  ...ownedBy('surveys', { 'synthetic.survey': ['survey_id'], 'synthetic.survey_reminder': ['reminder_id'] }),
+  'program_n.timesheet': { owner: 'timesheets', owners: ['timesheets'], keyColumns: ['timesheet_id'] },
+};
+
+const HEAD_CATALOG = fakeCatalog(HEAD_TABLES);
+
+/** Masa tables of every planned head group, `tusers` held behind its photo file, and the tables of two fixture modules. */
+const HEAD_INVENTORY: OrderInventory = {
+  tables: [
+    ...['tsettings', 'tusers', 'tpermissions', 'tuserstags', 'tclassextenddatauseractivity', 'tcontent', 'tfiles'].map((table) => ({ table, hasSiteId: true })),
+    ...['tcontentobjects', 'tcontentcategories', 'tapprovalchains', 'tchangesets', 'temails', 'synthetic.survey'].map((table) => ({ table, hasSiteId: true })),
+    ...unsited('tusersmemb', 'tuserremotesessions', 'tuserstrikes', 'synthetic.survey_reminder', 'Program_N.timesheet'),
+  ],
+  relations: [
+    relation('orm:user.photo', 'beanORM', 'tusers.photoFileID', 'tfiles.fileID'),
+    relation('orm:file.content', 'beanORM', 'tfiles.contentID', 'tcontent.ContentID'),
+    relation('dao:content.file', 'daoJoin', 'tcontent.FileID', 'tfiles.fileID'),
+    relation('orm:content.changeset', 'beanORM', 'tcontent.changesetID', 'tchangesets.changesetID'),
+    relation('dao:membership.user', 'daoJoin', 'tusersmemb.UserID', 'tusers.UserID'),
+    relation('dao:permission.group', 'daoJoin', 'tpermissions.GroupID', 'tusers.UserID'),
+    relation('dao:tag.user', 'daoJoin', 'tuserstags.userID', 'tusers.UserID'),
+    relation('dao:activity.user', 'daoJoin', 'tclassextenddatauseractivity.baseID', 'tusers.UserID'),
+    relation('tenant:session.user', 'tenantParent', 'tuserremotesessions.userID', 'tusers.UserID'),
+    relation('tenant:strike.user', 'tenantParent', 'tuserstrikes.username', 'tusers.UserName'),
+    relation('dao:object.version', 'daoJoin', 'tcontentobjects.ContentHistID', 'tcontent.ContentHistID'),
+    relation('orm:chain.site', 'beanORM', 'tapprovalchains.siteID', 'tsettings.SiteID'),
+    relation('fixture:reminder.survey', 'programFk', 'synthetic.survey_reminder.survey_id', 'synthetic.survey.survey_id'),
+  ],
+};
+
+/** The order of {@link HEAD_INVENTORY}: `tusers` follows the tables its photo file needs, then the planned head groups. */
+const HEAD_ORDER: readonly string[] = [
+  'tsettings',
+  'tchangesets',
+  'tcontent',
+  'tfiles',
+  'tusers',
+  'tpermissions',
+  'tusersmemb',
+  'tclassextenddatauseractivity',
+  'tuserremotesessions',
+  'tuserstags',
+  'tuserstrikes',
+  'tcontentobjects',
+  'tcontentcategories',
+  'tapprovalchains',
+  'temails',
+  'synthetic.program_site',
+  'synthetic.survey',
+  'synthetic.survey_reminder',
+  'Program_1.timesheet',
+  'Program_2.timesheet',
+];
 
 const LEGACY_FORM_TABLES: Readonly<Record<string, FakeTable>> = {
   tsettings: { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['SiteID'] },
@@ -280,16 +354,16 @@ const LEGACY_FORM_PARSED: OrderInventory = {
 /** Table, owner and tenant source of each entry of the fixture order, in order. */
 const FIXTURE_ENTRIES: readonly (readonly [string, DataOwner | 'split', TenantFrom])[] = [
   ['tsettings', 'programs-sites', 'siteID'],
-  ['synthetic.person_archive', 'people', 'siteID'],
-  ['synthetic.program_site', 'programs-sites', 'siteID'],
-  ['Program_1.blackout', 'timesheets', 'parent'],
-  ['Program_2.blackout', 'timesheets', 'parent'],
-  ['timagesizes', 'programs-sites', 'siteID'],
-  ['tmailinglist', 'communications', 'siteID'],
-  ['tmailinglistmembers', 'communications', 'siteID'],
   ['tusers', 'split', 'siteID'],
   ['tcontent', 'strategies-content', 'siteID'],
   ['tfiles', 'strategies-content', 'siteID'],
+  ['timagesizes', 'programs-sites', 'siteID'],
+  ['tmailinglist', 'communications', 'siteID'],
+  ['tmailinglistmembers', 'communications', 'siteID'],
+  ['synthetic.program_site', 'programs-sites', 'siteID'],
+  ['synthetic.person_archive', 'people', 'siteID'],
+  ['Program_1.blackout', 'timesheets', 'parent'],
+  ['Program_2.blackout', 'timesheets', 'parent'],
 ];
 
 /** Child and parent table pairs of a fixture relation; `Program_N` sides become one pair per fixture program. */
@@ -391,10 +465,10 @@ describe('buildDependencyOrder over the fixture inventory and catalog', () => {
     expect(summary(buildDependencyOrder({ inventory: FIXTURE_INVENTORY, catalog: FIXTURE_CATALOG }))).toEqual(summary(order));
   });
 
-  it('orders tables that depend on tsettings alone by compareTableNames', () => {
+  it('orders tables that depend on tsettings alone by planned head group, Masa tables before the fold target and fixtures, then by name', () => {
     const siblings = order.entries.filter((entry) => entry.parents.join() === SITE_ROOT_TABLE).map((entry) => entry.table);
-    expect(siblings).toEqual(['synthetic.person_archive', 'synthetic.program_site', 'timagesizes', 'tmailinglist', 'tusers']);
-    expect([...siblings].sort(compareTableNames)).toEqual(siblings);
+    expect(siblings).toEqual(['tusers', 'timagesizes', 'tmailinglist', 'synthetic.program_site', 'synthetic.person_archive']);
+    expect(['timagesizes', 'tmailinglist'].sort(compareTableNames)).toEqual(siblings.slice(1, 3));
   });
 
   // EXPECTED_HEAD is the planned head and the computed order governs, so only its lead is pinned to the head.
@@ -476,7 +550,7 @@ describe('buildDependencyOrder over the fixture inventory and catalog', () => {
 describe('buildDependencyOrder', () => {
   const order = buildDependencyOrder({ inventory: MAIN_INVENTORY, catalog: MAIN_CATALOG });
 
-  it('starts with tsettings, then orders the smallest ready table first', () => {
+  it('starts with tsettings, then orders the ready tables by planned head group and name', () => {
     expect(order.order[0]).toBe(SITE_ROOT_TABLE);
     expect(EXPECTED_HEAD[0]).toBe(SITE_ROOT_TABLE);
     expect(order.order).toEqual(MAIN_ENTRIES.map(([table]) => table));
@@ -510,9 +584,9 @@ describe('buildDependencyOrder', () => {
     expect(order.parentOf('tjobqueue')).toBeNull();
   });
 
-  it('adds synthetic.program_site, the program fold target, though it does not migrate', () => {
+  it('adds synthetic.program_site, the program fold target, though it does not migrate, after every Masa table', () => {
     expect(MAIN_CATALOG.isMigratable(PROGRAM_SITE_TABLE)).toBe(false);
-    expect(order.order.indexOf(PROGRAM_SITE_TABLE)).toBe(1);
+    expect(order.order.indexOf(PROGRAM_SITE_TABLE)).toBe(order.entries.filter((entry) => entry.schema === 'dbo').length);
   });
 
   it.each(['tsettings', 'synthetic.program_site', 'tusers', 'tpermissions', 'tcontent', 'tcontentcategories', 'tapprovalchains'])(
@@ -581,6 +655,7 @@ describe('buildDependencyOrder', () => {
   it.each<[string, OrderInventory, Readonly<Record<string, FakeTable>>, readonly Unit[]]>([
     ['the site and program inventory', MAIN_INVENTORY, MAIN_TABLES, MAIN_UNITS],
     ['the cycle inventory', CYCLES_INVENTORY, ownedBy('surveys', CYCLES_KEYS), []],
+    ['the planned head inventory', HEAD_INVENTORY, HEAD_TABLES, []],
   ])('gives the same result for %s whatever the order of its tables, relations and units', (_, inventory, tables, units) => {
     const expected = summary(buildDependencyOrder({ inventory, catalog: fakeCatalog(tables, units) }));
     for (const [, permute] of permutations) {
@@ -665,6 +740,91 @@ describe('buildDependencyOrder', () => {
     const build = (): DependencyOrder => buildDependencyOrder({ inventory, catalog });
     expect(build).toThrow(DependencyOrderError);
     expect(build).toThrow(new DependencyOrderError(`ordered table synthetic.program_site is owned by "${owner}"`));
+  });
+});
+
+describe('buildDependencyOrder head', () => {
+  const order = buildDependencyOrder({ inventory: HEAD_INVENTORY, catalog: HEAD_CATALOG });
+  const at = positions(order);
+
+  it('follows the planned head: tusers, its memberships and permissions, people children, tcontent versions, categories, approvals', () => {
+    expect(order.order).toEqual(HEAD_ORDER);
+  });
+
+  it('still defers tcontent.FileID to break the tcontent/tfiles cycle that holds tusers back', () => {
+    expect(order.deferred.map(({ table, column, relationId }) => [table, column, relationId])).toEqual([['tcontent', 'FileID', 'dao:content.file']]);
+    expect(order.cycles).toEqual([['tcontent', 'tfiles']]);
+  });
+
+  it.each(['tusersmemb', 'tpermissions', 'tuserstags', 'tclassextenddatauseractivity', 'tuserremotesessions', 'tuserstrikes'])(
+    'places %s after tusers',
+    (table) => {
+      expect(at.get(table)).toBeGreaterThan(at.get('tusers') ?? Infinity);
+    },
+  );
+
+  it('places every Masa table before synthetic.program_site and every fixture table after it, module by module', () => {
+    const fixtures = order.entries.filter((entry) => entry.schema !== 'dbo').map((entry) => [entry.table, entry.owner]);
+    expect(order.entries.slice(0, -fixtures.length).every((entry) => entry.schema === 'dbo')).toBe(true);
+    expect(fixtures).toEqual([
+      [PROGRAM_SITE_TABLE, 'programs-sites'],
+      ['synthetic.survey', 'surveys'],
+      ['synthetic.survey_reminder', 'surveys'],
+      ['Program_1.timesheet', 'timesheets'],
+      ['Program_2.timesheet', 'timesheets'],
+    ]);
+  });
+
+  it.each<[string, string]>([
+    ['tuserremotesessions', 'tenant:session.user'],
+    ['tuserstrikes', 'tenant:strike.user'],
+  ])('inherits the tenant of %s through its tenant-parent relation to tusers', (table, relationId) => {
+    expect(order.parentOf(table)).toMatchObject({ id: relationId, kind: 'tenantParent', parent: { table: 'tusers' } });
+  });
+});
+
+describe('computeDependencyOrder over the committed inventory and table ownership', () => {
+  const config = loadConfig();
+  let order: DependencyOrder;
+  let at: Map<string, number>;
+
+  beforeAll(async () => {
+    order = await computeDependencyOrder({ inventory: config.paths.inventory, catalog: loadUnitCatalog(config.paths.tableOwnership), programIds: [1, 2] });
+    at = positions(order);
+  });
+
+  it('places every parent before its children except across a broken back-reference', () => {
+    const broken = new Set([...order.deferred, ...order.relaxed].map(({ table, references }) => `${table}<${references.table}`));
+    for (const entry of order.entries) {
+      for (const parent of entry.parents) {
+        if (!broken.has(`${entry.table}<${parent}`)) expect(at.get(parent), `${parent} before ${entry.table}`).toBeLessThan(entry.position);
+      }
+    }
+  });
+
+  it.each([
+    'tusersmemb',
+    'tpermissions',
+    'tuseraddresses',
+    'tuserremotesessions',
+    'tusersfavorites',
+    'tusersinterests',
+    'tuserstags',
+    'tuserstrikes',
+    'tclassextenddatauseractivity',
+  ])('relates %s to tusers and places it after tusers', (table) => {
+    expect(order.entries.find((entry) => entry.table === table)?.parents).toContain('tusers');
+    expect(at.get(table)).toBeGreaterThan(at.get('tusers') ?? Infinity);
+  });
+
+  it('leads with tsettings, places every Masa table before synthetic.program_site and every fixture table after it', () => {
+    const fold = at.get(PROGRAM_SITE_TABLE) ?? 0;
+    expect(order.order[0]).toBe(SITE_ROOT_TABLE);
+    expect(order.entries.filter((entry) => entry.schema === 'dbo' && entry.position > fold)).toEqual([]);
+    expect(order.entries.filter((entry) => entry.schema !== 'dbo' && entry.position < fold)).toEqual([]);
+    const programs = order.entries.filter((entry) => parseProgramTable(entry.table) !== null);
+    expect(programs.length).toBeGreaterThan(0);
+    for (const entry of programs) expect(entry.parents, entry.table).toContain(PROGRAM_SITE_TABLE);
   });
 });
 
@@ -822,6 +982,29 @@ describe('loadOrderInventory', () => {
     expect(loadOrderInventory(file)).toStrictEqual(LEGACY_FORM_PARSED);
   });
 
+  it('reads a tenant-parent relation as tenantParent, inherited through ahead of a code relation to a parent of the same tenant source', async () => {
+    const source = { path: 'core/mura/dbUpdates/5.2.0.cfm', lines: [318, 322] };
+    const file = await writeTempFile(
+      'legacy-inventory.json',
+      JSON.stringify({
+        tables: [...['tsettings', 'tusers', 'tcontent'].map((table) => ({ table, hasSiteId: true })), { table: 'tuserstrikes', hasSiteId: false }],
+        relations: [
+          { id: 'rel:dao', kind: 'dao-join', child: { table: 'tuserstrikes', columns: ['contentID'] }, parent: { table: 'tcontent', columns: ['ContentID'] } },
+          { id: 'rel:tenant', kind: 'tenant-parent', child: { table: 'tuserstrikes', columns: ['username'] }, parent: { table: 'tusers', columns: ['UserName'] }, source },
+        ],
+      }),
+    );
+    const inventory = loadOrderInventory(file);
+    expect(inventory.relations.map((r) => r.kind)).toEqual(['daoJoin', 'tenantParent']);
+    expect(buildDependencyOrder({ inventory, catalog: HEAD_CATALOG }).parentOf('tuserstrikes')).toStrictEqual({
+      id: 'rel:tenant',
+      kind: 'tenantParent',
+      child: { table: 'tuserstrikes', column: 'username' },
+      parent: { table: 'tusers', column: 'UserName' },
+      source,
+    });
+  });
+
   it('reads a serialised order inventory back unchanged', async () => {
     const inventory: OrderInventory = {
       tables: MAIN_INVENTORY.tables,
@@ -877,7 +1060,12 @@ describe('toMigrationOrderReport', () => {
     expect(Object.keys(report)).toEqual(['basis', 'expectedHead', 'order', 'brokenCycles']);
     expect(report.basis).toEqual({
       relations: 'opt2/inventory/legacy-inventory.json relations[]',
-      kinds: ['beanORM fkcolumn/cfc property', 'DAO join predicate in core/mura/**', 'Program_<id> fixture foreign-key column'],
+      kinds: [
+        'beanORM fkcolumn/cfc property',
+        'DAO join predicate in core/mura/**',
+        'Program_<id> fixture foreign-key column',
+        'opt2/table-ownership.json tenantParent join of a table no code join relates to its tenant parent',
+      ],
       foreignKeysDeclared: 0,
       cyclePolicy: 'load without back-reference column, patch in second pass; a back-reference mirrored by a kept relation loads unchanged',
     });
@@ -899,13 +1087,13 @@ describe('computeDependencyOrder', () => {
 
     expect(order.order).toEqual([
       'tsettings',
+      'tredirects',
+      'tjobqueue',
       'synthetic.program_site',
       'Program_1.grant',
       'Program_1.award',
       'Program_2.grant',
       'Program_2.award',
-      'tredirects',
-      'tjobqueue',
     ]);
     expect(order.parentOf('Program_2.award')?.id).toBe('rel:fold');
     expect(order.parentOf('tjobqueue')?.id).toBe('rel:dao');

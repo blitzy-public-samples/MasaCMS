@@ -694,6 +694,7 @@ export function buildComponentIndex(inputs: ComponentIndexInputs): ComponentInde
     byComponent.set(lower(e.component), e.source.path);
     byComponent.set(lower(e.source.path), e.source.path);
   }
+  const transientPaths = new Set(transients.map((e) => e.source.path));
   return {
     resolveBean(name) {
       const key = lower(name);
@@ -702,5 +703,6 @@ export function buildComponentIndex(inputs: ComponentIndexInputs): ComponentInde
     },
     ormTable: (p) => ormIndex.byComponent.get(p) ?? null,
     parsed: (p) => parsedIn(tree, p),
+    transient: (p) => transientPaths.has(p),
   };
 }

@@ -27,6 +27,7 @@ import { mappings, units } from './migration/mappings/index.js';
 import { createExportObjects } from './migration/objects.js';
 import { OWNER, SCHEMA, createContentRepository } from './repo/repository.js';
 import { LEGACY_API_PREFIXES, registerRoutes } from './routes/index.js';
+import { rawSurfaceOf } from './routes/v1/raw.js';
 import { createContentTaskPort, registerContentQueueControl } from './tasks/port.js';
 
 // Default project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
@@ -84,6 +85,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     verifierOverride: options.verifierOverride,
     // Legacy serves the JSON API, feed, render and variation leads in any letter case; the gateway forwards them as sent.
     noCasePathPrefixes: LEGACY_API_PREFIXES,
+    surfaceOf: rawSurfaceOf,
     // createService takes an injected pool or the schema whose pool it opens, never both.
     ...(options.db === undefined ? { schema: SCHEMA } : { pool: options.db }),
   });

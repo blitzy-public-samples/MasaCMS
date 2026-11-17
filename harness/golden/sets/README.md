@@ -44,7 +44,7 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
 | `response` | `status`, normalised `headers`, `rawSha256` of the raw bytes, and exactly one of `body`, `domModel` or `export` |
 | `response.body` | JSON or text. A JSON API body keeps legacy's envelope as served: `params` is absent under `suppressAPIParams`, and `data` is flattened when `useDataNamespace` is false [core/mura/client/api/json/v1/jsonApiUtility.cfc:1471-1511] |
 | `response.domModel` | Cheerio DOM model of admin HTML |
-| `response.export` | CSV/XLSX cell values, PDF text per page, or SHA-256 plus content type of a download |
+| `response.export` | CSV/XLSX cell values, PDF text per page, a ZIP's files and directories by name, SHA-256 and size of their content (text files normalised, directories empty, nested archives expanded, each also listed empty as `<name>!/`; entry times and order not compared), or SHA-256 plus content type of any other download |
 | `normalised` | Output of the one normaliser, `harness/src/golden/normalise/`, applying `harness/golden/normalise.yaml`. This is what `compare.ts` compares |
 | `expected`, `decisionListRef`, `exceptionId` | `withheld`, `halted` or `gap`, with the decision-list or exceptions-list entry the step points to |
 | `gap`, `candidateIndex` | A step no candidate request triggers deterministically, recorded as a halted `EX-GAP-*` entry in `opt2/exceptions-list.json`; the index of the candidate kept, which replay resends |

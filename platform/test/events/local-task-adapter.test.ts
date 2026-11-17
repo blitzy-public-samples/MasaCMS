@@ -1196,5 +1196,36 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
       await until(async () => (await storedRow(tenant, 'wake-purge-u')) === undefined);
       expect(taskNames()).toEqual(['wake-purge-u']);
     });
+
+    it('keeps a paused queue tombstone past its retention without rescanning its tenant, and purges it after resume', async () => {
+      const polling = await startQuiet();
+      const tenant = TENANT_B.tenantId;
+      const queue = 'communications-reminders';
+      const name = 'wake-paused-purge-b';
+      await polling.create({
+        queue,
+        name,
+        scheduleTime: new Date(nowMs),
+        url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/3`,
+        deadlineS: 60,
+        tenantId: tenant,
+      });
+      await until(async () => (await storedRow(tenant, name))?.status === 'done');
+      await polling.pauseQueue(queue);
+      try {
+        await sleep(POLL_MS * 5);
+        opened = [];
+        nowMs += LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
+        // One scan at tenant B's wake time, its paused read and claim, and none after it.
+        await until(() => opened.length >= 2);
+        await sleep(POLL_MS * 10);
+        expect(opened).toEqual([SYSTEM_TENANT_ID, tenant]);
+        expect(await storedRow(tenant, name)).toMatchObject({ status: 'done' });
+      } finally {
+        await polling.resumeQueue(queue);
+      }
+      await until(async () => (await storedRow(tenant, name)) === undefined);
+      expect(taskNames()).toEqual([name]);
+    });
   });
 });

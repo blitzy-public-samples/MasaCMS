@@ -214,9 +214,9 @@ describe('cEditProfile before()', () => {
     expect(decision).toEqual({ kind: 'redirect', location: loginLocation('edit') });
   });
 
-  it('registers edit and update behind the same gate, owned by identity and people', () => {
+  it('registers edit and update behind the same gate, both owned by people', () => {
     expect(ceditprofileScreens).toEqual([editProfileScreen, updateProfileAction]);
-    expect(editProfileScreen).toMatchObject({ circuit: 'ceditprofile', action: 'edit', mode: 'page', owner: 'identity' });
+    expect(editProfileScreen).toMatchObject({ circuit: 'ceditprofile', action: 'edit', mode: 'page', owner: 'people' });
     expect(updateProfileAction).toMatchObject({ circuit: 'ceditprofile', action: 'update', mode: 'page', owner: 'people' });
     expect(editProfileScreen.gate).toBe(ceditprofileGate);
     expect(updateProfileAction.gate).toBe(ceditprofileGate);

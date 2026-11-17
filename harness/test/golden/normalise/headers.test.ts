@@ -204,6 +204,22 @@ describe('normaliseHeaders', () => {
     });
   });
 
+  it.each([
+    [
+      'attachment;filename="export_sports_statua_corrupti_alias_claudeo_apud_tenant-a_2026_11_16_23_43.zip"',
+      'attachment;filename="export_sports_statua_corrupti_alias_claudeo_apud_tenant-a_2026_11_16_23_50.zip"',
+      'attachment;filename="export_sports_statua_corrupti_alias_claudeo_apud_tenant-a_<ts:file-stamp-minute>.zip"',
+    ],
+    [
+      'attachment;filename=opt_2_seed_contact_form_2026_16_11_tenant-a.zip',
+      'attachment;filename=opt_2_seed_contact_form_2026_17_11_tenant-a.zip',
+      'attachment;filename=opt_2_seed_contact_form_<ts:file-stamp-date>_tenant-a.zip',
+    ],
+  ])('normalises the filename stamp of Content-Disposition %s alike at another export time', (capture, replay, value) => {
+    expect(normalise({ 'Content-Disposition': capture })).toStrictEqual({ 'content-disposition': value });
+    expect(normalise({ 'Content-Disposition': replay })).toStrictEqual({ 'content-disposition': value });
+  });
+
   it('numbers ids in sorted header-name order, whatever the recorded order', () => {
     const expected = { 'x-a': '<id:1>', 'x-b': '<id:2>' };
     expect(normalise({ 'X-B': ID_B, 'X-A': ID_A })).toStrictEqual(expected);

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   capturedLogOffsets,
+  classifyClientSpans,
   findSeamTrace,
   mintTraceparent,
   readCapturedLogLines,
@@ -20,10 +21,69 @@ import type { EnvLike } from '../../src/lib/paths.js';
 const SEAM_TRACE = '0af7651916cd43dd8448eb211c80319c';
 const DISTRACTOR_TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
 const LOG_SCHEMA = 'platform/contracts/log-record.v1.json';
+const CLIENT_TRACE = '5b8efff798038103d269b633813fc60c';
+const PORTS = { legacyPort: 25080, stubPort: 25199 };
+const LEGACY = 'http://127.0.0.1:25080';
+const DESCRIBE_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
 
 interface CommittedReport {
   trace: { requiredSpans: Record<string, unknown>[] } & Record<string, unknown>;
   logs: Record<string, unknown>;
+}
+
+type OtlpTestAttribute = { key: string; value: { stringValue: string } | { intValue: string | number } };
+
+interface OtlpTestSpan {
+  traceId?: string;
+  kind?: number | string;
+  attributes: OtlpTestAttribute[];
+}
+
+function text(key: string, value: string): OtlpTestAttribute {
+  return { key, value: { stringValue: value } };
+}
+
+function int(key: string, value: string | number): OtlpTestAttribute {
+  return { key, value: { intValue: value } };
+}
+
+/** One gateway export line holding `spans`, CLIENT spans of {@link CLIENT_TRACE} unless they say otherwise. */
+function gatewayExportLine(spans: OtlpTestSpan[]): string {
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: { attributes: [text('service.name', 'gateway')] },
+        scopeSpans: [
+          {
+            scope: { name: '@opentelemetry/instrumentation-undici', version: '0.34.0' },
+            spans: spans.map((span, index) => ({
+              traceId: span.traceId ?? CLIENT_TRACE,
+              spanId: `c1d2e3f4a5b6c7${String(index).padStart(2, '0')}`,
+              parentSpanId: 'e457b5a2e4d86bd1',
+              name: 'GET',
+              kind: span.kind ?? 3,
+              startTimeUnixNano: '1782810005001000000',
+              endTimeUnixNano: '1782810005004000000',
+              attributes: span.attributes,
+              status: {},
+            })),
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/** Undici CLIENT span attributes of a request to `url`. */
+function undiciAttributes(url: string): OtlpTestAttribute[] {
+  const parsed = new URL(url);
+  return [
+    text('http.request.method', 'GET'),
+    text('url.full', url),
+    text('url.path', parsed.pathname),
+    text('url.query', parsed.search),
+    int('server.port', Number(parsed.port)),
+  ];
 }
 
 let stateRoot: string;
@@ -124,6 +184,81 @@ describe('findSeamTrace', () => {
       candidates: 0,
       problems: ['no seam trace found'],
     });
+  });
+});
+
+describe('classifyClientSpans', () => {
+  it.each([
+    [
+      'a bridge describe call on the legacy port',
+      'bridge',
+      undiciAttributes(`${LEGACY}${DESCRIBE_PATH}?op=describe`),
+      [`${DESCRIBE_PATH}?op=describe`],
+    ],
+    [
+      'a bridge call named only by its URL',
+      'bridge',
+      [text('http.url', `${LEGACY}/Gateway/Legacy-Bridge/cfml/session.cfm?op=usedSince&since=261116155900000`)],
+      ['/Gateway/Legacy-Bridge/cfml/session.cfm?op=usedSince'],
+    ],
+    [
+      'a bridge call without its full URL',
+      'bridge',
+      [text('url.path', DESCRIBE_PATH), text('url.query', '?op=markUsed'), int('server.port', '25080')],
+      [`${DESCRIBE_PATH}?op=markUsed`],
+    ],
+    [
+      'a bridge call whose op the exporter masked',
+      'bridge',
+      undiciAttributes(`${LEGACY}${DESCRIBE_PATH}?op=[REDACTED]`),
+      [DESCRIBE_PATH],
+    ],
+    ['a write forwarded to legacy', 'legacy', undiciAttributes(`${LEGACY}/opt2/stub/notes?siteid=tenant-a`), []],
+    ['a legacy-port span without URL attributes', 'legacy', [int('net.peer.port', '25080')], []],
+    ['a call to the stub', 'stub', undiciAttributes('http://127.0.0.1:25199/opt2/stub/notes'), []],
+    ['a call to identity', 'other', undiciAttributes('http://127.0.0.1:25111/internal/v1/csrf/consume'), []],
+    ['a URL naming no port', 'other', [text('url.full', 'https://pubsub.googleapis.com/v1/topics')], []],
+    [
+      'a span naming neither port nor URL',
+      'unresolved',
+      [text('http.request.method', 'GET'), text('url.full', 'not a url')],
+      [],
+    ],
+  ] as const)('counts %s as %s', (_label, destination, attributes, bridgeCalls) => {
+    const result = classifyClientSpans([gatewayExportLine([{ attributes: [...attributes] }])], CLIENT_TRACE, PORTS);
+
+    expect(result).toEqual({
+      counts: { legacy: 0, bridge: 0, stub: 0, other: 0, unresolved: 0, [destination]: 1 },
+      bridgeCalls,
+    });
+  });
+
+  it('counts only CLIENT spans of the asked trace and skips lines that do not name it', async () => {
+    const forwarded = undiciAttributes(`${LEGACY}/opt2/stub/notes`);
+    const lines = [
+      'not json',
+      gatewayExportLine([
+        { kind: 2, attributes: forwarded },
+        { traceId: DISTRACTOR_TRACE, attributes: forwarded },
+        { kind: 'SPAN_KIND_CLIENT', attributes: undiciAttributes(`${LEGACY}${DESCRIBE_PATH}?op=describe`) },
+        { attributes: undiciAttributes('http://127.0.0.1:25199/opt2/stub/notes') },
+      ]),
+      gatewayExportLine([{ traceId: DISTRACTOR_TRACE, attributes: forwarded }]),
+    ];
+
+    expect(classifyClientSpans(lines, CLIENT_TRACE, PORTS)).toEqual({
+      counts: { legacy: 0, bridge: 1, stub: 1, other: 0, unresolved: 0 },
+      bridgeCalls: [`${DESCRIBE_PATH}?op=describe`],
+    });
+    expect(classifyClientSpans(lines, DISTRACTOR_TRACE, PORTS).counts).toMatchObject({ legacy: 2, bridge: 0 });
+    expect(classifyClientSpans(await fixtureLines('traces.sample.jsonl'), SEAM_TRACE, PORTS)).toEqual({
+      counts: { legacy: 0, bridge: 0, stub: 0, other: 0, unresolved: 0 },
+      bridgeCalls: [],
+    });
+  });
+
+  it('throws on a malformed line that names the trace', () => {
+    expect(() => classifyClientSpans([`{"traceId":"${CLIENT_TRACE}"`], CLIENT_TRACE, PORTS)).toThrow(SyntaxError);
   });
 });
 

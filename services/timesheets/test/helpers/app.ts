@@ -2292,6 +2292,7 @@ const DATA_PATTERNS: readonly { readonly name: string; readonly match: RegExp }[
   { name: 'tenant-setting', match: /^select set_config\('app\.tenant_id', \$1, true\)$/ },
   { name: 'lock-timeout', match: /^select (?:set_config\('lock_timeout', \$1, true\)|current_setting\('lock_timeout'\) as value)$/ },
   { name: 'snapshot', match: /^select pg_snapshot_xm(?:in|ax)\(pg_current_snapshot\(\)\)::text as value$/ },
+  { name: 'current-xid', match: /^select pg_current_xact_id\(\)::text as xid$/ },
   { name: 'relation-probe', match: /^select to_regclass\(\$1\) is not null as \w+, to_regclass\(\$2\) is not null as \w+$/ },
   {
     name: 'outbox-drain',

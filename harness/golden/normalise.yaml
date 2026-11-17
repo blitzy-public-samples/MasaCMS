@@ -77,6 +77,13 @@ timestamps:
     - name: cookie-expires
       format: "ddd, dd-mmm-yyyy HH:mm:ss GMT"
       pattern: "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \\d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\\d{4} \\d{2}:\\d{2}:\\d{2} GMT"
+    # Download filename stamps: settingsBundle.cfc:1928 (yyyy_mm_dd_HH_mm), cform.cfc:101 and carch.cfc:164 (yyyy_dd_mm).
+    - name: file-stamp-minute
+      format: "yyyy_mm_dd_HH_mm"
+      pattern: "\\d{4}_\\d{2}_\\d{2}_\\d{2}_\\d{2}"
+    - name: file-stamp-date
+      format: "yyyy_mm_dd"
+      pattern: "\\d{4}_\\d{2}_\\d{2}"
     - name: iso-date
       format: "yyyy-mm-dd"
       pattern: "\\d{4}-\\d{2}-\\d{2}"
@@ -308,9 +315,13 @@ exports:
     parser: pdfjs-dist
     compare: text-per-page
     whitespace: collapse-and-trim
+  zip:
+    parser: jszip
+    # Entry name, SHA-256 and size, text normalised: Masa stamps entry times, nests archives, has ids and times in WDDX.
+    compare: [entries, contentType, contentDispositionFilename]
   file:
     compare: [sha256, contentType, contentDispositionFilename]
-  neverCompareBytes: [xlsx, pdf]
+  neverCompareBytes: [xlsx, pdf, zip]
 
 transitions:
   id: transitions
@@ -458,7 +469,7 @@ overrides:
       description: "Exempts the listed paths from the ids and timestamps rules."
     extraTokenFields:
       value: field-names
-      description: "Adds JSON keys and form fields whose values become <token>."
+      description: "Adds JSON keys and form fields whose values become <token>, in admin HTML wherever the page repeats them."
     dropHeaders:
       value: header-names
       description: "Adds response headers to drop, matched case-insensitively."
@@ -468,6 +479,9 @@ overrides:
     domExclude:
       value: css-selectors
       description: "Removes matching elements from the DOM model."
+    domUnordered:
+      value: css-selectors
+      description: "Compares the child elements of each matching element as an unordered collection, whose order legacy does not guarantee: they are sorted by their normalised form before the DOM model is built."
     sortArrays:
       value: json-paths
       description: "Sorts arrays at the listed paths, whose order legacy does not guarantee."

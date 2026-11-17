@@ -1,6 +1,13 @@
 // Cross-tenant reads and writes through the gateway with real seeded logins of tenant-a, tenant-b and umbrella.
 import { createHash } from 'node:crypto';
-import { LEGACY_ERROR_MAP, getApiVersion, isCfUuid } from '@opt2/platform/legacy-compat';
+import {
+  LEGACY_ERROR_MAP,
+  getApiVersion,
+  isCfUuid,
+  matchRouteKey,
+  scannedRouteKey,
+  type RouteKeyOptions,
+} from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
 import {
   TENANT_A,
@@ -15,8 +22,14 @@ import {
 } from '@opt2/platform/testing';
 import { FIXTURES_UNAVAILABLE, readFixtureStatus, type FixtureStatus, type ServiceName } from '../golden/catalogue.js';
 import {
+  NEUTRAL_ID,
+  defaultRouteKeyOptions,
+  toRouteKeyRequest,
+  type CutoverEntry,
+  type StepRequest,
+} from '../golden/coverage.js';
+import {
   adminLogin,
-  basicAuth,
   createScenarioContext,
   jsonApiLogin,
   jsonApiTokens,
@@ -131,7 +144,7 @@ export interface ProbeTarget {
   fields: Record<string, string>;
 }
 
-/** One target-served route family. */
+/** One route family the matrix probes; the active cut-over version decides whether target or legacy serves it. */
 export interface RouteFamily extends RouteSet {
   id: FamilyId;
   service: ServiceName;
@@ -143,8 +156,6 @@ export interface RouteFamily extends RouteSet {
   v1?: RouteSet;
   /** Tenants whose records are probed; default every tenant. */
   owners?: readonly TenantKey[];
-  /** `basic`: sessionless REST with the actor's credentials; `session`: the logged-in session. */
-  writeAuth: 'basic' | 'session';
   /** Whether the write is an id-addressed transition or edit, which `write-foreign-id` probes. */
   idAddressedWrite: boolean;
   shape: RecordShape;
@@ -185,7 +196,12 @@ function financeProbe(record: Readonly<Record<string, unknown>>, id: string, mar
   return amount === undefined || period === undefined ? undefined : { id, fields: { title: marker, amount, period } };
 }
 
-/** The target-served families with their legacy and fixture paths and, for fixture families, the `/v1/` paths. */
+/**
+ * The probed families with their legacy and fixture paths and, for fixture families, the `/v1/` paths. Content and
+ * user saves use the session JSON API: REST runs sessionless, so on ACF 2023 every REST credential login of a
+ * registered site answers 500 before any save (core/mura/content/contentRenderer.cfc:701), as identity does, and no
+ * REST probe would reach the owning service.
+ */
 export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
   {
     id: 'content',
@@ -194,10 +210,9 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
     fixtureRoute: false,
     list: `/_api/json/v1/{site}/content?${PAGE}`,
     byId: '/_api/json/v1/{site}/content/{id}',
-    write: '/_api/rest/v1/{site}/content/{id}',
+    write: '/_api/json/v1/{site}/content/{id}',
     encoding: 'form',
-    csrf: false,
-    writeAuth: 'basic',
+    csrf: true,
     idAddressedWrite: false,
     shape: {
       idFields: ['contentid', 'id'],
@@ -214,11 +229,10 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
     fixtureRoute: false,
     list: `/_api/json/v1/{site}/user?${PAGE}`,
     byId: '/_api/json/v1/{site}/user/{id}',
-    write: '/_api/rest/v1/{site}/user/{id}',
+    write: '/_api/json/v1/{site}/user/{id}',
     pooledList: `/_api/json/v1/{site}/user?${PAGE}&isPublic=1`,
     encoding: 'form',
-    csrf: false,
-    writeAuth: 'basic',
+    csrf: true,
     idAddressedWrite: false,
     shape: {
       idFields: ['userid', 'id'],
@@ -247,7 +261,6 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
       encoding: 'json',
       csrf: true,
     },
-    writeAuth: 'session',
     idAddressedWrite: true,
     shape: {
       idFields: ['timesheet_id', 'timesheetId'],
@@ -275,7 +288,6 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
       encoding: 'json',
       csrf: true,
     },
-    writeAuth: 'session',
     idAddressedWrite: true,
     shape: {
       idFields: ['record_id', 'recordId'],
@@ -297,7 +309,6 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
     encoding: 'form',
     csrf: true,
     // No `v1`: the surveys contract has no /v1/ response write.
-    writeAuth: 'session',
     idAddressedWrite: false,
     shape: {
       idFields: ['survey_id', 'surveyId'],
@@ -363,6 +374,56 @@ export interface GatewayIsolationResult {
   cases: IsolationCase[];
 }
 
+/** A probe request as the route-key gate reads a step: method, path with query, and body. */
+export type ProbeRequest = Pick<StepRequest, 'method' | 'route' | 'form' | 'body'>;
+
+/** Where a cut-over version sends one probe. */
+export interface ProbeRoute {
+  routeKey: string;
+  /** Route of the matched entry; absent when none matches, so legacy serves the probe. */
+  entry?: string;
+  state: CutoverEntry['state'];
+}
+
+/** Probe routing of one cut-over version. */
+export interface ProbeRouting {
+  tableVersion: string;
+  route(probe: ProbeRequest): ProbeRoute;
+}
+
+/** Reason prefix of a case whose probe the active cut-over version serves from legacy. */
+export const LEGACY_SERVED = 'skipped: legacy-served';
+
+/**
+ * Routing of `version`'s entries, keying each probe as the gateway keys a request; a halted key matches no entry, so
+ * legacy serves it. `opts` default to {@link defaultRouteKeyOptions}.
+ */
+export function versionRouting(
+  version: { tableVersion: string; entries: readonly Pick<CutoverEntry, 'route' | 'state'>[] },
+  opts: RouteKeyOptions = defaultRouteKeyOptions(),
+): ProbeRouting {
+  const entries = new Map(version.entries.map((entry) => [entry.route, entry]));
+  return {
+    tableVersion: version.tableVersion,
+    route(probe) {
+      const { result } = scannedRouteKey({ ...toRouteKeyRequest(probe, opts), url: probe.route }, opts);
+      const route = matchRouteKey(result, entries.keys());
+      const entry = route === undefined ? undefined : entries.get(route);
+      return entry === undefined
+        ? { routeKey: result.key, state: 'legacy' }
+        : { routeKey: result.key, entry: entry.route, state: entry.state };
+    },
+  };
+}
+
+/** Skip reason naming `probe`'s route key and version when `routing` serves it from legacy; undefined otherwise. */
+function legacyServed(routing: ProbeRouting | undefined, probe: ProbeRequest): string | undefined {
+  if (routing === undefined) return undefined;
+  const { routeKey, entry, state } = routing.route(probe);
+  if (state === 'target') return undefined;
+  return `${LEGACY_SERVED} ${routeKey} in ${routing.tableVersion}${entry === undefined ? ' (no entry)' : ''}`;
+}
+
 /** Reserved rehearsal identities that no probe may target. */
 export interface ReservedIdentities {
   persons: string[];
@@ -384,6 +445,8 @@ export interface GatewayIsolationDeps {
   reserved?: ReservedIdentities;
   /** Marker every probe value contains; default {@link DEFAULT_PROBE_SUFFIX}. */
   probeSuffix?: string;
+  /** Routing of the active cut-over version; cases it serves from legacy are skipped unsent. Default: every case runs. */
+  routing?: ProbeRouting;
 }
 
 /** Options of {@link buildCases}. */
@@ -723,6 +786,7 @@ interface Runtime {
   persons: ReadonlySet<string>;
   usernames: ReadonlySet<string>;
   accounts: Map<string, Account>;
+  routing?: ProbeRouting;
 }
 
 /** Logs `ref` of `tenant` in once per run through the admin login form or the JSON API `login`. */
@@ -958,7 +1022,6 @@ function classifyWrite(result: HttpResult, effect: boolean, fixture: boolean): {
 }
 
 async function writeHeaders(run: FamilyRun, acct: Account, context: string): Promise<Record<string, string>> {
-  if (run.family.writeAuth === 'basic') return { authorization: basicAuth(acct.username, acct.password) };
   return run.routes.csrf ? jsonApiTokens(acct.session, acct.site, context) : {};
 }
 
@@ -981,6 +1044,13 @@ async function writeCase(rt: Runtime, run: FamilyRun, c: IsolationCase, acct: Ac
   const fields =
     c.kind === 'write-site-mismatch' ? { ...target.probe.fields, siteid: siteOf(c.owner) } : target.probe.fields;
   c.route = fill(run.routes.write, site, target.probe.id);
+  // Variants key on the body, so the write is routed again with the fields it sends.
+  const payload = run.routes.encoding === 'json' ? { body: fields } : { form: fields };
+  const served = legacyServed(rt.routing, { method: c.method, route: c.route, ...payload });
+  if (served !== undefined) {
+    settle(c, 'skipped', {}, served);
+    return;
+  }
   const effectPath = fill(run.routes.effect ?? run.routes.byId, viewer.site, target.owned.id);
   const before = await viewer.session.get(effectPath);
   if (!isOk(before)) {
@@ -1171,7 +1241,8 @@ function totals(cases: IsolationCase[]): GatewayIsolationResult {
 
 /**
  * Runs every case of {@link buildCases} through the gateway, one at a time, as real seeded logins; identity comes
- * only from those logins. Returns the cases sorted by id with their totals.
+ * only from those logins. Cases `deps.routing` serves from legacy are skipped unsent, and a family with no case left
+ * is not logged in. Returns the cases sorted by id with their totals.
  */
 export async function runGatewayIsolation(deps: GatewayIsolationDeps = {}): Promise<GatewayIsolationResult> {
   const env = deps.env ?? process.env;
@@ -1187,12 +1258,19 @@ export async function runGatewayIsolation(deps: GatewayIsolationDeps = {}): Prom
     persons: new Set(reserved.persons.map((person) => person.toUpperCase())),
     usernames: new Set(reserved.usernames.map((username) => username.toLowerCase())),
     accounts: new Map(),
+    routing: deps.routing,
   };
   const cases = buildCases(families, { fixtures });
+  for (const c of cases) {
+    const probe = { method: c.method, route: c.route.replaceAll('{id}', NEUTRAL_ID) };
+    const served = c.result === 'skipped' ? undefined : legacyServed(rt.routing, probe);
+    if (served !== undefined) settle(c, 'skipped', {}, served);
+  }
   const runs = new Map<FamilyId, FamilyRun>();
   for (const family of families) {
     const routes = routesFor(family, fixtures);
-    if (routes !== undefined) {
+    const runnable = cases.some((c) => c.family === family.id && c.result !== 'skipped');
+    if (routes !== undefined && runnable) {
       runs.set(family.id, await prepareFamily(rt, family, routes, family.fixtureRoute && fixtures.available));
     }
   }

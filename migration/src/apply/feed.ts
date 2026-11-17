@@ -31,6 +31,7 @@ import { FileStoreUnsupportedError, SUPPORTED_FILE_STORE, removeDroppedObjects, 
 import { compareTableNames, computeDependencyOrder } from '../order/index.js';
 import type { DataOwner, LegacyTableTarget } from '../owners/index.js';
 import {
+  activeVersionExpectation,
   describeUnitTable,
   fileUnitIds,
   objectLegacyPath,
@@ -56,7 +57,7 @@ import {
   type OwnerBatcher,
   type TenantResolver,
 } from './batch.js';
-import { Acceptance, addTaken, chunksOf, hintOf, planTarget, type DiffSide, type TargetPlan } from './targets.js';
+import { Acceptance, addTaken, chunksOf, hintOf, planTarget, prepareTenants, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the feed reads: snapshots, both data sides through `legacy` and `owners`, the gateway's authority and the report target. */
 export type FeedContext = Pick<
@@ -281,6 +282,41 @@ async function countDropped(share: OwnerShare, run: DiffRun, rows: readonly (rea
   }
 }
 
+/**
+ * Re-places a row whose writable columns did not change but whose writable targets or tenant differ between the snapshots:
+ * `count` deletes under its base placement and adds under the new one. A placement only read-only targets change counts as dropped.
+ */
+async function replace(
+  share: OwnerShare,
+  run: DiffRun,
+  rows: { readonly before: CanonicalRow; readonly after: CanonicalRow },
+  add: Extract<ApplyChange['op'], 'upsert' | 'insert'>,
+  count: number,
+): Promise<void> {
+  const { result } = share;
+  const was = await run.acceptance.filter(share.writable, run.before, rows.before);
+  const now = await run.acceptance.filter(share.writable, run.after, rows.after);
+  const old = run.before.tenants.resolve(run.table, rows.before.row);
+  const next = run.after.tenants.resolve(run.table, rows.after.row);
+  const moved = old.tenantId !== next.tenantId;
+  if ((was.length === 0 && now.length === 0) || (samePlans(was, now) && !moved)) {
+    const held = await run.acceptance.filter(share.readOnly, run.before, rows.before);
+    const holds = await run.acceptance.filter(share.readOnly, run.after, rows.after);
+    if (held.length + holds.length > 0 && (moved || !samePlans(held, holds))) result.droppedTargetAuthoritative += 1;
+    return;
+  }
+  for (let occurrence = 0; occurrence < count; occurrence++) {
+    if (was.length > 0) {
+      await send(share, run, 'delete', rows.before, was, old);
+      result.deletes += 1;
+    }
+    if (now.length > 0) {
+      await send(share, run, add, rows.after, now, next);
+      result.inserts += 1;
+    }
+  }
+}
+
 /** Applies one keyed change to one owner's writable targets; a row changing targets, tenant or target key is deleted and re-inserted. */
 async function applyKeyedChange(share: OwnerShare, run: DiffRun, change: KeyedChange): Promise<void> {
   const { result } = share;
@@ -298,6 +334,7 @@ async function applyKeyedChange(share: OwnerShare, run: DiffRun, change: KeyedCh
     result.deletes += 1;
     return;
   }
+  if (change.columns.length === 0) return replace(share, run, change, 'upsert', 1);
   const was = await run.acceptance.filter(share.writable, run.before, change.before);
   const now = await run.acceptance.filter(share.writable, run.after, change.after);
   if (was.length === 0 && now.length === 0) {
@@ -330,8 +367,13 @@ async function applyKeyedChange(share: OwnerShare, run: DiffRun, change: KeyedCh
   }
 }
 
-/** Applies one keyless occurrence change to one owner: a delete of one matching row per removed occurrence, an insert per added one. */
+/**
+ * Applies one keyless occurrence change to one owner: its kept occurrences re-placed, a delete of one matching row per removed
+ * occurrence and an insert per added one.
+ */
 async function applyMultisetChange(share: OwnerShare, run: DiffRun, change: MultisetChange): Promise<void> {
+  if (change.kept !== undefined) await replace(share, run, change.kept, 'insert', change.kept.count);
+  if (change.added === 0 && change.removed === 0) return;
   const side = change.added > 0 ? run.after : run.before;
   const taken = await run.acceptance.filter(share.writable, side, change.row);
   if (taken.length === 0) return countDropped(share, run, [[side, change.row]]);
@@ -356,6 +398,14 @@ function keyedRows(run: DiffRun, change: KeyedChange): (readonly [DiffSide, Cano
   ];
 }
 
+/** Rows of a keyless change with the side each is judged on: the changed occurrence's, then each side's kept one. */
+function multisetRows(run: DiffRun, change: MultisetChange): (readonly [DiffSide, CanonicalRow])[] {
+  const rows: (readonly [DiffSide, CanonicalRow])[] = [];
+  if (change.added + change.removed > 0) rows.push([change.added > 0 ? run.after : run.before, change.row]);
+  if (change.kept !== undefined) rows.push([run.before, change.kept.before], [run.after, change.kept.after]);
+  return rows;
+}
+
 /** Base snapshot of `owner`: the caller's, else the sequence of its `forward` watermark; null when it has none. */
 async function baseOf(ctx: Pick<TableDiffContext, 'owners'>, options: ApplyTableDiffOptions, owner: DataOwner): Promise<number | null> {
   if (options.baseByOwner?.has(owner) === true) return options.baseByOwner.get(owner) ?? null;
@@ -364,7 +414,7 @@ async function baseOf(ctx: Pick<TableDiffContext, 'owners'>, options: ApplyTable
 
 /**
  * Streams the table once from base snapshot `base` and once from `to`, and applies each change to every owner of the group,
- * `batchSize` changes at a time after preparing their acceptance.
+ * `batchSize` changes at a time after preparing their acceptance and tenants.
  */
 async function diffGroup(
   ctx: TableDiffContext,
@@ -406,6 +456,8 @@ async function diffGroup(
   }));
 
   const targets = [...new Set(shares.flatMap((share) => [...share.writable, ...share.readOnly].map((plan) => plan.target)))];
+  // A row equal in both snapshots can still change tenant or targets when the table's rules read other rows, so each is re-judged.
+  const rejudged = run.after.tenants.readsOtherRows(table.name) || (await run.acceptance.readsOtherRows(targets, run.after));
   const before = streamLegacyTable(ctx, { table, database: from.databaseName });
   const after = streamLegacyTable(ctx, { table, database: to.databaseName });
   if (shape.keyed) {
@@ -413,13 +465,18 @@ async function diffGroup(
       shares.flatMap((share) => share.writable),
       shape,
     );
-    for await (const changes of chunksOf(diffKeyedStreams(before, after, { columns: shape.columns, writableColumns }), options.batchSize)) {
-      await run.acceptance.prepare(targets, changes.flatMap((change) => keyedRows(run, change)));
+    const diff = diffKeyedStreams(before, after, { columns: shape.columns, writableColumns, unchanged: rejudged ? 'all' : 'differing' });
+    for await (const changes of chunksOf(diff, options.batchSize)) {
+      const rows = changes.flatMap((change) => keyedRows(run, change));
+      await run.acceptance.prepare(targets, rows);
+      await prepareTenants(run.table, rows);
       for (const change of changes) for (const share of shares) await applyKeyedChange(share, run, change);
     }
   } else {
-    for await (const changes of chunksOf(diffMultisetStreams(before, after), options.batchSize)) {
-      await run.acceptance.prepare(targets, changes.map((change) => [change.added > 0 ? run.after : run.before, change.row] as const));
+    for await (const changes of chunksOf(diffMultisetStreams(before, after, { kept: rejudged }), options.batchSize)) {
+      const rows = changes.flatMap((change) => multisetRows(run, change));
+      await run.acceptance.prepare(targets, rows);
+      await prepareTenants(run.table, rows);
       for (const change of changes) for (const share of shares) await applyMultisetChange(share, run, change);
     }
   }
@@ -627,7 +684,11 @@ export async function runFeed(ctx: FeedContext, options: FeedOptions = {}): Prom
 
   const point = `after-feed-${String(to.seq)}`;
   const report = await reconcileUnits(ctx, { point, units: reconciledUnits(ctx, writableUnits, files), database: to.databaseName, snapshotSeq: to.seq });
-  const written: ReconcileReport & { feed: FeedReportBlock } = { ...report, feed };
+  const written: ReconcileReport & { feed: FeedReportBlock } = {
+    ...report,
+    ...activeVersionExpectation(authority.tableVersion, report.expectedTableVersion, report.tableVersion),
+    feed,
+  };
   const reportPath = await writeReconciliationReport(ctx, written);
   return {
     snapshotSeq: to.seq,

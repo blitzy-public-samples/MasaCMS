@@ -380,6 +380,15 @@ describe('handleAdminPage', () => {
     expectLogged('page:cnope.zzz', 404);
   });
 
+  it.each(['main', 'login'])('answers 404 for the withheld clogin.%s{status=sendlogin}', async (action) => {
+    const query = { status: 'sendLogin', email: 'admin@example.com' };
+
+    expect((await adminPage('clogin', action, { query })).status).toBe(404);
+    const identityWrites = gatewayCalls().filter((call) => /\/(login-mail|sessions\/login)$/.test(call));
+    expect(identityWrites).toEqual([]);
+    expectLogged(`page:clogin.${action}`, 404);
+  });
+
   it.each<{ caller: string; opts: () => Promise<AdminRequestOptions>; status: 401 | 403 }>([
     { caller: 'without the gateway invocation', opts: async () => ({ invocation: false }), status: 403 },
     {

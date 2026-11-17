@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { computeClosure, extractSqlWrites, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
+import { computeClosure, extractSqlWrites, memorySourceTree, openSourceTree, parseCfmlComponent, viaLabel } from '../../src/inventory/closure.js';
 import type { CfmlComponent, ClosureWrite, ComponentIndex, SourceTree, WriteClosure } from '../../src/inventory/closure.js';
 import { loadWriterOverrides } from '../../src/inventory/overrides.js';
 import type { SourceRef, Trigger, WriterOverrides } from '../../src/inventory/overrides.js';
@@ -14,6 +14,7 @@ import {
   TABLE_SCOPE,
   assignOwners,
   attachWriters,
+  extractFixtureTables,
   extractTables,
   fetchLiveCatalog,
   loadTableOwnership,
@@ -136,6 +137,8 @@ function byTable(tables: readonly TableEntry[], table: string): TableEntry {
 /** Minimal table entry for a table the fixture trees do not create. */
 function handBuilt(table: string, siteIdColumn: string | null = null): TableEntry {
   const source = src(DDL, 1);
+  const columns = siteIdColumn === null ? [] : [{ name: siteIdColumn, type: 'nvarchar', length: 25, nullable: true, source }];
+  const siteIdSource = siteIdColumn === null ? null : source;
   return {
     id: `tbl:${table}`,
     table,
@@ -146,15 +149,21 @@ function handBuilt(table: string, siteIdColumn: string | null = null): TableEntr
     otherDialects: [],
     retired: false,
     droppedBy: null,
-    columns: siteIdColumn === null ? [] : [{ name: siteIdColumn, type: 'nvarchar', length: 25, nullable: true, source }],
+    columns,
     hasSiteId: siteIdColumn !== null,
     siteIdColumn,
-    siteIdSource: siteIdColumn === null ? null : source,
+    siteIdSource,
     hasPrimaryKey: true,
-    staticHasPrimaryKey: true,
     bootstrapHasPrimaryKey: true,
     primaryKey: [],
     primaryKeySource: null,
+    staticColumns: columns,
+    staticHasSiteId: siteIdColumn !== null,
+    staticSiteIdColumn: siteIdColumn,
+    staticSiteIdSource: siteIdSource,
+    staticHasPrimaryKey: true,
+    staticPrimaryKey: [],
+    staticPrimaryKeySource: null,
     serializedColumns: [],
     ormEntity: null,
     owningService: null,
@@ -372,7 +381,18 @@ describe('attachWriters', () => {
     if (comp === null || fn === undefined) throw new Error('cleanup fixture did not parse');
     const [w] = extractSqlWrites(fn, comp);
     if (w === undefined) throw new Error('cleanup fixture has no SQL write');
-    return { table: w.table, op: w.op, component: CLEANUP, method: fn.name, source: src(CLEANUP, w.line, w.endLine), trigger, whereParams: w.whereParams, conditional: false };
+    return {
+      table: w.table,
+      op: w.op,
+      component: CLEANUP,
+      method: fn.name,
+      source: src(CLEANUP, w.line, w.endLine),
+      trigger,
+      whereParams: w.whereParams,
+      conditional: false,
+      columns: w.columns,
+      via: [viaLabel(CLEANUP, fn.name)],
+    };
   }
 
   beforeAll(async () => {
@@ -450,6 +470,22 @@ describe('attachWriters', () => {
       writer({ component: MANAGER, method: 'trackStats', source: src(MANAGER, 12, 16), op: 'insert', keyScope: ['siteid'], trigger: 'thread', override: 'wov:fixture-thread' }),
     ]);
     expect(byTable(result, 'tfixture').writers).toEqual([]);
+  });
+
+  it('attaches the committed comment-notification redirect writer to tredirects under page rendering', async () => {
+    const committed = await loadWriterOverrides();
+    const jobs = { jobs: [{ id: 'job:sitemonitor', steps: [] }] };
+    const writers = byTable(attachWriters([handBuilt('tredirects')], [], committed, jobs).tables, 'tredirects').writers;
+    expect(writers.filter((w) => w.component === 'core/mura/utility.cfc')).toEqual([
+      expect.objectContaining({
+        method: 'createRedirectID',
+        op: 'insert',
+        source: { path: 'core/mura/utility.cfc', lines: [430, 434] },
+        routeKeys: ['api:processasyncobject', 'page:render'],
+        trigger: 'request',
+        override: 'wov:comments-display-object-redirects',
+      }),
+    ]);
   });
 
   it('returns a write of a table without an inventory entry as unmatched', () => {
@@ -639,5 +675,99 @@ describe('fetchLiveCatalog and mergeLiveCatalog', () => {
   it('rejects malformed catalog rows', async () => {
     const malformed = { ...rows, columns: [{ ...column('dbo', 'tfixture', 'fixtureID', 'char', 35, 'NO', 1), IS_NULLABLE: 'MAYBE' }] };
     await expect(fetchLiveCatalog(catalogDb(malformed, []))).rejects.toThrow('live catalog column rows are malformed');
+  });
+});
+
+describe('extractFixtureTables', () => {
+  const TABLES_SQL = 'legacy-fixtures/sql/thing/100_tables.sql';
+  const PROGRAM_SQL = 'legacy-fixtures/sql/thing/110_tables.program.sql';
+  const files: Readonly<Record<string, string>> = {
+    [TABLES_SQL]: [
+      '-- SYNTHETIC: CREATE TABLE [synthetic].[ghost] ([id] int) is only a comment.',
+      "IF OBJECT_ID(N'[synthetic].[thing]', N'U') IS NULL",
+      'BEGIN',
+      '\tCREATE TABLE [synthetic].[thing] (',
+      '\t\t[thing_id] [char] (35) NOT NULL ,',
+      '\t\t[siteID] [nvarchar] (25) NOT NULL ,',
+      '\t\t[label] [nvarchar] (max) NULL ,',
+      '\t\tCONSTRAINT [PK_thing] PRIMARY KEY CLUSTERED ([thing_id])',
+      '\t) ON [PRIMARY];',
+      'END',
+      'GO',
+      '',
+    ].join('\n'),
+    [PROGRAM_SQL]: [
+      '/* Runs once per program schema. */',
+      'CREATE TABLE [$(PROGRAM_SCHEMA)].[ledger] (',
+      '\t[ledger_id] [char] (35) NOT NULL PRIMARY KEY,',
+      '\t[amount] [numeric] (19, 4) NOT NULL',
+      ');',
+      'GO',
+      'CREATE TABLE $(PROGRAM_SCHEMA).ledger_note ([note_id] int NOT NULL, [ledger_id] char(35) NULL);',
+      'GO',
+      '',
+    ].join('\n'),
+  };
+  const fixtures = extractFixtureTables(memorySourceTree(files));
+  const column = (name: string, type: string, length: number | 'max' | null, nullable: boolean, file: string, line: number): TableEntry['columns'][number] => ({
+    name,
+    type,
+    length,
+    nullable,
+    source: src(file, line),
+  });
+
+  it('builds one fixture entry per CREATE TABLE of the fixture SQL, sourced at that line, a program script folding to Program_N', () => {
+    expect(fixtures.map((t) => t.id)).toEqual(['tbl:Program_N.ledger', 'tbl:Program_N.ledger_note', 'tbl:synthetic.thing']);
+    expect(byTable(fixtures, 'synthetic.thing')).toMatchObject({
+      schema: 'synthetic',
+      origin: 'fixture',
+      source: src(TABLES_SQL, 4),
+      createdBy: [{ dialect: 'mssql', path: TABLES_SQL, lines: [4, 4] }],
+      columns: [column('thing_id', 'char', 35, false, TABLES_SQL, 5), column('siteID', 'nvarchar', 25, false, TABLES_SQL, 6), column('label', 'nvarchar', 'max', true, TABLES_SQL, 7)],
+      hasSiteId: true,
+      siteIdColumn: 'siteID',
+      siteIdSource: src(TABLES_SQL, 6),
+      hasPrimaryKey: true,
+      primaryKey: ['thing_id'],
+      primaryKeySource: null,
+      writers: [],
+      live: null,
+      liveStatus: 'pending-run',
+    });
+    expect(byTable(fixtures, 'Program_N.ledger')).toMatchObject({
+      schema: 'Program_N',
+      source: src(PROGRAM_SQL, 2),
+      columns: [column('ledger_id', 'char', 35, false, PROGRAM_SQL, 3), column('amount', 'numeric', 19, false, PROGRAM_SQL, 4)],
+      hasSiteId: false,
+      primaryKey: ['ledger_id'],
+    });
+    expect(byTable(fixtures, 'Program_N.ledger_note')).toMatchObject({ source: src(PROGRAM_SQL, 7), hasPrimaryKey: false, primaryKey: [] });
+    expect(extractFixtureTables(memorySourceTree({}))).toEqual([]);
+  });
+
+  it('folds the live Program_<id> instances into the static Program_N entry and keeps the fixture entries on reset', () => {
+    const liveTable = (schema: string, name: string, columns: readonly string[], primaryKey: readonly string[]): LiveCatalogTable => ({
+      schema,
+      name,
+      columns: columns.map((c) => ({ name: c, type: 'char', length: 35, nullable: false })),
+      primaryKey: [...primaryKey],
+      hasPrimaryKey: primaryKey.length > 0,
+      hasSiteId: columns.some((c) => c.toLowerCase() === 'siteid'),
+    });
+    const merged = mergeLiveCatalog(fixtures, [
+      liveTable('Program_1', 'ledger', ['ledger_id', 'amount'], ['ledger_id']),
+      liveTable('Program_2', 'ledger', ['ledger_id', 'amount'], ['ledger_id']),
+      liveTable('synthetic', 'thing', ['thing_id', 'siteID', 'label'], ['thing_id']),
+      liveTable('Program_1', 'extra', ['extra_id'], []),
+    ]);
+    expect(merged.map((t) => [t.id, t.origin, t.createdBy.length, t.live?.instances])).toEqual([
+      ['tbl:Program_N.extra', 'fixture', 0, ['Program_1.extra']],
+      ['tbl:Program_N.ledger', 'fixture', 1, ['Program_1.ledger', 'Program_2.ledger']],
+      ['tbl:Program_N.ledger_note', 'fixture', 1, []],
+      ['tbl:synthetic.thing', 'fixture', 1, ['synthetic.thing']],
+    ]);
+    expect(byTable(merged, 'Program_N.ledger').source).toEqual(src(PROGRAM_SQL, 2));
+    expect(mergeLiveCatalog(merged, null)).toEqual(fixtures);
   });
 });

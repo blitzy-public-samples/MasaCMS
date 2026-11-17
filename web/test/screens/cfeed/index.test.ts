@@ -9,7 +9,7 @@ import { cfeedListScreen } from '@/screens/cfeed/list';
 import { cfeedSecondaryMenu as leafSecondaryMenu } from '@/screens/cfeed/secondary-menu';
 import { cfeedSiteParentsScreen } from '@/screens/cfeed/siteparents';
 import { cfeedUpdateScreen } from '@/screens/cfeed/update';
-import type { FragmentScreen, PageScreen, ScreenContext, ScreenDefinition } from '@/screens/registry';
+import type { FragmentScreen, ScreenContext, ScreenDefinition } from '@/screens/registry';
 import { makeAdminRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
@@ -19,13 +19,13 @@ import { makeScreenContext } from '../../helpers/screen-context';
 vi.mock('@/screens/registry', () => ({ shellHooks: { secondaryMenus: {} } }));
 
 const INVENTORY_URL = new URL('../../../../opt2/inventory/legacy-inventory.json', import.meta.url);
-const FEED_ID = 'F1000000-0000-0000-0000000000000001';
 const HTML_TYPE = 'text/html;charset=UTF-8';
 
 interface InventoryVariant {
   readonly routeKey: string;
   readonly disposition: string | null;
   readonly responseMode: string | null;
+  readonly exceptionRef?: string | null;
 }
 
 /** Every inventoried `admin:cfeed.*` key with its disposition and response mode. */
@@ -67,10 +67,19 @@ describe('cfeed barrel', () => {
   const records = cfeedRecords();
   const carried = records.filter((record) => record.disposition === 'carry');
 
-  it('registers exactly the carried inventory keys, each once; import2 stays on legacy', () => {
+  it('registers exactly the carried inventory keys but the halted import1, each once; import2 stays on legacy', () => {
     const keys = cfeedScreens.map(keyOf);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys.toSorted()).toEqual(carried.map((record) => record.routeKey).toSorted());
+    expect(keys.toSorted()).toEqual(
+      carried
+        .filter((record) => (record.exceptionRef ?? null) === null)
+        .map((record) => record.routeKey)
+        .toSorted(),
+    );
+    expect(carried.find((record) => record.routeKey === 'admin:cfeed.import1')?.exceptionRef).toBe(
+      'EX-FEED-REMOTE-OVERSIZE',
+    );
+    expect(keys).not.toContain('admin:cfeed.import1');
     expect(records.find((record) => record.routeKey === 'admin:cfeed.import2')?.disposition).toBe('decision');
     expect(keys).not.toContain('admin:cfeed.import2');
   });
@@ -93,22 +102,6 @@ describe('cfeed barrel', () => {
 
   it('re-exports the shell secondary-menu hook', () => {
     expect(cfeedSecondaryMenu).toBe(leafSecondaryMenu);
-  });
-
-  it('loads cFeed.import1 on the rc before() leaves, which the view and the shell then read', async () => {
-    const gateway = fakeGatewayClient({
-      [routeKey('GET', 'strategies-content', `/v1/sites/default/feeds/${FEED_ID}/import`)]: {
-        status: 200,
-        body: { rc: { feedBean: { name: 'Wire', version: 'RSS 2.0' }, items: [] } },
-      },
-    });
-    const ctx = context('import1', { feedid: FEED_ID }, gateway);
-    // before() adds only the keys the request, after the admin set-up, lacks.
-    const expected = { ...CFEED_RC_DEFAULTS, ...ctx.req.rc };
-    const page = screenOf('import1') as PageScreen;
-    await expect(page.load?.(ctx)).resolves.toEqual({ feedName: 'Wire', version: 'RSS 2.0', items: [] });
-    expect({ ...ctx.req.rc }).toEqual(expected);
-    expect(ctx.req.rc).toMatchObject({ feedid: FEED_ID, siteid: 'default', startrow: '1', regionID: '0' });
   });
 
   it('relays cFeed.loadSite with the rc before() leaves', async () => {

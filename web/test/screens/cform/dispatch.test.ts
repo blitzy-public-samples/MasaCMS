@@ -1,5 +1,6 @@
 // The real handlers and registry for the requests the gateway forwards by the inventoried response mode: Import Form as
-// a post action, and the form-builder and object-params actions as bare bodies that no page handler serves.
+// a post action, the form-builder actions as bare bodies that no page handler serves, and the withheld object-params
+// write that neither handler serves.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setServiceClientForTests } from '@/lib/gateway-client';
 import { handleAdminAction, handleAdminPage, handleAdminRaw } from '@/lib/handlers';
@@ -212,19 +213,6 @@ const BARE: readonly BareCase[] = [
     contentType: JSON_TYPE,
     body: '{"datasetid":"D2"}',
   },
-  {
-    circuit: 'carch',
-    action: 'updateobjectparams',
-    request: { form: { contenthistid: HIST_ID, siteid: SITE, approved: '0', preview: '0', ...CSRF_FIELDS } },
-    routes: {
-      [routeKey('POST', 'strategies-content', `/v1/sites/${SITE}/content/versions/${HIST_ID}/object-params`)]: {
-        status: 200,
-        body: { saved: true, errors: {}, redirect: null, data: { contentID: CONTENT_ID, contentHistID: HIST_ID } },
-      },
-    },
-    contentType: HTML_TYPE,
-    body: `{contentid:'${CONTENT_ID}',contenthistid:'${HIST_ID}'} `,
-  },
 ];
 
 describe.each(BARE)('$circuit.$action', ({ circuit, action, request, routes, contentType, body }) => {
@@ -254,6 +242,25 @@ describe.each(BARE)('$circuit.$action', ({ circuit, action, request, routes, con
     });
 
     expect(response.status).toBe(404);
+    expect(contentRequests()).toEqual([]);
+  });
+});
+
+describe('carch.updateobjectparams', () => {
+  it('is withheld, so neither the raw nor the page handler serves it and no service is called', async () => {
+    const form = { contenthistid: HIST_ID, siteid: SITE, approved: '0', preview: '0', ...CSRF_FIELDS };
+    serve({
+      [routeKey('POST', 'strategies-content', `/v1/sites/${SITE}/content/versions/${HIST_ID}/object-params`)]: {
+        status: 200,
+        body: { saved: true, errors: {}, redirect: null, data: { contentID: CONTENT_ID, contentHistID: HIST_ID } },
+      },
+    });
+    const params = { circuit: 'carch', action: 'updateobjectparams' };
+
+    const raw = await handleAdminRaw(await adminRequest('/admin-raw/carch/updateobjectparams', { user: 'admin', form }), params);
+    const page = await handleAdminPage(await adminRequest('/admin/carch/updateobjectparams', { user: 'admin' }), params);
+
+    expect([raw.status, page.status]).toEqual([404, 404]);
     expect(contentRequests()).toEqual([]);
   });
 });

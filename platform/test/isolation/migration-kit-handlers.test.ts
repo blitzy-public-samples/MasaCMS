@@ -1337,6 +1337,28 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expectRejected(await get('/position', { publishedTopics: `${created},mk.listed.created` }));
   });
 
+  it('lists the registry tenants, each site and its pools once, only when asked', async () => {
+    await seedRegistry(handle.app);
+    const poolOnly = tenantIdForSite('mk-pool-only');
+    try {
+      await withMetadata(handle.app, (tx) =>
+        tx.query(`UPDATE ${handle.schema}.tenant_registry SET public_user_pool_id = 'mk-pool-only', public_user_pool_tenant = $1 WHERE site_id = $2`, [
+          poolOnly,
+          TENANT_B.siteId,
+        ]),
+      );
+
+      const res = await get('/position', { registeredTenants: 'true' });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json<PositionResponse>().registeredTenants).toEqual([TENANT_A.tenantId, TENANT_B.tenantId, TENANT_UMBRELLA.tenantId, poolOnly].sort());
+      expect((await get('/position', { registeredTenants: 'false' })).json<PositionResponse>()).not.toHaveProperty('registeredTenants');
+      expect((await get('/position')).json<PositionResponse>()).not.toHaveProperty('registeredTenants');
+      expectRejected(await get('/position', { registeredTenants: 'yes' }));
+    } finally {
+      await seedRegistry(handle.app);
+    }
+  });
+
   it('pages published events across tenants by seq, never past a tenant whose own page is full', async () => {
     await seedRegistry(handle.app);
     const topic = 'mk.paged.created.v1';
@@ -1884,6 +1906,123 @@ describe.skipIf(!available)('migration endpoints of a service paging its object 
     const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.item', siteId: 'tenant-a', after: cursorText(cursor) } });
     expectRejected(res);
     expect(calls).toEqual([]);
+  });
+});
+
+describe.skipIf(!available)('migration applies of a mapping whose table has a target-only column', () => {
+  const VERSIONED: TableDefinition = {
+    table: 'versioned',
+    unit: 'mk.versioned',
+    key: ['item_id'],
+    columns: [
+      { name: 'tenant_id', type: 's' },
+      { name: 'item_id', type: 's' },
+      { name: 'name', type: 's' },
+      { name: 'row_version', type: 'i' },
+    ],
+  };
+  const VERSIONED_LEGACY: CanonicalColumn[] = [
+    { name: 'ItemID', type: 's' },
+    { name: 'Name', type: 's' },
+  ];
+  const VERSIONED_MAPPING = defineMapping({
+    legacyTable: 'tVersioned',
+    targetTable: 'mk.versioned',
+    columns: [
+      { legacy: 'ItemID', target: 'item_id', type: 's' },
+      { legacy: 'Name', target: 'name', type: 's' },
+    ],
+    key: ['ItemID'],
+  });
+  const site = 'versioned-site';
+  const tenantId = tenantIdForSite(site);
+  const pending: Parameters<NonNullable<MigrationHandlerOptions['targetOnlyColumns']>>[1][] = [];
+  const emitted: AppliedChange[] = [];
+  let handle: ThrowawaySchema;
+  let app: FastifyInstance;
+  let headers: Record<string, string>;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({
+      service: `${OWNER}-versioned`,
+      schemaName: BASE,
+      extraSql: [
+        migrationKitSql(BASE),
+        `CREATE TABLE ${BASE}.versioned (tenant_id uuid NOT NULL, item_id text NOT NULL, name text, row_version bigint NOT NULL DEFAULT 0,
+           PRIMARY KEY (tenant_id, item_id));`,
+        rlsSql(BASE, 'versioned'),
+      ],
+    });
+    app = await serviceApp(handle.app);
+    registerWritePositionHeader(app);
+    registerMigrationHandlers(app, {
+      owner: OWNER,
+      repository: createRepository({ owner: OWNER, schema: handle.schema, tables: [VERSIONED] }),
+      mappings: [VERSIONED_MAPPING],
+      units: ['mk.versioned'],
+      emitStateEvents: (_tx, change) => {
+        emitted.push(change);
+        return Promise.resolve();
+      },
+      targetOnlyColumns: (_tx, change) => {
+        pending.push(change);
+        return Promise.resolve({ row_version: String(BigInt(String(change.before?.row_version ?? 0)) + 1n) });
+      },
+    });
+    await app.ready();
+    headers = await authHeadersFor(subject('service:migration'), { audience: OWNER });
+  });
+
+  afterAll(async () => {
+    await app?.close();
+    await handle?.drop();
+  });
+
+  /** Applies one upsert of item v1 named `name` and returns the 200 answer. */
+  async function applyName(batchId: string, origin: string, name: string): Promise<LightMyRequestResponse> {
+    const rows = rowsOf(VERSIONED_LEGACY, [['upsert', { ItemID: 'v1', Name: name }]]);
+    const res = await app.inject({
+      method: 'POST',
+      url: `${MIGRATION_PATH_PREFIX}/apply`,
+      headers,
+      payload: { batchId, origin, legacyTable: 'tVersioned', siteId: site, columns: VERSIONED_LEGACY, rows },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return res;
+  }
+
+  it('writes the hook columns in the applied write itself and leaves a row the target already holds unwritten but positioned', async () => {
+    expect((await applyName('versioned-b1', 'backfill', 'One')).json()).toEqual({ batchId: 'versioned-b1', duplicate: false, applied: 1, skipped: 0 });
+    expect((await applyName('versioned-b2', 'migration-feed', 'Two')).json()).toEqual({ batchId: 'versioned-b2', duplicate: false, applied: 1, skipped: 0 });
+    const resent = await applyName('versioned-b3', 'migration-feed', 'Two');
+    expect(resent.json()).toEqual({ batchId: 'versioned-b3', duplicate: false, applied: 1, skipped: 0 });
+    // An unchanged batch is positioned at its own transaction, which wrote only the batch record.
+    const position = /^[^=]+=(\d+)$/.exec(String(resent.headers[WRITE_POSITION_HEADER_LC]))?.[1];
+    const [batch] = await handle.app.withTenant(tenantId, async (tx) =>
+      (await tx.query<{ xmin: string }>(`SELECT xmin::text AS xmin FROM ${handle.schema}.migration_batch WHERE batch_id = 'versioned-b3'`)).rows,
+    );
+    expect(resent.headers[WRITE_POSITION_HEADER_LC]).toBe(`${OWNER}=${position}`);
+    expect((BigInt(position ?? '0') & 0xffff_ffffn).toString()).toBe(batch?.xmin);
+
+    const one = { tenant_id: tenantId, item_id: 'v1', name: 'One', row_version: '1' };
+    const two = { ...one, name: 'Two', row_version: '2' };
+    expect(pending).toEqual([
+      { unit: 'mk.versioned', table: 'versioned', row: { item_id: 'v1', name: 'One' } },
+      { unit: 'mk.versioned', table: 'versioned', row: { item_id: 'v1', name: 'Two' }, before: one },
+    ]);
+    expect(emitted.map((change) => [change.op, change.after])).toEqual([
+      ['insert', one],
+      ['update', two],
+    ]);
+    const log = await handle.app.withTenant(tenantId, async (tx) =>
+      (await tx.query<{ op: string; columns: string[]; after: string; request_id: string }>(
+        `SELECT op, columns, after, request_id FROM ${handle.schema}.changelog ORDER BY seq`,
+      )).rows,
+    );
+    expect(log).toEqual([
+      { op: 'insert', columns: ['item_id', 'name', 'row_version'], after: encodeRow(VERSIONED.columns, one), request_id: 'versioned-b1' },
+      { op: 'update', columns: ['name', 'row_version'], after: encodeRow(VERSIONED.columns, two), request_id: 'versioned-b2' },
+    ]);
   });
 });
 

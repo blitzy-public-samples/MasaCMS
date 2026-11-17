@@ -32,17 +32,19 @@ import { OwnerCallError, loadUnitCatalog, type DataOwner } from '../../src/owner
 import type { LegacyEffect } from '../../src/reverse/apply-legacy.js';
 import { ProjectionTimeoutError, createAwaiter } from '../../src/reverse/await.js';
 import { createProjector } from '../../src/reverse/index.js';
-import { OperationTracker, ROSTER_PARTICIPANTS } from '../../src/reverse/operations.js';
+import { HeldSpanChangedError, OperationTracker, ROSTER_PARTICIPANTS } from '../../src/reverse/operations.js';
 import {
   PROJECTOR_LOCK_KEY,
   createProjectorLoop,
   liveTenantSites,
   runProjectorCycle,
   type CycleDeps,
+  type CycleResult,
   type OperationChangePoint,
   type ProjectorContext,
   type ProjectorHooks,
   type StartupGuardRunner,
+  type StreamMemory,
 } from '../../src/reverse/projector.js';
 import { createStartupGuardRunner, type GuardRunnerContext, type ReloadWindowResult } from '../../src/windows/reload.js';
 import { createGatewayDouble } from '../helpers/gateway-double.js';
@@ -186,14 +188,16 @@ function fakeLegacy(options: LegacyOptions = {}) {
     const horizon = String(params.appliedHorizon);
     const pending = params.pendingEffects as string | null;
     const ready = pending === null || previous === undefined ? null : previous.pending_effects === null ? previous.applied_horizon : previous.ready_horizon;
+    const horizonOnly =
+      previous !== undefined && Number(params.rowsApplied) === 0 && previous.cursor_xid === String(params.cursorXid) && previous.cursor_seq === String(params.cursorSeq);
     const record: CheckpointRecord = {
       owner: String(params.owner),
       tenant_id: String(params.tenantId),
       cursor_xid: String(params.cursorXid),
       cursor_seq: String(params.cursorSeq),
       applied_horizon: previous !== undefined && BigInt(previous.applied_horizon) > BigInt(horizon) ? previous.applied_horizon : horizon,
-      batch_id: String(params.batchId),
-      rows_applied: Number(params.rowsApplied),
+      batch_id: horizonOnly ? previous.batch_id : String(params.batchId),
+      rows_applied: horizonOnly ? previous.rows_applied : Number(params.rowsApplied),
       updated_at: null,
       pending_effects: pending,
       ready_horizon: ready,
@@ -281,13 +285,16 @@ function fakeLegacy(options: LegacyOptions = {}) {
   };
 }
 
-/** Migration pool answering the advisory lock and the `projector_cursor` mirror upsert. */
-function fakeDb(leader = true) {
+/** Migration pool answering the advisory lock and the `projector_cursor` mirror upsert; `mirrorTx` numbers each mirror write's transaction. */
+function fakeDb(leader = true, failMirror: (owner: string, tenantId: string) => boolean = () => false) {
   const mirror = new Map<string, { cursor: string; horizon: string }>();
+  const mirrorTx: number[] = [];
+  let transactions = 0;
   const db = {
     schema: 'migration',
     withTenant: () => Promise.reject(new Error('the projector never acts for a tenant on the migration pool')),
     async withMetadata<T>(fn: (tx: never) => Promise<T>): Promise<T> {
+      const id = ++transactions;
       const tx = {
         schema: 'migration',
         kind: 'metadata',
@@ -298,7 +305,9 @@ function fakeDb(leader = true) {
             return { rows: [{ ok: leader }] };
           }
           if (text.startsWith('INSERT INTO "migration"."projector_cursor"')) {
+            if (failMirror(String(values[0]), String(values[1]))) throw new Error('mirror unavailable');
             mirror.set(`${String(values[0])}|${String(values[1])}`, { cursor: String(values[2]), horizon: String(values[3]) });
+            mirrorTx.push(id);
             return { rows: [] };
           }
           throw new Error(`unexpected PostgreSQL SQL: ${text}`);
@@ -308,7 +317,7 @@ function fakeDb(leader = true) {
     },
     end: async () => undefined,
   };
-  return { db, mirror };
+  return { db, mirror, mirrorTx };
 }
 
 function page(rows: ProjectedChangeRow[], horizon: string, after: string, operations: Record<string, OperationStatus> = {}, complete = true): ChangesResponse {
@@ -418,6 +427,10 @@ interface Fakes {
   owners?: ReturnType<typeof fakeOwners>;
   /** Active version the gateway reports; null before `v0001`. */
   tableVersion?: string | null;
+  /** `projection.streamPagesPerCycle` of the context; the committed value when unset. */
+  streamPagesPerCycle?: number;
+  /** `projection.batchRows` of the context; the committed value when unset. */
+  batchRows?: number;
 }
 
 function harness(fakes: Fakes = {}) {
@@ -426,10 +439,12 @@ function harness(fakes: Fakes = {}) {
   const owners = fakes.owners ?? fakeOwners();
   const bridge = fakeBridge();
   const noop = () => undefined;
-  const logger = { level: 'info', fatal: noop, error: vi.fn(), warn: noop, info: noop, debug: noop, trace: noop, child: noop, isLevelEnabled: () => true, flush: noop };
+  const logger = { level: 'info', fatal: noop, error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: noop, trace: noop, child: noop, isLevelEnabled: () => true, flush: noop };
   const gateway = { status: vi.fn(async () => ({ tableVersion: fakes.tableVersion === undefined ? 'v9001' : fakes.tableVersion, epoch: 1 })) };
+  const streamPagesPerCycle = fakes.streamPagesPerCycle ?? config.projection.streamPagesPerCycle;
+  const batchRows = fakes.batchRows ?? config.projection.batchRows;
   const ctx = {
-    config,
+    config: { ...config, projection: { ...config.projection, streamPagesPerCycle, batchRows } },
     clock: { now: () => new Date(2026, 5, 30, 12, 0, 0) },
     logger,
     db: db.db,
@@ -556,7 +571,8 @@ describe('runProjectorCycle streams', () => {
     };
     const h = harness({ owners: fakeOwners({ pages, defaultHorizon: '777' }) });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
-    expect(result).toMatchObject({ leader: true, ran: true, rowsApplied: 0, skipped: 2, batches: config.dataOwners.length, errors: [] });
+    // The communications batch, then one batch for every other stream's empty page.
+    expect(result).toMatchObject({ leader: true, ran: true, rowsApplied: 0, skipped: 2, batches: 2, errors: [] });
     expect(h.legacy.checkpoint('communications')).toMatchObject({ cursor_xid: '501', cursor_seq: '2', applied_horizon: '502', rows_applied: 0 });
     expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '777' });
     expect(h.legacy.applied(/^(INSERT|DELETE|UPDATE \[)/)).toEqual([]);
@@ -582,6 +598,14 @@ describe('runProjectorCycle streams', () => {
     expect(h.legacy.applied(new RegExp(`^UPDATE \\[dbo\\]\\.\\[${legacyTable}\\]`))).toHaveLength(1);
     expect(h.bridge.calls).toEqual(bridgeCalls);
     expect(h.owners.watermarks).toEqual([{ owner, legacyTable, direction: 'reverse' }]);
+  });
+
+  it('applies the rows of one row in seq order, its commit order, keeping other rows at their positions', async () => {
+    const rows = [person('Lin', {}, [100, 2]), person('Zed', { key: 'other' }, [100, 3]), person('Grace', {}, [101, 1])];
+    const h = harness({ owners: fakeOwners({ pages: { [`people|${CURSOR_START}`]: page(rows, '102', CURSOR_START) } }) });
+    expect(await runProjectorCycle(h.ctx, cycleDeps())).toMatchObject({ rowsApplied: 3, errors: [] });
+    expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['Grace', 'Zed', 'Lin']);
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '101', cursor_seq: '1', applied_horizon: '102' });
   });
 
   /** The tusers targets other than people.person, in ownership-file order. */
@@ -680,6 +704,40 @@ describe('runProjectorCycle streams', () => {
       ['purgeCache', SITE],
     ]);
     expect(h.legacy.checkpoint('strategies-content')).toMatchObject({ cursor_xid: '120', cursor_seq: '1' });
+  });
+
+  it("passes the cycle's signal to the file operations, which read no later state of a replaced object once it aborts", async () => {
+    const fileId = 'F1E2D3C4-0000-0000-0000000000000002';
+    const after = encodeRow(FILE_OBJECT_COLUMNS, {
+      tenant_id: TENANT,
+      file_id: fileId,
+      variant: '',
+      ext: 'pdf',
+      object_key: `${TENANT}/${fileId}.pdf`,
+      size: '5',
+      sha256: createHash('sha256').update('older').digest('hex'),
+      content_type: 'application/pdf',
+      orphan: '0',
+      created_at: '2026-06-30 12:00:00.000',
+    });
+    const row: ProjectedChangeRow = { ...contentUpdate(), xid: '120', table: 'file_object', op: 'insert', after, legacy: [] };
+    const owners = fakeOwners({ pages: { [`strategies-content|${CURSOR_START}`]: page([row], '121', CURSOR_START) } });
+    const stop = new AbortController();
+    const serve = owners.owners.getObject;
+    owners.owners.getObject = () => {
+      stop.abort();
+      return serve();
+    };
+    const h = harness({ owners });
+
+    const result = await runProjectorCycle(h.ctx, { ...cycleDeps(), signal: stop.signal });
+
+    expect(result).toMatchObject({ files: { put: 0, deleted: 0 }, errors: [] });
+    expect(owners.changes).not.toContainEqual({ owner: 'strategies-content', after: '120:1' });
+    expect(h.logger.info).toHaveBeenCalledWith(
+      { tenantId: TENANT },
+      `Skipped legacy file ${SITE}/cache/file/${fileId}.pdf from ${TENANT}/${fileId}.pdf: a later change of the key projects it`,
+    );
   });
 
   catalogs['Program_1.finance_attachment'] = {
@@ -855,13 +913,33 @@ describe('runProjectorCycle streams', () => {
     h.owners.owners.changes = async (owner, params) => (owner === 'people' ? Promise.reject(new Error('people down')) : changes(owner, params));
     const result = await runProjectorCycle(h.ctx, cycleDeps());
     expect(result.errors.map((error) => [error.owner, error.tenantId, error.cursor, error.error.message])).toEqual([['people', TENANT, CURSOR_START, 'people down']]);
-    expect(result.batches).toBe(config.dataOwners.length - 1);
+    expect(result.batches).toBe(1);
+    expect(h.legacy.checkpoint('people')).toBeUndefined();
+    expect(h.legacy.committed.size).toBe(config.dataOwners.length - 1);
     expect(h.logger.error).toHaveBeenCalledTimes(1);
   });
 
   it('rejects the cycle when a hook throws', async () => {
     const lost = new Error('process lost');
-    await expect(runProjectorCycle(harness().ctx, cycleDeps({ beforeBatch: () => Promise.reject(lost) }))).rejects.toBe(lost);
+    await expect(runProjectorCycle(harness().ctx, cycleDeps({ beforeFirstBatch: () => Promise.reject(lost) }))).rejects.toBe(lost);
+  });
+
+  it('runs beforeFirstBatch once per cycle, before the first batch transaction, however many batches commit', async () => {
+    const pages = { [`people|${CURSOR_START}`]: page([person('Grace')], '101', CURSOR_START), [`identity|${CURSOR_START}`]: page([account('grace')], '103', CURSOR_START) };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const opened: number[] = [];
+    const beforeFirstBatch = vi.fn(() => {
+      opened.push(h.legacy.begun());
+      return Promise.resolve();
+    });
+
+    const result = await runProjectorCycle(h.ctx, cycleDeps({ beforeFirstBatch }));
+
+    // The identity and people batches, then the idle advances of the other streams.
+    expect(result).toMatchObject({ batches: 3, rowsApplied: 2, errors: [] });
+    expect(opened).toEqual([0]);
+    await runProjectorCycle(h.ctx, cycleDeps({ beforeFirstBatch }));
+    expect(beforeFirstBatch).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1107,6 +1185,8 @@ describe('runProjectorCycle roster operations', () => {
     expect(updates.every((statement) => statement.tx === joint)).toBe(true);
     const checkpointed = h.legacy.statements.filter((statement) => statement.tx === joint && statement.sql.startsWith('UPDATE opt2_sync'));
     expect(checkpointed.map((statement) => statement.params.owner).sort()).toEqual(['identity', 'people']);
+    const participants = h.legacy.applied(/^UPDATE opt2_sync/).filter((statement) => ['identity', 'people'].includes(String(statement.params.owner)));
+    expect(participants.map((statement) => statement.tx)).toEqual([joint, joint]);
     expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '100', cursor_seq: '1' });
     expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
     expect([...h.owners.positions].sort()).toEqual(['identity', 'people']);
@@ -1129,12 +1209,63 @@ describe('runProjectorCycle roster operations', () => {
       'identity|100:1': page([account('lin', {}, [105, 2])], '106', '100:1'),
       [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP }, [101, 1])], '102', CURSOR_START, { [OP]: 'rolled-back' }),
     };
-    const h = harness({ owners: fakeOwners({ pages }) });
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
     expect(result).toMatchObject({ held: 1, rowsApplied: 1, errors: [] });
     expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['lin']);
     expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '105', cursor_seq: '2' });
     expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '101', cursor_seq: '1' });
+  });
+
+  it('keeps a row whose same-row predecessor follows a rolled-back run unapplied until the re-run applies both in seq order', async () => {
+    const pages = {
+      [`identity|${CURSOR_START}`]: page(
+        [account('lin', {}, [100, 5]), account('op', { operationId: OP, key: 'held' }, [101, 2]), account('grace', {}, [102, 4])],
+        '103',
+        CURSOR_START,
+        { [OP]: 'open' },
+      ),
+      [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP }, [101, 1])], '102', CURSOR_START, { [OP]: 'rolled-back' }),
+    };
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+    expect(result).toMatchObject({ held: 1, rowsApplied: 2, skipped: 2, errors: [] });
+    expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['grace', 'lin']);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '4', applied_horizon: '103' });
+  });
+
+  it('counts as skipped only the rolled-back parts checkpointed past their stream, leaving the rest to the re-run', async () => {
+    const pages: Record<string, PageSource> = {
+      [`identity|${CURSOR_START}`]: page(
+        [account('lin', {}, [100, 5]), account('op', { operationId: OP, key: 'held' }, [101, 2]), account('grace', {}, [102, 4])],
+        '103',
+        CURSOR_START,
+        { [OP]: 'open' },
+      ),
+      // People's turn reports no status of the operation; its status read finds it rolled back.
+      [`people|${CURSOR_START}`]: (read) => page([person('Grace', { operationId: OP }, [101, 1])], '102', CURSOR_START, read === 1 ? {} : { [OP]: 'rolled-back' }),
+    };
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+    expect(result).toMatchObject({ held: 2, rowsApplied: 2, skipped: 2, errors: [] });
+    expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['grace', 'lin']);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '4', applied_horizon: '103' });
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '101', cursor_seq: '1' });
+  });
+
+  it('leaves a rolled-back operation parked while one of its streams has stopped, counting and committing none of it', async () => {
+    const pages: Record<string, PageSource> = {
+      [`identity|${CURSOR_START}`]: (read) => page([account('grace', { operationId: OP }, [100, 1])], '102', CURSOR_START, read === 1 ? {} : { [OP]: 'rolled-back' }),
+      [`people|${CURSOR_START}`]: (read) => {
+        if (read > 1) throw new Error('people down');
+        return page([person('Grace', { operationId: OP }, [101, 1])], '102', CURSOR_START);
+      },
+    };
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+    expect(result).toMatchObject({ held: 2, rowsApplied: 0, skipped: 0 });
+    expect(result.errors.map((error) => [error.owner, error.cursor, error.error.message])).toEqual([['people', CURSOR_START, 'people down']]);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '100' });
   });
 
   it('re-runs a stream whose read-ahead reached a held row and then releases the operation', async () => {
@@ -1143,19 +1274,22 @@ describe('runProjectorCycle roster operations', () => {
         read === 1 ? page([], '101', CURSOR_START) : page([account('grace', { operationId: OP })], '200', CURSOR_START, { [OP]: 'done' }),
       [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }),
     };
-    const h = harness({ owners: fakeOwners({ pages }) });
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
     expect(result.errors).toEqual([]);
     const updates = h.legacy.applied(TUSERS_UPDATE);
     expect(updates).toHaveLength(2);
     expect(updates[0]?.tx).toBe(updates[1]?.tx);
     expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
+    // The joint batch supersedes the first read's empty page and the parked page, which commit nothing of their own.
+    expect(h.legacy.applied(/^UPDATE opt2_sync/).filter((statement) => statement.params.owner === 'identity')).toHaveLength(1);
   });
 
-  it.each<[string, OwnersOptions['failPosition'], LegacyOptions]>([
-    ['a fence owner cannot report its position', 'identity', {}],
-    ['the joint batch fails', undefined, { failOn: /SET \[UserName\]/ }],
-  ])('keeps the operation unapplied when %s', async (_label, failPosition, legacyOptions) => {
+  it.each<[string, OwnersOptions['failPosition'], LegacyOptions, Partial<CheckpointRecord> | undefined]>([
+    // People's parked horizon rides the idle batch; a failed joint batch stops both participants, which commit nothing.
+    ['a fence owner cannot report its position', 'identity', {}, { cursor_xid: '0', applied_horizon: '100' }],
+    ['the joint batch fails', undefined, { failOn: /SET \[UserName\]/ }, undefined],
+  ])('keeps the operation unapplied when %s', async (_label, failPosition, legacyOptions, peopleCheckpoint) => {
     const pages = {
       [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }),
       [`identity|${CURSOR_START}`]: page([account('grace', { operationId: OP })], '103', CURSOR_START, { [OP]: 'done' }),
@@ -1164,7 +1298,7 @@ describe('runProjectorCycle roster operations', () => {
     const result = await runProjectorCycle(harness({ legacy, owners: fakeOwners({ pages, failPosition }) }).ctx, cycleDeps());
     expect(result.errors.length).toBeGreaterThan(0);
     expect(legacy.applied(TUSERS_UPDATE)).toEqual([]);
-    expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', applied_horizon: '100' });
+    expect(legacy.checkpoint('people')).toEqual(peopleCheckpoint === undefined ? undefined : expect.objectContaining(peopleCheckpoint));
   });
 
   describe('beforeOperationChange', () => {
@@ -1223,7 +1357,7 @@ describe('runProjectorCycle roster operations', () => {
       expect(rolledBack).toHaveLength(1);
       expect(issuedIn(legacy, rolledBack[0] ?? 0)).toEqual({ tusers: issuedBeforeThrow, checkpoints: 0, ended: [['rollback', rolledBack[0]]] });
       expect(legacy.applied(TUSERS_UPDATE)).toEqual([]);
-      for (const owner of ['people', 'identity']) expect(legacy.checkpoint(owner), owner).toMatchObject({ cursor_xid: '0', cursor_seq: '0' });
+      for (const owner of ['people', 'identity']) expect(legacy.checkpoint(owner), owner).toBeUndefined();
 
       failing = false;
       expect(await loop.runOnce()).toMatchObject({ rowsApplied: 2, errors: [] });
@@ -1255,7 +1389,7 @@ describe('runProjectorCycle roster operations', () => {
       const tx = await holding;
       expect(issuedIn(h.legacy, tx)).toEqual({ tusers: ['Grace'], checkpoints: 0, ended: [] });
       expect(h.legacy.applied(TUSERS_UPDATE)).toEqual([]);
-      expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '0', cursor_seq: '0' });
+      expect(h.legacy.checkpoint('identity')).toBeUndefined();
 
       release();
       expect(await cycle).toMatchObject({ rowsApplied: 2, errors: [] });
@@ -1266,6 +1400,497 @@ describe('runProjectorCycle roster operations', () => {
       expect(issuedIn(h.legacy, tx)).toMatchObject({ checkpoints: 2, ended: [['commit', tx]] });
       expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
     });
+  });
+});
+
+/** Identity account updates, one per xid, as a changes page read after `after`. */
+const accounts = (xids: number[], horizon: number, after: string, complete = false): ChangesResponse =>
+  page(
+    xids.map((xid) => account(`u${String(xid)}`, {}, [xid, 1])),
+    String(horizon),
+    after,
+    {},
+    complete,
+  );
+
+describe('runProjectorCycle turns', () => {
+  it('reads a stream whose end keeps moving only up to the horizon of its first read, projecting the next stream in between', async () => {
+    const h = harness({ owners: fakeOwners({ pages: { [`people|${CURSOR_START}`]: page([person('Grace')], '101', CURSOR_START) } }), streamPagesPerCycle: 5 });
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    const reads: string[] = [];
+    // Every read of identity returns the next two transactions and a horizon 60 past the cursor, never a complete page.
+    h.owners.owners.changes = async (owner, params) => {
+      reads.push(`${owner}|${params.after}`);
+      if (owner !== 'identity') return changes(owner, params);
+      if (reads.filter((read) => read.startsWith('identity|')).length > 10) throw new Error('identity read past its frontier');
+      const xid = Number(params.after.split(':')[0]);
+      return accounts([xid + 10, xid + 20], xid + 60, params.after);
+    };
+
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+
+    expect(result).toMatchObject({ rowsApplied: 7, errors: [], backlog: true });
+    // The frontier is 60: the third page reaches it, and no read follows a cursor at or past it.
+    expect(reads.filter((read) => /^(identity|people)\|/.test(read))).toEqual([`identity|${CURSOR_START}`, `people|${CURSOR_START}`, 'identity|20:1', 'identity|40:1']);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '60', cursor_seq: '1', applied_horizon: '60' });
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '100', cursor_seq: '1', applied_horizon: '101', rows_applied: 1 });
+  });
+
+  it('gives streams with several pages one page per turn, alternately', async () => {
+    const pages = {
+      [`identity|${CURSOR_START}`]: accounts([10], 100, CURSOR_START),
+      'identity|10:1': accounts([20], 100, '10:1'),
+      'identity|20:1': accounts([30], 100, '20:1', true),
+      [`people|${CURSOR_START}`]: page([person('A', {}, [11, 1])], '100', CURSOR_START, {}, false),
+      'people|11:1': page([person('B', {}, [21, 1])], '100', '11:1', {}, false),
+      'people|21:1': page([person('C', {}, [31, 1])], '100', '21:1'),
+    };
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 3 });
+
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+
+    expect(result).toMatchObject({ rowsApplied: 6, errors: [], backlog: false });
+    expect(h.owners.changes.filter((read) => read.owner === 'identity' || read.owner === 'people').map((read) => `${read.owner}|${read.after}`)).toEqual([
+      `identity|${CURSOR_START}`,
+      `people|${CURSOR_START}`,
+      'identity|10:1',
+      'people|11:1',
+      'identity|20:1',
+      'people|21:1',
+    ]);
+  });
+
+  it('reads a fenced stream ahead only until it passes the fence, then applies the operation jointly', async () => {
+    const pages: Record<string, PageSource> = {
+      [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }),
+      // Identity's change of the operation commits after its first read; its later write at 160 lies past the fence at 150.
+      [`identity|${CURSOR_START}`]: (read) =>
+        read === 1 ? page([], '101', CURSOR_START) : page([account('grace', { operationId: OP }), account('lin', {}, [160, 1])], '200', CURSOR_START, { [OP]: 'done' }, false),
+    };
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
+
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+
+    expect(result).toMatchObject({ held: 2, rowsApplied: 2, errors: [], backlog: true });
+    const updates = h.legacy.applied(TUSERS_UPDATE);
+    expect(updates.map((statement) => statement.params.p0)).toEqual(['Grace', 'grace']);
+    expect(new Set(updates.map((statement) => statement.tx)).size).toBe(1);
+    // The first read, the read-ahead that stopped past the fence, the re-run that parked at the operation, and the release's re-read of its span.
+    expect(h.owners.changes.filter((read) => read.owner === 'identity').map((read) => read.after)).toEqual([CURSOR_START, CURSOR_START, CURSOR_START, CURSOR_START]);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1', applied_horizon: '160' });
+  });
+
+  /** Identity's three pages from the start, each below the horizon 100 of a cycle's first read; the last one is complete. */
+  const threePages = (): Record<string, PageSource> => ({
+    [`identity|${CURSOR_START}`]: accounts([10], 100, CURSOR_START),
+    'identity|10:1': accounts([20], 100, '10:1'),
+    'identity|20:1': accounts([30], 100, '20:1', true),
+  });
+
+  it.each<[number, string[][], boolean[]]>([
+    [1, [[CURSOR_START], ['10:1'], ['20:1']], [true, true, false]],
+    [2, [[CURSOR_START, '10:1'], ['20:1']], [true, false]],
+  ])('reads at most %i pages of a stream per cycle, each next cycle continuing from its checkpoint', async (streamPagesPerCycle, reads, backlogs) => {
+    const h = harness({ owners: fakeOwners({ pages: threePages() }), streamPagesPerCycle });
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+    const identityReads = () => h.owners.changes.filter((read) => read.owner === 'identity').map((read) => read.after);
+
+    for (const [cycle, expected] of reads.entries()) {
+      const before = identityReads().length;
+      expect(await loop.runOnce(), `cycle ${String(cycle + 1)}`).toMatchObject({ rowsApplied: expected.length, errors: [], backlog: backlogs[cycle] });
+      expect(identityReads().slice(before)).toEqual(expected);
+    }
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '30', cursor_seq: '1', applied_horizon: '100' });
+  });
+
+  it("applies another stream's new rows in the next cycle while a stream works off its backlog one page per cycle", async () => {
+    const pages: Record<string, PageSource> = {
+      ...threePages(),
+      // People's row commits after the first cycle has read the stream.
+      [`people|${CURSOR_START}`]: (read) => (read === 1 ? page([], '100', CURSOR_START) : page([person('Grace', {}, [101, 1])], '102', CURSOR_START)),
+    };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+    const applied = () => h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0);
+
+    expect(await loop.runOnce()).toMatchObject({ rowsApplied: 1, errors: [], backlog: true });
+    expect(applied()).toEqual(['u10']);
+
+    expect(await loop.runOnce()).toMatchObject({ rowsApplied: 2, errors: [], backlog: true });
+    expect(applied()).toEqual(['u10', 'u20', 'Grace']);
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '101', cursor_seq: '1', applied_horizon: '102' });
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '20', cursor_seq: '1' });
+
+    expect(await loop.runOnce()).toMatchObject({ rowsApplied: 1, errors: [], backlog: false });
+    expect(applied()).toEqual(['u10', 'u20', 'Grace', 'u30']);
+  });
+
+  it('applies a released operation in one transaction and leaves the rest of a resumed stream that has used its budget to the next cycle', async () => {
+    const pages = {
+      [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP }), person('Lin', {}, [104, 1])], '105', CURSOR_START, { [OP]: 'done' }),
+      'people|100:1': page([person('Lin', {}, [104, 1])], '105', '100:1'),
+      [`identity|${CURSOR_START}`]: page([account('grace', { operationId: OP })], '103', CURSOR_START, { [OP]: 'done' }),
+    };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+    const peopleReads = () => h.owners.changes.filter((read) => read.owner === 'people').map((read) => read.after);
+
+    expect(await loop.runOnce()).toMatchObject({ held: 2, rowsApplied: 2, errors: [], backlog: true });
+    const joint = h.legacy.applied(TUSERS_UPDATE);
+    expect(joint.map((statement) => statement.params.p0)).toEqual(['Grace', 'grace']);
+    const [tx, ...others] = new Set(joint.map((statement) => statement.tx));
+    expect(others).toEqual([]);
+    const checkpointed = h.legacy.applied(/^UPDATE opt2_sync/).filter((statement) => statement.tx === tx);
+    expect(checkpointed.map((statement) => statement.params.owner).sort()).toEqual(['identity', 'people']);
+    // The turn that parked people, its read-ahead past the fence and the release's re-read of its span; the resumed stream reads no further page this cycle.
+    expect(peopleReads()).toEqual([CURSOR_START, '104:1', CURSOR_START]);
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '100', cursor_seq: '1', applied_horizon: '104' });
+
+    expect(await loop.runOnce()).toMatchObject({ rowsApplied: 1, errors: [], backlog: false });
+    expect(peopleReads().slice(3)).toEqual(['100:1']);
+    expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['Grace', 'grace', 'Lin']);
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '104', cursor_seq: '1', applied_horizon: '105' });
+  });
+
+  it('defers the re-run of a stream that has used its budget, applying nothing of the operation until a later cycle releases it jointly', async () => {
+    const pages: Record<string, PageSource> = {
+      // Identity's change of the operation commits after its first read.
+      [`identity|${CURSOR_START}`]: (read) =>
+        read === 1 ? page([], '101', CURSOR_START) : page([account('grace', { operationId: OP })], '200', CURSOR_START, { [OP]: 'done' }),
+      [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }),
+    };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+    expect(await loop.runOnce()).toMatchObject({ held: 1, rowsApplied: 0, errors: [], backlog: true });
+    expect(h.legacy.applied(TUSERS_UPDATE)).toEqual([]);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '101' });
+
+    expect(await loop.runOnce()).toMatchObject({ held: 2, rowsApplied: 2, errors: [] });
+    const updates = h.legacy.applied(TUSERS_UPDATE);
+    expect(updates.map((statement) => statement.params.p0)).toEqual(['Grace', 'grace']);
+    expect(new Set(updates.map((statement) => statement.tx)).size).toBe(1);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
+  });
+});
+
+describe('runProjectorCycle read-ahead budget and kept scans', () => {
+  const OP_B = 'b0000000-0000-4000-8000-00000000000b';
+  /** A data owner without rows whose horizon rises every cycle, so that each cycle has an idle advance to commit. */
+  const IDLE_OWNER = 'communications';
+
+  /** Cycle collaborators sharing one tracker and one stream memory across cycles, as a loop's cycles do. */
+  function sharedDeps() {
+    const tracker = new OperationTracker();
+    const memory: StreamMemory = { mirrored: new Map(), failures: new Map(), fenceFailures: new Map(), scans: new Map() };
+    const deps = (signal?: AbortSignal): CycleDeps => ({ hooks: {}, startupGuard: refuseGuard, tracker, memory, ...(signal === undefined ? {} : { signal }) });
+    const scanOf = (owner: string) => [...memory.scans.values()].find((saved) => saved.scan.owner === owner)?.scan;
+    return { tracker, memory, deps, scanOf };
+  }
+
+  /** People's change of the operation at 100:1 on an incomplete page, then one later people row per page at xid 110, seq 1 to `last`. */
+  function heldBacklog(h: ReturnType<typeof harness>, last: number, onRead: (after: string) => void = () => undefined) {
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    const reads: { owner: string; after: string; limit: number | undefined }[] = [];
+    let cycle = 0;
+    h.owners.owners.changes = async (owner, params) => {
+      reads.push({ owner, after: params.after, limit: (params as { limit?: number }).limit });
+      if (owner === IDLE_OWNER) return page([], String(300 + cycle), params.after);
+      if (owner !== 'people') return changes(owner, params);
+      onRead(params.after);
+      if (params.after === CURSOR_START) return page([person('Held', { operationId: OP })], '200', params.after, { [OP]: 'done' }, false);
+      const seq = params.after === '100:1' ? 1 : Number(params.after.split(':')[1]) + 1;
+      return page([person('Later', {}, [110, seq])], '200', params.after, { [OP]: 'done' }, seq === last);
+    };
+    return {
+      nextCycle: () => {
+        cycle += 1;
+        return reads.length;
+      },
+      readsSince: (from: number, owner: string) => reads.slice(from).filter((read) => read.owner === owner),
+    };
+  }
+
+  /** Identity's change of the operation at 102:1, on a complete page past every fence. */
+  const identityPages = () => ({ [`identity|${CURSOR_START}`]: page([account('grace', { operationId: OP })], '200', CURSOR_START, { [OP]: 'done' }) });
+
+  it('reads a parked stream ahead one page per cycle below a fixed fence, resuming each cycle, then releases it jointly', async () => {
+    const h = harness({ owners: fakeOwners({ pages: identityPages() }), streamPagesPerCycle: 1, batchRows: 1 });
+    const feed = heldBacklog(h, 100);
+    const shared = sharedDeps();
+
+    for (let cycle = 1; cycle < 100; cycle += 1) {
+      const from = feed.nextCycle();
+      const result = await runProjectorCycle(h.ctx, shared.deps());
+      expect(result, `cycle ${String(cycle)}`).toMatchObject({ rowsApplied: 0, errors: [], backlog: true });
+      // One turn page and one read-ahead page, continuing from where the previous cycle stopped.
+      const ahead = cycle === 1 ? '100:1' : `110:${String(cycle - 1)}`;
+      expect(feed.readsSince(from, 'people').map((read) => read.after)).toEqual([CURSOR_START, ahead]);
+      expect(shared.scanOf('people')).toMatchObject({ start: CURSOR_START, end: `110:${String(cycle)}`, entries: [{ cursor: '100:1', operationId: OP, next: '110' }] });
+      expect(shared.scanOf('people')?.entries).toHaveLength(1);
+      expect(h.legacy.checkpoint(IDLE_OWNER)).toMatchObject({ applied_horizon: String(300 + cycle) });
+    }
+    expect(h.legacy.applied(TUSERS_UPDATE)).toEqual([]);
+
+    const from = feed.nextCycle();
+    expect(await runProjectorCycle(h.ctx, shared.deps())).toMatchObject({ rowsApplied: 2, errors: [] });
+    // The turn, the last read-ahead page past the fence, and the release's re-read of the span.
+    expect(feed.readsSince(from, 'people').map((read) => [read.after, read.limit])).toEqual([
+      [CURSOR_START, 1],
+      ['110:99', 1],
+      [CURSOR_START, 1],
+    ]);
+    expect(h.legacy.checkpoint(IDLE_OWNER)).toMatchObject({ applied_horizon: '400' });
+    const updates = h.legacy.applied(TUSERS_UPDATE);
+    expect(updates.map((statement) => statement.params.p0)).toEqual(['Held', 'grace']);
+    const [joint, ...others] = new Set(updates.map((statement) => statement.tx));
+    expect(others).toEqual([]);
+    const checkpointed = h.legacy.applied(/^UPDATE opt2_sync/).filter((statement) => statement.tx === joint);
+    expect(checkpointed.map((statement) => statement.params.owner).sort()).toEqual(['identity', 'people']);
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '100', cursor_seq: '1', applied_horizon: '110' });
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1', applied_horizon: '200' });
+  });
+
+  it('drops a kept scan whose stream checkpoint moved, scanning afresh from the new checkpoint', async () => {
+    const legacy = fakeLegacy();
+    const pages = { ...identityPages(), 'people|110:1': page([person('Open', { operationId: OP_B }, [120, 1])], '200', '110:1', { [OP_B]: 'open' }) };
+    const h = harness({ legacy, owners: fakeOwners({ pages }), streamPagesPerCycle: 1 });
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    h.owners.owners.changes = async (owner, params) => {
+      if (owner !== 'people' || params.after === '110:1') return changes(owner, params);
+      if (params.after === CURSOR_START) return page([person('Held', { operationId: OP })], '200', params.after, { [OP]: 'done' }, false);
+      return page([person('Later', {}, [110, 1])], '200', params.after, { [OP]: 'done' }, false);
+    };
+    const shared = sharedDeps();
+
+    expect(await runProjectorCycle(h.ctx, shared.deps())).toMatchObject({ rowsApplied: 0, errors: [] });
+    expect(shared.scanOf('people')).toMatchObject({ start: CURSOR_START, end: '110:1' });
+
+    // Another instance released the operation, moving people's checkpoint to the kept scan's end and identity's past its row.
+    legacy.seed({ owner: 'people', tenant_id: TENANT, cursor_xid: '110', cursor_seq: '1', applied_horizon: '120', batch_id: 'other', rows_applied: 2, updated_at: null, pending_effects: null, ready_horizon: null });
+    legacy.seed({ owner: 'identity', tenant_id: TENANT, cursor_xid: '102', cursor_seq: '1', applied_horizon: '200', batch_id: 'other', rows_applied: 1, updated_at: null, pending_effects: null, ready_horizon: null });
+    expect(await runProjectorCycle(h.ctx, shared.deps())).toMatchObject({ rowsApplied: 0, errors: [] });
+    expect(shared.scanOf('people')).toEqual({
+      owner: 'people',
+      tenantId: TENANT,
+      start: '110:1',
+      end: '120:1',
+      horizon: '200',
+      entries: [{ cursor: '120:1', previous: '110:1', xid: '120', operationId: OP_B, through: '120:1', next: undefined }],
+    });
+  });
+
+  /**
+   * People parked at done operation A, whose second transaction at 108:1 follows B's row at 105:1 on the second page;
+   * `fault` sees each people read with the number of reads after the start so far this cycle.
+   */
+  function interleaved(fault: (after: string, limit: number | undefined, startReads: number) => void = () => undefined) {
+    const status = { b: 'open' as OperationStatus };
+    const pages: Record<string, PageSource> = {
+      [`people|${CURSOR_START}`]: page([person('A1', { operationId: OP })], '200', CURSOR_START, { [OP]: 'done' }, false),
+      'people|100:1': () => page([person('B', { operationId: OP_B }, [105, 1]), person('A2', { operationId: OP }, [108, 1])], '200', '100:1', { [OP]: 'done', [OP_B]: status.b }),
+    };
+    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 1 });
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    const reads: [string, number | undefined][] = [];
+    h.owners.owners.changes = async (owner, params) => {
+      if (owner === 'people') {
+        const limit = (params as { limit?: number }).limit;
+        reads.push([params.after, limit]);
+        fault(params.after, limit, reads.filter(([after]) => after === CURSOR_START).length);
+      }
+      return changes(owner, params);
+    };
+    return { h, status, reads };
+  }
+
+  it('refreshes the status of an operation a kept scan holds past its first page, and releases the closure once it is done', async () => {
+    const { h, status, reads } = interleaved();
+    const shared = sharedDeps();
+
+    expect(await runProjectorCycle(h.ctx, shared.deps())).toMatchObject({ held: 1, rowsApplied: 0, errors: [] });
+    expect(shared.scanOf('people')?.entries.map((entry) => [entry.cursor, entry.operationId])).toEqual([
+      ['100:1', OP],
+      ['105:1', OP_B],
+      ['108:1', OP],
+    ]);
+
+    status.b = 'done';
+    reads.length = 0;
+    expect(await runProjectorCycle(h.ctx, shared.deps())).toMatchObject({ rowsApplied: 3, errors: [] });
+    const batchRows = config.projection.batchRows;
+    // The turn re-reads only the first page; one row read refreshes B; the release re-reads the span.
+    expect(reads).toEqual([
+      [CURSOR_START, batchRows],
+      ['100:1', 1],
+      [CURSOR_START, batchRows],
+      ['100:1', batchRows],
+    ]);
+    const updates = h.legacy.applied(TUSERS_UPDATE);
+    expect(updates.map((statement) => statement.params.p0)).toEqual(['A1', 'B', 'A2']);
+    expect(new Set(updates.map((statement) => statement.tx)).size).toBe(1);
+    expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '108', cursor_seq: '1', applied_horizon: '200' });
+  });
+
+  it.each<[string, (after: string, limit: number | undefined, startReads: number) => boolean, 'fail' | 'stop']>([
+    ['its status read fails', (after, limit) => after === '100:1' && limit === 1, 'fail'],
+    ['its span re-read fails', (after, _limit, startReads) => after === CURSOR_START && startReads === 2, 'fail'],
+    ['the cycle stops during its span re-read', (after, _limit, startReads) => after === CURSOR_START && startReads === 2, 'stop'],
+  ])('keeps the scan of a parked stream and releases it in the next cycle when %s', async (_label, at, kind) => {
+    let armed = false;
+    let stop = new AbortController();
+    const { h, status, reads } = interleaved((after, limit, startReads) => {
+      if (!armed || !at(after, limit, startReads)) return;
+      armed = false;
+      if (kind === 'stop') stop.abort();
+      else throw new Error('people unavailable');
+    });
+    const shared = sharedDeps();
+    await runProjectorCycle(h.ctx, shared.deps());
+
+    status.b = 'done';
+    reads.length = 0;
+    armed = true;
+    const faulted = await runProjectorCycle(h.ctx, shared.deps(stop.signal));
+    expect(faulted.rowsApplied).toBe(0);
+    expect(faulted.errors.map((error) => error.owner)).toEqual(kind === 'fail' ? ['people'] : []);
+    expect(h.legacy.applied(TUSERS_UPDATE)).toEqual([]);
+    expect(shared.scanOf('people')).toMatchObject({ start: CURSOR_START, end: '108:1' });
+
+    stop = new AbortController();
+    expect(await runProjectorCycle(h.ctx, shared.deps(stop.signal))).toMatchObject({ rowsApplied: 3, errors: [] });
+    expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['A1', 'B', 'A2']);
+  });
+
+  it.each<[string, ProjectedChangeRow[]]>([
+    ['misses the span end', [person('Grace', {}, [100, 2])]],
+    ['holds a row its scan did not', [person('Early', { operationId: OP }, [99, 1]), person('Grace', { operationId: OP })]],
+  ])('fails the stream without applying when the re-read span %s', async (_label, reread) => {
+    const pages: Record<string, PageSource> = {
+      ...identityPages(),
+      [`people|${CURSOR_START}`]: (read) => page(read === 1 ? [person('Grace', { operationId: OP })] : reread, '200', CURSOR_START, { [OP]: 'done' }),
+    };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+    expect(result.rowsApplied).toBe(0);
+    expect(result.errors.map(({ owner, cursor, error }) => [owner, cursor, error])).toEqual([['people', CURSOR_START, new HeldSpanChangedError('people', TENANT, '100:1')]]);
+    expect(h.legacy.applied(TUSERS_UPDATE)).toEqual([]);
+    expect(h.legacy.checkpoint('people')).toBeUndefined();
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '0', cursor_seq: '0' });
+    const logged = h.logger.error.mock.calls.find(([, text]) => text === `Reverse projection of people for tenant ${TENANT} stopped at cursor ${CURSOR_START}`);
+    expect(logged?.[0]).toMatchObject({ tenantId: TENANT, error: { type: 'HeldSpanChangedError' } });
+  });
+
+  it('stops the read-ahead before its next page, keeps the scan and resumes it in the next cycle', async () => {
+    const h = harness({ owners: fakeOwners({ pages: identityPages() }), streamPagesPerCycle: 2, batchRows: 1 });
+    let stop = new AbortController();
+    const feed = heldBacklog(h, 100, (after) => {
+      if (after === '100:1') stop.abort();
+    });
+    const shared = sharedDeps();
+
+    let from = feed.nextCycle();
+    expect(await runProjectorCycle(h.ctx, shared.deps(stop.signal))).toMatchObject({ rowsApplied: 0, errors: [], backlog: true });
+    expect(feed.readsSince(from, 'people').map((read) => read.after)).toEqual([CURSOR_START, '100:1']);
+    expect(shared.scanOf('people')).toMatchObject({ start: CURSOR_START, end: '110:1' });
+
+    stop = new AbortController();
+    from = feed.nextCycle();
+    expect(await runProjectorCycle(h.ctx, shared.deps(stop.signal))).toMatchObject({ rowsApplied: 0, errors: [], backlog: true });
+    expect(feed.readsSince(from, 'people').map((read) => read.after)).toEqual([CURSOR_START, '110:1', '110:2']);
+    expect(shared.scanOf('people')).toMatchObject({ start: CURSOR_START, end: '110:3' });
+  });
+});
+
+describe('runProjectorCycle idle streams', () => {
+  const CHECKPOINT_UPSERT = /^UPDATE opt2_sync\.projector_checkpoint WITH/;
+
+  /** Commits a checkpoint for every data owner's stream of the tenant, as an applying batch left it, except `except`'s. */
+  function seedAll(legacy: ReturnType<typeof fakeLegacy>, appliedHorizon: string, except?: string) {
+    for (const owner of config.dataOwners.filter((name) => name !== except)) {
+      legacy.seed({ owner, tenant_id: TENANT, cursor_xid: '50', cursor_seq: '1', applied_horizon: appliedHorizon, batch_id: `batch-${owner}`, rows_applied: 3, updated_at: null, pending_effects: null, ready_horizon: null });
+    }
+  }
+
+  it('commits and mirrors nothing for streams whose stored checkpoint already holds the horizon of their empty page', async () => {
+    const legacy = fakeLegacy();
+    seedAll(legacy, '200');
+    const h = harness({ legacy, owners: fakeOwners({ defaultHorizon: '200' }) });
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+    // The loop's first cycle mirrors what it finds stored, all in one transaction.
+    expect(await loop.runOnce()).toMatchObject({ batches: 0, errors: [] });
+    expect(new Set(h.db.mirrorTx).size).toBe(1);
+    expect(h.db.mirrorTx).toHaveLength(config.dataOwners.length);
+    const mirrored = h.db.mirrorTx.length;
+
+    expect(await loop.runOnce()).toMatchObject({ batches: 0, rowsApplied: 0, errors: [], backlog: false });
+    expect(legacy.begun()).toBe(0);
+    expect(h.db.mirrorTx).toHaveLength(mirrored);
+    expect(h.owners.changes.filter((read) => read.owner === 'people')).toHaveLength(2);
+  });
+
+  it('commits the newer horizons of every idle stream in one SQL Server transaction and one mirror transaction, keeping each batch record', async () => {
+    const legacy = fakeLegacy();
+    seedAll(legacy, '150', 'people');
+    const h = harness({ legacy, owners: fakeOwners({ defaultHorizon: '200' }) });
+
+    expect(await runProjectorCycle(h.ctx, cycleDeps())).toMatchObject({ batches: 1, rowsApplied: 0, errors: [] });
+
+    const upserts = legacy.applied(CHECKPOINT_UPSERT);
+    expect(upserts).toHaveLength(config.dataOwners.length);
+    expect(new Set(upserts.map((statement) => statement.tx)).size).toBe(1);
+    expect(legacy.begun()).toBe(1);
+    expect(h.db.mirrorTx).toHaveLength(config.dataOwners.length);
+    expect(new Set(h.db.mirrorTx).size).toBe(1);
+    expect(legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '50', cursor_seq: '1', applied_horizon: '200', batch_id: 'batch-identity', rows_applied: 3 });
+    // The stream without a stored checkpoint gets its first one in the same batch.
+    expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '200', rows_applied: 0 });
+    expect(h.db.mirror.get(`people|${TENANT}`)).toEqual({ cursor: CURSOR_START, horizon: '200' });
+  });
+
+  it.each<[string, boolean, Partial<CheckpointRecord>]>([
+    ['without a stored checkpoint', false, { cursor_xid: '0', cursor_seq: '0', applied_horizon: '100', rows_applied: 0 }],
+    ['with a lower stored horizon', true, { cursor_xid: '50', cursor_seq: '1', applied_horizon: '100', batch_id: 'batch-people', rows_applied: 3 }],
+  ])('commits the held xid of a stream parked at its first row %s once, in the joint idle batch, then nothing while it stays parked', async (_label, peopleStored, stored) => {
+    const legacy = fakeLegacy();
+    seedAll(legacy, '60', peopleStored ? undefined : 'people');
+    const after = peopleStored ? '50:1' : CURSOR_START;
+    const pages = { [`people|${after}`]: page([person('Grace', { operationId: OP })], '101', after, { [OP]: 'open' }) };
+    const h = harness({ legacy, owners: fakeOwners({ pages, defaultHorizon: '200' }) });
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+    expect(await loop.runOnce()).toMatchObject({ held: 1, batches: 1, rowsApplied: 0, errors: [] });
+    const upserts = legacy.applied(CHECKPOINT_UPSERT);
+    expect(upserts).toHaveLength(config.dataOwners.length);
+    expect(new Set(upserts.map((statement) => statement.tx)).size).toBe(1);
+    expect(legacy.checkpoint('people')).toMatchObject(stored);
+    expect(legacy.checkpoint('identity')).toMatchObject({ applied_horizon: '200' });
+    expect(h.db.mirror.get(`people|${TENANT}`)).toEqual({ cursor: after, horizon: '100' });
+    const begun = legacy.begun();
+    const mirrored = h.db.mirrorTx.length;
+
+    expect(await loop.runOnce()).toMatchObject({ held: 1, batches: 0, rowsApplied: 0, errors: [] });
+    expect(legacy.begun()).toBe(begun);
+    expect(h.db.mirrorTx).toHaveLength(mirrored);
+    expect(legacy.checkpoint('people')).toMatchObject(stored);
+  });
+
+  it.each<[string, (legacy: ReturnType<typeof fakeLegacy>, db: ReturnType<typeof fakeDb>) => Promise<CycleResult>]>([
+    ['their joint idle advance fails after its commit', (legacy, db) => runProjectorCycle(harness({ legacy, db }).ctx, cycleDeps())],
+    [
+      'mirroring the checkpoints a new loop finds stored fails',
+      (legacy, db) => {
+        seedAll(legacy, '200');
+        return createProjectorLoop(harness({ legacy, db }).ctx, { startupGuard: refuseGuard }).runOnce();
+      },
+    ],
+  ])('stops every idle stream for the cycle when %s', async (_label, run) => {
+    const legacy = fakeLegacy();
+    const result = await run(legacy, fakeDb(true, () => true));
+
+    expect(result.errors.map((error) => error.owner).sort()).toEqual([...config.dataOwners].sort());
+    expect(result.errors.every((error) => error.error.message === 'mirror unavailable')).toBe(true);
   });
 });
 
@@ -1500,7 +2125,7 @@ describe('owed legacy effects', () => {
     const result = await runProjectorCycle(h.ctx, cycleDeps());
 
     expect(result.errors.map((error) => [error.owner, error.tenantId, error.cursor, error.error.message])).toEqual([['people', TENANT, '50:1', 'bridge unavailable']]);
-    expect(result.batches).toBe(config.dataOwners.length - 1);
+    expect(result.batches).toBe(1);
     expect(h.owners.changes.some((read) => read.owner === 'people')).toBe(false);
     expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '50', pending_effects: JSON.stringify(PURGE) });
   });
@@ -1539,7 +2164,21 @@ describe('createProjector awaiter', () => {
 });
 
 describe('createProjectorLoop', () => {
-  it('joins the cycle in flight, runs at the projection cadence once started, and stops', async () => {
+  const { idlePollMs, idleMaxPollMs } = config.projection;
+
+  /** Runs `body` under fake timers, passing the delays of the timers set so far. */
+  async function withTimers(body: (delays: () => unknown[]) => Promise<void>): Promise<void> {
+    vi.useFakeTimers();
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      await body(() => timers.mock.calls.map(([, delayMs]) => delayMs));
+    } finally {
+      timers.mockRestore();
+      vi.useRealTimers();
+    }
+  }
+
+  it('joins the cycle in flight, runs its first cycle one base interval after start, and stops', async () => {
     vi.useFakeTimers();
     try {
       const h = harness();
@@ -1552,29 +2191,192 @@ describe('createProjectorLoop', () => {
 
       loop.start();
       loop.start();
-      await vi.advanceTimersByTimeAsync(config.projection.idlePollMs * 3);
-      expect(h.gateway.status).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+      expect(h.gateway.status).toHaveBeenCalledTimes(2);
       await loop.stop();
-      await vi.advanceTimersByTimeAsync(config.projection.idlePollMs * 3);
-      expect(h.gateway.status).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(idleMaxPollMs * 2);
+      expect(h.gateway.status).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('logs a failed background cycle and keeps its schedule', async () => {
-    vi.useFakeTimers();
-    try {
-      const h = harness({ legacy: fakeLegacy({ ready: false }) });
+  it.each<[string, () => Fakes, number, number[]]>([
+    ['idle cycles, doubling to the ceiling', () => ({}), 12_750, [250, 500, 1000, 2000, 4000, 5000, 5000]],
+    ['cycles another instance leads', () => ({ db: fakeDb(false) }), 3750, [250, 500, 1000, 2000, 4000]],
+    ['cycles while no unit is target-authoritative', () => ({ tableVersion: null }), 3750, [250, 500, 1000, 2000, 4000]],
+    [
+      'idle cycles, returning to the base cadence after an active one',
+      () => ({
+        owners: fakeOwners({ pages: { [`people|${CURSOR_START}`]: (read) => (read === 3 ? page([person('Grace')], '201', CURSOR_START) : page([], '200', CURSOR_START)) } }),
+      }),
+      2000,
+      [250, 500, 1000, 250, 500],
+    ],
+  ])('backs off %s', async (_label, fakes, advanceMs, expected) => {
+    await withTimers(async (delays) => {
+      const loop = createProjectorLoop(harness(fakes()).ctx, { startupGuard: refuseGuard });
+      loop.start();
+      await vi.advanceTimersByTimeAsync(advanceMs);
+      await loop.stop();
+      expect(delays()).toEqual(expected);
+    });
+  });
+
+  it('cancels a backed-off timer for a demand, holds the base cadence while it is held, then backs off again', async () => {
+    await withTimers(async (delays) => {
+      const h = harness();
       const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
       loop.start();
-      await vi.advanceTimersByTimeAsync(config.projection.idlePollMs * 2);
+      await vi.advanceTimersByTimeAsync(idlePollMs * 3);
+      const cycles = h.gateway.status.mock.calls.length;
+
+      const release = loop.demand();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.gateway.status).toHaveBeenCalledTimes(cycles + 1);
+      await vi.advanceTimersByTimeAsync(idlePollMs * 2 - 1);
+      release();
+      await vi.advanceTimersByTimeAsync(1);
       await loop.stop();
-      expect(h.logger.error).toHaveBeenCalledTimes(2);
-      expect(h.logger.error.mock.lastCall).toMatchObject([{ error: { type: 'Opt2SyncUnavailableError' } }, 'Reverse projector cycle failed']);
+
+      expect(delays()).toEqual([250, 500, 1000, 0, 250, 250, 500]);
+    });
+  });
+
+  it('starts the next cycle as soon as the one in flight settles when a demand comes while it runs', async () => {
+    await withTimers(async (delays) => {
+      let open: () => void = () => undefined;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const beforeFirstBatch = vi.fn(() => opened);
+      const loop = createProjectorLoop(harness().ctx, { hooks: { beforeFirstBatch }, startupGuard: refuseGuard });
+      loop.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+      expect(beforeFirstBatch).toHaveBeenCalledTimes(1);
+
+      const release = loop.demand();
+      open();
+      await vi.advanceTimersByTimeAsync(1);
+      release();
+      await loop.stop();
+
+      expect(delays()).toEqual([250, 0, 250]);
+    });
+  });
+
+  it('only counts demands on a loop not started, and releases each demand once', async () => {
+    await withTimers(async (delays) => {
+      const loop = createProjectorLoop(harness().ctx, { startupGuard: refuseGuard });
+      const first = loop.demand();
+      const second = loop.demand();
+      expect(delays()).toEqual([]);
+
+      loop.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs * 2);
+      first();
+      first();
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+      second();
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+      await loop.stop();
+
+      expect(delays()).toEqual([250, 250, 250, 250, 500]);
+    });
+  });
+
+  it('runs the next cycle at once for an await of the projection, through its demand', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const projector = createProjector(h.ctx as unknown as MigrationContext, { startupGuard: refuseGuard });
+      const peopleReads = () => h.owners.changes.filter((read) => read.owner === 'people').length;
+      projector.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs * 3);
+      const reads = peopleReads();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(peopleReads()).toBe(reads);
+
+      await expect(projector.awaitProjection({ positions: new Map([['people', '100']]) })).resolves.toMatchObject({ positions: new Map([['people', '100']]) });
+      await vi.advanceTimersByTimeAsync(0);
+      await projector.stop();
+
+      expect(peopleReads()).toBe(reads + 1);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('logs a failure streak once at WARNING and again on each change of its error, backs off, and logs its recovery at INFO', async () => {
+    await withTimers(async (delays) => {
+      const h = harness();
+      const refused = new Error('Service gateway unavailable (ECONNREFUSED)');
+      const timedOut = new Error('Service gateway unavailable (ETIMEDOUT)');
+      const missing = new Opt2SyncUnavailableError(timedOut.message, undefined);
+      for (const error of [refused, refused, refused, timedOut, missing]) h.gateway.status.mockRejectedValueOnce(error);
+      h.gateway.status.mockResolvedValueOnce({ tableVersion: 'v9001', epoch: 1 }).mockRejectedValueOnce(refused);
+      const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+      loop.start();
+      await vi.advanceTimersByTimeAsync(17_750);
+      await loop.stop();
+
+      expect(h.gateway.status).toHaveBeenCalledTimes(7);
+      expect(delays()).toEqual([250, 500, 1000, 2000, 4000, 5000, 5000, 5000]);
+      expect(h.logger.warn.mock.calls).toEqual(
+        [refused, timedOut, missing, refused].map((error) => [{ error: serializeError(error) }, 'Reverse projector cycle failed']),
+      );
+      expect(h.logger.info.mock.calls).toEqual([['Reverse projector cycle recovered after 5 failed cycles']]);
+      expect(h.logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  it('starts the next cycle at once after a cycle with backlog, then backs off when that one is idle', async () => {
+    await withTimers(async (delays) => {
+      // Each of the first two cycles applies one page that is not complete, its one page of the cycle; the third reads the empty rest.
+      const pages = { [`identity|${CURSOR_START}`]: accounts([10], 11, CURSOR_START), 'identity|10:1': accounts([20], 30, '10:1') };
+      const h = harness({ owners: fakeOwners({ pages }) });
+      const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+      loop.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs * 2);
+      await loop.stop();
+
+      expect(h.gateway.status).toHaveBeenCalledTimes(3);
+      expect(delays()).toEqual([idlePollMs, 0, 0, idlePollMs * 2]);
+      expect(h.owners.changes.filter((read) => read.owner === 'identity').map((read) => read.after)).toEqual([CURSOR_START, '10:1', '20:1']);
+    });
+  });
+
+  it('stops the cycle in flight after its current batch, reading no further page', async () => {
+    const pages = { [`identity|${CURSOR_START}`]: accounts([10], 100, CURSOR_START), 'identity|10:1': accounts([20], 100, '10:1', true) };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    let committed: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => {
+      committed = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hooks: ProjectorHooks = {
+      afterLegacyCommit: async () => {
+        committed();
+        await released;
+      },
+    };
+    const loop = createProjectorLoop(h.ctx, { hooks, startupGuard: refuseGuard });
+
+    const cycle = loop.runOnce();
+    await reached;
+    const stopping = loop.stop();
+    release();
+    await stopping;
+
+    expect(await cycle).toMatchObject({ batches: 1, rowsApplied: 1, errors: [], backlog: true });
+    expect(h.owners.changes).toEqual([{ owner: 'identity', after: CURSOR_START }]);
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '10', cursor_seq: '1' });
+    expect(await loop.runOnce()).toMatchObject({ batches: 2, rowsApplied: 1, backlog: false });
   });
 });
 
@@ -1631,7 +2433,7 @@ describe('createProjectorLoop tracing', () => {
     const result = await createProjectorLoop(h.ctx, { startupGuard: refuseGuard }).runOnce();
     await flushTracing();
 
-    expect(result).toMatchObject({ ran: true, rowsApplied: 0, batches: config.dataOwners.length });
+    expect(result).toMatchObject({ ran: true, rowsApplied: 0, batches: 1 });
     expect(exporter.getFinishedSpans()).toEqual([]);
     expect(received).toHaveLength(config.dataOwners.length);
     expect(new Set(received.map((traceparent) => traceparent?.split('-')[3]))).toStrictEqual(new Set(['00']));
@@ -1663,7 +2465,9 @@ describe('error logs', () => {
   /** Roster participant with no stream this cycle, so its fence failure is logged rather than failing streams. */
   const UNSTREAMED = 'unstreamed-owner';
 
-  it.each<[site: string, error: Error, run: (error: Error) => Promise<ReturnType<typeof harness>['logger']>, fields: Record<string, unknown>, message: string]>([
+  it.each<
+    [site: string, error: Error, run: (error: Error) => Promise<ReturnType<typeof harness>['logger']>, fields: Record<string, unknown>, message: string, level: 'error' | 'warn']
+  >([
     [
       'stream failure',
       new OwnerCallError('people', 'GET', '/internal/v1/migration/changes', 502, BODY),
@@ -1676,6 +2480,7 @@ describe('error logs', () => {
       },
       { tenantId: TENANT },
       `Reverse projection of people for tenant ${TENANT} stopped at cursor ${CURSOR_START}`,
+      'error',
     ],
     [
       'fence position failure',
@@ -1691,6 +2496,7 @@ describe('error logs', () => {
       },
       {},
       `Reading the write position of ${UNSTREAMED} for operation fences failed`,
+      'error',
     ],
     [
       'background cycle failure',
@@ -1711,12 +2517,117 @@ describe('error logs', () => {
       },
       {},
       'Reverse projector cycle failed',
+      'warn',
     ],
-  ])('logs a %s with the serialized error record and no remote body', async (_site, error, run, fields, message) => {
+  ])('logs a %s with the serialized error record and no remote body', async (_site, error, run, fields, message, level) => {
     const logger = await run(error);
-    const call = logger.error.mock.calls.find(([, text]) => text === message);
+    const call = logger[level].mock.calls.find(([, text]) => text === message);
     expect(call?.[0]).toStrictEqual({ ...fields, error: serializeError(error) });
-    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(BODY.detail);
+    expect(JSON.stringify([logger.error.mock.calls, logger.warn.mock.calls])).not.toContain(BODY.detail);
+  });
+});
+
+describe('failure logs across cycles', () => {
+  const UNSTREAMED = 'unstreamed-owner';
+
+  it('logs a stream failure once while it lasts and again when its error changes, still reporting every failed cycle, and logs its resumption at INFO', async () => {
+    const h = harness();
+    const down = new Error('people down');
+    const refused = new Error('people refused');
+    const outcomes = [down, down, down, refused, null, down];
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    let peopleReads = 0;
+    h.owners.owners.changes = async (owner, params) => {
+      if (owner !== 'people') return changes(owner, params);
+      const failure = outcomes[peopleReads++] ?? null;
+      return failure === null ? changes(owner, params) : Promise.reject(failure);
+    };
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+    const reported: string[][] = [];
+    for (let cycle = 0; cycle < outcomes.length; cycle += 1) reported.push((await loop.runOnce()).errors.map((error) => error.error.message));
+
+    expect(reported).toEqual([['people down'], ['people down'], ['people down'], ['people refused'], [], ['people down']]);
+    const stopped = `Reverse projection of people for tenant ${TENANT} stopped at cursor ${CURSOR_START}`;
+    expect(h.logger.error.mock.calls).toEqual([down, refused, down].map((error) => [{ tenantId: TENANT, error: serializeError(error) }, stopped]));
+    expect(h.logger.info.mock.calls).toEqual([[{ tenantId: TENANT }, `Reverse projection of people for tenant ${TENANT} resumed at cursor ${CURSOR_START} after 4 failed cycles`]]);
+  });
+
+  it('forgets the failure of a stream whose tenant has left, so that its failure is logged again when it returns', async () => {
+    const OTHER = tenantIdForSite('tenant-b');
+    const sites = [SITE, 'tenant-b'];
+    const h = harness({ legacy: fakeLegacy({ sites }) });
+    const down = new Error('people down');
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    h.owners.owners.changes = async (owner, params) => (owner === 'people' && params.tenantId === OTHER ? Promise.reject(down) : changes(owner, params));
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+    const stopped = `Reverse projection of people for tenant ${OTHER} stopped at cursor ${CURSOR_START}`;
+    const logged = () => h.logger.error.mock.calls.filter(([, message]) => message === stopped).length;
+
+    await loop.runOnce();
+    await loop.runOnce();
+    expect(logged()).toBe(1);
+    sites.pop();
+    expect((await loop.runOnce()).errors).toEqual([]);
+    sites.push('tenant-b');
+    await loop.runOnce();
+
+    expect(logged()).toBe(2);
+    expect(h.logger.info).not.toHaveBeenCalled();
+  });
+
+  it('counts one failed cycle for the checkpoint of a gone site failing twice in a cycle, and logs its resumption once it settles', async () => {
+    const gone = tenantIdForSite('gone-site');
+    const legacy = fakeLegacy();
+    legacy.seed({
+      owner: 'programs-sites',
+      tenant_id: gone,
+      cursor_xid: '50',
+      cursor_seq: '1',
+      applied_horizon: '51',
+      batch_id: 'batch-old',
+      rows_applied: 1,
+      updated_at: null,
+      pending_effects: JSON.stringify([{ kind: 'purgeCache', siteId: 'gone-site' }]),
+      ready_horizon: null,
+    });
+    let broken = true;
+    const h = harness({ legacy, db: fakeDb(true, (owner, tenantId) => broken && owner === 'programs-sites' && tenantId === gone) });
+    const purgeCache = h.bridge.bridge.purgeCache.bind(h.bridge.bridge);
+    h.bridge.bridge.purgeCache = (siteId) => (broken ? Promise.reject(new Error('bridge unavailable')) : purgeCache(siteId));
+    const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+
+    const failed = await loop.runOnce();
+    broken = false;
+    await loop.runOnce();
+
+    expect(failed.errors.map((error) => [error.owner, error.tenantId, error.error.message])).toEqual([
+      ['programs-sites', gone, 'bridge unavailable'],
+      ['programs-sites', gone, 'mirror unavailable'],
+    ]);
+    expect(h.logger.error).toHaveBeenCalledTimes(2);
+    expect(h.logger.info.mock.calls).toEqual([[{ tenantId: gone }, `Reverse projection of programs-sites for tenant ${gone} resumed at cursor 50:1 after 1 failed cycles`]]);
+    expect(legacy.checkpoint('programs-sites', gone)).toMatchObject({ pending_effects: null });
+  });
+
+  it('logs a fence position failure of an owner without streams once while it lasts, and its recovery at INFO', async () => {
+    const pages = { [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }) };
+    const h = harness({ owners: fakeOwners({ pages }) });
+    const unavailable = new Error('position unavailable');
+    let failing = 2;
+    const position = h.owners.owners.position.bind(h.owners.owners);
+    h.owners.owners.position = async (owner) => (owner === UNSTREAMED && failing-- > 0 ? Promise.reject(unavailable) : position(owner));
+    const deps: CycleDeps = {
+      ...cycleDeps(),
+      tracker: new OperationTracker({ participants: [...ROSTER_PARTICIPANTS, UNSTREAMED] }),
+      memory: { mirrored: new Map(), failures: new Map(), fenceFailures: new Map(), scans: new Map() },
+    };
+
+    for (let cycle = 0; cycle < 3; cycle += 1) await runProjectorCycle(h.ctx, deps);
+
+    const failed = `Reading the write position of ${UNSTREAMED} for operation fences failed`;
+    expect(h.logger.error.mock.calls).toEqual([[{ error: serializeError(unavailable) }, failed]]);
+    expect(h.logger.info.mock.calls).toEqual([[`Reading the write position of ${UNSTREAMED} for operation fences recovered after 2 failed cycles`]]);
   });
 });
 

@@ -1420,7 +1420,8 @@ describe('runStep extraction', () => {
       'POST /admin/?muraAction=cUsers.update': redirect('./?muraAction=cUsers.edituser&userID=FIXTURE-USER-9'),
       [`GET ${editPage}`]: html(
         '<h1>  Edit User </h1><a id="back" href="./?muraAction=cUsers.list&SiteID=tenant-a">Back</a>' +
-          '<input id="uid" name="userid" value="FIXTURE-USER-9">',
+          '<input id="uid" name="userid" value="FIXTURE-USER-9">' +
+          `<input id="apply" type="button" onclick="applyAction('FIXTURE-REQ-1',$('#c').val(),'tenant\\x2Da');">`,
         [
           ['etag', 'FIXTURE-ETAG'],
           ['x-record-url', '/admin/?muraAction=cUsers.edituser&userid=FIXTURE-USER-9'],
@@ -1439,6 +1440,8 @@ describe('runStep extraction', () => {
           heading: { from: 'dom', selector: 'h1' },
           inputId: { from: 'dom', selector: '#uid', attr: 'value' },
           backSite: { from: 'dom', selector: '#back', attr: 'href', param: 'siteid' },
+          requestId: { from: 'dom', selector: '#apply', attr: 'onclick', pattern: "^applyAction\\('([^']+)'" },
+          headingNoun: { from: 'dom', selector: 'h1', pattern: '^Edit (\\w+)$' },
           etag: { from: 'header:ETag' },
           recordUser: { from: 'header:X-Record-Url', param: 'userid' },
         },
@@ -1460,6 +1463,8 @@ describe('runStep extraction', () => {
       heading: 'Edit User',
       inputId: 'FIXTURE-USER-9',
       backSite: 'tenant-a',
+      requestId: 'FIXTURE-REQ-1',
+      headingNoun: 'User',
       etag: 'FIXTURE-ETAG',
       recordUser: 'FIXTURE-USER-9',
     });
@@ -1476,6 +1481,13 @@ describe('runStep extraction', () => {
     ['x-present', 'http://127.0.0.1:8500/admin/?a=1'],
   ]);
   const listing = json({ data: { items: [{ id: 'FIXTURE-A' }] } });
+  // cUsers.loadExtendedAttributes answers its fragments as JSON strings, quotes escaped.
+  const fragments = json({
+    extended:
+      '<span class="extendset" extendsetid="FIXTURE-SET">\n\t<input name="extendSetID" type="hidden" ' +
+      'value="FIXTURE-SET" />\n\t<h2> Fixture Set </h2></span>',
+    basic: '',
+  });
   const absentPath = (bodyPath: string, reply: Reply): { extraction: Extraction; reply: Reply; why: string } => ({
     extraction: { from: 'body', path: bodyPath },
     reply,
@@ -1495,15 +1507,67 @@ describe('runStep extraction', () => {
       reply: page,
       why: 'no userid parameter in the extracted URL',
     },
+    {
+      extraction: { from: 'dom', selector: '#link', attr: 'href', pattern: 'userid=(\\w+)' },
+      reply: page,
+      why: '#link href does not match userid=(\\w+)',
+    },
+    {
+      extraction: { from: 'dom', selector: '#link', pattern: '^Groups (\\d+)$' },
+      reply: page,
+      why: '#link text does not match ^Groups (\\d+)$',
+    },
     { extraction: { from: 'header:X-Absent' }, reply: page, why: 'no x-absent response header' },
     { extraction: { from: 'header:X-Present', param: 'b' }, reply: page, why: 'no b parameter in the extracted URL' },
     { extraction: { from: 'location-query', param: 'uid' }, reply: page, why: 'no redirect Location carries uid' },
+    {
+      extraction: { from: 'dom', selector: 'input[name=extendSetID]', attr: 'value' },
+      reply: fragments,
+      why: 'no element matches input[name=extendSetID]',
+    },
+    {
+      extraction: { from: 'dom', path: 'extended', selector: 'input' },
+      reply: page,
+      why: 'no extended markup string in the response body',
+    },
+    {
+      extraction: { from: 'dom', path: 'missing', selector: 'input' },
+      reply: fragments,
+      why: 'no missing markup string in the response body',
+    },
+    {
+      extraction: { from: 'dom', path: 'data.items', selector: 'input' },
+      reply: listing,
+      why: 'no data.items markup string in the response body',
+    },
+    {
+      extraction: { from: 'dom', path: 'basic', selector: 'span.extendset' },
+      reply: fragments,
+      why: 'no element matches span.extendset',
+    },
   ])('rejects an extraction from $extraction.from that finds nothing: $why', async ({ extraction, reply, why }) => {
     const fake = fakeOrigin({ 'GET /admin/?muraAction=cUsers.list': reply });
     const err = await configError(
       runSingle({ name: 'read', route: '/admin/?muraAction=cUsers.list', extract: { value: extraction } }, fake),
     );
     expect(err.message).toBe(`${SCENARIO} step read: binding value: ${why} (status 200)`);
+  });
+
+  it('binds dom values from markup held in a JSON body string', async () => {
+    const route = '/admin/?muraAction=cUsers.loadExtendedAttributes&baseID=FIXTURE-USER-9&type=2&subType=GSPE06';
+    const fake = fakeOrigin({ [`GET ${route}`]: fragments });
+    const { record } = await runSingle(
+      {
+        name: 'ext',
+        route,
+        extract: {
+          extendSetID: { from: 'dom', path: 'extended', selector: 'input[name=extendSetID]', attr: 'value' },
+          setName: { from: 'dom', path: 'EXTENDED', selector: 'span.extendset h2' },
+        },
+      },
+      fake,
+    );
+    expect(record.extracted).toStrictEqual({ extendSetID: 'FIXTURE-SET', setName: 'Fixture Set' });
   });
 });
 

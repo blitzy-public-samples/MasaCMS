@@ -1,5 +1,5 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Tenant isolation of the communications schema, its scheduled-task routes and its login-mail consumer against PostgreSQL. */
+/** Tenant isolation of the communications schema, its scheduled-task routes and its event consumers against PostgreSQL. */
 import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7,12 +7,13 @@ import { DEAD_LETTER_REASON_ATTRIBUTE, INBOX_TABLE, dlqTopicName, type DeadLette
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { CHANGELOG_TABLE, closeGates, openGates } from '@opt2/platform/migration-kit';
 import { CLOUD_TASKS_HEADERS, QUEUES, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
-import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { SITE_CHANGED_TOPIC, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   PLATFORM_TABLE_GROUPS,
   TENANT_A,
   TENANT_B,
   TENANT_LIST,
+  createCapturingPublisher,
   createThrowawaySchema,
   defineIsolationSuite,
   expectPlatformTables,
@@ -21,13 +22,15 @@ import {
   pushTo,
   seedRegistry,
   withoutTenant,
+  type IsolationEventOptions,
   type PlatformTableGroup,
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { SURVEY_TASK_QUEUES, portTaskName, taskPayload, taskTarget } from '../../src/domain/survey-tasks.js';
-import { LOGIN_MAIL_SUBSCRIPTION } from '../../src/events/consumers.js';
+import { LOGIN_MAIL_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, SURVEY_SCHEDULED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
+import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { OWNER, createCommunicationsRepository, type CommunicationsRepository } from '../../src/repo/repository.js';
 import {
   DELIVERY_STATUS,
@@ -55,7 +58,7 @@ import {
 import { SCHEDULED_TASKS_PATH, toScheduledTask } from '../../src/routes/scheduled-tasks.js';
 import { REMINDER_TASK_PATH, type ReminderTaskIgnored } from '../../src/tasks/reminder.js';
 import { TEST_CLOCK, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
-import { envelopeFor, loginMailPayload } from '../helpers/payloads.js';
+import { envelopeFor, loginMailPayload, siteChangedPayload, surveyScheduledPayload } from '../helpers/payloads.js';
 
 type Row = Record<string, unknown>;
 type Fresh<R> = Omit<R, 'tenant_id'>;
@@ -69,6 +72,7 @@ const REMINDER_QUEUE = SURVEY_TASK_QUEUES['survey-reminder'];
 const SOURCE_TYPE = 'survey';
 const SCHEDULE_VERSION = 1;
 const MISSING_TENANT: DeadLetterReason = 'missing-tenant';
+const publisher = createCapturingPublisher();
 
 let schema: ThrowawaySchema | undefined;
 let repo: CommunicationsRepository | undefined;
@@ -404,6 +408,23 @@ async function storedTask(tenant: TenantFixture, taskId: string): Promise<Schedu
   });
 }
 
+/** Contract-valid envelopes per subscription; fresh message, user and survey ids make every delivery a first one. */
+const EVENT_ENVELOPES: ReadonlyArray<Pick<IsolationEventOptions, 'subscription' | 'envelopeFor'>> = [
+  {
+    subscription: SITE_CHANGED_SUBSCRIPTION,
+    envelopeFor: (tenantId) => envelopeFor(SITE_CHANGED_TOPIC, siteChangedPayload(TENANT_A.siteId), { tenantId }),
+  },
+  {
+    subscription: LOGIN_MAIL_SUBSCRIPTION,
+    envelopeFor: (tenantId) =>
+      envelopeFor(LOGIN_MAIL_TOPIC, loginMailPayload({ messageId: cfUuid(), userId: cfUuid(), returnId: cfUuid() }), { tenantId }),
+  },
+  {
+    subscription: SURVEY_SCHEDULED_SUBSCRIPTION,
+    envelopeFor: (tenantId) => envelopeFor(SURVEY_SCHEDULED_TOPIC, surveyScheduledPayload(1, { surveyId: cfUuid() }), { tenantId }),
+  },
+];
+
 const NONE = Object.fromEntries(TENANT_LIST.map(({ key }) => [key, 0]));
 
 describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => {
@@ -411,7 +432,7 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
     schema = await createThrowawaySchema({ service: 'communications', migrationsDir: MIGRATIONS_DIR });
     await seedRegistry(schema.app, schema.schema);
     repo = createCommunicationsRepository({ clock: TEST_CLOCK, schema: schema.schema });
-    ctx = await buildTestApp({ db: schema.app });
+    ctx = await buildTestApp({ db: schema.app, publisher });
     // The app's onReady inserts every missing gate as `legacy`; a transition makes a unit authoritative by closing and reopening it.
     await closeGates(schema.app, { units: UNITS, holderId: GATE_HOLDER, allowLegacy: true });
     await openGates(schema.app, { units: UNITS, holderId: GATE_HOLDER });
@@ -439,6 +460,7 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
       writeAs,
       readAs,
       rowFor,
+      events: EVENT_ENVELOPES.map((entry) => ({ ...entry, app: () => ctx?.app, publisher })),
     },
   );
 
@@ -487,6 +509,7 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
         task: await storedTask(TENANT_A, foreign.scheduled_task_id),
         messages: await countsOf(MESSAGE.table),
         changelog: await countsOf(CHANGELOG_TABLE),
+        mails: app.mail.sent.length,
       };
       app.client.clear();
 
@@ -508,16 +531,17 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
       expect(await storedTask(TENANT_A, foreign.scheduled_task_id)).toEqual(before.task);
       expect(await countsOf(MESSAGE.table)).toEqual(before.messages);
       expect(await countsOf(CHANGELOG_TABLE)).toEqual(before.changelog);
-      expect(app.mail.sent).toEqual([]);
+      expect(app.mail.sent.slice(before.mails)).toEqual([]);
       expect(app.client.requestsTo('surveys')).toEqual([]);
     });
   });
 
-  // Here rather than through the shared suite's `event` option, which would push a second time and checks neither inbox nor mail.
+  // Adds the inbox, outbox and mail checks the shared suite's tenantless case does not make.
   it('acks a login-mail event without a tenant, dead-letters it once as missing-tenant and records nothing', async () => {
     const app = running();
     const envelope = withoutTenant(envelopeFor(LOGIN_MAIL_TOPIC, loginMailPayload(), { tenantId: TENANT_A.tenantId }));
     const messagesBefore = await countsOf(MESSAGE.table);
+    const mailsBefore = app.mail.sent.length;
     app.publisher.clear();
 
     const res = await pushTo(app.app, LOGIN_MAIL_SUBSCRIPTION, envelope);
@@ -530,7 +554,7 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
     expect(await countsOf(MESSAGE.table, 'event_id = $1', [envelope.eventId])).toEqual(NONE);
     expect(await countsOf(INBOX_TABLE, 'event_id = $1', [envelope.eventId])).toEqual(NONE);
     expect(await countsOf(MESSAGE.table)).toEqual(messagesBefore);
-    expect(app.mail.sent).toEqual([]);
+    expect(app.mail.sent.slice(mailsBefore)).toEqual([]);
   });
 });
 

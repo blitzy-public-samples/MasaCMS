@@ -385,9 +385,11 @@ describe('frozen entries at the edge', () => {
     expect(res.statusCode).toBe(200);
     expect(pageRequests(test.legacy).map((req) => req.url)).toEqual([RELOAD_TARGETING_URL]);
     expect(targetRequests(test)).toBe(0);
-    expect(test.migration.windows).toEqual([
-      expect.objectContaining({ routeKey: TARGETING_SAVE, units: ['content.variation_targeting', 'content.content'], scope: { table: true } }),
-    ]);
+    const index = fake.active();
+    const reloadAndWrite = [...(index?.entryFor(TARGETING_SAVE)?.units ?? []), ...(index?.entryFor('reload:application')?.units ?? [])];
+    const units = [...new Set(reloadAndWrite)].filter((unit) => index?.unitAuthority(unit) === 'target');
+    expect(units).toContain('content.variation_targeting');
+    expect(test.migration.windows).toEqual([expect.objectContaining({ routeKey: TARGETING_SAVE, units, scope: { table: true } })]);
   });
 });
 

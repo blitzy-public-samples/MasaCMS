@@ -3,7 +3,7 @@
 	variables.envelope = createObject("component", "lib.envelope").init();
 	variables.auth = createObject("component", "lib.auth").init();
 
-	variables.masaParts = "sites,groups,users,memberships,categories,content,files,oauthClients";
+	variables.masaParts = "sites,groups,users,memberships,categories,content,files,oauthClients,formResponses,commenters,comments";
 	variables.loopback = "127.0.0.1,::1,0:0:0:0:0:0:0:1";
 	// Fixture tables and the seed procedure that loads each; an empty name marks a table seeded by no procedure.
 	variables.fixtureProcedures = {
@@ -131,14 +131,37 @@
 		}
 	}
 
-	/** Creates each absent site through settingsManager.create, which also creates its private-pool Admin group. */
+	/** Returns each row's pageLimit as an integer, "" for a row without one, or raises invalidParameters naming the row's dataset offset. */
+	array function pageLimits(required array rows) {
+		local.limits = [];
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			local.value = rowValue(arguments.rows[local.i], "pageLimit");
+			// Masa writes the page limit into its SQL unquoted, and tsettings.PageLimit is an int.
+			if (isSimpleValue(local.value) && !len(local.value)) {
+				arrayAppend(local.limits, "");
+			} else if (isSimpleValue(local.value) && isNumeric(local.value) && local.value == int(local.value) && local.value >= 1 && local.value <= 2147483647) {
+				arrayAppend(local.limits, int(local.value));
+			} else {
+				variables.envelope.raise("invalidParameters", "Row at offset #variables.call.offset + local.i - 1# has an invalid pageLimit");
+			}
+		}
+		return local.limits;
+	}
+
+	/** Creates each absent site through settingsManager.create, which also creates its private-pool Admin group, and brings each existing site to its row's pageLimit through settingsManager.update. */
 	struct function seedSites(required array rows) {
 		requireSiteIDs(arguments.rows, "siteID,publicUserPoolID,privateUserPoolID,categoryPoolID,filePoolID,displayPoolID", "contentPoolID");
+		local.limits = pageLimits(arguments.rows);
 		local.inserted = 0;
 		// A seeded site takes the installed default site's theme, as Masa's add-site form preselects an installed theme.
 		local.theme = application.settingsManager.getSite("default").getTheme();
-		for (local.row in arguments.rows) {
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			local.row = arguments.rows[local.i];
+			local.pageLimit = local.limits[local.i];
 			if (application.settingsManager.siteExists(local.row.siteID)) {
+				if (len(local.pageLimit) && val(application.settingsManager.getSite(local.row.siteID).getPageLimit()) != local.pageLimit) {
+					requireValid(application.settingsManager.update({"siteID" = local.row.siteID, "pageLimit" = local.pageLimit}), local.row.siteID);
+				}
 				continue;
 			}
 			local.data = {
@@ -155,6 +178,9 @@
 				"displayPoolID" = local.row.displayPoolID,
 				"contentPoolID" = rowValue(local.row, "contentPoolID", local.row.siteID)
 			};
+			if (len(local.pageLimit)) {
+				local.data["pageLimit"] = local.pageLimit;
+			}
 			requireValid(application.settingsManager.create(local.data), local.row.siteID);
 			local.inserted++;
 		}
@@ -440,6 +466,79 @@
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
 	}
 
+	/** Returns a dataset yyyy-mm-ddTHH:nn:ss.lll timestamp as a datetime to the second, or raises invalidParameters naming the row. */
+	date function datasetTimestamp(required any text, required string rowId) {
+		if (!isSimpleValue(arguments.text) || !reFind("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$", arguments.text)) {
+			variables.envelope.raise("invalidParameters", "Row #arguments.rowId# has an invalid timestamp");
+		}
+		return createDateTime(mid(arguments.text, 1, 4), mid(arguments.text, 6, 2), mid(arguments.text, 9, 2), mid(arguments.text, 12, 2), mid(arguments.text, 15, 2), mid(arguments.text, 18, 2));
+	}
+
+	/** Stores each absent form response under its dataset id through dataCollectionManager.update, the data manager's Update path, which keeps the given responseid and entered. */
+	struct function seedFormResponses(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			if (application.dataCollectionManager.read(local.row.responseID).recordCount) {
+				continue;
+			}
+			local.data = {
+				"responseid" = local.row.responseID,
+				"formid" = local.row.formID,
+				"siteid" = local.row.siteID,
+				"entered" = datasetTimestamp(local.row.entered, local.row.responseID)
+			};
+			local.names = [];
+			for (local.field in local.row.fields) {
+				arrayAppend(local.names, local.field.name);
+				local.data[local.field.name] = local.field.value;
+			}
+			local.data.fieldlist = arrayToList(local.names);
+			application.dataCollectionManager.update(local.data);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Saves each absent commenter with its dataset id through the commenter bean, as standardSetCommenterHandler does. */
+	struct function seedCommenters(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.commenter = application.serviceFactory.getBean("commenter").loadBy(commenterID = local.row.commenterID);
+			if (!local.commenter.getIsNew()) {
+				continue;
+			}
+			local.commenter.set({
+				"commenterid" = local.row.commenterID,
+				"name" = local.row.name,
+				"email" = local.row.email,
+				"remoteid" = local.row.remoteID
+			});
+			local.commenter.save();
+			requireValid(local.commenter, local.row.commenterID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Saves each absent comment with its dataset id through contentManager.saveComment, under its seeded commenter. */
+	struct function seedComments(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			if (!application.contentManager.getCommentBean().loadBy(commentID = local.row.commentID).getIsNew()) {
+				continue;
+			}
+			local.data = rowData(local.row);
+			structDelete(local.data, "commenterID");
+			local.data.userID = local.row.commenterID;
+			local.data.entered = datasetTimestamp(local.row.entered, local.row.commentID);
+			// Read as stored, the comment makes standardSetCommenterHandler keep the commenter its userID names instead of keying one to the seeding admin.
+			local.data.isNew = 0;
+			requireValid(application.contentManager.saveComment(data = local.data, notify = false), local.row.commentID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
 	/** Loads rows first .. first + count - 1 of a fixture part through its table's seed procedure; returns {total, inserted}. */
 	struct function seedFixture(required string part, required string body, required numeric first, required numeric count, required numeric rowCount) {
 		local.schemaName = listFirst(listRest(arguments.part, ":"), ".");
@@ -599,6 +698,15 @@
 					break;
 				case "files":
 					local.result = seedFiles(local.rows);
+					break;
+				case "formResponses":
+					local.result = seedFormResponses(local.rows);
+					break;
+				case "commenters":
+					local.result = seedCommenters(local.rows);
+					break;
+				case "comments":
+					local.result = seedComments(local.rows);
 					break;
 				default:
 					local.result = seedOAuthClients(local.rows, local.credentials);

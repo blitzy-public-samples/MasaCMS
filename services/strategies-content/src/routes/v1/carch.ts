@@ -85,6 +85,7 @@ import {
   dataManagerAction,
   downloadData,
   getActiveForm,
+  getCurrentFieldList,
   getDownloadSelect,
   getFullFieldList,
   readResponse,
@@ -92,6 +93,7 @@ import {
   responseValues,
   type AttachmentLinkParts,
 } from '../../domain/forms.js';
+import { WddxDate, WddxNumber, type WddxValue } from '../../domain/wddx.js';
 import { FeedBean, feedContent, listFeedNames } from '../../domain/feeds.js';
 import { createSitesClient, type SiteConfigFlags } from '../../legacy/sites-client.js';
 import { UNORDERED_SORT_REASON } from '../../repo/feed-queries.js';
@@ -765,6 +767,12 @@ function beanValues(bean: ContentBean): Record<string, unknown> {
   return bean.isNew === 0 ? { ...bean.version, isNew: 0 } : { ...bean.values, isNew: 1 };
 }
 
+/** contentBean.getContentID() (contentBean.cfc:561-566) over a bean's values: the id, storing a new createUUID() over an empty one. */
+function beanContentId(values: Rc): string {
+  if (rcText(values, 'contentid') === '') rcSet(values, 'contentid', cfUuid());
+  return rcText(values, 'contentid');
+}
+
 /** A view model: the rc values the controller and view compute, as the contract's AdminViewModel. */
 function viewModel(rc: Rc): { rc: Record<string, unknown> } {
   return { rc: modelValue(rc) as Record<string, unknown> };
@@ -988,6 +996,8 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
   if (cfEq(action, 'display')) rcSet(view, 'fieldnames', await getFullFieldList(ctx.domain, actor, contentId));
   let rsData: unknown = listing.rows?.map((row) => queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })) ?? [];
   if (cfEq(action, 'edit')) {
+    // datamanager.cfm gives dsp_edit.cfm the form's detail fields, not dsp_response.cfm's summary fields.
+    rcSet(view, 'fieldnames', await getCurrentFieldList(ctx.domain, actor, contentId));
     const row = await readResponse(ctx.domain, actor, rcText(rc, 'responseid'));
     rsData = row === null ? [] : [queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })];
   }
@@ -1015,10 +1025,20 @@ function queryCells(row: object): Rc {
 /** A packet's deserialised values, or null where `wddx2cfml` fails, as the data manager view treats it. */
 function safeValues(row: Parameters<typeof responseValues>[0]): unknown {
   try {
-    return responseValues(row);
+    return packetModel(responseValues(row));
   } catch {
     return null;
   }
+}
+
+/** A deserialised packet value as the page model carries it: structs as objects in key order, numbers and dates as CFML text. */
+function packetModel(value: WddxValue): unknown {
+  if (value instanceof WddxNumber) return cfValueText(Number(value.text));
+  if (value instanceof WddxDate) return cfValueText(value.value);
+  if (Array.isArray(value)) return value.map(packetModel);
+  if (value === null || typeof value !== 'object') return value;
+  const members = (entries: Iterable<[string, WddxValue]>): Record<string, unknown> => Object.fromEntries([...entries].map(([name, member]) => [name, packetModel(member)]));
+  return value.kind === 'struct' ? members(value.entries) : value.rows.map((row) => members(Object.entries(row)));
 }
 
 /** The getDraftList rows draft.cfm reads, handed to `write` batch by batch as page-model values with their crumbdata, icon classes and node verdict. */
@@ -1333,7 +1353,7 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     const siteId = rcText(rc, 'siteid');
     const bean = await readContent(ctx.domain, actor, { siteId, remoteId: rcRequired(rc, 'remoteid') });
     const values = { ...beanValues(bean), ...rc, isNew: bean.isNew };
-    const targeting = await readVariationTargeting(ctx.domain, actor, { contentId: rcText(values, 'contentid'), siteId });
+    const targeting = await readVariationTargeting(ctx.domain, actor, { contentId: beanContentId(values), siteId });
     return viewModel({ ...rc, contentBean: { ...values, variationTargeting: targeting } });
   });
 
@@ -1344,7 +1364,7 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     const siteId = rcText(rc, 'siteid');
     const site = await siteOf(ctx, actor);
     const found = await readContent(ctx.domain, actor, { siteId, remoteId: rcRequired(rc, 'remoteid') });
-    let contentId = bareBean(found).contentId;
+    let contentId: string;
     let errors: Record<string, string> = {};
     let node: Record<string, unknown> = { ...beanValues(found), ...rc };
     if (found.isNew === 1) {
@@ -1352,6 +1372,9 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
       contentId = saved.bean.contentId();
       errors = saved.errors;
       node = { ...Object.fromEntries(saved.bean.entries()), isNew: 0 };
+    } else {
+      // A stored node targets the id set(rc) left on it, not its stored one.
+      contentId = beanContentId(node);
     }
     await withGatedTenant(ctx.domain.db, actor.tenantId, (tx) =>
       saveVariationTargetingInTx(tx, ctx.domain.repository, { contentid: contentId, siteid: siteId, initjs: rcRequired(rc, 'initjs') }, actor),

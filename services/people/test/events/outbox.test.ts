@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createPublisher, type EventEnvelope, type EventPublisher, type PublisherOptions, type RawMessage } from '@opt2/platform/events';
 import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
-import { encodeRow, type ApplyRequest, type CanonicalColumn } from '@opt2/platform/migration-kit';
+import { WRITE_POSITION_HEADER_LC, encodeRow, type ApplyRequest, type CanonicalColumn } from '@opt2/platform/migration-kit';
 import { CLOUD_TASKS_HEADERS, OUTBOX_SWEEP_INTERVAL_S, slotName, slotStartS, type TaskWireBody } from '@opt2/platform/tasks';
 import {
   TENANT_A,
@@ -504,6 +504,49 @@ describe.skipIf(!PG_AVAILABLE)('people outbox', () => {
       }
       expect(await counts()).toEqual(before);
       expect(publisher.captured.published).toHaveLength(publishedBefore);
+    });
+  });
+
+  it('A Fname-only feed change writes one person changelog row with its row_version, and a resent unchanged row writes nothing but its position', async () => {
+    const publisher = createGatedPublisher();
+    await withPeople(publisher, async (ctx) => {
+      const tenantId = TENANT_A.tenantId;
+      const userId = cfUuid();
+      const tusersColumns: CanonicalColumn[] = [...personMapping.legacyColumns, { name: 'Type', type: 'i' }];
+      const person = (Fname: string): ApplyRequest =>
+        backfillBatch(personMapping.legacyTable, tusersColumns, { UserID: userId, SiteID: TENANT_A.siteId, Type: 2, Fname, Lname: 'Feed', subType: 'Default' });
+      const headers = await headersFor('service:migration');
+      const apply = async (body: ApplyRequest) => {
+        const res = await ctx.app.inject({ method: 'POST', url: '/internal/v1/migration/apply', headers, payload: body });
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json()).toEqual({ batchId: body.batchId, duplicate: false, applied: 1, skipped: 0 });
+        return res;
+      };
+
+      await apply(person('Fay'));
+      const fed = await apply({ ...person('Faye'), origin: 'migration-feed' });
+      const resent = await apply({ ...person('Faye'), origin: 'migration-feed' });
+
+      // The resent batch writes no row, and its own transaction is its write position.
+      const xid = (res: { headers: Record<string, unknown> }): bigint =>
+        BigInt(/^people=(\d+)$/.exec(String(res.headers[WRITE_POSITION_HEADER_LC]))?.[1] ?? '-1');
+      expect(xid(resent) > xid(fed) && xid(fed) > 0n).toBe(true);
+      const log = await adminRows<{ op: string; columns: string[]; origin: string }>(
+        ctx.schema,
+        tenantId,
+        `SELECT op, columns, origin FROM ${ctx.schema.schema}.changelog WHERE "table" = $1 AND key LIKE $2 ORDER BY seq`,
+        [PERSON.table, `%${userId}%`],
+      );
+      expect(log.map((row) => [row.op, row.op === 'insert' ? row.columns.at(-1) : row.columns, row.origin])).toEqual([
+        ['insert', 'row_version', 'backfill'],
+        ['update', ['fname', 'row_version'], 'migration-feed'],
+      ]);
+      expect(await rowVersion(ctx.schema, tenantId, userId)).toBe(2);
+      const changed = publishedFor(publisher.captured, PERSON_CHANGED_TOPIC, userId);
+      expect(changed.map((envelope) => [envelope.aggregateVersion, (envelope.payload as { fname: string }).fname])).toEqual([
+        [1, 'Fay'],
+        [2, 'Faye'],
+      ]);
     });
   });
 });

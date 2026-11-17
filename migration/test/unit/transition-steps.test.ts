@@ -1,11 +1,12 @@
 // Unit tests of the transition step engine over fakes and the committed cut-over versions.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { loadConfig } from '../../src/config.js';
+import { loadConfig, type ResolvedPaths } from '../../src/config.js';
 import {
   CutoverDataError,
   GatewayCallError,
@@ -15,6 +16,7 @@ import {
   loadVersion,
   type Authority,
   type CutoverStatusV2,
+  type CutoverVersion,
 } from '../../src/cutover/index.js';
 import type { MigrationContext } from '../../src/context.js';
 import { GateConflict, UnknownLegacyTableError, loadUnitCatalog, type UnitCatalog } from '../../src/owners/index.js';
@@ -195,6 +197,8 @@ function harness(opts: {
   instances?: CutoverStatusV2['instances'];
   stateDir?: string;
   clusterCommands?: number;
+  /** Cut-over files replacing the committed ones. */
+  paths?: Pick<ResolvedPaths, 'cutoverDir' | 'groupsFile'>;
 }) {
   const calls: Call[] = [];
   let now = Date.parse('2026-06-30T12:00:00.000Z');
@@ -272,7 +276,7 @@ function harness(opts: {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   const ctx = {
     env: { OPT2_SERVICE_URLS: SERVICE_URLS, OPT2_LEGACY_RESTART_CMD: opts.restartCmd, MURA_DATABASE: 'muradb_c62', OPT2_STATE_DIR: opts.stateDir ?? SAFE_STATE_DIR },
-    config,
+    config: opts.paths === undefined ? config : { ...config, paths: { ...config.paths, ...opts.paths } },
     clock: { now: () => new Date(now) },
     logger,
     db: {},
@@ -1135,10 +1139,38 @@ describe('controlled legacy restart of step 3', () => {
   /** Call order of the first gate call `match` selects. */
   const gateAt = (h: Harness, match: (req: Gate) => boolean): number => order(h.owners.gate, gates(h).findIndex(match));
   const attempts = (): number[] => m.importWindow.mock.calls.map(([, input]) => (input as { attempt: number }).attempt);
+  /** Content group with carry write entries that the fenced cut-over holds `target`-authoritative. */
+  const FENCED_GROUP = 'grp:content.comment';
+  /** Committed groups, and v0002 and v0003 with {@link FENCED_GROUP} and its write entries `target`, whatever the committed versions hold for it. */
+  let fencedCutover: Pick<ResolvedPaths, 'cutoverDir' | 'groupsFile'>;
 
-  /** A v0002 -> v0003 transition after step 2 with an orphaned legacy write, and the content units `target`-authoritative under v0002. */
+  beforeAll(async () => {
+    const group = groups.groups.find(({ id }) => id === FENCED_GROUP);
+    if (group === undefined || !group.hasCarryWrite || group.units.some((unit) => !contentUnits(catalog).includes(unit))) {
+      throw new Error(`groups.json has no content group ${FENCED_GROUP} with a carry write entry`);
+    }
+    const cutoverDir = await mkdtemp(path.join(tmpdir(), 'opt2-transition-fenced-cutover-'));
+    const groupsFile = path.join(cutoverDir, 'groups.json');
+    await copyFile(config.paths.groupsFile, groupsFile);
+    await mkdir(path.join(cutoverDir, 'versions'));
+    for (const version of [v2, v3]) {
+      const fencedVersion: CutoverVersion = {
+        ...version,
+        groupAuthority: { ...version.groupAuthority, [FENCED_GROUP]: 'target' },
+        entries: version.entries.map((entry) => (entry.group === FENCED_GROUP ? { ...entry, state: 'target' } : entry)),
+      };
+      await writeFile(path.join(cutoverDir, 'versions', `${version.tableVersion}.json`), JSON.stringify(fencedVersion));
+    }
+    fencedCutover = { cutoverDir, groupsFile };
+  });
+
+  afterAll(async () => {
+    await rm(fencedCutover.cutoverDir, { recursive: true, force: true });
+  });
+
+  /** A v0002 -> v0003 transition after step 2 with an orphaned legacy write, over the fenced cut-over's `target`-authoritative content units. */
   async function atStep3(orphaned = true) {
-    const plan = deriveTransitionPlan(v2, v3, groups, catalog);
+    const plan = deriveTransitionPlan(loadVersion(fencedCutover.cutoverDir, 'v0002'), loadVersion(fencedCutover.cutoverDir, 'v0003'), groups, catalog);
     const row = {
       instanceId: 'gw-dead',
       route: plan.frozenRoutes[0]!,
@@ -1147,9 +1179,9 @@ describe('controlled legacy restart of step 3', () => {
       oldestStartedAt: '2026-06-30T11:59:00Z',
       orphaned: true,
     };
-    const h = harness({ active: 'v0002', restartCmd: 'restart.sh', inflight: orphaned ? [row] : [], instances: [live, dead] });
+    const h = harness({ active: 'v0002', restartCmd: 'restart.sh', inflight: orphaned ? [row] : [], instances: [live, dead], paths: fencedCutover });
     const record = await runAll(h, newRecord('v0002', 'v0003'), 2);
-    const authority = await currentAuthority({ gateway: h.gateway, config: config.paths });
+    const authority = await currentAuthority({ gateway: h.gateway, config: h.ctx.config.paths });
     const fenced = contentUnits(catalog).filter((unit) => authority.isTargetAuthoritative(unit));
     expect(fenced.length).toBeGreaterThan(0);
     return { h, record, fenced };

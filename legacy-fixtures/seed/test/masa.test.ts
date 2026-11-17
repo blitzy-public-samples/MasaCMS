@@ -26,7 +26,7 @@ beforeAll(async () => {
 
 describe('masa counts', () => {
   it.each([
-    ['umbrella', 0, 1000, 0, 100, 0, 0],
+    ['umbrella', 0, 1000, 0, 100, 10, 1],
     ['tenant-a', 2000, 0, 50, 0, 5000, 1],
     ['tenant-b', 180, 20, 10, 10, 300, 1],
   ] as const)('%s: system %i members %i groups %i categories %i content %i forms %i', (site, sys, mem, groups, cats, content, forms) => {
@@ -38,14 +38,16 @@ describe('masa counts', () => {
     expect(masa.content.filter((c) => c.siteID === site && c.moduleID === MASA_FORMS_MODULE_ID)).toHaveLength(forms);
   });
   it('totals and key order', () => {
-    expect(Object.keys(masa)).toEqual(['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients']);
+    expect(Object.keys(masa)).toEqual([
+      'sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients', 'formResponses', 'commenters', 'comments',
+    ]);
     expect(masa.users).toHaveLength(3200);
     expect(masa.files).toHaveLength(20);
     expect(masa.oauthClients).toHaveLength(1);
-    expect(masa.sites.map((s) => [s.siteID, s.orderNo, s.domain, s.domainAlias, s.programId])).toEqual([
-      ['umbrella', 2, 'umbrella.localhost', 'localhost', null],
-      ['tenant-a', 3, 'tenant-a.localhost', 'localhost', 1],
-      ['tenant-b', 4, 'tenant-b.localhost', 'localhost', 2],
+    expect(masa.sites.map((s) => [s.siteID, s.orderNo, s.domain, s.domainAlias, s.programId, s.pageLimit])).toEqual([
+      ['umbrella', 2, 'umbrella.localhost', 'localhost', null, null],
+      ['tenant-a', 3, 'tenant-a.localhost', 'localhost', 1, 10000],
+      ['tenant-b', 4, 'tenant-b.localhost', 'localhost', 2, null],
     ]);
     const a = index.site('tenant-a');
     expect([a.publicUserPoolID, a.categoryPoolID, a.filePoolID, a.displayPoolID, a.privateUserPoolID, a.contentPoolID]).toEqual([
@@ -78,6 +80,7 @@ describe('masa users', () => {
       ...masa.groups.map((g) => g.groupID), ...masa.users.map((u) => u.userID), ...masa.categories.map((c) => c.categoryID),
       ...masa.content.flatMap((c) => [c.contentID, ...c.versions.map((v) => v.contentHistID)]),
       ...masa.files.map((f) => f.fileID), ...masa.oauthClients.map((o) => o.clientID),
+      ...masa.formResponses.map((r) => r.responseID), ...masa.commenters.map((c) => c.commenterID), ...masa.comments.map((c) => c.commentID),
     ];
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) expect(id).toMatch(CF_UUID);
@@ -175,7 +178,7 @@ describe('masa categories, content and files', () => {
     expect(masa.categories.filter((c) => c.siteID === 'tenant-b').every((c) => c.parentID === null)).toBe(true);
   });
   it('content', () => {
-    for (const site of ['tenant-a', 'tenant-b'] as const) {
+    for (const site of ['umbrella', 'tenant-a', 'tenant-b'] as const) {
       const rows = masa.content.filter((c) => c.siteID === site && c.moduleID === MASA_DEFAULT_MODULE_ID);
       const seen = new Set<string>([MASA_HOME_CONTENT_ID]);
       const folders = rows.filter((c) => c.type === 'Folder');
@@ -208,7 +211,7 @@ describe('masa categories, content and files', () => {
       expect(rows.filter((c) => c.objects.length > 0 || c.formID !== undefined)).toEqual([rows[rows.length - 1]]);
     }
   });
-  it.each(['tenant-a', 'tenant-b'] as const)('%s form and the page hosting it', (site) => {
+  it.each(['umbrella', 'tenant-a', 'tenant-b'] as const)('%s form and the page hosting it', (site) => {
     const rows = masa.content.filter((c) => c.siteID === site);
     const form = rows.find((c) => c.type === 'Form') as ContentRow;
     const host = rows[rows.length - 1] as ContentRow;
@@ -304,6 +307,67 @@ describe('masa categories, content and files', () => {
   });
 });
 
+describe('masa form responses, commenters and comments', () => {
+  const EMAIL = /^[a-z0-9]+(?:\.[a-z0-9]+)*\d*@seed\.opt2\.test$/;
+  const ascending = (stamps: string[]): boolean => stamps.every((ts, i) => i === 0 || (stamps[i - 1] as string) < ts);
+
+  it.each(['tenant-a', 'tenant-b'] as const)('%s form responses answer every field of the form', (site) => {
+    const form = masa.content.find((c) => c.siteID === site && c.type === 'Form') as ContentRow;
+    const def = JSON.parse(form.versions[0]!.body) as { form: { fields: Record<string, { name: string }> } };
+    const rows = masa.formResponses.filter((r) => r.siteID === site);
+    expect(rows).toHaveLength(12);
+    expect(rows.every((r) => r.formID === form.contentID)).toBe(true);
+    expect(ascending(rows.map((r) => r.entered))).toBe(true);
+    for (const r of rows) {
+      expect(r.entered).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000$/);
+      expect(r.entered < '2026-06-30T00:00:00.000').toBe(true);
+      expect(r.fields.map((f) => f.name)).toEqual(form.fieldIDs!.map((id) => def.form.fields[id]!.name));
+      const [fullname, email, message] = r.fields.map((f) => f.value) as [string, string, string];
+      expect(fullname).toMatch(/^\S.{0,253}\S$/);
+      expect(email).toMatch(EMAIL);
+      expect(message.length).toBeGreaterThan(0);
+      for (const { value } of r.fields) expect([value === value.trim(), /<script|<form/i.test(value)]).toEqual([true, false]);
+    }
+  });
+
+  it.each(['tenant-a', 'tenant-b'] as const)('%s comments on the form host page take turns among its commenters', (site) => {
+    const host = masa.content.find((c) => c.siteID === site && c.formID !== undefined) as ContentRow;
+    const comments = masa.comments.filter((c) => c.siteID === site);
+    const ids = comments.map((c) => c.commenterID);
+    const commenters = masa.commenters.filter((c) => ids.includes(c.commenterID));
+    expect(commenters).toHaveLength(4);
+    expect(comments).toHaveLength(6);
+    const userEmails = new Set(masa.users.map((u) => u.email));
+    commenters.forEach((c, i) => {
+      if (i < 2) {
+        const member = index.user(c.remoteID);
+        expect(index.publicPoolMembers(site)).toContain(member);
+        expect([c.name, c.email]).toEqual([`${member.fname} ${member.lname}`.slice(0, 50).trimEnd(), member.email]);
+      } else {
+        expect([c.remoteID, userEmails.has(c.email)]).toEqual([c.email, false]);
+      }
+      expect(c.name.length).toBeLessThanOrEqual(50);
+      expect(c.email).toMatch(EMAIL);
+      expect(c.email.length).toBeLessThanOrEqual(100);
+    });
+    expect(ascending(comments.map((c) => c.entered))).toBe(true);
+    comments.forEach((c, i) => {
+      const by = commenters[i % 4]!;
+      expect([c.contentID, c.commenterID, c.name, c.email]).toEqual([host.contentID, by.commenterID, by.name, by.email]);
+      expect(c.entered < '2026-06-30T00:00:00.000').toBe(true);
+      expect(c.comments.length).toBeGreaterThan(0);
+    });
+    expect(comments.map((c) => c.parentID)).toEqual([null, null, null, null, comments[1]!.commentID, null]);
+    expect(comments.map((c) => c.isApproved)).toEqual([1, 1, 1, 1, 1, 0]);
+  });
+
+  it('keys every commenter to a distinct member or visitor', () => {
+    expect(masa.commenters).toHaveLength(12);
+    expect(new Set(masa.commenters.map((c) => c.remoteID)).size).toBe(12);
+    expect(new Set(masa.commenters.map((c) => c.email)).size).toBe(12);
+  });
+});
+
 describe('masa determinism', () => {
   it('same config gives identical output; a reloaded dataset indexes identically', () => {
     const again = build(config);
@@ -333,11 +397,11 @@ describe('masa determinism', () => {
     expect(() => build(over)).toThrow(RangeError);
     const full = structuredClone(config);
     full.historyDays = 1;
-    for (const site of ['tenant-a', 'tenant-b'] as const) {
+    for (const site of ['umbrella', 'tenant-a', 'tenant-b'] as const) {
       Object.assign(full.sites[site].counts, { contentNodes: 2, maxVersionsPerNode: 1440 });
     }
     const { content } = build(full);
-    expect(content.map((c) => c.type)).toEqual(['File', 'Form', 'Page', 'Page', 'Form', 'Page']);
+    expect(content.map((c) => c.type)).toEqual(['File', 'Form', 'Page', 'File', 'Form', 'Page', 'Page', 'Form', 'Page']);
     for (const c of content) {
       expect(c.versions.length).toBeLessThanOrEqual(1440);
       for (let i = 1; i < c.versions.length; i += 1) expect(c.versions[i - 1]!.lastUpdate < c.versions[i]!.lastUpdate).toBe(true);

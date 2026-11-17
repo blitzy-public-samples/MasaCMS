@@ -1192,6 +1192,15 @@ paths:
           description: Comma-separated topics whose published outbox events are listed in `published`; every one when the read names none of `publishedAfter`, `publishedLimit` and `publishedThrough`, otherwise one page per read.
           schema:
             type: string
+        - name: registeredTenants
+          in: query
+          required: false
+          description: With `true`, lists every tenant of the registry, each site's and its pools', in `registeredTenants`.
+          schema:
+            type: string
+            enum:
+              - 'true'
+              - 'false'
         - name: publishedAfter
           in: query
           required: false
@@ -2868,6 +2877,12 @@ components:
           description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
+        registeredTenants:
+          type: array
+          description: Every tenant of the registry, each site's and its pools', lower-case and sorted; present only when asked.
+          items:
+            type: string
+            format: uuid
         publishedNext:
           type: string
           pattern: '^[0-9]+$'

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CURSOR_START,
   InvalidCursorError,
+  changelogOrderSql,
   createRepository,
   currentPosition,
   decodeRow,
@@ -14,6 +15,7 @@ import {
   legacyRowHash,
   migrationKitSql,
   parseCursor,
+  predecessorEnds,
   readChanges,
   type CanonicalColumn,
   type ChangeRow,
@@ -168,7 +170,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
     if (!(await pgAvailable())) {
       throw new Error(`PostgreSQL at PG_HOST=${config.host} PG_PORT=${config.port} is unreachable`);
     }
-    handle = await createThrowawaySchema({ service: OWNER, extraSql: [migrationKitSql(OWNER), TABLES_SQL] });
+    handle = await createThrowawaySchema({ service: OWNER, extraSql: [migrationKitSql(OWNER), changelogOrderSql(OWNER), TABLES_SQL] });
     repo = createRepository({ owner: OWNER, schema: handle.schema, tables: [NOTE, REMINDER], clock: CLOCK });
   });
 
@@ -195,6 +197,69 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
       return txXid(tx);
     });
     return { key: noteKey(id), xid };
+  }
+
+  /** Opens a tenant transaction with its xid assigned; `run` executes in it, `commit` ends it after the steps run. */
+  async function holdTransaction(tenantId: string): Promise<{ xid: string; run<T>(fn: (tx: TenantTx) => Promise<T>): Promise<T>; commit(): Promise<void> }> {
+    const queue: ((tx: TenantTx) => Promise<void>)[] = [];
+    let wake: (() => void) | undefined;
+    let ending = false;
+    const opened = deferred<string>();
+    const finished = withTenant(handle.app, tenantId, async (tx) => {
+      opened.resolve(await txXid(tx));
+      for (;;) {
+        while (queue.length === 0 && !ending) {
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+        }
+        const step = queue.shift();
+        if (step === undefined) return;
+        await step(tx);
+      }
+    });
+    const xid = await Promise.race([opened.promise, finished.then(() => Promise.reject(new Error('the held transaction ended before it opened')))]);
+    const post = (step: (tx: TenantTx) => Promise<void>): void => {
+      queue.push(step);
+      wake?.();
+    };
+    return {
+      xid,
+      run: <T>(fn: (tx: TenantTx) => Promise<T>) =>
+        new Promise<T>((resolve, reject) => {
+          post((tx) => fn(tx).then(resolve, reject));
+        }),
+      commit: async () => {
+        ending = true;
+        wake?.();
+        await finished;
+      },
+    };
+  }
+
+  /**
+   * The tenant's first page once a read horizon above `xid` withholds that transaction: its returned horizon is then
+   * `xid` itself, while a lower one means some session in the cluster still holds the read horizon below `xid`.
+   */
+  async function withheldAt(tenantId: string, xid: string): Promise<ChangesPage> {
+    const deadline = Date.now() + HORIZON_WAIT_MS;
+    for (;;) {
+      const page = await readChanges(handle.app, { tenantId, after: CURSOR_START, limit: PAGE_LIMIT });
+      if (BigInt(page.horizon) >= BigInt(xid)) return page;
+      if (Date.now() > deadline) throw new Error(`changelog horizon ${page.horizon} did not reach ${xid} within ${HORIZON_WAIT_MS} ms`);
+      await sleep(100);
+    }
+  }
+
+  /** Every page from the start with `limit`, as op and body or email of each row, until a complete page. */
+  async function pagesOf(tenantId: string, limit: number, describeRow: (row: ChangeRow) => string): Promise<string[][]> {
+    const pages: string[][] = [];
+    for (let cursor = CURSOR_START; ; ) {
+      const page = await readChanges(handle.app, { tenantId, after: cursor, limit });
+      pages.push(page.rows.map(describeRow));
+      if (page.complete) return pages;
+      cursor = page.cursor;
+    }
   }
 
   /** The tenant's first page once its horizon has passed `position`; any open transaction in the cluster holds the horizon back. */
@@ -400,6 +465,72 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
 
     const next = await readChanges(handle.app, { tenantId: tenant, after: page.cursor, limit: PAGE_LIMIT });
     expect(next).toMatchObject({ rows: [], cursor: page.cursor, complete: true });
+  }, HORIZON_TEST_TIMEOUT_MS);
+
+  it('withholds a row whose same-key predecessor of a higher xid is above the horizon, then pages them together', async () => {
+    const tenant = freshTenant();
+    const id = nextId();
+    const body = (row: ChangeRow): string => `${row.op}:${String(decodeRow(NOTE_COLUMNS, row.after ?? row.before ?? '').body)}`;
+    await withTenant(handle.app, tenant, (tx) => repo.insert(tx, 'note', { id, body: 'v1' }));
+    const older = await holdTransaction(tenant);
+    // Any open transaction holds the cluster-wide horizon at or below its xid.
+    const blocker = await holdTransaction(freshTenant());
+    let newer = '';
+    try {
+      newer = await withTenant(handle.app, tenant, async (tx) => {
+        await repo.update(tx, 'note', { id }, { body: 'v2' });
+        return txXid(tx);
+      });
+      // The lower xid commits last, so its row carries the higher seq: PostgreSQL ends at v3.
+      await older.run((tx) => repo.update(tx, 'note', { id }, { body: 'v3' }));
+      await older.commit();
+      expect(BigInt(older.xid) < BigInt(blocker.xid) && BigInt(blocker.xid) < BigInt(newer)).toBe(true);
+
+      const withheld = await withheldAt(tenant, older.xid);
+      expect(withheld).toMatchObject({ horizon: older.xid, complete: true });
+      expect(withheld.rows.map(body)).toEqual(['insert:v1']);
+      expect(isApplied(older.xid, withheld.horizon)).toBe(false);
+    } finally {
+      await blocker.commit();
+    }
+
+    const page = await settled(tenant, newer);
+    expect(page.rows.map(body)).toEqual(['insert:v1', 'update:v3', 'update:v2']);
+    expect(predecessorEnds(page.rows)).toEqual([0, 2, 2]);
+    // With one row per page, the v3 page runs past its limit to take the v2 row it needs.
+    expect(await pagesOf(tenant, 1, body)).toEqual([['insert:v1'], ['update:v3', 'update:v2'], []]);
+  }, HORIZON_TEST_TIMEOUT_MS);
+
+  it('withholds a keyless delete of the image a higher-xid update left, then pages them together', async () => {
+    const tenant = freshTenant();
+    const x = { content_id: cfId(900_101), site_id: 'default', email: 'x@example.test', remind_date: '2026-07-01 09:30:00.000' };
+    const y = { ...x, email: 'y@example.test' };
+    const email = (row: ChangeRow): string => `${row.op}:${String(decodeRow(REMINDER_COLUMNS, row.after ?? row.before ?? '').email)}`;
+    await withTenant(handle.app, tenant, (tx) => repo.insert(tx, 'reminder', x));
+    const older = await holdTransaction(tenant);
+    const blocker = await holdTransaction(freshTenant());
+    let newer = '';
+    try {
+      newer = await withTenant(handle.app, tenant, async (tx) => {
+        await repo.replaceOne(tx, 'reminder', x, y);
+        return txXid(tx);
+      });
+      // Deletes the occurrence of y the newer transaction inserted: its key is y, the update's key is x.
+      expect(await older.run((tx) => repo.deleteOne(tx, 'reminder', y))).not.toBeNull();
+      await older.commit();
+
+      const withheld = await withheldAt(tenant, older.xid);
+      expect(withheld).toMatchObject({ horizon: older.xid, complete: true });
+      expect(withheld.rows.map(email)).toEqual(['insert:x@example.test']);
+    } finally {
+      await blocker.commit();
+    }
+
+    const page = await settled(tenant, newer);
+    expect(page.rows.map(email)).toEqual(['insert:x@example.test', 'delete:y@example.test', 'update:y@example.test']);
+    expect(page.rows[1]?.before).toBe(page.rows[2]?.after);
+    expect(predecessorEnds(page.rows)).toEqual([0, 2, 2]);
+    expect(await pagesOf(tenant, 1, email)).toEqual([['insert:x@example.test'], ['delete:y@example.test', 'update:y@example.test'], []]);
   }, HORIZON_TEST_TIMEOUT_MS);
 
   it('never shows one tenant the changes of another', async () => {

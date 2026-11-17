@@ -196,6 +196,20 @@ describe('diffKeyedStreams', () => {
     expect(changes).toEqual(expected === null ? [] : [{ op: 'update', key: before.key, before, after, columns: expected }]);
   });
 
+  it.each<[string, KeyedDiffOptions['unchanged'], number[]]>([
+    ['yields no row without a changed writable column by default', undefined, []],
+    ['yields a row changed only outside the writable columns as an update without columns', 'differing', [2]],
+    ['yields every row without a changed writable column as an update without columns', 'all', [1, 2]],
+  ])('%s', async (_case, unchanged, quiet) => {
+    const before = [user(1), user(2), user(3)];
+    const after = [user(1), user(2, { UserName: 'renamed' }), user(3, { Fname: 'Renamed' })];
+
+    const changes = await collect(diffKeyedStreams(before, after, { columns: USERS.columns, writableColumns: PERSON_COLUMNS, unchanged }));
+
+    const update = (n: number, columns: string[]) => ({ op: 'update', key: before[n - 1]?.key, before: before[n - 1], after: after[n - 1], columns });
+    expect(changes).toEqual([...quiet.map((n) => update(n, [])), update(3, ['Fname'])]);
+  });
+
   it('keeps inserts and deletes whole whatever the writable columns', async () => {
     const removed = user(1);
     const added = user(2);
@@ -279,6 +293,33 @@ describe('diffMultisetStreams', () => {
     expect(rowOf('A')).toBe(before.find((row) => row.encoding === member('A').encoding));
     expect(rowOf('B')).toBe(after.find((row) => row.encoding === member('B').encoding));
     expect(rowOf('C')).toBe(after.find((row) => row.encoding === member('C').encoding));
+  });
+
+  it('reports the occurrences both inputs hold, with one of each side, when asked to keep them', async () => {
+    const before = members('AACCB');
+    const after = members('ACCC');
+    const occurrence = (rows: readonly CanonicalRow[], label: Label): CanonicalRow | undefined => rows.find((row) => row.encoding === member(label).encoding);
+    const kept = (label: Label, count: number) => ({ count, before: occurrence(before, label), after: occurrence(after, label) });
+
+    const changes = await collect(diffMultisetStreams(before, after, { kept: true }));
+
+    expect(changes.map(({ encoding, added, removed, kept: both }) => ({ encoding, added, removed, kept: both }))).toEqual(
+      [
+        { encoding: member('A').encoding, added: 0, removed: 1, kept: kept('A', 1) },
+        { encoding: member('B').encoding, added: 0, removed: 1, kept: undefined },
+        { encoding: member('C').encoding, added: 1, removed: 0, kept: kept('C', 2) },
+      ].toSorted(byEncoding),
+    );
+  });
+
+  it('yields a row whose count did not change only when asked to keep its occurrences', async () => {
+    const before = members('AB');
+    const after = members('AB');
+
+    expect(await collect(diffMultisetStreams(before, after))).toEqual([]);
+    expect(await collect(diffMultisetStreams(before, after, { kept: true }))).toEqual(
+      before.map((row, index) => ({ encoding: row.encoding, added: 0, removed: 0, row, kept: { count: 1, before: row, after: after[index] } })),
+    );
   });
 
   it.each<[DiffSide, string, string]>([

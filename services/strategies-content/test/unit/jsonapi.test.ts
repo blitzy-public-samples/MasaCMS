@@ -12,7 +12,7 @@ import {
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
 import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, mintUserToken } from '@opt2/platform/testing';
 import { contentEntities, isContentEntity } from '../../src/legacy/jsonapi-entities.js';
 import {
   jsonApiSiteOf,
@@ -23,7 +23,7 @@ import {
 } from '../../src/routes/jsonapi.js';
 import { buildTestApp, createRecordingDb, type RecordingDb, type Responder, type TestApp } from '../helpers/app.js';
 import { IDS, seedRecordingDb, tenantASeed } from '../helpers/seed.js';
-import { contentHeaders, type ContentSubject } from '../helpers/tokens.js';
+import { SUBJECT_USER_IDS, contentHeaders, type ContentSubject } from '../helpers/tokens.js';
 
 type Struct = Record<string, unknown>;
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -144,12 +144,43 @@ describe('site resolution and route keys', () => {
   it.each([
     ['a path site', `/_api/json/v1/${TENANT_B.siteId}/content`],
     ['a registered siteid parameter', `${API}/content?siteid=${TENANT_B.siteId}`],
+    ['a registered siteid parameter beside an unknown path site', `/_api/json/v1/nosuchsite/content?siteid=${TENANT_B.siteId}`],
+    ['a path site behind /index.cfm', `/index.cfm/_api/json/v1/${TENANT_B.siteId}/content`],
   ])('refuses %s other than the token site with the legacy 403 before any domain read', async (_label, url) => {
     api.db.clear();
     api.client.clear();
     const res = await send(api, { url, subject: 'site-admin' });
     expect(res.statusCode).toBe(403);
     expect(bodyOf(res)).toEqual({ apiversion: 'v1', method: 'invalid', error: errorBody('authorization') });
+    expect(api.db.statements.filter((statement) => statement.tenantId !== null)).toEqual([]);
+    expect(api.client.requests).toEqual([]);
+  });
+
+  /** Callers of an unknown site: identity's roleless token of that site, an anonymous session's, another site's, or none. */
+  const UNKNOWN_SITE_CALLERS: ReadonlyArray<{ who: string; subject: ContentSubject; sub?: string }> = [
+    { who: 'a roleless token of that site', subject: 'anonymous', sub: SUBJECT_USER_IDS['system-user'] },
+    { who: 'an anonymous session token of that site', subject: 'anonymous', sub: '' },
+    { who: 'a tenant-a site-admin token', subject: 'site-admin' },
+    { who: 'no user token', subject: 'anonymous' },
+  ];
+
+  it.each(
+    (
+      [
+        ['/_api/json/v1/nosuchsite/content', 'invalid'],
+        ['/_api/ajax/v1/nosuchsite/content', 'invalid'],
+        ['/index.cfm/_api/json/v1/nosuchsite/content', 'invalid'],
+        ['/_api/json/v1/?siteid=nosuchsite&method=findOne&entityname=content', 'findOne'],
+      ] as const
+    ).flatMap(([url, method]) => UNKNOWN_SITE_CALLERS.map((caller) => ({ url, method, ...caller }))),
+  )("answers $url × $who with legacy's 400 invalidParameters before any domain read", async ({ url, method, subject, sub }) => {
+    api.db.clear();
+    api.client.clear();
+    const headers = sub === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ sub, site: 'nosuchsite', roles: [] })}` };
+    const res = await send(api, { url, subject, headers });
+    expect(res.statusCode).toBe(400);
+    expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(res.body).toBe(`{"apiversion":"v1","method":"${method}","error":{"message":"Invalid parameters","code":"invalid_request"}}`);
     expect(api.db.statements.filter((statement) => statement.tenantId !== null)).toEqual([]);
     expect(api.client.requests).toEqual([]);
   });
@@ -328,6 +359,79 @@ describe('envelope and headers', () => {
     expect(data.json).toMatchObject({ contentid: PAGE_ONE, title: 'Page One' });
     expect(data.ajax).toEqual(data.json);
     expect(JSON.parse(JSON.stringify(data.rest).replaceAll('/_api/rest/v1/', '/_api/json/v1/'))).toEqual(data.json);
+  });
+});
+
+describe('the families behind /index.cfm', () => {
+  const ABSENT_TARGETING = 'AAAAAAAA-AAAA-AAAA-AAAAAAAAAAAAAAAA';
+  const TARGETING_SAVE = { method: 'POST', headers: { 'content-type': FORM }, payload: formBody({ contentid: PAGE_ONE, initjs: 'x' }) } as const;
+  const INVALID_TOKENS = '{"apiversion":"v1","method":"save","error":{"message":"Invalid CSRF tokens","code":"invalid_request"}}';
+
+  /** A request on its bare path, and the Masa 7.6.1 oracle's answer to it where the request alone decides that answer. */
+  interface SpellingCase {
+    name: string;
+    variations?: true;
+    request: ApiCall;
+    legacy?: { status: number; body: string; wwwAuthenticate?: string };
+  }
+
+  const CASES: readonly SpellingCase[] = [
+    { name: 'a variationTargeting save without CSRF tokens', variations: true, request: { url: `${API}/variationTargeting`, ...TARGETING_SAVE }, legacy: { status: 400, body: INVALID_TOKENS } },
+    { name: 'a lower-case variationtargeting/ save', variations: true, request: { url: `${API}/variationtargeting/`, ...TARGETING_SAVE }, legacy: { status: 400, body: INVALID_TOKENS } },
+    { name: 'an ajax variationTargeting save', variations: true, request: { url: `/_api/ajax/v1/${SITE}/variationTargeting`, ...TARGETING_SAVE }, legacy: { status: 400, body: INVALID_TOKENS } },
+    { name: 'a variationTargeting save while variations is off', request: { url: `${API}/variationTargeting`, ...TARGETING_SAVE } },
+    {
+      name: 'a variationTargeting delete of an absent id',
+      variations: true,
+      request: { method: 'DELETE', url: `${API}/variationTargeting/${ABSENT_TARGETING}` },
+      legacy: { status: 200, body: '{"apiversion":"v1","data":"","method":"delete"}' },
+    },
+    { name: 'an anonymous content findOne', request: { url: `${API}${PAGE_ONE_PATH}` } },
+    { name: 'an ajax content findOne', request: { url: `/_api/ajax/v1/${SITE}${PAGE_ONE_PATH}` } },
+    { name: 'a findOne under an allowed Origin', request: { url: `${API}${PAGE_ONE_PATH}`, headers: { origin: 'https://tenant-a.opt2.test' } } },
+    { name: 'a signed-in REST findOne', request: { url: `/_api/rest/v1/${SITE}${PAGE_ONE_PATH}`, subject: 's2' } },
+    {
+      name: 'a REST call without credentials',
+      request: { url: `/_api/rest/v1/${SITE}${PAGE_ONE_PATH}` },
+      legacy: {
+        status: 401,
+        body: '{"apiversion":"v1","method":"invalid","error":{"message":"Insufficient Account Permissions","code":"invalid_request"}}',
+        wwwAuthenticate: WWW_AUTHENTICATE.basic,
+      },
+    },
+    {
+      name: 'a call without a site segment',
+      request: { url: '/_api/json/v1' },
+      legacy: { status: 400, body: '{"apiversion":"v1","method":"invalid","error":{"message":"Invalid parameters","code":"invalid_request"}}' },
+    },
+    { name: 'a path site other than the token site', request: { url: `/_api/json/v1/${TENANT_B.siteId}/content`, subject: 'site-admin' } },
+  ];
+
+  // The container maps only a lower-case `/index.cfm`, so under `/INDEX.CFM` legacy keeps REST session-managed (applicationSettings.cfm:179).
+  /** Respellings of a bare path: name, rewrite, and whether a REST call answers it as on the bare path. */
+  const SPELLINGS: ReadonlyArray<readonly [string, (bare: string) => string, boolean]> = [
+    ['/index.cfm', (bare) => `/index.cfm${bare}`, true],
+    ['/INDEX.CFM', (bare) => `/INDEX.CFM${bare}`, false],
+    ['/index.cfm and an upper-case lead', (bare) => `/index.cfm${bare.replace(/^\/_api\/(\w+)\/v1/, (_lead, family: string) => `/_API/${family.toUpperCase()}/V1`)}`, true],
+  ];
+
+  /** What the two spellings must share: status, body and the legacy headers. */
+  function answerOf(res: Awaited<ReturnType<typeof send>>): Struct {
+    const { etag: tag, 'content-type': type, 'www-authenticate': challenge, 'access-control-allow-origin': origin } = res.headers;
+    return { status: res.statusCode, body: res.body, type, tag, challenge, origin };
+  }
+
+  it.each(
+    CASES.flatMap((c) =>
+      SPELLINGS.filter(([, , rest]) => rest || !c.request.url.startsWith('/_api/rest/')).map(([spelling, respell]) => ({ ...c, spelling, respell })),
+    ),
+  )('answers $name behind $spelling as on the bare path', async ({ variations, request, legacy, respell }) => {
+    const target = variations === true ? variationsApi : api;
+    const bare = answerOf(await send(target, request));
+    expect(answerOf(await send(target, { ...request, url: respell(request.url) }))).toEqual(bare);
+    if (legacy !== undefined) {
+      expect(bare).toMatchObject({ status: legacy.status, body: legacy.body, type: LEGACY_JSON_CONTENT_TYPE, challenge: legacy.wwwAuthenticate });
+    }
   });
 });
 

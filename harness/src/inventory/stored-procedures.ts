@@ -133,9 +133,11 @@ export interface LiveCheckOptions {
   clock?: Clock;
 }
 
-/** Options of `storedProcedureCheck`; without `db` the live part is `pending-run`. */
+/** Options of `storedProcedureCheck`; without `live` or `db` the live part is `pending-run`. */
 export interface StoredProcedureCheckOptions extends StaticCheckOptions, LiveCheckOptions {
   db?: ReadOnlyMssql;
+  /** A live check already taken, used instead of querying `db`. */
+  live?: LiveCheck | null;
 }
 
 interface ScanText {
@@ -381,14 +383,14 @@ function checkResult(staticCount: number, live: LiveCheck | null): CheckResult {
   return live === null ? 'pending-run' : 'confirmed';
 }
 
-/** Static scan, foreign-key scan and, when `db` is given, the live catalog check, with a verdict and findings. */
+/** Static scan, foreign-key scan and the given or, with `db`, queried live check, with a verdict and findings. */
 export async function storedProcedureCheck(
   tree: SourceTree,
   opts: StoredProcedureCheckOptions = {},
 ): Promise<StoredProcedureCheck> {
   const texts = scanTexts(tree, opts);
   const scan = scanObjects(tree, texts);
-  const live = opts.db === undefined ? null : await liveCheck(opts.db, opts);
+  const live = opts.live ?? (opts.db === undefined ? null : await liveCheck(opts.db, opts));
   const findings: Finding[] = [
     ...scan.matches.map((m): Finding => ({
       name: m.name,

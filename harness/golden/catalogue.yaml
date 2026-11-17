@@ -1,7 +1,7 @@
 # Golden scenarios: requests only; responses are whatever legacy answers at capture. Capture and replay follow this order, except the GS-PE-RH rehearsal scenarios, which run last.
 # Scenario: id, title, service, role, sessions{name: {login, via}}, seedRefs[{as, source, path, where, index}], steps[], compare[], rows[{table, where}], normalisationOverrides, covers[]; optional purpose, tableVersion, fixtures, expected, decisionListRef, exceptionId, acrossTransition, replayFaults, browser, tasks.
 # Step: name, method, route, as, auth, csrf, csrfFrom, mergeHidden, headers, form | body | multipart{fields, files[{field, fixture, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
-# auth: session | anonymous | basic:<user>:<secret> | bearer:<token>; csrf: fetch-form | json-api:<context> | none; extract: {from: body | header:<Name> | dom | location-query, path | selector, attr, param}.
+# auth: session | anonymous | basic:<user>:<secret> | bearer:<token>; csrf: fetch-form | json-api:<context> | none; extract: {from: body | header:<Name> | dom | location-query, path | selector, attr, param | pattern} (dom path: JSON body string holding the markup; dom pattern: regular expression whose first capture group, matched against the attr value or text, is the value).
 # seedRefs index is 0-based and negative from the end; a reserved ref resolves to a scalar, read as ${seed.<as>}.
 # Placeholders: ${secret:admin|qa_editor|appreload|seed:<user>|oauth:<clientId>|generated:<name>}, ${user:<site>:<role>}, ${seed.<as>.<field>}, ${<step>.<binding>}, ${matrix.<var>}, ${asOf}, ${nodash:<value>} (<value> without '-'), ${urlencode:<value>} (legacy esapiEncode('url')); keys resolve like values.
 sourceSha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
@@ -104,6 +104,8 @@ scenarios:
           parentid: '00000000000000000000000000000000001'
           type: Page
           siteid: tenant-a
+        expected: withheld
+        decisionListRef: api:content.save
       - name: editor-edit-site
         method: GET
         route: /admin/?muraAction=cSettings.editSite&siteid=default
@@ -150,10 +152,29 @@ scenarios:
           isAdminLogin: 'true'
           returnURL: ''
           compactDisplay: 'false'
+        expected: withheld
+        decisionListRef: admin:clogin.main{status=sendlogin}
+      - name: send-login-via-login
+        method: POST
+        route: /admin/index.cfm
+        as: anon
+        csrf: fetch-form
+        csrfFrom: login-page
+        form:
+          muraAction: cLogin.login
+          status: sendlogin
+          email: ${seed.member.email}
+          isAdminLogin: 'true'
+          returnUrl: ''
+          compactDisplay: 'false'
+        expected: withheld
+        decisionListRef: admin:clogin.login{status=sendlogin}
     compare: [status, dom, mail]
     normalisationOverrides: {}
     covers:
       - admin:clogin.main
+      - admin:clogin.main{status=sendlogin}
+      - admin:clogin.login{status=sendlogin}
   - id: GS-ID-05
     title: User CRUD
     service: people
@@ -603,6 +624,8 @@ scenarios:
         form:
           username: admin
           'password': ${secret:admin}
+      # Legacy answers a valid client_credentials grant 500 server_error: the sessionless REST login builds a
+      # renderer that reads the session scope. No token is issued, so the Bearer steps send an unissued one.
       - name: token
         method: POST
         route: /_api/rest/v1/tenant-a/oauth2
@@ -612,8 +635,6 @@ scenarios:
           grant_type: client_credentials
           client_id: ${seed.oauthClient.clientID}
           client_secret: ${secret:oauth:${seed.oauthClient.clientID}}
-        extract:
-          accessToken: {from: body, path: access_token}
       - name: token-v1
         method: POST
         route: /_api/rest/v1/tenant-a/oauth
@@ -627,15 +648,21 @@ scenarios:
         method: GET
         route: /_api/rest/v1/tenant-a/content/
         as: client
-        auth: bearer:${token.accessToken}
+        auth: anonymous
+        headers:
+          Authorization: Bearer opt2-invalid-token
       - name: tokeninfo
         method: GET
-        route: /_api/rest/v1/tenant-a/tokeninfo?access_token=${token.accessToken}&client_id=${seed.oauthClient.clientID}
+        route: /_api/rest/v1/tenant-a/tokeninfo?access_token=opt2-invalid-token&client_id=${seed.oauthClient.clientID}
         as: client
         auth: anonymous
     compare: [status, envelope, headers, auth, dom]
     normalisationOverrides:
       applyRules: [error-stacktrace]
+      # cwebservice.edit shows the generated client secret in a hidden input, a link and its text.
+      extraTokenFields: [clientsecret]
+      # Accounts sort by last name alone (admin/core/views/cwebservice/edit.cfm:68), so equal names vary in order.
+      domUnordered: ['select[name=userid]']
     covers:
       - admin:cwebservice.list
       - admin:cwebservice.edit
@@ -1448,10 +1475,14 @@ scenarios:
         route: /?${urlencode:${secret:appreload}}
         as: anon
         auth: anonymous
+        expected: withheld
+        decisionListRef: reload:application
       - name: global-config-reload
         method: GET
         route: /admin/?${urlencode:${secret:appreload}}&reload=${urlencode:${secret:appreload}}
         as: admin
+        expected: withheld
+        decisionListRef: reload:application
     compare: [status, headers, auth]
     normalisationOverrides: {}
     covers:
@@ -1734,6 +1765,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: trash-page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -1750,6 +1782,8 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: delete-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${trash-page-form.contentid}deleteall
@@ -1770,6 +1804,8 @@ scenarios:
           topid: '00000000000000000000000000000000001'
           csrf_token: ${delete-tokens.csrfToken}
           csrf_token_expires: ${delete-tokens.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: list
         method: GET
         route: /admin/?muraAction=cTrash.list&siteID=tenant-a
@@ -1815,6 +1851,8 @@ scenarios:
           topid: '00000000000000000000000000000000001'
           csrf_token: ${delete-again-tokens.csrfToken}
           csrf_token_expires: ${delete-again-tokens.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: empty-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=emptytrashtenant-a
@@ -1858,12 +1896,15 @@ scenarios:
         extract:
           contentid: {from: dom, selector: 'form#contentForm input[name=contentid]', attr: value}
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
+        expected: halted
+        exceptionId: EX-CARCH-EDIT-FORM
       - name: page
         method: POST
         route: /admin/?muraAction=cArch.update
         as: admin
         csrf: fetch-form
         csrfFrom: page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -1880,6 +1921,8 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: editor-page-form
         method: GET
         route: /admin/?muraAction=cArch.edit&siteid=default&moduleid=00000000000000000000000000000000000&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&type=Page&contentid=&contenthistid=
@@ -1887,6 +1930,8 @@ scenarios:
         extract:
           contentid: {from: dom, selector: 'form#contentForm input[name=contentid]', attr: value}
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
+        expected: halted
+        exceptionId: EX-CARCH-EDIT-FORM
       - name: editor-page
         method: POST
         route: /admin/?muraAction=cArch.update
@@ -1909,6 +1954,8 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
     compare: [status, auth, dom, rows]
     rows:
       - {table: tcontent, where: {contentid: '${page-form.contentid}'}}
@@ -1940,6 +1987,8 @@ scenarios:
         extract:
           contentid: {from: dom, selector: 'form#contentForm input[name=contentid]', attr: value}
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
+        expected: halted
+        exceptionId: EX-CARCH-EDIT-FORM
       - name: page
         method: POST
         route: /admin/?muraAction=cArch.update
@@ -1963,6 +2012,8 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: quick-edit
         method: GET
         route: /admin/?muraAction=cArch.loadQuickEdit&siteid=tenant-a&contentid=${seed.page.contentID}&attribute=isnav
@@ -1985,6 +2036,8 @@ scenarios:
           isnav: '1'
           csrf_token: ${quick-edit-tokens.csrfToken}
           csrf_token_expires: ${quick-edit-tokens.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:carch.savequickedit
     compare: [status, auth, dom, rows]
     rows:
       - {table: tcontent, where: {contentid: '${seed.page.contentID}'}}
@@ -2017,6 +2070,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -2033,13 +2087,21 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: drafts
         method: GET
         route: /admin/?muraAction=cArch.draft&siteid=tenant-a
         as: admin
+      - name: draft-version
+        method: GET
+        route: /_api/json/v1/tenant-a/content/${page-form.contentid}
+        as: admin
+        extract:
+          contenthistid: {from: body, path: data.contenthistid}
       - name: publish-form
         method: GET
-        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${page-form.contentid}&contenthistid=${page-form.contenthistid}&parentid=00000000000000000000000000000000001&type=Page
+        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${page-form.contentid}&contenthistid=${draft-version.contenthistid}&parentid=00000000000000000000000000000000001&type=Page
         as: admin
         extract:
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
@@ -2049,6 +2111,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: publish-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -2079,6 +2142,7 @@ scenarios:
       - admin:carch.edit
       - admin:carch.update
       - admin:carch.draft
+      - api:content.findone
       - admin:carch.update{approved=1}
   - id: GS-CO-04
     title: Content version history
@@ -2261,6 +2325,8 @@ scenarios:
             approved: '0'
           files:
             - {field: files, fixture: pdf-one-page, filename: gs-co-07-multi.pdf, contentType: application/pdf}
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: uploader-image
         method: GET
         route: /admin/?muraAction=cArch.multiFileUpload&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000001&type=File
@@ -2308,6 +2374,8 @@ scenarios:
         extract:
           contentid: {from: dom, selector: 'form#contentForm input[name=contentid]', attr: value}
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
+        expected: halted
+        exceptionId: EX-CARCH-EDIT-FORM
       - name: pdf
         method: POST
         route: /admin/?muraAction=cArch.update
@@ -2333,6 +2401,8 @@ scenarios:
             isNav: '1'
           files:
             - {field: newfile, fixture: pdf-one-page, filename: gs-document.pdf, contentType: application/pdf}
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: image-form
         method: GET
         route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&type=File&contentid=&contenthistid=
@@ -2340,6 +2410,8 @@ scenarios:
         extract:
           contentid: {from: dom, selector: 'form#contentForm input[name=contentid]', attr: value}
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
+        expected: halted
+        exceptionId: EX-CARCH-EDIT-FORM
       - name: image
         method: POST
         route: /admin/?muraAction=cArch.update
@@ -2431,6 +2503,10 @@ scenarios:
         form:
           siteid: tenant-a
           tab: '0'
+      - name: scaffold
+        method: GET
+        route: /admin/?muraAction=cArch.scaffold&siteid=tenant-a
+        as: admin
       - name: lock-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${seed.page.contentID}lockfile
@@ -2485,6 +2561,7 @@ scenarios:
       - admin:carch.list
       - admin:carch.loadsitemanager
       - admin:carch.sitemanagertab
+      - admin:carch.scaffold
       - admin:carch.lockfile
       - admin:carch.unlockfile
       - admin:carch.unlocknode
@@ -2496,7 +2573,9 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       approver: {login: 'seed:tenant-a:site-admin', via: admin}
-    seedRefs: []
+      requester: {login: none, via: admin}
+    seedRefs:
+      - {as: requesterGroup, source: dataset, path: masa.groups, where: {siteID: tenant-a, groupname: communications.sender}}
     steps:
       - name: chains
         method: GET
@@ -2538,6 +2617,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -2554,6 +2634,23 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
+      - name: module-form
+        method: GET
+        route: /admin/?muraAction=cPerm.module&siteid=tenant-a&contentid=00000000000000000000000000000000000&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: module
+        method: POST
+        route: /admin/?muraAction=cPerm.updatemodule&contentid=00000000000000000000000000000000000
+        as: admin
+        csrf: fetch-form
+        csrfFrom: module-form
+        form:
+          groupid: ${seed.requesterGroup.groupID}
+          siteid: tenant-a
+          moduleid: '00000000000000000000000000000000000'
+          topid: ''
       - name: perm
         method: GET
         route: /admin/?muraAction=cPerm.main&siteid=tenant-a&contentid=${page-form.contentid}&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000
@@ -2565,24 +2662,53 @@ scenarios:
         csrf: fetch-form
         csrfFrom: perm
         form:
+          p${nodash:${seed.requesterGroup.groupID}}: editor
           chainID: ${new-chain.chainID}
           siteid: tenant-a
           topid: '00000000000000000000000000000000001'
           moduleid: '00000000000000000000000000000000000'
         expected: withheld
         decisionListRef: admin:cperm.update
+      # Legacy fixes a session's admin sites at login (admin/Application.cfc:433), so the requester logs in once
+      # module access is granted.
+      - name: requester-login-form
+        method: GET
+        route: /admin/?muraAction=clogin.main
+        as: requester
+        auth: session
+      - name: requester-login
+        method: POST
+        route: /admin/index.cfm
+        as: requester
+        auth: session
+        csrf: fetch-form
+        csrfFrom: requester-login-form
+        form:
+          username: ${user:tenant-a:communications.sender}
+          'password': ${secret:seed:${user:tenant-a:communications.sender}}
+          muraAction: cLogin.login
+          isAdminLogin: 'true'
+          returnUrl: ''
+          compactDisplay: 'false'
+      - name: saved-version
+        method: GET
+        route: /_api/json/v1/tenant-a/content/${page-form.contentid}
+        as: admin
+        extract:
+          contenthistid: {from: body, path: data.contenthistid}
       - name: submit-form
         method: GET
-        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${page-form.contentid}&contenthistid=${page-form.contenthistid}&parentid=00000000000000000000000000000000001&type=Page
-        as: admin
+        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${page-form.contentid}&contenthistid=${saved-version.contenthistid}&parentid=00000000000000000000000000000000001&type=Page
+        as: requester
         extract:
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
       - name: submit-for-approval
         method: POST
         route: /admin/?muraAction=cArch.update
-        as: admin
+        as: requester
         csrf: fetch-form
         csrfFrom: submit-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -2612,7 +2738,7 @@ scenarios:
         route: /admin/?muraAction=cArch.statusmodal&siteid=tenant-a&contenthistid=${pending-version.contenthistid}
         as: approver
         extract:
-          requestid: {from: dom, selector: '[data-requestid]', attr: data-requestid}
+          requestid: {from: dom, selector: '#mura-approval-apply', attr: onclick, pattern: "^applyApprovalAction\\('([^']+)'"}
       - name: pending
         method: GET
         route: /admin/?muraAction=cChain.pending&siteid=tenant-a
@@ -2630,23 +2756,29 @@ scenarios:
         as: approver
         form:
           requestid: ${status-modal.requestid}
-          action: approve
+          action: Approve
           comment: GS-CO-09 approve
           siteid: tenant-a
           csrf_token: ${approve-tokens.csrfToken}
           csrf_token_expires: ${approve-tokens.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:carch.approvalaction{action=approve}
+        # Approval saves the approved copy as a new version and deletes the pending one.
+        extract:
+          contenthistid: {from: body, path: contenthistid}
       - name: second-form
         method: GET
-        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${page-form.contentid}&contenthistid=${pending-version.contenthistid}&parentid=00000000000000000000000000000000001&type=Page
-        as: admin
+        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${page-form.contentid}&contenthistid=${approve.contenthistid}&parentid=00000000000000000000000000000000001&type=Page
+        as: requester
         extract:
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
       - name: submit-again
         method: POST
         route: /admin/?muraAction=cArch.update
-        as: admin
+        as: requester
         csrf: fetch-form
         csrfFrom: second-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -2676,7 +2808,7 @@ scenarios:
         route: /admin/?muraAction=cArch.statusmodal&siteid=tenant-a&contenthistid=${pending-again.contenthistid}
         as: approver
         extract:
-          requestid: {from: dom, selector: '[data-requestid]', attr: data-requestid}
+          requestid: {from: dom, selector: '#mura-approval-apply', attr: onclick, pattern: "^applyApprovalAction\\('([^']+)'"}
       - name: reject-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=approvalaction
@@ -2690,11 +2822,44 @@ scenarios:
         as: approver
         form:
           requestid: ${status-modal-again.requestid}
-          action: reject
+          action: Reject
           comment: GS-CO-09 reject
           siteid: tenant-a
           csrf_token: ${reject-tokens.csrfToken}
           csrf_token_expires: ${reject-tokens.csrfExpires}
+      - name: restore-perm-form
+        method: GET
+        route: /admin/?muraAction=cPerm.main&siteid=tenant-a&contentid=${page-form.contentid}&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: restore-perm
+        method: POST
+        route: /admin/?muraAction=cPerm.update&siteid=tenant-a&contentid=${page-form.contentid}&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000
+        as: admin
+        csrf: fetch-form
+        csrfFrom: restore-perm-form
+        form:
+          p${nodash:${seed.requesterGroup.groupID}}: none
+          chainID: ''
+          siteid: tenant-a
+          topid: '00000000000000000000000000000000001'
+          moduleid: '00000000000000000000000000000000000'
+        expected: withheld
+        decisionListRef: admin:cperm.update
+      - name: restore-module-form
+        method: GET
+        route: /admin/?muraAction=cPerm.module&siteid=tenant-a&contentid=00000000000000000000000000000000000&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: restore-module
+        method: POST
+        route: /admin/?muraAction=cPerm.updatemodule&contentid=00000000000000000000000000000000000
+        as: admin
+        csrf: fetch-form
+        csrfFrom: restore-module-form
+        form:
+          groupid: ''
+          siteid: tenant-a
+          moduleid: '00000000000000000000000000000000000'
+          topid: ''
       - name: chain-edit
         method: GET
         route: /admin/?muraAction=cChain.edit&siteid=tenant-a&chainID=${new-chain.chainID}
@@ -2706,9 +2871,30 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cChain.delete&siteid=tenant-a&chainID=${new-chain.chainID}&csrf_token=${chain-edit.csrfToken}&csrf_token_expires=${chain-edit.csrfExpires}
         as: admin
+      # Deleting the page frees its filename and drafts, so every run's page is gs-co-09-approval-page.
+      - name: delete-page-tokens
+        method: GET
+        route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${page-form.contentid}deleteall
+        as: admin
+        extract:
+          csrfToken: {from: body, path: data.csrf_token}
+          csrfExpires: {from: body, path: data.csrf_token_expires}
+      - name: delete-page
+        method: POST
+        route: /admin/?muraAction=cArch.update
+        as: admin
+        form:
+          action: deleteall
+          contentid: ${page-form.contentid}
+          siteid: tenant-a
+          parentid: '00000000000000000000000000000000001'
+          moduleid: '00000000000000000000000000000000000'
+          topid: '00000000000000000000000000000000001'
+          csrf_token: ${delete-page-tokens.csrfToken}
+          csrf_token_expires: ${delete-page-tokens.csrfExpires}
     compare: [status, auth, dom, rows]
     rows:
-      - {table: tapprovalrequests, where: {contentid: '${page-form.contentid}'}}
+      - {table: tapprovalrequests, where: {chainid: '${new-chain.chainID}'}}
       - {table: tapprovalactions, where: {chainid: '${new-chain.chainID}'}}
     normalisationOverrides: {}
     covers:
@@ -2718,8 +2904,13 @@ scenarios:
       - admin:cchain.update
       - admin:carch.edit
       - admin:carch.update
+      - admin:clogin.main
+      - admin:clogin.login
+      - admin:cperm.module
+      - admin:cperm.updatemodule
       - admin:cperm.main
       - admin:cperm.update
+      - api:content.findone
       - admin:carch.update{approved=1}
       - admin:carch.statusmodal
       - admin:cchain.pending
@@ -2773,6 +2964,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -2790,10 +2982,14 @@ scenarios:
           display: '1'
           isNav: '1'
           changesetID: ${new-changeset.changesetID}
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: assignments
         method: GET
         route: /admin/?muraAction=cChangesets.assignments&siteid=tenant-a&changesetID=${new-changeset.changesetID}
         as: admin
+        extract:
+          contenthistid: {from: dom, selector: 'a[href*="cChangesets.removeItem"]', attr: href, param: contentHistId}
       - name: tags
         method: GET
         route: /admin/?muraAction=cChangesets.loadtagarray&siteid=tenant-a
@@ -2807,7 +3003,7 @@ scenarios:
           csrfExpires: {from: body, path: data.csrf_token_expires}
       - name: remove-item
         method: GET
-        route: /admin/?muraAction=cChangesets.removeitem&siteid=tenant-a&changesetID=${new-changeset.changesetID}&contenthistid=${page-form.contenthistid}&csrf_token=${cs-tokens.csrfToken}&csrf_token_expires=${cs-tokens.csrfExpires}
+        route: /admin/?muraAction=cChangesets.removeitem&siteid=tenant-a&changesetID=${new-changeset.changesetID}&contenthistid=${assignments.contenthistid}&csrf_token=${cs-tokens.csrfToken}&csrf_token_expires=${cs-tokens.csrfExpires}
         as: admin
       - name: publish
         method: GET
@@ -2826,6 +3022,8 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cChangesets.rollback&siteid=tenant-a&changesetID=${new-changeset.changesetID}&csrf_token=${rollback-tokens.csrfToken}&csrf_token_expires=${rollback-tokens.csrfExpires}
         as: admin
+        expected: withheld
+        decisionListRef: admin:cchangesets.rollback
       - name: delete-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${new-changeset.changesetID}
@@ -2885,6 +3083,19 @@ scenarios:
           siteid: tenant-a
           name: GS-CO-10 REST Change Set
           description: ''
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup, which the target serves. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-changeset-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/changeset/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          name: GS-CO-10 REST Change Set
+          description: ''
+        compare: [status, auth]
       - name: rest-assignment
         method: POST
         route: /_api/rest/v1/tenant-a/changesetCategoryAssignment/
@@ -2894,6 +3105,17 @@ scenarios:
           siteid: tenant-a
           changesetid: ${api-changeset-new.id}
           categoryid: ${seed.category.categoryID}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-assignment-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/changesetCategoryAssignment/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          changesetid: ${api-changeset-new.id}
+          categoryid: ${seed.category.categoryID}
+        compare: [status, auth]
       - name: rest-assignment-delete
         method: DELETE
         route: /_api/rest/v1/tenant-a/changesetCategoryAssignment/${api-assignment-new.id}
@@ -2950,6 +3172,8 @@ scenarios:
       - rest:changeset.delete
       - api:changesetcategoryassignment.delete
       - api:changeset.delete
+      - rest:changeset.save{siteid}
+      - rest:changesetcategoryassignment.save{siteid}
   - id: GS-CO-11
     title: Comments moderation and comment proxy
     service: strategies-content
@@ -3087,6 +3311,22 @@ scenarios:
           email: rest-commenter@seed.opt2.test
           comments: GS-CO-11 REST comment
           isApproved: '0'
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup, which the target serves. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-comment-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          contentid: ${seed.page.contentID}
+          name: GS REST Commenter
+          email: rest-commenter@seed.opt2.test
+          comments: GS-CO-11 REST comment
+          isApproved: '0'
+        compare: [status, auth]
       - name: rest-flag
         method: POST
         route: /_api/rest/v1/tenant-a/comment/${comment.commentid}/flag
@@ -3146,6 +3386,16 @@ scenarios:
         form:
           siteid: tenant-a
           contentid: ${seed.page.contentID}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-stats-save-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/stats/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          contentid: ${seed.page.contentID}
+        compare: [status, auth]
       - name: rest-stats-delete
         method: DELETE
         route: /_api/rest/v1/tenant-a/stats/${seed.page.contentID}
@@ -3210,6 +3460,8 @@ scenarios:
       - admin:ccomments.delete
       - api:comment.delete
       - admin:ccomments.purgedeletedcomments
+      - rest:comment.save{siteid}
+      - rest:stats.save{siteid}
   - id: GS-CO-12
     title: Categories
     service: strategies-content
@@ -3246,9 +3498,11 @@ scenarios:
           isOpen: '1'
           isfeatureable: '0'
           parentID: ''
+        extract:
+          categoryID: {from: dom, selector: 'a[title=Edit]:contains("GS-CO-12 Category")', attr: href, param: categoryID}
       - name: edit
         method: GET
-        route: /admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=${new-category.categoryID}
+        route: /admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=${create.categoryID}&parentID=
         as: admin
       - name: update
         method: POST
@@ -3257,14 +3511,14 @@ scenarios:
         csrf: fetch-form
         csrfFrom: edit
         form:
-          categoryID: ${new-category.categoryID}
+          categoryID: ${create.categoryID}
           siteid: tenant-b
           action: update
           name: GS-CO-12 Category edited
           isActive: '1'
       - name: edit-delete
         method: GET
-        route: /admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=${new-category.categoryID}
+        route: /admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=${create.categoryID}&parentID=
         as: admin
       - name: delete
         method: POST
@@ -3273,7 +3527,7 @@ scenarios:
         csrf: fetch-form
         csrfFrom: edit-delete
         form:
-          categoryID: ${new-category.categoryID}
+          categoryID: ${create.categoryID}
           siteid: tenant-b
           action: delete
       # A new category bean has an empty id, so the save takes no id and the CSRF context `new`.
@@ -3337,6 +3591,23 @@ scenarios:
           isOpen: '1'
           isfeatureable: '0'
           parentID: ''
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup, which the target serves. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-category-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-b/category/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          name: GS-CO-12 REST Category
+          isActive: '1'
+          isInterestGroup: '0'
+          isOpen: '1'
+          isfeatureable: '0'
+          parentID: ''
+        compare: [status, auth]
       - name: rest-assign-save
         method: POST
         route: /_api/rest/v1/tenant-b/contentCategoryAssign/
@@ -3348,6 +3619,19 @@ scenarios:
           contenthistid: ${page-version.contenthistid}
           categoryid: ${api-category-save.categoryid}
           isfeature: '0'
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-assign-save-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-b/contentCategoryAssign/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          contentid: ${seed.pageB.contentID}
+          contenthistid: ${page-version.contenthistid}
+          categoryid: ${api-category-save.categoryid}
+          isfeature: '0'
+        compare: [status, auth]
       - name: rest-assign-delete
         method: POST
         route: /_api/rest/v1/tenant-b/?method=delete
@@ -3357,6 +3641,17 @@ scenarios:
           siteid: tenant-b
           id: ''
           entityname: contentCategoryAssign
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-assign-delete-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-b/?method=delete
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          id: ''
+          entityname: contentCategoryAssign
+        compare: [status, auth]
       - name: rest-category-delete
         method: DELETE
         route: /_api/rest/v1/tenant-b/category/${api-category-save.categoryid}
@@ -3388,6 +3683,9 @@ scenarios:
       - rest:contentcategoryassign.delete
       - rest:category.delete
       - api:category.delete
+      - rest:category.save{siteid}
+      - rest:contentcategoryassign.save{siteid}
+      - rest:contentcategoryassign.delete{siteid}
   - id: GS-CO-13
     title: Collections and RSS feeds
     service: strategies-content
@@ -3425,22 +3723,29 @@ scenarios:
           isPublic: '1'
           maxItems: '20'
           contentID: ${seed.folder.contentID}
+          # The empty advanced-filter row a browser posts beside the hidden param=1 (admin/Application.cfc:479).
+          paramRelationship1: and
+          paramField1: ''
+          paramCondition1: Equals
+          paramCriteria1: ''
+        extract:
+          feedID: {from: dom, selector: 'a[href*=''type=Local'']:contains("GS-CO-13 Local Feed")', attr: href, param: feedID}
       - name: loadsite
         method: GET
-        route: /admin/?muraAction=cFeed.loadsite&siteid=tenant-a&feedID=${new-local.feedID}
+        route: /admin/?muraAction=cFeed.loadsite&siteid=tenant-a&feedID=${save-local.feedID}
         as: admin
       - name: siteparents
         method: GET
-        route: /admin/?muraAction=cFeed.siteparents&siteid=tenant-a&keywords=a
+        route: /admin/?muraAction=cFeed.siteparents&siteid=tenant-a&parentid=&keywords=a
         as: admin
       - name: rss
         method: GET
-        route: /_api/feed/v1/?feedid=${new-local.feedID}&siteid=tenant-a
+        route: /_api/feed/v1/?feedid=${save-local.feedID}&siteid=tenant-a
         as: anon
         auth: anonymous
       - name: rss-legacy-path
         method: GET
-        route: /tasks/feed/?feedid=${new-local.feedID}&siteid=tenant-a
+        route: /tasks/feed/?feedid=${save-local.feedID}&siteid=tenant-a
         as: anon
         auth: anonymous
       - name: new-remote
@@ -3464,9 +3769,11 @@ scenarios:
           channelLink: http://feeds.invalid/gs-co-13.xml
           isActive: '1'
           autoImport: '0'
+        extract:
+          feedID: {from: dom, selector: 'a[href*=''type=Remote'']:contains("GS-CO-13 Remote Feed")', attr: href, param: feedID}
       - name: import1
         method: GET
-        route: /admin/?muraAction=cFeed.import1&siteid=tenant-a&feedID=${new-remote.feedID}
+        route: /admin/?muraAction=cFeed.import1&siteid=tenant-a&feedID=${save-remote.feedID}
         as: admin
       - name: import2
         method: POST
@@ -3474,14 +3781,14 @@ scenarios:
         as: admin
         form:
           siteid: tenant-a
-          feedID: ${new-remote.feedID}
+          feedID: ${save-remote.feedID}
           remoteID: ''
           parentID: ${seed.folder.contentID}
         expected: withheld
         decisionListRef: admin:cfeed.import2
       - name: edit-remote
         method: GET
-        route: /admin/?muraAction=cFeed.edit&siteid=tenant-a&feedID=${new-remote.feedID}
+        route: /admin/?muraAction=cFeed.edit&siteid=tenant-a&feedID=${save-remote.feedID}&type=Remote
         as: admin
       - name: delete-remote
         method: POST
@@ -3490,12 +3797,12 @@ scenarios:
         csrf: fetch-form
         csrfFrom: edit-remote
         form:
-          feedID: ${new-remote.feedID}
+          feedID: ${save-remote.feedID}
           siteid: tenant-a
           action: delete
       - name: edit-local
         method: GET
-        route: /admin/?muraAction=cFeed.edit&siteid=tenant-a&feedID=${new-local.feedID}
+        route: /admin/?muraAction=cFeed.edit&siteid=tenant-a&feedID=${save-local.feedID}&type=Local
         as: admin
       - name: delete-local
         method: POST
@@ -3504,10 +3811,14 @@ scenarios:
         csrf: fetch-form
         csrfFrom: edit-local
         form:
-          feedID: ${new-local.feedID}
+          feedID: ${save-local.feedID}
           siteid: tenant-a
           action: delete
-      # A feed save answers 500 after its write (hasImage under the content config), so its id is found by name.
+          paramRelationship1: and
+          paramField1: ''
+          paramCondition1: Equals
+          paramCriteria1: ''
+      # Legacy checks a feed save as content: parentID grants the write (an existing contentID 500s at getNodePerm), then setImageURLs 500s at hasImage, so its id is found by name.
       - name: api-feed-save
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -3522,7 +3833,7 @@ scenarios:
           isActive: '1'
           isPublic: '1'
           maxItems: '20'
-          contentID: ${seed.folder.contentID}
+          parentID: ${seed.folder.contentID}
       - name: api-feed-find
         method: GET
         route: /_api/json/v1/tenant-a/feed/?name=GS-CO-13%20JSON%20Feed
@@ -3543,6 +3854,23 @@ scenarios:
           isPublic: '1'
           maxItems: '20'
           contentID: ${seed.folder.contentID}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup, which the target serves. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-feed-save-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/feed/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          type: Local
+          name: GS-CO-13 REST Feed
+          isActive: '1'
+          isPublic: '1'
+          maxItems: '20'
+          contentID: ${seed.folder.contentID}
+        compare: [status, auth]
       - name: rest-feed-delete
         method: DELETE
         route: /_api/rest/v1/tenant-a/feed/${api-feed-find.feedid}
@@ -3575,6 +3903,7 @@ scenarios:
       - rest:feed.save
       - rest:feed.delete
       - api:feed.delete
+      - rest:feed.save{siteid}
   - id: GS-CO-14
     title: Forms dialogs and data manager
     service: strategies-content
@@ -3583,7 +3912,46 @@ scenarios:
       admin: {login: admin, via: admin}
     seedRefs:
       - {as: formNode, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Form}, index: 0}
+      - {as: formPage, source: dataset, path: masa.content, where: {siteID: tenant-a, title: OPT-2 Seed Contact Page}, index: 0}
+      - {as: response, source: dataset, path: masa.formResponses, where: {formID: '${seed.formNode.contentID}'}, index: 0}
     steps:
+      # The draft comes first, so every admin page's header Drafts count holds it on a first run as on a re-run.
+      - name: page-version
+        method: GET
+        route: /_api/json/v1/tenant-a/content/${seed.formPage.contentID}
+        as: admin
+        extract:
+          contenthistid: {from: body, path: data.contenthistid}
+      - name: form-object-params
+        method: POST
+        route: /admin/?muraAction=cArch.updateObjectParams
+        as: admin
+        form:
+          contenthistid: ${page-version.contenthistid}
+          objectid: ${seed.formNode.contentID}
+          regionid: '2'
+          orderno: '1'
+          siteid: tenant-a
+          params: '{"source":"GS-CO-14 draft"}'
+          approved: '0'
+          object: form
+          name: OPT-2 Seed Contact Form
+          changesetid: ''
+          removepreviouschangeset: 'false'
+          preview: '0'
+      # The published version's edit form links its latest draft, the one updateObjectParams just saved.
+      - name: page-edit
+        method: GET
+        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&type=Page&contentid=${seed.formPage.contentID}&contenthistid=${page-version.contenthistid}
+        as: admin
+        extract:
+          draft: {from: dom, selector: 'div.alert-info a[href*="contenthistid="]', attr: href, param: contenthistid}
+        expected: halted
+        exceptionId: EX-CARCH-EDIT-FORM
+      - name: draft-version
+        method: GET
+        route: /_api/json/v1/tenant-a/content/${seed.formPage.contentID}?contenthistid=${page-edit.draft}
+        as: admin
       - name: dialogs
         method: GET
         route: /admin/?muraAction=${matrix.action}&siteid=tenant-a&formid=${seed.formNode.contentID}&dialog=message-delete-row&fieldtype=field-textfield
@@ -3610,11 +3978,61 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cArch.datamanager&siteid=tenant-a&contentid=${seed.formNode.contentID}&moduleid=00000000000000000000000000000000004
         as: admin
+      # Updating before the later reads lets every run, the first included, read the marker; the post carries the
+      # fields of the response's edit form (dsp_edit.cfm) and its CSRF pair.
+      # Only status is compared: the edit form shows the message an earlier run left.
+      - name: response-form
+        method: GET
+        route: /admin/?muraAction=cArch.datamanager&siteid=tenant-a&contentid=${seed.formNode.contentID}&moduleid=00000000000000000000000000000000004&date1=&hour1=0&minute1=0&date2=&hour2=23&minute2=59&responseid=${seed.response.responseID}&action=edit&sortBy=Entered&sortDirection=asc&filterBy=&keywords=
+        as: admin
+        compare: [status]
+      - name: response-update
+        method: POST
+        route: /admin/?muraAction=cArch.datamanager
+        as: admin
+        csrf: fetch-form
+        csrfFrom: response-form
+        form:
+          fullname: ${seed.response.fields.0.value}
+          email: ${seed.response.fields.1.value}
+          message: GS-CO-14 updated message
+          formid: ${seed.formNode.contentID}
+          contentid: ${seed.formNode.contentID}
+          siteid: tenant-a
+          muraAction: cArch.datamanager
+          responseID: ${seed.response.responseID}
+          hour1: '0'
+          hour2: '23'
+          minute1: '0'
+          minute2: '59'
+          date1: ''
+          date2: ''
+          fieldlist: email,fullname,message
+          sortBy: Entered
+          sortDirection: asc
+          filterBy: ''
+          keywords: ''
+          entered: ${seed.response.entered}
+          moduleid: '00000000000000000000000000000000004'
+          action: update
+      - name: responses
+        method: GET
+        route: /admin/?muraAction=cArch.datamanager&siteid=tenant-a&contentid=${seed.formNode.contentID}&moduleid=00000000000000000000000000000000004&date1=&hour1=0&minute1=0&date2=&hour2=23&minute2=59&sortBy=Entered&sortDirection=asc&filterBy=&keywords=&newSearch=1
+        as: admin
+      - name: response-edit
+        method: GET
+        route: /admin/?muraAction=cArch.datamanager&siteid=tenant-a&contentid=${seed.formNode.contentID}&moduleid=00000000000000000000000000000000004&date1=&hour1=0&minute1=0&date2=&hour2=23&minute2=59&responseid=${seed.response.responseID}&action=edit&sortBy=Entered&sortDirection=asc&filterBy=&keywords=
+        as: admin
       - name: download-data
         method: GET
         route: /admin/?muraAction=cArch.downloaddata&siteid=tenant-a&contentid=${seed.formNode.contentID}&date1=&hour1=0&minute1=0&date2=&hour2=23&minute2=59&sortBy=Entered&sortDirection=asc&filterBy=&keywords=&columns=fixed
         as: admin
-    compare: [status, headers, dom, export]
+    compare: [status, headers, dom, export, rows]
+    rows:
+      - {table: tformresponsepackets, where: {formid: '${seed.formNode.contentID}'}, minRows: 12}
+      - {table: tformresponsequestions, where: {formid: '${seed.formNode.contentID}'}, minRows: 36}
+      - {table: tcontentobjects, where: {contenthistid: '${page-version.contenthistid}'}, minRows: 1}
+      - {table: tcontentobjects, where: {contenthistid: '${page-edit.draft}'}, minRows: 1}
     normalisationOverrides: {}
     covers:
       - admin:cform.getdialog
@@ -3627,6 +4045,9 @@ scenarios:
       - admin:cform.importform
       - admin:carch.datamanager
       - admin:carch.downloaddata
+      - api:content.findone
+      - admin:carch.edit
+      - admin:carch.updateobjectparams
   - id: GS-CO-15
     title: REST authentication and the error envelope
     service: strategies-content
@@ -3645,6 +4066,7 @@ scenarios:
         route: /_api/rest/v1/tenant-a/content/${seed.page.contentID}
         as: rest
         auth: basic:${user:tenant-a:system-user}:${secret:seed:${user:tenant-a:system-user}}
+      # Legacy issues no token (500 server_error, as in GS-ID-08), so the Bearer step sends an unissued one.
       - name: token
         method: POST
         route: /_api/rest/v1/tenant-a/oauth2
@@ -3654,13 +4076,13 @@ scenarios:
           grant_type: client_credentials
           client_id: ${seed.oauthClient.clientID}
           client_secret: ${secret:oauth:${seed.oauthClient.clientID}}
-        extract:
-          accessToken: {from: body, path: access_token}
       - name: bearer
         method: GET
         route: /_api/rest/v1/tenant-a/content/${seed.page.contentID}
         as: client
-        auth: bearer:${token.accessToken}
+        auth: anonymous
+        headers:
+          Authorization: Bearer opt2-invalid-token
       - name: invalid-parameters
         method: GET
         route: /_api/json/v1/tenant-a/content/?siteid=gs-no-such-site
@@ -3679,19 +4101,24 @@ scenarios:
         route: /_api/rest/v1/tenant-a/user/
         as: anon
         auth: anonymous
+      # 403: a template with a path separator fails contentBean.validate, so the save answers its errors and writes nothing.
       - name: forbidden-validation-errors
         method: POST
         route: /_api/json/v1/tenant-a/content/
         as: author
         csrf: json-api:new
         form:
-          title: ''
+          title: GS-CO-15 invalid template
           type: Page
           parentid: '00000000000000000000000000000000001'
           siteid: tenant-a
+          template: gs-co-15/invalid.cfm
+        expected: withheld
+        decisionListRef: api:content.save
+      # 404: an unknown _path renders the site's 404 content.
       - name: not-found-path
         method: GET
-        route: /_api/json/v1/tenant-a/content/?_path=gs-co-15/does-not-exist
+        route: /_api/json/v1/tenant-a/content/_path/gs-co-15/does-not-exist
         as: anon
         auth: anonymous
       - name: server-error
@@ -3712,6 +4139,7 @@ scenarios:
       - rest:oauth2
       - rest:user.findall
       - api:content.save
+      - api:content.findone
       - api:content.findquery
       - api:!invalidparameters
       - api:!invalidmethodcall
@@ -4280,6 +4708,8 @@ scenarios:
           siteid: tenant-a
           csrf_token: ${approval-tokens.csrfToken}
           csrf_token_expires: ${approval-tokens.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:carch.approvalaction{action=approve}
     compare: [dom, status, headers, envelope]
     normalisationOverrides: {}
     covers:
@@ -4329,6 +4759,8 @@ scenarios:
             approved: '0'
           files:
             - {field: files, fixture: pdf-one-page, filename: gs-ui-03.pdf, contentType: application/pdf}
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: tree
         method: GET
         route: /admin/?muraAction=cArch.loadsitemanager&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001
@@ -4405,6 +4837,8 @@ scenarios:
           isnav: '0'
           csrf_token: ${quick-edit-tokens.csrfToken}
           csrf_token_expires: ${quick-edit-tokens.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:carch.savequickedit
     compare: [dom, status, headers, envelope]
     normalisationOverrides: {}
     covers:
@@ -4436,6 +4870,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -4453,6 +4888,8 @@ scenarios:
           display: '1'
           isNav: '1'
           preview: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
         extract:
           contenthistid: {from: location-query, param: contenthistid}
       - name: legacy-preview
@@ -6008,7 +6445,7 @@ scenarios:
         route: /admin/?muraAction=cUsers.loadExtendedAttributes&baseID=${group-form.groupid}&type=1&subType=GSID10&siteID=tenant-a
         as: admin
         extract:
-          extendSetID: {from: dom, selector: 'input[name=extendSetID]', attr: value}
+          extendSetID: {from: dom, path: extended, selector: 'input[name=extendSetID]', attr: value}
       - name: group-edit
         method: GET
         route: /admin/?muraAction=cUsers.editGroup&siteid=tenant-a&userid=${group-form.groupid}
@@ -6048,6 +6485,8 @@ scenarios:
           userid: ${group-form.groupid}
           type: '1'
           groupname: GS-ID-10 Group JSON
+        expected: withheld
+        decisionListRef: api:group.save
       - name: api-group-extdata
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -6092,6 +6531,7 @@ scenarios:
           id: ${group-form.groupid}
         expected: withheld
         decisionListRef: api:group.delete
+      # Legacy answers Basic-auth REST with 500 server_error and creates no group, so the REST steps address the admin group.
       - name: rest-group
         method: POST
         route: /_api/rest/v1/tenant-a/group/
@@ -6102,11 +6542,25 @@ scenarios:
           isPublic: '0'
           siteid: tenant-a
           groupname: GS-ID-10 REST Group
-        extract:
-          userid: {from: body, path: data.userid}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup on the withheld save. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-group-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/group/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          type: '1'
+          isPublic: '0'
+          groupname: GS-ID-10 REST Group
+        compare: [status, auth]
+        expected: withheld
+        decisionListRef: api:group.save
       - name: rest-group-extdata
         method: POST
-        route: /_api/rest/v1/tenant-a/group/${rest-group.userid}
+        route: /_api/rest/v1/tenant-a/group/${group-form.groupid}
         as: rest
         auth: basic:admin:${secret:admin}
         form:
@@ -6118,7 +6572,7 @@ scenarios:
         decisionListRef: api:group.save{extdata}
       - name: rest-group-photo
         method: POST
-        route: /_api/rest/v1/tenant-a/group/${rest-group.userid}
+        route: /_api/rest/v1/tenant-a/group/${group-form.groupid}
         as: rest
         auth: basic:admin:${secret:admin}
         form:
@@ -6126,11 +6580,15 @@ scenarios:
           removePhotoFile: 'true'
         expected: withheld
         decisionListRef: api:group.save{photo}
+      # A siteid param makes onRequestStart build the session-reading renderer, so the POSTs above always answer the HTML
+      # error page. A DELETE has none: it answers the server_error envelope, or that page when it runs application start
+      # (onApplicationStart_include.cfm), so it compares status and auth.
       - name: rest-group-delete
         method: DELETE
-        route: /_api/rest/v1/tenant-a/group/${rest-group.userid}
+        route: /_api/rest/v1/tenant-a/group/${group-form.groupid}
         as: rest
         auth: basic:admin:${secret:admin}
+        compare: [status, auth]
         expected: withheld
         decisionListRef: api:group.delete
       - name: ext-subtype-edit
@@ -6155,8 +6613,12 @@ scenarios:
     rows:
       - {table: tusers, where: {userid: '${group-form.groupid}'}}
       - {table: tclassextenddatauseractivity, where: {baseid: '${group-form.groupid}'}}
-      - {table: tusers, where: {userid: '${rest-group.userid}'}}
-    normalisationOverrides: {}
+    normalisationOverrides:
+      # The saved attribute's id is an identity value that grows with every run.
+      domExclude:
+        - 'input[name=attributeID]:not([value="0"])'
+        - 'label:contains("Attribute ID:")'
+        - 'a[href*="cExtend.updateAttribute&action=delete"]'
     covers:
       - admin:cextend.editsubtype
       - admin:cextend.updatesubtype
@@ -6177,6 +6639,7 @@ scenarios:
       - rest:group.save{extdata}
       - rest:group.save{photo}
       - rest:group.delete
+      - rest:group.save{siteid}
   - id: GS-ID-11
     title: Session-based lockdown check through the JSON API login
     service: identity
@@ -6307,7 +6770,7 @@ scenarios:
         route: /admin/?muraAction=cUsers.loadExtendedAttributes&baseID=${user-form.userid}&type=2&subType=GSPE06&siteID=tenant-a
         as: admin
         extract:
-          extendSetID: {from: dom, selector: 'input[name=extendSetID]', attr: value}
+          extendSetID: {from: dom, path: extended, selector: 'input[name=extendSetID]', attr: value}
       - name: add-extdata
         method: POST
         route: /admin/?muraAction=cUsers.update&userid=${user-form.userid}&routeid=
@@ -6468,6 +6931,8 @@ scenarios:
           email: gs-pe-06-2@seed.opt2.test
           username: gs-pe-06-2
           'password': ${secret:generated:gs-pe-06-json}
+        expected: withheld
+        decisionListRef: api:user.save
       - name: api-user-extdata
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -6523,6 +6988,8 @@ scenarios:
           zip: '10006'
           country: USA
           isPrimary: '0'
+        expected: withheld
+        decisionListRef: api:address.save
       - name: api-address-extdata
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -6569,6 +7036,7 @@ scenarios:
           id: ${api-user-new.id}
         expected: withheld
         decisionListRef: api:user.delete
+      # Legacy answers Basic-auth REST with 500 server_error and creates no rows, so the REST steps address the JSON API user and address.
       - name: rest-user
         method: POST
         route: /_api/rest/v1/tenant-a/user/
@@ -6583,11 +7051,29 @@ scenarios:
           username: gs-pe-06-3
           'password': ${secret:generated:gs-pe-06-rest}
           siteid: tenant-a
-        extract:
-          userid: {from: body, path: data.userid}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup on the withheld save. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-user-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/user/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          type: '2'
+          isPublic: '0'
+          fname: GS
+          lname: PE-06 REST
+          email: gs-pe-06-3@seed.opt2.test
+          username: gs-pe-06-3
+          'password': ${secret:generated:gs-pe-06-rest}
+        compare: [status, auth]
+        expected: withheld
+        decisionListRef: api:user.save
       - name: rest-user-extdata
         method: POST
-        route: /_api/rest/v1/tenant-a/user/${rest-user.userid}
+        route: /_api/rest/v1/tenant-a/user/${api-user-new.id}
         as: rest
         auth: basic:admin:${secret:admin}
         form:
@@ -6599,7 +7085,7 @@ scenarios:
         decisionListRef: api:user.save{extdata}
       - name: rest-user-photo
         method: POST
-        route: /_api/rest/v1/tenant-a/user/${rest-user.userid}
+        route: /_api/rest/v1/tenant-a/user/${api-user-new.id}
         as: rest
         auth: basic:admin:${secret:admin}
         form:
@@ -6613,7 +7099,7 @@ scenarios:
         as: rest
         auth: basic:admin:${secret:admin}
         form:
-          userid: ${rest-user.userid}
+          userid: ${api-user-new.id}
           addressname: GS-PE-06 REST
           address1: 42 Roster Lane
           city: Sample City
@@ -6622,31 +7108,52 @@ scenarios:
           country: USA
           isPrimary: '0'
           siteid: tenant-a
-        extract:
-          addressid: {from: body, path: data.addressid}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-address-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/address/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          userid: ${api-user-new.id}
+          addressname: GS-PE-06 REST
+          address1: 42 Roster Lane
+          city: Sample City
+          state: NY
+          zip: '10006'
+          country: USA
+          isPrimary: '0'
+        compare: [status, auth]
+        expected: withheld
+        decisionListRef: api:address.save
       - name: rest-address-extdata
         method: POST
-        route: /_api/rest/v1/tenant-a/address/${rest-address.addressid}
+        route: /_api/rest/v1/tenant-a/address/${api-address-new.id}
         as: rest
         auth: basic:admin:${secret:admin}
         form:
           siteid: tenant-a
-          userid: ${rest-user.userid}
+          userid: ${api-user-new.id}
           extendSetID: ''
         expected: withheld
         decisionListRef: api:address.save{extdata}
+      # As in GS-ID-10, a DELETE carries no siteid and answers the server_error envelope, or the HTML error page when it
+      # runs application start, so the DELETEs compare status and auth.
       - name: rest-address-delete
         method: DELETE
-        route: /_api/rest/v1/tenant-a/address/${rest-address.addressid}
+        route: /_api/rest/v1/tenant-a/address/${api-address-new.id}
         as: rest
         auth: basic:admin:${secret:admin}
+        compare: [status, auth]
         expected: withheld
         decisionListRef: api:address.delete
       - name: rest-user-delete
         method: DELETE
-        route: /_api/rest/v1/tenant-a/user/${rest-user.userid}
+        route: /_api/rest/v1/tenant-a/user/${api-user-new.id}
         as: rest
         auth: basic:admin:${secret:admin}
+        compare: [status, auth]
         expected: withheld
         decisionListRef: api:user.delete
       - name: delete-tokens
@@ -6686,8 +7193,12 @@ scenarios:
       - {table: tuseraddresses, where: {userid: '${user-form.userid}'}}
       - {table: tclassextenddatauseractivity, where: {baseid: '${user-form.userid}'}}
       - {table: tusers, where: {userid: '${api-user-new.id}'}}
-      - {table: tusers, where: {userid: '${rest-user.userid}'}}
-    normalisationOverrides: {}
+    normalisationOverrides:
+      # The saved attribute's id is an identity value that grows with every run.
+      domExclude:
+        - 'input[name=attributeID]:not([value="0"])'
+        - 'label:contains("Attribute ID:")'
+        - 'a[href*="cExtend.updateAttribute&action=delete"]'
     covers:
       - admin:cextend.editsubtype
       - admin:cextend.updatesubtype
@@ -6726,6 +7237,8 @@ scenarios:
       - rest:user.delete
       - api:generatecsrftokens
       - admin:cusers.update
+      - rest:user.save{siteid}
+      - rest:address.save{siteid}
   - id: GS-PE-07
     title: 'Front-end favourites: save, delete and RSS delete through the templates'
     service: people
@@ -7258,6 +7771,23 @@ scenarios:
           alttext: GS-CO-17 REST PDF
           caption: GS-CO-17 REST caption
           credits: ''
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup, which the target serves. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-metadata-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/fileMetaData/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          fileid: ${upload-pdf.fileid}
+          contentid: ${seed.page.contentID}
+          contenthistid: ${page-version.contenthistid}
+          alttext: GS-CO-17 REST PDF
+          caption: GS-CO-17 REST caption
+          credits: ''
+        compare: [status, auth]
       - name: rest-metadata-delete
         method: DELETE
         route: /_api/rest/v1/tenant-a/fileMetaData/${metadata-new.id}
@@ -7297,6 +7827,19 @@ scenarios:
             moduleid: '00000000000000000000000000000000000'
           files:
             - {field: newfile, fixture: pdf-one-page, filename: gs-rest-document.pdf, contentType: application/pdf}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-upload-pdf-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/file/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        multipart:
+          fields:
+            moduleid: '00000000000000000000000000000000000'
+          files:
+            - {field: newfile, fixture: pdf-one-page, filename: gs-rest-document.pdf, contentType: application/pdf}
+        compare: [status, auth]
       - name: imagedetails
         method: GET
         route: /admin/?muraAction=cArch.imagedetails&siteid=tenant-a&fileid=${upload-image.fileid}&compactDisplay=true
@@ -7402,6 +7945,8 @@ scenarios:
       - admin:carch.rotateimage
       - render:small
       - api:file.delete
+      - rest:filemetadata.save{siteid}
+      - rest:file.save{siteid}
   - id: GS-CO-18
     title: Content saves that publish or notify, and display-object parameters
     service: strategies-content
@@ -7420,12 +7965,15 @@ scenarios:
         extract:
           contentid: {from: dom, selector: 'form#contentForm input[name=contentid]', attr: value}
           contenthistid: {from: dom, selector: 'form#contentForm input[name=contenthistid]', attr: value}
+      # tenant-a's content form holds a categoryAssign input per pooled category (100), so its hidden fields with the
+      # named ones exceed ACF's 100-parameter POST limit (400); its saves send the CSRF pair and the fields Masa reads.
       - name: notify-page
         method: POST
         route: /admin/?muraAction=cArch.update
         as: admin
         csrf: fetch-form
         csrfFrom: notify-page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -7434,6 +7982,8 @@ scenarios:
           contentid: ${notify-page-form.contentid}
           contenthistid: ${notify-page-form.contenthistid}
           parentid: '00000000000000000000000000000000001'
+          topid: '00000000000000000000000000000000001'
+          ptype: Page
           type: Page
           subtype: Default
           title: GS-CO-18 Notify
@@ -7442,7 +7992,9 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+          dspNotify: 'on'
           notify: ${seed.person.userID}
+          message: "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t"
         expected: withheld
         decisionListRef: admin:carch.update{notify}
       - name: params-page-form
@@ -7458,6 +8010,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: params-page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -7474,6 +8027,8 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update
       - name: params-version
         method: GET
         route: /_api/json/v1/tenant-a/content/${params-page-form.contentid}
@@ -7497,6 +8052,8 @@ scenarios:
           changesetid: ''
           removepreviouschangeset: 'false'
           preview: '0'
+        expected: withheld
+        decisionListRef: admin:carch.updateobjectparams
       - name: params-version-2
         method: GET
         route: /_api/json/v1/tenant-a/content/${params-page-form.contentid}
@@ -7571,7 +8128,10 @@ scenarios:
           title: GS-CO-18 JSON
           menutitle: GS-CO-18 JSON
           approved: '0'
+          topid: '00000000000000000000000000000000001'
+          ptype: Page
           notify: ${seed.person.userID}
+          message: "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t"
         expected: withheld
         decisionListRef: api:content.save{notify}
       - name: api-draft-new
@@ -7597,6 +8157,8 @@ scenarios:
           title: GS-CO-18 JSON draft
           menutitle: GS-CO-18 JSON draft
           approved: '0'
+        expected: withheld
+        decisionListRef: api:content.save
       - name: nav-new
         method: GET
         route: /_api/json/v1/tenant-a/contentnav/new
@@ -7639,7 +8201,10 @@ scenarios:
           title: GS-CO-18 JSON nav
           menutitle: GS-CO-18 JSON nav
           approved: '0'
+          topid: '00000000000000000000000000000000001'
+          ptype: Page
           notify: ${seed.person.userID}
+          message: "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t"
         expected: withheld
         decisionListRef: api:contentnav.save{notify}
       - name: nav-draft-new
@@ -7665,6 +8230,8 @@ scenarios:
           title: GS-CO-18 JSON nav draft
           menutitle: GS-CO-18 JSON nav draft
           approved: '0'
+        expected: withheld
+        decisionListRef: api:contentnav.save
       # Legacy answers REST Basic 500 at its credential lookup, so REST steps extract nothing and address JSON API ids.
       - name: rest-draft
         method: POST
@@ -7679,6 +8246,25 @@ scenarios:
           title: GS-CO-18 REST draft
           menutitle: GS-CO-18 REST draft
           approved: '0'
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup on the withheld save. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-draft-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/content/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          parentid: '00000000000000000000000000000000001'
+          type: Page
+          subtype: Default
+          title: GS-CO-18 REST draft
+          menutitle: GS-CO-18 REST draft
+          approved: '0'
+        compare: [status, auth]
+        expected: withheld
+        decisionListRef: rest:content.save
       - name: rest-draft-delete
         method: DELETE
         route: /_api/rest/v1/tenant-a/content/${api-draft-new.id}
@@ -7699,6 +8285,25 @@ scenarios:
           title: GS-CO-18 REST nav draft
           menutitle: GS-CO-18 REST nav draft
           approved: '0'
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-nav-draft-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          method: save
+          entityname: contentnav
+          parentid: '00000000000000000000000000000000001'
+          type: Page
+          subtype: Default
+          title: GS-CO-18 REST nav draft
+          menutitle: GS-CO-18 REST nav draft
+          approved: '0'
+        compare: [status, auth]
+        expected: withheld
+        decisionListRef: rest:contentnav.save
       - name: rest-nav-draft-delete
         method: POST
         route: /_api/rest/v1/tenant-a/
@@ -7709,6 +8314,18 @@ scenarios:
           entityname: contentnav
           siteid: tenant-a
           id: ${nav-draft-new.id}
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-nav-draft-delete-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/
+        as: rest
+        auth: basic:admin:${secret:admin}
+        form:
+          method: delete
+          entityname: contentnav
+          id: ${nav-draft-new.id}
+        compare: [status, auth]
       - name: api-draft-delete
         method: POST
         route: /_api/json/v1/tenant-a/
@@ -7742,8 +8359,6 @@ scenarios:
           title: GS-CO-18 REST
           menutitle: GS-CO-18 REST
           approved: '1'
-        extract:
-          contentid: {from: body, path: data.contentid}
         expected: withheld
         decisionListRef: rest:content.save{approved=1}
       - name: rest-notify
@@ -7752,7 +8367,7 @@ scenarios:
         as: rest
         auth: basic:admin:${secret:admin}
         form:
-          contentid: ${rest-publish.contentid}
+          contentid: ${params-page-form.contentid}
           siteid: tenant-a
           parentid: '00000000000000000000000000000000001'
           type: Page
@@ -7760,7 +8375,10 @@ scenarios:
           title: GS-CO-18 REST
           menutitle: GS-CO-18 REST
           approved: '0'
+          topid: '00000000000000000000000000000000001'
+          ptype: Page
           notify: ${seed.person.userID}
+          message: "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t"
         expected: withheld
         decisionListRef: rest:content.save{notify}
       - name: rest-nav-publish
@@ -7778,8 +8396,6 @@ scenarios:
           title: GS-CO-18 REST nav
           menutitle: GS-CO-18 REST nav
           approved: '1'
-        extract:
-          contentid: {from: body, path: data.contentid}
         expected: withheld
         decisionListRef: rest:contentnav.save{approved=1}
       - name: rest-nav-notify
@@ -7790,7 +8406,7 @@ scenarios:
         form:
           method: save
           entityname: contentnav
-          contentid: ${rest-nav-publish.contentid}
+          contentid: ${nav-new.id}
           siteid: tenant-a
           parentid: '00000000000000000000000000000000001'
           type: Page
@@ -7798,7 +8414,10 @@ scenarios:
           title: GS-CO-18 REST nav
           menutitle: GS-CO-18 REST nav
           approved: '0'
+          topid: '00000000000000000000000000000000001'
+          ptype: Page
           notify: ${seed.person.userID}
+          message: "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t"
         expected: withheld
         decisionListRef: rest:contentnav.save{notify}
     compare: [status, envelope, auth, dom, mail]
@@ -7829,6 +8448,9 @@ scenarios:
       - rest:contentnav.save{notify}
       - rest:contentnav.save
       - rest:contentnav.delete
+      - rest:content.save{siteid}
+      - rest:contentnav.save{siteid}
+      - rest:contentnav.delete{siteid}
   - id: GS-CO-19
     title: Variation targeting through the admin, JSON API and REST
     service: strategies-content
@@ -7837,6 +8459,7 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       rest: {login: admin, via: rest-basic}
+      anon: {login: none, via: public}
     seedRefs:
       - {as: person, source: dataset, path: masa.users, where: {siteID: tenant-a, isPublic: 0}, index: -2}
     steps:
@@ -7846,6 +8469,8 @@ scenarios:
         as: admin
         extract:
           contentid: {from: dom, selector: 'form input[name=contentid]', attr: value}
+        expected: withheld
+        decisionListRef: admin:carch.variationtargeting
       - name: variation-save
         method: POST
         route: /admin/?muraAction=carch.variationTargeting
@@ -7863,6 +8488,8 @@ scenarios:
           muraAction: carch.variationTargeting
           saveTargeting: 'true'
           initjs: Mura('.gs-co-19').addClass('mxp-editable')
+        expected: withheld
+        decisionListRef: admin:carch.variationtargeting
       - name: variation-save-notify
         method: POST
         route: /admin/?muraAction=carch.variationTargeting
@@ -7883,40 +8510,43 @@ scenarios:
           notify: ${seed.person.userID}
         expected: withheld
         decisionListRef: admin:carch.variationtargeting{notify}
+      # findNew and findOne answer 401: legacy registers variationTargeting only while `variations` is on
+      # (jsonApiUtility.cfc:103-105, 1714-1715) and settings.ini.cfm turns it off; save and delete skip that check.
       - name: targeting-new
         method: GET
         route: /_api/json/v1/tenant-a/variationtargeting/new
         as: admin
-        extract:
-          id: {from: body, path: data.id}
       - name: targeting-save
         method: POST
         route: /_api/json/v1/tenant-a/
         as: admin
-        csrf: json-api:${targeting-new.id}
+        csrf: json-api:new
         form:
           method: save
           entityname: variationTargeting
           siteid: tenant-a
-          id: ${targeting-new.id}
-          targetingid: ${targeting-new.id}
           contentid: ${variation-form.contentid}
           initjs: ''
           targetingjs: return true;
+        extract:
+          id: {from: body, path: data.id}
       - name: targeting-read
         method: GET
-        route: /_api/json/v1/tenant-a/variationtargeting/${targeting-new.id}
+        route: /_api/json/v1/tenant-a/variationtargeting/${targeting-save.id}
         as: admin
       - name: targeting-delete
         method: POST
         route: /_api/json/v1/tenant-a/
         as: admin
-        csrf: json-api:${targeting-new.id}
+        csrf: json-api:${targeting-save.id}
         form:
           method: delete
           entityname: variationTargeting
           siteid: tenant-a
-          id: ${targeting-new.id}
+          id: ${targeting-save.id}
+      # Every /_api/rest/ request answers 500 on ACF: contentRenderer init reads the session scope
+      # (contentRenderer.cfc:701) that /_api/rest/ disables (applicationSettings.cfm:179), at a point that varies by
+      # run, so the body is either the HTML error page or the server_error envelope. The steps reuse the JSON API id.
       - name: rest-targeting
         method: POST
         route: /_api/rest/v1/tenant-a/variationtargeting/
@@ -7924,18 +8554,486 @@ scenarios:
         auth: basic:admin:${secret:admin}
         form:
           siteid: tenant-a
+          targetingid: ${targeting-save.id}
           contentid: ${variation-form.contentid}
           initjs: ''
           targetingjs: return true;
-        extract:
-          targetingid: {from: body, path: data.targetingid}
-      - name: rest-targeting-delete
-        method: DELETE
-        route: /_api/rest/v1/tenant-a/variationtargeting/${rest-targeting.targetingid}
+        compare: [status, auth]
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      # The same call without `siteid` reaches legacy's credential lookup, which the target serves. It answers the
+      # server_error envelope, or the error page when it runs application start, so it compares status and auth.
+      - name: rest-targeting-path-site
+        method: POST
+        route: /_api/rest/v1/tenant-a/variationtargeting/
         as: rest
         auth: basic:admin:${secret:admin}
+        form:
+          targetingid: ${targeting-save.id}
+          contentid: ${variation-form.contentid}
+          initjs: ''
+          targetingjs: return true;
+        compare: [status, auth]
+      - name: rest-targeting-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/variationtargeting/${targeting-save.id}
+        as: rest
+        auth: basic:admin:${secret:admin}
+        compare: [status, auth]
+      # Behind a spelling of index.cfm the container does not map, legacy serves REST session-managed (EX-REST-INDEX-SESSION).
+      - name: rest-session-targeting
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/variationtargeting/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+          contentid: ${variation-form.contentid}
+          initjs: ''
+          targetingjs: return true;
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-targeting-delete
+        method: DELETE
+        route: /Index.cfm/_api/rest/v1/tenant-a/variationtargeting/${targeting-save.id}
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      # Every other target REST write behind such a spelling: an anonymous call on a fixed id, served on legacy.
+      - name: rest-session-address-save
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/address/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-category-delete
+        method: DELETE
+        route: /Index.cfm/_api/rest/v1/tenant-a/category/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-category-save
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/category/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-changeset-delete
+        method: DELETE
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/changeset/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-changeset-save
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/changeset/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-changesetcategoryassignment-delete
+        method: DELETE
+        route: /index.CFM/_api/rest/v1/tenant-a/changesetCategoryAssignment/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-changesetcategoryassignment-save
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/changesetCategoryAssignment/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-delete
+        method: DELETE
+        route: /Index.cfm/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-save
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/comment/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-fn-delete
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/delete
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-fn-flag
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/flag
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-fn-markasspam
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/markAsSpam
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-fn-undelete
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/undelete
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-comment-fn-unmarkasspam
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/unMarkAsSpam
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-content-delete
+        method: DELETE
+        route: /index.CFM/_api/rest/v1/tenant-a/content/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-content-save
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/content/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-contentcategoryassign-delete
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/?method=delete
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+          entityname: contentCategoryAssign
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-contentcategoryassign-save
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/contentCategoryAssign/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-contentnav-delete
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/
+        as: anon
+        auth: anonymous
+        form:
+          method: delete
+          entityname: contentnav
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-contentnav-save
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/
+        as: anon
+        auth: anonymous
+        form:
+          method: save
+          entityname: contentnav
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-feed-delete
+        method: DELETE
+        route: /index.CFM/_api/rest/v1/tenant-a/feed/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-feed-save
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/feed/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-file-delete
+        method: DELETE
+        route: /Index.cfm/_api/rest/v1/tenant-a/file/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-file-save
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/file/
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-filemetadata-delete
+        method: DELETE
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/fileMetaData/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-filemetadata-save
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/fileMetaData/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-group-save
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/group/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-login
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/login
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-oauth
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/oauth
+        as: anon
+        auth: anonymous
+        form:
+          grant_type: client_credentials
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-oauth2
+        method: POST
+        route: /index.CFM/_api/rest/v1/tenant-a/oauth2
+        as: anon
+        auth: anonymous
+        form:
+          grant_type: client_credentials
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-stats-delete
+        method: DELETE
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/stats/00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-stats-save
+        method: POST
+        route: /Index.cfm/_api/rest/v1/tenant-a/stats/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-tokeninfo
+        method: GET
+        route: /index.CFM/_api/rest/v1/tenant-a/tokeninfo?access_token=gs-co-19-session&client_id=gs-co-19-session
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      - name: rest-session-user-save
+        method: POST
+        route: /INDEX.CFM/_api/rest/v1/tenant-a/user/
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-INDEX-SESSION
+      # A sessionless REST call whose form or url scope carries `siteid` fails legacy's onRequestStart
+      # (EX-REST-SITEID-STARTUP): an anonymous call of every other target REST write, served on legacy.
+      - name: rest-siteid-targeting-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/variationtargeting/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-category-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/category/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-changeset-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/changeset/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-changesetcategoryassignment-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/changesetCategoryAssignment/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-comment-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-comment-fn-delete
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/delete
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-comment-fn-flag
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/flag
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-comment-fn-markasspam
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/markAsSpam
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-comment-fn-undelete
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/undelete
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-comment-fn-unmarkasspam
+        method: POST
+        route: /_api/rest/v1/tenant-a/comment/00000000-0000-0000-0000000000000000/unMarkAsSpam
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-content-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/content/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-feed-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/feed/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-file-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/file/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-filemetadata-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/fileMetaData/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-login
+        method: POST
+        route: /_api/rest/v1/tenant-a/login
+        as: anon
+        auth: anonymous
+        form:
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-oauth
+        method: POST
+        route: /_api/rest/v1/tenant-a/oauth
+        as: anon
+        auth: anonymous
+        form:
+          grant_type: client_credentials
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-oauth2
+        method: POST
+        route: /_api/rest/v1/tenant-a/oauth2
+        as: anon
+        auth: anonymous
+        form:
+          grant_type: client_credentials
+          siteid: tenant-a
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-stats-delete
+        method: DELETE
+        route: /_api/rest/v1/tenant-a/stats/00000000-0000-0000-0000000000000000?siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
+      - name: rest-siteid-tokeninfo
+        method: GET
+        route: /_api/rest/v1/tenant-a/tokeninfo?access_token=gs-co-19-siteid&client_id=gs-co-19-siteid&siteid=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-REST-SITEID-STARTUP
     compare: [status, envelope, auth, dom]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      applyRules: [error-stacktrace]
     covers:
       - admin:carch.variationtargeting
       - admin:carch.variationtargeting{notify}
@@ -7945,6 +9043,207 @@ scenarios:
       - api:variationtargeting.delete
       - rest:variationtargeting.save
       - rest:variationtargeting.delete
+      - rest:variationtargeting.save{session}
+      - rest:variationtargeting.delete{session}
+      - rest:address.save{session}
+      - rest:category.delete{session}
+      - rest:category.save{session}
+      - rest:changeset.delete{session}
+      - rest:changeset.save{session}
+      - rest:changesetcategoryassignment.delete{session}
+      - rest:changesetcategoryassignment.save{session}
+      - rest:comment.delete{session}
+      - rest:comment.save{session}
+      - rest:comment.~delete{session}
+      - rest:comment.~flag{session}
+      - rest:comment.~markasspam{session}
+      - rest:comment.~undelete{session}
+      - rest:comment.~unmarkasspam{session}
+      - rest:content.delete{session}
+      - rest:content.save{session}
+      - rest:contentcategoryassign.delete{session}
+      - rest:contentcategoryassign.save{session}
+      - rest:contentnav.delete{session}
+      - rest:contentnav.save{session}
+      - rest:feed.delete{session}
+      - rest:feed.save{session}
+      - rest:file.delete{session}
+      - rest:file.save{session}
+      - rest:filemetadata.delete{session}
+      - rest:filemetadata.save{session}
+      - rest:group.save{session}
+      - rest:login{session}
+      - rest:oauth{session}
+      - rest:oauth2{session}
+      - rest:stats.delete{session}
+      - rest:stats.save{session}
+      - rest:tokeninfo{session}
+      - rest:user.save{session}
+      - rest:variationtargeting.save{siteid}
+      - rest:variationtargeting.delete{siteid}
+      - rest:category.delete{siteid}
+      - rest:changeset.delete{siteid}
+      - rest:changesetcategoryassignment.delete{siteid}
+      - rest:comment.delete{siteid}
+      - rest:comment.~delete{siteid}
+      - rest:comment.~flag{siteid}
+      - rest:comment.~markasspam{siteid}
+      - rest:comment.~undelete{siteid}
+      - rest:comment.~unmarkasspam{siteid}
+      - rest:content.delete{siteid}
+      - rest:feed.delete{siteid}
+      - rest:file.delete{siteid}
+      - rest:filemetadata.delete{siteid}
+      - rest:login{siteid}
+      - rest:oauth{siteid}
+      - rest:oauth2{siteid}
+      - rest:stats.delete{siteid}
+      - rest:tokeninfo{siteid}
+  - id: GS-CO-20
+    title: Seeded comments and their commenters
+    service: strategies-content
+    role: admin
+    sessions:
+      admin: {login: admin, via: admin}
+      anon: {login: none, via: public}
+    seedRefs:
+      - {as: formPage, source: dataset, path: masa.content, where: {siteID: tenant-a, title: OPT-2 Seed Contact Page}, index: 0}
+    steps:
+      - name: comments
+        method: GET
+        route: /_api/json/v1/tenant-a/comment/?contentid=${seed.formPage.contentID}
+        as: admin
+        extract:
+          commentid: {from: body, path: data.items.0.id}
+          member1: {from: body, path: data.items.0.userid}
+          member2: {from: body, path: data.items.1.userid}
+          visitor1: {from: body, path: data.items.2.userid}
+          visitor2: {from: body, path: data.items.3.userid}
+          pending: {from: body, path: data.items.5.id}
+      - name: comments-page
+        method: GET
+        route: /admin/?muraAction=cComments.loadCommentsPage&siteid=tenant-a&contentid=${seed.formPage.contentID}&lowerID=${comments.commentid}
+        as: admin
+      - name: proxy-page
+        method: POST
+        route: /core/modules/v1/comments/ajax/commentsProxy.cfc
+        as: anon
+        auth: anonymous
+        form:
+          method: renderCommentsPage
+          contentID: ${seed.formPage.contentID}
+          pageNo: '1'
+          nextN: '10'
+          sortDirection: asc
+          siteid: tenant-a
+      - name: proxy-get
+        method: POST
+        route: /core/modules/v1/comments/ajax/commentsProxy.cfc
+        as: anon
+        auth: anonymous
+        form:
+          method: get
+          commentID: ${comments.commentid}
+          siteid: tenant-a
+      - name: proxy-stats
+        method: POST
+        route: /core/modules/v1/comments/ajax/commentsProxy.cfc
+        as: anon
+        auth: anonymous
+        form:
+          method: getContentStats
+          contentID: ${seed.formPage.contentID}
+          siteid: tenant-a
+      # Each mutation is undone before the scenario ends, so a re-run starts from the seeded comments.
+      - name: approve
+        method: GET
+        route: /admin/?muraAction=cComments.approve&siteid=tenant-a&commentid=${comments.pending}
+        as: admin
+      - name: approved
+        method: GET
+        route: /_api/json/v1/tenant-a/comment/${comments.pending}
+        as: admin
+      - name: approved-page
+        method: GET
+        route: /admin/?muraAction=cComments.loadCommentsPage&siteid=tenant-a&contentid=${seed.formPage.contentID}&commentID=${comments.pending}
+        as: admin
+      - name: unapprove
+        method: POST
+        route: /admin/?muraAction=cComments.singleEdit
+        as: admin
+        form:
+          siteid: tenant-a
+          commentid: ${comments.pending}
+          updateAction: unapprove
+      - name: unapproved
+        method: GET
+        route: /_api/json/v1/tenant-a/comment/${comments.pending}
+        as: admin
+      # A visitor's JSON API comment creates its commenter keyed by e-mail, or reuses the one a run before left;
+      # an edit of the comment renames the commenter its userid names (standardEventsHandler.cfc:158-183).
+      - name: visitor-comment
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/
+        as: anon
+        csrf: json-api:new
+        form:
+          contentid: ${seed.formPage.contentID}
+          siteid: tenant-a
+          name: GS-CO-20 Visitor
+          email: gs-co-20.visitor@seed.opt2.test
+          comments: GS-CO-20 visitor comment
+        extract:
+          commentid: {from: body, path: data.id}
+      - name: visitor-rename
+        method: POST
+        route: /_api/json/v1/tenant-a/comment/
+        as: admin
+        csrf: json-api:new
+        form:
+          commentid: ${visitor-comment.commentid}
+          siteid: tenant-a
+          name: GS-CO-20 Visitor Renamed
+      - name: visitor-read
+        method: GET
+        route: /_api/json/v1/tenant-a/comment/${visitor-comment.commentid}
+        as: admin
+      - name: visitor-delete
+        method: POST
+        route: /admin/?muraAction=cComments.bulkEdit
+        as: admin
+        form:
+          siteid: tenant-a
+          ckUpdate: ${visitor-comment.commentid}
+          bulkedit: delete
+      - name: purge
+        method: GET
+        route: /admin/?muraAction=cComments.purgeDeletedComments&siteid=tenant-a
+        as: admin
+      - name: after
+        method: GET
+        route: /_api/json/v1/tenant-a/comment/?contentid=${seed.formPage.contentID}
+        as: admin
+    compare: [status, dom, envelope, rows]
+    rows:
+      - {table: tcontentcomments, where: {contentid: '${seed.formPage.contentID}'}, minRows: 6}
+      - {table: tcontentcommentcommenters, where: {commenterid: '${comments.member1}'}, minRows: 1}
+      - {table: tcontentcommentcommenters, where: {commenterid: '${comments.member2}'}, minRows: 1}
+      - {table: tcontentcommentcommenters, where: {commenterid: '${comments.visitor1}'}, minRows: 1}
+      - {table: tcontentcommentcommenters, where: {commenterid: '${comments.visitor2}'}, minRows: 1}
+      - {table: tcontentcommentcommenters, where: {remoteid: gs-co-20.visitor@seed.opt2.test}, minRows: 1}
+    normalisationOverrides: {}
+    covers:
+      - api:comment.findquery
+      - api:comment.findone
+      - api:comment.save
+      - admin:ccomments.loadcommentspage
+      - admin:ccomments.approve
+      - admin:ccomments.singleedit
+      - admin:ccomments.bulkedit
+      - admin:ccomments.purgedeletedcomments
+      - cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=rendercommentspage
+      - cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get
+      - cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=getcontentstats
   - id: GS-LS-01
     title: Email bounce cleanup and mailing-list maintenance
     service: communications
@@ -8112,6 +9411,8 @@ scenarios:
           email: ${seed.member.email}
           siteid: tenant-a
           returnURL: ''
+        expected: withheld
+        decisionListRef: page:sendlogin
       - name: track-open
         method: GET
         route: /_api/email/trackopen/?emailid=gs-ls-02-no-email&email=gs-ls-02-visitor@seed.opt2.test
@@ -8178,8 +9479,6 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cArch.importcomponent&siteid=tenant-a&moduleid=00000000000000000000000000000000003
         as: admin
-        expected: withheld
-        decisionListRef: admin:carch.importcomponent
       - name: component-import
         method: POST
         route: /admin/?muraAction=cArch.importcomponent&siteid=tenant-a
@@ -8187,8 +9486,6 @@ scenarios:
         form:
           title: ''
           componentzip: ''
-        expected: withheld
-        decisionListRef: admin:carch.importcomponent
       - name: asset-upload
         method: POST
         route: /_api/asset/upload/?siteId=tenant-a

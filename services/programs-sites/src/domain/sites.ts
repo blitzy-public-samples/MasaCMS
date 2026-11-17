@@ -134,6 +134,8 @@ export interface SitesDomain {
   readJsonApiValues(db: TenantDb, baseUrl: string, siteIds: readonly string[]): Promise<JsonApiSiteValues[]>;
   /** Writes `programs-sites.site.changed.v1` for each applied site insert, update or delete of a migration apply. */
   emitStateEvents: NonNullable<MigrationHandlerOptions['emitStateEvents']>;
+  /** The `row_version` a migration-applied site insert or change writes with its row: one past the stored one, 1 for a new site. */
+  targetOnlyColumns: NonNullable<MigrationHandlerOptions['targetOnlyColumns']>;
 }
 
 // legacy: core/mura/content/contentRenderer.cfc:2704, the tags setDynamicContent evaluates as CFML.
@@ -559,27 +561,22 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     await writeSiteChanged(tx, { siteId: row.siteid, rowVersion, payload: { ...siteChangedPayload(row), deleted: true }, origin });
   }
 
-  const emitStateEvents: SitesDomain['emitStateEvents'] = async (tx, change, write) => {
+  const emitStateEvents: SitesDomain['emitStateEvents'] = async (tx, change) => {
     if (change.unit !== SITE.unit) return;
     if (change.op === 'delete') {
       if (change.before !== undefined) await announceDeletion(tx, change.before as SiteRow, change.origin);
       return;
     }
     if (change.after === undefined) return;
+    // The applied row carries the row_version targetOnlyColumns gave it.
+    await announce(tx, change.after as SiteRow, change.origin);
+  };
+
+  const targetOnlyColumns: SitesDomain['targetOnlyColumns'] = async (tx, change) => {
+    if (change.unit !== SITE.unit) return {};
     // A site created again after its deletion continues above the deletion's version, which consumers already hold.
-    const floor = change.op === 'insert' ? await lastAnnouncedVersion(tx, String(change.after.siteid)) : 0n;
-    // The platform update reads the applied row under the apply's authority, with no window-phase read wait.
-    const row = await repo.update<SiteRow>(
-      tx,
-      SITE.table,
-      { siteid: change.after.siteid },
-      { row_version: String(nextRowVersion(change.after.row_version, floor)) },
-      write,
-    );
-    if (row === null) {
-      throw new Error(`Applied site ${String(change.after.siteid)} is missing from its apply transaction`);
-    }
-    await announce(tx, row, change.origin);
+    const floor = change.before === undefined ? await lastAnnouncedVersion(tx, String(change.row.siteid)) : 0n;
+    return { row_version: String(nextRowVersion(change.before?.row_version ?? 0, floor)) };
   };
 
   const hrefDomains = createHrefDomainsReader(repo);
@@ -597,5 +594,6 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     readConfigFlags,
     readJsonApiValues,
     emitStateEvents,
+    targetOnlyColumns,
   });
 }

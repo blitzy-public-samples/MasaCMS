@@ -6,6 +6,7 @@ import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import {
   UNIT_GATE_TABLE,
   awaitReadable,
+  changelogOrderSql,
   createRepository,
   defineMapping,
   migrationKitSql,
@@ -418,7 +419,7 @@ export async function startPgOwner(opts: PgOwnerOptions): Promise<PgOwner> {
     const throwaway = await createThrowawaySchema({
       service: owner,
       schemaName: sourceSchema,
-      extraSql: [tenantRegistrySql(sourceSchema), migrationKitSql(sourceSchema), fixtureTargetDdl(sourceSchema)],
+      extraSql: [tenantRegistrySql(sourceSchema), migrationKitSql(sourceSchema), changelogOrderSql(sourceSchema), fixtureTargetDdl(sourceSchema)],
     });
     closers.push(() => throwaway.drop());
     const db = throwaway.app;

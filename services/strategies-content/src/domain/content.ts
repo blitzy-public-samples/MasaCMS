@@ -24,7 +24,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import type { StoragePort } from '@opt2/platform/storage';
-import { poolTenantFor, type TenantTx } from '@opt2/platform/tenancy';
+import { poolTenantFor, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { contentImageUrl, contentUrl, formatFilename, getUrlStem, isCfUrl, materializedPath, uniqueFilename, uniqueTitle, uniqueUrlTitle } from '../legacy/content-urls.js';
 import type { CategoryAssignmentRow, ContentVersionRow, Crumb } from '../repo/content-queries.js';
 import type { CategoryAssignmentInput, ContentObjectInput, ContentTagInput, ExtendDataInput, RelatedItemInput, VersionInput } from '../repo/repository.js';
@@ -1234,14 +1234,29 @@ async function hasDisplayConflicts(scope: WriteScope, bean: LegacyContentBean, o
   return opts.findDisplayConflicts(bean);
 }
 
+/** contentBean.validate's checks beyond the validator's rules: extend value errors, then title and display conflicts, file and template rules. */
+export interface ContentBeanChecks {
+  extended: Array<[string, string]>;
+  checks: Array<[string, string]>;
+}
+
 /** contentBean.validate (contentBean.cfc:420-488): the validator's `title` rule, extend values, title and display conflicts, file and template rules. */
 async function validateBean(scope: WriteScope, bean: LegacyContentBean, opts: SaveContentOptions): Promise<LegacyErrors> {
-  const rb = rbOf(opts);
-  if (bean.text('siteid') !== '') await autocompleteExtendData(scope, bean);
-  const extErrors = bean.text('siteid') !== '' ? await validateExtendedData(scope, bean.values(), rb) : [];
+  const { extended, checks } = await contentBeanChecks(scope, bean, opts);
   const errors: Array<[string, string]> = [];
   if (bean.text('title') === '') errors.push(['title', "The property named 'title' is not valid"]);
-  errors.push(...extErrors);
+  errors.push(...extended, ...checks);
+  const result = structErrors(errors);
+  bean.errors = result;
+  return result;
+}
+
+/** contentBean.validate's own checks of `bean` (contentBean.cfc:467-505), in their order. */
+async function contentBeanChecks(scope: WriteScope, bean: LegacyContentBean, opts: SaveContentOptions): Promise<ContentBeanChecks> {
+  const rb = rbOf(opts);
+  if (bean.text('siteid') !== '') await autocompleteExtendData(scope, bean);
+  const extended = bean.text('siteid') !== '' ? await validateExtendedData(scope, bean.values(), rb) : [];
+  const errors: Array<[string, string]> = [];
   const type = bean.text('type');
   if (inList(['form', 'component'], type) && (await doesLoadKeyExist(scope, bean, 'title', bean.text('title')))) {
     errors.push(['titleconflict', rb('sitemanager.titlenotunique')]);
@@ -1260,9 +1275,18 @@ async function validateBean(scope: WriteScope, bean: LegacyContentBean, opts: Sa
       errors.push(['filename', rb('sitemanager.content.filenamesiteidconflict')]);
     }
   }
-  const result = structErrors(errors);
-  bean.errors = result;
-  return result;
+  return { extended, checks: errors };
+}
+
+/** contentBean.validate's own checks of a bean the JSON API `validate` loaded, read in the actor's tenant (jsonApiUtility.cfc:3765). */
+export function contentValidateChecks(
+  deps: ContentDeps,
+  actor: Actor,
+  site: ContentSaveSite,
+  bean: LegacyContentBean,
+  opts: Pick<SaveContentOptions, 'siteIds' | 'siteIdInUrls'> = {},
+): Promise<ContentBeanChecks> {
+  return withTenant(deps.db, actor.tenantId, (tx) => contentBeanChecks(scopeOf(tx, deps, actor, site, {}), bean, opts));
 }
 
 // ---- contentManager.add ----

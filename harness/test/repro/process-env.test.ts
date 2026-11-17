@@ -227,6 +227,19 @@ describe('process_env Masa port pair', () => {
   });
 });
 
+describe('process_env Masa web root', () => {
+  it('gives web the checkout legacy serves as MURA_WEBROOT over the caller, and no other process any', () => {
+    const others = PACKAGE_NAMES.filter((name) => name !== 'web');
+    const web = runEnv('process_env', 'web', { MURA_WEBROOT: '/srv/caller-webroot' });
+
+    expect(web.MURA_WEBROOT).toBe(realpathSync(REPO_ROOT));
+    expect(envOf('web').MURA_WEBROOT).toBe(realpathSync(REPO_ROOT));
+    for (const name of others) {
+      expect(runEnv('process_env', name, { MURA_WEBROOT: '/srv/caller-webroot' }), name).not.toHaveProperty('MURA_WEBROOT');
+    }
+  });
+});
+
 describe('process_env OPT2_REPORTS_DIR', () => {
   it.each([
     ['a relative value against the checkout', 'out/reports', path.join(realpathSync(REPO_ROOT), 'out/reports')],

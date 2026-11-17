@@ -1,14 +1,16 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { adminUnavailableResponse, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
+import { adminUnavailableResponse, apiUnavailableResponse, type RouteKeyOptions } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, crossTenantPairs, type TenantFixture } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FIXTURES_UNAVAILABLE, readFixtureStatus, type FixtureStatus } from '../../src/golden/catalogue.js';
+import { NEUTRAL_ID, defaultRouteKeyOptions } from '../../src/golden/coverage.js';
 import { SEED_CONFIG_PATH, SEED_CREDENTIALS_FILE, originBaseUrl } from '../../src/golden/session.js';
 import {
   ACTORS,
   DEFAULT_PROBE_SUFFIX,
+  LEGACY_SERVED,
   MAX_OWNER_RECORDS,
   NOT_RUN,
   ROUTE_FAMILIES,
@@ -17,12 +19,16 @@ import {
   buildCases,
   isLegacyRefusal,
   runGatewayIsolation,
+  versionRouting,
   type ActorRef,
+  type CaseKind,
   type CaseResult,
   type FamilyId,
   type GatewayIsolationDeps,
   type GatewayIsolationResult,
   type IsolationCase,
+  type ProbeRequest,
+  type ProbeRoute,
   type RefusalOptions,
   type RouteFamily,
   type TenantKey,
@@ -276,10 +282,10 @@ const FAMILY_ROUTE = new RegExp(
 
 /** The family route `call` addresses, or undefined. */
 function targetOf(call: GatewayCall): Target | undefined {
-  const api = /^\/_api\/(json|rest)\/v1\/([^/]+)\/(content|user)(?:\/([^/]+))?$/.exec(call.url.pathname);
+  const api = /^\/_api\/json\/v1\/([^/]+)\/(content|user)(?:\/([^/]+))?$/.exec(call.url.pathname);
   if (api !== null) {
-    const [, kind, site = '', family, id] = api;
-    const op: Op = kind === 'rest' ? 'write' : id === undefined ? 'list' : 'byId';
+    const [, site = '', family, id] = api;
+    const op: Op = call.method === 'POST' ? 'write' : id === undefined ? 'list' : 'byId';
     return { family: family as FamilyId, op, shape: 'jsonapi', site, id };
   }
   const fixture = FAMILY_ROUTE.exec(call.url.pathname);
@@ -428,12 +434,7 @@ function fakeGateway(world: World, ...overrides: Override[]): FakeGateway {
 
   const callerOf = (headers: Record<string, string>): Caller | undefined => {
     const sid = /(?:^|;\s*)CFID=([^;]+)/.exec(headers.cookie ?? '')?.[1];
-    const known = sid === undefined ? undefined : sessions.get(sid);
-    if (known !== undefined) return known;
-    const basic = /^Basic (.+)$/.exec(headers.authorization ?? '')?.[1];
-    if (basic === undefined) return undefined;
-    const [username = '', ...rest] = Buffer.from(basic, 'base64').toString('utf8').split(':');
-    return accepts(username, rest.join(':'));
+    return sid === undefined ? undefined : sessions.get(sid);
   };
 
   const answer = (call: GatewayCall): Response => {
@@ -760,8 +761,9 @@ describe('buildCases', () => {
   it.each([
     ['timesheets:read-list:a->b', `${API}/timesheets/sheets?siteid=tenant-b&itemsPerPage=50`, 'no-owner-rows'],
     ['content:read-by-id:b->a', '/_api/json/v1/tenant-b/content/{id}', 'no-owner-record'],
-    ['user:write-owner-site:a->umbrella', '/_api/rest/v1/umbrella/user/{id}', 'refused-no-effect'],
-    ['user:write-site-mismatch:b->a', '/_api/rest/v1/tenant-b/user/{id}', 'refused-no-effect'],
+    ['user:write-owner-site:a->umbrella', '/_api/json/v1/umbrella/user/{id}', 'refused-no-effect'],
+    ['user:write-site-mismatch:b->a', '/_api/json/v1/tenant-b/user/{id}', 'refused-no-effect'],
+    ['content:write-owner-site:umbrella->b', '/_api/json/v1/tenant-b/content/{id}', 'refused-no-effect'],
     ['finance:write-foreign-id:b->a', `${API}/finance/records/{id}/edit?siteid=tenant-b`, 'refused-no-effect'],
     ['user:pooled-read:a->umbrella', '/_api/json/v1/tenant-a/user?itemsPerPage=50&isPublic=1', 'registry-pools-only'],
     ['surveys:survey-grant:umbrella->a', `${API}/surveys/surveys/{id}/responses?siteid=umbrella`, 'granted-sites-only'],
@@ -871,6 +873,75 @@ describe('isLegacyRefusal', () => {
   );
 });
 
+const VERSION = 'v9001';
+const WRITE_CASE = /^write-/;
+/** Route keys the content and user families' probes resolve to, by case kind. */
+const FAMILY_KEYS: Readonly<Record<'content' | 'user', Readonly<Partial<Record<CaseKind, string>>>>> = {
+  content: {
+    'read-list': 'api:content.findquery',
+    'read-by-id': 'api:content.findone',
+    'write-owner-site': 'api:content.save',
+    'write-site-mismatch': 'api:content.save',
+  },
+  user: {
+    'read-list': 'api:user.findquery',
+    'pooled-read': 'api:user.findquery',
+    'read-by-id': 'api:user.findone',
+    'write-owner-site': 'api:user.save',
+    'write-site-mismatch': 'api:user.save',
+  },
+};
+
+/** Routing of a version holding every content and user family key and `extra`, `legacy` ones legacy, others target. */
+function routingWith(legacy: readonly string[], extra: readonly string[] = [], opts?: RouteKeyOptions) {
+  const keys = new Set([...Object.values(FAMILY_KEYS).flatMap((byKind) => Object.values(byKind)), ...extra]);
+  const entries = [...keys].map((route) => ({ route, state: legacy.includes(route) ? ('legacy' as const) : ('target' as const) }));
+  return versionRouting({ tableVersion: VERSION, entries }, opts);
+}
+
+describe('versionRouting', () => {
+  const routing = versionRouting({
+    tableVersion: VERSION,
+    entries: [
+      { route: 'api:user.findone', state: 'legacy' },
+      { route: 'fixture:finance/records/{id}/edit@post', state: 'target' },
+      { route: 'rest:content.save', state: 'target' },
+      { route: 'rest:content.save{approved=1}', state: 'legacy' },
+    ],
+  });
+
+  it.each<[string, ProbeRequest, ProbeRoute]>([
+    [
+      'a JSON API by-id read on its legacy entry',
+      { method: 'GET', route: `/_api/json/v1/tenant-a/user/${NEUTRAL_ID}` },
+      { routeKey: 'api:user.findone', entry: 'api:user.findone', state: 'legacy' },
+    ],
+    [
+      'a fixture write on its target entry',
+      { method: 'POST', route: `${API}/finance/records/${NEUTRAL_ID}/edit?siteid=tenant-a`, form: { title: 'x' } },
+      { routeKey: 'fixture:finance/records/{id}/edit@post', entry: 'fixture:finance/records/{id}/edit@post', state: 'target' },
+    ],
+    [
+      'a REST save on its target entry',
+      { method: 'POST', route: `/_api/rest/v1/tenant-a/content/${NEUTRAL_ID}`, form: { title: 'x' } },
+      { routeKey: 'rest:content.save', entry: 'rest:content.save', state: 'target' },
+    ],
+    [
+      'a REST save whose body keys a committed legacy variant',
+      { method: 'POST', route: `/_api/rest/v1/tenant-a/content/${NEUTRAL_ID}`, form: { title: 'x', approved: '1' } },
+      { routeKey: 'rest:content.save{approved=1}', entry: 'rest:content.save{approved=1}', state: 'legacy' },
+    ],
+    [
+      'a path no entry matches',
+      { method: 'GET', route: '/v1/timesheets/sheets?siteid=tenant-a' },
+      { routeKey: 'opt2:/v1/timesheets/sheets', state: 'legacy' },
+    ],
+  ])('routes %s', (_name, probe, expected) => {
+    expect(routing.route(probe)).toStrictEqual(expected);
+    expect(routing.tableVersion).toBe(VERSION);
+  });
+});
+
 describe('runGatewayIsolation', () => {
   it('passes every case through the fixture routes when the gateway refuses every cross-tenant probe', async () => {
     writeAvailableFixtures();
@@ -921,22 +992,26 @@ describe('runGatewayIsolation', () => {
     expect(result).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: false });
   });
 
-  it('sends each /v1/ write with the CSRF pair issued for the id it writes, as the services consume it', async () => {
+  it.each<[Shape, (call: GatewayCall) => string | undefined]>([
+    ['v1', (call) => call.url.pathname.split('/')[4]],
+    ['jsonapi', lastSegment],
+  ])('sends each %s write in its session with the CSRF pair issued for the id it writes', async (shape, idOf) => {
     copyUnavailableFixtures();
     const fake = fakeGateway(buildWorld());
     await run(fake, FROM_STATE_DIR);
 
     const header = (call: GatewayCall, name: string): string | undefined =>
       Object.entries(call.headers).find(([key]) => key.toLowerCase() === name)?.[1];
-    const writes = fake.calls.filter((call) => call.method === 'POST' && call.url.pathname.startsWith('/v1/'));
+    const writes = fake.calls.filter((call) => targetOf(call)?.op === 'write' && targetOf(call)?.shape === shape);
     expect(writes.length).toBeGreaterThan(0);
     expect(
       writes.filter((call) => header(call, 'x-csrf_token') !== TOKENS.csrf_token || header(call, 'x-csrf_token_expires') !== TOKENS.csrf_token_expires),
     ).toStrictEqual([]);
+    expect(writes.filter((call) => call.caller === undefined || header(call, 'authorization') !== undefined)).toStrictEqual([]);
     const contexts = new Set(
       fake.calls.filter((call) => call.url.pathname.endsWith('/generateCSRFTokens')).map((call) => call.url.searchParams.get('context')),
     );
-    expect(writes.filter((call) => !contexts.has(call.url.pathname.split('/')[4] ?? null))).toStrictEqual([]);
+    expect(writes.filter((call) => !contexts.has(idOf(call) ?? null))).toStrictEqual([]);
   });
 
   it('honours the base URL, reserved identities and probe marker it is given', async () => {
@@ -1563,5 +1638,65 @@ describe('runGatewayIsolation', () => {
     await expect(failure).rejects.toThrow(/ECONNREFUSED.*\/_api\/json\/v1\/tenant-b\/content/);
     expect(fake.calls.length).toBeGreaterThan(0);
     expect(disciplineProblems(fake.calls, GATEWAY)).toStrictEqual([]);
+  });
+
+  /** Answers every user by-id read with the record, whatever site the caller or the path names. */
+  function leakingUserReads(world: World): Override {
+    return (call) => {
+      const t = targetOf(call);
+      if (t?.family !== 'user' || t.op !== 'byId') return undefined;
+      const row = world.rows.user.find((candidate) => candidate.userid === t.id);
+      return row === undefined ? undefined : json(recordBody(t, t.site, row));
+    };
+  }
+
+  it('skips every case of a legacy-served family unsent and uncounted, and still probes the target-served one', async () => {
+    const leakyWorld = buildWorld();
+    const leaked = await run(fakeGateway(leakyWorld, leakingUserReads(leakyWorld)), { families: familiesOf('content', 'user') });
+    expect(leaked.crossTenantReads).toBeGreaterThan(0);
+
+    const world = buildWorld();
+    const fake = fakeGateway(world, leakingUserReads(world));
+    const routing = routingWith(Object.values(FAMILY_KEYS.user));
+    const result = await run(fake, { families: familiesOf('content', 'user'), routing });
+
+    const user = result.cases.filter((c) => c.family === 'user');
+    expect(user.length).toBeGreaterThan(0);
+    expect(user.filter((c) => FAMILY_KEYS.user[c.kind] === undefined)).toStrictEqual([]);
+    expect(user.map((c) => [c.id, c.result, c.reason, c.observed])).toStrictEqual(
+      user.map((c) => [c.id, 'skipped', `${LEGACY_SERVED} ${FAMILY_KEYS.user[c.kind] ?? ''} in ${VERSION}`, {}]),
+    );
+    expect(fake.calls.filter((call) => targetOf(call)?.family === 'user')).toStrictEqual([]);
+    expect(fake.calls.some((call) => targetOf(call)?.family === 'content')).toBe(true);
+    expect(notResult(result, 'pass').filter((line) => !line.startsWith('user:'))).toStrictEqual([]);
+    expect(result).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0 });
+  });
+
+  it('sends nothing, not even a login, when every case is legacy-served', async () => {
+    const fake = fakeGateway(buildWorld());
+    const result = await run(fake, { families: familiesOf('content'), routing: routingWith(Object.values(FAMILY_KEYS.content)) });
+
+    expect(fake.calls).toStrictEqual([]);
+    expect(result.cases.length).toBeGreaterThan(0);
+    expect(result.cases.filter((c) => c.result !== 'skipped' || !c.reason?.startsWith(`${LEGACY_SERVED} `))).toStrictEqual([]);
+    expect(result).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: false });
+  });
+
+  it('routes each write again with the fields it sends, skipping one whose body keys a legacy variant', async () => {
+    const opts: RouteKeyOptions = {
+      ...defaultRouteKeyOptions(),
+      variants: [{ route: 'api:content.save', variant: 'probe', when: [{ param: 'title', nonEmpty: true }] }],
+    };
+    const fake = fakeGateway(buildWorld());
+    const routing = routingWith(['api:content.save{probe}'], ['api:content.save{probe}'], opts);
+    const result = await run(fake, { families: familiesOf('content'), routing });
+
+    const writes = result.cases.filter((c) => WRITE_CASE.test(c.kind));
+    expect(writes.length).toBeGreaterThan(0);
+    for (const c of writes) {
+      expect(c).toMatchObject({ result: 'skipped', reason: `${LEGACY_SERVED} api:content.save{probe} in ${VERSION}`, observed: {} });
+    }
+    expect(fake.calls.filter((call) => targetOf(call)?.op === 'write')).toStrictEqual([]);
+    expect(notResult(result, 'pass').filter((line) => !WRITE_CASE.test(line.split(':')[1] ?? ''))).toStrictEqual([]);
   });
 });

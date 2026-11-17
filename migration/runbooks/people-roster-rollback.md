@@ -52,7 +52,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 4. Drain
 
-- `drain-effects` waits, before any gate of `T` closes, until the people outbox is fully published and every `people.person.archived.v1` has a timesheets inbox receipt. Blackouts of pending archives therefore exist before projection.
+- `drain-effects` waits, before any gate of `T` closes, until the outboxes of `T`'s owners (identity, people and timesheets for the committed `R`), and of the services publishing to them, are fully published, and every published event for `T` has an inbox receipt or, for a state event, a dead letter. Every `people.person.archived.v1` therefore has its timesheets receipt, and the blackouts of pending archives exist before projection.
 - A dead-lettered `people.person.archived.v1` is a process effect without a receipt: step 4 aborts naming its event id, topic and subscription. Run `opt2-events replay --subscription <subscription>` with that subscription, then run the transition again. A consumer that does not answer counts as not yet drained until `transition.drainTimeoutMs`; the timeout names it.
 
 | Transition step | Evidence |

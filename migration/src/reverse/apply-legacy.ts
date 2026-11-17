@@ -61,8 +61,11 @@ interface CheckpointRecord {
 // Decimals arrive as varchar so no xid passes through a JS number.
 const CHECKPOINT_SELECT = `SELECT owner, tenant_id, CONVERT(varchar(20), cursor_xid) AS cursor_xid, CONVERT(varchar(20), cursor_seq) AS cursor_seq, CONVERT(varchar(20), applied_horizon) AS applied_horizon, batch_id, rows_applied, updated_at, pending_effects, CONVERT(varchar(20), ready_horizon) AS ready_horizon FROM ${CHECKPOINT_TABLE}`;
 
-// SET expressions read the row before the update, so effects first owed keep the previous applied horizon as ready.
-const CHECKPOINT_UPSERT = `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = @batchId, rows_applied = @rowsApplied, updated_at = SYSDATETIME(), pending_effects = @pendingEffects, ready_horizon = CASE WHEN @pendingEffects IS NULL THEN NULL WHEN pending_effects IS NULL THEN applied_horizon ELSE ready_horizon END WHERE owner = @owner AND tenant_id = @tenantId;
+const HORIZON_ONLY = '@rowsApplied = 0 AND cursor_xid = CAST(@cursorXid AS decimal(20,0)) AND cursor_seq = CAST(@cursorSeq AS bigint)';
+
+// SET expressions read the row before the update, so effects first owed keep the previous applied horizon as ready,
+// and a horizon-only advance, at the stored cursor with no row applied, keeps the batch id and row count of the batch before.
+const CHECKPOINT_UPSERT = `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = CASE WHEN ${HORIZON_ONLY} THEN batch_id ELSE @batchId END, rows_applied = CASE WHEN ${HORIZON_ONLY} THEN rows_applied ELSE @rowsApplied END, updated_at = SYSDATETIME(), pending_effects = @pendingEffects, ready_horizon = CASE WHEN @pendingEffects IS NULL THEN NULL WHEN pending_effects IS NULL THEN applied_horizon ELSE ready_horizon END WHERE owner = @owner AND tenant_id = @tenantId;
 IF @@ROWCOUNT = 0 INSERT INTO ${CHECKPOINT_TABLE} (owner, tenant_id, cursor_xid, cursor_seq, applied_horizon, batch_id, rows_applied, updated_at, pending_effects) VALUES (@owner, @tenantId, CAST(@cursorXid AS decimal(20,0)), CAST(@cursorSeq AS bigint), CAST(@appliedHorizon AS decimal(20,0)), @batchId, @rowsApplied, SYSDATETIME(), @pendingEffects);
 ${CHECKPOINT_SELECT} WHERE owner = @owner AND tenant_id = @tenantId;`;
 

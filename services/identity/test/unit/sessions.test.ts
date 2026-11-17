@@ -22,6 +22,7 @@ import {
   locateSession,
   newSessionTokens,
   sessionAdminSite,
+  sessionAdminState,
   sessionCookies,
   sessionSnapshot,
   sessionState,
@@ -212,6 +213,17 @@ describe('epoch and login-time snapshot', () => {
     expect(await sessionAdminSite(f.deps, 'S-never-created')).toBe('');
   });
 
+  it('reads the stored admin state of an active session, and {} once it ended or for an unknown one', async () => {
+    const stored = { siteid: TENANT_A.siteId, mura: { flatViewArgs: { [TENANT_A.siteId]: { tab: 1 } } } };
+    const held = sessionRow({ tenant_id: SYSTEM_TENANT_ID, session_id: 'S-admin-state-read', admin_state: JSON.stringify(stored) });
+    f = sessionFixture(CLOCK, { sessions: [held] });
+
+    expect(await sessionAdminState(f.deps, held.session_id)).toEqual(stored);
+    await endSession(f.deps, held.session_id);
+    expect(await sessionAdminState(f.deps, held.session_id)).toEqual({});
+    expect(await sessionAdminState(f.deps, 'S-never-created')).toEqual({});
+  });
+
   it('replaces the snapshot and bumps the epoch again on a self-save re-login', async () => {
     const { sessionId } = await ensureSession(f.deps, { mode: 'target-primary' });
     const first = await applyLogin(f.deps, { sessionId, snapshot: ADMIN_SNAPSHOT, mode: 'target-primary', siteId: TENANT_A.siteId });
@@ -355,6 +367,7 @@ describe('gateway session routes', () => {
   const routeUrls = (sid: string) => ({
     state: `/internal/v1/sessions/${encodeURIComponent(sid)}/state`,
     adminSite: `/internal/v1/sessions/${encodeURIComponent(sid)}/admin-site`,
+    adminState: `/internal/v1/sessions/${encodeURIComponent(sid)}/admin-state`,
     snapshot: `/internal/v1/sessions/${encodeURIComponent(sid)}/snapshot`,
     end: `/internal/v1/sessions/${encodeURIComponent(sid)}:end`,
   });
@@ -428,6 +441,7 @@ describe('gateway session routes', () => {
     }
     expect((await gateway('GET', urls.state)).json()).toEqual(state.json());
     expect((await gateway('GET', urls.adminSite)).json()).toEqual({ siteId: await sessionAdminSite(memory.deps, sid) });
+    expect((await gateway('GET', urls.adminState)).json()).toEqual(await sessionAdminState(memory.deps, sid));
 
     const ended = await gateway('POST', urls.end, { reason: 'logout' });
     expect(ended.statusCode).toBe(200);
@@ -439,6 +453,7 @@ describe('gateway session routes', () => {
   it.each<[string, Method, keyof ReturnType<typeof routeUrls>, number, unknown]>([
     ['/internal/v1/sessions/{sid}/state', 'GET', 'state', 200, { state: 'ended', epoch: 0, userId: '', siteId: '' }],
     ['/internal/v1/sessions/{sid}/admin-site', 'GET', 'adminSite', 200, { siteId: '' }],
+    ['/internal/v1/sessions/{sid}/admin-state', 'GET', 'adminState', 200, {}],
     ['/internal/v1/sessions/{sid}/snapshot', 'GET', 'snapshot', 404, undefined],
     ['/internal/v1/sessions/{sid}:end', 'POST', 'end', 200, { ended: true, epoch: 0 }],
   ])('answers %s of an unknown session with the declared status', async (template, method, route, status, body) => {
@@ -453,6 +468,7 @@ describe('gateway session routes', () => {
     ['POST', () => ADOPT, legacyDescribe(LEGACY_SID)],
     ['GET', (sid) => routeUrls(sid).state, undefined],
     ['GET', (sid) => routeUrls(sid).adminSite, undefined],
+    ['GET', (sid) => routeUrls(sid).adminState, undefined],
     ['GET', (sid) => routeUrls(sid).snapshot, undefined],
     ['POST', (sid) => routeUrls(sid).end, { reason: 'logout' }],
   ])('refuses %s to non-gateway callers before any handler runs', async (method, urlOf, payload) => {

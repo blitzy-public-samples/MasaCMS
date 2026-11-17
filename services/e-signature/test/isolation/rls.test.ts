@@ -1,20 +1,23 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Tenant isolation of the esignature schema, its repository writes and its fixture and /v1 read routes against PostgreSQL. */
+/** Tenant isolation of the esignature schema, its repository writes, its fixture and /v1 read routes and its site registry consumer against PostgreSQL. */
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { qualified } from '@opt2/platform/migration-kit';
-import { createPool, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { SITE_CHANGED_TOPIC, createPool, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TENANT_B,
   TENANT_UMBRELLA,
   checkCatalog,
+  createCapturingPublisher,
   createThrowawaySchema,
   defineIsolationSuite,
   expectPlatformTables,
   pgAvailable,
+  registryPayloads,
+  testEnvelope,
   testPgConfig,
   type InjectResponse,
   type PlatformTableGroup,
@@ -23,6 +26,7 @@ import {
 } from '@opt2/platform/testing';
 import { nextEntry } from '../../src/domain/hash-chain.js';
 import { AUDIT_ACTIONS } from '../../src/domain/signing.js';
+import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { FIXTURE_ERROR_MAP, fixtureMethod } from '../../src/legacy/envelope.js';
 import { createEsignatureRepository, type EsignatureRepository } from '../../src/repo/repository.js';
 import {
@@ -84,6 +88,7 @@ SELECT c.relname::text AS relname, c.relrowsecurity AS enabled, c.relforcerowsec
  ORDER BY c.relname`;
 
 const available = await pgAvailable();
+const publisher = createCapturingPublisher();
 
 let schema: ThrowawaySchema | undefined;
 let service: TestApp<TenantDb> | undefined;
@@ -219,6 +224,13 @@ async function readAs(tx: TenantTx, table: string): Promise<unknown[]> {
   return (await tx.query(`SELECT * FROM ${qualified(tx.schema, table)}`)).rows;
 }
 
+/** A contract-valid site.changed envelope of the tenant-a site under `tenantId`. */
+function siteChanged(tenantId: string) {
+  const payload = registryPayloads().find(({ siteId }) => siteId === TENANT_A.siteId);
+  if (payload === undefined) throw new Error('registryPayloads() has no tenant-a site');
+  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId, aggregateId: TENANT_A.siteId, payload });
+}
+
 /** One PENDING request with its `created` entry and one SIGNED request with its signature and two-entry chain, in `tenant`. */
 async function seedRequests(tenant: TenantFixture): Promise<SeededRequests> {
   const { schema: db, repository: repo } = built();
@@ -270,7 +282,7 @@ describe.skipIf(!available)('e-signature tenant isolation', () => {
   beforeAll(async () => {
     schema = await createThrowawaySchema({ service: 'e-signature', schemaName: 'esignature', migrationsDir: MIGRATIONS_DIR });
     // buildDbApp registers the fixture sites and opens every unit gate, which the repository writes below need.
-    service = await buildDbApp(schema);
+    service = await buildDbApp(schema, { publisher });
     repository = createEsignatureRepository({ db: schema.app, clock: TEST_CLOCK });
   });
 
@@ -321,6 +333,7 @@ describe.skipIf(!available)('e-signature tenant isolation', () => {
       writeAs,
       readAs,
       rowFor,
+      event: { app: () => service?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: siteChanged, publisher },
     },
   );
 

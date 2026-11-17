@@ -118,6 +118,12 @@ export class Acceptance {
     return (await this.#filter(target.unit, side)).accepts(row.row);
   }
 
+  /** True when the predicate of a target among `targets` judges a row of `side` by other rows. */
+  async readsOtherRows(targets: readonly LegacyTableTarget[], side: DiffSide): Promise<boolean> {
+    for (const target of targets) if (target.rowPredicate !== null && (await this.#filter(target.unit, side)).readsOtherRows) return true;
+    return false;
+  }
+
   /** The plans among `plans` that take `row`. */
   async filter(plans: readonly TargetPlan[], side: DiffSide, row: CanonicalRow): Promise<TargetPlan[]> {
     const taken: TargetPlan[] = [];
@@ -134,6 +140,17 @@ export class Acceptance {
     }
     return filter;
   }
+}
+
+/** Prepares each side's tenant resolver for its rows of `table`, once per resolver so sides sharing one are prepared together. */
+export async function prepareTenants(table: string, rows: readonly (readonly [DiffSide, CanonicalRow])[]): Promise<void> {
+  const byResolver = new Map<TenantResolver, CanonicalRow['row'][]>();
+  for (const [side, row] of rows) {
+    const sideRows = byResolver.get(side.tenants);
+    if (sideRows === undefined) byResolver.set(side.tenants, [row.row]);
+    else sideRows.push(row.row);
+  }
+  for (const [tenants, sideRows] of byResolver) await tenants.prepare(table, sideRows);
 }
 
 /** Consecutive runs of at most `size` items of `items`. */

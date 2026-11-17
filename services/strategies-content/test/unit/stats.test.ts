@@ -457,7 +457,9 @@ describe('domain/stats over the recording database', () => {
     expect(await inMemory((tx) => saveStatsInTx(tx, memoryRepo, changed))).toEqual(changed);
     const writes = db.writes();
     expect(writes.map(({ sql }) => writeTarget(sql))).toEqual(['UPDATE "content"."content_stats"', 'INSERT INTO "content"."changelog"']);
-    expect(writes[0]?.params.slice(0, 11)).toEqual([13, 3.5, 4, 3, 1, 2, 1, 2, 1, null, null]);
+    // Only the differing columns are set.
+    expect(writes[0]?.sql).toMatch(/ SET "views" = \$1, "lockid" = \$2, "locktype" = \$3 WHERE /);
+    expect(writes[0]?.params).toEqual([13, null, null, TENANT_A.tenantId, STORED_ID, SITE]);
     expect(writes[1]?.params.slice(1, 3)).toEqual(['content_stats', 'update']);
   });
 

@@ -1,5 +1,13 @@
 /** Gated, audited writes of tenant-owned service tables: unit gate, row write, changelog row and write position in one transaction. */
-import { changedColumns, encodeKey, encodeRow, legacyRowHash, type CanonicalColumn } from './canonical.js';
+import {
+  CanonicalEncodingError,
+  changedColumns,
+  encodeKey,
+  encodeRow,
+  encodeValue,
+  legacyRowHash,
+  type CanonicalColumn,
+} from './canonical.js';
 import { CHANGELOG_TABLE, isPlatformInfraTable, qualified, type ChangeOp, type ChangeOrigin } from './ddl.js';
 import { acquireWriteGates, awaitReadable, isMigrationAuthority, type MigrationAuthority } from './gates.js';
 import { requireTenantTx, type TenantTx } from '../tenancy/index.js';
@@ -68,15 +76,15 @@ export interface Repository {
     conflict: readonly string[],
     ctx?: WriteContext,
   ): Promise<R[]>;
-  /** Sets `patch` on the row with `key`; null when no row has it. */
+  /** Sets the columns of `patch` that differ from the row with `key`; null when no row has it, the stored row unwritten when none differs. */
   update<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, patch: RepositoryRow, ctx?: WriteContext): Promise<R | null>;
-  /** Inserts `row`, or sets its non-key columns on the stored row with the same key. */
+  /** Inserts `row`, or sets its differing non-key columns on the stored row with the same key, which it returns unwritten when none differs. */
   upsert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx?: WriteContext): Promise<R>;
   /** Deletes the row with `key`; null when no row has it. */
   delete<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, ctx?: WriteContext): Promise<R | null>;
   /** Deletes the highest occurrence of a keyless row; null when none matches. */
   deleteOne<R = RepositoryRow>(tx: TenantTx, table: string, contentRow: RepositoryRow, ctx?: WriteContext): Promise<R | null>;
-  /** Replaces one occurrence of a keyless row with `afterContentRow`; null when `beforeContentRow` matches none. */
+  /** Replaces one occurrence of a keyless row with `afterContentRow`; null when `beforeContentRow` matches none, the occurrence unwritten when both hold the same content. */
   replaceOne<R = RepositoryRow>(
     tx: TenantTx,
     table: string,
@@ -96,6 +104,7 @@ const OCCURRENCE_COLUMN = 'occurrence';
 const KEYLESS_MANAGED: ReadonlySet<string> = new Set([TENANT_COLUMN, ROW_HASH_COLUMN, OCCURRENCE_COLUMN]);
 const TENANT_ONLY: ReadonlySet<string> = new Set([TENANT_COLUMN]);
 const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+const CURRENT_XID_SQL = 'SELECT pg_current_xact_id()::text AS xid';
 /** PostgreSQL's limit on the bind parameters of one statement. */
 const MAX_BIND_PARAMETERS = 65_535;
 /** Parameters a batched changelog insert shares across its rows, and those each row adds (key and after image). */
@@ -181,6 +190,60 @@ function writableValues(row: RepositoryRow, skip: readonly string[] = []): Repos
   return Object.fromEntries(
     Object.entries(row).filter(([column, value]) => value !== undefined && column !== TENANT_COLUMN && !skip.includes(column)),
   );
+}
+
+/**
+ * Columns of `values`, other than `tenant_id` and undefined ones, whose canonical value differs from `stored` under `def`,
+ * in column order; a value without a canonical form before the database stores it counts as differing.
+ */
+export function differingColumns(def: TableDefinition, stored: RepositoryRow, values: RepositoryRow): string[] {
+  return def.columns
+    .filter((column) => column.name !== TENANT_COLUMN && values[column.name] !== undefined)
+    .filter((column) => {
+      const opts = { scale: column.scale, column: column.name };
+      try {
+        return encodeValue(column.type, values[column.name], opts) !== encodeValue(column.type, stored[column.name], opts);
+      } catch (err) {
+        if (err instanceof CanonicalEncodingError) return true;
+        throw err;
+      }
+    })
+    .map((column) => column.name);
+}
+
+/** The entries of `values` named in `columns`, in `values` order. */
+function pick(values: RepositoryRow, columns: readonly string[]): RepositoryRow {
+  return Object.fromEntries(Object.entries(values).filter(([column]) => columns.includes(column)));
+}
+
+/** Owners whose write position each open transaction has recorded. */
+const positioned = new WeakMap<TenantTx, Set<string>>();
+
+/** Records `xid` as the write position of `owner` when `tx` commits, once per transaction and owner. */
+function recordCommitPosition(tx: TenantTx, owner: string, xid: string): void {
+  const owners = positioned.get(tx) ?? new Set<string>();
+  if (owners.has(owner)) {
+    return;
+  }
+  positioned.set(tx, owners.add(owner));
+  tx.onCommit(() => {
+    // recordWritePosition throws outside a request, where no response carries the position.
+    if (currentRequestContext() !== undefined) {
+      recordWritePosition(owner, xid);
+    }
+  });
+}
+
+/**
+ * Records the transaction's own xid as the write position of `owner`, for a write that logged no change;
+ * does nothing outside a request or once `tx` has recorded a position of `owner`.
+ */
+export async function recordTransactionPosition(tx: TenantTx, owner: string): Promise<void> {
+  if (currentRequestContext() === undefined || positioned.get(tx)?.has(owner) === true) {
+    return;
+  }
+  const { rows } = await tx.query<{ xid: string }>(CURRENT_XID_SQL);
+  recordCommitPosition(tx, owner, (rows[0] as { xid: string }).xid);
 }
 
 /** Tenant then key values of `key`, in key order; throws when a key column has no value. */
@@ -332,7 +395,6 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     prepared.set(def.table, prepareTable(schema, def));
   }
   const declaredUnits = [...new Set(tables.flatMap((def) => (def.unit === undefined ? [] : [def.unit])))];
-  const positioned = new WeakSet<TenantTx>();
 
   function lookup(table: string): PreparedTable {
     const t = prepared.get(table);
@@ -384,18 +446,8 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
 
   /** Records the xid of `logged` as the owner write position when `tx` commits, once per transaction. */
   function recordPosition(tx: TenantTx, logged: readonly { xid: string }[]): void {
-    if (positioned.has(tx)) {
-      return;
-    }
-    positioned.add(tx);
     // Every changelog row of one transaction carries the same xid.
-    const xid = (logged[0] as { xid: string }).xid;
-    tx.onCommit(() => {
-      // recordWritePosition throws outside a request, where no response carries the position.
-      if (currentRequestContext() !== undefined) {
-        recordWritePosition(owner, xid);
-      }
-    });
+    recordCommitPosition(tx, owner, (logged[0] as { xid: string }).xid);
   }
 
   async function logChange(tx: TenantTx, t: PreparedTable, change: Change, ctx: WriteContext): Promise<void> {
@@ -431,6 +483,34 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
 
   function deleteChange(t: PreparedTable, removed: RepositoryRow): Change {
     return { op: 'delete', key: changeKey(t, removed), before: image(t, removed), after: null, columns: t.dataNames };
+  }
+
+  /**
+   * Sets the columns of `values` that differ from the locked `before` and logs the change; returns `before` when none differs.
+   * A write that logs no change records the transaction's own xid as the write position.
+   */
+  async function updateChanged(
+    tx: TenantTx,
+    t: PreparedTable,
+    keyVals: unknown[],
+    before: RepositoryRow,
+    values: RepositoryRow,
+    ctx: WriteContext,
+  ): Promise<RepositoryRow> {
+    const differing = differingColumns(t.definition, before, values);
+    if (differing.length === 0) {
+      await recordTransactionPosition(tx, owner);
+      return before;
+    }
+    const after = await updateRow(tx, t, keyVals, pick(values, differing));
+    const change = updateChange(t, before, after);
+    // A value that only the database brings to its canonical form can store what the row already held.
+    if (change.columns.length > 0) {
+      await logChange(tx, t, change, ctx);
+    } else {
+      await recordTransactionPosition(tx, owner);
+    }
+    return after;
   }
 
   async function insert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
@@ -501,9 +581,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     if (before === undefined) {
       return null;
     }
-    const after = await updateRow(tx, t, keyVals, values);
-    await logChange(tx, t, updateChange(t, before, after), ctx);
-    return after as R;
+    return (await updateChanged(tx, t, keyVals, before, values, ctx)) as R;
   }
 
   async function upsert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
@@ -525,13 +603,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
         throw new RepositoryError('insert conflicts with a row outside this key or tenant', table);
       }
     }
-    const set = writableValues(values, t.definition.key ?? []);
-    if (Object.keys(set).length === 0) {
-      return before as R;
-    }
-    const after = await updateRow(tx, t, keyVals, set);
-    await logChange(tx, t, updateChange(t, before, after), ctx);
-    return after as R;
+    return (await updateChanged(tx, t, keyVals, before, writableValues(values, t.definition.key ?? []), ctx)) as R;
   }
 
   async function remove<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, ctx: WriteContext = {}): Promise<R | null> {
@@ -581,6 +653,19 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     const afterHash = legacyRowHash(t.data, afterContentRow);
     await gate(tx, t, ctx);
     await lockHashes(tx, t, [beforeHash, afterHash]);
+    if (beforeHash === afterHash) {
+      // The same content: the stored occurrence already holds it.
+      const { rows } = await tx.query(
+        `SELECT * FROM ${t.name} WHERE ${OCCURRENCE_WHERE} ORDER BY ${ident(OCCURRENCE_COLUMN)} DESC LIMIT 1`,
+        [tx.tenantId, beforeHash],
+      );
+      const stored = rows[0];
+      if (stored === undefined) {
+        return null;
+      }
+      await recordTransactionPosition(tx, owner);
+      return stored as R;
+    }
     const removed = await removeOccurrence(tx, t, beforeHash);
     if (removed === undefined) {
       return null;

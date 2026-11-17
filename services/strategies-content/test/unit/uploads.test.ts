@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
-import { isCfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE, isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { contentFileKey } from '@opt2/platform/storage';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, type TenantFixture } from '@opt2/platform/testing';
@@ -293,7 +293,7 @@ describe('upload routes', () => {
   }
 
   // The `{upload=image}` variants are excluded from the contract and routed to legacy by the gateway; a direct call
-  // reaching carch.update gets the service's unhandled-error answer.
+  // reaching carch.update gets the service's unhandled-error answer, the admin error page.
   it.each<[string, Part[], unknown]>([
     ['adding a File with a .jpg', fileAdd(filePart('newfile', 'photo.jpg', 'image/jpeg')), expect.stringMatching(/^[0-9A-F-]{35}add$/)],
     [
@@ -301,11 +301,10 @@ describe('upload routes', () => {
       multiFileUpload([filePart('files', 'photo.png', 'image/png'), filePart('files', 'a.pdf'), filePart('files', 'b.pdf')], 'photo.png'),
       `${HOME}multifileupload`,
     ],
-  ])('refuses carch.update %s at the upload, after its token is accepted, with the server_error answer and no storage put or write', async (_case, parts, context) => {
+  ])('refuses carch.update %s at the upload, after its token is accepted, with the admin error page and no storage put or write', async (_case, parts, context) => {
     const res = await post(UPDATE_URL, parts);
     expect(t.client.csrfConsumes.map((consume) => consume.context)).toEqual([context]);
-    expect(res.statusCode).toBe(500);
-    expect(JSON.parse(res.body)).toMatchObject({ apiversion: 'v1', error: { message: 'Unhandled Exception', code: 'server_error' } });
+    expect([res.statusCode, res.headers['content-type'], res.body]).toEqual([500, LEGACY_HTML_CONTENT_TYPE, LEGACY_ERROR_PAGE_HTML]);
     expect(storage.calls).toEqual([]);
     expect(db.writes()).toEqual([]);
   });

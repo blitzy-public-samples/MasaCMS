@@ -17,9 +17,9 @@ import { FeedAuthorityError, FeedBaselineMissingError, applyTableDiff, restartFe
 import type { FeedContext, FeedFilesResult } from '../../src/apply/feed.js';
 import { loadConfig } from '../../src/config.js';
 import { currentAuthority } from '../../src/cutover/index.js';
-import { compareCanonicalRows, describeLegacyTable, listLegacyTables, migratableTables, streamLegacyTable } from '../../src/extract/index.js';
+import { TableNotFoundError, compareCanonicalRows, describeLegacyTable, listLegacyTables, migratableTables, streamLegacyTable } from '../../src/extract/index.js';
 import type { CanonicalRow, LegacyTableRef, MigratableTable } from '../../src/extract/index.js';
-import { FileStoreUnsupportedError, removeDroppedObjects, streamChangedEntries, transferFiles } from '../../src/files/index.js';
+import { FileStoreUnsupportedError, readSnapshotSites, removeDroppedObjects, streamChangedEntries, transferFiles } from '../../src/files/index.js';
 import type { ManifestEntry, RemovalResult, TransferResult } from '../../src/files/index.js';
 import { computeDependencyOrder } from '../../src/order/index.js';
 import { UnknownUnitError, loadUnitCatalog } from '../../src/owners/index.js';
@@ -75,6 +75,7 @@ vi.mock('../../src/files/index.js', async (importOriginal) => ({
   streamChangedEntries: vi.fn(),
   transferFiles: vi.fn(),
   removeDroppedObjects: vi.fn(),
+  readSnapshotSites: vi.fn(),
 }));
 
 vi.mock('../../src/order/index.js', async (importOriginal) => ({
@@ -110,6 +111,10 @@ const SPECS = {
     programIds: [1, 2],
   },
   tredirects: { columns: text('redirectID', 'URL'), keyColumns: ['redirectID'] },
+  tuserstrikes: { columns: text('username', 'strikes', 'lastAttempt'), keyColumns: ['username'] },
+  tusersmemb: { columns: text('UserID', 'GroupID'), keyColumns: ['UserID', 'GroupID'] },
+  tuseraddresses: { columns: text('addressID', 'userID', 'siteID', 'addressName'), keyColumns: ['addressID'] },
+  temails: { columns: text('EmailID', 'siteid', 'Subject'), keyColumns: ['EmailID'] },
   'Program_N.finance_attachment': {
     columns: [...text('attachment_id', 'sha256'), { name: 'content', type: 'b' }, { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
     keyColumns: ['attachment_id', LEGACY_PROGRAM_ID_COLUMN],
@@ -253,6 +258,37 @@ function withAttachments(): Ownership {
   return ownership;
 }
 
+/**
+ * OWNERSHIP plus the tusers children and temails with their shipped targets, whose tenant and row rules the shipped ownership
+ * file decides; `personAddresses` gives the Type 2 addresses to identity instead of people.
+ */
+function withUserChildren(personAddresses: 'people' | 'identity' = 'people'): Ownership {
+  const ownership = structuredClone(OWNERSHIP);
+  const personAddress = personAddresses === 'people' ? 'people.user_address' : 'identity.person_address';
+  ownership.units.push(
+    { unit: 'identity.user_strike', owner: 'identity', legacyTables: ['tuserstrikes'] },
+    { unit: 'identity.membership', owner: 'identity', legacyTables: ['tusersmemb'] },
+    { unit: 'identity.user_address', owner: 'identity', legacyTables: ['tuseraddresses'] },
+    { unit: personAddress, owner: personAddresses, legacyTables: ['tuseraddresses'] },
+    { unit: 'communications.email', owner: 'communications', legacyTables: ['temails'] },
+  );
+  ownership.tables.push(
+    { table: 'tuserstrikes', owner: 'identity', primaryKey: ['username'], targets: [whole('identity.user_strike', 'identity', ['username'])] },
+    { table: 'tusersmemb', owner: 'identity', primaryKey: ['UserID', 'GroupID'], targets: [whole('identity.membership', 'identity', ['UserID', 'GroupID'])] },
+    {
+      table: 'tuseraddresses',
+      owner: personAddresses === 'people' ? 'split' : 'identity',
+      primaryKey: ['addressID'],
+      targets: [
+        whole('identity.user_address', 'identity', ['addressID'], 'owner Type = 1'),
+        whole(personAddress, personAddresses, ['addressID'], 'owner Type = 2'),
+      ],
+    },
+    { table: 'temails', owner: 'communications', primaryKey: ['EmailID'], targets: [whole('communications.email', 'communications', ['EmailID'])] },
+  );
+  return ownership;
+}
+
 const LIVE = 'muradb';
 const CLOCK = businessClock();
 const FINISHED_AT = formatCanonicalTimestamp(CLOCK.now());
@@ -277,6 +313,10 @@ const content = (id: string, site: string, title: string): Row => ({ ContentID: 
 const file = (id: string, site: string): Row => ({ fileID: id, siteID: site, filename: `${id}.pdf` });
 const stat = (id: string, email: string): Row => ({ EmailID: id, Email: email, sent: '1' });
 const blackout = (id: string, programId: number, reason: string): Row => ({ blackout_id: id, reason, [LEGACY_PROGRAM_ID_COLUMN]: String(programId) });
+const strike = (username: string): Row => ({ username, strikes: '1', lastAttempt: '2026-06-30T12:00:00.000' });
+const membership = (userId: string, groupId: string): Row => ({ UserID: userId, GroupID: groupId });
+const address = (id: string, userId: string, site: string): Row => ({ addressID: id, userID: userId, siteID: site, addressName: `Home ${id}` });
+const email = (id: string, site: string): Row => ({ EmailID: id, siteid: site, Subject: `Subject ${id}` });
 
 interface World {
   readonly databases: Map<string, Database>;
@@ -293,6 +333,10 @@ interface World {
   nextSnapshot: Partial<SnapshotRecord>;
   order: readonly string[];
   reconcileResult: ReconcileResult;
+  /** Version the gateway reports active when the feed begins. */
+  activeVersion: string | null;
+  /** Version the reconciliation measures. */
+  measuredVersion: string | null;
 }
 
 function createWorld(): World {
@@ -309,6 +353,8 @@ function createWorld(): World {
     nextSnapshot: {},
     order: ['tusers', 'tcontent', 'tfiles', 'temailstats', 'Program_1.blackout', 'Program_2.blackout'],
     reconcileResult: 'zero-difference',
+    activeVersion: 'v0002',
+    measuredVersion: 'v0002',
   };
 }
 
@@ -369,14 +415,24 @@ const owners: Pick<OwnersClient, 'apply' | 'putWatermark' | 'watermark'> = {
 
 const SITE_TENANT = new Map(TENANT_LIST.map((fixture) => [fixture.siteId, fixture.tenantId]));
 
+/** Rows the resolver's last `prepare` covered; resolving any other row fails, as the real resolver fails for unprepared parents. */
+const prepared = new Set<object>();
+
 /** Rows of a known site go to its tenant; rows without one, or of a site the snapshot lacks, are umbrella orphans. */
 const resolver: TenantResolver = {
+  prepare(_table, rows) {
+    prepared.clear();
+    for (const row of rows) prepared.add(row);
+    return Promise.resolve();
+  },
   resolve(_table, row) {
+    if (!prepared.has(row)) throw new Error('resolve of a row the last prepare did not cover');
     const site = Object.entries(row).find(([column]) => lower(column) === 'siteid')?.[1];
     const tenantId = typeof site === 'string' ? SITE_TENANT.get(lower(site)) : undefined;
     return tenantId === undefined ? { tenantId: UMBRELLA_ID, orphan: true } : { tenantId, orphan: false };
   },
   siteTenants: () => [...SITE_TENANTS],
+  readsOtherRows: () => false,
 };
 
 function contextFor(): FeedContext {
@@ -517,7 +573,7 @@ function installFakes(): void {
   vi.mocked(currentAuthority).mockImplementation(() => {
     const targetUnits = new Set([...world.targetUnits].sort());
     return Promise.resolve({
-      tableVersion: 'v0002',
+      tableVersion: world.activeVersion,
       epoch: 3,
       units: new Map(),
       targetUnits,
@@ -543,7 +599,9 @@ function installFakes(): void {
   });
   vi.mocked(streamLegacyTable).mockImplementation(async function* (_deps, options): AsyncGenerator<CanonicalRow, void, undefined> {
     const name = typeof options.table === 'string' ? options.table : options.table.name;
-    yield* tableRows(options.database ?? LIVE, name);
+    const database = options.database ?? LIVE;
+    if (world.databases.get(database)?.has(name) !== true) throw new TableNotFoundError(database, name);
+    yield* tableRows(database, name);
   });
   vi.mocked(computeDependencyOrder).mockImplementation(() =>
     Promise.resolve({ order: world.order, entries: [], deferred: [], relaxed: [], cycles: [], parentOf: () => null }),
@@ -560,7 +618,7 @@ function installFakes(): void {
   vi.mocked(createTenantResolver).mockImplementation(() => Promise.resolve(resolver));
   vi.mocked(createUnitRowFilter).mockImplementation((_deps, options) => {
     const { rowPredicate } = targetOf(options.unit, options.legacyTable);
-    return Promise.resolve({ prepare: () => Promise.resolve(), accepts: (row) => Promise.resolve(takes(rowPredicate, row as Row)) });
+    return Promise.resolve({ prepare: () => Promise.resolve(), accepts: (row) => Promise.resolve(takes(rowPredicate, row as Row)), readsOtherRows: false });
   });
   vi.mocked(describeUnitTable).mockImplementation((_deps, options) => {
     const target = targetOf(options.unit, options.legacyTable);
@@ -580,17 +638,18 @@ function installFakes(): void {
       folded,
     });
   });
-  vi.mocked(readLegacyUnitRows).mockImplementation((_deps, shape, options) => {
+  vi.mocked(readLegacyUnitRows).mockImplementation(async (_deps, shape, options) => {
     const { rowPredicate } = targetOf(shape.unit, shape.legacyTable);
     const byTenant = new Map<string, CanonicalRow[]>();
-    for (const row of tableIn(options.database, shape.legacyTable).rows) {
-      if (!takes(rowPredicate, row)) continue;
+    const taken = tableIn(options.database, shape.legacyTable).rows.filter((row) => takes(rowPredicate, row));
+    await options.tenants.prepare(shape.legacyTable, taken);
+    for (const row of taken) {
       const { tenantId } = options.tenants.resolve(shape.legacyTable, row);
       byTenant.set(tenantId, [...(byTenant.get(tenantId) ?? []), canonicalRow(shape, row)]);
     }
     world.readers.opened += 1;
     const tenants = [...byTenant.keys()].sort();
-    return Promise.resolve({
+    return {
       tenants,
       counts: new Map(tenants.map((tenantId) => [tenantId, byTenant.get(tenantId)?.length ?? 0])),
       rows: (tenantId: string) => (byTenant.get(tenantId) ?? []).sort(compareCanonicalRows),
@@ -600,7 +659,7 @@ function installFakes(): void {
         world.readers.disposed += 1;
         return Promise.resolve();
       },
-    });
+    };
   });
   vi.mocked(readTargetUnitRows).mockImplementation((_deps, shape, tenantId) => {
     const rows = (world.target.get(`${shape.unit}|${tenantId}`) ?? []).map((row) => canonicalRow(shape, row)).sort(compareCanonicalRows);
@@ -620,7 +679,7 @@ function installFakes(): void {
       ...buildReport({
         point: resolvePoint(ctx.config, options.point),
         startedAt: ctx.clock.now().toISOString(),
-        tableVersion: 'v0002',
+        tableVersion: world.measuredVersion,
         snapshotSeq: options.snapshotSeq ?? null,
         legacyDatabase: options.database,
         units: [],
@@ -770,6 +829,7 @@ describe('runFeed', () => {
           log.push(['accepts', options.database, valueOf(row as Row, 'UserID')]);
           return Promise.resolve(takes(rowPredicate, row as Row));
         },
+        readsOtherRows: false,
       });
     });
     seed(
@@ -968,7 +1028,176 @@ describe('runFeed', () => {
       expect.objectContaining({ point: 'after-feed-1', result: outcome, feed: { startedAt: CLOCK.now().toISOString() } }),
     );
   });
+
+  it.each([
+    { label: 'v0001 for a feed before any transition', active: 'v0001', measured: 'v0001', expected: 'v0001', matches: true },
+    { label: 'v0002 for a feed after the transition to v0002', active: 'v0002', measured: 'v0002', expected: 'v0002', matches: true },
+    { label: 'the start version when another was activated during the feed', active: 'v0002', measured: 'v0003', expected: 'v0002', matches: false },
+    { label: "the point's default when no version was active at the start", active: null, measured: null, expected: 'v0001', matches: false },
+  ])('expects $label at after-feed-<seq>', async ({ active, measured, expected, matches }) => {
+    world.activeVersion = active;
+    world.measuredVersion = measured;
+    seed({ tusers: [user('U1', 'tenant-a', '2')] }, { tusers: [user('U1', 'tenant-a', '2')] });
+
+    const result = await runFeed(contextFor());
+
+    expect(result).toMatchObject({ tableVersion: active, exitCode: 0, reconciliation: { point: 'after-feed-1', result: 'zero-difference' } });
+    expect(writeReconciliationReport).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({
+        point: 'after-feed-1',
+        expectedTableVersion: expected,
+        tableVersion: measured,
+        tableVersionMatches: matches,
+        legacySource: 'snapshot',
+        snapshotSeq: 1,
+        feed: { startedAt: CLOCK.now().toISOString() },
+      }),
+    );
+  });
 });
+
+describe('runFeed re-placement of rows other rows place', () => {
+  let real: typeof import('../../src/reconcile/index.js');
+  let children: UnitCatalog;
+  let identityAddresses: UnitCatalog;
+
+  const PARENTS = [user('U2', 'tenant-a', '2'), user('G1', 'tenant-a', '1')];
+  const CHILDREN = {
+    tuserstrikes: [strike('u1'), strike('u2')],
+    tusersmemb: [membership('U1', 'G1'), membership('U2', 'G1')],
+    tuseraddresses: [address('A1', 'U1', 'tenant-a'), address('A2', 'U2', 'tenant-a')],
+  };
+  const WITH_USER: Tables = { tusers: [user('U1', 'tenant-a', '2'), ...PARENTS], ...CHILDREN };
+  const WITHOUT_USER: Tables = { tusers: PARENTS, ...CHILDREN };
+
+  /** Rows sent to `owner` for `table` as [op, tenant, encoding], sorted. */
+  const sent = (owner: DataOwner, table: TableName): string[][] =>
+    requests(owner)
+      .filter((request) => request.legacyTable === table)
+      .flatMap((request) => request.rows.map((change) => [change.op, request.tenantId ?? '', change.row]))
+      .sort();
+  const rowsOf = (table: TableName, rows: readonly (readonly [string, string, Row])[]): string[][] =>
+    rows.map(([op, tenantId, row]) => [op, tenantId, encode(table, row)]).sort();
+  const counts = (result: { tables: { table: string; owners: OwnerCounts[] }[] }, table: TableName): (string | number)[][] | undefined =>
+    result.tables
+      .find((entry) => entry.table === table)
+      ?.owners.map((owner) => [owner.owner, owner.status, owner.inserts, owner.updates, owner.deletes, owner.orphans, owner.droppedTargetAuthoritative]);
+
+  type OwnerCounts = Awaited<ReturnType<typeof runFeed>>['tables'][number]['owners'][number];
+
+  beforeAll(async () => {
+    real = await vi.importActual<typeof import('../../src/reconcile/index.js')>('../../src/reconcile/index.js');
+    children = await catalogFrom(withUserChildren());
+    identityAddresses = await catalogFrom(withUserChildren('identity'));
+  });
+
+  beforeEach(() => {
+    catalog = children;
+    const fakeFilter = vi.mocked(createUnitRowFilter).getMockImplementation();
+    if (fakeFilter === undefined) throw new Error('installFakes sets a row filter');
+    // The tusers column predicates read the table catalog, which the fake legacy lacks; every other table uses the shipped rules.
+    vi.mocked(createUnitRowFilter).mockImplementation((deps, options) =>
+      options.legacyTable === 'tusers' ? fakeFilter(deps, options) : real.createUnitRowFilter(deps, options),
+    );
+    vi.mocked(createTenantResolver).mockImplementation(real.createTenantResolver);
+    vi.mocked(readSnapshotSites).mockResolvedValue(TENANT_LIST.map((fixture) => fixture.siteId));
+  });
+
+  it.each([
+    { change: 'deleted', before: WITH_USER, after: WITHOUT_USER, from: TENANT_A_ID, to: UMBRELLA_ID, addressOp: 'delete', addressCounts: [0, 0, 1] },
+    { change: 're-inserted', before: WITHOUT_USER, after: WITH_USER, from: UMBRELLA_ID, to: TENANT_A_ID, addressOp: 'upsert', addressCounts: [1, 0, 0] },
+  ])(
+    'moves the unchanged child rows of a user $change between the snapshots to their new tenant and targets, and no other row',
+    async ({ before, after, from, to, addressOp, addressCounts }) => {
+      seed(before, after);
+
+      const result = await runFeed(contextFor());
+
+      expect(sent('identity', 'tuserstrikes')).toEqual(rowsOf('tuserstrikes', [['delete', from, strike('u1')], ['upsert', to, strike('u1')]]));
+      expect(sent('identity', 'tusersmemb')).toEqual(rowsOf('tusersmemb', [['delete', from, membership('U1', 'G1')], ['upsert', to, membership('U1', 'G1')]]));
+      expect(sent('people', 'tuseraddresses')).toEqual(rowsOf('tuseraddresses', [[addressOp, TENANT_A_ID, address('A1', 'U1', 'tenant-a')]]));
+      expect(sent('identity', 'tuseraddresses')).toEqual([]);
+      expect(counts(result, 'tuserstrikes')).toEqual([['identity', 'applied', 1, 0, 1, 1, 0]]);
+      expect(counts(result, 'tusersmemb')).toEqual([['identity', 'applied', 1, 0, 1, 1, 0]]);
+      expect(counts(result, 'tuseraddresses')).toEqual([
+        ['identity', 'applied', 0, 0, 0, 0, 0],
+        ['people', 'applied', ...addressCounts, 0, 0],
+      ]);
+    },
+  );
+
+  it('sends nothing for child rows whose parents did not change', async () => {
+    seed(WITH_USER, WITH_USER);
+
+    const result = await runFeed(contextFor());
+
+    expect(world.applies).toEqual([]);
+    for (const table of ['tuserstrikes', 'tusersmemb', 'tuseraddresses'] as const) {
+      for (const owner of counts(result, table) ?? []) expect(owner.slice(2)).toEqual([0, 0, 0, 0, 0]);
+    }
+  });
+
+  it('never writes a target-authoritative unit of a re-placed row and counts the move only it would take as dropped', async () => {
+    catalog = identityAddresses;
+    world.targetUnits.add('identity.user_strike');
+    world.targetUnits.add('identity.person_address');
+    seed(WITH_USER, WITHOUT_USER);
+
+    const result = await runFeed(contextFor());
+
+    expect(sent('identity', 'tuserstrikes')).toEqual([]);
+    expect(sent('identity', 'tuseraddresses')).toEqual([]);
+    expect(counts(result, 'tuserstrikes')).toEqual([['identity', 'not-writable', 0, 0, 0, 0, 0]]);
+    expect(counts(result, 'tuseraddresses')).toEqual([['identity', 'applied', 0, 0, 0, 0, 1]]);
+    expect(sent('identity', 'tusersmemb')).toEqual(
+      rowsOf('tusersmemb', [['delete', TENANT_A_ID, membership('U1', 'G1')], ['upsert', UMBRELLA_ID, membership('U1', 'G1')]]),
+    );
+    const units = world.applies.flatMap(({ request }) => request.units ?? []);
+    expect(units).not.toContain('identity.user_strike');
+    expect(units).not.toContain('identity.person_address');
+  });
+
+  it('moves every occurrence of a keyless row whose parent was deleted, kept and added ones alike', async () => {
+    const kept = stat('E1', 'kept@example.test');
+    const other = stat('E2', 'other@example.test');
+    seed(
+      { temails: [email('E1', 'tenant-a'), email('E2', 'tenant-b')], temailstats: [kept, kept, other] },
+      { temails: [email('E2', 'tenant-b')], temailstats: [kept, kept, kept, other] },
+    );
+
+    const result = await runFeed(contextFor());
+
+    expect(sent('communications', 'temailstats')).toEqual(
+      rowsOf('temailstats', [
+        ['delete', TENANT_A_ID, kept],
+        ['delete', TENANT_A_ID, kept],
+        ['insert', UMBRELLA_ID, kept],
+        ['insert', UMBRELLA_ID, kept],
+        ['insert', UMBRELLA_ID, kept],
+      ]),
+    );
+    expect(counts(result, 'temailstats')).toEqual([['communications', 'applied', 3, 0, 2, 3, 0]]);
+    expect(sent('communications', 'temails')).toEqual(rowsOf('temails', [['delete', TENANT_A_ID, email('E1', 'tenant-a')]]));
+  });
+
+  it("moves a row whose tenant column changed outside the writable units' columns", async () => {
+    for (const unit of ['identity.group_account', 'identity.user_account', 'people.person']) world.targetUnits.add(unit);
+    seed({ tusers: [user('U1', 'tenant-a', '2')] }, { tusers: [user('U1', 'tenant-b', '2')] });
+
+    const result = await runFeed(contextFor());
+
+    expect(sent('identity', 'tusers')).toEqual(
+      rowsOf('tusers', [['delete', TENANT_A_ID, user('U1', 'tenant-a', '2')], ['upsert', TENANT_B_ID, user('U1', 'tenant-b', '2')]]),
+    );
+    expect(requests('identity').map((request) => request.units)).toEqual([['identity.credential'], ['identity.credential']]);
+    expect(counts(result, 'tusers')).toEqual([
+      ['identity', 'applied', 1, 0, 1, 0, 0],
+      ['people', 'not-writable', 0, 0, 0, 0, 0],
+    ]);
+  });
+});
+
 
 describe('runFeed files step', () => {
   const unsupported = new FileStoreUnsupportedError('s3', 'tenant-a');

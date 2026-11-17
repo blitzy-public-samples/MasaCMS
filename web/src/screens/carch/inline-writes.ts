@@ -47,9 +47,9 @@ async function updateObjectParams(ctx: ScreenContext): Promise<RawBody> {
   return { status: 200, contentType: LEGACY_HTML_CONTENT_TYPE, body };
 }
 
-// carch.copy is not registered: its write set spans identity and strategies-content, so it is withheld on legacy.
+// carch.copy is not registered: it writes the decision-list table tcontenteventreminders, so it is withheld on legacy.
 // savecopyinfo applies no session effects: the contract returns none, and the copy state is strategies-content's.
-/** The carried inline write of each lower-case carch action. */
+/** The inline write of each lower-case carch action. */
 const INLINE_WRITES: Readonly<Record<string, InlineWrite>> = Object.freeze({
   savequickedit: relayed('savequickedit'),
   savecopyinfo: relayed('savecopyinfo'),
@@ -58,7 +58,7 @@ const INLINE_WRITES: Readonly<Record<string, InlineWrite>> = Object.freeze({
   updateobjectparams: updateObjectParams,
 });
 
-/** Carried carch writes that abort with a bare body, served in JSON mode after the carch before() defaults. */
+/** carch writes that abort with a bare body, served in JSON mode after the carch before() defaults. */
 export const inlineWriteScreens: readonly ScreenDefinition[] = Object.freeze(
   Object.entries(INLINE_WRITES).map(
     ([action, write]): JsonScreen<undefined> =>

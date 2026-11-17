@@ -1,10 +1,13 @@
 /** Decides which changelog rows the reverse projector applies, passes over, or holds for a joint multi-participant apply. */
 import {
   APPLY_ORIGINS,
+  closedEndFrom,
   compareXid,
   formatCursor,
   isApplied,
+  lastClosedEnd,
   parseCursor,
+  predecessorEnds,
   type ChangeOrigin,
   type ChangeRow,
   type ChangesResponse,
@@ -37,9 +40,9 @@ export function classifyRow<R extends ChangeRow>(row: R, deps: ClassifyDeps<R>):
 
 /** Checkpoint a parked stream takes once its held rows are applied or passed over. */
 export interface HeldStreamState {
-  /** Cursor of the last row of the held run. */
+  /** Cursor of the last row of the held run; the split's own when rows before the run wait for it. */
   endCursor: string;
-  /** Applied horizon once the held run is consumed; never claims a transaction with unread rows. */
+  /** Applied horizon once the held run is consumed; never claims a transaction with unread or waiting rows. */
   appliedHorizon: string;
   /** True when the page showed the end of the held run, so none of its rows is unread. */
   complete: boolean;
@@ -74,8 +77,27 @@ export function cursorOf(row: Pick<ChangeRow, 'xid' | 'seq'>): string {
   return formatCursor({ xid: BigInt(row.xid), seq: BigInt(row.seq) });
 }
 
+/** Orders cursor texts by `(xid, seq)`. */
+export function compareCursors(a: string, b: string): -1 | 0 | 1 {
+  const left = parseCursor(a);
+  const right = parseCursor(b);
+  if (left.xid !== right.xid) return left.xid < right.xid ? -1 : 1;
+  return left.seq < right.seq ? -1 : left.seq > right.seq ? 1 : 0;
+}
+
 /**
- * Splits a page at its first held row: rows before it are applied or skipped, the run from it is held.
+ * Index of the page's first held row, and of the first row that waits for it: that row, or an earlier one whose
+ * same-row predecessor sits at or after it; both the page length when no row is held.
+ */
+function waitStart<R extends ChangeRow>(rows: readonly R[], classify: (row: R) => RowDisposition): { held: number; start: number } {
+  const held = rows.findIndex((row) => classify(row) === 'hold');
+  if (held < 0) return { held: rows.length, start: rows.length };
+  return { held, start: lastClosedEnd(predecessorEnds(rows), held) + 1 };
+}
+
+/**
+ * Splits a page at its first held row: rows before it are applied or skipped, the run from it is held, and rows before
+ * it that need a row from it on wait with it.
  * @param storedCursor checkpoint cursor the page was read after; the end cursor when nothing is consumed.
  */
 export function splitAtHold<R extends ChangeRow>(
@@ -83,29 +105,25 @@ export function splitAtHold<R extends ChangeRow>(
   classify: (row: R) => RowDisposition,
   storedCursor: string,
 ): PageSplit<R> {
+  const { held, start } = waitStart(page.rows, classify);
   const applicable: R[] = [];
   let skipped = 0;
   let consumed: R | undefined;
-  for (const [index, row] of page.rows.entries()) {
-    const disposition = classify(row);
-    if (disposition === 'hold') {
-      return {
-        applicable,
-        skipped,
-        held: heldRun(page, index, classify),
-        endCursor: consumed === undefined ? storedCursor : cursorOf(consumed),
-        appliedHorizon: row.xid,
-      };
-    }
-    if (disposition === 'apply') applicable.push(row);
+  for (const row of page.rows.slice(0, start)) {
+    if (classify(row) === 'apply') applicable.push(row);
     else skipped += 1;
     consumed = row;
   }
-  return { applicable, skipped, endCursor: page.cursor, appliedHorizon: readHorizon(page) };
+  const first = page.rows[start];
+  if (first === undefined) return { applicable, skipped, endCursor: page.cursor, appliedHorizon: readHorizon(page) };
+  const endCursor = consumed === undefined ? storedCursor : cursorOf(consumed);
+  const run = heldRun(page, held, classify);
+  // Passing over a run that earlier rows wait for leaves the stream at this split, so its re-run applies those rows.
+  return { applicable, skipped, held: start < held ? { ...run, endCursor, appliedHorizon: first.xid } : run, endCursor, appliedHorizon: first.xid };
 }
 
 /** Horizon below which a page returned every row: its horizon when complete, else its last row's xid. */
-function readHorizon(page: ChangesPageView<ChangeRow>): string {
+export function readHorizon(page: ChangesPageView<ChangeRow>): string {
   const last = page.rows.at(-1);
   return page.complete || last === undefined ? page.horizon : last.xid;
 }
@@ -148,12 +166,87 @@ export interface ParkedPart<S extends HeldStreamState = HeldStreamState, R exten
   streamState: S;
 }
 
-/** Operations applied or passed over together; `operationIds` starts with `operationId`, `rows` merges parts' rows by `(xid, seq)`. */
+/** A parked operation passed over; `operationIds` is `[operationId]`, `rows` merges parts' rows by `(xid, seq)`. */
 export interface TrackedOperation<S extends HeldStreamState = HeldStreamState, R extends ChangeRow = ProjectedChangeRow> {
   operationId: string;
   operationIds: string[];
   parts: ParkedPart<S, R>[];
   rows: R[];
+}
+
+/** One stream's span of a ready release; re-read after its checkpoint through `streamState.endCursor`, it holds exactly `held`. */
+export interface ReadyPart<S extends HeldStreamState = HeldStreamState> {
+  owner: string;
+  tenantId: string;
+  streamState: S;
+  held: ScanEntry[];
+}
+
+/** Operations applied together in one legacy transaction; `operationIds` starts with `operationId`. */
+export interface ReadyOperation<S extends HeldStreamState = HeldStreamState> {
+  operationId: string;
+  operationIds: string[];
+  parts: ReadyPart<S>[];
+}
+
+/**
+ * A held row of a scan: its position, the cursor before it, its operation, the cursor `through` which its release
+ * applies so that no row up to it needs a later same-row predecessor, and the xid of the row after `through` once read.
+ */
+export interface ScanEntry {
+  cursor: string;
+  previous: string;
+  xid: string;
+  operationId: string;
+  through: string;
+  next: string | undefined;
+}
+
+/**
+ * A contiguous read of one tenant stream after `start` through `end`, below `horizon`, keeping only its held rows;
+ * rows before the first held one that wait for it are re-read from `start`, the stream's checkpoint.
+ */
+export interface StreamScan {
+  owner: string;
+  tenantId: string;
+  start: string;
+  end: string;
+  horizon: string;
+  entries: ScanEntry[];
+}
+
+/** A one-row read after `after` reporting `operationId`'s status as `owner` sees it. */
+export interface StatusRead {
+  owner: string;
+  tenantId: string;
+  after: string;
+  operationId: string;
+}
+
+/** Thrown when re-reading a ready span does not end at its end cursor or holds other rows than its scan held. */
+export class HeldSpanChangedError extends Error {
+  override readonly name = 'HeldSpanChangedError';
+
+  constructor(
+    readonly owner: string,
+    readonly tenantId: string,
+    readonly endCursor: string,
+  ) {
+    super(`Re-reading the held span of ${owner} for tenant ${tenantId} through ${endCursor} returned other rows than its scan held`);
+  }
+}
+
+/** A ready part's re-read span rows to apply; throws HeldSpanChangedError unless they end at its end and hold exactly its held rows. */
+export function releasedRows<R extends ChangeRow>(part: ReadyPart, rows: readonly R[], classify: (row: R) => RowDisposition): R[] {
+  const classified = rows.map((row) => ({ row, disposition: classify(row) }));
+  const held = classified.filter(({ disposition }) => disposition === 'hold');
+  const found = held.map(({ row }) => `${cursorOf(row)} ${String(row.operationId)}`).join();
+  const last = rows.at(-1);
+  const matches = found === part.held.map((entry) => `${entry.cursor} ${entry.operationId}`).join();
+  if (last === undefined || cursorOf(last) !== part.streamState.endCursor || !matches) {
+    throw new HeldSpanChangedError(part.owner, part.tenantId, part.streamState.endCursor);
+  }
+  return classified.filter(({ disposition }) => disposition === 'apply' || disposition === 'hold').map(({ row }) => row);
 }
 
 /**
@@ -175,26 +268,14 @@ export interface FenceRequest {
   owner: string;
 }
 
-/** A scanned row with its disposition when read. */
-interface ScannedRow<R extends ChangeRow> {
-  row: R;
-  disposition: RowDisposition;
-}
-
-/** A cycle's contiguous read of one tenant stream from its checkpoint; `rows` runs from the first held row, of operation `head`. */
-interface StreamScan<R extends ChangeRow> {
-  owner: string;
-  tenantId: string;
-  end: string;
-  horizon: string;
-  head: string | undefined;
-  rows: ScannedRow<R>[];
-}
-
-/** A scan's rows through index `last` that one release applies, and the part parked at its `head` operation. */
+/**
+ * A scan's entries through index `last` that one release applies, the entry `end` whose `through` and `next` checkpoint
+ * it, and the part parked at its `head`, its first entry's operation.
+ */
 interface Span<S extends HeldStreamState, R extends ChangeRow> {
-  scan: StreamScan<R>;
+  scan: StreamScan;
   last: number;
+  end: ScanEntry;
   head: string;
   parked: ParkedPart<S, R> | undefined;
 }
@@ -217,17 +298,21 @@ const STATUS_RANK: Readonly<Record<OperationStatus, number>> = { done: 0, open: 
 /**
  * Parks streams stopped at multi-participant operations and releases each closure of done operations sharing a stream
  * once every owner's scans in the closure's tenants have passed that owner's fence of each of them.
- * Per cycle: `park` each stopped stream; `noteStatuses` and `noteScan` for every page read, read-ahead pages included;
+ * Per cycle: `restoreScan` the scans an earlier cycle saved; `park` each stopped stream; `noteStatuses` and `noteScan`
+ * for every page read, read-ahead pages included, and `rebase` each committed checkpoint; read each `statusReads` entry;
  * until `fencesNeeded` is empty, `noteFence` each entry from its owner's `/position` and read that owner's streams ahead
- * past it; then apply each `ready` release's rows with every part's checkpoint in one legacy transaction and `release`
- * each of its `operationIds`; pass over and `release` each `rolledBack` operation; `clear`.
+ * past its `fenceBound`; then re-read each `ready` release's spans, apply their `releasedRows` with every part's checkpoint
+ * in one legacy transaction and `release` each of its `operationIds`; pass over and `release` each `rolledBack` operation;
+ * keep each `savedScan`; `clear`.
  */
 export class OperationTracker<S extends HeldStreamState = HeldStreamState, R extends ChangeRow = ProjectedChangeRow> {
   readonly participants: readonly string[];
   readonly #statuses = new Map<string, OperationStatus>();
+  /** Operations each owner reported this cycle. */
+  readonly #reported = new Map<string, Set<string>>();
   readonly #parked = new Map<string, Map<string, ParkedPart<S, R>>>();
   readonly #fences = new Map<string, Map<string, string>>();
-  readonly #scans = new Map<string, StreamScan<R>>();
+  readonly #scans = new Map<string, StreamScan>();
 
   constructor({ participants = ROSTER_PARTICIPANTS }: OperationTrackerOptions = {}) {
     this.participants = Object.freeze([...new Set(participants)]);
@@ -260,9 +345,13 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     if (this.#statuses.get(operationId) !== 'done') this.#fences.delete(operationId);
   }
 
-  /** Records every status of a changes page's `operations` map. */
-  noteStatuses(operations: Readonly<Record<string, OperationStatus>>): void {
+  /** Records every status of a changes page's `operations` map, as reported by `owner` when given. */
+  noteStatuses(operations: Readonly<Record<string, OperationStatus>>, owner?: string): void {
     for (const [operationId, status] of Object.entries(operations)) this.noteStatus(operationId, status);
+    if (owner === undefined) return;
+    const reported = this.#reported.get(owner) ?? new Set<string>();
+    for (const operationId of Object.keys(operations)) reported.add(operationId);
+    this.#reported.set(owner, reported);
   }
 
   /** Merged status of an operation; undefined when none was reported this cycle. */
@@ -271,21 +360,87 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
   }
 
   /**
-   * Records a page read of the owner's tenant stream, keeping its rows from the first held one on: it extends the cycle's
-   * scan when `after` is that scan's end cursor, otherwise it starts a fresh scan, whose `after` must be the stream's checkpoint cursor.
+   * Records a page of the owner's tenant stream, keeping its held rows: it extends the scan read on from its end, leaves it
+   * for a re-read from its start ending within it, else starts a fresh scan, whose `after` must be the stream's checkpoint.
+   * Each held row's `through` stays within its page, since the changes feed closes every page over same-row predecessors.
    */
   noteScan(owner: string, tenantId: string, after: string, page: ChangesPageView<R>, classify: (row: R) => RowDisposition): void {
     const key = streamKey(owner, tenantId);
-    const previous = this.#scans.get(key);
-    const extended = previous?.end === after ? previous : undefined;
-    let head = extended?.head;
-    const rows = extended?.rows ?? [];
-    for (const row of page.rows) {
-      const disposition = classify(row);
-      if (head === undefined && disposition === 'hold' && row.operationId !== null) head = row.operationId;
-      if (head !== undefined) rows.push({ row, disposition });
+    const known = this.#scans.get(key);
+    if (known?.start === after && known.end !== after && compareCursors(page.cursor, known.end) <= 0) return;
+    const fresh = (): StreamScan => ({ owner, tenantId, start: after, end: after, horizon: page.horizon, entries: [] });
+    const scan = known?.end === after ? known : fresh();
+    const firstXid = page.rows[0]?.xid;
+    for (let index = scan.entries.length - 1; firstXid !== undefined && index >= 0; index -= 1) {
+      const entry = scan.entries[index] as ScanEntry;
+      if (entry.next !== undefined) break;
+      entry.next = firstXid;
     }
-    this.#scans.set(key, { owner, tenantId, end: page.cursor, horizon: readHorizon(page), head, rows });
+    let ends: number[] | undefined;
+    let previous = after;
+    for (const [index, row] of page.rows.entries()) {
+      const cursor = cursorOf(row);
+      if (classify(row) === 'hold' && row.operationId !== null) {
+        ends ??= predecessorEnds(page.rows);
+        const end = closedEndFrom(ends, index);
+        const through = cursorOf(page.rows[end] as R);
+        scan.entries.push({ cursor, previous, xid: row.xid, operationId: row.operationId, through, next: page.rows[end + 1]?.xid });
+      }
+      previous = cursor;
+    }
+    scan.end = page.cursor;
+    scan.horizon = readHorizon(page);
+    this.#scans.set(key, scan);
+  }
+
+  /** Moves a scan's start to its stream's new checkpoint, dropping the held rows it passed; forgets a scan the checkpoint passed. */
+  rebase(owner: string, tenantId: string, checkpoint: string): void {
+    const key = streamKey(owner, tenantId);
+    const scan = this.#scans.get(key);
+    if (scan === undefined) return;
+    if (compareCursors(checkpoint, scan.end) > 0) {
+      this.#scans.delete(key);
+      return;
+    }
+    const kept = scan.entries.findIndex((entry) => compareCursors(entry.cursor, checkpoint) > 0);
+    scan.entries.splice(0, kept < 0 ? scan.entries.length : kept);
+    scan.start = checkpoint;
+  }
+
+  /** The owner's tenant stream scan as far as it is read; undefined when none is kept. */
+  scanOf(owner: string, tenantId: string): Readonly<StreamScan> | undefined {
+    return this.#scans.get(streamKey(owner, tenantId));
+  }
+
+  /** Takes over a scan an earlier cycle saved, read after its stream's current checkpoint. */
+  restoreScan(scan: StreamScan): void {
+    this.#scans.set(streamKey(scan.owner, scan.tenantId), { ...scan, entries: scan.entries.map((entry) => ({ ...entry })) });
+  }
+
+  /** A copy of the stream's scan for a later cycle, without the held rows of operations now rolled back. */
+  savedScan(owner: string, tenantId: string): StreamScan | undefined {
+    const scan = this.#scans.get(streamKey(owner, tenantId));
+    if (scan === undefined) return undefined;
+    return { ...scan, entries: scan.entries.filter((entry) => this.#liveHold(entry) !== undefined).map((entry) => ({ ...entry })) };
+  }
+
+  /** Forgets the stream's scan. */
+  dropScan(owner: string, tenantId: string): void {
+    this.#scans.delete(streamKey(owner, tenantId));
+  }
+
+  /** One read per owner and operation of a kept, not rolled-back held row whose status that owner has not reported this cycle. */
+  statusReads(): StatusRead[] {
+    const reads = new Map<string, StatusRead>();
+    for (const scan of this.#scans.values()) {
+      for (const { operationId, previous } of scan.entries) {
+        const key = streamKey(scan.owner, operationId);
+        const known = reads.has(key) || this.#reported.get(scan.owner)?.has(operationId) === true;
+        if (known || this.#statuses.get(operationId) === 'rolled-back') continue;
+        reads.set(key, { owner: scan.owner, tenantId: scan.tenantId, after: previous, operationId });
+      }
+    }
+    return [...reads.values()];
   }
 
   /** Owners without a fence of each done operation, for every closure of the parked and scanned operations. */
@@ -320,11 +475,25 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     if (known === undefined || compareXid(xid, known) < 0) fences.set(owner, xid);
   }
 
+  /** Highest fence of `owner` among the done operations of parked closures, which its scans must pass; undefined when none is noted. */
+  fenceBound(owner: string): string | undefined {
+    let bound: string | undefined;
+    for (const seed of this.#parked.keys()) {
+      const { ids, owners } = this.#closure(seed);
+      if (!owners.has(owner)) continue;
+      for (const id of ids) {
+        const fence = this.#statuses.get(id) === 'done' ? this.#fences.get(id)?.get(owner) : undefined;
+        if (fence !== undefined && (bound === undefined || compareXid(fence, bound) > 0)) bound = fence;
+      }
+    }
+    return bound;
+  }
+
   /**
-   * One release per ready closure of a parked done operation: each part holds its stream's span rows to apply,
+   * One release per ready closure of a parked done operation: each part holds its stream span's live held rows,
    * and its `streamState` checkpoints the span's last row with the next row's xid, or the scan horizon, as applied horizon.
    */
-  ready(): TrackedOperation<S, R>[] {
+  ready(): ReadyOperation<S>[] {
     return this.#evaluate().released;
   }
 
@@ -362,16 +531,17 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     this.#fences.delete(operationId);
   }
 
-  /** Forgets every part, status and scan at the end of a cycle; fences of done operations stay valid and are kept. */
+  /** Forgets every part, status, report and scan at the end of a cycle; fences of done operations stay valid and are kept. */
   clear(): void {
     this.#parked.clear();
     this.#statuses.clear();
+    this.#reported.clear();
     this.#scans.clear();
   }
 
   /** Ready releases in parked order, each closure once and none sharing an operation, and the operations they release. */
-  #evaluate(): { released: TrackedOperation<S, R>[]; emitted: Set<string> } {
-    const released: TrackedOperation<S, R>[] = [];
+  #evaluate(): { released: ReadyOperation<S>[]; emitted: Set<string> } {
+    const released: ReadyOperation<S>[] = [];
     const emitted = new Set<string>();
     for (const seed of this.#parked.keys()) {
       if (emitted.has(seed) || this.#statuses.get(seed) !== 'done') continue;
@@ -384,24 +554,27 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
   }
 
   /**
-   * Grows `seed` to a fixpoint: a scan holding an unrolled-back row of the closure spans from its first held row
-   * through the closure's last such row, and the head operation and every other unrolled-back held operation of that span join.
+   * Grows `seed` to a fixpoint: a scan holding an unrolled-back row of the closure spans from its first waiting row
+   * through the `through` of the closure's last such entry, so no row of the span needs a later same-row predecessor,
+   * and the head operation and every other unrolled-back held operation of that span join.
    */
   #closure(seed: string): Closure<S, R> {
     const ids = new Set([seed]);
     const spans = new Map<string, Span<S, R>>();
-    const inClosure = (entry: ScannedRow<R>): boolean => {
+    const inClosure = (entry: ScanEntry): boolean => {
       const id = this.#liveHold(entry);
       return id !== undefined && ids.has(id);
     };
     for (let grown = true; grown; ) {
       grown = false;
       for (const [key, scan] of this.#scans) {
-        if (scan.head === undefined) continue;
-        const last = scan.rows.findLastIndex(inClosure);
-        if (last < 0) continue;
-        spans.set(key, { scan, last, head: scan.head, parked: this.#parked.get(scan.head)?.get(key) });
-        const joining = [scan.head, ...scan.rows.slice(1, last + 1).map((entry) => this.#liveHold(entry))];
+        const head = scan.entries[0]?.operationId;
+        const end = scan.entries.findLast(inClosure);
+        if (head === undefined || end === undefined) continue;
+        // `through` never decreases along a scan, so the closure's last entry ends the span.
+        const last = scan.entries.findLastIndex((entry) => compareCursors(entry.cursor, end.through) <= 0);
+        spans.set(key, { scan, last, end, head, parked: this.#parked.get(head)?.get(key) });
+        const joining = [head, ...scan.entries.slice(1, last + 1).map((entry) => this.#liveHold(entry))];
         for (const id of joining) {
           if (id === undefined || ids.has(id)) continue;
           ids.add(id);
@@ -437,22 +610,20 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     return blockers;
   }
 
-  /** The release of a ready closure: per span, its applicable and live held rows, checkpointed just past the span. */
-  #releaseOf(seed: string, { ids, spans }: Closure<S, R>): TrackedOperation<S, R> {
-    const parts = [...spans.values()].map(({ scan, last, parked }): ParkedPart<S, R> => {
-      const span = scan.rows.slice(0, last + 1);
-      // Every live held row of a span belongs to the closure, so the rows it skips are exactly those passed over.
-      const rows = span.filter((entry) => entry.disposition === 'apply' || this.#liveHold(entry) !== undefined).map(({ row }) => row);
-      const next = scan.rows[last + 1];
+  /** The release of a ready closure: per span, its live held rows, all of the closure, checkpointed just past the span. */
+  #releaseOf(seed: string, { ids, spans }: Closure<S, R>): ReadyOperation<S> {
+    const parts = [...spans.values()].map(({ scan, last, end, parked }): ReadyPart<S> => {
+      // A span without a park blocks its closure.
       const streamState = {
         ...(parked as ParkedPart<S, R>).streamState,
-        endCursor: cursorOf((scan.rows[last] as ScannedRow<R>).row),
-        appliedHorizon: next === undefined ? scan.horizon : next.row.xid,
+        endCursor: end.through,
+        appliedHorizon: end.next ?? scan.horizon,
         complete: true,
       };
-      return { owner: scan.owner, tenantId: scan.tenantId, rows, streamState };
+      const held = scan.entries.slice(0, last + 1).filter((entry) => this.#liveHold(entry) !== undefined);
+      return { owner: scan.owner, tenantId: scan.tenantId, streamState, held };
     });
-    return { operationId: seed, operationIds: [...ids], parts, rows: parts.flatMap((part) => part.rows).sort(byPosition) };
+    return { operationId: seed, operationIds: [...ids], parts };
   }
 
   /**
@@ -483,7 +654,7 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     }
     for (const [key, part] of this.#parked.get(operationId) ?? []) {
       if (part.owner !== owner) continue;
-      const scanned = new Set(this.#scans.get(key)?.rows.map(({ row }) => cursorOf(row)));
+      const scanned = new Set(this.#scans.get(key)?.entries.map((entry) => entry.cursor));
       if (!part.rows.every((row) => scanned.has(cursorOf(row)))) return false;
     }
     return true;
@@ -491,23 +662,20 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
 
   /** True when a scan of `owner` held a row of the operation. */
   #holds(owner: string, operationId: string): boolean {
-    const holdsRow = ({ row, disposition }: ScannedRow<R>): boolean => disposition === 'hold' && row.operationId === operationId;
-    return [...this.#scans.values()].some((scan) => scan.owner === owner && scan.rows.some(holdsRow));
+    const holds = (scan: StreamScan): boolean => scan.owner === owner && scan.entries.some((entry) => entry.operationId === operationId);
+    return [...this.#scans.values()].some(holds);
   }
 
-  /** The operation of a row held when scanned whose operation is not rolled back since. */
-  #liveHold({ row, disposition }: ScannedRow<R>): string | undefined {
-    const id = row.operationId;
-    return disposition === 'hold' && id !== null && this.#statuses.get(id) !== 'rolled-back' ? id : undefined;
+  /** The operation of a held row unless it is rolled back since. */
+  #liveHold({ operationId }: ScanEntry): string | undefined {
+    return this.#statuses.get(operationId) !== 'rolled-back' ? operationId : undefined;
   }
 
   /** Parked operations, then operations held by a scanned row, in first-seen order. */
   #known(): Set<string> {
     const known = new Set(this.#parked.keys());
     for (const scan of this.#scans.values()) {
-      for (const { row, disposition } of scan.rows) {
-        if (disposition === 'hold' && row.operationId !== null) known.add(row.operationId);
-      }
+      for (const { operationId } of scan.entries) known.add(operationId);
     }
     return known;
   }

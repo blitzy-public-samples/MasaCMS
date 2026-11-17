@@ -36,7 +36,7 @@ import {
   type OwnerBatchStats,
   type TenantResolver,
 } from './batch.js';
-import { Acceptance, addTaken, chunksOf, planTarget, type DiffSide, type TargetPlan } from './targets.js';
+import { Acceptance, addTaken, chunksOf, planTarget, prepareTenants, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the backfill reads: the snapshot, both data sides, the gateway's authority and the report target. */
 export type BackfillContext = Pick<
@@ -195,10 +195,12 @@ function routingFor(run: TableRun, table: MigratableTable, shape: LegacyTableSha
   return { table: table.name, keyed: shape.keyed, plans, acceptance: new Acceptance(run.ctx, table.name) };
 }
 
-/** Reads the ownership joins every target of the table needs to judge `rows`, one chunk of rows at a time. */
-function prepareRows(run: TableRun, routing: TableRouting, rows: readonly CanonicalRow[]): Promise<void> {
+/** Reads the ownership joins every target of the table needs to judge `rows`, and the parents their tenants come from, one chunk at a time. */
+async function prepareRows(run: TableRun, routing: TableRouting, rows: readonly CanonicalRow[]): Promise<void> {
   const targets = [...routing.plans.values()].flatMap((plans) => plans.map((plan) => plan.target));
-  return routing.acceptance.prepare(targets, rows.map((row) => [run.side, row] as const));
+  const sided = rows.map((row) => [run.side, row] as const);
+  await routing.acceptance.prepare(targets, sided);
+  await prepareTenants(routing.table, sided);
 }
 
 /** Adds `changes` of `row` to the batcher of each owner whose targets take the real row, with the discriminators those targets need. */

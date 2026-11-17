@@ -1,6 +1,7 @@
 // Port of the Masa JSON API error map and the platform's legacy error classes (jsonApiUtility.cfc:1318-1402).
 import { buildEnvelope, paramsWithoutMethod, serializeResponse, type SerializedLegacyResponse } from './envelope.js';
 import { isDefinedApiName, isValidVariableName, type ApiNameContext } from './jsonapi-names.js';
+import type { LegacyJsonSerializer } from './serializer.js';
 
 /** Exception types `processRequest` catches by name; anything else falls to `catch (Any e)`. */
 export type LegacyApiErrorType =
@@ -71,6 +72,8 @@ export interface LegacyErrorResponseOptions {
   mura404?: boolean;
   /** `WWW-Authenticate` value legacy set before throwing. */
   wwwAuthenticate?: string;
+  /** The API utility's serializer, whose key hints the echoed params are written with; the API hints alone by default. */
+  serializer?: LegacyJsonSerializer;
 }
 
 /** Error envelope response for an exception of `type`, as the matching catch block serializes it. */
@@ -82,10 +85,13 @@ export function legacyErrorResponse(type: string, a: LegacyErrorResponseOptions 
     // Key order follows the ACF wire bytes ({"message":…,"code":…}), so body and ETag match legacy exactly.
     error: { message, code },
   });
+  // The catch blocks' unordered struct literal iterates apiversion, method, error, params on ACF.
   const response = serializeResponse(envelope, {
     statusCode: status,
     suppressAPIParams: a.suppressAPIParams,
     mura404: a.mura404,
+    keyOrder: 'acf',
+    ...(a.serializer === undefined ? {} : { serializer: a.serializer }),
   });
   if (a.wwwAuthenticate !== undefined) response.headers['WWW-Authenticate'] = a.wwwAuthenticate;
   return response;

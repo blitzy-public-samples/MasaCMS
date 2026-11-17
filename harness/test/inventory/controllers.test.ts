@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { VariantDeclaration } from '@opt2/platform/legacy-compat';
-import { computeClosure, memorySourceTree, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
+import { CFML_TRUTHY, computeClosure, memorySourceTree, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
 import type { CfmlComponent, ClosureContext, ComponentIndex, Predicates, SourceTree } from '../../src/inventory/closure.js';
 import {
   CONTROLLERS_DIR,
@@ -15,14 +15,16 @@ import {
   REQUEST_LAYOUT,
   ROLE_OVERRIDES_REF,
   VIEWS_DIR,
+  VIEW_PARTIALS_REF,
   extractControllers,
   searchCoreMuraAction,
 } from '../../src/inventory/controllers.js';
 import type { ActionEntry, ControllerEntry, ControllerExtraction, VariantEntry } from '../../src/inventory/controllers.js';
-import { loadRoleOverrides, loadWriterOverrides } from '../../src/inventory/overrides.js';
-import type { RequiredRole, RoleOverride, RoleOverrides, SourceRef } from '../../src/inventory/overrides.js';
+import { OverrideError, loadRoleOverrides, loadWriterOverrides } from '../../src/inventory/overrides.js';
+import type { RequiredRole, RoleOverride, RoleOverrides, SourceRef, ViewPartial } from '../../src/inventory/overrides.js';
 import { inventoryRouteKey, loadInventoryVariants, normaliseInventoryKey } from '../../src/inventory/route-keys.js';
 import { assertOutsideRepo } from '../../src/lib/paths.js';
+import { pinnedSha } from '../../src/lib/pin.js';
 
 const CTL = CONTROLLERS_DIR;
 const VIEWS = VIEWS_DIR;
@@ -166,8 +168,12 @@ const INLINE: Readonly<Record<string, string>> = {
     '<cfinclude template="summary.cfm">',
     '<cfinclude template="#rc.extraView#">',
     '<cfinclude template="missing.cfm">',
+    '<cfinclude template="edit.cfm">',
+    '<cfoutput><a href="./?muraAction=cFixture.edit&fixtureid=#rc.fixtureid#">Edit</a></cfoutput>',
+    '<!--- <a href="./?muraAction=cFixture.summary">Summary</a> --->',
   ),
   [`${VIEWS}/cfixture/summary.cfm`]: lines('<cfoutput><p>#rc.rs.recordcount#</p></cfoutput>'),
+  [`${VIEWS}/cfixture/edit.cfm`]: lines('<cfoutput><h2>Edit fixture</h2></cfoutput>'),
   [`${VIEWS}/cfixture/dsp_header.cfm`]: lines('<cfoutput><h2>Header</h2></cfoutput>'),
   [`${VIEWS}/cfixture/download.cfm`]: lines('<cfinclude template="inc/dsp_download.cfm">'),
   [`${VIEWS}/cfixture/inc/dsp_download.cfm`]: lines(
@@ -451,7 +457,7 @@ const CUSTOM_VARIANTS: readonly VariantDeclaration[] = [
 
 /** Closure predicates of the committed cusers.update declarations, one list of alternatives per declaration in file order. */
 const CUSERS_UPDATE_PREDICATES: ReadonlyArray<readonly Predicates[]> = [
-  [{ newFile: true }, { removePhotoFile: 'true' }],
+  [{ newFile: true }, { removePhotoFile: CFML_TRUTHY }],
   [{ type: '2', action: 'Add', extendSetID: true }],
   [{ type: '2', action: 'Update', extendSetID: true }],
   [{ type: '1', action: 'Delete' }],
@@ -569,10 +575,11 @@ afterAll(async () => {
 
 describe('controllers constants', () => {
   it('name the admin folders, the override file, the page layouts and the core search', () => {
-    expect([CONTROLLERS_DIR, VIEWS_DIR, ROLE_OVERRIDES_REF]).toEqual([
+    expect([CONTROLLERS_DIR, VIEWS_DIR, ROLE_OVERRIDES_REF, VIEW_PARTIALS_REF]).toEqual([
       'admin/core/controllers',
       'admin/core/views',
       'harness/inventory/role-overrides.yaml',
+      'harness/inventory/view-partials.yaml',
     ]);
     expect(PAGE_LAYOUTS).toEqual(['template', 'compact']);
     expect(Object.isFrozen(PAGE_LAYOUTS)).toBe(true);
@@ -601,7 +608,7 @@ describe('circuits and actions', () => {
       ['ctl:cunknown', false],
       ['ctl:cusers', false],
     ]);
-    expect(extraction.counts).toEqual({ circuits: 16, base: 1, actions: 38, viewOnlyActions: 4, variants: 47 });
+    expect(extraction.counts).toEqual({ circuits: 16, base: 1, actions: 40, viewOnlyActions: 6, variants: 49 });
   });
 
   it('spans each entry from its declaration line to the last line of the file', () => {
@@ -639,10 +646,12 @@ describe('circuits and actions', () => {
     expect(controllerOf(extraction, 'cfixture').actions.map((a) => [a.id, a.name, a.kind, a.viewPath])).toEqual([
       ['ctl:cfixture.diff', 'diff', 'view-only', `${VIEWS}/cfixture/diff.cfm`],
       ['ctl:cfixture.download', 'download', 'view-only', `${VIEWS}/cfixture/download.cfm`],
+      ['ctl:cfixture.edit', 'edit', 'view-only', `${VIEWS}/cfixture/edit.cfm`],
       ['ctl:cfixture.list', 'list', 'method', `${VIEWS}/cfixture/list.cfm`],
       ['ctl:cfixture.loadjson', 'loadjson', 'view-only', `${VIEWS}/cfixture/loadjson.cfm`],
       ['ctl:cfixture.remove', 'remove', 'method', null],
       ['ctl:cfixture.special', 'special', 'view-only', `${VIEWS}/cfixture/special.cfm`],
+      ['ctl:cfixture.summary', 'summary', 'view-only', `${VIEWS}/cfixture/summary.cfm`],
       ['ctl:cfixture.update', 'update', 'method', null],
     ]);
     const approve = actionOf(extraction, 'ctl:cmodes.approve');
@@ -671,12 +680,143 @@ describe('circuits and actions', () => {
     expect(actionOf(extraction, 'ctl:cfixture.download').source).toEqual({ path: `${VIEWS}/cfixture/download.cfm`, lines: [1, 1] });
   });
 
-  it('excludes dsp_ includes, views another view includes, and subfolders from the view-only actions', () => {
+  it('excludes only dsp_ includes and subfolders from the view-only actions without reviewed partials', () => {
     expect(controllerOf(extraction, 'cfixture').excludedViews).toEqual([
       { path: `${VIEWS}/cfixture/dsp_header.cfm`, reason: 'dsp-include' },
       { path: `${VIEWS}/cfixture/inc`, reason: 'subfolder' },
-      { path: `${VIEWS}/cfixture/summary.cfm`, reason: 'included', includedBy: [`${VIEWS}/cfixture/list.cfm`] },
     ]);
+  });
+
+  it('keeps every included view as an action, with its includers and the references addressing it', () => {
+    const list = `${VIEWS}/cfixture/list.cfm`;
+    const link = lineIn(list, 'muraAction=cFixture.edit');
+    expect(actionOf(extraction, 'ctl:cfixture.edit').reachability).toEqual({
+      includedBy: [list],
+      addressedBy: [{ path: list, lines: [link, link] }],
+    });
+    expect(actionOf(extraction, 'ctl:cfixture.summary').reachability).toEqual({ includedBy: [list], addressedBy: [] });
+    expect(onlyVariant(extraction, 'ctl:cfixture.edit').routeKey).toBe('admin:cfixture.edit');
+    expect(onlyVariant(extraction, 'ctl:cfixture.summary').routeKey).toBe('admin:cfixture.summary');
+    const included = extraction.controllers.flatMap((c) => c.actions).filter((a) => a.reachability !== undefined);
+    expect(included.map((a) => a.id)).toEqual(['ctl:cfixture.edit', 'ctl:cfixture.summary']);
+  });
+
+  const MENU = `${VIEWS}/cpart/dsp_menu.cfm`;
+  const OTHER = `${CTL}/cother.cfc`;
+  const PART_LIST = `${VIEWS}/cpart/list.cfm`;
+  const PART_EDIT = `${VIEWS}/cpart/edit.cfm`;
+  /** A circuit whose list view includes an edit view and a dsp_ include. */
+  const PART_FILES: Readonly<Record<string, string>> = {
+    [`${CTL}/controller.cfc`]: BASE_CONTROLLER,
+    [`${CTL}/cpart.cfc`]: circuit('\tpublic any function list(rc) {', '\t}'),
+    [PART_LIST]: lines('<cfinclude template="edit.cfm">', '<cfinclude template="dsp_form.cfm">'),
+    [PART_EDIT]: lines('<cfoutput><h2>Edit</h2></cfoutput>'),
+    [`${VIEWS}/cpart/dsp_form.cfm`]: lines('<form></form>'),
+  };
+  /** The reviewed partial record of the cpart edit view, with `edits` applied. */
+  const partOf = (edits: Partial<ViewPartial> = {}): ViewPartial => ({
+    id: 'vp:cpart.edit',
+    view: PART_EDIT,
+    includers: [{ path: PART_LIST, lines: [1, 1] }],
+    reason: 'Rendered only inside the list view.',
+    ...edits,
+  });
+  const go = (line: string): string => circuit('\tpublic any function go(rc) {', `\t\t${line}`, '\t}');
+  it.each<[string, string, string, [number, number] | null]>([
+    ['a muraAction link in a view', MENU, '<a href="./?muraAction=cPart.edit&id=#rc.id#">Edit</a>', [1, 1]],
+    ['an upper-case link outside the circuit', 'admin/common/menu.cfm', '<a href="./?MURAACTION=cpart.Edit">Edit</a>', [1, 1]],
+    ['a core:-qualified fuseaction link', MENU, '<a href="./?fuseaction=core:cpart.edit">Edit</a>', [1, 1]],
+    ['a hidden muraAction field', MENU, '<input type="hidden" name="muraAction" value="cpart.edit">', [1, 1]],
+    ['a field naming its value first', MENU, '<input value="cPart.edit" type="hidden" name="muraAction">', [1, 1]],
+    ['a field tag over two lines', MENU, '<input name="muraAction"\n\tvalue="cpart.edit">', [1, 2]],
+    ['a buildURL call in a view', MENU, '<a href="#buildURL(\'cpart.edit\')#">Edit</a>', [1, 1]],
+    ['a redirect in another controller', OTHER, go('variables.fw.redirect(action="cPart.edit", append="siteid");'), [4, 4]],
+    ['a setView in another controller', OTHER, go('getFW().setView("cpart.edit");'), [4, 4]],
+    ['a script URL in an admin asset', 'admin/assets/js/cpart.js', "$.ajax({url: './?muraAction=cpart.edit', data: {}});", [1, 1]],
+    ['a core component', 'core/mura/part/urls.cfc', lines('component {', '\tvariables.edit = "./?muraAction=cPart.edit";', '}'), [2, 2]],
+    ['a commented-out link', MENU, '<!--- <a href="./?muraAction=cpart.edit">Edit</a> --->', null],
+    ['a script comment in a controller', OTHER, go('// variables.fw.redirect(action="cpart.edit");'), null],
+    ["another circuit's action of the same name", MENU, '<a href="./?muraAction=cother.edit">Edit</a>', null],
+    ['a longer action name', MENU, '<a href="./?muraAction=cpart.editor">Edit</a>', null],
+    ['a dynamic action', MENU, '<a href="./?muraAction=#rc.circuit#.edit">Edit</a>', null],
+    ['a link to the dsp_ include', MENU, '<a href="./?muraAction=cpart.dsp_form">Form</a>', null],
+    ['a vendor file', 'core/vendor/lib/page.cfm', '<a href="./?muraAction=cpart.edit">Edit</a>', null],
+    ['a file outside admin and core', 'sites/default/page.cfm', '<a href="./?muraAction=cpart.edit">Edit</a>', null],
+  ])('keeps an included view as an action and records its references from %s', async (_label, rel, text, refLines) => {
+    const files = { ...PART_FILES, [rel]: text };
+    const result = await extractControllers(memoryContext(files), { variants, roleOverrides });
+    const cpart = controllerOf(result, 'cpart');
+    expect(cpart.excludedViews.filter((v) => v.path !== MENU)).toEqual([{ path: `${VIEWS}/cpart/dsp_form.cfm`, reason: 'dsp-include' }]);
+    expect(cpart.actions.map((a) => [a.id, a.kind, a.viewPath])).toEqual([
+      ['ctl:cpart.edit', 'view-only', PART_EDIT],
+      ['ctl:cpart.list', 'method', PART_LIST],
+    ]);
+    expect(actionOf(result, 'ctl:cpart.edit').reachability).toEqual({
+      includedBy: [PART_LIST],
+      addressedBy: refLines === null ? [] : [{ path: rel, lines: refLines }],
+    });
+  });
+
+  it('excludes a reviewed partial with its reference and includers instead of keeping it as an action', async () => {
+    const viewPartials = { sourceSha: pinnedSha(), partials: [partOf()] };
+    const result = await extractControllers(memoryContext(PART_FILES), { variants, roleOverrides, viewPartials });
+    const cpart = controllerOf(result, 'cpart');
+    expect(cpart.actions.map((a) => a.id)).toEqual(['ctl:cpart.list']);
+    expect(cpart.excludedViews).toEqual([
+      { path: `${VIEWS}/cpart/dsp_form.cfm`, reason: 'dsp-include' },
+      { path: PART_EDIT, reason: 'reviewed-partial', ref: `${VIEW_PARTIALS_REF}#vp:cpart.edit`, includedBy: [PART_LIST] },
+    ]);
+    expect(result.counts).toMatchObject({ actions: 1, viewOnlyActions: 0, variants: 1 });
+  });
+
+  it.each<[string, Partial<ViewPartial>, Record<string, string>, string]>([
+    ['an absent view', { id: 'vp:cpart.gone', view: `${VIEWS}/cpart/gone.cfm` }, {}, `${VIEWS}/cpart/gone.cfm does not exist`],
+    [
+      'a view of no controller',
+      { id: 'vp:cnone.edit', view: `${VIEWS}/cnone/edit.cfm` },
+      { [`${VIEWS}/cnone/edit.cfm`]: lines('<p>edit</p>') },
+      `${VIEWS}/cnone/edit.cfm belongs to no controller of ${CTL}`,
+    ],
+    [
+      'a view nothing includes',
+      { id: 'vp:cpart.alone', view: `${VIEWS}/cpart/alone.cfm` },
+      { [`${VIEWS}/cpart/alone.cfm`]: lines('<p>alone</p>') },
+      `${VIEWS}/cpart/alone.cfm is not included by another view`,
+    ],
+    [
+      'includers other than the includes',
+      { includers: [{ path: PART_LIST, lines: [5, 5] }] },
+      {},
+      `includers ${PART_LIST}:5-5 differ from its includes ${PART_LIST}:1-1`,
+    ],
+    [
+      'a method action view',
+      {},
+      { [`${CTL}/cpart.cfc`]: circuit('\tpublic any function list(rc) {', '\t}', '', '\tpublic any function edit(rc) {', '\t}') },
+      `${PART_EDIT} is the view of the cpart.edit method action`,
+    ],
+    [
+      'a dsp_ include',
+      { id: 'vp:cpart.dsp_form', view: `${VIEWS}/cpart/dsp_form.cfm`, includers: [{ path: PART_LIST, lines: [2, 2] }] },
+      {},
+      `${VIEWS}/cpart/dsp_form.cfm is a dsp_ include, excluded by its name`,
+    ],
+    [
+      'a view addressed as an action',
+      {},
+      { [MENU]: '<a href="./?muraAction=cPart.edit">Edit</a>' },
+      `cpart.edit is addressed as an action at ${MENU}:1-1`,
+    ],
+  ])('rejects a reviewed partial the tree contradicts: %s', async (_label, edits, extra, issue) => {
+    const record = partOf(edits);
+    const viewPartials = { sourceSha: pinnedSha(), partials: [record] };
+    const run = extractControllers(memoryContext({ ...PART_FILES, ...extra }), { variants, roleOverrides, viewPartials });
+    const error: unknown = await run.then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(OverrideError);
+    expect([(error as OverrideError).path, (error as OverrideError).issues]).toEqual([VIEW_PARTIALS_REF, [`${record.id}: ${issue}`]]);
   });
 
   it('throws on a controller file that declares no component', async () => {
@@ -1104,6 +1244,62 @@ describe('variants and write sets', () => {
     const base = onlyVariant(extraction, 'ctl:cmerge.save');
     expect(base.writeSet).toEqual(['tfixture', 'tfixturemembers', 'tfixturestats']);
     expect(base.conditionalWrites.map((w) => [w.table, w.condition])).toEqual([['tfixturemembers', "arguments.rc.mode == 'b'"]]);
+  });
+
+  describe('a request-parameter branch of an included view', () => {
+    /** A clogin-shaped circuit: the forgot-password call sits in a cfsavecontent of main.cfm, which login.cfm includes. */
+    const LOGIN_FILES: Readonly<Record<string, string>> = {
+      [`${CTL}/controller.cfc`]: BASE_CONTROLLER,
+      [`${CTL}/clogin.cfc`]: circuit(
+        '\tpublic any function before(rc) {',
+        '\t\tparam default="" name="arguments.rc.status";',
+        '\t}',
+        '',
+        '\tpublic any function main(rc) {',
+        '\t}',
+        '',
+        '\tpublic any function login(rc) {',
+        '\t}',
+      ),
+      [`${VIEWS}/clogin/main.cfm`]: lines(
+        '<cfoutput>',
+        '<cfsavecontent variable="pwresponse">',
+        "\t<cfif rc.status eq 'sendLogin'>",
+        "\t\t<cfset application.userManager.sendLoginByEmail('#rc.email#','')>",
+        '\t<cfelse>',
+        "\t\t#rc.$.rbKey('login.enteremail')#",
+        '\t</cfif>',
+        '</cfsavecontent>',
+        '<p id="pw-response">#pwresponse#</p>',
+        '</cfoutput>',
+      ),
+      [`${VIEWS}/clogin/login.cfm`]: lines('<cfinclude template="main.cfm">'),
+      [USER_MANAGER]: lines(
+        'component extends="mura.cfobject" output="false" {',
+        '',
+        '\tpublic any function sendLoginByEmail(required string email, string siteid="") {',
+        '\t\tqueryExecute("INSERT INTO tfixtureredirects (email) VALUES (:email)", {email=arguments.email});',
+        '\t}',
+        '',
+        '}',
+      ),
+    };
+    let login: ControllerExtraction;
+
+    beforeAll(async () => {
+      login = await extractControllers(memoryContext(LOGIN_FILES), { variants, roleOverrides });
+    });
+
+    it.each<[string, Record<string, string>, string, string[]]>([
+      ['cLogin.main', { status: 'sendlogin' }, 'admin:clogin.main{status=sendlogin}', ['tfixtureredirects']],
+      ['cLogin.main', { status: 'failed' }, 'admin:clogin.main', []],
+      ['cLogin.login', { status: 'sendlogin' }, 'admin:clogin.login{status=sendlogin}', ['tfixtureredirects']],
+      ['cLogin.login', {}, 'admin:clogin.login', []],
+    ])('keys %s with %j as %s under the committed variants, whose view closure writes %j', async (action, params, key, writeSet) => {
+      expect((await inventoryRouteKey({ kind: 'admin', action, params }, { variants })).key).toBe(key);
+      const variant = variantOf(login, `ctl:${action.toLowerCase()}`, key);
+      expect([variant.writeSet, variant.conditionalWrites]).toEqual([writeSet, []]);
+    });
   });
 
   it.each<[string, VariantDeclaration[], string]>([

@@ -773,10 +773,10 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
         [halted.operation_id, 'halted', second],
       ]);
       expect(await inTenant((tx) => repo.pageHaltedRosterOperations(tx), TENANT_B.tenantId)).toEqual({ rows: [], next: null });
+      // The second halt changes no stored value, so it writes no changelog row.
       expect((await changelog('roster_operation', resolved.operation_id)).map((change) => [change.op, change.columns.includes('halted_at')])).toEqual([
         ['insert', true],
         ['update', true],
-        ['update', false],
         ['update', false],
       ]);
       const plan = planNodes(await planOf((tx) => repo.pageHaltedRosterOperations(tx), 'roster_operation'));

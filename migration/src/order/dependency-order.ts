@@ -9,7 +9,7 @@ import { writeJsonReport } from '../reports/index.js';
 import type { ReportClock, ReportTarget } from '../reports/index.js';
 
 /** Origin of an ordering edge: an inventory relation kind, or the implicit site and program-fold edges. */
-export type OrderRelationKind = 'beanORM' | 'daoJoin' | 'programFk' | 'site' | 'programFold';
+export type OrderRelationKind = 'beanORM' | 'daoJoin' | 'programFk' | 'tenantParent' | 'site' | 'programFold';
 
 /** One side of a relation: a table and its joining column. */
 export interface TableRef {
@@ -126,7 +126,29 @@ const SITE_COLUMN = 'siteID';
 const SITE_ROOT_COLUMN = 'SiteID';
 const PROGRAM_SITE_COLUMN = 'program_id';
 const TENANT_RANK: Readonly<Record<TenantFrom, number>> = { siteID: 0, parent: 1, umbrella: 2 };
-const KIND_RANK: Readonly<Record<OrderRelationKind, number>> = { programFold: 0, beanORM: 1, programFk: 2, daoJoin: 3, site: 4 };
+const KIND_RANK: Readonly<Record<OrderRelationKind, number>> = { programFold: 0, tenantParent: 1, beanORM: 2, programFk: 3, daoJoin: 4, site: 5 };
+const CONTENT_TABLE = 'tcontent';
+const CONTENT_VERSION_COLUMN = 'contenthistid';
+
+/** What the planned head groups test a Masa table by. */
+interface HeadFacts {
+  table: string;
+  owners: readonly DataOwner[];
+  parents: readonly OrderRelation[];
+}
+
+/** Planned head groups of the Masa tables after `tsettings`, in {@link EXPECTED_HEAD} order. */
+const HEAD_GROUPS: readonly ((facts: HeadFacts) => boolean)[] = [
+  ({ table }) => table === 'tusers',
+  ({ table }) => table === 'tusersmemb' || table === 'tpermissions',
+  ({ owners }) => owners.length > 0 && owners.every((owner) => owner === 'identity' || owner === 'people'),
+  ({ table }) => table === CONTENT_TABLE,
+  ({ parents }) => parents.some((edge) => edge.parent.table === CONTENT_TABLE && lower(edge.parent.column) === CONTENT_VERSION_COLUMN),
+  ({ table }) => table.startsWith('tcontentcategor'),
+  ({ table }) => table === 'tfiles' || table === 'tcontentfilemetadata',
+  ({ table }) => table.startsWith('tapproval'),
+  ({ table }) => table.startsWith('tchangeset'),
+];
 
 /** The inventory and its relations are inconsistent, or a cycle has no back-reference that can be broken. */
 export class DependencyOrderError extends Error {
@@ -138,6 +160,7 @@ const INVENTORY_KINDS = {
   'dao-join': 'daoJoin',
   'fixture-fk': 'programFk',
   'program-fold': 'programFold',
+  'tenant-parent': 'tenantParent',
 } as const satisfies Record<string, OrderRelationKind>;
 
 const tableName = z.string().min(1);
@@ -153,7 +176,7 @@ function withSource(relation: Omit<OrderRelation, 'source'>, source: OrderRelati
 const orderRelationSchema = z
   .object({
     id: z.string().min(1),
-    kind: z.enum(['beanORM', 'daoJoin', 'programFk', 'site', 'programFold']),
+    kind: z.enum(['beanORM', 'daoJoin', 'programFk', 'tenantParent', 'site', 'programFold']),
     child: tableRefSchema,
     parent: tableRefSchema,
     source: sourceSchema.optional(),
@@ -164,7 +187,7 @@ const orderRelationSchema = z
 const inventoryRelationSchema = z
   .object({
     id: z.string().min(1),
-    kind: z.enum(['orm-fk', 'dao-join', 'fixture-fk', 'program-fold']),
+    kind: z.enum(['orm-fk', 'dao-join', 'fixture-fk', 'program-fold', 'tenant-parent']),
     child: z.object({ table: tableName, columns: inventoryColumns.nullable() }),
     parent: z.object({ table: tableName, columns: inventoryColumns }),
     source: sourceSchema.optional(),
@@ -445,10 +468,39 @@ interface Sorted {
   readonly cycles: string[][];
 }
 
+/** Tie-break rank among ready tables: `tsettings`, the planned head groups, other Masa tables, `synthetic.program_site`, fixtures. */
+function headRank(table: string, graph: Graph, catalog: OrderCatalog): number {
+  if (table === SITE_ROOT_TABLE) return 0;
+  if (table === PROGRAM_SITE_TABLE) return HEAD_GROUPS.length + 2;
+  if (schemaOf(table) !== 'dbo') return HEAD_GROUPS.length + 3;
+  const facts: HeadFacts = { table, owners: catalog.ownersForLegacyTable(table), parents: graph.incoming.get(table) ?? [] };
+  const group = HEAD_GROUPS.findIndex((inGroup) => inGroup(facts));
+  return group === -1 ? HEAD_GROUPS.length + 1 : group + 1;
+}
+
+/** Each table's rank lowered to the smallest rank of any table that depends on it, so a parent loads with its earliest child. */
+function effectiveRanks(graph: Graph, own: ReadonlyMap<string, number>): Map<string, number> {
+  const ranks = new Map(own);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const table of graph.nodes) {
+      for (const { child } of graph.outgoing.get(table) ?? []) {
+        const rank = ranks.get(child.table) ?? Infinity;
+        if (rank < (ranks.get(table) ?? Infinity)) {
+          ranks.set(table, rank);
+          changed = true;
+        }
+      }
+    }
+  }
+  return ranks;
+}
+
 /**
- * Kahn's sort taking `tsettings`, then the smallest ready table, first. On a stall it breaks the cycle whose smallest member is smallest:
- * the first member, in name order, all of whose in-cycle back-references are either mirrored by a kept relation on the
- * same column pair (relaxed) or held in a non-key column (deferred) has those back-references broken.
+ * Kahn's sort taking `tsettings` first, then, among the ready tables of the lowest effective rank left, the one of lowest
+ * own rank ({@link headRank}), fixture module and name. When none of that rank is ready it breaks the cycle whose smallest
+ * member is smallest: the first member, in name order, all of whose in-cycle back-references are either mirrored by a
+ * kept relation on the same column pair (relaxed) or held in a non-key column (deferred) has those back-references broken.
  * @throws DependencyOrderError when no member of the cycle qualifies.
  */
 function sortTables(graph: Graph, catalog: OrderCatalog): Sorted {
@@ -456,6 +508,12 @@ function sortTables(graph: Graph, catalog: OrderCatalog): Sorted {
   const broken = new Map<OrderRelation, Break>();
   const order: string[] = [];
   const cycles: string[][] = [];
+  const own = new Map(graph.nodes.map((table) => [table, headRank(table, graph, catalog)]));
+  const effective = effectiveRanks(graph, own);
+  const moduleOf = (table: string): string => (schemaOf(table) === 'dbo' ? '' : ownerOf(catalog, table));
+  const rankOf = (ranks: ReadonlyMap<string, number>, table: string): number => ranks.get(table) ?? Infinity;
+  const byRank = (a: string, b: string): number =>
+    rankOf(own, a) - rankOf(own, b) || compareCodeUnits(moduleOf(a), moduleOf(b)) || compareTableNames(a, b);
   const intoOf = (table: string): readonly OrderRelation[] => graph.incoming.get(table) ?? [];
   const active = (edge: OrderRelation): boolean => !broken.has(edge);
   const isMirror = (edge: OrderRelation, candidate: OrderRelation): boolean =>
@@ -488,8 +546,10 @@ function sortTables(graph: Graph, catalog: OrderCatalog): Sorted {
 
   const isReady = (table: string): boolean => intoOf(table).every((edge) => !active(edge) || !remaining.has(edge.parent.table));
   while (remaining.size > 0) {
+    const lowest = Math.min(...[...remaining].map((table) => rankOf(effective, table)));
+    const ready = [...remaining].filter((table) => rankOf(effective, table) === lowest && isReady(table)).sort(byRank);
     // Sites become tenants, the umbrella included, so the site table leads even tables without any parent.
-    const next = remaining.has(SITE_ROOT_TABLE) && isReady(SITE_ROOT_TABLE) ? SITE_ROOT_TABLE : [...remaining].find(isReady);
+    const next = remaining.has(SITE_ROOT_TABLE) && isReady(SITE_ROOT_TABLE) ? SITE_ROOT_TABLE : ready[0];
     if (next === undefined) {
       breakCycle();
       continue;
@@ -503,7 +563,7 @@ function sortTables(graph: Graph, catalog: OrderCatalog): Sorted {
 
 /**
  * Tenant source of each table, in order. A table without its own site inherits through its unbroken relation ranked by
- * the parent's tenant source (siteID, parent, umbrella), then kind (programFold, beanORM, programFk, daoJoin, site), then
+ * the parent's tenant source (siteID, parent, umbrella), then kind (programFold, tenantParent, beanORM, programFk, daoJoin, site), then
  * a parent sharing an owner with the child (a `tusersinterests` row follows its user, not its pooled category), then
  * parent name, child column and relation id.
  */
@@ -606,7 +666,12 @@ export function toMigrationOrderReport(order: DependencyOrder): MigrationOrderRe
   return {
     basis: {
       relations: 'opt2/inventory/legacy-inventory.json relations[]',
-      kinds: ['beanORM fkcolumn/cfc property', 'DAO join predicate in core/mura/**', 'Program_<id> fixture foreign-key column'],
+      kinds: [
+        'beanORM fkcolumn/cfc property',
+        'DAO join predicate in core/mura/**',
+        'Program_<id> fixture foreign-key column',
+        'opt2/table-ownership.json tenantParent join of a table no code join relates to its tenant parent',
+      ],
       foreignKeysDeclared: 0,
       cyclePolicy: 'load without back-reference column, patch in second pass; a back-reference mirrored by a kept relation loads unchanged',
     },

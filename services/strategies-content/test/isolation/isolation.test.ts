@@ -1,8 +1,14 @@
 // Tenant isolation of the content schema: RLS, pools, content pools, dead letters and repository guards.
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEAD_LETTER_REASON_ATTRIBUTE, dlqTopicName, type EventEnvelope } from '@opt2/platform/events';
-import { legacyRowHash, type TableDefinition } from '@opt2/platform/migration-kit';
+import {
+  CONSUMER_AGGREGATE_VERSION_TABLE,
+  DEAD_LETTER_REASON_ATTRIBUTE,
+  INBOX_TABLE,
+  dlqTopicName,
+  type EventEnvelope,
+} from '@opt2/platform/events';
+import { CHANGELOG_TABLE, legacyRowHash, type TableDefinition } from '@opt2/platform/migration-kit';
 import {
   NON_TENANT_TABLES,
   OutsideTenantTransactionError,
@@ -23,6 +29,7 @@ import {
   TENANT_LIST,
   TENANT_UMBRELLA,
   businessClock,
+  createCapturingPublisher,
   defineIsolationSuite,
   expectPlatformTables,
   fixtureForTenant,
@@ -32,6 +39,7 @@ import {
   testEnvelope,
   withoutTenant,
   type InjectResponse,
+  type IsolationEventOptions,
   type PlatformTableGroup,
   type TenantFixture,
   type ThrowawaySchema,
@@ -121,6 +129,14 @@ const DEFINITIONS: ReadonlyMap<string, TableDefinition> = new Map(
   [...OWNED_TABLES, GROUP_PROJECTION, PERMISSION_PROJECTION, MEMBERSHIP_PROJECTION].map((definition) => [definition.table, definition]),
 );
 const ISOLATION_TABLES: readonly string[] = [...DEFINITIONS.keys()].filter((table) => !NON_TENANT.includes(table));
+/** Fresh rows of the platform tables a delivery writes in its destination tenant: receipt, ordering progress and projection audit. */
+const CONSUMER_ROWS: ReadonlyMap<string, () => Row> = new Map<string, () => Row>([
+  [INBOX_TABLE, () => ({ event_id: randomUUID(), subscription: SITE_CHANGED_SUBSCRIPTION, status: 'applied' })],
+  [CONSUMER_AGGREGATE_VERSION_TABLE, () => ({ subscription: SITE_CHANGED_SUBSCRIPTION, aggregate_type: 'site', aggregate_id: newId(), last_version: 1 })],
+  [CHANGELOG_TABLE, () => ({ table: GROUP_PROJECTION.table, op: 'insert', key: newId(), after: '{}', origin: 'target' })],
+]);
+/** Tables of the shared suite, so a delivery's effect in another tenant shows in its counts. */
+const SUITE_TABLES: readonly string[] = [...ISOLATION_TABLES, ...CONSUMER_ROWS.keys()];
 const IDENTITY_OF: ReadonlyMap<string, string> = new Map(Object.entries(IDENTITY_COLUMNS));
 const KEYLESS_MANAGED: ReadonlySet<string> = new Set(['tenant_id', 'legacy_row_hash', 'occurrence']);
 const SITE_COLUMNS: ReadonlySet<string> = new Set(['siteid', 'site_id']);
@@ -166,8 +182,10 @@ let testApp: TestApp<TenantDb> | undefined;
 let repository: ContentRepository | undefined;
 let seeds: TenantSeed[] = [];
 let columnFacts = new Map<string, Map<string, ColumnFacts>>();
-/** Last `programs-sites.site.changed.v1` version pushed for tenant-a; seedRegistry stores version 1. */
+/** Last `programs-sites.site.changed.v1` version built for a push; seedRegistry stores version 1. */
 let siteVersion = 1;
+/** The app's publisher, created up front because the shared suite's event cases take it at registration. */
+const publisher = createCapturingPublisher();
 
 /** The throwaway schema the outer beforeAll created; throws when its creation failed. */
 function created(): ThrowawaySchema {
@@ -259,6 +277,8 @@ function stagedObjectRow(tenant: TenantFixture): Row {
 /** A fresh, constraint-satisfying `table` row of `tenant` without `tenant_id`; keyless rows carry their hash and occurrence 1. */
 function rowFor(table: string, tenant: TenantFixture): Row {
   if (table === STAGED_OBJECT.table) return stagedObjectRow(tenant);
+  const consumerRow = CONSUMER_ROWS.get(table);
+  if (consumerRow !== undefined) return consumerRow();
   const definition = DEFINITIONS.get(table);
   if (definition === undefined) {
     throw new TypeError(`strategies-content declares no table ${table}`);
@@ -287,9 +307,14 @@ function insertOf(tx: TenantTx, table: string, row: Row): { text: string; values
   };
 }
 
-/** Writes one fresh `table` row of `tenant` through the gated, audited content repository. */
+/** Writes one fresh `table` row of `tenant` through the gated, audited content repository; the platform consumer tables with plain SQL. */
 async function writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Promise<void> {
   const row = rowFor(table, tenant);
+  if (CONSUMER_ROWS.has(table)) {
+    const { text, values } = insertOf(tx, table, row);
+    await tx.query(text, values);
+    return;
+  }
   await built().repository.platform.insert(tx, table, row, { actorService: 'strategies-content', requestId: 'isolation' });
 }
 
@@ -402,6 +427,31 @@ function siteEnvelope(fixture: TenantFixture, payload: SiteChangedPayload = payl
   return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: fixture.tenantId, aggregateType: 'site', aggregateId: fixture.siteId, aggregateVersion, payload });
 }
 
+/** `fixture`'s registry state as the next site.changed version, so the consumer applies it rather than ignoring it as stale. */
+function nextSiteEnvelope(fixture: TenantFixture) {
+  siteVersion += 1;
+  return siteEnvelope(fixture, payloadOf(fixture), siteVersion);
+}
+
+/** `build` keyed by tenant id instead of fixture; throws for a tenant id no fixture has. */
+function byTenantId(build: (fixture: TenantFixture) => EventEnvelope): (tenantId: string) => EventEnvelope {
+  return (tenantId) => {
+    const fixture = fixtureForTenant(tenantId);
+    if (fixture === undefined) {
+      throw new TypeError(`No tenant fixture has tenant id ${tenantId}`);
+    }
+    return build(fixture);
+  };
+}
+
+/** The shared suite's event cases, one per push subscription of the service. */
+const SUITE_EVENTS: readonly IsolationEventOptions[] = [
+  { subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: byTenantId(nextSiteEnvelope) },
+  { subscription: GROUP_CHANGED_SUBSCRIPTION, envelopeFor: byTenantId(groupEnvelope) },
+  { subscription: PERMISSION_CHANGED_SUBSCRIPTION, envelopeFor: byTenantId(permissionEnvelope) },
+  { subscription: MEMBERSHIP_CHANGED_SUBSCRIPTION, envelopeFor: byTenantId(membershipEnvelope) },
+].map((event) => ({ ...event, app: () => testApp?.app, publisher }));
+
 /** Delivers tenant-a's registry state `payload` as the next site.changed version. */
 async function pushTenantASite(payload: SiteChangedPayload): Promise<InjectResponse> {
   siteVersion += 1;
@@ -438,7 +488,7 @@ describe.skipIf(!available)('strategies-content tenant isolation', () => {
     repository = createContentRepository({ clock: CLOCK, schema: handle.schema });
     columnFacts = await readColumnFacts(handle);
     seeds = await seedAll(handle);
-    testApp = await buildTestApp({ db: handle.app, clock: CLOCK });
+    testApp = await buildTestApp({ db: handle.app, clock: CLOCK, publisher });
     // After the build, whose start-up may add missing gates as `legacy`; the suite's writes go through the gates.
     await openContentGates(handle);
   });
@@ -481,16 +531,17 @@ describe.skipIf(!available)('strategies-content tenant isolation', () => {
   });
 
   // Also registers the checkCatalog case (forced RLS with USING and WITH CHECK, no role reaching SUPERUSER or BYPASSRLS)
-  // and the requireTenantTx guard case, so neither is repeated here.
+  // and the requireTenantTx guard case, so neither is repeated here, plus each subscription's tenantless and tenant A delivery cases.
   defineIsolationSuite(
     { describe, it, expect, beforeAll },
     {
       db: () => handle,
       name: 'content owned tables',
-      tables: ISOLATION_TABLES,
+      tables: SUITE_TABLES,
       writeAs,
       readAs,
       rowFor,
+      events: SUITE_EVENTS,
     },
   );
 

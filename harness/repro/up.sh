@@ -38,6 +38,8 @@ Environment (* = secret):
     OPT2_STATE_DIR OPT2_PRISTINE_DIR   absolute, outside the checkout (default $HOME/.opt2/state, $HOME/.opt2/pristine)
     OPT2_TZ                            legacy time zone (default: legacy JVM's -Duser.timezone, else TZ or host zone)
     OPT2_LEGACY_SERVER_NAME            original CommandBox server (default the one serving this checkout or PORT)
+    OPT2_LOCK_WAIT                     seconds to queue, first come, first served, behind other claimants of the
+                                       stack (default 0: refuse at once)
   OPT2_CF_*, OPT2_MSSQL_*, OPT2_SQLSERVR_CMD, OPT2_PG_START_CMD, OPT2_LEGACY_START_TIMEOUT_S and MAILPIT_API_URL
   override further defaults; harness/README.md describes every variable. up.sh derives each target process's
   variables from harness/repro/ports.env.
@@ -352,6 +354,8 @@ if ! command -v sqlcmd >/dev/null 2>&1 && [[ -x /opt/mssql-tools18/bin/sqlcmd ]]
 fi
 require_cmd git node npm box sqlcmd pg_isready psql curl tar sha256sum gcloud otelcol-contrib flock setsid ps
 check_target_ports
+# Recorded only now, so a refused rerun leaves a live stack's record alone.
+lock_claim_stack
 # Every process, tool and harness command shares these with the emulator; the service URL map is always ports.env's.
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-opt2-local}"
 export PUBSUB_EMULATOR_HOST="localhost:$OPT2_TOOL_PORT_PUBSUB_EMULATOR"

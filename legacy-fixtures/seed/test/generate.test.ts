@@ -33,7 +33,7 @@ const DDL_FILES: Readonly<Record<FixtureModule, string>> = {
 };
 // Columns the fixture procedures fill on load, so seeded rows omit them.
 const LOADED_COLUMNS: Readonly<Record<string, readonly string[]>> = { audit_entry: ['seq', 'prev_hash', 'entry_hash'] };
-const MASA_ARRAYS = ['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients'] as const;
+const MASA_ARRAYS = ['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients', 'formResponses', 'commenters', 'comments'] as const;
 const ROLES: readonly string[] = [
   'timesheets.employee',
   'timesheets.primary-approver',
@@ -258,6 +258,9 @@ function masaIds(masa: MasaData): string[] {
     ...masa.content.flatMap((row) => [row.contentID, ...row.versions.map((version) => version.contentHistID)]),
     ...masa.files.map((row) => row.fileID),
     ...masa.oauthClients.map((row) => row.clientID),
+    ...masa.formResponses.map((row) => row.responseID),
+    ...masa.commenters.map((row) => row.commenterID),
+    ...masa.comments.map((row) => row.commentID),
   ];
 }
 
@@ -450,6 +453,8 @@ describe('counts', () => {
     ['umbrella members', () => dataset.masa.users.filter((u) => site(u, 'umbrella') && u.isPublic === 1), 1000],
     ['umbrella categories', () => dataset.masa.categories.filter((c) => site(c, 'umbrella')), 100],
     ['umbrella files', () => dataset.masa.files.filter((f) => site(f, 'umbrella')), 20],
+    ['umbrella content nodes', () => siteTree('umbrella').filter((c) => c.versions.length > 0), 10],
+    ['umbrella forms', () => dataset.masa.content.filter((c) => site(c, 'umbrella') && c.type === 'Form'), 1],
     ['tenant-a system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-a') && u.isPublic === 0), 2000],
     ['tenant-a groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-a')), 50],
     ['tenant-a content nodes', () => siteTree('tenant-a').filter((c) => c.versions.length > 0), 5000],
@@ -539,7 +544,7 @@ describe('ids', () => {
     expect(tree.filter((row) => row.parentID !== MASA_HOME_CONTENT_ID && nodes.get(row.parentID) !== row.siteID)).toEqual([]);
     const forms = content.filter((row) => row.moduleID !== MASA_DEFAULT_MODULE_ID);
     expect(forms.map((row) => [row.siteID, row.moduleID, row.parentID, row.type])).toEqual(
-      ['tenant-a', 'tenant-b'].map((siteID) => [siteID, MASA_FORMS_MODULE_ID, MASA_FORMS_MODULE_ID, 'Form']),
+      SITE_ORDER.map((siteID) => [siteID, MASA_FORMS_MODULE_ID, MASA_FORMS_MODULE_ID, 'Form']),
     );
     expect(dataset.masa.files.filter((row) => row.moduleID !== MASA_DEFAULT_MODULE_ID)).toEqual([]);
   });
@@ -548,7 +553,7 @@ describe('ids', () => {
     const files = new Map(dataset.masa.files.map((row) => [row.fileID, row]));
     const pools = new Map(dataset.masa.sites.map((row) => [row.siteID, row.filePoolID]));
     const nodes = dataset.masa.content.filter((row) => row.type === 'File');
-    expect(nodes.map((row) => row.siteID)).toEqual(['tenant-a']);
+    expect(nodes.map((row) => row.siteID)).toEqual(['umbrella', 'tenant-a']);
     for (const node of nodes) {
       const file = files.get(node.fileID ?? '');
       expect(file?.siteID, node.contentID).toBe(pools.get(node.siteID));
@@ -1018,6 +1023,11 @@ describe('CLI', () => {
 
   it.each<[string, (raw: RawConfig) => void, RegExp]>([
     ['too few groups for the role groups', (raw) => void (raw.sites['tenant-b'].counts.groups = 3), /^seed: Site tenant-b needs at least 10 groups for the role groups, got 3\n$/],
+    [
+      'too few public-pool members to comment',
+      (raw) => void (raw.sites['tenant-b'].counts.members = 1),
+      /^seed: Site tenant-b needs at least 2 public-pool members to comment, got 1\n$/,
+    ],
     [
       'more multi-site survey responses than responses',
       (raw) => void (raw.sites['tenant-b'].counts.multiSiteResponses = 500),

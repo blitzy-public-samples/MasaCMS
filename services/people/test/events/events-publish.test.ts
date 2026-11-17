@@ -158,7 +158,14 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
     return userid;
   }
 
-  /** The same lifecycle as legacy-window applies through `emitStateEvents`; returns the user id. */
+  /** Upserts a mapped person `row` as a migration apply does: the stored row read first, the hook's row_version in the same write. */
+  async function applyPerson(tx: TenantTx, row: Record<string, unknown> & { userid: string }, write: WriteContext): Promise<PersonRow> {
+    const before = await repo.findByKey<PersonRow>(tx, PERSON.table, { userid: row.userid });
+    const pending = { unit: PERSON.unit, table: PERSON.table, row, ...(before === null ? {} : { before }) };
+    return repo.upsert<PersonRow>(tx, PERSON.table, { ...row, ...(await events.targetOnlyColumns(tx, pending, write)) }, write);
+  }
+
+  /** The same lifecycle as legacy-window applies through `targetOnlyColumns` and `emitStateEvents`; returns the user id. */
   async function migrationLifecycle(): Promise<string> {
     const write = migrationWrite('legacy-window');
     const userid = cfUuid();
@@ -168,11 +175,19 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
         const image =
           op === 'delete'
             ? await repo.delete<PersonRow>(tx, PERSON.table, { userid }, write)
-            : await repo.upsert<PersonRow>(tx, PERSON.table, { ...seed, fname }, write);
+            : await applyPerson(tx, { ...seed, fname }, write);
         await events.emitStateEvents(tx, change(PERSON.unit, PERSON.table, op, image as PersonRow, 'legacy-window'), write);
       });
     }
     return userid;
+  }
+
+  /** The tenant's person changelog rows of `userid` as op and columns, in write order. */
+  async function personLog(userid: string): Promise<[string, string[]][]> {
+    return inTenant(async (tx) => {
+      const sql = `SELECT op, columns FROM ${handle.schema}.changelog WHERE "table" = 'person' AND key LIKE $1 ORDER BY seq`;
+      return (await tx.query<{ op: string; columns: string[] }>(sql, [`%${userid}%`])).rows.map((row): [string, string[]] => [row.op, row.columns]);
+    });
   }
 
   const lifecycles = { domain: domainLifecycle, migration: migrationLifecycle };
@@ -253,19 +268,23 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
     expect(capture.published.map((entry) => entry.topic)).toStrictEqual([PERSON_ARCHIVED_TOPIC, PERSON_ARCHIVED_TOPIC]);
   });
 
-  it('advances row_version for each applied person upsert and writes its state, then the delete one past the before-image', async () => {
+  it('writes each applied person upsert at its next row_version in one changelog row and its state, then the delete one past the before-image', async () => {
     const write = migrationWrite('backfill');
     const userid = cfUuid();
     const seed = { userid, fname: 'Mig', lname: 'Rated', siteid: TENANT_A.siteId, subscribe: 0 };
 
     for (const [op, fname] of [['insert', 'Mig'], ['update', 'Migrated']] as const) {
       await inTenant(async (tx) => {
-        const applied = await repo.upsert<PersonRow>(tx, PERSON.table, { ...seed, fname }, write);
+        const applied = await applyPerson(tx, { ...seed, fname }, write);
         await events.emitStateEvents(tx, change(PERSON.unit, PERSON.table, op, applied), write);
       });
     }
     const stored = await inTenant((tx) => repo.findPerson(tx, userid));
     expect(stored?.row_version).toBe('2');
+    expect((await personLog(userid)).map(([op, columns]) => [op, op === 'insert' ? columns.at(-1) : columns])).toStrictEqual([
+      ['insert', 'row_version'],
+      ['update', ['fname', 'row_version']],
+    ]);
 
     await inTenant(async (tx) => {
       const before = await repo.delete<PersonRow>(tx, PERSON.table, { userid }, write);
@@ -338,6 +357,7 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
     const before = await outboxCount();
 
     await inTenant(async (tx) => {
+      expect(await events.targetOnlyColumns(tx, { unit: ADDRESS.unit, table: ADDRESS.table, row: address }, write)).toStrictEqual({});
       const applied = await repo.upsert(tx, ADDRESS.table, address, write);
       await events.emitStateEvents(tx, change(ADDRESS.unit, ADDRESS.table, 'insert', applied, 'migration-feed'), write);
     });
@@ -346,16 +366,13 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
     expect(capture.published).toStrictEqual([]);
   });
 
-  it('throws for an applied person missing from its transaction and for a change without a row image', async () => {
+  it('throws for an applied change without a row image', async () => {
     const write = migrationWrite('backfill');
-    const ghost = personRow({ row_version: '0' });
+    const before = await outboxCount();
 
-    await expect(inTenant((tx) => events.emitStateEvents(tx, change(PERSON.unit, PERSON.table, 'update', ghost), write))).rejects.toThrow(
-      `Applied person ${ghost.userid} is missing from its apply transaction`,
-    );
     await expect(
       inTenant((tx) => events.emitStateEvents(tx, { unit: PERSON.unit, table: PERSON.table, op: 'delete', origin: 'backfill', tenantId: TENANT_A.tenantId }, write)),
     ).rejects.toThrow('Applied delete on people.person carries no row image');
-    expect(await outboxRows(ghost.userid)).toStrictEqual([]);
+    expect(await outboxCount()).toBe(before);
   });
 });

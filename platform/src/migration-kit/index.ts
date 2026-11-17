@@ -65,6 +65,7 @@ export {
   isPlatformInfraTable,
   qualified,
   changelogSql,
+  changelogOrderSql,
   unitGateSql,
   openOperationSql,
   migrationBatchSql,
@@ -140,6 +141,8 @@ export {
   currentPosition,
 } from './cursor.js';
 export type { ChangelogCursor, ChangeRow, ReadChangesOptions, ChangesPage } from './cursor.js';
+export { predecessorEnds, closedEndFrom, lastClosedEnd, commitOrder } from './commit-order.js';
+export type { OrderedChange } from './commit-order.js';
 export { RepositoryError, createRepository } from './repository.js';
 export type { RepositoryRow, TableDefinition, WriteContext, RepositoryOptions, Repository } from './repository.js';
 export {

@@ -98,13 +98,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
     await registerRoutes(app, { db, repository, port, clock, serviceUrls, env });
     registerConsumers(app, { service: OWNER, consumers: [siteRegistryConsumerRegistration], publisher, db });
+    const sitesDomain = createSitesDomain({ repo: repository });
     registerMigrationHandlers(app, {
       owner: OWNER,
       repository,
       mappings,
       units,
       db,
-      emitStateEvents: createSitesDomain({ repo: repository }).emitStateEvents,
+      emitStateEvents: sitesDomain.emitStateEvents,
+      targetOnlyColumns: sitesDomain.targetOnlyColumns,
     });
     await registerSweep(app, { port, serviceUrls, clock });
     await registerSiteMonitorRoutes(app, { db, port, clock, serviceUrls });

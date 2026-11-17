@@ -174,9 +174,11 @@ paths:
     get:
       operationId: jsonApiRootGet
       summary: Serves the JSON API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: &jsonApiKeys
         - 'api:category.delete'
         - 'api:category.findall'
@@ -337,15 +339,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonApiRootPost
       summary: Serves the JSON API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -378,15 +382,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonApiRootPut
       summary: Serves the JSON API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -419,15 +425,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonApiRootDelete
       summary: Serves the JSON API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -460,7 +468,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/json/v1/{siteid}:
@@ -469,9 +477,11 @@ paths:
     get:
       operationId: jsonApiSiteGet
       summary: Serves the JSON API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -501,15 +511,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonApiSitePost
       summary: Serves the JSON API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -541,15 +553,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonApiSitePut
       summary: Serves the JSON API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -581,15 +595,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonApiSiteDelete
       summary: Serves the JSON API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -621,7 +637,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/json/v1/{siteid}/{path}:
@@ -631,9 +647,11 @@ paths:
     get:
       operationId: jsonApiPathGet
       summary: 'Serves a path-addressed JSON API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -663,15 +681,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonApiPathPost
       summary: 'Serves a path-addressed JSON API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -703,15 +723,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonApiPathPut
       summary: 'Serves a path-addressed JSON API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -743,15 +765,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonApiPathDelete
       summary: 'Serves a path-addressed JSON API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -783,16 +807,18 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/ajax/v1:
     get:
       operationId: ajaxApiRootGet
       summary: Serves the AJAX API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -823,15 +849,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxApiRootPost
       summary: Serves the AJAX API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -864,15 +892,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxApiRootPut
       summary: Serves the AJAX API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -905,15 +935,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxApiRootDelete
       summary: Serves the AJAX API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -946,7 +978,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/ajax/v1/{siteid}:
@@ -955,9 +987,11 @@ paths:
     get:
       operationId: ajaxApiSiteGet
       summary: Serves the AJAX API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -987,15 +1021,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxApiSitePost
       summary: Serves the AJAX API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1027,15 +1063,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxApiSitePut
       summary: Serves the AJAX API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1067,15 +1105,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxApiSiteDelete
       summary: Serves the AJAX API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1107,7 +1147,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/ajax/v1/{siteid}/{path}:
@@ -1117,9 +1157,11 @@ paths:
     get:
       operationId: ajaxApiPathGet
       summary: 'Serves a path-addressed AJAX API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1149,15 +1191,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxApiPathPost
       summary: 'Serves a path-addressed AJAX API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1189,15 +1233,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxApiPathPut
       summary: 'Serves a path-addressed AJAX API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1229,15 +1275,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxApiPathDelete
       summary: 'Serves a path-addressed AJAX API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1269,16 +1317,18 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/rest/v1:
     get:
       operationId: restApiRootGet
       summary: Serves the sessionless REST API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: &restApiKeys
         - 'rest:category.delete'
         - 'rest:category.findall'
@@ -1438,15 +1488,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restApiRootPost
       summary: Serves the sessionless REST API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1478,15 +1530,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restApiRootPut
       summary: Serves the sessionless REST API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1518,15 +1572,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restApiRootDelete
       summary: Serves the sessionless REST API for the site the `siteid` form or url field names, else `default`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1558,7 +1614,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/rest/v1/{siteid}:
@@ -1567,9 +1623,11 @@ paths:
     get:
       operationId: restApiSiteGet
       summary: Serves the sessionless REST API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid, /index.cfm/_api/rest/v1/:siteid]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1598,15 +1656,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restApiSitePost
       summary: Serves the sessionless REST API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid, /index.cfm/_api/rest/v1/:siteid]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1637,15 +1697,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restApiSitePut
       summary: Serves the sessionless REST API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid, /index.cfm/_api/rest/v1/:siteid]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1676,15 +1738,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restApiSiteDelete
       summary: Serves the sessionless REST API for one site; the entity or method comes from `method` and `entityname`.
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid, /index.cfm/_api/rest/v1/:siteid]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1715,7 +1779,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/rest/v1/{siteid}/{path}:
@@ -1725,9 +1789,11 @@ paths:
     get:
       operationId: restApiPathGet
       summary: 'Serves a path-addressed sessionless REST API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid/*, /index.cfm/_api/rest/v1/:siteid/*]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1756,15 +1822,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restApiPathPost
       summary: 'Serves a path-addressed sessionless REST API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid/*, /index.cfm/_api/rest/v1/:siteid/*]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1795,15 +1863,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restApiPathPut
       summary: 'Serves a path-addressed sessionless REST API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid/*, /index.cfm/_api/rest/v1/:siteid/*]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1834,15 +1904,17 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restApiPathDelete
       summary: 'Serves a path-addressed sessionless REST API call: an entity, id, sub-resource or method after the site id.'
+      description: The path in any letter case, also behind `/index.cfm`, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1/:siteid/*, /index.cfm/_api/rest/v1/:siteid/*]
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
@@ -1873,7 +1945,7 @@ paths:
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
-          $ref: '#/components/responses/ServerError'
+          $ref: '#/components/responses/JsonApiServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /_api/feed/v1:
@@ -7231,6 +7303,15 @@ paths:
           description: Comma-separated topics whose published outbox events are listed in `published`; every one when the read names none of `publishedAfter`, `publishedLimit` and `publishedThrough`, otherwise one page per read.
           schema:
             type: string
+        - name: registeredTenants
+          in: query
+          required: false
+          description: With `true`, lists every tenant of the registry, each site's and its pools', in `registeredTenants`.
+          schema:
+            type: string
+            enum:
+              - 'true'
+              - 'false'
         - name: publishedAfter
           in: query
           required: false
@@ -8608,7 +8689,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     ServerError:
-      description: Legacy 500 `server_error`; a `comment` remote function (`delete`, `undelete`, `flag`, `markAsSpam`, `unMarkAsSpam`) answers it after it has run, as its void result fails the envelope.
+      description: Legacy 500 `server_error`.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -8620,6 +8701,21 @@ components:
         application/json;charset=utf-8:
           schema:
             $ref: '#/components/schemas/LegacyError'
+    JsonApiServerError:
+      description: Legacy 500 `server_error`; a `comment` remote function (`delete`, `undelete`, `flag`, `markAsSpam`, `unMarkAsSpam`) answers it after it has run, as its void result fails the envelope; with `suppressAPIParams` false, onError's page instead, without an ETag, when the echoed params hold a JSON null under a serializer-hinted key.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/LegacyError'
+              - $ref: '#/components/schemas/LegacyErrorPage'
     Unavailable:
       description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
       headers:
@@ -8787,18 +8883,13 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     RawUnavailable:
-      description: 'Legacy-shaped 503: the error envelope, or the admin error page.'
+      description: 'Legacy-shaped 503: the admin error page.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
         Strict-Transport-Security:
           $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
       content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyUnavailable'
         text/html;charset=UTF-8:
           schema:
             $ref: '#/components/schemas/LegacyErrorPage'
@@ -10137,6 +10228,12 @@ components:
           description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
+        registeredTenants:
+          type: array
+          description: Every tenant of the registry, each site's and its pools', lower-case and sorted; present only when asked.
+          items:
+            type: string
+            format: uuid
         publishedNext:
           type: string
           pattern: '^[0-9]+$'

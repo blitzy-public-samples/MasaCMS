@@ -644,6 +644,72 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     ]);
   });
 
+  it('writes no row or changelog row for an upsert, update or replaceOne that changes no canonical value, positioned at its own xid once', async () => {
+    const tenant = freshTenant();
+    const stored = await handle.app.withTenant(tenant, async (tx) => ({
+      item: await repo.insert(tx, 'item', { item_id: 'n1', name: 'Same', qty: 3 }),
+      tag: await repo.insert(tx, 'tag_member', { label: 'same', weight: 1 }),
+    }));
+    const store = requestStore('req-noop');
+    const seen: string[] = [];
+    const registered = { count: 0 };
+    const { results, xid } = await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, async (tx) => {
+        const recorded = recordingTx(tx, seen, registered);
+        const written = [
+          await repo.upsert(recorded, 'item', { item_id: 'n1', name: 'Same', qty: '3' }),
+          await repo.update(recorded, 'item', { item_id: 'n1' }, { name: 'Same', qty: 3n }),
+          await repo.replaceOne(recorded, 'tag_member', { label: 'same', weight: 1 }, { label: 'same', weight: '1' }),
+        ];
+        const own = await tx.query<{ xid: string }>('SELECT pg_current_xact_id()::text AS xid');
+        return { results: written, xid: own.rows[0]?.xid };
+      }),
+    );
+    expect(results).toEqual([stored.item, stored.item, stored.tag]);
+    expect(seen.filter((text) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(text))).toEqual([]);
+    expect(seen.filter((text) => text.includes('pg_current_xact_id'))).toHaveLength(1);
+    expect(registered.count).toBe(1);
+    expect((await changelog(tenant)).map((change) => change.op)).toEqual(['insert', 'insert']);
+    expect(store.writePositions).toEqual(new Map([[OWNER, xid]]));
+  });
+
+  it('positions a no-op after a logged write at the changelog xid without querying it, and queries nothing outside a request', async () => {
+    const tenant = freshTenant();
+    const store = requestStore('req-noop-after');
+    const seen: string[] = [];
+    await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, async (tx) => {
+        const recorded = recordingTx(tx, seen, { count: 0 });
+        await repo.insert(recorded, 'item', { item_id: 'n3', name: 'Logged', qty: 1 });
+        await repo.upsert(recorded, 'item', { item_id: 'n3', name: 'Logged', qty: 1 });
+      }),
+    );
+    await handle.app.withTenant(tenant, (tx) => repo.update(recordingTx(tx, seen, { count: 0 }), 'item', { item_id: 'n3' }, { qty: 1 }));
+    expect(seen.filter((text) => text.includes('pg_current_xact_id'))).toEqual([]);
+    expect(store.writePositions).toEqual(new Map([[OWNER, (await changelog(tenant))[0]?.xid]]));
+  });
+
+  it('sets only the differing columns, and logs nothing when the database stores a value as the row already holds it', async () => {
+    const tenant = freshTenant();
+    const stored = await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'n2', name: 'Kept', qty: 3 }));
+    const seen: string[] = [];
+    const [normalised, changed] = await handle.app.withTenant(tenant, async (tx) => {
+      const recorded = recordingTx(tx, seen, { count: 0 });
+      return [
+        // ' 3' has no canonical integer form until PostgreSQL parses it as 3.
+        await repo.update(recorded, 'item', { item_id: 'n2' }, { qty: ' 3' }),
+        await repo.upsert(recorded, 'item', { item_id: 'n2', name: 'Kept', qty: 4 }),
+      ];
+    });
+    expect(normalised).toEqual(stored);
+    expect(changed).toEqual({ ...stored, qty: 4 });
+    expect(seen.filter((text) => text.startsWith('UPDATE')).map((text) => /SET (.+) WHERE/.exec(text)?.[1])).toEqual(['"qty" = $1', '"qty" = $1']);
+    expect((await changelog(tenant)).map((change) => [change.op, change.columns])).toEqual([
+      ['insert', ['item_id', 'name', 'qty']],
+      ['update', ['qty']],
+    ]);
+  });
+
   it('upsert updates the row a concurrent transaction committed for the same key after its first read', async () => {
     const tenant = freshTenant();
     let release = (): void => undefined;

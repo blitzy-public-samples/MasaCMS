@@ -10,6 +10,7 @@ import {
   ROUTE_FAMILIES,
   adminUnavailableResponse,
   apiUnavailableResponse,
+  createApiSerializer,
   errorSpec,
   etag,
   isDefinedApiName,
@@ -44,8 +45,8 @@ const ERROR_ROWS: { type: LegacyApiErrorType; status: number; code: string; mess
   { type: 'server_error', status: 500, code: 'server_error', message: 'Unhandled Exception' },
 ];
 
-// Anonymous GETs against Masa 7.6.1 on ACF 2023: /index.cfm/_api/json/v1/default/nosuchentity and
-// /index.cfm/_api/json/v1/default/user/?fields=username.
+// Anonymous GETs against Masa 7.6.1 on ACF 2023: /index.cfm/_api/json/v1/default/nosuchentity,
+// /index.cfm/_api/json/v1/default/user/?fields=username and /index.cfm/_api/json/v1/default/file/<id>.
 const ORACLE_ERRORS: {
   label: string;
   type: LegacyApiErrorType;
@@ -69,6 +70,31 @@ const ORACLE_ERRORS: {
     status: 401,
     body: '{"apiversion":"v1","method":"findQuery","error":{"message":"Insufficient Account Permissions","code":"invalid_request"}}',
     etag: 'D203B063A91EDCCF5A3669192822EE3D8EA19321999C13DB875064E24598ACBE',
+  },
+  {
+    label: 'a file entity path, whose segment names the file scope',
+    type: 'invalidMethodCall',
+    opts: { method: 'file', params: { siteid: 'default', method: 'file' } },
+    status: 400,
+    body: '{"apiversion":"v1","method":"file","error":{"message":"Invalid method call","code":"invalid_request"}}',
+    etag: '1ED7DD034141415F1B6593870AE987378CE716E0879BA3344DF6635394D9715E',
+  },
+  // The same oracle with suppressAPIParams=false: /_api/json/v1/default/file?probe=1 and /_api/json/v1/nosuchsite/content?probe=1.
+  {
+    label: 'a file entity path with its params echoed',
+    type: 'invalidMethodCall',
+    opts: { method: 'file', params: { probe: '1', method: 'file' }, suppressAPIParams: false },
+    status: 400,
+    body: '{"apiversion":"v1","method":"file","error":{"message":"Invalid method call","code":"invalid_request"},"params":{"probe":"1"}}',
+    etag: '78B4F2A30CC8FD8ED7FA6979394B0D2A1F71D37723851CE9465DDD263EBA5E2B',
+  },
+  {
+    label: 'an unknown site with its params echoed',
+    type: 'invalidParameters',
+    opts: { params: { siteid: 'nosuchsite', probe: '1' }, suppressAPIParams: false },
+    status: 400,
+    body: '{"apiversion":"v1","method":"invalid","error":{"message":"Invalid parameters","code":"invalid_request"},"params":{"siteid":"nosuchsite","probe":"1"}}',
+    etag: '81F6C68BA4C330AC41971A02E6ED7A8476501F73F69F00D3FDC434E5231ED6BB',
   },
 ];
 
@@ -132,8 +158,15 @@ describe('legacyErrorResponse', () => {
       suppressAPIParams: false,
     });
     expect(body).toBe(
-      '{"apiversion":"v1","method":"login","params":{"siteid":"default"},"error":{"message":"Bad Request","code":"invalid_request"}}',
+      '{"apiversion":"v1","method":"login","error":{"message":"Bad Request","code":"invalid_request"},"params":{"siteid":"default"}}',
     );
+  });
+
+  it('writes the echoed params with the serializer it is given', () => {
+    const serializer = createApiSerializer([{ key: 'display', hint: 'integer' }]);
+    const params = { display: '1', probe: '1' };
+    expect(legacyErrorResponse('badRequest', { params, suppressAPIParams: false }).body).toContain('"params":{"display":"1","probe":"1"}');
+    expect(legacyErrorResponse('badRequest', { params, suppressAPIParams: false, serializer }).body).toContain('"params":{"display":1,"probe":"1"}');
   });
 
   it('forces status 404 when request.mura404 is set', () => {
@@ -244,6 +277,7 @@ describe('reportedMethod', () => {
     { name: 'getBean', valid: true, defined: true, reported: 'getBean' },
     { name: 'file', valid: true, defined: true, reported: 'file' },
     { name: 'File', valid: true, defined: true, reported: 'File' },
+    { name: 'http', valid: true, defined: true, reported: 'http' },
     { name: 'attributes', valid: true, defined: false, reported: 'invalid' },
     { name: 'e', valid: true, defined: false, reported: 'e' },
     { name: 'E', valid: true, defined: false, reported: 'E' },
@@ -302,7 +336,7 @@ describe('apiUnavailableResponse', () => {
       suppressAPIParams: false,
     });
     expect(body).toBe(
-      '{"apiversion":"v1","method":"findOne","params":{"siteid":"default"},"error":{"message":"Unhandled Exception","code":"server_error"}}',
+      '{"apiversion":"v1","method":"findOne","error":{"message":"Unhandled Exception","code":"server_error"},"params":{"siteid":"default"}}',
     );
   });
 

@@ -1,4 +1,4 @@
-/** Target side of reconciliation: a unit table's rows and the unit's object manifest, read through its owner's export only. */
+/** Target side of reconciliation: a unit table's or target-only unit's rows, the unit's object manifest and the owner's registered tenants, read through its migration endpoints only. */
 import {
   LEGACY_PROGRAM_ID_COLUMN,
   decodeRow,
@@ -15,9 +15,9 @@ import { parseQualifiedName, qualifiedName, type CanonicalRow } from '../extract
 import type { DataOwner } from '../owners/index.js';
 import type { ObjectEntry } from './compare.js';
 import { toUnitRow, unitRowSorter, type UnitTableShape } from './legacy-side.js';
-import type { UnitRowSorter, UnitRowSorterOptions } from './sorted-rows.js';
+import { UnitRowSorter, type UnitRowSorterOptions } from './sorted-rows.js';
 
-/** Context members the target side reads: the owners' export endpoints. */
+/** Context members the target side reads: the owners' export and position endpoints. */
 export type ReconcileTargetDeps = Pick<MigrationContext, 'owners'>;
 
 /** One unit table's target rows in one tenant, held in bounded memory until read, with the unit's objects when asked for. */
@@ -178,6 +178,46 @@ export async function readTargetUnitRows(
     objects: includeObjects ? objects : null,
     dispose: () => sorter.dispose(),
   };
+}
+
+/** Sort shape of a unit no legacy table feeds: keyless, so its exported rows order by their encodings. */
+const TARGET_ONLY_SHAPE: Pick<UnitTableShape, 'keyed' | 'keyColumns' | 'columns'> = { keyed: false, keyColumns: [], columns: [] };
+
+/** An exported row of `unit`, which no legacy table feeds, as a keyless row of its encoding; rows of several mappings share no columns to decode. */
+function targetOnlyRow(unit: string, encoding: string): CanonicalRow {
+  return { table: unit, key: encoding, keyValues: [], encoding, row: {} };
+}
+
+/**
+ * Every row `source.owner` exports for `source.unit`, a unit no legacy table feeds, in `tenantId`: the rows of all its
+ * exported tables as one keyless multiset of encodings, held in a bounded sorter; `objects` is null.
+ */
+export async function readTargetOnlyRows(
+  deps: ReconcileTargetDeps,
+  source: TargetObjectsSource,
+  tenantId: string,
+  options: UnitRowSorterOptions = {},
+): Promise<TargetUnitRows> {
+  const sorter = new UnitRowSorter(TARGET_ONLY_SHAPE, (encoding) => targetOnlyRow(source.unit, encoding), options);
+  try {
+    for await (const page of deps.owners.exportPages(source.owner, { unit: source.unit, tenantId })) {
+      for (const exported of page.tables) {
+        for (const row of exported.rows) await sorter.add(tenantId, targetOnlyRow(source.unit, row.row));
+      }
+    }
+    await sorter.sort();
+  } catch (error) {
+    await sorter.dispose();
+    throw error;
+  }
+  return { rows: sortedRows(sorter, tenantId), count: sorter.count(tenantId), objects: null, dispose: () => sorter.dispose() };
+}
+
+/** Tenants `owner`'s registry names, sites and their pools. @throws Error when the owner's position answer omits them */
+export async function readTargetTenants(deps: ReconcileTargetDeps, owner: DataOwner): Promise<string[]> {
+  const { registeredTenants } = await deps.owners.position(owner, { registeredTenants: true });
+  if (registeredTenants === undefined) throw new Error(`Owner ${owner} answered its position without the registered tenants it was asked for`);
+  return registeredTenants;
 }
 
 /** The object manifest `source.owner` exports for `source.unit` in `tenantId`, collected from every export page. */

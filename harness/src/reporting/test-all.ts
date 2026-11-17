@@ -427,8 +427,9 @@ function consumerFacts(service: ServiceName, consumers: IsolationInput['consumer
     .filter((consumer) => consumer.subscription.startsWith(`${service}.`))
     .flatMap((consumer) => {
       const facts: string[] = [];
-      const effects = consumer.crossTenantEffects ?? 0;
-      if (effects > 0) facts.push(`crossTenantEffects ${effects}`);
+      const effects = consumer.crossTenantEffects;
+      if (effects === null) facts.push('crossTenantEffects null: no effect assertion names it');
+      else if (effects !== undefined && effects > 0) facts.push(`crossTenantEffects ${effects}`);
       if (consumer.tenantlessRejected === false) facts.push('tenantlessRejected false');
       if (consumer.fanoutRegistryOnly === false) facts.push('fanoutRegistryOnly false');
       return facts.map((fact) => `consumer ${consumer.subscription} ${fact}`);

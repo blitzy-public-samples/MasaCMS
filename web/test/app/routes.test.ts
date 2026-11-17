@@ -26,6 +26,7 @@ import { TENANT_A_USERS_CSV_BODY, USERS_CSV_HEADERS, tenantAUsersCsv } from '../
 import { siteById, type FixtureSiteId } from '../fixtures/programs-sites/sites';
 import { adminS2Session, tenantASiteAdminSession } from '../fixtures/session';
 import { CONTENT_HIST_IDS, CONTENT_IDS } from '../fixtures/strategies-content/carch';
+import { CHANGESET_IDS } from '../fixtures/strategies-content/changesets';
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { loaddiffRelay, loadsitemanagerRelay } from '../fixtures/strategies-content/raw';
 import { writeResultReRender } from '../fixtures/strategies-content/write-results';
@@ -60,6 +61,11 @@ const USERS_CSV = routeKey('GET', 'people', '/v1/users/download');
 const CARCH_UPDATE = routeKey('POST', 'strategies-content', '/v1/raw/carch/update');
 const LOADDIFF = routeKey('GET', 'strategies-content', '/v1/raw/carch/loaddiff');
 const LOADSITEMANAGER = routeKey('POST', 'strategies-content', '/v1/raw/carch/loadsitemanager');
+const CHANGESET_ROLLBACK = routeKey(
+  'POST',
+  'strategies-content',
+  `/v1/sites/${TENANT_A.siteId}/changesets/${CHANGESET_IDS.published}/rollback`,
+);
 const dayActionRoute = (dayId: string, action: string): string =>
   routeKey('POST', 'timesheets', `/v1/timesheets/days/${dayId}/${action}`);
 
@@ -317,6 +323,23 @@ describe('admin-actions redirect mode', () => {
     expect(relayed(toService('people'))).toEqual([]);
     expect(relayed((recorded) => recorded.method !== 'GET')).toEqual([]);
   });
+
+  it('POST cChangesets.rollback answers 404 for the withheld rollback, which stays on legacy, unrelayed', async () => {
+    install({
+      ...sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession),
+      [CHANGESET_ROLLBACK]: { status: 200, body: { saved: true, errors: {}, redirect: null } },
+    });
+
+    const { response } = await send('/admin-actions/cchangesets/rollback', {
+      user: SUBJECTS.siteAdmin,
+      form: formWithCsrf({ siteid: SITE, changesetID: CHANGESET_IDS.published }, POSTED_CSRF),
+    });
+
+    expectLegacyHeaders(response);
+    expect(response.status).toBe(404);
+    expect(relayed(toService('strategies-content'))).toEqual([]);
+    expect(relayed((recorded) => recorded.method !== 'GET')).toEqual([]);
+  });
 });
 
 describe('admin-raw response modes', () => {
@@ -375,7 +398,7 @@ describe('admin-raw response modes', () => {
     expect(await response.text()).toBe(TENANT_A_USERS_CSV_BODY);
   });
 
-  it('POST carch.update with a rejected save re-renders the editor inside the layout', async () => {
+  it('POST carch.update answers 404 for the withheld content save, which stays on legacy, unrelayed', async () => {
     install({
       [CARCH_UPDATE]: {
         status: 200,
@@ -402,11 +425,9 @@ describe('admin-raw response modes', () => {
     });
 
     expectLegacyHeaders(response);
-    expect(response.status).toBe(200);
-    expect(response.headers.get('content-type')).toMatch(/^text\/html/);
-    const body = await response.text();
-    expect(body.startsWith('<!DOCTYPE html>')).toBe(true);
-    expect(body).toContain("The 'Title' field is required");
+    expect(response.status).toBe(404);
+    expect(relayed(toService('strategies-content'))).toEqual([]);
+    expect(relayed((recorded) => recorded.method !== 'GET')).toEqual([]);
   });
 });
 

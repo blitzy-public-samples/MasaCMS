@@ -93,6 +93,7 @@ import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.js';
 import { registerInterestGroupRoutes } from '../../src/routes/v1/interest-groups.js';
+import { rawSurfaceOf } from '../../src/routes/v1/raw.js';
 import { registerContentQueueControl } from '../../src/tasks/port.js';
 
 /** Name of the service under test, the audience of every invocation credential sent to it. */
@@ -957,6 +958,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
       env,
       clock: TEST_CLOCK,
       verifierOverride: testVerifier(SERVICE),
+      surfaceOf: rawSurfaceOf,
       pool: db,
       logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
     });

@@ -275,7 +275,7 @@ export interface SuiteApi {
 /** A migrated schema handle, or a getter of one the caller creates later, e.g. in its own `beforeAll`. */
 export type IsolationDb = ThrowawaySchema | (() => ThrowawaySchema | undefined);
 
-/** The service's push route and dead-letter publisher, for the tenantless-event case. */
+/** One subscription's push route and dead-letter publisher, for its tenantless-event and tenant A delivery cases. */
 export interface IsolationEventOptions {
   /** The app, or a getter of one the caller builds later, e.g. in its own `beforeAll`. */
   app: PushTarget | (() => PushTarget | undefined);
@@ -319,7 +319,10 @@ export interface IsolationSuiteOptions {
   rowFor(table: string, tenant: TenantFixture): Record<string, unknown>;
   /** Tenant id owning a row readAs returned, or undefined when unknown; defaults to its `tenant_id` or `tenantId`. */
   tenantOf?(table: string, row: unknown): string | undefined;
+  /** One subscription's event cases, registered before those of `events`. */
   event?: IsolationEventOptions;
+  /** Event cases per subscription; a subscription may appear only once across `event` and `events`. */
+  events?: readonly IsolationEventOptions[];
   fanout?: IsolationFanoutOptions;
   grant?: IsolationGrantOptions;
 }
@@ -327,6 +330,8 @@ export interface IsolationSuiteOptions {
 /** SQLSTATE of a row-level security WITH CHECK violation. */
 const RLS_VIOLATION = '42501';
 const MISSING_TENANT: DeadLetterReason = 'missing-tenant';
+/** Tenants a tenant A delivery must leave unchanged. */
+const BYSTANDERS: readonly TenantFixture[] = Object.freeze([TENANT_B, TENANT_UMBRELLA]);
 /** Consumer segment of the subscription the fan-out case records its inbox receipts under. */
 const FANOUT_CONSUMER = 'isolation';
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
@@ -441,18 +446,41 @@ async function countsByTenant(tx: TenantTx, schema: string, table: string): Prom
   return new Map(rows.map((row) => [row.tenant_id.toLowerCase(), row.n]));
 }
 
-/** Rows of each table visible to each fixture tenant, keyed `<key> <table>`. */
-async function visibleCounts(db: ThrowawaySchema, tables: readonly string[]): Promise<Record<string, number>> {
-  const counts: Record<string, number> = {};
-  for (const tenant of TENANT_LIST) {
+/** Row count and an order-independent digest of the rows' text. */
+interface TableContents {
+  n: number;
+  digest: string;
+}
+
+/** Contents of each table visible to each of `tenants`, keyed `<key> <table>`. */
+async function visibleContents(
+  db: ThrowawaySchema,
+  tables: readonly string[],
+  tenants: readonly TenantFixture[] = TENANT_LIST,
+): Promise<Map<string, TableContents>> {
+  const contents = new Map<string, TableContents>();
+  for (const tenant of tenants) {
     await withTenant(db.app, tenant.tenantId, async (tx) => {
       for (const table of tables) {
-        const { rows } = await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${quoted(db.schema, table)}`);
-        counts[`${tenant.key} ${table}`] = rows[0]?.n ?? 0;
+        // (t.*) is the whole row even when the table has a column named t.
+        const { rows } = await tx.query<TableContents>(
+          `SELECT count(*)::int AS n, md5(coalesce(string_agg((t.*)::text, E'\\n' ORDER BY (t.*)::text), '')) AS digest
+             FROM ${quoted(db.schema, table)} t`,
+        );
+        contents.set(`${tenant.key} ${table}`, rows[0] ?? { n: 0, digest: '' });
       }
     });
   }
-  return counts;
+  return contents;
+}
+
+/** The `<key> <table>` entries whose rows differ between two {@link visibleContents} snapshots, with how. */
+function changedContents(before: ReadonlyMap<string, TableContents>, after: ReadonlyMap<string, TableContents>): string[] {
+  return [...after].flatMap(([key, now]) => {
+    const was = before.get(key);
+    if (was?.n !== now.n) return [`${key}: ${String(was?.n ?? 0)} -> ${String(now.n)} rows`];
+    return was.digest === now.digest ? [] : [`${key}: contents changed`];
+  });
 }
 
 /** The fan-out consumer's effect count per fixture key. */
@@ -592,18 +620,32 @@ function registerCatalogAndGuardCases({ api, resolve }: SuiteContext): void {
   });
 }
 
-function registerEventCase({ api, tables, ready }: SuiteContext, event: IsolationEventOptions): void {
+function registerEventCases({ api, tables, ready }: SuiteContext, event: IsolationEventOptions): void {
   const { expect } = api;
   api.it(`an event without a tenant on ${event.subscription} is acked, dead-lettered as missing-tenant and changes no rows`, async () => {
     const db = await ready();
     const app = resolved(event.app, 'event.app');
-    const before = await visibleCounts(db, tables);
+    const before = await visibleContents(db, tables);
     const earlier = event.publisher.deadLetters(event.subscription).length;
     const response = await pushTo(app, event.subscription, withoutTenant(event.envelopeFor(TENANT_A.tenantId)));
     const letters = event.publisher.deadLetters(event.subscription).slice(earlier);
     expect(isAck(response), `push answered ${String(response.statusCode)}`).toBe(true);
     expect(letters.map((letter) => letter.reason), `dead letters on ${event.subscription}`).toEqual([MISSING_TENANT]);
-    expect(await visibleCounts(db, tables), 'business rows after the tenantless delivery').toEqual(before);
+    const changed = changedContents(before, await visibleContents(db, tables));
+    expect(changed, 'business tables changed by the tenantless delivery').toEqual([]);
+  });
+  const others = BYSTANDERS.map(tenantLabel).join(' or ');
+  api.it(`a ${tenantLabel(TENANT_A)} delivery on ${event.subscription} is acked and changes no rows of ${others}`, async () => {
+    const db = await ready();
+    const app = resolved(event.app, 'event.app');
+    const before = await visibleContents(db, tables, BYSTANDERS);
+    const earlier = event.publisher.deadLetters(event.subscription).length;
+    const response = await pushTo(app, event.subscription, event.envelopeFor(TENANT_A.tenantId));
+    const letters = event.publisher.deadLetters(event.subscription).slice(earlier);
+    expect(isAck(response), `push answered ${String(response.statusCode)}`).toBe(true);
+    expect(letters.map((letter) => letter.reason), `dead letters on ${event.subscription}`).toEqual([]);
+    const changed = changedContents(before, await visibleContents(db, tables, BYSTANDERS));
+    expect(changed, `tables of ${others} changed by the tenant A delivery`).toEqual([]);
   });
 }
 
@@ -675,6 +717,12 @@ export function defineIsolationSuite(api: SuiteApi, options: IsolationSuiteOptio
   if (tables.length === 0 || invalid.length > 0) {
     throw new TypeError(`defineIsolationSuite needs lower-case snake table names; got ${JSON.stringify(options.tables)}`);
   }
+  const events = [...(options.event === undefined ? [] : [options.event]), ...(options.events ?? [])];
+  const subscriptions = events.map((event) => event.subscription);
+  const repeated = [...new Set(subscriptions.filter((subscription, index) => subscriptions.indexOf(subscription) !== index))];
+  if (repeated.length > 0) {
+    throw new TypeError(`defineIsolationSuite needs each subscription once across event and events; got ${JSON.stringify(repeated)} more than once`);
+  }
   const { db } = options;
   const resolve = (): ThrowawaySchema => resolved(db, 'db');
   const seeds = new WeakMap<ThrowawaySchema, Promise<void>>();
@@ -704,7 +752,7 @@ export function defineIsolationSuite(api: SuiteApi, options: IsolationSuiteOptio
     registerWriteCases(context);
     registerPoolReuseCases(context);
     registerCatalogAndGuardCases(context);
-    if (options.event !== undefined) registerEventCase(context, options.event);
+    for (const event of events) registerEventCases(context, event);
     if (options.fanout !== undefined) registerFanoutCase(context, options.fanout);
     if (options.grant !== undefined) registerGrantCase(context, options.grant);
   });

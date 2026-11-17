@@ -74,8 +74,8 @@ const gatewayMatcher = createMatcher({
   routeKeyOptions: gatewayOptions,
 });
 
-/** Every inventoried remote-function key, `<family>:<entity>.~<function>`. */
-const remoteFunctionKeys = facts.routes().filter((route) => route.includes('.~'));
+/** Every inventoried remote-function key, `<family>:<entity>.~<function>`; a `{variant}` key keys another spelling of the same call. */
+const remoteFunctionKeys = facts.routes().filter((route) => route.includes('.~') && !route.includes('{'));
 
 /** A JSON API or REST request to the default site, keyed `expectedKey`; a form is sent url-encoded. */
 function apiCall(method: string, path: string, parts: ApiCallParts, expectedKey: string): RouteKeyConflictCase {

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { FIXTURES_UNAVAILABLE } from '../../src/golden/catalogue.js';
 import { evaluateCatalog, type CatalogRows, type CatalogRunResult } from '../../src/isolation/catalog.js';
 import type { CaseResult, GatewayIsolationResult, IsolationCase } from '../../src/isolation/gateway-matrix.js';
+import { LEGACY_SERVED } from '../../src/isolation/gateway-matrix.js';
 import {
   E2E_RESULT_RELATIVE,
   EVENT_CATEGORIES,
@@ -125,7 +126,7 @@ function reuseTitle(table: string): string {
   return `a pooled connection reused after a tenant A transaction sees no rows of ${table} and cannot write it`;
 }
 
-/** Title of a tenantless-event case on `subscription`. */
+/** Title `defineIsolationSuite` gives the tenantless-event case of `subscription`. */
 function tenantlessTitle(subscription: string): string {
   return `an event without a tenant on ${subscription} is acked, dead-lettered as missing-tenant and changes no rows`;
 }
@@ -135,9 +136,14 @@ function fanoutTitle(topic: string): string {
   return `a ${topic} fan-out from umbrella reaches tenant A once each and never tenant B`;
 }
 
-/** Title of a delivery-effect case on `subscription`. */
+/** Title `defineIsolationSuite` gives the cross-tenant delivery-effect case of `subscription`. */
 function effectTitle(subscription: string): string {
-  return `${subscription} applies a redelivered event once`;
+  return `a tenant A delivery on ${subscription} is acked and changes no rows of tenant B or tenant umbrella`;
+}
+
+/** The tail of a consumer finding for a category no assertion of the consumer package covers for `subscription`. */
+function namingInPackage(subscription: ConsumerSubscription): string {
+  return `naming ${subscription.subscription} or ${subscription.topic} in its consumer package`;
 }
 
 /** Passing read, write and pooled-reuse assertions over `table`. */
@@ -264,6 +270,10 @@ describe('categoriseAssertion', () => {
     [reuseTitle('person'), 'pooledConnectionReuse'],
     [tenantlessTitle(ARCHIVED.subscription), 'tenantlessRejected'],
     ['a Tenant-less delivery is Dead-Lettered', 'tenantlessRejected'],
+    ['dead-letters a tenant-less group.changed delivery', 'tenantlessRejected'],
+    ['dead-letters and acks a site.changed event without a tenant and records nothing', 'tenantlessRejected'],
+    ['a tenant-less delivery is acked', UNCATEGORISED],
+    ['applies a tenant-b group.changed delivery in tenant-b only and dead-letters nothing', UNCATEGORISED],
     [fanoutTitle(ARCHIVED.topic), 'fanoutRegistryOnly'],
     ['the consumer fans out only to registry tenants', 'fanoutRegistryOnly'],
     ['a tenant A survey grant to tenant B admits tenant B and not tenant umbrella', 'grant'],
@@ -676,7 +686,7 @@ describe('buildIsolationReport', () => {
       'has no tenantless-event assertion',
       [assertion(effectTitle(ARCHIVED.subscription)), assertion(fanoutTitle(ARCHIVED.topic))],
       { tenantlessRejected: false, fanoutRegistryOnly: true, crossTenantEffects: 0 },
-      ['no tenantless-event assertion in its consumer package'],
+      [`no tenantless-event assertion ${namingInPackage(ARCHIVED)}`],
     ],
     [
       'fails its tenantless-event assertion',
@@ -686,15 +696,24 @@ describe('buildIsolationReport', () => {
     ],
     [
       'has no fan-out assertion on a fan-out topic',
-      [assertion(tenantlessTitle(ARCHIVED.subscription))],
+      [assertion(tenantlessTitle(ARCHIVED.subscription)), assertion(effectTitle(ARCHIVED.subscription))],
       { tenantlessRejected: true, fanoutRegistryOnly: false, crossTenantEffects: 0 },
-      [`fan-out topic ${ARCHIVED.topic} has no fan-out assertion in its consumer package`],
+      [`fan-out topic ${ARCHIVED.topic} has no fan-out assertion ${namingInPackage(ARCHIVED)}`],
     ],
     [
       'fails its fan-out assertion',
       [assertion(tenantlessTitle(ARCHIVED.subscription)), assertion(fanoutTitle(ARCHIVED.topic), 'failed')],
       { tenantlessRejected: true, fanoutRegistryOnly: false, crossTenantEffects: 1 },
       ['fan-out assertions did not all pass'],
+    ],
+    [
+      'has neither a fan-out nor a cross-tenant effect assertion',
+      [assertion(tenantlessTitle(ARCHIVED.subscription))],
+      { tenantlessRejected: true, fanoutRegistryOnly: false, crossTenantEffects: null },
+      [
+        `fan-out topic ${ARCHIVED.topic} has no fan-out assertion ${namingInPackage(ARCHIVED)}`,
+        `no cross-tenant effect assertion ${namingInPackage(ARCHIVED)}`,
+      ],
     ],
     [
       'applies an event to another tenant',
@@ -720,7 +739,7 @@ describe('buildIsolationReport', () => {
     expect(built.report.result).toBe('fail');
   });
 
-  it('applies the assertions naming a subscription, and every assertion of the category when none does', () => {
+  it('applies to each subscription only the assertions naming it or its topic, in either tenantless word order', () => {
     const archived: ConsumerSubscription = { ...ARCHIVED, fanout: false };
     const changed: ConsumerSubscription = {
       subscription: 'timesheets.people.person.changed.v1',
@@ -736,19 +755,30 @@ describe('buildIsolationReport', () => {
     };
     const assertions = [
       ...serviceAssertions('blackout'),
-      assertion(tenantlessTitle(archived.subscription)),
+      assertion(`dead-letters a tenant-less ${archived.subscription} delivery`),
+      assertion(effectTitle(archived.subscription)),
       assertion(tenantlessTitle(changed.subscription), 'failed'),
+      assertion(effectTitle(changed.topic)),
     ];
 
-    const { report } = buildIsolationReport(
+    const built = buildIsolationReport(
       inputWithAssertions('timesheets', assertions, { subscriptions: [group, changed, archived] }),
     );
 
-    expect(report.consumers).toEqual([
-      { subscription: group.subscription, tenantlessRejected: false, fanoutRegistryOnly: null, crossTenantEffects: 1 },
+    expect(built.report.consumers).toEqual([
+      { subscription: group.subscription, tenantlessRejected: false, fanoutRegistryOnly: null, crossTenantEffects: null },
       { subscription: archived.subscription, tenantlessRejected: true, fanoutRegistryOnly: null, crossTenantEffects: 0 },
       { subscription: changed.subscription, tenantlessRejected: false, fanoutRegistryOnly: null, crossTenantEffects: 1 },
     ]);
+    const consumerFindings: [ConsumerSubscription, string][] = [
+      [group, `no tenantless-event assertion ${namingInPackage(group)}`],
+      [group, `no cross-tenant effect assertion ${namingInPackage(group)}`],
+      [changed, 'tenantless-event assertions did not all pass'],
+    ];
+    expect(built.findings.filter((finding) => finding.scope.startsWith('consumer '))).toEqual(
+      consumerFindings.map(([{ subscription }, detail]) => ({ scope: `consumer ${subscription}`, service: 'timesheets', detail })),
+    );
+    expect(built.report.result).toBe('fail');
   });
 
   it('fails a consumer whose service is not an isolation package', () => {
@@ -762,10 +792,15 @@ describe('buildIsolationReport', () => {
     const built = buildIsolationReport(passingInput({ subscriptions: [search] }));
 
     expect(built.findings).toEqual(
-      ['consumer search is not one of the isolation packages', 'no tenantless-event assertion in its consumer package'].map(
-        (detail) => ({ scope: `consumer ${search.subscription}`, service: 'search', detail }),
-      ),
+      [
+        'consumer search is not one of the isolation packages',
+        `no tenantless-event assertion ${namingInPackage(search)}`,
+        `no cross-tenant effect assertion ${namingInPackage(search)}`,
+      ].map((detail) => ({ scope: `consumer ${search.subscription}`, service: 'search', detail })),
     );
+    expect(built.report.consumers).toEqual([
+      { subscription: search.subscription, tenantlessRejected: false, fanoutRegistryOnly: null, crossTenantEffects: null },
+    ]);
     expect(built.servicesFailing).toEqual([]);
     expect(built.report.result).toBe('fail');
   });
@@ -819,6 +854,24 @@ describe('buildIsolationReport', () => {
       source: E2E_SOURCE,
     });
     expect(built.report.result).toBe('fail');
+  });
+
+  it.each<[string, CaseResult, string, boolean]>([
+    ['a legacy-served skip', 'skipped', `${LEGACY_SERVED} api:user.findone in v0002`, true],
+    ['a legacy-served skip of a key no entry matches', 'skipped', `${LEGACY_SERVED} page:render in v0002 (no entry)`, true],
+    ['a legacy-served skip naming no route key', 'skipped', LEGACY_SERVED, false],
+    ['an inconclusive case with a legacy-served reason', 'inconclusive', `${LEGACY_SERVED} api:user.findone in v0002`, false],
+  ])('settles %s as an allowed skip or a finding', (_name, result, reason, collected) => {
+    const id = 'user:read-by-id:a->b';
+    const run = gatewayRun([gatewayCase('content:read-list:a->b', 'pass'), gatewayCase(id, result, reason)]);
+
+    const built = buildIsolationReport(passingInput({ endToEnd: endToEnd(run, GATEWAY_URL) }));
+
+    expect(built.endToEndSkipped).toEqual(collected ? [id] : []);
+    expect(built.findings.filter((finding) => finding.scope === 'endToEnd')).toEqual(
+      collected ? [] : [{ scope: 'endToEnd', detail: `case ${id} ${result}: ${reason}` }],
+    );
+    expect(built.report.endToEnd).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: true });
   });
 });
 

@@ -8,7 +8,6 @@ import { changesetEditScreen } from './edit';
 import { changesetListScreen } from './list';
 import { changesetLoadTagArrayScreen } from './loadtagarray';
 import { changesetRemoveItemScreen } from './removeitem';
-import { changesetRollbackScreen } from './rollback';
 import { changesetSaveScreen } from './save';
 
 export { cchangesetsSecondaryMenu } from './secondary-menu';
@@ -97,15 +96,14 @@ function fragmentAction<D>(screen: Omit<FragmentScreen<D>, 'gate'>): FragmentScr
   return Object.freeze({ ...screen, gate: cchangesetsGate, ...defaultedLoad(load), render: afterBefore(render) });
 }
 
-// publish stays legacy-served: publishing saves approved content, which writes the withheld tcontenteventreminders
-// table, so web registers no screen for it and the gateway keeps its route key on legacy.
+// publish and rollback are withheld: each saves content, which writes the decision-list table tcontenteventreminders,
+// so web registers no screen for either and the gateway keeps both on legacy.
 /** The carried cChangesets actions, each behind the controller's `before()` gate and defaults. */
 export const cchangesetsScreens: readonly ScreenDefinition[] = Object.freeze([
   pageAction(changesetListScreen),
   pageAction(changesetAssignmentsScreen),
   pageAction(changesetEditScreen),
   pageAction(changesetSaveScreen),
-  redirectAction(changesetRollbackScreen),
   redirectAction(changesetRemoveItemScreen),
   redirectAction(changesetDeleteScreen),
   fragmentAction(changesetLoadTagArrayScreen),

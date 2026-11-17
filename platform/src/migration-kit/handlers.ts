@@ -49,12 +49,21 @@ import {
   readChanges,
   type ChangeRow,
 } from './cursor.js';
-import { RepositoryError, type Repository, type RepositoryRow, type TableDefinition, type WriteContext } from './repository.js';
+import {
+  RepositoryError,
+  differingColumns,
+  recordTransactionPosition,
+  type Repository,
+  type RepositoryRow,
+  type TableDefinition,
+  type WriteContext,
+} from './repository.js';
 import { hasWritePositionHeader } from './write-position.js';
 import {
   InvalidTenantIdError,
   assertTenantId,
   knownTenants,
+  registryEntries,
   tenantIdForSite,
   withMetadata,
   withTenant,
@@ -142,6 +151,15 @@ export interface MigrationHandlerOptions {
    * context (origin and migration authority), so the service's audited writes for the event pass the unit gate.
    */
   emitStateEvents?(tx: TenantTx, change: AppliedChange, write: WriteContext): Promise<void>;
+  /**
+   * Values of target-only columns, such as an aggregate version, written with one mapped `row` in the same write; called only
+   * when the row inserts (no `before`) or changes the stored `before`.
+   */
+  targetOnlyColumns?(
+    tx: TenantTx,
+    change: Pick<AppliedChange, 'unit' | 'table' | 'before'> & { row: RepositoryRow },
+    write: WriteContext,
+  ): Promise<RepositoryRow>;
   /** Statuses of operations; ids it omits fall back to the `open_operation` registry. */
   operationStatus?(db: TenantDb, operationIds: string[]): Promise<Record<string, OperationStatus>>;
   /** Site of a `Program_<id>` schema as `synthetic.program_site` maps it; required when a mapping takes its tenant from the program. */
@@ -239,6 +257,8 @@ export interface PositionResponse {
    * one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
    */
   published?: PublishedEvent[];
+  /** When asked: every tenant of `tenant_registry`, each site's and its pools', lower-case and sorted. */
+  registeredTenants?: string[];
   /** `publishedAfter` of the next page; it never passes an unpublished or held row of the asked topics at or below `publishedFrontier`. */
   publishedNext?: string;
   /** True when every row of the asked topics after `publishedAfter` and at or below `publishedFrontier` is published and listed. */
@@ -370,6 +390,10 @@ const positionQuerySchema = z.strictObject({
     .string()
     .transform((topics) => topics.split(',').map((topic) => topic.trim()).filter((topic) => topic !== ''))
     .pipe(z.array(z.string().refine(isTopicName, 'expected a <service>.<entity>.<event>.v<major> topic')))
+    .optional(),
+  registeredTenants: z
+    .enum(['true', 'false'])
+    .transform((flag) => flag === 'true')
     .optional(),
   // At most 18 digits, so the value always fits the outbox's bigint `seq`.
   publishedAfter: z.string().regex(/^(0|[1-9]\d{0,17})$/).optional(),
@@ -807,6 +831,9 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     await ensureUnitGates(db, units);
   });
 
+  /** Answer of applyRow for an upsert the stored row already holds: the row counts as applied, with no write and no state event. */
+  const UNCHANGED = 'unchanged';
+
   /** Applies one decoded row through one mapping; null when a delete found nothing to remove. */
   async function applyRow(
     tx: TenantTx,
@@ -814,7 +841,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     op: ApplyBody['rows'][number]['op'],
     row: RepositoryRow,
     ctx: WriteContext,
-  ): Promise<Pick<AppliedChange, 'op' | 'before' | 'after'> | null> {
+  ): Promise<Pick<AppliedChange, 'op' | 'before' | 'after'> | typeof UNCHANGED | null> {
     const { mapping, table, definition } = entry;
     if (op === 'delete') {
       const removed = mapping.keyless
@@ -828,15 +855,21 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     }
     if (op !== 'upsert') throw new InvalidRequestError(`${mapping.legacyTable} is keyed; rows are upserted or deleted`);
     const key = definition.key ?? [];
-    // The stored row is read first only to report the change as an insert or an update with its before-image.
+    // The stored row is read first to tell an unchanged row, and to report the change as an insert or an update with its before-image.
     const { rows } = await tx.query(
       `SELECT * FROM ${qualified(tx.schema, table)} WHERE "tenant_id" = $1 AND ${key
         .map((column, i) => `${ident(column)} = $${i + 2}`)
         .join(' AND ')} FOR UPDATE`,
       [tx.tenantId, ...key.map((column) => row[column] ?? null)],
     );
-    const before = rows[0];
-    const after = await repository.upsert(tx, table, row, ctx);
+    const before: RepositoryRow | undefined = rows[0];
+    if (before !== undefined && differingColumns(definition, before, row).length === 0) {
+      await recordTransactionPosition(tx, owner);
+      return UNCHANGED;
+    }
+    const pending = { unit: mapping.unit, table, row, ...(before === undefined ? {} : { before }) };
+    const targetOnly = (await options.targetOnlyColumns?.(tx, pending, ctx)) ?? {};
+    const after = await repository.upsert(tx, table, { ...row, ...targetOnly }, ctx);
     return before === undefined ? { op: 'insert', after } : { op: 'update', before, after };
   }
 
@@ -915,6 +948,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
           const change = await applyRow(tx, entry, input.op, target, ctx);
           if (change === null) continue;
           wrote = true;
+          if (change === UNCHANGED) continue;
           await emitState(tx, { ...change, unit: entry.mapping.unit, table: entry.table, origin: body.origin, tenantId }, ctx, batchTable, log);
         }
         if (wrote) applied += 1;
@@ -1068,6 +1102,20 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     return published;
   }
 
+  /** Every tenant the registry names, each site's and its pools', lower-case, without repeats and sorted. */
+  async function registryTenantIds(): Promise<string[]> {
+    const ids = (await registryEntries(db)).flatMap((entry) => [
+      entry.tenantId,
+      entry.publicUserPoolTenant,
+      entry.privateUserPoolTenant,
+      entry.categoryPoolTenant,
+      entry.filePoolTenant,
+      entry.displayPoolTenant,
+      ...entry.contentPoolTenants,
+    ]);
+    return [...new Set(ids.flatMap((id) => (id === null ? [] : [id.toLowerCase()])))].sort();
+  }
+
   /** Published events of `topics` at or below `after` in each of `tenantIds`, each tenant read in its own transaction. */
   async function publishedUpTo(tenantIds: readonly string[], topics: readonly string[], after: string): Promise<number> {
     const table = qualified(db.schema, OUTBOX_TABLE);
@@ -1173,6 +1221,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
           : { published: [], publishedNext: after, publishedComplete: true, publishedFrontier: through ?? after, publishedUpTo: 0 },
       );
     }
+    if (query.registeredTenants === true) answer.registeredTenants = await registryTenantIds();
     return answer;
   }
 

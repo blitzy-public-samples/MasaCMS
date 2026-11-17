@@ -209,6 +209,8 @@ export interface OwnerDoubleState {
   readonly positionCalls: number;
   /** Events this owner reports as published to a `publishedTopics` ask; one without `seq` takes its 1-based position. */
   readonly published: DoublePublishedEvent[];
+  /** Tenants this owner's registry names to a `registeredTenants` ask; empty by default. */
+  readonly registeredTenants: Set<string>;
   /** Inbox receipts: lower-case event id to the lower-case tenants that applied it. */
   readonly receipts: Map<string, Set<string>>;
   /** Watermarks keyed `<legacyTable>|<direction>`. */
@@ -436,6 +438,7 @@ class OwnerDouble implements OwnerDoubleState {
   readonly changesCalls: ChangesParams[] = [];
   positionScript: PositionScript | undefined;
   readonly published: DoublePublishedEvent[] = [];
+  readonly registeredTenants = new Set<string>();
   readonly receipts = new Map<string, Set<string>>();
   readonly watermarks = new Map<string, WatermarkRecord>();
   readonly gates = new Map<string, OwnerGate>();
@@ -843,6 +846,7 @@ class OwnerDouble implements OwnerDoubleState {
       inbox: script.inbox === false ? null : this.#inbox(params.eventIds),
     };
     if (params.publishedTopics !== undefined) Object.assign(answer, this.#publishedPage(params, answer.outbox !== null));
+    if (params.registeredTenants === true) answer.registeredTenants = [...new Set([...this.registeredTenants].map((id) => id.toLowerCase()))].sort(byCodeUnit);
     return answer;
   }
 

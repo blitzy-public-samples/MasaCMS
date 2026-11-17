@@ -257,7 +257,10 @@ describe('sessionIdFromTargetCookies', () => {
   it.each([
     ['JSESSIONID=ABC; CFID=1', 'ABC'],
     ['jsessionid=abc', 'abc'],
-    ['CFID=1; CFTOKEN=2', undefined],
+    ['CFID=1; CFTOKEN=2', '2'],
+    ['JSESSIONID=ABC; CFTOKEN=2', 'ABC'],
+    ['JSESSIONID=; cftoken=2', '2'],
+    ['CFID=1; CFTOKEN=', undefined],
     ['JSESSIONID=', undefined],
     ['JSESSIONID=0A1B2C3D4E5F60718293A4B5C6D7E8F9; CFID=1', '0A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9'],
   ])('reads the identity session id from %j', (header, expected) => {
@@ -400,7 +403,7 @@ describe('target-primary target-bound requests', () => {
     expect(resolution.setCookies.join('\n')).not.toMatch(/L-CFID|L-CFTOKEN|L-J/);
   });
 
-  it('emits an identity cookie legacy never set in identity form', async () => {
+  it('emits no cookie legacy never set, carrying the session id in CFTOKEN where legacy set no JSESSIONID', async () => {
     const s = setup();
     const resolution = asSession(
       await s.resolver.resolveSession(request('CFID=L-CFID; CFTOKEN=L-CFTOKEN'), {
@@ -408,9 +411,12 @@ describe('target-primary target-bound requests', () => {
         mode: 'target-primary',
       }),
     );
-    expect(setCookieOf(resolution.setCookies, 'JSESSIONID')).toBe(
-      setCookieLegacy({ name: 'JSESSIONID', value: ADOPTED_ID }),
-    );
+    expect(resolution.setCookies).toEqual([
+      setCookieLegacy({ name: 'CFID', value: 'T-CFID' }),
+      setCookieLegacy({ name: 'CFTOKEN', value: ADOPTED_ID }),
+    ]);
+    const browser = resolution.setCookies.map((value) => `${parseSetCookie(value).name}=${parseSetCookie(value).value}`);
+    expect(sessionIdFromTargetCookies(parseCookieHeader(browser.join('; ')))).toBe(ADOPTED_ID);
   });
 
   /** ColdFusion's describe answer when the cookies attach no session: new session cookies and a non-session one. */
@@ -421,17 +427,32 @@ describe('target-primary target-bound requests', () => {
   ];
   const tail = (setCookie: string | undefined = '') => setCookie.slice(setCookie.indexOf(';') + 1);
 
-  it.each<[string, string, JarCookies, string[], string | undefined]>([
-    ['no session cookies', 'MXP=1', {}, [], undefined],
-    ['a stale JSESSIONID', 'JSESSIONID=STALE; MXP=1', cookie('JSESSIONID', 'STALE'), ['check:STALE'], undefined],
+  /** Identity's values under `opened`'s names and attributes: CFTOKEN names the session unless the browser holds a JSESSIONID. */
+  const reissued = (cftoken: string, jsessionid: string[]) => [
+    opened[0]?.replace('N-CFID', 'T-CFID'),
+    opened[1]?.replace('N-CFTOKEN', cftoken),
+    ...jsessionid,
+  ];
+
+  it.each<[string, string, JarCookies, string[], string | undefined, Array<string | undefined>]>([
+    ['no session cookies', 'MXP=1', {}, [], undefined, reissued(ADOPTED_ID, [])],
+    [
+      'a stale JSESSIONID',
+      'JSESSIONID=STALE; MXP=1',
+      cookie('JSESSIONID', 'STALE'),
+      ['check:STALE'],
+      undefined,
+      reissued('T-CFTOKEN', [setCookieLegacy({ name: 'JSESSIONID', value: ADOPTED_ID })]),
+    ],
     [
       'a stale CFID and CFTOKEN',
       'CFID=S-CFID; CFTOKEN=S-CFTOKEN',
       { ...cookie('CFID', 'S-CFID'), ...cookie('CFTOKEN', 'S-CFTOKEN') },
-      [],
+      ['check:S-CFTOKEN'],
       'tenant-a',
+      reissued(ADOPTED_ID, []),
     ],
-  ])('adopts the session ColdFusion opens for a request with %s', async (_label, header, sent, checks, siteId) => {
+  ])('adopts the session ColdFusion opens for a request with %s', async (_label, header, sent, checks, siteId, emitted) => {
     const s = setup({ describe: () => ({ body: describeBody('NEW'), setCookies: opened }) });
     const resolution = asSession(
       await s.resolver.resolveSession(request(header), { family: 'admin', mode: 'target-primary', siteId }),
@@ -449,13 +470,7 @@ describe('target-primary target-bound requests', () => {
       ...cookie('CFTOKEN', 'N-CFTOKEN', tail(opened[1])),
     });
     expect(resolution.legacyCookies).toEqual(row?.cookies);
-    expect([...resolution.setCookies].sort()).toEqual(
-      [
-        opened[0]?.replace('N-CFID', 'T-CFID'),
-        opened[1]?.replace('N-CFTOKEN', 'T-CFTOKEN'),
-        setCookieLegacy({ name: 'JSESSIONID', value: ADOPTED_ID }),
-      ].sort(),
-    );
+    expect([...resolution.setCookies].sort()).toEqual([...emitted].sort());
     expect(resolution.setCookies.join('\n')).not.toMatch(/N-CFID|N-CFTOKEN|S-CF|STALE|MXP_TRACKINGID/);
   });
 });
@@ -675,7 +690,8 @@ describe('legacy-primary legacy-bound requests whose cookies a describe attached
 
     expect(resolution).toMatchObject({ kind: 'session', sessionId: 'M1', epoch: 6, legacyCookies: {}, setCookies: [] });
     expect(describeCount(s)).toBe(count);
-    if (count === 1) expect(s.calls).toEqual(['describe', 'jar.find', 'check:M1', 'jar.find', 'check:M1']);
+    // Only unknown cookies are checked for a target-primary jar their CFTOKEN may name before the describe.
+    if (count === 1) expect(s.calls).toEqual(['jar.get', 'describe', 'jar.find', 'check:M1', 'jar.find', 'check:M1']);
   });
 
   it('knows the cookies a target-bound describe attached', async () => {
@@ -748,7 +764,7 @@ describe('legacy-primary legacy-bound requests whose cookies a describe attached
     s.calls.length = 0;
 
     expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: ADOPTED_ID });
-    expect(s.calls).toEqual(['describe', 'jar.find', `check:${ADOPTED_ID}`]);
+    expect(s.calls).toEqual(['jar.get', 'describe', 'jar.find', `check:${ADOPTED_ID}`]);
   });
 
   it('describes known cookies again after the mapped session epoch changed', async () => {
@@ -759,7 +775,18 @@ describe('legacy-primary legacy-bound requests whose cookies a describe attached
     expect(await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY)).toMatchObject({ kind: 'session', sessionId: 'M1' });
     await s.resolver.resolveLegacyBound(request(COOKIES), LEGACY_PRIMARY);
 
-    expect(s.calls).toEqual(['describe', 'jar.find', 'check:M1', 'jar.find', 'check:M1', 'describe', 'jar.find', 'check:M1']);
+    expect(s.calls).toEqual([
+      'jar.get',
+      'describe',
+      'jar.find',
+      'check:M1',
+      'jar.find',
+      'check:M1',
+      'jar.get',
+      'describe',
+      'jar.find',
+      'check:M1',
+    ]);
   });
 
   it.each<[boolean, string, string[]]>([
@@ -903,6 +930,24 @@ describe('legacy-bound requests right after a switch back to legacy-primary', ()
       expect(s.rows.has('T1')).toBe(adoptedId === 'T1');
     },
   );
+
+  it('restores a jar without JSESSIONID from the CFTOKEN that names its target session', async () => {
+    const jarCookies = { ...cookie('CFID', 'L-CFID'), ...cookie('CFTOKEN', 'L-CFTOKEN') };
+    const s = setup({
+      adopt: () => ({ sessionId: 'S-NEW', epoch: 9, setCookie: [] }),
+      states: T1_ACTIVE,
+      rows: [jarRow('T1', { cookies: jarCookies, hydratedEpoch: 4 })],
+    });
+    const resolution = asSession(
+      await s.resolver.resolveLegacyBound(request('CFID=T-CFID; CFTOKEN=T1'), { mode: 'legacy-primary', adopt: false }),
+    );
+    expect(resolution).toMatchObject({
+      sessionId: 'S-NEW',
+      legacyCookies: jarCookies,
+      setCookies: ['CFID=L-CFID;path=/;HttpOnly;', 'CFTOKEN=L-CFTOKEN;path=/;HttpOnly;'],
+    });
+    expect(s.calls).toEqual(SWITCH_BACK);
+  });
 
   it('answers every later resolution of the same request with the restored session', async () => {
     const s = reversed('S-NEW');
@@ -1258,18 +1303,28 @@ describe('adoptAfterLegacy', () => {
     expect(resolution.legacyCookies).toEqual(s.rows.get('T1')?.cookies);
   });
 
-  it('adopts the session legacy created when no target session existed', async () => {
-    const s = setup();
+  it('adopts the session legacy created when no target session existed, under the cookie names legacy set', async () => {
+    const s = setup({ states: { [ADOPTED_ID]: { state: 'active', epoch: ADOPTED_EPOCH } } });
     const resolution = asSession(
       await s.resolver.adoptAfterLegacy(request(), { mode: 'target-primary', setCookies: legacySet }),
     );
     expect(s.calls).toEqual(['describe', 'jar.find', 'adopt', 'jar.rebind']);
     expect(s.described[0]?.cookies).toMatchObject({ CFID: { value: 'N-CFID' }, CFTOKEN: { value: 'N-CFTOKEN' } });
-    expect(resolution.setCookies).toEqual(
-      expect.arrayContaining([legacySet[0]?.replace('N-CFID', 'T-CFID'), 'MXP=1;path=/;']),
-    );
-    expect(resolution.setCookies.join('\n')).not.toMatch(/N-CFID|N-CFTOKEN/);
+    // Legacy set no JSESSIONID, so the browser gets none; CFTOKEN names the adopted session instead.
+    expect(resolution.setCookies).toEqual([
+      legacySet[0]?.replace('N-CFID', 'T-CFID'),
+      legacySet[1]?.replace('N-CFTOKEN', ADOPTED_ID),
+      'MXP=1;path=/;',
+    ]);
     expect(s.rows.get(ADOPTED_ID)).toMatchObject({ mode: 'target-primary', hydratedEpoch: ADOPTED_EPOCH });
+
+    s.calls.length = 0;
+    const later = await s.resolver.resolveLegacyBound(request(`CFID=T-CFID; CFTOKEN=${ADOPTED_ID}`), {
+      mode: 'target-primary',
+      adopt: true,
+    });
+    expect(later).toMatchObject({ kind: 'session', sessionId: ADOPTED_ID, setCookies: [] });
+    expect(s.calls).toEqual([`check:${ADOPTED_ID}`, 'jar.get']);
   });
 
   it('passes only deletions and other cookies when the legacy session is not live', async () => {

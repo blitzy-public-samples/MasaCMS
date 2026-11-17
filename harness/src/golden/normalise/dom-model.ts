@@ -157,6 +157,7 @@ const ALWAYS_EXCLUDED = ['script', 'style', 'noscript'];
 const COMMENT_EXCLUSION = 'comment()';
 const COMMENT_NODE = 8;
 const TEXT_NODE = 3;
+const ELEMENT_NODE = 1;
 // CFML form and URL scopes read names case-insensitively.
 const CSRF_NAMES: ReadonlySet<string> = new Set([CSRF_FIELD_TOKEN, CSRF_FIELD_EXPIRES].map((name) => name.toLowerCase()));
 const CHECKABLE_TYPES: ReadonlySet<string> = new Set(['checkbox', 'radio']);
@@ -165,9 +166,11 @@ const CHECKABLE_TYPES: ReadonlySet<string> = new Set(['checkbox', 'radio']);
 const VERBATIM_URL = /^\s*(?:#\s*$|javascript:|$)/i;
 
 const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
+const codeUnitOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const isCsrfName = (name: string | undefined): boolean => name !== undefined && CSRF_NAMES.has(name.toLowerCase());
 const matches = (pattern: RegExp, s: string): boolean => s.search(pattern) >= 0;
 const isTextNode = (node: AnyNode): node is TextNode => node.nodeType === TEXT_NODE;
+const isElement = (node: AnyNode): node is Element => node.nodeType === ELEMENT_NODE;
 // A text location's matches are lifted out of the text rather than masking the fields that hold them.
 const isTextLocation = (location: DomLocation): boolean =>
   location.textPattern !== undefined && location.attributes === undefined;
@@ -255,6 +258,57 @@ function removeExcluded($: CheerioAPI, rules: NormaliseRules): void {
     } else {
       $.root().find(selector).remove();
     }
+  }
+}
+
+/** Masks each non-empty value of a control an `extraTokenFields` name covers in every attribute and text node. */
+function maskRepeatedTokens(ctx: Context): void {
+  const { tokens, overrides } = ctx.rules;
+  const fold = tokens.fieldMatch === 'case-insensitive' ? (s: string) => s.toLowerCase() : (s: string) => s;
+  const names = new Set(overrides.applied.extraTokenFields.map(fold));
+  if (names.size === 0) return;
+  const values = select(ctx, ctx.rules.dom.extract.controls.selector)
+    .filter((el) => names.has(fold(ctx.$(el).attr('name') ?? '')))
+    .map((el) => rawValueOf(ctx, el) ?? '')
+    .filter((value) => value !== '')
+    .sort((a, b) => b.length - a.length);
+  if (values.length === 0) return;
+  const mask = (s: string): string => values.reduce((out, value) => out.replaceAll(value, tokens.placeholder), s);
+  for (const el of select(ctx, '*')) {
+    for (const [name, value] of Object.entries(el.attribs)) el.attribs[name] = mask(value);
+  }
+  for (const node of ctx.$.root().toArray().flatMap((root) => textNodesOf(root))) node.data = mask(node.data);
+}
+
+// Markup of `node` with attributes sorted by name, whitespace collapsed and comments left out.
+function canonicalMarkup(node: AnyNode): string {
+  if (isTextNode(node)) return collapse(node.data);
+  if (!isElement(node)) return '';
+  const attributes = Object.entries(node.attribs)
+    .sort(([a], [b]) => codeUnitOrder(a, b))
+    .map(([name, value]) => ` ${name}="${value}"`)
+    .join('');
+  return `<${node.tagName}${attributes}>${node.children.map(canonicalMarkup).join('')}</${node.tagName}>`;
+}
+
+/**
+ * Reorders the child elements of each element a `domUnordered` selector matches by their canonical markup,
+ * normalised against a copy of the id ordinals so the order never depends on raw ids, attribute order or quoting.
+ * Innermost matches are sorted first; text and comment nodes keep their places.
+ */
+function sortUnordered(ctx: Context): void {
+  const selectors = ctx.rules.overrides.applied.domUnordered;
+  if (selectors.length === 0) return;
+  for (const parent of select(ctx, selectors.join(',')).reverse()) {
+    const children = ctx.$(parent).children().toArray();
+    const sorted = children
+      .map((child) => ({
+        child,
+        order: normaliseText(canonicalMarkup(child), structuredClone(ctx.state), ctx.rules),
+      }))
+      .sort((a, b) => codeUnitOrder(a.order, b.order))
+      .map(({ child }) => ctx.$(child).clone());
+    children.forEach((child, i) => ctx.$(child).replaceWith(sorted[i]!));
   }
 }
 
@@ -626,17 +680,21 @@ function maskedPathsOf(
 }
 
 /**
- * DOM model of admin page `html`, after removing `script`, `style`, `noscript` and the `dom.exclude` selectors, with
- * the model paths the step's DOM mask locations resolve to. Text a DOM mask's `textPattern` matches (without
- * `attributes`) is lifted into `maskedText`, leaving {@link maskedTextPlaceholder} in the model text. Texts are
- * whitespace-collapsed and go through {@link normaliseText}; control values through {@link normaliseValue}, CSRF
- * values becoming the token placeholder. Ordinals are assigned in model order (title, headings, labels, forms,
- * controls, buttons, links, tables, alerts, maskedText).
+ * DOM model of admin page `html`, after removing `script`, `style`, `noscript` and the `dom.exclude` selectors,
+ * masking repeated `extraTokenFields` values and sorting the children of `domUnordered` elements, with the model paths
+ * the step's DOM mask locations resolve to. Text a DOM mask's `textPattern` matches (without `attributes`) is lifted
+ * into `maskedText`, leaving {@link maskedTextPlaceholder} in the model text. Texts are whitespace-collapsed and go
+ * through {@link normaliseText}; control values through {@link normaliseValue}, CSRF values becoming the token
+ * placeholder.
+ * Ordinals are assigned in model order (title, headings, labels, forms, controls, buttons, links, tables, alerts,
+ * maskedText).
  */
 export function domModel(html: string, opts: DomModelOptions): DomModelResult {
   const $ = cheerio.load(html);
   removeExcluded($, opts.rules);
   const ctx: Context = { $, state: opts.state, rules: opts.rules, produced: new Map() };
+  maskRepeatedTokens(ctx);
+  sortUnordered(ctx);
   const selected = selectLocations(ctx, opts.masks ?? []);
   const lifted = liftText(selected);
   const title = titleOf(ctx);

@@ -17,6 +17,7 @@ import {
   type BridgeClient,
   type BridgeClientOptions,
   type BridgeResult,
+  type CarriedValue,
   type HydrateBody,
   type LegacyCookies,
   type LegacyDescribe,
@@ -99,8 +100,11 @@ const HYDRATE: HydrateBody = {
   usedTokens: USED,
 };
 
+const FLAT_VIEW_ARGS: CarriedValue = { name: 'flatViewArgs', value: { default: { tab: 1, sortby: 'lastupdate' } }, revision: 'REVISION-0001' };
+const CARRIED: CarriedValue[] = [FLAT_VIEW_ARGS];
+
 interface OpCase {
-  op: 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'end';
+  op: 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'end';
   method: 'GET' | 'POST';
   url: string;
   query: Record<string, string>;
@@ -150,6 +154,16 @@ const OP_CASES: OpCase[] = [
     sub: '',
     answer: { tokens: USED.slice(1), serverTime: SERVER_TIME },
     invoke: (client) => client.usedSince(COOKIES, SINCE, CALL),
+  },
+  {
+    op: 'carry',
+    method: 'POST',
+    url: `${SESSION_PAGE}?op=carry`,
+    query: { op: 'carry' },
+    body: { values: CARRIED },
+    sub: '',
+    answer: { applied: ['flatViewArgs'], serverTime: SERVER_TIME },
+    invoke: (client) => client.carry(COOKIES, CARRIED, CALL),
   },
   {
     op: 'end',
@@ -540,6 +554,15 @@ const LEGACY_CASES: LegacyCase[] = [
     after: { hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER },
   },
   {
+    op: 'carry',
+    method: 'POST',
+    sub: '',
+    sent: { values: CARRIED },
+    invoke: (bridge, s) => bridge.carry(s.cookies, CARRIED, callOf(s)),
+    answer: () => ({ applied: ['flatViewArgs'], serverTime: SERVER_TIME }),
+    after: { hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER },
+  },
+  {
     op: 'end',
     method: 'POST',
     sub: '',
@@ -647,7 +670,7 @@ describe('createBridgeClient against the legacy origin double', () => {
     },
   );
 
-  it('runs describe, hydrate, markUsed, usedSince and end on one session, each with a distinct nonce', async () => {
+  it('runs describe, hydrate, markUsed, usedSince, carry and end on one session, each with a distinct nonce', async () => {
     const s = tenantSession();
     const client = bridge();
 
@@ -675,6 +698,25 @@ describe('createBridgeClient against the legacy origin double', () => {
       csrfSecretKey: HYDRATE.csrfSecretKey,
     });
     expect(legacy.usedTokens(s.session.legacySessionId)).toEqual(HYDRATE.usedTokens);
+  });
+
+  it('carry sets a value once per revision, so legacy writes stand until the revision changes, and refuses an uncarried key', async () => {
+    const s = tenantSession();
+    const client = bridge();
+    const changed: CarriedValue[] = [{ ...FLAT_VIEW_ARGS, value: { default: { tab: 0 } }, revision: 'REVISION-0002' }];
+
+    const first = await client.carry(s.cookies, CARRIED, callOf(s));
+    // Legacy's own write, as carch.siteManagerTab makes it (carch.cfc:516-522).
+    s.session.values = { flatViewArgs: { default: { tab: 2, sortby: 'lastupdate' } } };
+    const repeated = await client.carry(s.cookies, CARRIED, callOf(s));
+    const kept = s.session.values.flatViewArgs;
+    const next = await client.carry(s.cookies, changed, callOf(s));
+    const refused = await failureOf(client.carry(s.cookies, [{ ...FLAT_VIEW_ARGS, name: 'mura' }], callOf(s)));
+
+    expect([first.body.applied, repeated.body.applied, next.body.applied]).toEqual([['flatViewArgs'], [], ['flatViewArgs']]);
+    expect(kept).toEqual({ default: { tab: 2, sortby: 'lastupdate' } });
+    expect(s.session.values).toEqual({ flatViewArgs: { default: { tab: 0 } } });
+    expect(refused.cause).toMatchObject({ status: 400, error: 'badRequest' });
   });
 
   it.each<[string, (client: BridgeClient) => Promise<BridgeResult<{ sessionId: string }>>]>([

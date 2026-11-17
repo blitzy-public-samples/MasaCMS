@@ -13,6 +13,7 @@ import { okBody, type GatewayClient } from '@/lib/gateway-client';
 import { tokenServesSite, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { renderCompact } from './compact';
+import { loadLegacyServerInfo } from './legacy-server';
 import { resolveModuleTitle } from './module-title';
 import { renderTemplate } from './template';
 import type {
@@ -137,21 +138,22 @@ async function loadUserPrompts(ctx: AdminRequest, gateway: GatewayClient): Promi
 }
 
 /**
- * The data the shell renders beyond `ctx`; site list, prompt counts and Update Core tokens are loaded only when the
- * full layout shows its nav and header, the counts only for a session site the token serves. Gateway unavailability
- * propagates.
+ * The data the shell renders beyond `ctx`; site list, prompt counts, Update Core tokens and the legacy server facts are
+ * loaded only when the full layout shows its nav and header, the counts only for a session site the token serves.
+ * Gateway unavailability propagates.
  * @throws GatewayDenialError When a service refuses a read (401 or 403).
  */
 export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Promise<ShellData> {
   const now = deps.now ?? new Date();
   const chrome =
     selectLayout(ctx.rc) === 'template' && ctx.session.siteid !== '' && ctx.isLoggedIn && ctx.isPrivateUser;
-  const [userSites, coreCsrfQuery, prompts] = await Promise.all([
+  const [userSites, coreCsrfQuery, prompts, server] = await Promise.all([
     chrome ? loadUserSites(deps.gateway) : [],
     chrome && ctx.isS2 && legacySettings().allowAutoUpdates ? updateCoreCsrfQuery(deps.csrf) : '',
     chrome && ctx.user !== undefined && tokenServesSite(ctx.user, ctx.session.siteid)
       ? loadUserPrompts(ctx, deps.gateway)
       : NO_PROMPTS,
+    chrome ? loadLegacyServerInfo() : null,
   ]);
   return {
     rb: deps.rb,
@@ -160,8 +162,7 @@ export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Pro
     prompts,
     // Plugins run only on legacy; the target holds no plugin data.
     sitePlugins: [],
-    // No target store holds the legacy server's runtime facts.
-    server: null,
+    server,
     updateCoreCsrfQuery: coreCsrfQuery,
     // Legacy checks the export directory on its own file system, which programs-sites does not report.
     exportLocationExists: false,

@@ -330,7 +330,7 @@ async function currentSession(sessions: SessionDeps, user: UserClaims | undefine
 }
 
 /** The contract's admin values of a stored admin state. */
-function adminStateOf(stored: Readonly<Record<string, unknown>>): AdminState {
+export function adminStateOf(stored: Readonly<Record<string, unknown>>): AdminState {
   const state: Record<string, unknown> = {};
   for (const key of ADMIN_STATE_KEYS) if (Object.hasOwn(stored, key)) state[key] = stored[key];
   return state as AdminState;

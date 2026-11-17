@@ -25,6 +25,7 @@ const CSRF_FIELDS = { csrf_token: 'POSTEDTOKEN', csrf_token_expires: '2612312359
 const DENIED = { apiversion: 'v1', method: 'carch', error: { message: 'Denied', code: 'denied' } };
 const LOCKFILE_PATH = '/v1/raw/carch/lockfile';
 const STATUSMODAL_PATH = '/v1/raw/carch/statusmodal';
+const UNLOCKNODE_PATH = '/v1/raw/carch/unlocknode';
 const OBJECT_PARAMS_PATH = `/v1/sites/${SITE}/content/versions/${HIST_ID}/object-params` as const;
 // The cookies the request set-up sets for a browser that sent none (request-context adminCookies), in order.
 const SETUP_COOKIES = ['rb', 'ADMINCONTROLWIDTH', 'ADMINSIDEBAR'];
@@ -79,6 +80,7 @@ beforeEach(() => {
     [routeKey('GET', 'strategies-content', LOCKFILE_PATH)]: lock,
     [routeKey('POST', 'strategies-content', LOCKFILE_PATH)]: lock,
     [routeKey('GET', 'strategies-content', STATUSMODAL_PATH)]: { status: 403, body: DENIED },
+    [routeKey('POST', 'strategies-content', UNLOCKNODE_PATH)]: { status: 403, body: DENIED },
     [routeKey('POST', 'strategies-content', OBJECT_PARAMS_PATH)]: { status: 403, body: DENIED },
   });
   restoreEnv = useTestEnv();
@@ -133,10 +135,10 @@ describe('carch raw redirects through the admin-raw route', () => {
       { query: { siteid: SITE, contenthistid: HIST_ID } },
     ],
     [
-      'the carch.updateobjectparams write',
-      'updateobjectparams',
-      OBJECT_PARAMS_PATH,
-      { form: { siteid: SITE, contenthistid: HIST_ID, regionid: '2', object: 'feed', ...CSRF_FIELDS } },
+      'the carch.unlocknode write',
+      'unlocknode',
+      UNLOCKNODE_PATH,
+      { form: { siteid: SITE, contentid: CONTENT_ID, ...CSRF_FIELDS } },
     ],
   ] as const)('answers a 403 on %s with the secure() redirect', async (_name, action, path, body) => {
     const request = await adminRequest(`/admin-raw/carch/${action}`, {
@@ -152,5 +154,15 @@ describe('carch raw redirects through the admin-raw route', () => {
     expect(cookieNames(response)).toEqual(SETUP_COOKIES);
     expect(await response.text()).toBe('');
     expect(serviceCalls(method, path)).toHaveLength(1);
+  });
+
+  it('answers 404 for the withheld carch.updateobjectparams write without a service call', async () => {
+    const form = { siteid: SITE, contenthistid: HIST_ID, regionid: '2', object: 'feed', ...CSRF_FIELDS };
+    const request = await adminRequest('/admin-raw/carch/updateobjectparams', { user: 'admin', form });
+
+    const response = await adminRaw.POST(request, routeParams({ circuit: 'carch', action: 'updateobjectparams' }));
+
+    expect(response.status).toBe(404);
+    expect(serviceCalls('POST', OBJECT_PARAMS_PATH)).toEqual([]);
   });
 });

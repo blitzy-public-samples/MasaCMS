@@ -757,20 +757,21 @@ describe('extractJobs over handler variants', () => {
   it('names unplanned and repeated steps from their calls and records the gaps their closures cannot enter', async () => {
     const divergent = onlyJob(await extractJobs(variantContext(DIVERGENT_FILES), { routeKeyOptions: ROUTE_KEY_OPTIONS }));
     const at = (needle: string): SourceRef => src(CONTENT_SERVER_PATH, lineWith(DIVERGENT, needle));
+    const via = ['contentServer.handleAPIRequest'];
     expect(divergent.steps.map((s) => [s.order, s.step, s.call, s.tables, s.unresolved, s.expected?.disposition ?? null])).toEqual([
       [1, 'reminders', 'contentManager.sendReminders (catch-up when minute(application.lastMonitored) neq minute(now()))', ['tcontenteventreminders'], [], 'decision'],
       [2, 'changeset-publish', 'changesetManager.publishBySchedule', ['tchangesets'], [], 'carry'],
       [3, 'email-send', 'emailManager.send', ['temailsends'], [], 'legacy-served'],
-      [4, 'user-manager-purge-sessions', 'userManager.purgeSessions', [], [{ expr: 'application.userManager.purgeSessions', kind: 'bean', source: at('purgeSessions') }], null],
-      [5, 'call-save', '?.save', [], [{ expr: 'someObj.save', kind: 'bean', source: at('someObj.save') }], null],
-      [6, 'ghost-manager-run', 'ghostManager.run', [], [{ expr: 'application.ghostManager.run', kind: 'component', source: at('ghostManager.run') }], null],
+      [4, 'user-manager-purge-sessions', 'userManager.purgeSessions', [], [{ expr: 'application.userManager.purgeSessions', kind: 'bean', source: at('purgeSessions'), via }], null],
+      [5, 'call-save', '?.save', [], [{ expr: 'someObj.save', kind: 'bean', source: at('someObj.save'), via }], null],
+      [6, 'ghost-manager-run', 'ghostManager.run', [], [{ expr: 'application.ghostManager.run', kind: 'component', source: at('ghostManager.run'), via }], null],
       [7, 'child-manager-inherited', 'childManager.inherited', ['tinherited'], [], null],
-      [8, 'orphan-manager-lost', 'orphanManager.lost', [], [{ expr: 'application.orphanManager.lost', kind: 'method', source: at('orphanManager.lost') }], null],
-      [9, 'loop-manager-spin', 'loopManager.spin', [], [{ expr: 'application.loopManager.spin', kind: 'method', source: at('loopManager.spin') }], null],
+      [8, 'orphan-manager-lost', 'orphanManager.lost', [], [{ expr: 'application.orphanManager.lost', kind: 'method', source: at('orphanManager.lost'), via }], null],
+      [9, 'loop-manager-spin', 'loopManager.spin', [], [{ expr: 'application.loopManager.spin', kind: 'method', source: at('loopManager.spin'), via }], null],
       [10, 'email-send-2', 'emailManager.send', ['temailsends'], [], null],
       [11, 'bounces', 'emailManager.trackBounces per site with MailServerUsername', ['temailbouncestats'], [], 'legacy-served'],
       [12, 'feed-import', 'feedManager.doAutoImport per site with FeedImport; sentList dedupe ineffective (listAppend result discarded)', ['tcontentfeedimports'], [], 'carry'],
-      [13, 'feed-manager-missing-method', 'feedManager.missingMethod', [], [{ expr: 'application.feedManager.missingMethod', kind: 'method', source: at('missingMethod') }], null],
+      [13, 'feed-manager-missing-method', 'feedManager.missingMethod', [], [{ expr: 'application.feedManager.missingMethod', kind: 'method', source: at('missingMethod'), via }], null],
       [14, 'plugin-events', 'announceEvent eventName, then ? for display windows in [url.since, lastMonitored]', [], [], 'decision'],
     ]);
     const repeated = stepNamed(divergent, 'email-send-2');
@@ -986,9 +987,27 @@ describe('extractJobs merging step closures', () => {
     const step = stepNamed(merged, 'cache-purge');
     expect(step.fileStoreWrite).toBe(true);
     expect(step.closure.fileStoreEvidence).toEqual([
-      { component: FILE_MANAGER, method: 'deleteAll', source: src(SETTINGS_BEAN, fileLine(SETTINGS_BEAN, 'deleteAll')), conditional: false },
-      { component: FILE_MANAGER, method: 'deleteVersion', source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'getFileID()')), conditional: false },
-      { component: FILE_MANAGER, method: 'deleteVersion', source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'getOldFileID()')), conditional: false },
+      {
+        component: FILE_MANAGER,
+        method: 'deleteAll',
+        source: src(SETTINGS_BEAN, fileLine(SETTINGS_BEAN, 'deleteAll')),
+        conditional: false,
+        via: ['settingsBean.purgeCache', 'fileManager.deleteAll'],
+      },
+      {
+        component: FILE_MANAGER,
+        method: 'deleteVersion',
+        source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'getFileID()')),
+        conditional: false,
+        via: ['contentManager.purgeContentCache', 'fileManager.deleteVersion'],
+      },
+      {
+        component: FILE_MANAGER,
+        method: 'deleteVersion',
+        source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'getOldFileID()')),
+        conditional: false,
+        via: ['contentManager.purgeContentCache', 'fileManager.deleteVersion'],
+      },
     ]);
     expect(step.closure.threads.map((t) => [t.name, t.component, t.method])).toEqual([
       ['contentPurgeThread', CONTENT_MANAGER, 'purgeContentCache'],
@@ -997,9 +1016,19 @@ describe('extractJobs merging step closures', () => {
     ]);
     expect(step.closure.sessionEffects).toBe('logout');
     expect(step.unresolved).toEqual([
-      { expr: 'application.ghostService.flush', kind: 'bean', source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'ghostService')) },
-      { expr: 'application.shadowService.flush', kind: 'bean', source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'shadowService')) },
-      { expr: 'application.phantomService.flush', kind: 'bean', source: src(SETTINGS_BEAN, fileLine(SETTINGS_BEAN, 'phantomService')) },
+      {
+        expr: 'application.ghostService.flush',
+        kind: 'bean',
+        source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'ghostService')),
+        via: ['contentManager.purgeContentCache'],
+      },
+      {
+        expr: 'application.shadowService.flush',
+        kind: 'bean',
+        source: src(CONTENT_MANAGER, fileLine(CONTENT_MANAGER, 'shadowService')),
+        via: ['contentManager.purgeContentCache'],
+      },
+      { expr: 'application.phantomService.flush', kind: 'bean', source: src(SETTINGS_BEAN, fileLine(SETTINGS_BEAN, 'phantomService')), via: ['settingsBean.purgeCache'] },
     ]);
     expect(step.closure.visited).toEqual([
       `${CACHE_DAO}#purge`,

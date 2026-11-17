@@ -87,6 +87,7 @@ function fakeIdentity(clock: Clock): FakeIdentity {
       adopt: notCalled,
       state: notCalled,
       adminSite: notCalled,
+      adminState: notCalled,
       snapshot: notCalled,
       end: notCalled,
       claim: notCalled,

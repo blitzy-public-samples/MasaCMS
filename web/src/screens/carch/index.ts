@@ -3,53 +3,47 @@ import type { ScreenDefinition } from '../registry';
 import { auditScreen } from './audit';
 import { datamanagerScreen } from './datamanager';
 import { draftScreen } from './draft';
-import { editScreen } from './edit';
 import { editliveScreen } from './editlive';
 import { edittextScreen } from './edittext';
 import { histScreen } from './hist';
-import { imagedetailsScreen } from './imagedetails';
 import { inlineWriteScreens } from './inline-writes';
 import { listScreen } from './list';
 import { lockcheckScreen } from './lockcheck';
 import { lockfileScreen } from './lockfile';
-import { multifileuploadScreen } from './multifileupload';
 import { rawActionScreens } from './raw-actions';
 import { relatedcontentScreen } from './relatedcontent';
-import { searchScreen } from './search';
+import { scaffoldScreen } from './scaffold';
 import { selectfieldsScreen } from './selectfields';
 import { selectmediaScreen } from './selectmedia';
-import { updateScreen } from './update';
-import { variationtargetingScreen } from './variationtargeting';
 
 export { carchContentNav } from './content-nav';
 export { carchSecondaryMenu } from './secondary-menu';
 
+/** Inline writes kept withheld on legacy: their content saves write the decision-list table tcontenteventreminders. */
+const WITHHELD_INLINE_WRITES: ReadonlySet<string> = new Set(['savequickedit', 'updateobjectparams']);
+
 // Every screen applies the `before()` defaults in its own first step. Legacy keeps the bundle-engine actions (export,
-// import, exportcontent and exportcomponent legacy-served; importcontent and importcomponent withheld), emailTest, the
+// import, exportcontent, exportcomponent and importcomponent legacy-served; importcontent withheld), emailTest, the
 // display-object CFML of displayobjectmodal and frontendconfigurator, loadrepomanager's FW/1 viewNotFound page, the
-// image-engine edits cropimage, flipimage and rotateimage (halted) and the withheld copy; the withheld or halted
-// variants of update, multifileupload, updateobjectparams and variationtargeting are the registry's not-built list.
-// dsp_nest, dsp_nextN, dsp_rendertabevents and objectclass/legacy are rendered by strategies-content and relayed raw.
-/** The carried cArch actions: the Site Manager pages, the editor and its save, their fragments, JSON and downloads. */
+// halted edit, cropimage, flipimage, rotateimage, search, multifileupload, imagedetails and loadsiteflat, and the
+// withheld copy, update, updateobjectparams, savequickedit and variationtargeting; the withheld approve branch of
+// approvalaction is the registry's not-built list. dsp_nest, dsp_nextN, dsp_rendertabevents and objectclass/legacy are
+// rendered by strategies-content and relayed raw.
+/** The carried cArch actions: the Site Manager pages, fragments, JSON, inline writes and downloads. */
 export const carchScreens: readonly ScreenDefinition[] = Object.freeze([
   listScreen,
-  searchScreen,
   draftScreen,
-  editScreen,
   editliveScreen,
   edittextScreen,
-  updateScreen,
   histScreen,
   auditScreen,
   lockcheckScreen,
   relatedcontentScreen,
-  multifileuploadScreen,
   datamanagerScreen,
-  imagedetailsScreen,
+  scaffoldScreen,
   selectfieldsScreen,
   selectmediaScreen,
-  variationtargetingScreen,
   lockfileScreen,
-  ...inlineWriteScreens,
+  ...inlineWriteScreens.filter((def) => !WITHHELD_INLINE_WRITES.has(def.action)),
   ...rawActionScreens,
 ]);

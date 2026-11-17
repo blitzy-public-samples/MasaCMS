@@ -341,6 +341,77 @@ describe('classifyScenario', () => {
     );
   });
 
+  it.each<[string, (s: Scenario) => Scenario, (g: GoldenSet) => void, (r: ReplayOutput) => void, string, string]>([
+    [
+      'a replay halt',
+      (s) => s,
+      () => undefined,
+      (r) => {
+        r.halted.push({
+          step: 'form',
+          routeKey: 'admin:cusers.edituser',
+          reason: 'session-managed',
+          exceptionId: 'EX-PE-HALT',
+        });
+      },
+      'session-managed',
+      'EX-PE-HALT',
+    ],
+    [
+      'a declared step halt',
+      (s) => ({
+        ...s,
+        steps: s.steps.map((step) =>
+          step.name === 'form' ? { ...step, expected: 'halted' as const, exceptionId: 'EX-PE-HALT' } : step,
+        ),
+      }),
+      () => undefined,
+      () => undefined,
+      'declared halted; served by legacy',
+      'EX-PE-HALT',
+    ],
+    [
+      'a capture gap',
+      (s) => s,
+      (g) => {
+        const step = g.steps[0];
+        if (step === undefined) throw new Error('no step');
+        step.gap = { reason: 'no candidate answered', candidatesTried: 2 };
+        step.exceptionId = 'EX-PE-GAP';
+      },
+      () => undefined,
+      'no candidate answered',
+      'EX-PE-GAP',
+    ],
+  ])(
+    'withholds a scenario that also halts on %s, keeping the halt and listing it unmet',
+    (_title, scenarioEdit, goldenEdit, replayEdit, reason, exceptionId) => {
+      const scenario = scenarioEdit(withheldScenario());
+      const golden = goldenOf(scenario);
+      goldenEdit(golden);
+      const verdict = classify(golden, replayOf(golden, replayEdit), { scenario });
+      expect(verdict).toEqual(verdictOf('withheld', { reason, exceptionId, decisionListRef: [ACTION_REF, TABLE_REF] }));
+
+      const report = buildParityReport({
+        catalogue: { scenarios: [scenario] },
+        scenarios: [toScenarioParity(scenario, verdict)],
+        fixtures: FIXTURES,
+        decisionList: DECISIONS,
+        exceptions: [],
+      });
+      expect(report.summary).toMatchObject({ total: 1, halted: 0, withheld: 1 });
+      expect(report.unmetWithheld).toEqual([
+        { id: 'GS-PE-01', decisionListRef: ACTION_REF, proposal: PROPOSAL },
+        { id: 'GS-PE-01', decisionListRef: TABLE_REF, proposal: TABLE_PROPOSAL },
+      ]);
+      const row = renderParityMarkdown(report).find((line) => line.startsWith('| <a id="GS-PE-01"></a>'));
+      expect(row).toContain(`| \`withheld\`: ${reason} |`);
+      expect(row).toContain(
+        `${EXCEPTIONS_LINK}: \`${exceptionId}\`; ${DECISION_LINK}: \`${ACTION_REF}\`, \`${TABLE_REF}\``,
+      );
+    },
+  );
+
   it('throws for a withheld route key the decision list does not hold', () => {
     const scenario = withheldScenario();
     const golden = goldenOf(scenario);

@@ -28,11 +28,13 @@ import {
 } from '../../src/events/dlq.js';
 import { pollUntil, type PollBounds, type SeamDeps } from '../../src/events/seams.js';
 import {
+  classifyClientSpans,
   mintTraceparent,
   readCapturedLogLines,
   readTraceLines,
   traceExportOffset,
   validateLogLines,
+  type ClientSpanClassification,
   type MintedTraceparent,
 } from '../../src/events/traces.js';
 import { runCatalogChecks, type CatalogRunResult } from '../../src/isolation/catalog.js';
@@ -172,38 +174,6 @@ interface StubPosition {
   subscription: number;
 }
 
-/** CLIENT spans of one trace by destination; `unresolved` spans name no port or URL. */
-interface ClientSpanCounts {
-  legacy: number;
-  stub: number;
-  other: number;
-  unresolved: number;
-}
-
-interface OtlpAttribute {
-  key?: unknown;
-  value?: { stringValue?: unknown; intValue?: unknown } | null;
-}
-
-interface OtlpSpan {
-  traceId?: unknown;
-  kind?: unknown;
-  attributes?: OtlpAttribute[];
-}
-
-interface OtlpScopeSpans {
-  spans?: OtlpSpan[];
-}
-
-interface OtlpRequest {
-  resourceSpans?: { scopeSpans?: OtlpScopeSpans[]; instrumentationLibrarySpans?: OtlpScopeSpans[] }[];
-}
-
-// OTLP numbers span kinds one above the API's SpanKind; the JSON exporter may also write the enum name.
-const OTLP_CLIENT_KINDS: ReadonlySet<unknown> = new Set([SpanKind.CLIENT + 1, 'SPAN_KIND_CLIENT']);
-const PORT_ATTRIBUTES = ['server.port', 'net.peer.port'] as const;
-const URL_ATTRIBUTES = ['url.full', 'http.url'] as const;
-
 const checks: CheckRecord[] = [];
 let traceOffset = 0;
 let tenantA: SubjectSession | undefined;
@@ -325,46 +295,13 @@ function isConsumeSpan(span: ContinuitySpan): boolean {
   return span.name === CONSUME_SPAN && span.service === 'stub' && span.kind === SpanKind.CONSUMER;
 }
 
-function attributeText(attributes: readonly OtlpAttribute[], keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const value = attributes.find((attribute) => attribute.key === key)?.value;
-    const raw = value?.intValue ?? value?.stringValue;
-    if (typeof raw === 'string' || typeof raw === 'number') return String(raw);
-  }
-  return undefined;
-}
-
-/** Destination port of a CLIENT span from its port attributes, else its URL; null when it names neither. */
-function destinationPort(attributes: readonly OtlpAttribute[]): number | null {
-  const port = attributeText(attributes, PORT_ATTRIBUTES);
-  if (port !== undefined && /^[0-9]+$/.test(port)) return Number(port);
-  const url = attributeText(attributes, URL_ATTRIBUTES);
-  return url !== undefined && URL.canParse(url) ? portOfUrl(url) : null;
-}
-
-// ContinuitySpan keeps no attributes, so the destinations of CLIENT spans are read from the export lines directly.
-/** CLIENT spans of trace `traceId` counted by destination: legacy ColdFusion, the stub, anything else, or unknown. */
-function clientSpanCounts(traceId: string): ClientSpanCounts {
-  const legacyPort = portOfUrl(legacyUrl());
-  const stubPort = portOfUrl(serviceUrl('stub'));
-  const counts: ClientSpanCounts = { legacy: 0, stub: 0, other: 0, unresolved: 0 };
-  for (const line of readTraceLines(undefined, { fromOffset: traceOffset })) {
-    if (!line.includes(traceId)) continue;
-    const request = JSON.parse(line) as OtlpRequest | null;
-    for (const resourceSpans of request?.resourceSpans ?? []) {
-      for (const scope of resourceSpans.scopeSpans ?? resourceSpans.instrumentationLibrarySpans ?? []) {
-        for (const span of scope.spans ?? []) {
-          if (span.traceId !== traceId || !OTLP_CLIENT_KINDS.has(span.kind)) continue;
-          const port = destinationPort(span.attributes ?? []);
-          if (port === null) counts.unresolved += 1;
-          else if (port === legacyPort) counts.legacy += 1;
-          else if (port === stubPort) counts.stub += 1;
-          else counts.other += 1;
-        }
-      }
-    }
-  }
-  return counts;
+/** CLIENT spans of trace `traceId` exported since the suite started, by destination. */
+function clientSpanCounts(traceId: string): ClientSpanClassification {
+  const lines = readTraceLines(undefined, { fromOffset: traceOffset });
+  return classifyClientSpans(lines, traceId, {
+    legacyPort: portOfUrl(legacyUrl()),
+    stubPort: portOfUrl(serviceUrl('stub')),
+  });
 }
 
 function stubProcess(): UpProcessEntry {
@@ -624,8 +561,8 @@ describe('platform proof on the stub', () => {
         await awaitSpans(trace.traceId, 'the gateway SERVER span', (spans) =>
           spans.some((span) => span.service === 'gateway' && span.kind === SpanKind.SERVER),
         );
-        const clientSpans = clientSpanCounts(trace.traceId);
-        expect(clientSpans.legacy, 'CLIENT spans towards legacy').toBe(0);
+        const { counts: clientSpans, bridgeCalls } = clientSpanCounts(trace.traceId);
+        expect(clientSpans.legacy, 'CLIENT spans towards legacy outside its bridge').toBe(0);
         expect(clientSpans.stub, 'CLIENT spans towards the stub').toBeLessThanOrEqual(1);
         expect(clientSpans.unresolved, 'CLIENT spans naming no destination').toBe(0);
         return {
@@ -635,6 +572,7 @@ describe('platform proof on the stub', () => {
           error: body.error,
           traceId: trace.traceId,
           clientSpans,
+          bridgeCalls,
         };
       });
       await waitHealthy('stub');

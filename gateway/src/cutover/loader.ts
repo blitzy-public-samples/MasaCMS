@@ -85,6 +85,8 @@ const VARIANT_CONDITION = {
     paramCondition('nonEmpty', { const: true }),
     paramCondition('truthy', { const: true }),
     keywordCondition('multipartExtensionIn', { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } }),
+    keywordCondition('sessionManaged', { const: true }),
+    keywordCondition('startupSiteId', { const: true }),
     keywordCondition('anyOf', { type: 'array', minItems: 1, items: { $ref: '#/$defs/variantCondition' } }),
     keywordCondition('not', { $ref: '#/$defs/variantCondition' }),
   ],
@@ -221,14 +223,18 @@ const ACTION_VARIANT = objectWith({
 
 // A route records CSRF facts exactly when it has a route key.
 const ROUTE = {
-  ...objectWith({
-    ...ENTRY_POINT,
-    routeKey: nullable(NAME),
-    kind: oneOfValues(ROUTE_KINDS),
-    family: oneOfValues(ROUTE_FAMILIES),
-    csrfValidation: nullable(CSRF_FACTS.csrfValidation),
-    csrfContext: CSRF_FACTS.csrfContext,
-  }),
+  ...objectWith(
+    {
+      ...ENTRY_POINT,
+      routeKey: nullable(NAME),
+      kind: oneOfValues(ROUTE_KINDS),
+      family: oneOfValues(ROUTE_FAMILIES),
+      csrfValidation: nullable(CSRF_FACTS.csrfValidation),
+      csrfContext: CSRF_FACTS.csrfContext,
+      sessionless: { type: 'boolean' },
+    },
+    ['sessionless'],
+  ),
   if: { properties: { routeKey: { type: 'null' } } },
   then: { properties: { csrfValidation: { type: 'null' } } },
   else: { properties: { csrfValidation: { type: 'string' } } },
@@ -630,6 +636,12 @@ export async function loadInventoryFacts(
     if (facts.csrf === undefined || CSRF_STRENGTH[csrfValidation] > CSRF_STRENGTH[facts.csrf.csrfValidation]) {
       facts.csrf = item.csrfContext === null ? { csrfValidation } : { csrfValidation, csrfContext: item.csrfContext };
     }
+  }
+  // A key is sessionless only when every route recording it is, so a session-managed one keeps CSRF arbitration.
+  for (const route of inventory.routes) {
+    if (route.routeKey === null || route.sessionless === undefined) continue;
+    const facts = factsFor(route.routeKey);
+    facts.sessionless = (facts.sessionless ?? true) && route.sessionless;
   }
   for (const variant of actionVariants) {
     const facts = factsFor(variant.routeKey);

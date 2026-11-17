@@ -160,6 +160,9 @@ describe('timing and batch figures', () => {
     ['gives a write window 30 s to open', config.windows.openBudgetMs, 30 * SECOND],
     ['uses a 30 s freeze acknowledgement wait', config.transition.freezeAckTimeoutMs, 30 * SECOND],
     ['awaits the reverse projection for 5 s by default', config.projection.defaultAwaitTimeoutMs, 5 * SECOND],
+    ['reads one page per reverse projection stream and cycle', config.projection.streamPagesPerCycle, 1],
+    ['polls the reverse projection every 250 ms at its base cadence', config.projection.idlePollMs, 250],
+    ['backs the idle reverse projection off to one poll per 5 s', config.projection.idleMaxPollMs, 5 * SECOND],
     ['retries a pending window import every 5 s', config.windows.importRetryMs, 5 * SECOND],
     ['leases a gateway write window for 120 s', config.windows.gatewayLeaseMs, 120 * SECOND],
     ['polls the legacy bridge every 60 s', config.background.bridgePollMs, 60 * SECOND],
@@ -418,6 +421,34 @@ describe('loadConfig with a fixture file', () => {
         delete faultNamed(config, 'projector-delay').defaultDelayMs;
       },
       'faults.6: defaultDelayMs belongs to "projector-delay" only, and is required there',
+    ],
+    [
+      'an idle back-off ceiling below the base poll interval',
+      (config) => {
+        config.projection.idleMaxPollMs = config.projection.idlePollMs - 1;
+      },
+      'projection.idleMaxPollMs: must not be below idlePollMs',
+    ],
+    [
+      'a stream page budget of 0',
+      (config) => {
+        config.projection.streamPagesPerCycle = 0;
+      },
+      'projection.streamPagesPerCycle: Too small: expected number to be >0',
+    ],
+    [
+      'a negative stream page budget',
+      (config) => {
+        config.projection.streamPagesPerCycle = -1;
+      },
+      'projection.streamPagesPerCycle: Too small: expected number to be >0',
+    ],
+    [
+      'a fractional stream page budget',
+      (config) => {
+        config.projection.streamPagesPerCycle = 1.5;
+      },
+      'projection.streamPagesPerCycle: Invalid input: expected int, received number',
     ],
     [
       'a repeated data owner',

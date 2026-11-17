@@ -30,6 +30,7 @@ Environment:
   OPT2_STATE_DIR        up.json and the stage records (default $HOME/.opt2/state)
   OPT2_PRISTINE_DIR     pristine legacy baseline (default $HOME/.opt2/pristine)
   OPT2_REPORTS_DIR      report directory, relative to the checkout when relative (default opt2/reports)
+  OPT2_LOCK_WAIT        seconds to wait for a running OPT-2 command to finish (default 0: refuse at once)
 The stack's own settings (PORT, database and service addresses) come from up.json.
 
 Example, with the environment up.sh ran under:
@@ -76,7 +77,7 @@ SERVICE_PACKAGES=(services/identity services/people services/programs-sites serv
   services/communications services/reporting services/surveys services/timesheets services/finance services/e-signature
   web migration harness)
 E2E_SUITES=(isolation/tenant-isolation events/seams events/dlq-replay events/trace events/roster-protocol
-  security/authz-matrix)
+  security/authz-matrix synthetic/v1-writes)
 # Settings of the migration process up.sh recorded, so every command here addresses the same stack it started.
 STACK_ENV_KEYS=(TZ GOOGLE_CLOUD_PROJECT PUBSUB_EMULATOR_HOST OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL
   LEGACY_ORIGIN OPT2_LEGACY_PORT MURA_DBHOST MURA_DBPORT MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD PG_HOST PG_PORT
@@ -541,6 +542,9 @@ stage_migration() {
   if [[ $manifest != true && $store != unsupported ]]; then
     run_step "file manifest of S$seq" "$MIGRATE" files manifest --snapshot "$seq" || return 1
   fi
+  # Brings the target to Sk, so Ck holds both sides at Sk; the drain then settles the feed's state events.
+  run_step "feed to S$seq" "$MIGRATE" feed --snapshot "$seq" || return 1
+  note_evidence "$RECON_DIR/after-feed-$seq.json"
   # Written first: a failed or interrupted drain-and-suspend can leave part of the background work suspended.
   if ! printf '%s\n' "$STACK_STARTED_AT" >"$SUSPENDED_MARKER"; then
     rm -f -- "$SUSPENDED_MARKER" || true
@@ -572,13 +576,16 @@ stage_capture() {
 }
 
 stage_cutover() {
-  local failures=0
+  local failures=0 report
   # GS-ID-09 opens its session under v0001 and resumes it after the transition, proving session adoption across it.
   run_step "GS-ID-09 before the transition" harness_run golden:replay -- --only GS-ID-09 --phase pre-transition ||
     failures=1
   run_step "transition to v0002" "$MIGRATE" transition --to v0002 || return 1
   note_evidence "$REPORTS_DIR/transitions.json"
   run_step "GS-ID-09 after the transition" harness_run golden:replay -- --only GS-ID-09 --phase resume || failures=1
+  # Feeds the legacy writes since Ck, GS-ID-09's logins included, into the units v0002 leaves legacy-authoritative.
+  run_step "feed" "$MIGRATE" feed || failures=1
+  if report="$(json_get "$STEP_STDOUT" reconciliation.reportPath 2>/dev/null)"; then note_evidence "$report"; fi
   run_step "reconcile post-cutover" "$MIGRATE" reconcile --point post-cutover || failures=1
   note_evidence "$RECON_DIR/post-cutover.json"
   return "$failures"

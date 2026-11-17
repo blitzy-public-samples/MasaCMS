@@ -11,7 +11,7 @@ import {
   type SessionCookieTracker,
 } from './cookies.js';
 import { domModel, type DomModel } from './dom-model.js';
-import { exportModel, fileModel, type ExportModel } from './exports.js';
+import { byteBodyModel, exportModel, type ExportModel } from './exports.js';
 import { normaliseHeaders, type NormalisedHeaders } from './headers.js';
 import { createIdOrdinals, normaliseIdsInString, type IdOrdinals } from './ids.js';
 import { normaliseMail, type NormalisedMail } from './mail.js';
@@ -352,7 +352,7 @@ function structuredBody(contentType: string, text: string, env: BodyEnv): Normal
   return undefined;
 }
 
-// Downloads (CSV, XLSX, PDF, other files) are modelled when exports are compared; other text is normalised text.
+// Downloads (CSV, XLSX, PDF, ZIP, other files) are modelled when exports are compared; other text is normalised text.
 async function responseBody(
   response: RecordedResponse,
   text: string | undefined,
@@ -365,7 +365,7 @@ async function responseBody(
     return { export: await exportModel(response, env.ids, env.rules, env.csvKeyColumns), maskedPaths: {} };
   }
   if (text !== undefined) return { body: normaliseText(text, env.ids, env.rules), maskedPaths: {} };
-  return { export: fileModel({ sha256: response.sha256, contentType: response.contentType }), maskedPaths: {} };
+  return { export: await byteBodyModel(response, env.ids, env.rules), maskedPaths: {} };
 }
 
 /**

@@ -34,6 +34,7 @@ import {
   type JsonApiHandlerFn,
   type JsonApiResult,
 } from './types.js';
+import { validate } from './validate.js';
 
 type StatsRow = Record<string, unknown>;
 
@@ -166,6 +167,7 @@ const loadByFirst: JsonApiHandlerFn = async () => missingLoadBy();
 export const statsHandler: EntityHandler = Object.freeze({
   entity: ENTITY,
   config: CONFIG,
+  validate,
   findOne,
   findMany,
   findAll: findFeed(CONFIG.primaryKey),

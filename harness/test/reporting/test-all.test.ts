@@ -366,6 +366,12 @@ describe('buildServiceMatrix', () => {
       'role identity_app in roles.membershipViolations (member of postgres)',
     ],
     ['a consumer with cross-tenant effects', {}, { consumers: consumersWith({ crossTenantEffects: 1 }) }, `consumer ${IDENTITY_CONSUMER} crossTenantEffects 1`],
+    [
+      'a consumer without cross-tenant effect evidence',
+      {},
+      { consumers: consumersWith({ crossTenantEffects: null }) },
+      `consumer ${IDENTITY_CONSUMER} crossTenantEffects null: no effect assertion names it`,
+    ],
     ['a consumer that accepts tenantless events', {}, { consumers: consumersWith({ tenantlessRejected: false }) }, `consumer ${IDENTITY_CONSUMER} tenantlessRejected false`],
     ['a consumer that fans out beyond the registry', {}, { consumers: consumersWith({ fanoutRegistryOnly: false }) }, `consumer ${IDENTITY_CONSUMER} fanoutRegistryOnly false`],
   ])('fails the isolation cell for %s, naming the fact and leaving other services green', (_, identity, top, fact) => {

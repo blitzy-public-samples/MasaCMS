@@ -1,11 +1,20 @@
-/** Tenant isolation of the identity schema, its group, permission and token routes, and its person-contact consumer against PostgreSQL. */
-import { randomBytes, randomInt } from 'node:crypto';
+/** Tenant isolation of the identity schema, its group, permission and token routes, and its person-contact and site registry consumers against PostgreSQL. */
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { decodeJwt } from '@opt2/platform/auth';
+import { CONSUMER_AGGREGATE_VERSION_TABLE, INBOX_TABLE, subscriptionName } from '@opt2/platform/events';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, cfUuid, generateCsrfToken } from '@opt2/platform/legacy-compat';
-import { ensureUnitGates, type CanonicalType } from '@opt2/platform/migration-kit';
-import { NON_TENANT_TABLES, OutsideTenantTransactionError, createPool, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { CHANGELOG_TABLE, ensureUnitGates, type CanonicalType } from '@opt2/platform/migration-kit';
+import {
+  NON_TENANT_TABLES,
+  OutsideTenantTransactionError,
+  SITE_CHANGED_TOPIC,
+  createPool,
+  withMetadata,
+  withTenant,
+  type TenantTx,
+} from '@opt2/platform/tenancy';
 import {
   PLATFORM_TABLE_GROUPS,
   ROLE_SET,
@@ -21,6 +30,7 @@ import {
   mintUserToken,
   pgAvailable,
   pushTo,
+  registryPayloads,
   seedRegistry,
   testEnvelope,
   testPgConfig,
@@ -29,7 +39,7 @@ import {
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
+import { PERSON_AGGREGATE_TYPE, PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
 import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS, OWNED_TABLES, type GroupAccountRow, type IdentityTableDefinition } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, headersFor } from '../helpers/app.js';
@@ -63,6 +73,19 @@ const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableG
 const PLATFORM_TENANT_TABLES = ALL_PLATFORM_GROUPS.flatMap((group) => PLATFORM_TABLE_GROUPS[group].tenantOwned);
 const TABLES = OWNED_TABLES.map(({ table }) => table);
 const DEFINITIONS: ReadonlyMap<string, IdentityTableDefinition> = new Map(OWNED_TABLES.map((definition) => [definition.table, definition]));
+const SITE_CHANGED_SUBSCRIPTION = subscriptionName('identity', SITE_CHANGED_TOPIC);
+
+/** Fresh rows of the platform tenant tables the consumers write, which the shared suite inserts directly. */
+const CONSUMER_ROWS: ReadonlyMap<string, () => Row> = new Map<string, () => Row>([
+  [CHANGELOG_TABLE, () => ({ table: 'person_contact', op: 'insert', key: cfUuid(), after: 'N', origin: 'backfill' })],
+  [INBOX_TABLE, () => ({ event_id: randomUUID(), subscription: PERSON_CONTACT_SUBSCRIPTION, status: 'applied' })],
+  [
+    CONSUMER_AGGREGATE_VERSION_TABLE,
+    () => ({ subscription: PERSON_CONTACT_SUBSCRIPTION, aggregate_type: PERSON_AGGREGATE_TYPE, aggregate_id: cfUuid(), last_version: 1 }),
+  ],
+]);
+/** Owned tables plus the platform tenant tables the consumers write. */
+const SUITE_TABLES = [...TABLES, ...CONSUMER_ROWS.keys()];
 const USERS_MODULE = '00000000000000000000000000000000008';
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const SITE_ADMIN_ROLES = ROLE_SET.find(({ name }) => name === 'site-admin')?.roles ?? [];
@@ -220,14 +243,26 @@ function requiredRow(table: string, tenant: TenantFixture): Row {
 
 /** A fresh `table` row of `tenant` without `tenant_id`, from its builder when one exists. */
 function rowFor(table: string, tenant: TenantFixture): Row {
+  const consumerRow = CONSUMER_ROWS.get(table);
+  if (consumerRow !== undefined) return consumerRow();
   const build = BUILDERS.get(table);
   const { tenant_id: _tenant, ...columns } = build === undefined ? requiredRow(table, tenant) : build(tenant.siteId);
   return columns;
 }
 
-/** Writes one fresh row of `table` for `tenant` through the identity repository, so the unit gate and changelog hooks run. */
+/** Writes one fresh row of `table` for `tenant`: owned tables through the identity repository, so the unit gate and changelog hooks run; platform tables directly. */
 async function writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Promise<void> {
-  await built().repository.insert(tx, table, rowFor(table, tenant));
+  const row = rowFor(table, tenant);
+  if (!CONSUMER_ROWS.has(table)) {
+    await built().repository.insert(tx, table, row);
+    return;
+  }
+  const names = ['tenant_id', ...Object.keys(row)];
+  const placeholders = names.map((_, index) => `$${String(index + 1)}`);
+  await tx.query(`INSERT INTO "${tx.schema}"."${table}" (${names.map((name) => `"${name}"`).join(', ')}) VALUES (${placeholders.join(', ')})`, [
+    tx.tenantId,
+    ...Object.values(row),
+  ]);
 }
 
 /** Every row of `table` visible in `tx`; RLS is the only filter. */
@@ -322,6 +357,14 @@ function personEnvelope(tenant: TenantFixture, userId: string = cfUuid()) {
     aggregateVersion: 1,
     payload: personPayload(userId, tenant.siteId),
   });
+}
+
+/** A `programs-sites.site.changed.v1` envelope of the seeded registry state of `tenantId`'s fixture site, at version 2 over the seeded 1. */
+function siteEnvelope(tenantId: string) {
+  const siteId = fixtureForTenant(tenantId)?.siteId;
+  const payload = registryPayloads().find((candidate) => candidate.siteId === siteId);
+  if (siteId === undefined || payload === undefined) throw new TypeError(`No tenant fixture has tenant ${tenantId}`);
+  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId, aggregateId: siteId, aggregateVersion: 2, payload });
 }
 
 /** Injects `method url` with `headers`, sending `form` urlencoded when given. */
@@ -428,22 +471,24 @@ describe.skipIf(!available)('identity tenant isolation', () => {
     });
   });
 
-  // Its event case covers a tenantless people.person.changed.v1: acked, dead-lettered as missing-tenant, no owned row changed.
   defineIsolationSuite(
     { describe, it, expect, beforeAll },
     {
       db: () => schema,
-      name: 'identity owned tables',
-      tables: TABLES,
+      name: 'identity owned and consumer tables',
+      tables: SUITE_TABLES,
       writeAs,
       readAs,
       rowFor,
-      event: {
-        app: () => ctx?.app,
-        subscription: PERSON_CONTACT_SUBSCRIPTION,
-        envelopeFor: (tenantId) => personEnvelope(fixtureForTenant(tenantId) ?? TENANT_A),
-        publisher: appPublisher,
-      },
+      events: [
+        {
+          app: () => ctx?.app,
+          subscription: PERSON_CONTACT_SUBSCRIPTION,
+          envelopeFor: (tenantId) => personEnvelope(fixtureForTenant(tenantId) ?? TENANT_A),
+          publisher: appPublisher,
+        },
+        { app: () => ctx?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: siteEnvelope, publisher: appPublisher },
+      ],
     },
   );
 

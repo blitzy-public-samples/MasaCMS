@@ -2,13 +2,17 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import type { ScreenGate } from '@/lib/access-gate';
 import { carchContentNav } from '@/screens/carch/content-nav';
+import { carchGate } from '@/screens/carch/controller';
 import { carchSecondaryMenu } from '@/screens/carch/secondary-menu';
 import { ccategorySecondaryMenu } from '@/screens/ccategory/secondary-menu';
+import { cchainGate } from '@/screens/cchain';
 import { cchangesetsSecondaryMenu } from '@/screens/cchangesets/secondary-menu';
 import { cfeedSecondaryMenu } from '@/screens/cfeed/secondary-menu';
 import { cloginScreens } from '@/screens/clogin';
 import { homeRedirectScreen } from '@/screens/clogin/home-redirect';
+import { cwebserviceGate } from '@/screens/cwebservice';
 import {
   NOT_BUILT_VARIANTS,
   allOpt2Actions,
@@ -84,26 +88,47 @@ interface UnregisteredCarry {
   readonly rc: Rc;
 }
 
-// The variant-less approvalaction definition reads `action` itself, so it also answers the carried approve variant.
-const ANSWERED_BY_BASE: ReadonlyArray<UnregisteredCarry & { readonly base: string }> = [
-  {
-    key: normaliseRouteKey('admin:carch.approvalaction{action=approve}'),
-    base: normaliseRouteKey('admin:carch.approvalaction'),
-    circuit: 'carch',
-    action: 'approvalaction',
-    rc: { action: 'approve' },
-  },
-];
-
-// No programs-sites screen serves updateSite's residual branch (its Update branch writes the withheld
-// trazunasettings) or the withheld site copy's result page, so both stay on legacy.
+// No programs-sites screen serves updateSite's residual branch (its Update branch writes the decision-list table
+// tentity) or the withheld site copy's result page, so both stay on legacy.
 const KEPT_ON_LEGACY: readonly UnregisteredCarry[] = [
   { key: normaliseRouteKey('admin:csettings.updatesite'), circuit: 'csettings', action: 'updatesite', rc: {} },
   { key: normaliseRouteKey('admin:csettings.sitecopyresult'), circuit: 'csettings', action: 'sitecopyresult', rc: {} },
 ];
 
-// cwebservice edit is a carried identity action the inventory folds into save.cfm, which includes edit.cfm.
-const NOT_INVENTORIED: readonly string[] = [normaliseRouteKey('admin:cwebservice.edit')];
+/** A carried view-only action another view also includes, with the circuit gate that serves it. */
+interface IncludedView {
+  readonly key: string;
+  readonly circuit: string;
+  readonly action: string;
+  readonly owner: string;
+  readonly gate: ScreenGate;
+}
+
+// save.cfm includes cwebservice/edit.cfm, update.cfm includes cchain/edit.cfm and list.cfm includes carch/scaffold.cfm
+// as its Custom Entities tab; each included view is an action of its own.
+const INCLUDED_VIEWS: readonly IncludedView[] = [
+  {
+    key: normaliseRouteKey('admin:cwebservice.edit'),
+    circuit: 'cwebservice',
+    action: 'edit',
+    owner: 'identity',
+    gate: cwebserviceGate,
+  },
+  {
+    key: normaliseRouteKey('admin:cchain.edit'),
+    circuit: 'cchain',
+    action: 'edit',
+    owner: 'strategies-content',
+    gate: cchainGate,
+  },
+  {
+    key: normaliseRouteKey('admin:carch.scaffold'),
+    circuit: 'carch',
+    action: 'scaffold',
+    owner: 'strategies-content',
+    gate: carchGate,
+  },
+];
 
 const DEFS: readonly ScreenDefinition[] = allScreens();
 const REGISTERED: readonly string[] = DEFS.map((def) => normaliseRouteKey(routeKeyOf(def)));
@@ -139,11 +164,7 @@ describe('registered admin screens', () => {
   });
 
   it('registers every carried action once', () => {
-    const unregistered = new Set([
-      ...HALTED,
-      ...ANSWERED_BY_BASE.map((entry) => entry.key),
-      ...KEPT_ON_LEGACY.map((entry) => entry.key),
-    ]);
+    const unregistered = new Set([...HALTED, ...KEPT_ON_LEGACY.map((entry) => entry.key)]);
     const missing = CARRIED.filter(
       (key) => !unregistered.has(key) && REGISTERED.filter((registered) => registered === key).length !== 1,
     );
@@ -153,7 +174,7 @@ describe('registered admin screens', () => {
   it('registers only carried inventory keys', () => {
     const stray = REGISTERED.filter((key) => {
       const record = RECORDS.get(key);
-      return record === undefined ? !NOT_INVENTORIED.includes(key) : !isCarried(record);
+      return record === undefined || !isCarried(record);
     });
     expect(stray).toEqual([]);
   });
@@ -171,15 +192,18 @@ describe('registered admin screens', () => {
   });
 
   it('leaves the halted carried keys to legacy', () => {
-    expect([...HALTED]).toEqual(expect.arrayContaining([normaliseRouteKey('admin:carch.cropimage')]));
+    expect([...HALTED]).toEqual(
+      expect.arrayContaining(
+        [
+          'admin:carch.cropimage',
+          'admin:carch.edit',
+          'admin:carch.imagedetails',
+          'admin:carch.multifileupload',
+          'admin:carch.search',
+        ].map(normaliseRouteKey),
+      ),
+    );
     expect(registeredOf(HALTED)).toEqual([]);
-  });
-
-  it.each(ANSWERED_BY_BASE)('answers $key with its base definition', ({ key, base, circuit, action, rc }) => {
-    expect(CARRIED).toContain(key);
-    expect(registeredOf([key])).toEqual([]);
-    expect(defOf(base)).toBeDefined();
-    expect(findScreen(circuit, action, rc)).toBe(defOf(base));
   });
 
   it.each(KEPT_ON_LEGACY)('keeps $key on legacy', ({ key, circuit, action, rc }) => {
@@ -188,10 +212,18 @@ describe('registered admin screens', () => {
     expect(findScreen(circuit, action, rc)).toBeUndefined();
   });
 
-  it.each(NOT_INVENTORIED)('registers the uninventoried %s once for identity', (key) => {
-    expect(RECORDS.has(key)).toBe(false);
-    expect(REGISTERED.filter((registered) => registered === key)).toEqual([key]);
-    expect(defOf(key)).toMatchObject({ mode: 'page', owner: 'identity' });
+  it.each(INCLUDED_VIEWS)('registers the carried $key page once behind its circuit gate', (view) => {
+    expect(CARRIED).toContain(view.key);
+    expect(RECORDS.get(view.key)).toMatchObject({
+      responseMode: 'page',
+      owningService: view.owner,
+      exceptionRef: null,
+    });
+    expect(REGISTERED.filter((registered) => registered === view.key)).toEqual([view.key]);
+    const def = defOf(view.key);
+    expect(def).toMatchObject({ circuit: view.circuit, action: view.action, mode: 'page', owner: view.owner });
+    expect(def?.gate).toBe(view.gate);
+    expect(findScreen(view.circuit, view.action.toUpperCase(), {})).toBe(def);
   });
 
   it('registers home.redirect as a clogin screen of identity', () => {
@@ -239,6 +271,13 @@ const WITHHELD_OR_LEGACY_SERVED_KEYS: readonly string[] = [
   'admin:carch.cropimage',
   'admin:carch.flipimage',
   'admin:carch.rotateimage',
+  'admin:carch.update',
+  'admin:carch.updateobjectparams',
+  'admin:carch.savequickedit',
+  'admin:carch.variationtargeting',
+  'admin:carch.copy',
+  'admin:cchangesets.publish',
+  'admin:cchangesets.rollback',
 ];
 
 describe('withheld and legacy-served actions', () => {
@@ -269,6 +308,18 @@ interface LookupCase {
 }
 
 const REFUSED: readonly LookupCase[] = [
+  {
+    label: 'a forgot-password request on the login page',
+    circuit: 'clogin',
+    action: 'main',
+    rc: { status: 'sendLogin', email: 'admin@example.com' },
+  },
+  {
+    label: 'a forgot-password post to the login action',
+    circuit: 'cLogin',
+    action: 'login',
+    rc: { status: 'SENDLOGIN' },
+  },
   { label: 'a roster delete', circuit: 'cusers', action: 'update', rc: { type: '2', action: 'Delete' } },
   {
     label: 'a roster edit with a photo',
@@ -295,6 +346,15 @@ const REFUSED: readonly LookupCase[] = [
     rc: {},
     uploads: [{ field: 'newfile', filename: 'Photo.JPEG' }],
   },
+  {
+    label: 'a content save with a non-image upload',
+    circuit: 'carch',
+    action: 'update',
+    rc: { newfile: 'doc.pdf' },
+    uploads: [{ field: 'newfile', filename: 'doc.pdf' }],
+  },
+  { label: 'an approval', circuit: 'carch', action: 'approvalaction', rc: { action: 'Approve' } },
+  { label: 'a change set rollback', circuit: 'cChangesets', action: 'rollback', rc: { changesetid: 'CS-1' } },
   { label: 'class extensions', circuit: 'cextend', action: 'listsubtypes', rc: {} },
   { label: 'trash', circuit: 'ctrash', action: 'list', rc: {} },
   { label: 'the email broadcaster', circuit: 'cemail', action: 'list', rc: {} },
@@ -334,6 +394,22 @@ const RESOLVED: readonly ResolvedCase[] = [
     owner: 'people',
   },
   {
+    label: 'an MFA challenge on the login action',
+    circuit: 'clogin',
+    action: 'login',
+    rc: { status: 'challenge', attemptChallenge: 'true' },
+    key: 'admin:clogin.login',
+    owner: 'identity',
+  },
+  {
+    label: 'a failed-login notice on the login page',
+    circuit: 'clogin',
+    action: 'main',
+    rc: { status: 'failed' },
+    key: 'admin:clogin.main',
+    owner: 'identity',
+  },
+  {
     label: 'the home redirect',
     circuit: 'home',
     action: 'redirect',
@@ -342,12 +418,11 @@ const RESOLVED: readonly ResolvedCase[] = [
     owner: 'identity',
   },
   {
-    label: 'a non-image upload',
+    label: 'an approval rejection',
     circuit: 'carch',
-    action: 'update',
-    rc: { newfile: 'doc.pdf' },
-    uploads: [{ field: 'newfile', filename: 'doc.pdf' }],
-    key: 'admin:carch.update',
+    action: 'approvalaction',
+    rc: { action: 'reject' },
+    key: 'admin:carch.approvalaction',
     owner: 'strategies-content',
   },
   {
@@ -385,16 +460,20 @@ describe('findScreen', () => {
     expect(findScreen(circuit, action, rc, uploads)).toBeUndefined();
   });
 
-  it('lists the photo, roster delete and image upload refusals', () => {
+  it('lists the forgot-password, photo, roster delete, image upload and approval refusals', () => {
     expect(NOT_BUILT_VARIANTS).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ circuit: 'clogin', action: 'main', key: 'status=sendlogin' }),
+        expect.objectContaining({ circuit: 'clogin', action: 'login', key: 'status=sendlogin' }),
         expect.objectContaining({ circuit: 'cusers', action: 'update', key: 'photo' }),
         expect.objectContaining({ circuit: 'ceditprofile', action: 'update', key: 'photo' }),
         expect.objectContaining({ circuit: 'cusers', action: 'update', key: 'type=2,action=delete' }),
         expect.objectContaining({ circuit: 'carch', action: 'update', key: 'upload=image' }),
+        expect.objectContaining({ circuit: 'carch', action: 'approvalaction', key: 'action=approve' }),
       ]),
     );
   });
+
 
   it('refuses no carried variant but the halted ones', () => {
     const refusedCarry = NOT_BUILT_VARIANTS.map(notBuiltKey).filter((key) => CARRIED.includes(key) && !HALTED.has(key));

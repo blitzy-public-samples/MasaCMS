@@ -718,6 +718,13 @@ function urlParam(raw: string, base: string, param: string): string | undefined 
   return URL.canParse(raw, base) ? paramNoCase(new URL(raw, base).searchParams, param) : undefined;
 }
 
+/** Markup a dom extraction reads: the body, or the string at JSON body `path` (fragments legacy returns as JSON). */
+function domMarkup(result: HttpResult, path: string | undefined): string | undefined {
+  if (path === undefined) return result.text;
+  const { found, value } = valueAt(parseJson(result.text), path);
+  return found && typeof value === 'string' ? value : undefined;
+}
+
 function extractBinding(
   ctx: ScenarioContext,
   step: Step,
@@ -739,11 +746,18 @@ function extractBinding(
     return value;
   }
   if (extraction.from === 'dom') {
-    const element = load(result.text)(extraction.selector).first();
+    const markup = domMarkup(result, extraction.path);
+    if (markup === undefined) throw fail(`no ${extraction.path ?? ''} markup string in the response body`);
+    const element = load(markup)(extraction.selector).first();
     if (element.length === 0) throw fail(`no element matches ${extraction.selector}`);
     const raw = extraction.attr === undefined ? element.text().trim() : element.attr(extraction.attr);
     if (raw === undefined) throw fail(`${extraction.selector} has no ${extraction.attr ?? ''} attribute`);
-    return withParam(raw, extraction.param, result.url);
+    if (extraction.pattern === undefined) return withParam(raw, extraction.param, result.url);
+    const value = new RegExp(extraction.pattern).exec(raw)?.[1];
+    if (value === undefined) {
+      throw fail(`${extraction.selector} ${extraction.attr ?? 'text'} does not match ${extraction.pattern}`);
+    }
+    return value;
   }
   if (extraction.from === 'location-query') {
     for (const hop of result.hops) {

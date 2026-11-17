@@ -24,9 +24,10 @@ one for this stack, and is only reported when it records none. Then stops the to
 ColdFusion, restores the legacy database and file store from the pristine baseline, re-imports the original
 scheduled tasks, restores the /muraWRM mapping, restarts the original legacy server without the OPT-2 start
 variables, removes this checkout's opt2-legacy CommandBox registration (registry entry only, server files kept) and
-releases the run lock. A failed step keeps the lock, and a failed schema drop keeps PostgreSQL's tooling.json entry
-and does not stop it, so a rerun retries them. Takes no arguments; run again after a completed teardown, it reports
-nothing running.
+releases the run lock. A failed or interrupted step keeps the lock in a recovery state that other checkouts wait
+on, and a failed schema drop keeps PostgreSQL's tooling.json entry and does not stop it, so a rerun retries them.
+Takes no arguments. With nothing to tear down (no run lock of this checkout, no up.json or tooling.json) it
+reports nothing running without taking the lock.
 
 Environment (* = secret):
   OPT2_STATE_DIR OPT2_PRISTINE_DIR   the directories up.sh used (default $HOME/.opt2/state, $HOME/.opt2/pristine)
@@ -37,6 +38,7 @@ Environment (* = secret):
   PG_HOST PG_PORT PG_USER PG_PASSWORD* PG_DATABASE
                                      PostgreSQL holding the OPT-2 schemas and roles, as for up.sh
   OPT2_PG_STOP_CMD                   stops a PostgreSQL up.sh started (default pg_ctlcluster 16 main stop)
+  OPT2_LOCK_WAIT                     seconds to wait for a running OPT-2 command to finish (default 0: refuse at once)
   OPT2_MSSQL_TRUST_SERVER_CERT and OPT2_LEGACY_START_TIMEOUT_S apply as for up.sh; harness/README.md describes each.
 
 Example, in the environment up.sh ran with:
@@ -492,13 +494,19 @@ restore_legacy() {
 
 # --- Main ------------------------------------------------------------------------------------------------------
 
-lock_acquire down
+# Exits 0 when this checkout has nothing to tear down: no run lock of its own, no up.json and no tooling.json.
+exit_if_nothing_running() {
+  if ! (lock_assert_mine) 2>/dev/null && [[ ! -e $UP_FILE && ! -e $TOOLING_FILE ]]; then
+    printf 'OPT-2 stack down: nothing running for %s (no run lock, up.json or tooling.json); legacy left as it is.\n' \
+      "$REPO"
+    exit 0
+  fi
+}
 
-if ! (lock_assert_mine) 2>/dev/null && [[ ! -e $UP_FILE && ! -e $TOOLING_FILE ]]; then
-  printf 'OPT-2 stack down: nothing running for %s (no run lock, up.json or tooling.json); legacy left as it is.\n' \
-    "$REPO"
-  exit 0
-fi
+# Before the lock too, so a checkout with nothing to tear down never waits on or touches another checkout's lock.
+exit_if_nothing_running
+lock_acquire down
+exit_if_nothing_running
 
 mapfile -t TOOLS < <(started_tooling)
 require_cmd node realpath ps
@@ -512,6 +520,7 @@ if [[ -f $CAPTURE_FILE ]]; then
   if [[ -f $PRISTINE_FILE ]]; then require_env MURA_DBHOST MURA_DBUSERNAME MURA_DBPASSWORD MURA_DATABASE; fi
 fi
 ensure_state_dirs
+lock_teardown_begin
 
 log_step 1 "stop the target processes"
 stop_target_processes
@@ -549,8 +558,9 @@ fi
 printf 'OPT-2 stack down for %s:\n' "$REPO"
 printf '  %s\n' "${SUMMARY[@]}"
 if ((${#FAILED[@]} > 0)); then
-  # The kept lock makes the next down.sh redo the failed steps rather than report nothing running.
-  printf 'opt2: teardown steps failed: %s; run lock kept, so rerunning harness/repro/down.sh retries them\n' \
+  # The recovery record keeps other checkouts off the stack and makes the next down.sh redo the failed steps.
+  lock_teardown_failed "${FAILED[@]}"
+  printf 'opt2: teardown steps failed: %s; run lock kept for recovery; rerunning harness/repro/down.sh retries them\n' \
     "$(join_or_none "${FAILED[@]}")" >&2
   exit 1
 fi

@@ -87,6 +87,8 @@ export async function loadLoginViewState(
     !isChallenge({ status, mfaPending: session.mfaPending }) &&
     config.showAdminLoginHelp &&
     cfEq(status, 'sendLogin');
+  // No web handler reaches this branch: the registry refuses `status=sendLogin`, the withheld forgot-password variant
+  // of clogin.main and clogin.login, so legacy answers it and sends the mail.
   if (loginMailSent) {
     const email = rcGet(rc, 'email');
     if (email === undefined) throw new TypeError('Element EMAIL is undefined in RC.');

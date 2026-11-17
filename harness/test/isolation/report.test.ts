@@ -22,6 +22,7 @@ import {
   writeEndToEndResult,
   type AssertionCategory,
   type ConsumerIsolationRow,
+  type ConsumerSubscription,
   type IsolationDeps,
   type IsolationReport,
   type IsolationReportInput,
@@ -74,6 +75,8 @@ const TOPOLOGY: Pick<Topology, 'subscriptions'> = {
     [SCHEDULED]: subscriptionEntry('communications', 'surveys.survey.scheduled.v1'),
   },
 };
+const TOPOLOGY_SUBSCRIPTIONS = consumerSubscriptions(TOPOLOGY);
+const CONTRACT_SUBSCRIPTIONS = consumerSubscriptions(deriveTopology('local', REPO_ROOT));
 
 /** A fresh parse of the committed vitest sample of services/people. */
 function sample(): VitestJson {
@@ -84,6 +87,25 @@ function sample(): VitestJson {
 function withPackagePath(json: VitestJson, svc: string): VitestJson {
   const copy = structuredClone(json);
   for (const file of copy.testResults) file.name = file.name.replace('/services/people/', `/services/${svc}/`);
+  return copy;
+}
+
+/** `json` with the passing tenantless, fan-out and effect cases `defineIsolationSuite` names per subscription of `svc`. */
+function withConsumerEvidence(json: VitestJson, svc: string, subscriptions: readonly ConsumerSubscription[]): VitestJson {
+  const copy = structuredClone(json);
+  const file = copy.testResults.find((entry) => entry.name.includes('/test/isolation/'));
+  if (file === undefined) throw new Error('the sample has no test/isolation/ file');
+  for (const { subscription, consumer, topic, fanout } of subscriptions) {
+    if (consumer !== svc) continue;
+    const titles = [
+      `an event without a tenant on ${subscription} is acked, dead-lettered as missing-tenant and changes no rows`,
+      ...(fanout ? [`a ${topic} fan-out from umbrella reaches tenant A and tenant umbrella once each and never tenant B`] : []),
+      `a tenant A delivery on ${subscription} is acked and changes no rows of tenant B or tenant umbrella`,
+    ];
+    for (const title of titles) {
+      file.assertionResults.push({ ancestorTitles: [], title, fullName: title, status: 'passed', failureMessages: [] });
+    }
+  }
   return copy;
 }
 
@@ -120,7 +142,7 @@ function rowsWithMembershipViolation(): CatalogRows {
   return { ...rows, memberships: [...rows.memberships, escalation] };
 }
 
-/** Report input with the sample fed to every package, the compliant catalog, a clean gateway run and the fixed topology. */
+/** Report input: the sample with the fixed topology's named evidence per package, the compliant catalog, a clean gateway run. */
 function passingInput(overrides: Partial<IsolationReportInput> = {}): IsolationReportInput {
   return {
     sha: PIN_SHA,
@@ -128,26 +150,30 @@ function passingInput(overrides: Partial<IsolationReportInput> = {}): IsolationR
     packages: ISOLATION_PACKAGES.map((pkg) => ({
       ...pkg,
       path: `\${OPT2_STATE_DIR}/test-all/vitest/services-${pkg.service}.json`,
-      json: withPackagePath(sample(), pkg.service),
+      json: withConsumerEvidence(withPackagePath(sample(), pkg.service), pkg.service, TOPOLOGY_SUBSCRIPTIONS),
     })),
     endToEnd: endToEndResultSchema.parse({ writtenAt: GENERATED_AT, gateway: CLEAN_RUN }),
     catalog: evaluateCatalog(compliantRows()),
-    subscriptions: consumerSubscriptions(TOPOLOGY),
+    subscriptions: TOPOLOGY_SUBSCRIPTIONS,
     ...overrides,
   };
 }
 
-/** `input` with the isolation assertion of `category` in the results of `service` marked failed. */
+/** `input` with the first isolation assertion of `category` in the results of `service`, naming `naming` if given, failed. */
 function withFailedAssertion(
   input: IsolationReportInput,
   service: string,
   category: AssertionCategory,
+  naming?: string,
 ): IsolationReportInput {
   const packages = input.packages.map((pkg) => {
     if (pkg.service !== service || pkg.json === null) return pkg;
     const json = structuredClone(pkg.json);
-    const target = isolationAssertions(json).find((assertion) => categoriseAssertion(assertion.fullName) === category);
-    if (target === undefined) throw new Error(`the sample has no ${category} assertion`);
+    const target = isolationAssertions(json).find(
+      (assertion) =>
+        categoriseAssertion(assertion.fullName) === category && (naming === undefined || assertion.fullName.includes(naming)),
+    );
+    if (target === undefined) throw new Error(`the input has no matching ${category} assertion`);
     target.status = 'failed';
     target.failureMessages = ['AssertionError: expected 1 to be 0 // Object.is equality'];
     return { ...pkg, json };
@@ -324,13 +350,13 @@ describe('buildIsolationReport over the samples', () => {
     ],
     [
       'a consumer applies an event to another tenant',
-      (input) => withFailedAssertion(input, 'timesheets', 'crossTenantEffects'),
+      (input) => withFailedAssertion(input, 'timesheets', 'crossTenantEffects', ARCHIVED),
       (report) => consumerOf(report, ARCHIVED).crossTenantEffects,
       1,
     ],
     [
       'a consumer does not dead-letter a tenantless event',
-      (input) => withFailedAssertion(input, 'communications', 'tenantlessRejected'),
+      (input) => withFailedAssertion(input, 'communications', 'tenantlessRejected', SCHEDULED),
       (report) => consumerOf(report, SCHEDULED).tenantlessRejected,
       false,
     ],
@@ -345,6 +371,34 @@ describe('buildIsolationReport over the samples', () => {
 
     expect(probe(report)).toEqual(expected);
     expect(report.result).toBe('fail');
+  });
+
+  it('fails an uncovered consumer of a package whose other consumer is covered, without crediting it that evidence', () => {
+    const covered = TOPOLOGY_SUBSCRIPTIONS.find((subscription) => subscription.subscription === ARCHIVED);
+    if (covered === undefined) throw new Error(`the fixed topology has no ${ARCHIVED}`);
+    const uncovered: ConsumerSubscription = {
+      subscription: 'timesheets.programs-sites.site.changed.v1',
+      consumer: 'timesheets',
+      topic: 'programs-sites.site.changed.v1',
+      fanout: false,
+    };
+
+    const built = buildIsolationReport(passingInput({ subscriptions: [covered, uncovered] }));
+
+    expect(built.report.consumers).toEqual([
+      { subscription: ARCHIVED, tenantlessRejected: true, fanoutRegistryOnly: true, crossTenantEffects: 0 },
+      { subscription: uncovered.subscription, tenantlessRejected: false, fanoutRegistryOnly: null, crossTenantEffects: null },
+    ]);
+    const naming = `naming ${uncovered.subscription} or ${uncovered.topic} in its consumer package`;
+    expect(built.findings).toEqual(
+      [`no tenantless-event assertion ${naming}`, `no cross-tenant effect assertion ${naming}`].map((detail) => ({
+        scope: `consumer ${uncovered.subscription}`,
+        service: 'timesheets',
+        detail,
+      })),
+    );
+    expect(built.servicesFailing).toEqual(['timesheets']);
+    expect(built.report.result).toBe('fail');
   });
 
   it('gives equal reports for equal inputs and leaves its input unchanged, even when the report is edited', () => {
@@ -376,12 +430,13 @@ describe('main', () => {
   let env: EnvLike;
   let committedBytes: Buffer;
 
-  /** Writes the sample as every package's vitest results and `gateway` as the end-to-end result. */
+  /** Writes the sample with named evidence of every contract subscription as each package's results, and `gateway`. */
   async function arrange(gateway: GatewayIsolationResult = CLEAN_RUN): Promise<void> {
     for (const pkg of ISOLATION_PACKAGES) {
       const file = vitestResultPath(pkg.pkg, env);
+      const json = withConsumerEvidence(withPackagePath(sample(), pkg.service), pkg.service, CONTRACT_SUBSCRIPTIONS);
       await mkdir(dirname(file), { recursive: true });
-      await writeFile(file, JSON.stringify(withPackagePath(sample(), pkg.service)), 'utf8');
+      await writeFile(file, JSON.stringify(json), 'utf8');
     }
     await writeEndToEndResult(gateway, env, { clock: CLOCK });
   }

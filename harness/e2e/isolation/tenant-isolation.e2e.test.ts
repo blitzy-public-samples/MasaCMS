@@ -7,10 +7,12 @@ import { FIXTURES_UNAVAILABLE, type FixtureStatus } from '../../src/golden/catal
 import { loadSecretStore, loadSeedStore, type SecretStore, type SeedStore } from '../../src/golden/session.js';
 import {
   ACTORS,
+  LEGACY_SERVED,
   ROUTE_FAMILIES,
   SURVEY_GRANT,
   TENANTS_BY_KEY,
   runGatewayIsolation,
+  versionRouting,
   type ActorRef,
   type CaseKind,
   type GatewayIsolationResult,
@@ -20,6 +22,7 @@ import {
 } from '../../src/isolation/gateway-matrix.js';
 import { writeEndToEndResult } from '../../src/isolation/report.js';
 import type { FetchLike } from '../../src/lib/http.js';
+import { loadCutoverVersion } from '../../src/security/gateway-reach.js';
 import { redactSecrets } from '../helpers/admin-login.js';
 import { fixtureStatus, gatewayUrl, requireTableVersion } from '../helpers/stack.js';
 
@@ -53,6 +56,11 @@ const guardedFetch: FetchLike = async (input, init) => {
 
 function siteOf(tenant: TenantKey): string {
   return TENANTS_BY_KEY[tenant].siteId;
+}
+
+/** Whether the matrix skipped `c` because the cut-over version serves its route from legacy. */
+function isLegacyServed(c: IsolationCase): boolean {
+  return c.result === 'skipped' && c.reason?.startsWith(`${LEGACY_SERVED} `) === true;
 }
 
 function serviceOf(c: IsolationCase): string {
@@ -135,7 +143,8 @@ describe('tenant isolation through the gateway', () => {
     await requireTableVersion(TABLE_VERSION);
     fixtures = fixtureStatus();
     const baseUrl = gatewayUrl();
-    result = await runGatewayIsolation({ baseUrl, fetch: guardedFetch, fixtures });
+    const routing = versionRouting(await loadCutoverVersion(TABLE_VERSION));
+    result = await runGatewayIsolation({ baseUrl, fetch: guardedFetch, fixtures, routing });
     await writeEndToEndResult(result, process.env, { baseUrl });
   }, MATRIX_TIMEOUT_MS);
 
@@ -174,17 +183,22 @@ describe('tenant isolation through the gateway', () => {
     const disallowed = result.cases.filter(
       (c) =>
         c.result === 'skipped' &&
+        !isLegacyServed(c) &&
         (fixtures.available || c.reason !== FIXTURES_UNAVAILABLE || !c.route.startsWith(FIXTURE_ROUTE_PREFIX)),
     );
     expect(disallowed.map((c) => c.id), describeCases(disallowed)).toEqual([]);
   });
 
-  it('pooled reads of tenant-a resolve to the umbrella public pool, invisible to tenant-b', () => {
+  // A legacy-served case proves nothing about the target, so the test reports itself skipped rather than passing.
+  it('pooled reads of tenant-a resolve to the umbrella public pool, invisible to tenant-b', (ctx) => {
     const pooled = userPoolCase('pooled-read', TENANT_A, TENANT_UMBRELLA);
     const direct = userPoolCase('read-by-id', TENANT_B, TENANT_UMBRELLA);
     const found = [pooled, direct].filter((c): c is IsolationCase => c !== undefined);
     expect(found.length, 'the matrix built no pooled-read or tenant-b by-id case of the user pool').toBe(2);
-    expect(found.map((c) => c.result), describeCases(found)).toEqual(['pass', 'pass']);
+    const served = found.filter((c) => !isLegacyServed(c));
+    expect(served.map((c) => c.result), describeCases(found)).toEqual(served.map(() => 'pass'));
+    const legacy = found.filter(isLegacyServed);
+    ctx.skip(legacy.length > 0, `not measured on target: ${legacy.map((c) => `${c.id} ${c.reason ?? ''}`).join('; ')}`);
   });
 
   it('no case is inconclusive and no actor is a reserved rehearsal identity', () => {

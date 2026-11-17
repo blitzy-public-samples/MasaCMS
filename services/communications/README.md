@@ -130,7 +130,7 @@ Used by the OPT-2 screens at `/opt2/admin/communications/*` (templates, sends, d
 |---|---|---|---|
 | Produces | `communications.message.delivery-status-changed.v1` | `state` | Full delivery state of one message (`aggregateId` = message id, `aggregateVersion` = `message.row_version`), written to the outbox in the transaction of every state change. No consumer this run; contract-tested |
 | Consumes | `programs-sites.site.changed.v1` | `state` | `communications.tenant_registry`: site, tenant, pools and domains |
-| Consumes | `identity.login-mail.requested.v1` | `process` | Stores the mail `queued` once per `eventId` in the envelope tenant, re-checked against the registry, and sends it after commit (GS-ID-04) |
+| Consumes | `identity.login-mail.requested.v1` | `process` | Stores the mail `queued` once per `eventId` in the envelope tenant, re-checked against the registry, and sends it after commit (GS-ID-04, `withheld`) |
 | Consumes | `surveys.survey.scheduled.v1` | `process`, `x-opt2-supersedes` | Seam 2, below |
 
 ## Seam 2: survey schedule to Cloud Tasks
@@ -171,7 +171,7 @@ Scenarios in `harness/golden/catalogue.yaml`, captured from legacy and replayed 
 
 | Scenario | Covers |
 |---|---|
-| GS-ID-04 | Forgot-password mail captured in Mailpit, sent here from identity's event |
+| GS-ID-04 | Forgot-password mail captured in Mailpit; `withheld` (`opt2/decision-list.json#admin:clogin.main{status=sendlogin}`), so Masa sends it until the proposal is approved |
 | GS-CM-01 | Template store |
 | GS-CM-02 | Send to Mailpit and delivery-status history |
 

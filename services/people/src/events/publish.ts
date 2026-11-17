@@ -26,6 +26,8 @@ export interface PeopleEvents {
   publishPersonArchived(tx: TenantTx, archive: PersonArchiveRow): Promise<EventEnvelope<PersonArchivedPayload> | null>;
   /** Writes the person state event of one migration-applied `people.person` change in the apply transaction. */
   emitStateEvents: NonNullable<MigrationHandlerOptions['emitStateEvents']>;
+  /** The `row_version` a migration-applied `people.person` insert or change writes with its row: one past the stored one, an insert past its tombstone. */
+  targetOnlyColumns: NonNullable<MigrationHandlerOptions['targetOnlyColumns']>;
 }
 
 /** `timestamp(3)` text of a stored value; pg yields a Date in the process zone, which `localTimestamp` formats back exactly. */
@@ -131,24 +133,20 @@ export function createPeopleEvents(repository: PeopleRepository): PeopleEvents {
       await publishPersonChanged(tx, person, { deleted: true, origin: change.origin, write });
       return;
     }
-    // Applied upserts leave the target-only row_version as stored (0 for a new row, below the envelope minimum), so it is
-    // advanced here, an insert past the person's tombstone too; the update also returns the row without the window-phase
-    // wait a findPerson read would take.
-    const tombstone = change.op === 'insert' ? await repository.personTombstoneVersion(tx, person.userid) : null;
-    const stored = BigInt(person.row_version);
-    const last = tombstone !== null && BigInt(tombstone) > stored ? BigInt(tombstone) : stored;
-    const bumped = await repository.update<PersonRow>(
-      tx,
-      PERSON.table,
-      { userid: person.userid },
-      { row_version: String(last + 1n) },
-      write,
-    );
-    if (bumped === null) {
-      throw new Error(`Applied person ${person.userid} is missing from its apply transaction`);
-    }
-    await publishPersonChanged(tx, bumped, { origin: change.origin });
+    // The applied row carries the row_version targetOnlyColumns gave it.
+    await publishPersonChanged(tx, person, { origin: change.origin });
   };
 
-  return Object.freeze({ publishPersonChanged, publishPersonArchived, emitStateEvents });
+  const targetOnlyColumns: PeopleEvents['targetOnlyColumns'] = async (tx, change) => {
+    if (change.unit !== PERSON.unit) {
+      return {};
+    }
+    // A new row would otherwise keep the column default 0, below the envelope minimum.
+    const stored = change.before === undefined ? 0n : BigInt(String(change.before.row_version));
+    const tombstone = change.before === undefined ? await repository.personTombstoneVersion(tx, String(change.row.userid)) : null;
+    const last = tombstone !== null && BigInt(tombstone) > stored ? BigInt(tombstone) : stored;
+    return { row_version: String(last + 1n) };
+  };
+
+  return Object.freeze({ publishPersonChanged, publishPersonArchived, emitStateEvents, targetOnlyColumns });
 }

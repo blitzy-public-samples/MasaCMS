@@ -21,7 +21,9 @@ into ${OPT2_CLONE_PARENT:-$HOME/.opt2}/opt2-clean-<timestamp>, and runs harness/
 harness/repro/test-all.sh there with a fresh OPT2_STATE_DIR (<clone>.state) and this checkout's OPT2_PRISTINE_DIR. The
 result is recorded in opt2/reports/reproducibility.md of this checkout, then the clone's down.sh stops its stack. The
 clone and its state directory are left for inspection; this checkout restarts only by an explicit harness/repro/up.sh.
-Takes no arguments.
+It holds the per-command lock from the first teardown to the clone's down.sh. Takes no arguments.
+OPT2_LOCK_WAIT=<seconds> queues, first come, first served, behind other claimants of the stack for up to that long
+instead of refusing at once.
 
 Environment, passed on to the clone's commands:
   required              PORT, MURA_DBHOST, MURA_DBPORT, MURA_DATABASE, MURA_DBUSERNAME, MURA_DBPASSWORD,
@@ -53,7 +55,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 # shellcheck source=SCRIPTDIR/lib/lock.sh
 source "$LIB_DIR/lock.sh"
 
-# The clone's commands must take the per-command flock themselves and write their reports into the clone.
+# The clone's commands run only under the flock this script takes in step 1, and write their reports into the clone.
 unset OPT2_LOCK_FLOCK_HELD OPT2_REPORTS_DIR
 
 REPORT="$REPO/opt2/reports/reproducibility.md"
@@ -85,7 +87,6 @@ OUTCOME=()
 CLONE=""
 CLONE_STATE=""
 CLONE_COMMIT=""
-CLONE_STACK=false
 COPIED=()
 DIRTY=()
 UP_RC=not-run
@@ -96,10 +97,16 @@ FIXTURES_AVAILABLE=unknown
 FIXTURES_REASON=""
 STATUS=fail
 
+# True when the clone's state directory or the run lock still records a stack of the clone.
+clone_stack_recorded() {
+  [[ -n $CLONE_STATE ]] || return 1
+  [[ -e $CLONE_STATE/up.json || -e $CLONE_STATE/tooling.json || "$(lock_checkout)" == "$CLONE" ]]
+}
+
 # Names the clone's teardown command when the script stops while the clone's stack may still run.
 on_exit() {
   local status=$?
-  if ((status != 0)) && [[ $CLONE_STACK == true ]]; then
+  if ((status != 0)) && clone_stack_recorded; then
     printf "opt2: the clone's stack may still be running; stop it with:\n" >&2
     printf '  (cd %s && OPT2_STATE_DIR=%s harness/repro/down.sh)\n' "$CLONE" "$CLONE_STATE" >&2
   fi
@@ -180,7 +187,7 @@ write_report() {
 
 # --- Preconditions ---------------------------------------------------------------------------------------------
 
-require_cmd git sha256sum flock realpath cp
+require_cmd git sha256sum realpath cp
 PIN_SHA="$(json_get "$REPO/opt2/source-pin.json" sha)" ||
   die "cannot read the pinned SHA from $REPO/opt2/source-pin.json"
 [[ $PIN_SHA =~ ^[0-9a-f]{40}$ ]] || die "$REPO/opt2/source-pin.json holds no 40-character SHA ('$PIN_SHA')"
@@ -197,19 +204,13 @@ CLONE_STATE="$CLONE.state"
 # --- Step 1: teardown of the working checkout ------------------------------------------------------------------
 
 step_begin 1 "harness/repro/down.sh in the working checkout"
-# The flock helper lock_acquire starts dies with this subshell, so the clone's commands can take the flock themselves;
-# down.sh inherits OPT2_LOCK_FLOCK_HELD and runs under it. Run as a plain statement so errexit holds inside.
-set +e
-(
-  set -e
-  lock_acquire clean-checkout-proof
-  "$REPRO_DIR/down.sh" >&2
-)
-status=$?
-set -e
+# The per-command flock lasts until this script exits. down.sh here and the clone's up.sh, test-all.sh and down.sh run
+# under it through OPT2_LOCK_FLOCK_HELD, so no other command gets between them; down.sh releases the run lock.
+lock_acquire clean-checkout-proof
+status=0
+"$REPRO_DIR/down.sh" >&2 || status=$?
 ((status == 0)) || die "teardown of the working checkout failed (exit $status, message above); nothing was cloned"
-flock -w 10 "$OPT2_LOCK_FLOCK" true || die "the per-command flock $OPT2_LOCK_FLOCK is still held after the teardown"
-[[ ! -e $OPT2_LOCK_FILE ]] || die "$OPT2_LOCK_FILE is still held after down.sh: $(lock_holder)"
+lock_assert_stack_free
 
 COMMIT="$(git -C "$REPO" rev-parse HEAD)" || die "cannot read HEAD of $REPO"
 # The environment artefacts are carried over separately, so they do not count as uncommitted changes.
@@ -246,7 +247,6 @@ step_end 2 "cloned and detached at $CLONE_COMMIT; ${#COPIED[@]} environment arte
 # --- Step 3: both commands in the clone ------------------------------------------------------------------------
 
 step_begin 3 "harness/repro/up.sh, then harness/repro/test-all.sh, in the clone"
-CLONE_STACK=true
 UP_RC=0
 run_in_clone up.sh || UP_RC=$?
 if ((UP_RC == 0)); then
@@ -276,7 +276,6 @@ write_report || printf 'opt2: cannot write %s (message above); retrying after th
 step_begin 5 "harness/repro/down.sh in the clone"
 DOWN_RC=0
 run_in_clone down.sh || DOWN_RC=$?
-if ((DOWN_RC == 0)); then CLONE_STACK=false; fi
 step_end 5 "down.sh exit $DOWN_RC"
 # Rewritten so the record carries step 5's timestamps and outcome too.
 REPORT_OK=true

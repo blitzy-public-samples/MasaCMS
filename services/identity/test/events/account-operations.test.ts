@@ -637,7 +637,9 @@ describe.skipIf(!available)('identity account operations against PostgreSQL', ()
       );
       expect(new Set(logged.map((row) => row.xid))).toEqual(new Set([writePosition]));
       const ofOperation = logged.filter((row) => row.operation_id === operationId).map((row) => row.table);
-      expect(ofOperation).toEqual(expect.arrayContaining([ACCOUNT_OPERATION.table, USER_ACCOUNT.table, CREDENTIAL.table, MEMBERSHIP.table]));
+      expect(ofOperation).toEqual(expect.arrayContaining([ACCOUNT_OPERATION.table, CREDENTIAL.table, MEMBERSHIP.table]));
+      // The change keeps every user_account value, so that row is not written.
+      expect(ofOperation).not.toContain(USER_ACCOUNT.table);
       expect(await opRow(operationId)).toMatchObject({ state: 'committed', commit_xid: writePosition });
       expect((await op(user.userId, operationId, 'finish')).statusCode).toBe(200);
     });

@@ -1,12 +1,15 @@
-// The cUsers, cEditProfile, cCategory and cArch registry contributions against the inventory's carried route keys.
+// The cUsers, cEditProfile, cCategory, cChain, cWebService and cArch registry contributions against the inventory's
+// carried route keys.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import { carchScreens } from '@/screens/carch';
 import { carchGate } from '@/screens/carch/controller';
 import { ccategoryScreens } from '@/screens/ccategory';
+import { cchainScreens } from '@/screens/cchain';
 import { ceditprofileScreens } from '@/screens/ceditprofile';
 import { cusersScreens } from '@/screens/cusers';
+import { cwebserviceScreens } from '@/screens/cwebservice';
 import type { ScreenDefinition } from '@/screens/registry';
 
 const INVENTORY_URL = new URL('../../../opt2/inventory/legacy-inventory.json', import.meta.url);
@@ -70,6 +73,8 @@ const CASES: readonly BarrelCase[] = [
   { circuit: 'cusers', screens: cusersScreens },
   { circuit: 'ceditprofile', screens: ceditprofileScreens },
   { circuit: 'ccategory', screens: ccategoryScreens },
+  { circuit: 'cchain', screens: cchainScreens },
+  { circuit: 'cwebservice', screens: cwebserviceScreens },
 ];
 
 describe.each(CASES)('$circuit barrel', ({ circuit, screens }) => {
@@ -99,22 +104,23 @@ describe('carch barrel', () => {
       (record) => [record.routeKey, record] as const,
     ),
   );
-  // The carried keys no carch screen registers: those a halted exceptions-list entry keeps on legacy, and the approve
-  // variant the variant-less `approvalaction` definition answers.
+  // The carried keys no carch screen registers: those a halted exceptions-list entry keeps on legacy.
   const halted = [
     'admin:carch.cropimage',
+    'admin:carch.edit',
     'admin:carch.flipimage',
+    'admin:carch.imagedetails',
+    'admin:carch.loadsiteflat',
+    'admin:carch.multifileupload',
     'admin:carch.multifileupload{upload=image}',
     'admin:carch.rotateimage',
+    'admin:carch.search',
   ];
-  const answeredByBase: Readonly<Record<string, string>> = {
-    'admin:carch.approvalaction{action=approve}': 'admin:carch.approvalaction',
-  };
   const haltedByException = haltedExceptionKeys();
 
-  it('registers exactly the carried inventory keys but the halted and base-answered ones, each once', () => {
+  it('registers exactly the carried inventory keys but the halted ones, each once', () => {
     const keys = carchScreens.map(keyOf);
-    const required = [...carried.keys()].filter((key) => !halted.includes(key) && !Object.hasOwn(answeredByBase, key));
+    const required = [...carried.keys()].filter((key) => !halted.includes(key));
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys.toSorted()).toEqual(required.toSorted());
   });
@@ -123,11 +129,6 @@ describe('carch barrel', () => {
     const ref = carried.get(key)?.exceptionRef;
     expect(ref, key).toBeTypeOf('string');
     expect(haltedByException.get(ref ?? '')?.has(key), key).toBe(true);
-  });
-
-  it.each(Object.entries(answeredByBase))('answers the carried %s with the registered %s', (variant, base) => {
-    expect(carried.has(variant)).toBe(true);
-    expect(carchScreens.map(keyOf)).toContain(base);
   });
 
   it('serves each key in its inventoried mode and owner behind the carch before() gate', () => {

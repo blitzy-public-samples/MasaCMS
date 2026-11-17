@@ -197,6 +197,28 @@ describe('extractDaoJoins', () => {
     ]);
   });
 
+  it('orients the join on the live catalog key once it replaces the static one', () => {
+    const line = lineIn(JOIN_DAO_TEXT, 'tfixture.fixtureID = tfixturestats.statid');
+    const governed = mergeLiveCatalog(staticTables, [
+      { ...liveTable('dbo', 'tfixture', ['fixtureID', 'SiteID', 'name'], 'fixtureID', true) },
+      { ...liveTable('dbo', 'tfixturestats', ['statID', 'siteid', 'data'], 'statID', true), primaryKey: [], hasPrimaryKey: false },
+    ]);
+    expect(extractDaoJoins(tree, governed)).toEqual([
+      {
+        id: 'rel:tfixturestats.statid->tfixture.fixtureid',
+        kind: 'dao-join',
+        child: { table: 'tfixturestats', columns: ['statID'] },
+        parent: { table: 'tfixture', columns: ['fixtureID'] },
+        source: { path: JOIN_DAO, lines: [line, line] },
+        cfc: null,
+        cardinality: null,
+        orientation: 'primary-key',
+        parentKey: { basis: 'table-key', component: null },
+        tenantDerivation: false,
+      },
+    ]);
+  });
+
   it('ignores a join predicate inside a CFML comment', () => {
     expect(() => lineIn(JOIN_DAO_TEXT, 'tfixturenopk.fixtureID = tfixture.fixtureID')).not.toThrow();
     expect(ids(extractDaoJoins(tree, staticTables, extraction.entities)).filter((id) => id.includes('tfixturenopk'))).toEqual([]);
@@ -229,6 +251,7 @@ describe('extractRelations', () => {
       daoJoin: 0,
       fixtureFk: 1,
       programFold: 0,
+      tenantParent: 0,
       unknownOrientation: 1,
       relationsDropped: 0,
     });

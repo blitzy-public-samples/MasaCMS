@@ -9,7 +9,7 @@ This README is the normative contract. The pages in [`cfml/`](cfml/) implement i
 | File | Role |
 |---|---|
 | `cfml/Application.cfc` | Guard (allow-list, assertion, reload-key strip) and the helpers the pages share |
-| `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, end |
+| `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, carried values, end |
 | `cfml/jobs.cfm` | Site-monitor steps, cursor, cache purge |
 | `cfml/scheduler.cfm` | ACF scheduled-task control |
 | `cfml/site.cfm` | In-memory site registry list and rebuild |
@@ -127,6 +127,7 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
 | `hydrate` | POST | — | `{snapshot:{user, memberships, membershipIds}, csrfSecretKey, usedTokens:[{token, usedAt}]}` | `{sessionId, hydrated:true, serverTime}` |
 | `markUsed` | POST | — | `{tokens:[{token, usedAt}]}` | `{applied, serverTime}` |
 | `usedSince` | GET | `since` | — | `{tokens:[{token, usedAt}], serverTime}` |
+| `carry` | POST | — | `{values:[{name, value, revision}]}` | `{applied:[<name>], serverTime}` |
 | `end` | POST | — | — | `{ended:true, serverTime}` |
 
 - **`describe`** is read-only. Every value comes from `session.mura`, as `userUtility.setUserStruct` sets it (`core/mura/user/userUtility.cfc:749-805`), and from `session.siteid`. Full shape:
@@ -147,6 +148,10 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
   - For a new session the gateway absorbs ColdFusion's `Set-Cookie` headers into `gateway.legacy_jar`.
 - **`markUsed`** adds each token to `session.mura.csrfusedtokens`. A token already present keeps its earlier timestamp. `applied` is the number of tokens newly added.
 - **`usedSince`** returns the ledger entries with `usedAt >= since`, compared to the millisecond. Ledger semantics are legacy's (`core/mura/user/sessionUserFacade.cfc:206-235`): a token validates once, and legacy purges entries older than 3 h at its next validation. The bridge never purges.
+- **`carry`** installs session values target routes keep in identity, which legacy-served admin views read from the session scope.
+  - `name` must be one of the carried keys, today only `flatViewArgs`: carch.list's `session.flatViewArgs` (`admin/core/views/carch/list.cfm:492-584`), which `carch.loadSiteFlat` reads without a default (`admin/core/views/carch/loadsiteflat.cfm:109`). `value` must be an object and `revision` a non-empty string; otherwise 400 and nothing is set.
+  - Each value becomes the top-level `session[name]` only when its `revision` differs from the one recorded for that name in `session.opt2CarriedRevisions` by the last install, which then records it. An unchanged revision leaves legacy's own later writes to the key standing.
+  - `applied` lists the names installed. The gateway sends it before each legacy-bound admin request of a session whose identity admin state holds a value (`gateway/src/session/carry.ts`).
 - **`end`** calls `setUserStruct()` with no user (logged-out defaults, no database), then `sessionInvalidate()`.
 
 ### `jobs.cfm?job=…`

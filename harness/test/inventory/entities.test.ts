@@ -38,6 +38,7 @@ const TALLY_BEAN = 'core/mura/fixture/tallyBean.cfc';
 const JSON_API_UTILITY = 'core/mura/client/api/json/v1/jsonApiUtility.cfc';
 const PLUGIN_CONFIG = 'core/mura/plugin/pluginConfig.cfc';
 const PLUGIN_BEAN = 'plugins/demo/model/beans/plugindemo.cfc';
+const BROWSER_BEAN = 'core/modules/v1/filebrowser/model/beans/filebrowser.cfc';
 
 /** Committed CFML fixtures by their place in the temp tree. */
 const FIXTURES: Readonly<Record<string, string>> = {
@@ -93,6 +94,14 @@ const INLINE: Readonly<Record<string, string>> = {
 `,
   [PLUGIN_BEAN]: `component extends="mura.bean.beanORM" table="plugindemo" entityname="plugindemo" {
 	property name="plugindemoid" fieldtype="id";
+}
+`,
+  [BROWSER_BEAN]: `component entityname="filebrowser" extends="mura.bean.bean" table="m_filebrowser" {
+	property name="filebrowserid" fieldtype="id";
+
+	remote any function browse(siteid) {
+		return this;
+	}
 }
 `,
 };
@@ -341,7 +350,7 @@ describe('static classification', () => {
         source: { path: JSON_API_UTILITY, lines: [3, 5] },
         component: 'mura.client.api.json.v1.jsonApiUtility',
         bom: false,
-        table: null,
+        table: 'tentity-declared:*',
         origin: 'dynamic',
       },
     ],
@@ -353,7 +362,7 @@ describe('static classification', () => {
         source: { path: PLUGIN_CONFIG, lines: [3, 6] },
         component: 'mura.plugin.pluginConfig',
         bom: false,
-        table: null,
+        table: 'tentity-declared:*',
         origin: 'plugin',
       },
     ],
@@ -695,5 +704,44 @@ describe('attachDaoWrites', () => {
     const others = (list: readonly EntityEntry[]): EntityEntry[] => list.filter((e) => e.class !== 'domain-bean');
     expect(others(attached)).toEqual(others(extraction.entities));
     expect(attached.map((e) => e.id)).toEqual(extraction.entities.map((e) => e.id));
+  });
+
+  describe('of live registrations', () => {
+    let registered: EntityEntry[];
+
+    beforeAll(async () => {
+      const payload = {
+        ...LIVE_PAYLOAD,
+        entities: [
+          ...LIVE_PAYLOAD.entities,
+          liveEntity({
+            name: 'filebrowser',
+            table: 'm_filebrowser',
+            componentPath: 'muraWRM.core.modules.v1.filebrowser.model.beans.filebrowser',
+            origin: 'other',
+          }),
+        ],
+      };
+      const live = await fetchLiveEntities(ORIGIN, { fetch: vi.fn<FetchLike>(async () => jsonResponse(payload)) });
+      const ctx: ClosureContext = { tree, index: fixtureIndex(tree, { rosterdao: ROSTER_DAO }, extraction) };
+      registered = attachDaoWrites(mergeLive(extraction.entities, live, tree), ctx);
+    });
+
+    it.each<[string, Pick<EntityEntry, 'dao' | 'writesTables' | 'writesBasis'>]>([
+      ['ent:dynamic:fb_contact', { dao: null, writesTables: ['fb_contact'], writesBasis: 'orm-table' }],
+      ['ent:dynamic:widget', { dao: null, writesTables: ['twidget'], writesBasis: 'orm-table' }],
+      ['ent:dynamic:plugindemo', { dao: null, writesTables: ['plugindemo'], writesBasis: 'orm-table' }],
+      ['ent:dynamic:filebrowser', { dao: null, writesTables: null, writesBasis: null }],
+      ['ent:dynamic:stray', { dao: null, writesTables: null, writesBasis: null }],
+    ])('persists the table of %s only through beanORM or a generated declaration', (id, expected) => {
+      expect(byEntityId(registered, id)).toMatchObject(expected);
+    });
+
+    it('leaves the dynamic-family patterns unchanged', () => {
+      const patterns = (list: readonly EntityEntry[]): EntityEntry[] => list.filter((e) => e.pattern);
+      expect(patterns(registered).map((e) => [e.id, e.writesTables, e.writesBasis])).toEqual(
+        patterns(extraction.entities).map((e) => [e.id, null, null]),
+      );
+    });
   });
 });

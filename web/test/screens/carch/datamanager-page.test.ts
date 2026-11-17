@@ -76,7 +76,7 @@ const model = (rc: Record<string, unknown> = {}): FakeReply => ({
       perm: 'editor',
       hasLockableNodes: 0,
       useLayoutManager: true,
-      rsDataInfo: [{ CountEntered: 2, firstEntered: ROW_ANN.entered, lastEntered: ROW_BOB.entered }],
+      rsDataInfo: { firstentered: ROW_ANN.entered, lastentered: ROW_BOB.entered, countentered: 2 },
       fieldnames: 'EMAIL,MESSAGE,NAME',
       rsData: [],
       scheme: 'http',

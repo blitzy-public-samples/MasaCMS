@@ -6,9 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AREA_OWNERS,
   NAMED_SPANNING_OWNERS,
-  SPANNING_OWNER,
+  TARGET_SERVICES,
   areaKeyForRouteKey,
   decide,
+  expectedOutcome,
+  haltingExceptionId,
   loadDecisionList,
   loadExceptions,
   ownersOfWriteSet,
@@ -203,14 +205,14 @@ describe('rule steps in order', () => {
     expect(result).toMatchObject({ disposition: 'retired', dispositionStep: 1, basis: 'its table is absent from the live catalog' });
   });
 
-  it('withholds an action that writes the decision-list table tplugins under its proposal', () => {
+  it('withholds an action that writes the decision-list table tplugins, without the owner its row does not name', () => {
     const result = decide(facts({ routeKey: 'admin:csettings.deployplugin', writeSet: ['tplugins'] }), ctx);
     expect(result).toMatchObject({
       disposition: 'decision',
       dispositionStep: 2,
       basis: 'writes decision-list table tplugins',
-      owningService: 'retire',
-      ownerBasis: 'decision-list-proposal',
+      owningService: null,
+      ownerBasis: 'none',
       withheld: true,
       legacyWrite: true,
       decisionListRef: 'opt2/decision-list.json#tplugins',
@@ -218,22 +220,41 @@ describe('rule steps in order', () => {
     });
   });
 
-  it('matches a decision-list table pattern for a dynamic form-builder table', () => {
-    expect(decide(facts({ routeKey: 'api:submitform', writeSet: ['fb_contactform'] }), wide)).toMatchObject({
+  it.each([
+    ['a JSON API method', { routeKey: 'api:submitform' }],
+    ['a site-monitor step', { itemKind: 'job-step', routeKey: undefined, areaKey: 'job:sitemonitor.feed-import' }],
+  ] as const)('matches a decision-list table pattern for a dynamic form-builder table written by %s, under its plan owner', (_label, extra) => {
+    expect(decide(facts({ ...extra, writeSet: ['fb_contactform'] }), wide)).toMatchObject({
       disposition: 'decision',
       dispositionStep: 2,
       owningService: 'strategies-content',
+      ownerBasis: 'aap-0.3.2',
       decisionListRef: 'opt2/decision-list.json#fb_*',
     });
   });
 
-  it('still withholds a write to a decision-list table the decision list does not name, with no owner', () => {
+  it('still withholds a write to a decision-list table the decision list does not name, under its area owner', () => {
     const result = decide(facts({ routeKey: 'admin:csettings.updatesite{action=update}', writeSet: ['tclustercommands'] }), wide);
-    expect(result).toMatchObject({ disposition: 'decision', dispositionStep: 2, owningService: null, ownerBasis: 'none', withheld: true });
+    expect(result).toMatchObject({ disposition: 'decision', dispositionStep: 2, owningService: 'programs-sites', ownerBasis: 'aap-0.3.2', withheld: true });
     expect(result.decisionListRef).toBeUndefined();
   });
 
-  it('withholds cusers.update{type=2,action=delete} because identity and people both own its writes', () => {
+  it.each([
+    ['its row proposes a service', 'fb_contactform', wide, 'fb_*'],
+    ['its row proposes retirement', 'tplugins', ctx, 'tplugins'],
+  ] as const)('withholds a decision-list table item without an owning service where %s', (_label, table, context, entry) => {
+    const result = decide(facts({ itemKind: 'table', id: `tbl:${table}`, routeKey: undefined, areaKey: `table:${table}`, writeSet: [table] }), context);
+    expect(result).toMatchObject({
+      disposition: 'decision',
+      dispositionStep: 2,
+      owningService: null,
+      ownerBasis: 'decision-list-proposal',
+      withheld: true,
+      decisionListRef: `opt2/decision-list.json#${entry}`,
+    });
+  });
+
+  it('withholds cusers.update{type=2,action=delete} under its area owner because identity and people both own its writes', () => {
     const result = decide(
       facts({ routeKey: 'admin:cusers.update{type=2,action=delete}', variantPredicates: { type: '2', action: 'Delete' }, writeSet: ROSTER }),
       ctx,
@@ -242,7 +263,7 @@ describe('rule steps in order', () => {
       disposition: 'decision',
       dispositionStep: 3,
       basis: 'write set spans identity, people; no input names the owner',
-      owningService: SPANNING_OWNER,
+      owningService: 'people',
       ownerBasis: 'spanning',
       owners: ['identity', 'people'],
       withheld: true,
@@ -256,7 +277,8 @@ describe('rule steps in order', () => {
     expect(decide(facts({ itemKind: 'api', routeKey, writeSet: ROSTER }), ctx)).toMatchObject({
       disposition: 'decision',
       dispositionStep: 3,
-      owningService: SPANNING_OWNER,
+      owningService: 'people',
+      ownerBasis: 'spanning',
       withheld: true,
       decisionListRef: 'opt2/decision-list.json#api:user.delete',
     });
@@ -271,17 +293,19 @@ describe('rule steps in order', () => {
       disposition: 'decision',
       dispositionStep: 3,
       basis: `owner depends on the stored ${storedDataOwner}`,
-      owningService: SPANNING_OWNER,
+      owningService: null,
+      ownerBasis: 'spanning',
       withheld: true,
       legacyWrite: false,
     });
   });
 
-  it('takes the proposed owner of a matching decision-list variant pattern for a stored-data owner', () => {
-    expect(decide(facts({ routeKey: 'admin:cextend.updatesubtype', storedDataOwner: 'baseTable' }), wide)).toMatchObject({
+  it('keeps a matching decision-list variant pattern as the reference, never as the owner of a stored-data owner', () => {
+    const result = decide(facts({ routeKey: 'admin:cextend.updatesubtype', storedDataOwner: 'baseTable' }), wide);
+    expect(result).toMatchObject({
       dispositionStep: 3,
-      owningService: 'programs-sites',
-      ownerBasis: 'decision-list-proposal',
+      owningService: null,
+      ownerBasis: 'spanning',
       decisionListRef: 'opt2/decision-list.json#admin:cextend.*',
     });
   });
@@ -291,6 +315,10 @@ describe('rule steps in order', () => {
     ['admin:cfilemanager.default', { webRootFilesystem: true }, 'depends on the legacy web-root filesystem', 'strategies-content'],
     ['admin:cplugins.list', { runtimeCategory: 'plugin' }, 'depends on the CFML runtime (plugin)', null],
     ['admin:cemail.list', {}, 'owner communications is not a migrated domain', 'communications'],
+    ['admin:carch.emailtest', {}, 'owner communications is not a migrated domain', 'communications'],
+    [undefined, { itemKind: 'service', areaKey: 'service:emailManager' }, 'owner communications is not a migrated domain', 'communications'],
+    ['admin:carch.loadrepomanager', { runtimeCategory: 'framework-error' }, 'depends on the CFML runtime (framework-error)', 'strategies-content'],
+    ['admin:razuna.default', { servesTable: 'tplugins' }, 'serves decision-list table tplugins, which the target never builds', 'strategies-content'],
     ['admin:scaffold.default', {}, 'no service owns its area', null],
   ] as const)('serves %s from legacy: %s', (routeKey, extra, basis, owningService) => {
     expect(decide(facts({ routeKey, ...extra }), ctx)).toMatchObject({
@@ -304,14 +332,50 @@ describe('rule steps in order', () => {
   });
 
   it.each([
+    ['the public logout under its row owner', { itemKind: 'front-end', routeKey: 'page:logout', rendersCfml: true }, 'legacy-served', 'identity', 'aap-0.3.2'],
+    ['the commented-out contact send under its row owner', { itemKind: 'front-end', routeKey: 'page:contactsend', rendersCfml: true, reachable: false }, 'retired', 'communications', 'aap-0.3.2'],
+    ['a doaction value no row names, without an owner', { itemKind: 'front-end', routeKey: 'page:forward', rendersCfml: true }, 'legacy-served', null, 'none'],
+    ['a filebrowser site-asset method under its area owner', { itemKind: 'api', routeKey: 'rest:filebrowser.~browse', areaKey: 'api:filebrowser', webRootFilesystem: true }, 'legacy-served', 'strategies-content', 'aap-0.3.2'],
+    ['the display-window purge step under its area owner', { itemKind: 'job-step', routeKey: undefined, areaKey: 'job:sitemonitor.cache-purge', runtimeCategory: 'theme-render' }, 'legacy-served', 'strategies-content', 'aap-0.3.2'],
+  ] as const)('records %s for an item that writes nothing', (_label, extra, disposition, owningService, ownerBasis) => {
+    expect(decide(facts(extra), ctx)).toMatchObject({ disposition, owningService, ownerBasis, owners: [], withheld: false });
+  });
+
+  it.each([
     ['admin:clogin.login', ['tusersmemb'], 'identity', 'table-ownership', 'single owner identity among the migrated services'],
     ['admin:clogin.main', [], 'identity', 'aap-0.3.2', 'area owner identity is a migrated service'],
-    ['cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=getcomments', [], null, 'none', 'writes nothing and depends on no legacy runtime'],
+    ['cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=getcomments', [], 'strategies-content', 'aap-0.3.2', 'area owner strategies-content is a migrated service'],
+    ['cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm', [], null, 'none', 'writes nothing and depends on no legacy runtime'],
   ] as const)('carries %s', (routeKey, writeSet, owningService, ownerBasis, basis) => {
     const result = decide(facts({ routeKey, writeSet }), ctx);
     expect(result).toMatchObject({ disposition: 'carry', dispositionStep: 5, owningService, ownerBasis, basis, withheld: false, legacyWrite: false });
     expect(result.haltedBy).toBeUndefined();
     expect(result.protocol).toBeUndefined();
+  });
+
+  it('withholds a screen with the decision-list branch it serves, under its area owner', () => {
+    const result = decide(facts({ routeKey: 'admin:csettings.sitecopyselect', servesBranch: 'admin:cUsers.update{type=2,action=delete}' }), ctx);
+    expect(result).toMatchObject({
+      disposition: 'decision',
+      dispositionStep: 3,
+      basis: 'serves only admin:cusers.update{type=2,action=delete}, which the decision list withholds',
+      owningService: 'programs-sites',
+      ownerBasis: 'aap-0.3.2',
+      withheld: true,
+      decisionListRef: 'opt2/decision-list.json#admin:cusers.update{type=2,action=delete}',
+    });
+    expect(result.correction).toBeUndefined();
+  });
+
+  it.each([
+    ['a served branch the decision list does not withhold', { servesBranch: 'admin:cusers.update{type=2,action=add}' }],
+    ['a served table the ownership file gives an owner', { servesTable: 'tusersmemb' }],
+  ] as const)('carries an item despite %s', (_label, extra) => {
+    expect(decide(facts({ routeKey: 'admin:clogin.main', ...extra }), ctx)).toMatchObject({
+      disposition: 'carry',
+      dispositionStep: 5,
+      basis: 'area owner identity is a migrated service',
+    });
   });
 
   it('settles an item that writes tplugins and renders CFML at step 2, before legacy-served', () => {
@@ -410,6 +474,7 @@ describe('ownersOfWriteSet', () => {
     [['tclassextenddata', 'tfiles'], ['strategies-content']],
     [['tclassextenddata'], ['people', 'strategies-content']],
     [['ttrash', 'tusersmemb'], ['identity']],
+    [['ttrash', 'tclassextenddata'], ['people', 'strategies-content']],
   ])('narrows stored-data splits of %j by the co-written tables', (writeSet, owners) => {
     expect(ownersOfWriteSet(writeSet, {}, wide.ownership).owners).toEqual(owners);
   });
@@ -470,17 +535,35 @@ describe('exceptions, fixtures and corrections', () => {
     });
   });
 
-  it('records a correction when the rule disposition differs from the AAP table', () => {
-    expect(decide(facts({ routeKey: 'admin:csettings.deployplugin', writeSet: ['tplugins'] }), ctx).correction).toEqual({
+  it('carries a fixture table to its owner by definition, where the rule would serve the same table from legacy', () => {
+    const ownership = structuredClone(ctx.ownership);
+    ownership.tables.push(owned('Program_N.blackout', 'timesheets', 'timesheets.blackout'));
+    const table = facts({ itemKind: 'table', id: 'tbl:Program_N.blackout', routeKey: undefined, areaKey: 'table:Program_N.blackout', writeSet: ['Program_N.blackout'] });
+    expect(decide({ ...table, fixtureTable: true }, { ...ctx, ownership })).toMatchObject({
+      disposition: 'carry',
+      dispositionStep: 5,
+      basis: 'fixture table of a synthetic module, carried by definition',
+      owningService: 'timesheets',
+      ownerBasis: 'table-ownership',
+      withheld: false,
+    });
+    expect(decide(table, { ...ctx, ownership })).toMatchObject({ disposition: 'legacy-served', dispositionStep: 4, basis: 'owner timesheets is not a migrated domain' });
+  });
+
+  it.each([
+    ['the plugin deploy action', facts({ routeKey: 'admin:csettings.deployplugin', writeSet: ['tplugins'] })],
+    ['the plugin-declared entity family', facts({ routeKey: undefined, itemKind: 'entity', areaKey: 'entity:ent:dyn:plugin-declared', writeSet: ['tplugins'] })],
+  ])('records a correction when the rule disposition of %s differs from the AAP table', (_label, f) => {
+    expect(decide(f, ctx).correction).toEqual({
       expected: { disposition: 'legacy-served' },
-      computed: { disposition: 'decision', owningService: 'retire' },
+      computed: { disposition: 'decision', owningService: null },
       step: 2,
       basis: 'writes decision-list table tplugins',
     });
   });
 
   it('records a correction when a single write-set owner differs from the area owner', () => {
-    expect(decide(facts({ routeKey: 'admin:cusers.addtogroup', writeSet: ['tusersmemb'] }), ctx).correction).toEqual({
+    expect(decide(facts({ routeKey: 'admin:cusers.updateaddress', writeSet: ['tusersmemb'] }), ctx).correction).toEqual({
       expected: { owningService: AREA_OWNERS['admin:cusers'] },
       computed: { disposition: 'carry', owningService: 'identity' },
       step: 5,
@@ -488,9 +571,35 @@ describe('exceptions, fixtures and corrections', () => {
     });
   });
 
-  it('records no correction when the rule agrees with the AAP table and the area owner', () => {
-    expect(decide(facts({ routeKey: 'admin:clogin.login', writeSet: ['tusersmemb'] }), ctx).correction).toBeUndefined();
+  it.each(['admin:clogin.login', 'admin:cusers.addtogroup', 'admin:cusers.removefromgroup'])(
+    'records no correction for %s, where the rule agrees with the AAP table and the area owner',
+    (routeKey) => {
+      expect(decide(facts({ routeKey, writeSet: ['tusersmemb'] }), ctx).correction).toBeUndefined();
+    },
+  );
+
+  it('records no owner correction for a single write-set owner where the row names no service', () => {
+    expect(decide(facts({ routeKey: 'admin:csettings.exporthtml', writeSet: ['tusersmemb'] }), ctx).correction?.expected).toEqual({
+      disposition: 'legacy-served',
+    });
   });
+
+  it('records a correction when a doaction writes for another owner than its row names', () => {
+    const entry = facts({ itemKind: 'front-end', routeKey: 'page:subscribe', rendersCfml: true, writeSet: ['tusersmemb'] });
+    expect(decide(entry, ctx).correction).toEqual({
+      expected: { owningService: 'communications' },
+      computed: { disposition: 'legacy-served', owningService: 'identity' },
+      step: 4,
+      basis: 'renders CFML through the theme and display-object runtime',
+    });
+  });
+
+  it.each(['admin:cusers.editgroup', 'admin:cusers.editgroupmembers', 'admin:cusers.downloadgroupmembers'])(
+    'gives the read-only group branch %s its area owner identity',
+    (routeKey) => {
+      expect(decide(facts({ routeKey }), ctx)).toMatchObject({ disposition: 'carry', owningService: 'identity', ownerBasis: 'aap-0.3.2' });
+    },
+  );
 });
 
 describe('findings', () => {
@@ -504,7 +613,7 @@ describe('findings', () => {
         detail: 'AAP expects legacy-served, the rule computes decision at step 2 (writes decision-list table tplugins)',
       }),
     ]);
-    expect(findingsOf(facts({ routeKey: 'admin:cusers.addtogroup', writeSet: ['tusersmemb'] })).map((f) => f.detail)).toEqual([
+    expect(findingsOf(facts({ routeKey: 'admin:cusers.updateaddress', writeSet: ['tusersmemb'] })).map((f) => f.detail)).toEqual([
       'area owner people, computed owner identity (single owner identity among the migrated services)',
     ]);
   });
@@ -542,6 +651,14 @@ describe('findings', () => {
 describe('areaKeyForRouteKey', () => {
   it.each([
     ['admin:cUsers.update{type=2,action=delete}', 'admin:cusers'],
+    ['admin:cusers.update{photo}', 'admin:cusers'],
+    ['admin:cusers.update', 'admin:cusers'],
+    ['admin:cusers.update{type=1}', 'admin:cusers.update{type=1}'],
+    ['admin:cUsers.update{type=1,action=delete}', 'admin:cusers.update{type=1}'],
+    ['admin:cusers.update{type=1,extdata}', 'admin:cusers.update{type=1}'],
+    ['admin:cUsers.editGroupMembers', 'admin:cusers.editgroupmembers'],
+    ['admin:cArch.emailTest', 'admin:carch.emailtest'],
+    ['admin:carch.update', 'admin:carch'],
     ['rest:user.delete', 'api:user'],
     ['fixture:people/persons/{id}/archive@post', 'fixture:people'],
     ['cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=getcomments', 'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc'],
@@ -550,6 +667,74 @@ describe('areaKeyForRouteKey', () => {
     ['sitemonitor', 'sitemonitor'],
   ])('keys %s under area %s', (routeKey, area) => {
     expect(areaKeyForRouteKey(routeKey)).toBe(area);
+  });
+});
+
+describe('haltingExceptionId', () => {
+  const scanFault: ExceptionsList = {
+    ...ctx.exceptions,
+    entries: [{ id: 'EX-SCAN', routeKey: 'admin:*{scriptprotect=fault}', decision: 'preserve', status: 'halted' }],
+  };
+
+  it.each([
+    ['a halted entry by its route key', ctx.exceptions, 'admin:carch.update{upload=image}', 'EX-FILE-RENDITION'],
+    ['a halted entry by an authored-case appliesTo key', ctx.exceptions, 'admin:cArch.multiFileUpload{upload=image}', 'EX-FILE-RENDITION'],
+    ['no open fix proposal, which holds but does not halt', ctx.exceptions, 'reload:application', null],
+    ['nothing for the base key of a halted variant', ctx.exceptions, 'admin:carch.update', null],
+    ['nothing for a keyless item', ctx.exceptions, null, null],
+    ['a halted glob pattern', scanFault, 'admin:carch.list{scriptprotect=fault}', 'EX-SCAN'],
+    ['nothing outside a glob pattern', scanFault, 'api:content.save{scriptprotect=fault}', null],
+  ] as const)('names %s', (_label, list, routeKey, id) => {
+    expect(haltingExceptionId(list, routeKey)).toBe(id);
+  });
+});
+
+describe('expectedOutcome', () => {
+  const keyed = (routeKey: string): Pick<DispositionFacts, 'routeKey' | 'areaKey'> => ({ routeKey, areaKey: areaKeyForRouteKey(routeKey) });
+
+  it.each([
+    ['a carried admin action', keyed('admin:clogin.login'), { disposition: 'carry', owningService: 'identity' }],
+    ['a withheld variant, without an owner', keyed('admin:csettings.updatesite{action=add}'), { disposition: 'decision', owningService: null }],
+    ['a legacy-served action under its area owner', keyed('admin:carch.exportcontent'), { disposition: 'legacy-served', owningService: 'strategies-content' }],
+    ['a bundle-engine action whose row names no service', keyed('admin:csettings.createbundle'), { disposition: 'legacy-served', owningService: null }],
+    ['a dynamic-entity method whose row names no service', keyed('rest:declareEntity'), { disposition: 'legacy-served', owningService: null }],
+    ['a named settings action', keyed('admin:csettings.editsite'), { disposition: 'carry', owningService: 'programs-sites' }],
+    ['nothing for an action its circuit rows do not name', keyed('admin:cusers.loadextendedattributes'), null],
+    ['nothing for the base save of the user circuit', keyed('admin:cusers.update'), null],
+    ['nothing for a settings variant its rows do not name', keyed('admin:csettings.updatesite{bundle}'), null],
+    ['a variant with terms beyond its row key', keyed('admin:cusers.update{type=2,action=add,extdata}'), { disposition: 'carry', owningService: 'people' }],
+    ['a variant of a named action', keyed('admin:cusers.updateaddress{action=delete}'), { disposition: 'carry', owningService: 'people' }],
+    [
+      'a doaction under the owner of what it writes',
+      { ...keyed('page:login'), itemKind: 'front-end', rendersCfml: true },
+      { disposition: 'legacy-served', owningService: 'identity' },
+    ],
+    [
+      'a data-only comments proxy method',
+      { ...keyed('cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get'), itemKind: 'front-end', rendersCfml: false },
+      { disposition: 'carry', owningService: 'strategies-content' },
+    ],
+    [
+      'a comments proxy method that renders CFML',
+      { ...keyed('cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=rendercommentspage'), itemKind: 'front-end', rendersCfml: true },
+      { disposition: 'legacy-served', owningService: 'strategies-content' },
+    ],
+    [
+      'a rendering route its row carries',
+      { routeKey: 'variation:js', areaKey: 'variation', itemKind: 'route', rendersCfml: true },
+      { disposition: 'carry', owningService: 'strategies-content' },
+    ],
+    ['an action of an ownerless area', keyed('admin:cplugins.list'), { disposition: 'legacy-served', owningService: null }],
+    ['a REST key through its JSON API form', keyed('rest:user.delete'), { disposition: 'decision', owningService: null }],
+    ['a group screen of the user circuit', keyed('admin:cusers.editgroup'), { disposition: 'carry', owningService: 'identity' }],
+    ['a group save variant under its variant area', keyed('admin:cusers.update{type=1,extdata}'), { disposition: 'carry', owningService: 'identity' }],
+    ['a roster save variant under the circuit area', keyed('admin:cusers.update{type=2,action=add}'), { disposition: 'carry', owningService: 'people' }],
+    ['the keyless JSON API families', { areaKey: 'api' }, { disposition: 'carry', owningService: null }],
+    ['the public page render', keyed('page:render'), { disposition: 'legacy-served', owningService: 'reporting' }],
+    ['a keyless route by its area', { areaKey: 'soap:v1' }, { disposition: 'retired', owningService: null }],
+    ['nothing for a fixture route', keyed('fixture:people/persons@get'), null],
+  ] as const)('gives %s its plan expectation', (_label, f, expected) => {
+    expect(expectedOutcome(f)).toEqual(expected);
   });
 });
 
@@ -564,12 +749,13 @@ describe('decide', () => {
     ['fixture', facts({ itemKind: 'fixture-route', routeKey: 'fixture:people/persons/{id}/archive@post', fixtureModule: 'people' }), ctx],
   ];
 
-  it.each(SAMPLES)('decides the %s sample purely, with a stated basis and untouched inputs', (_label, f, context) => {
+  it.each(SAMPLES)('decides the %s sample purely, with a stated basis, a target-service owner and untouched inputs', (_label, f, context) => {
     const before = structuredClone(context);
     const first: DispositionResult = decide(f, context);
     const second: DispositionResult = decide(structuredClone(f), context);
     expect(second).toEqual(first);
     expect(first.basis.length).toBeGreaterThan(0);
+    expect(first.owningService === null || TARGET_SERVICES.has(first.owningService)).toBe(true);
     expect(context).toEqual(before);
   });
 });

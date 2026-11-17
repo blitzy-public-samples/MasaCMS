@@ -545,6 +545,7 @@ describe('createApplyTenantResolver', () => {
     const ctx = { legacy, catalog: FIXTURE_CATALOG, config: { ...config, paths: { ...config.paths, tableOwnership: await ownershipWithParentTable() } } };
 
     const tenants = await createApplyTenantResolver(ctx, { database: LIVE_DB });
+    await tenants.prepare(table, [row]);
 
     expect(tenants.resolve(table, row)).toEqual({ tenantId, orphan });
     expect(tenants.siteTenants()).toEqual(['default', DEFAULT_UMBRELLA_SITE_ID, 'tenant-a', 'tenant-b'].map(tenantIdForSite).sort());

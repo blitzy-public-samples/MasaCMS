@@ -18,7 +18,9 @@ import type { StubNoteCreatedV1Payload } from '../../src/generated/events/stub.n
 import type { StubRepository } from '../../src/repo/repository.js';
 
 const TENANT_ID = tenantIdForSite('default');
+const OTHER_TENANT_ID = tenantIdForSite('tenant-b');
 const NOTE_ID = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
+const OTHER_NOTE_ID = 'B2C3D4E5-F607-1829-3A4B5C6D7E8F9012';
 const CREATED = '2026-06-30 11:59:00.000';
 const EVENT_1 = '11111111-1111-4111-8111-111111111111';
 const EVENT_2 = '22222222-2222-4222-8222-222222222222';
@@ -26,13 +28,22 @@ const FIRST_APPLY = new Date(2026, 5, 30, 12, 0, 0);
 const SECOND_APPLY = new Date(2026, 5, 30, 12, 0, 1, 250);
 const LOGGER = createLogger({ service: 'stub', version: '1.0.0', env: 'local', level: 'silent' });
 
-type RepositoryCall = { method: 'findProjection' | 'upsertProjection'; tx: TenantTx; arg: unknown };
+type RepositoryCall = { method: 'findNote' | 'findProjection' | 'upsertProjection'; tx: TenantTx; arg: unknown };
 
-/** The two projection methods of the stub repository over an in-memory `note_id` map, logging each call in order. */
-function fakeRepository(): { repository: StubRepository; rows: Map<string, NoteProjectionRow>; calls: RepositoryCall[] } {
+/** `findNote` over `notes` and the projection methods over an in-memory `note_id` map, logging each call in order. */
+function fakeRepository(notes: ReadonlyArray<{ tenantId: string; noteId: string }> = []): {
+  repository: StubRepository;
+  rows: Map<string, NoteProjectionRow>;
+  calls: RepositoryCall[];
+} {
   const rows = new Map<string, NoteProjectionRow>();
   const calls: RepositoryCall[] = [];
-  const projections: Pick<StubRepository, 'findProjection' | 'upsertProjection'> = {
+  const projections: Pick<StubRepository, 'findNote' | 'findProjection' | 'upsertProjection'> = {
+    findNote(tx, noteId) {
+      calls.push({ method: 'findNote', tx, arg: noteId });
+      const stored = notes.some((note) => note.tenantId === tx.tenantId && note.noteId === noteId);
+      return Promise.resolve(stored ? { note_id: noteId, title: 'Stored', body: '', created: CREATED, row_version: 1 } : null);
+    },
     findProjection(tx, noteId) {
       calls.push({ method: 'findProjection', tx, arg: noteId });
       return Promise.resolve(rows.get(noteId) ?? null);
@@ -46,10 +57,11 @@ function fakeRepository(): { repository: StubRepository; rows: Map<string, NoteP
   return { repository: projections as StubRepository, rows, calls };
 }
 
-/** An open tenant transaction and its raw `query` mock, which the consumer must leave unused. */
-function tenantTx(): { tx: TenantTx; query: Mock } {
-  const query = vi.fn();
-  return { tx: { kind: 'tenant', tenantId: TENANT_ID, schema: 'stub', query, onCommit: vi.fn() }, query };
+/** An open tenant transaction and its raw `query` mock, which only the registry lookup uses; `registered` answers it with an entry. */
+function tenantTx(tenantId = TENANT_ID, registered = false): { tx: TenantTx; query: Mock } {
+  const rows = registered ? [{ site_id: 'default', tenant_id: tenantId, aggregate_version: '1' }] : [];
+  const query = vi.fn().mockResolvedValue({ rows, rowCount: rows.length });
+  return { tx: { kind: 'tenant', tenantId, schema: 'stub', query, onCommit: vi.fn() }, query };
 }
 
 /** A clock returning `instants` in turn, one per read, and its `now` mock. */
@@ -75,11 +87,31 @@ function consumeContext(): ConsumeContext {
 }
 
 describe('noteProjectionConsumer', () => {
-  it('consumes the note topic as a state topic without fan-out, supersedes or a tenant check override', () => {
+  it('consumes the note topic as a state topic without fan-out or supersedes, with its own tenant check', () => {
     const consumer = noteProjectionConsumer(fakeRepository().repository, fixedClock(FIRST_APPLY));
 
     expect(consumer).toMatchObject({ topic: NOTE_CREATED_TOPIC, kind: 'state' });
-    expect(Object.keys(consumer).sort()).toEqual(['apply', 'kind', 'topic']);
+    expect(Object.keys(consumer).sort()).toEqual(['apply', 'checkTenant', 'kind', 'topic']);
+  });
+
+  const valid = noteEnvelope(1, EVENT_1, 'First note');
+  it.each([
+    { label: 'accepts the stored note of a registered destination', envelope: valid, tenantId: TENANT_ID, registered: true, verdict: true, lookups: 1, found: [NOTE_ID] },
+    { label: 'dead-letters as schema-invalid an aggregateId of another note', envelope: { ...valid, aggregateId: OTHER_NOTE_ID }, tenantId: TENANT_ID, registered: true, verdict: 'schema-invalid', lookups: 0, found: [] },
+    { label: 'dead-letters as schema-invalid an aggregateId differing only in case', envelope: { ...valid, aggregateId: NOTE_ID.toLowerCase() }, tenantId: TENANT_ID, registered: true, verdict: 'schema-invalid', lookups: 0, found: [] },
+    { label: 'dead-letters as schema-invalid an aggregateVersion other than rowVersion', envelope: { ...valid, aggregateVersion: 2 }, tenantId: TENANT_ID, registered: true, verdict: 'schema-invalid', lookups: 0, found: [] },
+    { label: 'dead-letters as schema-invalid an aggregateType other than note', envelope: { ...valid, aggregateType: 'site' }, tenantId: TENANT_ID, registered: true, verdict: 'schema-invalid', lookups: 0, found: [] },
+    { label: 'dead-letters as invalid-tenant an unregistered destination', envelope: valid, tenantId: TENANT_ID, registered: false, verdict: 'invalid-tenant', lookups: 1, found: [] },
+    { label: 'dead-letters as tenant-mismatch a note not stored under the destination', envelope: { ...valid, tenantId: OTHER_TENANT_ID }, tenantId: OTHER_TENANT_ID, registered: true, verdict: 'tenant-mismatch', lookups: 1, found: [NOTE_ID] },
+  ])('$label', async ({ envelope, tenantId, registered, verdict, lookups, found }) => {
+    const { repository, calls } = fakeRepository([{ tenantId: TENANT_ID, noteId: NOTE_ID }]);
+    const { tx, query } = tenantTx(tenantId, registered);
+
+    await expect(noteProjectionConsumer(repository, fixedClock(FIRST_APPLY)).checkTenant?.(tx, envelope)).resolves.toBe(verdict);
+
+    expect(query).toHaveBeenCalledTimes(lookups);
+    expect(query.mock.calls.map(([, params]) => params)).toEqual(Array(lookups).fill([tenantId]));
+    expect(calls).toEqual(found.map((arg) => ({ method: 'findNote', tx, arg })));
   });
 
   it('projects a first delivery with apply_count 1, the envelope version and event id, stamped from the clock', async () => {

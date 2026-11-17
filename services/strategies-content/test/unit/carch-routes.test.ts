@@ -1150,13 +1150,31 @@ describe('carch.datamanager', () => {
   });
 
   it.each([
-    ['a stored response', [packet()], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: expect.anything() }]],
+    ['a stored response', [packet()], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: { name: 'Ann' } }]],
     ['an unreadable packet', [packet({ data: 'x' })], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: null }]],
     ['a missing response', [], []],
   ] as const)('edits %s', async (_name, rows, rsData) => {
     t.db.respond(READ_RESPONSE, rows);
     const rc = await rcOf(`${RESPONSES_URL}?action=edit&responseid=${RESPONSE}`);
     expect(rc.rsData).toEqual(rsData);
+  });
+
+  it('carries a packet as the struct dsp_edit.cfm reads, its numbers and dates as CFML prints them', async () => {
+    const data =
+      "<wddxPacket version='1.0'><header/><data><struct><var name='RESPONSEID'><string>R1</string></var>" +
+      "<var name='age'><number>42.0</number></var><var name='seen'><dateTime>2026-6-3T9:0:0</dateTime></var>" +
+      "<var name='tags'><array length='1'><string>a</string></array></var></struct></data></wddxPacket>";
+    t.db.respond(READ_RESPONSE, [packet({ data })]);
+    const [row] = (await rcOf(`${RESPONSES_URL}?action=edit&responseid=${RESPONSE}`)).rsData as Json[];
+    expect(row?.data).toEqual({ RESPONSEID: 'R1', age: '42', seen: "{ts '2026-06-03 09:00:00'}", tags: ['a'] });
+  });
+
+  it("edits a response over the form's detail fields, where the list shows its summary fields", async () => {
+    const responsedisplayfields = 'name^email~email';
+    t.db.respond(ACTIVE, [formRow({ responsedisplayfields })]);
+    t.db.respond(DISPLAY_FIELDS, [{ responsedisplayfields }]);
+    const [edit, list] = [await rcOf(`${RESPONSES_URL}?action=edit&responseid=${RESPONSE}`), await rcOf(RESPONSES_URL)];
+    expect([edit.fieldnames, list.fieldnames]).toEqual(['name,email', 'email']);
   });
 
   it.each([
@@ -1278,10 +1296,22 @@ describe('selectmedia, selectfields and variationtargeting', () => {
     expect(paramsOfFirst(TARGETING)).toEqual([TENANT_A.tenantId, [NODE, NODE.toLowerCase()], SITE]);
   });
 
-  it('lets before()’s empty contentid replace the stored one, as contentBean.set(rc) does', async () => {
-    t.db.respond(BY_REMOTE_ID, [versionRow({ type: 'Variation', remoteid: 'r1' })]);
-    const rc = await rcOf(`/v1/sites/${SITE}/variation-targeting?remoteid=r1`);
-    expect(rc.contentBean).toMatchObject({ contentid: '', isNew: 0, variationTargeting: { contentid: '', initjs: '' } });
+  it.each([
+    ['a stored node', [versionRow({ type: 'Variation', remoteid: 'r1' })], 0],
+    ['no node', [], 1],
+  ] as const)('gives %s the new id getContentID() creates over the empty contentid set(rc) leaves, then reads its targeting', async (_name, rows, isNew) => {
+    t.db.respond(BY_REMOTE_ID, [...rows]);
+    const ids: string[] = [];
+    for (let request = 0; request < 2; request += 1) {
+      const bean = (await rcOf(`/v1/sites/${SITE}/variation-targeting?remoteid=r1`)).contentBean as Json;
+      const contentId = String(bean.contentid);
+      ids.push(contentId);
+      expect(bean).toMatchObject({ isNew, variationTargeting: { contentid: contentId, initjs: '', isNew: 1 } });
+    }
+    expect(ids.map(isCfUuid)).toEqual([true, true]);
+    expect(new Set([...ids, NODE]).size).toBe(3);
+    expect(paramsOfFirst(TARGETING)).toEqual([TENANT_A.tenantId, [ids[0], ids[0]?.toLowerCase()], SITE]);
+    expect(ran(WRITE)).toBe(false);
   });
 
   it('saves the initialization JS of a stored variation node without saving the node', async () => {
@@ -1294,6 +1324,20 @@ describe('selectmedia, selectfields and variationtargeting', () => {
     expect(targetings.at(-1)).toMatchObject({ contentid: NODE, siteid: SITE, initjs: 'start()' });
     expect(ran(/^INSERT INTO "content"\."content" /)).toBe(false);
     expect(consumed).toEqual([]);
+  });
+
+  it.each([
+    ['another posted contentid', CHILD],
+    ['an empty posted contentid', ''],
+  ])('saves the initialization JS of a stored variation node under the id set(rc) leaves, for %s', async (_name, posted) => {
+    t.db.respond(BY_REMOTE_ID, [versionRow({ type: 'Variation', remoteid: 'r1' })]);
+    const form = { remoteid: 'r1', type: 'Variation', contentid: posted, saveTargeting: 'true', initjs: 'start()' };
+    const body = await writeOf(`/v1/sites/${SITE}/variation-targeting`, form);
+    const contentId = String(body.data?.contentid);
+    expect([isCfUuid(contentId), contentId === NODE, posted === '' || contentId === posted]).toEqual([true, false, true]);
+    const targetings = t.db.statements.filter((statement) => /^INSERT INTO "content"\."variation_targeting" \(/.test(statement.sql)).map((statement) => boundRow(statement.sql, statement.params));
+    expect(targetings.at(-1)).toMatchObject({ contentid: contentId, siteid: SITE, initjs: 'start()' });
+    expect(ran(/^INSERT INTO "content"\."content" /)).toBe(false);
   });
 
   it('saves a new variation node of remoteid, then the initialization JS of its new content id', async () => {

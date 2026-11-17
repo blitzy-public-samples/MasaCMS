@@ -40,6 +40,9 @@ const SEED_PATH = '/legacy-fixtures/cfml/seed.cfm';
 const CSRF_FIELDS = ['csrf_token', 'csrf_token_expires'];
 const MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+// node:http sends no User-Agent, and Masa gives such requests a 2 s session (core/appcfc/applicationSettings.cfm:235-314),
+// which expires during a long seed part; this name matches none of Masa's untracked agents.
+const USER_AGENT = 'opt2-seed-legacy';
 // Wait before the single admin login retry.
 const LOGIN_RETRY_PAUSE_MS = 3000;
 // Controls a browser submits only when clicked or chosen.
@@ -106,7 +109,7 @@ function exchange(url, { method, headers, body }, timeoutMs) {
   return new Promise((done, fail) => {
     const onError = (err) => fail(signal.aborted ? new Error(`no response within ${timeoutMs / 1000} s`) : err);
     // agent false: no kept-alive socket holds the process open once the run ends.
-    const req = transport.request(url, { method, headers, signal, agent: false }, (res) => {
+    const req = transport.request(url, { method, headers: { 'user-agent': USER_AGENT, ...headers }, signal, agent: false }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => done({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));

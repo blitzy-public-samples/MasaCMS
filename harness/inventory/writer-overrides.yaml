@@ -393,6 +393,19 @@ writers:
     condition: "the comments display object renders on a site with comments enabled: commentUnsubscribe (163-165); a posted comment that passes the human check (168-233); deletecommentid or spamcommentid for editors, or approvedcommentid for any visitor (235-245)"
     reason: "The display object is included by page rendering at run time, outside every inventoried entry point's closure."
 
+  - id: wov:comments-display-object-redirects
+    tables: [tredirects]
+    component: core/mura/utility.cfc
+    method: createRedirectID
+    op: insert
+    source: {path: core/mura/utility.cfc, lines: [430, 434]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a comment posted through the comments display object on a site whose comment approval default is not 1 (core/modules/v1/comments/index.cfm:207-209); contentCommentBean.sendNotification, given no script, writes the approve, delete and view links through utility.createRedirectID (core/mura/content/contentCommentBean.cfc:595-625), one tredirects row each"
+    reason: "The display object is included by page rendering at run time, outside every inventoried entry point's closure; the redirect rows are written by utility.createRedirectID, which that display object's comment notification calls."
+
   - id: wov:cextend-subtype-write
     tables: [tclassextend, tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tclassextendsets, tfiles]
     component: admin/core/controllers/cextend.cfc
@@ -523,6 +536,36 @@ writers:
     condition: "the deleted request has stored actions; actions declares cascade='delete' (core/mura/content/approval/approvalRequestBean.cfc:11); content deletes reach the request through contentDAO.deleteHistAll and delete (core/mura/content/contentDAO.cfc:784-786, 1183-1185)"
     reason: "beanORM.delete cascades to each approvalAction of the request through an iterator built at run time, a receiver the extractor cannot resolve (core/mura/bean/beanORM.cfc:719)."
 
+  - id: wov:changeset-publish-item-save
+    tables: [tcontent]
+    component: core/mura/content/changeset/changesetManager.cfc
+    method: publish
+    op: save
+    source: {path: core/mura/content/changeset/changesetManager.cfc, lines: [533, 533]}
+    routeKeys: ["admin:cchangesets.publish", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the change set has no pending approvals (core/mura/content/changeset/changesetManager.cfc:503); each assigned version is saved approved (524-533), which also updates or deletes a calendar item's event reminders (core/mura/content/contentManager.cfc:1269-1274)"
+    reaches:
+      - {component: core/mura/content/contentBean.cfc, method: save}
+    reason: "item is a contentNavBean of the run-time contentIterator getAssignmentsIterator returns (changesetManager.cfc:563-569, core/mura/content/contentIterator.cfc:102), whose save() reaches contentBean.save through onMissingMethod (core/mura/content/contentNavBean.cfc:98-119, core/mura/content/contentBean.cfc:1074-1077), a receiver the extractor cannot resolve."
+
+  - id: wov:changeset-publish-changeset-save
+    tables: [tchangesets]
+    component: core/mura/content/changeset/changesetManager.cfc
+    method: publish
+    op: save
+    source: {path: core/mura/content/changeset/changesetManager.cfc, lines: [552, 554]}
+    routeKeys: ["admin:cchangesets.publish", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the change set has no pending approvals and no errors (core/mura/content/changeset/changesetManager.cfc:503, 521); it is saved as published (552-554)"
+    reaches:
+      - {component: core/mura/content/changeset/changesetBean.cfc, method: save}
+    reason: "changeset is the bean read(changesetID) returns (changesetManager.cfc:506), a receiver the extractor cannot resolve; its save() persists through changesetManager.save (core/mura/content/changeset/changesetBean.cfc:145-153)."
+
   - id: wov:ver-versioned-objects-delete
     tables: [tcontentfilemetadata]
     component: core/mura/content/contentDAO.cfc
@@ -574,6 +617,32 @@ writers:
     sessionEffects: none
     condition: "an attribute the config XML names is new to its extend set (1943); extendAttribute.save inserts it (core/mura/extend/extendAttribute.cfc:423), owned by the baseTable of its set's subtype"
     reason: "attribute comes from extendSet.getAttributeByName (core/mura/extend/extendSet.cfc:392-408), a getter on a set bean whose result the extractor does not follow."
+
+  - id: wov:ext-loadconfigxml-site-save
+    tables: [tsettings]
+    component: core/mura/extend/extendManager.cfc
+    method: loadConfigXML
+    op: update
+    source: {path: core/mura/extend/extendManager.cfc, lines: [2016, 2018]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{action=add}", "admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{action=update}", "admin:csettings.updatesite{bundle}", "api:site.save", "api:site.save{bundle}", "rest:site.save", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the config XML gives the small, medium or large image size a height or width other than the site's (core/mura/extend/extendManager.cfc:1986-1998), which marks the site dirty; site.save then updates its tsettings row through settingsManager.update (core/mura/settings/settingsManager.cfc:292, core/mura/settings/settingsDAO.cfc:318)"
+    reason: "site is getBean('settingsManager').getSite(siteid) (core/mura/extend/extendManager.cfc:1804), a settingsBean setSites reads into variables.sites (core/mura/settings/settingsManager.cfc:477, 486) and getSite returns from that struct (546-562), which the extractor does not follow; every such site has its tsettings row, so settingsBean.save (core/mura/settings/settingsBean.cfc:1271-1274) takes the update branch of settingsManager.save (settingsManager.cfc:829-830). The site's own values carry no extendSetID, new placeholder image or bundle (settingsManager.cfc:267, 273, 294), and the registry reload of setSites (295) is the start-up writer's."
+
+  - id: wov:ext-loadconfigxml-site-razuna-save
+    tables: [trazunasettings]
+    component: core/mura/extend/extendManager.cfc
+    method: loadConfigXML
+    op: save
+    source: {path: core/mura/extend/extendManager.cfc, lines: [2016, 2018]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{action=add}", "admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{action=update}", "admin:csettings.updatesite{bundle}", "api:site.save", "api:site.save{bundle}", "rest:site.save", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the config XML gives the small, medium or large image size a height or width other than the site's (core/mura/extend/extendManager.cfc:1986-1998), so site.save runs settingsManager.update, which re-saves the site's razuna settings row, inserting it when the site has none (core/mura/settings/settingsManager.cfc:271, core/mura/settings/settingsBean.cfc:1306-1311)"
+    reason: "The razunaSettings bean is reached only through the site the extractor does not follow (core/mura/extend/extendManager.cfc:1804, 2017); it is the trazunasettings entity (core/mura/content/file/razuna/razunaSettingsBean.cfc:2)."
 
   - id: wov:sql-bundle-restore-bundleable-delete
     tables: [tapprovalactions, tapprovalchains, tapprovalmemberships, tapprovalrequests, tchangesetcategoryassign, tchangesettagassign, tcontentfilemetadata, tcontentfilenamearchive, tcontentremotepointer, tcontentvariationtargeting, toauthclients, tremotepointer]
@@ -653,7 +722,43 @@ writers:
     sessionEffects: none
     condition: "a valid restore CSRF token; saves each trashed object of rc.deleteid, or the one of rc.objectid, rebuilt as getBean(objectClass) from its stored objectstring (core/mura/trash/trashManager.cfc:308)"
     dynamic: true
-    reason: "The entity, and so its table, is decided by the stored ttrash objectClass at run time."
+    reaches:
+      - {component: core/mura/user/addressBean.cfc, method: save}
+      - {component: core/mura/category/categoryBean.cfc, method: save}
+      - {component: core/mura/content/changeset/changesetBean.cfc, method: save}
+      - {component: core/mura/content/contentBean.cfc, method: save}
+      - {component: core/mura/email/emailBean.cfc, method: save}
+      - {component: core/mura/extend/extendObject.cfc, method: save}
+      - {component: core/mura/content/feed/feedBean.cfc, method: save}
+      - {component: core/mura/mailinglist/mailinglistBean.cfc, method: save}
+      - {component: core/mura/user/userBean.cfc, method: save}
+    reason: "The saved bean is that of the stored ttrash objectClass. reaches lists the save of each class trashManager.throwIn stores at the pin: address and user or group (core/mura/user/userManager.cfc:945,728), category (core/mura/category/categoryManager.cfc:809), changeset (core/mura/content/changeset/changesetManager.cfc:229), content (core/mura/content/contentManager.cfc:1829), email (core/mura/email/emailManager.cfc:201), extendObject (core/mura/extend/extendObject.cfc:139), feed (core/mura/content/feed/feedManager.cfc:460) and mailinglist (core/mura/mailinglist/mailinglistManager.cfc:165). ORM entities are trashed only with usetrash (core/mura/bean/beanORM.cfc:743), which no static entity declares, so further classes are dynamic."
+
+  - id: wov:ctrash-restore-trash-row
+    tables: [ttrash]
+    component: admin/core/controllers/ctrash.cfc
+    method: restore
+    op: delete
+    source: {path: core/mura/trash/trashManager.cfc, lines: [432, 434]}
+    routeKeys: ["admin:ctrash.restore"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid restore CSRF token; trashManager.takeOut, called by each restored object's save, deletes its ttrash row and those of the child items it saves again (core/mura/trash/trashManager.cfc:432-440)"
+    reason: "takeOut deletes the row only for an object rebuilt from the trash (core/mura/trash/trashManager.cfc:310,417-421), which this action alone saves, so the delete is listed as the restore's own write."
+
+  - id: wov:ctrash-restore-file-versions
+    tables: [tfiles]
+    component: admin/core/controllers/ctrash.cfc
+    method: restore
+    op: update
+    source: {path: core/mura/content/file/fileDAO.cfc, lines: [375, 380]}
+    routeKeys: ["admin:ctrash.restore"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid restore CSRF token; trashManager.takeOut sets deleted=0 on the tfiles row of every UUID value the restored object holds (core/mura/trash/trashManager.cfc:425-430)"
+    reason: "takeOut restores file versions only for an object rebuilt from the trash (core/mura/trash/trashManager.cfc:310,417-421), which this action alone saves, so the update is listed as the restore's own write."
 
   - id: wov:plugin-monitor-events
     tables: []
@@ -1084,3 +1189,35 @@ settledCalls:
     calls: [cffp.updateConfig]
     resolution: non-write
     reason: "cffp is a cfformprotect.cffpVerify instance created per call at core/mura/utility.cfc:555, whose updateConfig (core/vendor/cfformprotect/cffpVerify.cfc:72-77) only sets a key of its in-memory variables.Config, so it writes no table and no file, cffp.ini.cfm being only read by setConfig (cffpVerify.cfc:55-69)."
+
+  - id: wov:bean-extend-object-manager-save
+    source: {path: core/mura/extend/extendObject.cfc, lines: [129, 131]}
+    calls: ["getManager().save"]
+    resolution: unreachable
+    reason: "No code at the pin gives an extendObject a manager: it defaults to '' (core/mura/extend/extendObject.cfc:9,20), the bean factory registers no manager bean and extendObjectIterator never sets one (core/mura/extend/extendObjectIterator.cfc:81,88-92), so save always takes the saveExtendedData branch (extendObject.cfc:132)."
+
+  - id: wov:sql-extend-object-data-table
+    source: {path: core/mura/extend/extendManager.cfc, lines: [523, 641]}
+    calls: ["#arguments.dataTable#"]
+    resolution: counted
+    countedBy: [tclassextenddata]
+    reason: "extendObject.save passes its extendDataTable as a variable the closure cannot bind (core/mura/extend/extendObject.cfc:132); it is the beanExtendable default tclassextenddata (core/mura/bean/beanExtendable.cfc:92), which nothing at the pin replaces, and the one closure reaching extendObject.save, the trash restore's, records these saveExtendedData statements on tclassextenddata through contentBean.save."
+
+  - id: wov:trash-takeout-child-resave
+    source: {path: core/mura/trash/trashManager.cfc, lines: [436, 440]}
+    calls: ["it.previous().getObject().save"]
+    resolution: counted
+    countedBy: [wov:ctrash-restore-object-save]
+    reason: "takeOut re-saves each item trashed with the restored object, rebuilt as getBean(objectClass) from its stored ttrash row (core/mura/trash/trashManager.cfc:297-320), and only for a bean carrying fromMuraTrash (417-421), which only the trash restore saves; those are the saves of the trashed classes wov:ctrash-restore-object-save reaches."
+
+  - id: wov:rel-content-added-objects
+    source: {path: core/mura/content/contentManager.cfc, lines: [1654, 1658]}
+    calls: ["obj.setAddedObjectValues(updateArgs).save"]
+    resolution: unreachable
+    reason: "addObjects is newBean.getAddObjects() (core/mura/content/contentManager.cfc:1156), which stays empty: contentBean.set replaces bean.set without its relationship loop (core/mura/content/contentBean.cfc:294-465, core/mura/bean/bean.cfc:340-410), and no code at the pin calls contentBean.addObject or addChild (contentBean.cfc:1081-1096) or an add method synthesized for content (bean.cfc:891, 918)."
+
+  - id: wov:zip-temp-file-delete
+    source: {path: core/mura/Zip.cfc, lines: [265, 284]}
+    calls: ["ioFile.init(arguments.zipFilePath).delete", "ioFile.init(arguments.zipFilePath & \".temp\").delete"]
+    resolution: non-write
+    reason: "ioFile is the java.io.File the pseudo-constructor creates (core/mura/Zip.cfc:53); DeleteFiles removes the bundle backup archive it rewrites and its .temp copy under the bundle backup directory (core/mura/settings/settingsBundle.cfc:374, 379), writing no table and no stored file."

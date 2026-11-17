@@ -438,7 +438,7 @@ beforeEach(() => {
   ]);
   vi.mocked(latestSnapshot).mockResolvedValue(snapshot(3, NOW));
   vi.mocked(getSnapshot).mockImplementation(async (_ctx, seq) => (seq === 0 ? null : snapshot(seq, seq === 1 ? S1_TAKEN : NOW)));
-  vi.mocked(createApplyTenantResolver).mockResolvedValue({ resolve: vi.fn(), siteTenants: () => [TENANT_A, TENANT_B] });
+  vi.mocked(createApplyTenantResolver).mockResolvedValue({ prepare: vi.fn(), resolve: vi.fn(), siteTenants: () => [TENANT_A, TENANT_B], readsOtherRows: () => false });
   vi.mocked(fixtureTables).mockResolvedValue(new Set(['synthetic.person_archive']));
   vi.mocked(readFixtureStatus).mockResolvedValue({ available: true, reason: null, checkedAt: NOW.toISOString() });
   vi.mocked(describeUnitTable).mockImplementation(async (_deps, { unit, legacyTable }) =>
@@ -771,7 +771,7 @@ describe('pubsub-redelivery fault script', () => {
 
   it('caps the listed differing keys at 50 and counts them all', async () => {
     const many = Array.from({ length: 60 }, (_, index) => `00000000-0000-5000-8000-${String(index).padStart(12, '0')}`);
-    vi.mocked(createApplyTenantResolver).mockResolvedValue({ resolve: vi.fn(), siteTenants: () => many });
+    vi.mocked(createApplyTenantResolver).mockResolvedValue({ prepare: vi.fn(), resolve: vi.fn(), siteTenants: () => many, readsOtherRows: () => false });
     vi.mocked(spawnChild).mockImplementationOnce(async (...args) => {
       for (const tenant of many) targetData.set(`programs_sites.site|dbo.tsettings|${tenant}`, [{ ID: tenant, Name: 'new' }]);
       return replayChild(...args);

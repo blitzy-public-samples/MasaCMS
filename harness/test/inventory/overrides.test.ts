@@ -249,6 +249,50 @@ describe('committed override files', () => {
     });
   });
 
+  it('settles the trash restore with the save of every class trashed at the pin and its takeOut writes', () => {
+    const restore = writers.writers.filter((w) => w.routeKeys.includes('admin:ctrash.restore'));
+    expect(restore.map((w) => [w.id, w.tables, w.op, w.keyScope, w.trigger])).toEqual([
+      ['wov:ctrash-restore-object-save', [], 'save', 'table', 'request'],
+      ['wov:ctrash-restore-trash-row', ['ttrash'], 'delete', 'table', 'request'],
+      ['wov:ctrash-restore-file-versions', ['tfiles'], 'update', 'table', 'request'],
+    ]);
+    const trashed = [
+      'user/addressBean',
+      'category/categoryBean',
+      'content/changeset/changesetBean',
+      'content/contentBean',
+      'email/emailBean',
+      'extend/extendObject',
+      'content/feed/feedBean',
+      'mailinglist/mailinglistBean',
+      'user/userBean',
+    ];
+    expect(restore[0]?.reaches).toEqual(trashed.map((bean) => ({ component: `core/mura/${bean}.cfc`, method: 'save' })));
+  });
+
+  it('attributes the redirect rows of a comment notification to utility.createRedirectID under page rendering', async () => {
+    const redirects = writers.writers.filter((w) => w.tables?.includes('tredirects') && w.component === 'core/mura/utility.cfc');
+    expect(redirects.map((w) => [w.id, w.component, w.method, w.op, w.source, w.routeKeys, w.trigger])).toEqual([
+      [
+        'wov:comments-display-object-redirects',
+        'core/mura/utility.cfc',
+        'createRedirectID',
+        'insert',
+        { path: 'core/mura/utility.cfc', lines: [430, 434] },
+        ['api:processasyncobject', 'page:render'],
+        'request',
+      ],
+    ]);
+    const lines = (await readFile(path.join(REPO_ROOT, 'core/mura/utility.cfc'), 'utf8')).split(/\r?\n/);
+    const declared = lines.findLastIndex((line, i) => i < 429 && /<cffunction\b/i.test(line));
+    expect(lines[declared]).toMatch(/<cffunction\s+name="createRedirectID"/i);
+    expect(lines.slice(429, 434).join('\n')).toMatch(/insert\s+into\s+tredirects/i);
+    const notify = await readFile(path.join(REPO_ROOT, 'core/mura/content/contentCommentBean.cfc'), 'utf8');
+    expect(notify.match(/createRedirectID\(/gi)?.length).toBe(3);
+    const display = await readFile(path.join(REPO_ROOT, 'core/modules/v1/comments/index.cfm'), 'utf8');
+    expect(display).toMatch(/\.sendNotification\(\)/);
+  });
+
   it.each<[Trigger, string[]]>([
     ['scheduler', ['wov:native-sitemonitor-task', 'wov:fixture-survey-tasks']],
     ['appstart', ['wov:scheduler-registration', 'wov:startup-url-conversion']],

@@ -1,0 +1,122 @@
+# Reviewed admin views that render only inside the views including them; harness/src/inventory/controllers.ts lists each under controllers[].excludedViews instead of controllers[].actions.
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+
+partials:
+  - id: vp:carch.draftpromptjs
+    view: admin/core/views/carch/draftpromptjs.cfm
+    includers:
+      - {path: admin/core/views/carch/audit.cfm, lines: [323, 323]}
+      - {path: admin/core/views/carch/hist.cfm, lines: [366, 366]}
+      - {path: admin/core/views/carch/list.cfm, lines: [452, 452]}
+      - {path: admin/core/views/carch/list.cfm, lines: [850, 850]}
+    reason: "A script block that binds draftprompt() to the a.draftprompt version links its includers render (draftpromptjs.cfm:2-72); requested alone it returns the admin layout around an inert script."
+
+  - id: vp:carch.edit_panels
+    view: admin/core/views/carch/edit_panels.cfm
+    includers:
+      - {path: admin/core/views/carch/edit.cfm, lines: [541, 541]}
+    reason: "The content editor's accordion panels, built from edit.cfm's tabList (edit.cfm:78) and tabAssignments (edit.cfm:131) and the rc.contentBean the edit action loads; requested alone it fails with 'Variable TABLIST is undefined'."
+
+  - id: vp:carch.js
+    view: admin/core/views/carch/js.cfm
+    includers:
+      - {path: admin/core/views/carch/audit.cfm, lines: [76, 76]}
+      - {path: admin/core/views/carch/datamanager.cfm, lines: [77, 77]}
+      - {path: admin/core/views/carch/draft.cfm, lines: [76, 76]}
+      - {path: admin/core/views/carch/edit.cfm, lines: [77, 77]}
+      - {path: admin/core/views/carch/edittext.cfm, lines: [4, 4]}
+      - {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [30, 30]}
+      - {path: admin/core/views/carch/hist.cfm, lines: [76, 76]}
+      - {path: admin/core/views/carch/list.cfm, lines: [80, 80]}
+      - {path: admin/core/views/carch/lockcheck.cfm, lines: [6, 6]}
+      - {path: admin/core/views/carch/multifileupload.cfm, lines: [76, 76]}
+      - {path: admin/core/views/carch/relatedcontent.cfm, lines: [81, 81]}
+      - {path: admin/core/views/carch/search.cfm, lines: [76, 76]}
+      - {path: admin/core/views/carch/selectfields.cfm, lines: [82, 82]}
+      - {path: admin/core/views/carch/selectmedia.cfm, lines: [105, 105]}
+      - {path: admin/core/views/carch/variationtargeting.cfm, lines: [12, 12]}
+    reason: "Captures the site manager and editor scripts into request.ajax (js.cfm:77-134), which the layout writes into the page head (admin/common/layouts/template.cfm:230, compact.cfm:301), and picks the editor script by the including action (js.cfm:81); requested alone it returns the admin layout with an empty body."
+
+  - id: vp:ccategory.js
+    view: admin/core/views/ccategory/js.cfm
+    includers:
+      - {path: admin/core/views/ccategory/edit.cfm, lines: [77, 77]}
+      - {path: admin/core/views/ccategory/list.cfm, lines: [77, 77]}
+    reason: "Captures the category script and the category list's context menu into request.ajax for the layout head (ccategory/js.cfm:76-87); requested alone it returns the admin layout with an empty body."
+
+  - id: vp:cchain.js
+    view: admin/core/views/cchain/js.cfm
+    includers:
+      - {path: admin/core/views/cchain/edit.cfm, lines: [100, 100]}
+      - {path: admin/core/views/cchain/list.cfm, lines: [77, 77]}
+    reason: "One script tag loading approvalchain.js for the approval-chain list and edit forms (cchain/js.cfm:1-3); requested alone it returns the admin layout around that tag."
+
+  - id: vp:cdashboard.act_defaults
+    view: admin/core/views/cdashboard/act_defaults.cfm
+    includers:
+      - {path: admin/core/views/cdashboard/loademailactivity.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cdashboard/loadformactivity.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cdashboard/loadpopularcontent.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cdashboard/loadrecentcomments.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cdashboard/loaduseractivity.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cdashboard/main.cfm, lines: [86, 86]}
+    reason: "A cfsilent block that sets the reporting span, threshold and date range its including dashboard loaders read (act_defaults.cfm:77-92); it renders nothing, so requested alone it returns the admin layout with an empty body."
+
+  - id: vp:cdashboard.js
+    view: admin/core/views/cdashboard/js.cfm
+    includers:
+      - {path: admin/core/views/cdashboard/main.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cdashboard/recentcomments.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cdashboard/sessionsearch.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cdashboard/topcontent.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cdashboard/toprated.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cdashboard/topreferers.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cdashboard/topsearches.cfm, lines: [76, 76]}
+    reason: "Captures the dashboard and search-parameter scripts into request.ajax for the layout head (cdashboard/js.cfm:76-81); requested alone it returns the admin layout with an empty body."
+
+  - id: vp:cemail.js
+    view: admin/core/views/cemail/js.cfm
+    includers:
+      - {path: admin/core/views/cemail/edit.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cemail/list.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cemail/showallbounces.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cemail/showreturns.cfm, lines: [76, 76]}
+    reason: "Captures the email script into request.ajax for the layout head (cemail/js.cfm:76-80); requested alone it returns the admin layout with an empty body."
+
+  - id: vp:cextend.js
+    view: admin/core/views/cextend/js.cfm
+    includers:
+      - {path: admin/core/views/cextend/editattributes.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cextend/editsubtype.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cextend/listsets.cfm, lines: [77, 77]}
+    reason: "Captures the class-extension script into request.ajax for the layout head (cextend/js.cfm:76-80); requested alone it returns the admin layout with an empty body."
+
+  - id: vp:cfeed.js
+    view: admin/core/views/cfeed/js.cfm
+    includers:
+      - {path: admin/core/views/cfeed/edit.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cfeed/import1.cfm, lines: [77, 77]}
+      - {path: admin/core/views/cfeed/import2.cfm, lines: [76, 76]}
+    reason: "Captures the feed, checkbox-tree and search-parameter scripts into request.ajax for the layout head (cfeed/js.cfm:76-82); requested alone it returns the admin layout with an empty body."
+
+  - id: vp:cform.html
+    view: admin/core/views/cform/html.cfm
+    includers:
+      - {path: admin/core/views/cform/getdialog.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cform/getfieldtemplate.cfm, lines: [76, 76]}
+    reason: "Writes rc.return and aborts (cform/html.cfm:76); only the getDialog and getFieldTemplate actions set rc.return (admin/core/controllers/cform.cfc:162,200), and requested alone it fails with 'Element RETURN is undefined in RC'."
+
+  - id: vp:cform.json
+    view: admin/core/views/cform/json.cfm
+    includers:
+      - {path: admin/core/views/cform/getdataset.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cform/getfield.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cform/getfieldtype.cfm, lines: [76, 76]}
+      - {path: admin/core/views/cform/getform.cfm, lines: [76, 76]}
+    reason: "Writes rc.return as JSON and aborts (cform/json.cfm:75-76); only the getDataset, getField, getFieldType and getForm actions set rc.return (admin/core/controllers/cform.cfc:171,183,195,209), and requested alone it fails with 'Element RETURN is undefined in RC'."
+
+  - id: vp:scaffold.assembler_templates
+    view: admin/core/views/scaffold/assembler_templates.cfm
+    includers:
+      - {path: admin/core/views/scaffold/assembler.cfm, lines: [181, 181]}
+    reason: "Inert Vue <template> elements (assembler_templates.cfm:3,72,98,225) that assembler.min.js, loaded and mounted on #container-assembler by assembler.cfm (assembler.cfm:83-86,127), renders; requested alone the templates never mount."

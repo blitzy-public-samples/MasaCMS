@@ -472,20 +472,20 @@ describe('createFaultRegistry hooks', () => {
   it.each([
     { params: {}, ms: DEFAULT_DELAY_MS },
     { params: { delayMs: 500 }, ms: 500 },
-  ])('sleeps $ms ms before each batch while projector-delay is armed with $params, and not once cleared', async ({ params, ms }) => {
+  ])('sleeps $ms ms before the first batch of each cycle while projector-delay is armed with $params, and not once cleared', async ({ params, ms }) => {
     const { registry, sleep } = armedRegistry();
     const hooks = registry.projectorHooks();
     expect(registry.active()).toStrictEqual([]);
-    await hooks.beforeBatch?.();
+    await hooks.beforeFirstBatch?.();
     expect(sleep).not.toHaveBeenCalled();
 
     expect(registry.set(TOGGLE_FAULT, params)).toMatchObject({ name: TOGGLE_FAULT, params: { delayMs: ms } });
-    await hooks.beforeBatch?.();
-    await hooks.beforeBatch?.();
+    await hooks.beforeFirstBatch?.();
+    await hooks.beforeFirstBatch?.();
     expect(sleep.mock.calls).toStrictEqual([[ms], [ms]]);
 
     expect(registry.clear(TOGGLE_FAULT)).toBe(true);
-    await hooks.beforeBatch?.();
+    await hooks.beforeFirstBatch?.();
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(registry.active()).toStrictEqual([]);
   });

@@ -71,9 +71,17 @@ export interface UnitTableShape {
 
 /** Tenant of a legacy row as the backfill, the feed and reconciliation assign it. */
 export interface TenantResolver {
+  /**
+   * Reads, for `rows` of `table`, only the parent rows their tenant joins reach, hop by hop, replacing what the previous
+   * call for `table` read; any table and rows may be prepared, and a table whose tenant needs no parent reads nothing.
+   */
+  prepare(table: string, rows: readonly Readonly<Record<string, unknown>>[]): Promise<void>;
+  /** @throws Error for a parent-sourced row whose join value the last `prepare` of `table` did not cover. */
   resolve(table: string, row: Readonly<Record<string, unknown>>): { tenantId: string; orphan: boolean };
   /** Tenants of every site of the database plus the umbrella tenant, sorted. */
   siteTenants(): string[];
+  /** True when `table`'s rule places a row by other rows (its parent's, or `synthetic.program_site`), so an unchanged row can move. */
+  readsOtherRows(table: string): boolean;
 }
 
 /** Rows of one tenant placed there as orphans: the first `DIFFERENCE_LIMIT` keys in extraction order and the total. */
@@ -132,22 +140,22 @@ export type LookupSource = (spec: IndexSpec) => Promise<ValueLookup>;
 export interface UnitRowFilter {
   prepare(rows: readonly Readonly<Record<string, CanonicalValue>>[]): Promise<void>;
   accepts(row: Readonly<Record<string, CanonicalValue>>): Promise<boolean>;
+  /** True when judging a row reads other rows, so an unchanged row can be taken or left differently. */
+  readonly readsOtherRows: boolean;
 }
 
 type Values = Readonly<Record<string, CanonicalValue>>;
 
-/** One column of a legacy table indexed by others: comparison form of the index columns to the distinct comparison-form values carried. */
-type ValueIndex = ReadonlyMap<string, readonly string[]>;
-
-/** Value indexes built during one run, by table, index columns and carried column. */
-type IndexMemo = Map<string, Promise<ValueIndex>>;
-
-/** Site a parent join value resolves to: its rows' single tenant and that tenant's site, or null when they span tenants. */
+/** Site a parent join value resolves to: its rows' single tenant and that tenant's site, or null when they span tenants or none exists. */
 type ParentSite = { tenantId: string; siteId: string } | null;
 
-/** Which rows of a split legacy table belong to one unit; `columns` are the row columns it reads. */
+/** One prepared batch's parent join values per hop (parent table and column) to the site each resolves to. */
+type ParentLookups = Map<string, ReadonlyMap<string, ParentSite>>;
+
+/** Which rows of a split legacy table belong to one unit; `columns` are the row columns it reads, `readsOtherRows` whether it joins. */
 interface RowSelector {
   readonly columns: readonly string[];
+  readonly readsOtherRows: boolean;
   accepts(row: Values): boolean;
 }
 
@@ -185,7 +193,7 @@ const CLASS_MAP_PREDICATE = /^\s*classMap\s+owner\s*=\s*(\S+)\s*$/i;
 const LITERAL = /^\s*(?:'((?:[^']|'')*)'|(-?\d+))\s*$/;
 const CHAIN_SEPARATOR = /,\s*then\s+/i;
 const INDEX_SEPARATOR = '\u0000';
-const ALL_ROWS: RowSelector = { columns: [], accepts: () => true };
+const ALL_ROWS: RowSelector = { columns: [], readsOtherRows: false, accepts: () => true };
 
 const PROGRAM_SITE_COLUMNS = ['program_id', 'siteID'] as const;
 /** Masa user, trash and class-extension tables and columns the class map reads [core/setup/db/mssql.sql:467-505,569-582]. */
@@ -204,7 +212,6 @@ const SNAPSHOT_MANIFEST_SQL = 'SELECT state, manifest_complete FROM migration.sn
 const UNKNOWN_STORE = 'unknown';
 
 const factsByFile = new Map<string, ReadonlyMap<string, TableFacts>>();
-const runIndexes = new WeakMap<TenantResolver, IndexMemo>();
 
 const textOf = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
 const recordOf = (value: unknown): Record<string, unknown> =>
@@ -330,38 +337,6 @@ function indexEntry(spec: IndexSpec, row: Readonly<Record<string, unknown>>): re
   return at === undefined || value === undefined ? undefined : [at, value];
 }
 
-/** Distinct comparison-form values of `carried` in `table` of `database`, indexed by `indexColumns`; streamed once per run. */
-function valueIndex(deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>, memo: IndexMemo, spec: IndexSpec): Promise<ValueIndex> {
-  const key = indexId(spec);
-  const known = memo.get(key);
-  if (known !== undefined) return known;
-  const building = (async (): Promise<ValueIndex> => {
-    const index = new Map<string, string[]>();
-    const columns = [...new Set([...spec.indexColumns, spec.carried])];
-    for await (const source of streamLegacyTable(deps, { table: spec.table, database: spec.database, columns })) {
-      const entry = indexEntry(spec, source.row);
-      if (entry === undefined) continue;
-      const [at, value] = entry;
-      const values = index.get(at);
-      if (values === undefined) index.set(at, [value]);
-      else if (!values.includes(value)) values.push(value);
-    }
-    return index;
-  })();
-  memo.set(key, building);
-  return building;
-}
-
-/** Index memo of the run `tenants` belongs to; a resolver not built here gets its own. */
-function indexesOf(tenants: TenantResolver): IndexMemo {
-  let memo = runIndexes.get(tenants);
-  if (memo === undefined) {
-    memo = new Map();
-    runIndexes.set(tenants, memo);
-  }
-  return memo;
-}
-
 // Tenant rules follow the ownership file's tenantResolution and tenantParent, as the owners' mappings and the window import
 // do; the dependency order's inferred parents differ for several tables (tusersmemb, tuserstrikes, feed and comment children).
 /** Tenant source of a table under its ownership-file rule. */
@@ -410,20 +385,44 @@ async function readProgramSites(deps: Pick<ReconcileLegacyDeps, 'legacy' | 'cata
   return sites;
 }
 
+/** Rows of `table` in `database` whose `column` holds a value of `wanted` (comparison form), read in scoped chunks; none when the table is absent. */
+async function* scopedRows(
+  deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>,
+  database: string,
+  table: string,
+  column: string,
+  columns: readonly string[],
+  wanted: ReadonlySet<string>,
+): AsyncGenerator<Readonly<Record<string, unknown>>, void, undefined> {
+  const values = [...wanted];
+  try {
+    for (let start = 0; start < values.length; start += MAX_SCOPE_PARAMETERS) {
+      const scope = { [column]: values.slice(start, start + MAX_SCOPE_PARAMETERS) };
+      // The scope may match more rows under the column's collation; only rows whose comparison form is wanted count.
+      for await (const { row } of streamLegacyTable(deps, { table, database, columns, scope })) {
+        const value = indexKey([valueOf(row, column)]);
+        if (value !== undefined && wanted.has(value)) yield row;
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof TableNotFoundError)) throw error;
+  }
+}
+
 /**
  * Tenant resolver over `database` by each table's ownership rule (site column, parent row, `Program_<id>` site) through
- * `resolveTenant`; unresolvable rows and children of parents in several tenants go to the umbrella as orphans.
+ * `resolveTenant`; unresolvable rows and children of parents in several tenants go to the umbrella as orphans. Parent rows
+ * are read per prepared batch, so it holds only the site list, `synthetic.program_site` and each table's last batch.
  */
 export async function createTenantResolver(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
   options: { database: string },
 ): Promise<TenantResolver> {
   const { database } = options;
-  const memo: IndexMemo = new Map();
   const sites = await readSnapshotSites(deps, database);
   const programSites = await readProgramSites(deps, database);
-  const parentSites = new Map<string, ReadonlyMap<string, ParentSite>>();
   const sources = new Map<string, TenantSource>();
+  const prepared = new Map<string, TenantLookups>();
   const parentKey = (table: string, column: string): string => `${tableKey(table)}${INDEX_SEPARATOR}${column.toLowerCase()}`;
 
   const sourceFor = (table: string): TenantSource => {
@@ -436,67 +435,83 @@ export async function createTenantResolver(
     return source;
   };
 
-  const lookups: TenantLookups = {
+  /** Lookups answering parent joins from `parents` alone; a join value they lack was never prepared. */
+  const lookupsOver = (parents: ParentLookups | undefined): TenantLookups => ({
     umbrellaSiteId: deps.config.umbrellaSiteId,
     programSiteId: (programId) => programSites.get(programId),
     parentSiteId: (parentTable, key) => {
       const [column, value] = Object.entries(key)[0] ?? [];
-      const sitesByValue = column === undefined ? undefined : parentSites.get(parentKey(parentTable, column));
-      if (sitesByValue === undefined) throw new Error(`no parent lookup of ${parentTable} by ${String(column)} was prepared`);
-      return sitesByValue.get(norm(value) ?? '')?.siteId ?? null;
+      const site = column === undefined ? undefined : parents?.get(parentKey(parentTable, column))?.get(norm(value) ?? '');
+      if (site === undefined) throw new Error(`no parent lookup of ${parentTable} by ${String(column)} was prepared for this row`);
+      return site?.siteId ?? null;
     },
-  };
+  });
+  const unprepared = lookupsOver(undefined);
 
-  const resolveRow = (table: string, row: Readonly<Record<string, unknown>>) => {
+  const resolveRow = (lookups: TenantLookups, table: string, row: Readonly<Record<string, unknown>>) => {
     const source = sourceFor(table);
     return resolveTenant(source, row, lookups, { legacyProgramId: source.kind === 'program' ? programIdOf(table, row) : undefined });
   };
 
-  /** Folds parent join values into their resolved site, retaining null for conflicting tenants and no parent rows. */
-  const prepareParent = async (table: string, column: string, trail: readonly string[]): Promise<void> => {
-    const key = parentKey(table, column);
-    if (parentSites.has(key)) return;
-    if (trail.includes(key)) throw new Error(`tenant parent joins form a cycle through ${table}.${column}`);
+  /**
+   * Adds to `parents` the site of each join value `rows` of `table` carry, reading only those parent rows and, first, the
+   * parents they reach in turn; a value whose non-orphan parent rows span tenants, or that has none, folds to null.
+   */
+  const readParents = async (
+    table: string,
+    rows: readonly Readonly<Record<string, unknown>>[],
+    parents: ParentLookups,
+    trail: readonly string[],
+  ): Promise<void> => {
     const source = sourceFor(table);
-    if (source.kind === 'parent') {
-      for (const [, parentColumn] of Object.entries(source.columns)) await prepareParent(source.parentLegacyTable, parentColumn, [...trail, key]);
-    }
-    const sitesByValue = new Map<string, ParentSite>();
-    const columns = [...new Set([column, ...tenantColumnsOf(source)])];
-    try {
-      for await (const { row } of streamLegacyTable(deps, { table, database, columns })) {
+    if (source.kind !== 'parent') return;
+    const parentTable = source.parentLegacyTable;
+    const parentSource = sourceFor(parentTable);
+    for (const [childColumn, column] of Object.entries(source.columns)) {
+      const key = parentKey(parentTable, column);
+      if (trail.includes(key)) throw new Error(`tenant parent joins form a cycle through ${parentTable}.${column}`);
+      const wanted = new Set(rows.flatMap((row) => indexKey([valueOf(row, childColumn)]) ?? []));
+      const columns = [...new Set([column, ...tenantColumnsOf(parentSource)])];
+      const read = scopedRows(deps, database, parentTable, column, columns, wanted);
+      let found: AsyncIterable<Readonly<Record<string, unknown>>> | readonly Readonly<Record<string, unknown>>[] = read;
+      // A parent whose tenant comes from its own parent is held, so the next hop is read for its join values first.
+      if (parentSource.kind === 'parent') {
+        const held: Readonly<Record<string, unknown>>[] = [];
+        for await (const row of read) held.push(row);
+        await readParents(parentTable, held, parents, [...trail, key]);
+        found = held;
+      }
+      const lookups = lookupsOver(parents);
+      const sitesByValue = new Map<string, ParentSite>();
+      for await (const row of found) {
         const value = indexKey([valueOf(row, column)]);
         if (value === undefined) continue;
-        const resolved = resolveRow(table, row);
+        const resolved = resolveRow(lookups, parentTable, row);
         if (resolved.orphan) continue;
         const known = sitesByValue.get(value);
         if (known === undefined) sitesByValue.set(value, { tenantId: resolved.tenantId, siteId: resolved.siteId });
         else if (known !== null && known.tenantId === resolved.tenantId) known.siteId = resolved.siteId;
         else sitesByValue.set(value, null);
       }
-    } catch (error) {
-      if (!(error instanceof TableNotFoundError)) throw error;
+      for (const value of wanted) if (!sitesByValue.has(value)) sitesByValue.set(value, null);
+      parents.set(key, sitesByValue);
     }
-    parentSites.set(key, sitesByValue);
   };
 
-  for (const facts of ownershipFacts(deps.config.paths.tableOwnership).values()) {
-    if (facts.tenantResolution?.startsWith('parent:') !== true) continue;
-    const source = tenantSourceOf(facts);
-    if (source.kind !== 'parent') continue;
-    for (const [, column] of Object.entries(source.columns)) await prepareParent(source.parentLegacyTable, column, []);
-  }
-
   const tenantIds = [...new Set([...sites.map(tenantIdForSite), tenantIdForSite(deps.config.umbrellaSiteId)])].sort();
-  const resolver: TenantResolver = {
+  return {
+    async prepare(table, rows) {
+      const parents: ParentLookups = new Map();
+      if (rows.length > 0) await readParents(table, rows, parents, []);
+      prepared.set(tableKey(table), lookupsOver(parents));
+    },
     resolve(table, row) {
-      const { tenantId, orphan } = resolveRow(table, row);
+      const { tenantId, orphan } = resolveRow(prepared.get(tableKey(table)) ?? unprepared, table, row);
       return { tenantId, orphan };
     },
     siteTenants: () => [...tenantIds],
+    readsOtherRows: (table) => ['parent', 'program'].includes(sourceFor(table).kind),
   };
-  runIndexes.set(resolver, memo);
-  return resolver;
 }
 
 /** The target of `unit` among the targets of `legacyTable`. */
@@ -663,6 +678,7 @@ async function classMapSelector(source: LookupSource, database: string, facts: T
   const columns = [classColumn, ...(ruleBy.size > 0 ? [TRASH.type, TRASH.subType, TRASH.parent, TRASH.site] : [])];
   return {
     columns,
+    readsOtherRows: users !== undefined || subtypes !== undefined,
     accepts(row) {
       const objectClass = norm(valueOf(row, classColumn));
       const rule = rules.find((candidate) => candidate.classes.some((name) => norm(name) === objectClass));
@@ -699,7 +715,9 @@ async function rowSelectorFor(
   const viaOwner = match[1] !== undefined;
   if (!viaOwner) {
     const column = findColumn(await readTableCatalog(await deps.legacy.database(database), shape.legacyTable), attr);
-    if (column !== undefined) return { columns: [column.name], accepts: (row) => accepted.has(norm(valueOf(row, column.name)) ?? '') };
+    if (column !== undefined) {
+      return { columns: [column.name], readsOtherRows: false, accepts: (row) => accepted.has(norm(valueOf(row, column.name)) ?? '') };
+    }
   }
   const chains = (viaOwner ? [facts.parentJoin, facts.addressJoin] : [facts.resolve]).flatMap((chain) =>
     chain === undefined ? [] : [chainHops(shape.legacyTable, chain)],
@@ -709,6 +727,7 @@ async function rowSelectorFor(
   for (const hops of chains) reached.push(await chainValues(source, database, hops, attr));
   return {
     columns: [...new Set(chains.flatMap((hops) => hops[0]?.fromColumn ?? []))],
+    readsOtherRows: true,
     accepts: (row) => reached.some((values) => values(row).some((value) => accepted.has(value))),
   };
 }
@@ -781,6 +800,13 @@ export class JoinLookups {
   }
 }
 
+/** Fetches every join key `selector` needs to judge `rows`; each pass reaches one join hop further. */
+async function prepareSelector(selector: RowSelector, lookups: JoinLookups, rows: readonly Values[]): Promise<void> {
+  do {
+    for (const row of rows) selector.accepts(row);
+  } while (await lookups.fetchMissing());
+}
+
 /** Row filter of `unit`'s predicate on `legacyTable` in `database`, judging ownership as {@link readLegacyUnitRows} does. */
 export async function createUnitRowFilter(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
@@ -789,18 +815,14 @@ export async function createUnitRowFilter(
   const { unit, legacyTable, database, lookups } = options;
   const target = unitTarget(deps.catalog, unit, legacyTable);
   const selector = await rowSelectorFor(deps, lookups.source, database, { legacyTable }, target.rowPredicate);
-  // Each pass reaches one join hop further; it ends once every key the rows reach has been fetched.
-  const prepare = async (rows: readonly Values[]): Promise<void> => {
-    do {
-      for (const row of rows) selector.accepts(row);
-    } while (await lookups.fetchMissing());
-  };
+  const prepare = (rows: readonly Values[]): Promise<void> => prepareSelector(selector, lookups, rows);
   return {
     prepare,
     async accepts(row) {
       await prepare([row]);
       return selector.accepts(row);
     },
+    readsOtherRows: selector.readsOtherRows,
   };
 }
 
@@ -809,7 +831,17 @@ export function unitRowSorter(shape: Pick<UnitTableShape, 'legacyTable' | 'keyed
   return new UnitRowSorter(shape, (encoding, legacyProgramId) => toUnitRow(shape, decodeRow(shape.columns, encoding), legacyProgramId), options);
 }
 
-/** Streams the unit's projected legacy rows into a bounded sorter, grouped by resolved tenant, with the objects its object columns hold. */
+/** A streamed row as a batch holds it until judged: object bytes reduced to their size and SHA-256, null for a NULL value. */
+interface PendingUnitRow {
+  readonly row: Values;
+  readonly legacyProgramId: number | undefined;
+  readonly objects: readonly (Pick<ObjectEntry, 'size' | 'sha256'> | null)[];
+}
+
+/**
+ * Streams the unit's projected legacy rows into a bounded sorter, grouped by resolved tenant, with the objects its object columns
+ * hold. Rows are judged `backfill.batchRows` at a time: the batch's join keys and parent rows are read, then dropped.
+ */
 export async function readLegacyUnitRows(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
   shape: UnitTableShape,
@@ -817,21 +849,56 @@ export async function readLegacyUnitRows(
 ): Promise<LegacyUnitRows> {
   const { database, tenants } = options;
   const target = unitTarget(deps.catalog, shape.unit, shape.legacyTable);
-  const memo = indexesOf(tenants);
-  const selector = await rowSelectorFor(deps, (spec) => valueIndex(deps, memo, spec), database, shape, target.rowPredicate);
+  const lookups = new JoinLookups(deps);
+  const selector = await rowSelectorFor(deps, lookups.source, database, shape, target.rowPredicate);
   const tenantColumns = tenantColumnsOf(tenantSourceOf(factsFor(deps, shape.legacyTable)));
   const encoded = [...shape.columns, ...shape.objectColumns].flatMap((column) =>
     shape.folded && column.name === LEGACY_PROGRAM_ID_COLUMN ? [] : [column.name],
   );
   const columns = [...new Set([...encoded, ...selector.columns, ...tenantColumns])];
-  const valueOfColumn = (source: CanonicalRow, name: string): CanonicalValue => {
-    if (!(name in source.row)) throw new Error(`legacy table ${shape.legacyTable} of database ${database} yields no column ${name}`);
-    return source.row[name] ?? null;
+  const judged = new Set([...selector.columns, ...tenantColumns].map((name) => name.toLowerCase()));
+  const shed = new Set(shape.objectColumns.map((column) => column.name).filter((name) => !judged.has(name.toLowerCase())));
+  const valueOfColumn = (row: Values, name: string): CanonicalValue => {
+    if (!(name in row)) throw new Error(`legacy table ${shape.legacyTable} of database ${database} yields no column ${name}`);
+    return row[name] ?? null;
   };
+  const pendingOf = (source: CanonicalRow): PendingUnitRow => ({
+    row: shed.size === 0 ? source.row : Object.fromEntries(Object.entries(source.row).filter(([name]) => !shed.has(name))),
+    legacyProgramId: source.legacyProgramId,
+    objects: shape.objectColumns.map((column) => {
+      const bytes = valueOfColumn(source.row, column.name);
+      return bytes === null ? null : { size: Buffer.byteLength(bytes), sha256: sha256Hex(bytes) };
+    }),
+  });
 
   const sorter = unitRowSorter(shape, options);
   const orphans = new Map<string, LegacyOrphans>();
   const objects = new Map<string, ObjectEntry[]>();
+  const add = async (pending: PendingUnitRow): Promise<void> => {
+    const { tenantId, orphan } = tenants.resolve(shape.legacyTable, pending.row);
+    const values: Record<string, CanonicalValue> = {};
+    for (const column of shape.columns) values[column.name] = valueOfColumn(pending.row, column.name);
+    const row = toUnitRow(shape, values, pending.legacyProgramId);
+    await sorter.add(tenantId, row);
+    // Only the size and hash of the bytes are kept; a NULL value stores no object.
+    for (const object of pending.objects) {
+      if (object !== null) push(objects, tenantId, { key: objectLegacyPath(shape, row), ...object, orphan });
+    }
+    if (!orphan) return;
+    const listed = orphans.get(tenantId) ?? { keys: [], count: 0 };
+    orphans.set(tenantId, listed);
+    listed.count += 1;
+    if (listed.keys.length < DIFFERENCE_LIMIT) listed.keys.push(shape.keyed ? row.key : sha256Hex(row.encoding));
+  };
+  let batch: PendingUnitRow[] = [];
+  const flush = async (): Promise<void> => {
+    await prepareSelector(selector, lookups, batch.map((pending) => pending.row));
+    const accepted = batch.filter((pending) => selector.accepts(pending.row));
+    await tenants.prepare(shape.legacyTable, accepted.map((pending) => pending.row));
+    for (const pending of accepted) await add(pending);
+    lookups.clear();
+    batch = [];
+  };
   try {
     const stream = streamLegacyTable(deps, {
       table: shape.legacyTable,
@@ -840,23 +907,10 @@ export async function readLegacyUnitRows(
       ...(shape.keyed ? { keyColumns: shape.keyColumns } : {}),
     });
     for await (const source of stream) {
-      if (!selector.accepts(source.row)) continue;
-      const { tenantId, orphan } = tenants.resolve(shape.legacyTable, source.row);
-      const values: Record<string, CanonicalValue> = {};
-      for (const column of shape.columns) values[column.name] = valueOfColumn(source, column.name);
-      const row = toUnitRow(shape, values, source.legacyProgramId);
-      await sorter.add(tenantId, row);
-      // Only the size and hash of the bytes are kept; a NULL value stores no object.
-      for (const column of shape.objectColumns) {
-        const bytes = valueOfColumn(source, column.name);
-        if (bytes !== null) push(objects, tenantId, { key: objectLegacyPath(shape, row), size: Buffer.byteLength(bytes), sha256: sha256Hex(bytes), orphan });
-      }
-      if (!orphan) continue;
-      const listed = orphans.get(tenantId) ?? { keys: [], count: 0 };
-      orphans.set(tenantId, listed);
-      listed.count += 1;
-      if (listed.keys.length < DIFFERENCE_LIMIT) listed.keys.push(shape.keyed ? row.key : sha256Hex(row.encoding));
+      batch.push(pendingOf(source));
+      if (batch.length >= deps.config.backfill.batchRows) await flush();
     }
+    if (batch.length > 0) await flush();
     await sorter.sort();
   } catch (error) {
     await sorter.dispose();

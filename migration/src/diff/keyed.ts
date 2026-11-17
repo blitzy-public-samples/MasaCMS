@@ -87,9 +87,17 @@ export interface KeyedDiffOptions {
   columns: readonly CanonicalColumn[];
   /** Restricts update columns to these names, matched case-insensitively; inserts and deletes are unaffected. */
   writableColumns?: ReadonlySet<string> | readonly string[];
+  /**
+   * Key-matched rows without a changed writable column to yield anyway, as updates with no columns: `differing` those whose
+   * encodings differ, `all` every one. None when absent.
+   */
+  unchanged?: 'differing' | 'all';
 }
 
-/** One row difference; an update's `key` is the before row's and `columns` lists its changed columns in catalog order. */
+/**
+ * One row difference; an update's `key` is the before row's and `columns` lists its changed columns in catalog order,
+ * empty only for a row the `unchanged` option yields.
+ */
 export type KeyedChange =
   | { op: 'insert'; key: CanonicalRow['key']; after: CanonicalRow }
   | { op: 'delete'; key: CanonicalRow['key']; before: CanonicalRow }
@@ -100,11 +108,14 @@ function updateOf(
   after: CanonicalRow,
   columns: readonly CanonicalColumn[],
   writable: ReadonlySet<string> | undefined,
+  unchanged: KeyedDiffOptions['unchanged'],
 ): KeyedChange | undefined {
-  if (before.encoding === after.encoding) return undefined;
+  const quiet = (): KeyedChange => ({ op: 'update', key: before.key, before, after, columns: [] });
+  if (before.encoding === after.encoding) return unchanged === 'all' ? quiet() : undefined;
   const changed = changedColumns(columns, before.row, after.row);
   const scoped = writable === undefined ? changed : changed.filter((name) => writable.has(name.toLowerCase()));
-  return scoped.length === 0 ? undefined : { op: 'update', key: before.key, before, after, columns: scoped };
+  if (scoped.length > 0) return { op: 'update', key: before.key, before, after, columns: scoped };
+  return unchanged === undefined ? undefined : quiet();
 }
 
 /**
@@ -132,7 +143,7 @@ export async function* diffKeyedStreams(
         yield { op: 'insert', key: next.key, after: next };
         next = await right.next();
       } else {
-        const change = updateOf(old, next, options.columns, writable);
+        const change = updateOf(old, next, options.columns, writable, options.unchanged);
         if (change !== undefined) yield change;
         old = await left.next();
         next = await right.next();

@@ -18,6 +18,7 @@ import {
 import { ENTITY_SCAN_ROOT } from './entities.js';
 import type { PreventedBy, SessionEffects, SourceRef, Trigger, WriterOp, WriterOverride, WriterOverrides } from './overrides.js';
 import { normaliseInventoryKey } from './route-keys.js';
+import { blankSqlComments, FIXTURE_SQL_DIR, PROGRAM_SCHEMA_FOLD, PROGRAM_SCHEMA_VAR } from './routes.js';
 
 /** Archive path of the SQL Server bootstrap DDL. */
 export const BOOTSTRAP_DDL_PATH = 'core/setup/db/mssql.sql';
@@ -136,18 +137,25 @@ export interface TableEntry {
   otherDialects: DialectSource[];
   retired: boolean;
   droppedBy: SourceRef | null;
+  /** Governing columns, key and siteID facts: the live catalog's for a table it holds, else the static ones. */
   columns: TableColumn[];
   hasSiteId: boolean;
   siteIdColumn: string | null;
   siteIdSource: SourceRef | null;
-  /** Governing flag: the live catalog's once merged, else the static one. */
   hasPrimaryKey: boolean | null;
-  staticHasPrimaryKey: boolean | null;
   /** Whether the bootstrap DDL itself declares a key; null for tables it does not create. */
   bootstrapHasPrimaryKey: boolean | null;
   primaryKey: string[];
   /** Statement that set the current key, when it lies outside the file that creates the table. */
   primaryKeySource: SourceRef | null;
+  /** The static facts the governing ones replace; empty or null for a table only the live catalog shows. */
+  staticColumns: TableColumn[];
+  staticHasSiteId: boolean | null;
+  staticSiteIdColumn: string | null;
+  staticSiteIdSource: SourceRef | null;
+  staticHasPrimaryKey: boolean | null;
+  staticPrimaryKey: string[];
+  staticPrimaryKeySource: SourceRef | null;
   serializedColumns: string[];
   expectedSerializedColumns?: string[];
   ormEntity: OrmEntityRef | null;
@@ -168,7 +176,7 @@ export interface TableCorrection {
   computed: string[];
 }
 
-/** Static table counts; `retired` tables are included in the totals. */
+/** Static table counts; the origin and siteID counts include `retired` tables, `staticTotal` leaves them out. */
 export interface TableCounts {
   bootstrap: number;
   migration: number;
@@ -700,11 +708,14 @@ type StaticOrigin = 'bootstrap' | 'migration' | 'orm';
 
 const STATIC_ORIGINS: ReadonlySet<TableOrigin> = new Set<StaticOrigin>(['bootstrap', 'migration', 'orm']);
 
+/** Origin of a table some DDL or entity declaration creates: the archive's, or the working-tree fixture SQL's. */
+type DraftOrigin = StaticOrigin | 'fixture';
+
 interface Draft {
   table: string;
   schema: string;
   key: string;
-  origin: StaticOrigin;
+  origin: DraftOrigin;
   source: SourceRef;
   createdBy: DialectSource[];
   otherDialects: DialectSource[];
@@ -715,7 +726,7 @@ interface Draft {
   ormEntity: OrmEntityRef | null;
 }
 
-function newDraft(t: TableName, origin: StaticOrigin, source: SourceRef, createdBy: DialectSource): Draft {
+function newDraft(t: TableName, origin: DraftOrigin, source: SourceRef, createdBy: DialectSource): Draft {
   return {
     table: t.name,
     schema: t.schema,
@@ -762,7 +773,7 @@ interface OtherDialectCreate {
 }
 
 /** Applies one SQL Server schema event: creation for unknown tables, changes to known ones; other dialects' creates go to `others`. */
-function applyEvent(drafts: Map<string, Draft>, e: SchemaEvent, file: string, origin: StaticOrigin, others: OtherDialectCreate[]): void {
+function applyEvent(drafts: Map<string, Draft>, e: SchemaEvent, file: string, origin: DraftOrigin, others: OtherDialectCreate[]): void {
   const draft = drafts.get(e.table.key);
   if (e.kind === 'create') {
     const record: DialectSource = { dialect: dialectLabel(e.dialects), path: file, lines: [e.line, e.line] };
@@ -1092,9 +1103,47 @@ function ownerDefaults(): Pick<TableEntry, 'owningService' | 'ownershipRuleStep'
   return { owningService: null, ownershipRuleStep: [], targetUnits: [], split: null, decisionListRef: null };
 }
 
+/** The column, key and siteID facts the live catalog governs once merged. */
+type GoverningFacts = Pick<TableEntry, 'columns' | 'hasSiteId' | 'siteIdColumn' | 'siteIdSource' | 'hasPrimaryKey' | 'primaryKey' | 'primaryKeySource'>;
+
+/** `facts` recorded as the static provenance a live merge keeps. */
+function staticOf(facts: GoverningFacts): Pick<TableEntry, `static${Capitalize<keyof GoverningFacts>}`> {
+  return {
+    staticColumns: [...facts.columns],
+    staticHasSiteId: facts.hasSiteId,
+    staticSiteIdColumn: facts.siteIdColumn,
+    staticSiteIdSource: facts.siteIdSource,
+    staticHasPrimaryKey: facts.hasPrimaryKey,
+    staticPrimaryKey: [...facts.primaryKey],
+    staticPrimaryKeySource: facts.primaryKeySource,
+  };
+}
+
+/** The governing facts restored from an entry's static provenance. */
+function staticFacts(t: TableEntry): GoverningFacts {
+  return {
+    columns: [...t.staticColumns],
+    hasSiteId: t.staticHasSiteId === true,
+    siteIdColumn: t.staticSiteIdColumn,
+    siteIdSource: t.staticSiteIdSource,
+    hasPrimaryKey: t.staticHasPrimaryKey,
+    primaryKey: [...t.staticPrimaryKey],
+    primaryKeySource: t.staticPrimaryKeySource,
+  };
+}
+
 function entryOf(d: Draft, serialized: ReadonlySet<string>): TableEntry {
   const siteId = d.columns.find((c) => c.name.toLowerCase() === 'siteid');
   const pk = d.primaryKey;
+  const facts: GoverningFacts = {
+    columns: d.columns,
+    hasSiteId: siteId !== undefined,
+    siteIdColumn: siteId?.name ?? null,
+    siteIdSource: siteId?.source ?? null,
+    hasPrimaryKey: pk !== null,
+    primaryKey: pk?.columns ?? [],
+    primaryKeySource: pk !== null && pk.source.path !== d.source.path ? pk.source : null,
+  };
   return {
     id: `tbl:${d.table}`,
     table: d.table,
@@ -1107,15 +1156,9 @@ function entryOf(d: Draft, serialized: ReadonlySet<string>): TableEntry {
     ),
     retired: d.droppedBy !== null,
     droppedBy: d.droppedBy,
-    columns: d.columns,
-    hasSiteId: siteId !== undefined,
-    siteIdColumn: siteId?.name ?? null,
-    siteIdSource: siteId?.source ?? null,
-    hasPrimaryKey: pk !== null,
-    staticHasPrimaryKey: pk !== null,
+    ...facts,
+    ...staticOf(facts),
     bootstrapHasPrimaryKey: d.bootstrapHasPrimaryKey,
-    primaryKey: pk?.columns ?? [],
-    primaryKeySource: pk !== null && pk.source.path !== d.source.path ? pk.source : null,
     serializedColumns: d.columns.filter((c) => serialized.has(c.name.toLowerCase())).map((c) => c.name),
     ormEntity: d.ormEntity,
     ...ownerDefaults(),
@@ -1173,7 +1216,7 @@ export function extractTables(tree: SourceTree, ormTables: readonly string[]): T
       bootstrap: count((t) => t.origin === 'bootstrap'),
       migration: count((t) => t.origin === 'migration'),
       orm: count((t) => t.origin === 'orm'),
-      staticTotal: tables.length,
+      staticTotal: count((t) => !t.retired),
       retired: count((t) => t.retired),
       liveStatic: count((t) => !t.retired),
       withSiteId: count((t) => t.hasSiteId),
@@ -1184,6 +1227,26 @@ export function extractTables(tree: SourceTree, ormTables: readonly string[]): T
     noPrimaryKey,
     corrections: correction === null ? [] : [correction],
   };
+}
+
+/**
+ * `tables[]` entries of the tables the fixture SQL scripts in `tree` create, each sourced at its `CREATE TABLE` line;
+ * a per-program script's tables fold to one `Program_N` entry.
+ */
+export function extractFixtureTables(tree: SourceTree): TableEntry[] {
+  const drafts = new Map<string, Draft>();
+  const mssql = (): string[] => ['mssql'];
+  for (const file of tree.list(FIXTURE_SQL_DIR, { ext: ['sql'], recursive: true })) {
+    const text = blankSqlComments(tree.readText(file)).replaceAll(PROGRAM_SCHEMA_VAR, PROGRAM_SCHEMA_FOLD);
+    let start = 0;
+    for (const end of [...[...text.matchAll(/^[ \t]*GO[ \t]*\r?$/gim)].map((m) => m.index), text.length]) {
+      for (const e of sqlSchemaEvents(text.slice(start, end), start, text, mssql)) applyEvent(drafts, e, file, 'fixture', []);
+      start = end;
+    }
+  }
+  return [...drafts.values()]
+    .map((d) => ({ ...entryOf(d, new Set()), source: ref(d.source.path, d.source.lines[0], d.source.lines[0]) }))
+    .sort(byId);
 }
 
 
@@ -1573,13 +1636,50 @@ function liveOrigin(schema: string, key: string, declared: ReadonlySet<string>):
   return key.startsWith('fb_') || declared.has(key) ? 'dynamic' : 'live-only';
 }
 
+/**
+ * Governing facts of a table the live catalog holds: the union of its instances' columns in catalog order, each
+ * sourced at its static declaration when `base` has one; the key when every instance has one; the siteID column when
+ * every instance has one. A key differing from `base`'s is sourced at the catalog unless `ownSource` already is.
+ */
+function liveFacts(instances: readonly LiveCatalogTable[], state: LiveTableState, base: GoverningFacts, ownSource: SourceRef): GoverningFacts {
+  const lower = (name: string): string => name.toLowerCase();
+  const columns: TableColumn[] = [];
+  for (const i of instances) {
+    for (const c of i.columns) {
+      if (columns.some((n) => lower(n.name) === lower(c.name))) continue;
+      columns.push({ ...c, source: base.columns.find((s) => lower(s.name) === lower(c.name))?.source ?? LIVE_TABLE_SOURCE });
+    }
+  }
+  const siteId = state.hasSiteId === true ? columns.find((c) => lower(c.name) === 'siteid') : undefined;
+  const primaryKey = state.hasPrimaryKey === true ? [...state.primaryKey] : [];
+  const sameKey = primaryKey.length === base.primaryKey.length && primaryKey.every((c, n) => lower(c) === lower(base.primaryKey[n] ?? ''));
+  return {
+    columns,
+    hasSiteId: siteId !== undefined,
+    siteIdColumn: siteId?.name ?? null,
+    siteIdSource: siteId?.source ?? null,
+    hasPrimaryKey: state.hasPrimaryKey,
+    primaryKey,
+    primaryKeySource: sameKey ? base.primaryKeySource : primaryKey.length > 0 && ownSource.path !== LIVE_TABLE_SOURCE.path ? LIVE_TABLE_SOURCE : null,
+  };
+}
+
+/** Static facts of a table no static source declares. */
+const NO_STATIC_FACTS: GoverningFacts = Object.freeze({
+  columns: [],
+  hasSiteId: false,
+  siteIdColumn: null,
+  siteIdSource: null,
+  hasPrimaryKey: null,
+  primaryKey: [],
+  primaryKeySource: null,
+}) as GoverningFacts;
+
 /** An entry for a table the live catalog alone shows; `Program_<id>` instances fold into one `Program_N` entry. */
 function liveOnlyEntry(key: string, instances: readonly LiveCatalogTable[], declared: ReadonlySet<string>): TableEntry {
   const first = instances[0] as LiveCatalogTable;
   const table = tableName(first.schema, first.name);
   const state = liveState(instances);
-  const columns: TableColumn[] = first.columns.map((c) => ({ ...c, source: LIVE_TABLE_SOURCE }));
-  const siteId = columns.find((c) => c.name.toLowerCase() === 'siteid');
   return {
     id: `tbl:${table}`,
     table,
@@ -1590,15 +1690,10 @@ function liveOnlyEntry(key: string, instances: readonly LiveCatalogTable[], decl
     otherDialects: [],
     retired: false,
     droppedBy: null,
-    columns,
-    hasSiteId: siteId !== undefined,
-    siteIdColumn: siteId?.name ?? null,
-    siteIdSource: siteId === undefined ? null : LIVE_TABLE_SOURCE,
-    hasPrimaryKey: state.hasPrimaryKey,
-    staticHasPrimaryKey: null,
+    ...liveFacts(instances, state, NO_STATIC_FACTS, LIVE_TABLE_SOURCE),
+    ...staticOf(NO_STATIC_FACTS),
+    staticHasSiteId: null,
     bootstrapHasPrimaryKey: null,
-    primaryKey: state.primaryKey,
-    primaryKeySource: null,
     serializedColumns: [],
     ormEntity: null,
     ...ownerDefaults(),
@@ -1609,8 +1704,9 @@ function liveOnlyEntry(key: string, instances: readonly LiveCatalogTable[], decl
 }
 
 /**
- * Merges the live catalog, whose key flag governs `hasPrimaryKey`, and adds live-only tables; `null` resets to pending.
- * Merge before {@link attachWriters} and {@link assignOwners}, so live-only tables get writers and owners.
+ * Merges the live catalog, whose columns, key and siteID facts govern each table it holds, and adds live-only tables;
+ * `null` restores the static facts pending a live run. Merge before {@link attachWriters} and {@link assignOwners},
+ * so live-only tables get writers and owners.
  */
 export function mergeLiveCatalog(
   tables: readonly TableEntry[],
@@ -1619,8 +1715,9 @@ export function mergeLiveCatalog(
 ): TableEntry[] {
   if (live === null) {
     return tables
-      .filter((t) => STATIC_ORIGINS.has(t.origin))
-      .map((t) => ({ ...t, hasPrimaryKey: t.staticHasPrimaryKey, ...liveDefaults() }))
+      // Fixture SQL creates a fixture entry; the live catalog alone creates one with no createdBy.
+      .filter((t) => STATIC_ORIGINS.has(t.origin) || (t.origin === 'fixture' && t.createdBy.length > 0))
+      .map((t) => ({ ...t, ...staticFacts(t), ...liveDefaults() }))
       .sort(byId);
   }
   const declared = new Set((opts.declaredEntityTables ?? []).map(tableKey));
@@ -1633,8 +1730,10 @@ export function mergeLiveCatalog(
   const merged = tables.map((t): TableEntry => {
     const key = tableKey(t.table);
     known.add(key);
-    const state = liveState(instances.get(key) ?? []);
-    return { ...t, live: state, liveStatus: 'live', hasPrimaryKey: state.present ? state.hasPrimaryKey : t.staticHasPrimaryKey };
+    const group = instances.get(key) ?? [];
+    const state = liveState(group);
+    const facts = state.present ? liveFacts(group, state, staticFacts(t), t.source) : staticFacts(t);
+    return { ...t, ...facts, live: state, liveStatus: 'live' };
   });
   for (const [key, group] of instances) if (!known.has(key)) merged.push(liveOnlyEntry(key, group, declared));
   return merged.sort(byId);

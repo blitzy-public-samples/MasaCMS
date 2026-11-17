@@ -137,6 +137,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       units: PEOPLE_UNITS,
       db,
       emitStateEvents: events.emitStateEvents,
+      targetOnlyColumns: events.targetOnlyColumns,
       operationStatus: rosterOperationStatus,
     });
     registerConsumers(app, { service: SERVICE_NAME, consumers: peopleConsumerRegistrations(repository), publisher, db });

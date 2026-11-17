@@ -5,13 +5,12 @@ import { CORE_VERSION } from '@/lib/env';
 import { GatewayDenialError, type ServicePath } from '@/lib/gateway-client';
 import { isSafeHtml, toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { cfeedScreens } from '@/screens/cfeed';
 import { CFEED_RC_DEFAULTS } from '@/screens/cfeed/before';
 import { feedApiEndpoint } from '@/screens/cfeed/common';
 import { cfeedEditScreen } from '@/screens/cfeed/edit';
 import { loadCfeedImport1, renderCfeedImport1, type CfeedImport1Data } from '@/screens/cfeed/import1';
 import { cfeedListScreen, loadFeedList, renderFeedList, type CfeedListData } from '@/screens/cfeed/list';
-import type { PageScreen, ScreenContext } from '@/screens/registry';
+import type { ScreenContext } from '@/screens/registry';
 import { adminS2Request, editorRequest, type AdminRequestPartial } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
@@ -506,22 +505,6 @@ describe('cFeed.import1', () => {
       expect(markup).toContain('action="./?muraAction=cFeed.import2&feedid=a+b&siteid=tenant+a%26b"');
       expect(ajax).toContain(`assets/js/feed.min.js?coreversion=${CORE_VERSION}`);
     });
-  });
-
-  it('renders inside the shell through the registered screen, on the before() defaults', async () => {
-    const def = cfeedScreens.find((candidate) => candidate.action === 'import1') as PageScreen<CfeedImport1Data>;
-    const ctx = contextFor(
-      adminOn('import1', { feedid: REMOTE }),
-      importRoute({ feedBean: { name: 'Wire', version: 'RSS 2.0' }, items: ITEMS }),
-    );
-
-    const page = await renderScreenPage(def, ctx);
-
-    expect(page.kind).toBe('document');
-    if (page.kind !== 'document') return;
-    expect(page.html).toContain('<h1>Remote Feed Import Selection</h1>');
-    expect(page.html).toContain(`assets/js/jquery/jquery.collapsibleCheckboxTree.js?coreversion=${CORE_VERSION}`);
-    expect(ctx.req.rc).toMatchObject({ ...BEFORE_RC, feedid: REMOTE });
   });
 });
 

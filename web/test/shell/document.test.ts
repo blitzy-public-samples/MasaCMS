@@ -1,5 +1,6 @@
 // Unit tests for the admin shell entry point: default.cfm's layout choice, shell data loading and document output.
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -37,6 +38,7 @@ import {
   unservedEditorRequest,
 } from '../helpers/admin-request';
 import { domModel } from '../helpers/dom-model';
+import { useTestEnv } from '../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeCall, type FakeGatewayClient } from '../helpers/fake-gateway';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
@@ -69,6 +71,16 @@ const UPDATE_CORE_QUERY = renderCsrfFields(
   { token: CSRF_UPDATECORE.csrf_token, expires: CSRF_UPDATECORE.csrf_token_expires },
   'url',
 );
+/** `settings.versionMenu` of the ACF 2023 oracle's environment record, which has no `server.java`. */
+const RECORDED_MENU = {
+  appServerProductName: 'ColdFusion Server',
+  appServerVersion: '2023,0,26,331018',
+  dbProductName: 'Microsoft SQL Server',
+  dbProductVersion: 'Microsoft SQL Server 2022 - 16.0.4305.5',
+  javaVersion: null,
+  osName: 'UNIX',
+  osVersion: '6.12.105+',
+};
 
 /** Regions other renderers own, replaced by markers in the oracle fixtures: [marker, region start, region end]. */
 type Regions = ReadonlyArray<readonly [marker: string, start: string, end: string]>;
@@ -138,15 +150,19 @@ const $of = (doc: AdminDocument) => cheerio.load(serializeAdminDocument(doc));
 /** `ctx` with the session site emptied, as before the set-up switched to one. */
 const withoutSessionSite = (ctx: AdminRequest): AdminRequest => ({ ...ctx, session: { ...ctx.session, siteid: '' } });
 
+let restoreEnv: () => void;
+
 beforeEach(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith('MURA_')) vi.stubEnv(key, undefined);
   vi.stubEnv('MURA_PORT', '8080');
   vi.stubEnv('MURA_SITEIDINURLS', 'false');
   vi.stubEnv('MURA_INDEXFILEINURLS', 'false');
   resetLegacySettingsForTests();
+  restoreEnv = useTestEnv();
 });
 
 afterEach(() => {
+  restoreEnv();
   vi.unstubAllEnvs();
   resetLegacySettingsForTests();
 });
@@ -272,13 +288,37 @@ describe('loadShellData', () => {
     );
   });
 
-  it('passes the labels and clock through and holds no plugins, server facts or export directory', async () => {
+  it('passes the labels and clock through and holds no plugins, export directory or, without a record, server facts', async () => {
     const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }));
     expect(data.rb).toBe(RB);
     expect(data.now).toBe(NOW);
     expect(data.sitePlugins).toEqual([]);
     expect(data.server).toBeNull();
     expect(data.exportLocationExists).toBe(false);
+  });
+
+  it("loads the environment record's server facts into the full layout's Version menu only", async () => {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), 'opt2-web-document-'));
+    try {
+      mkdirSync(path.join(stateDir, 'baseline'));
+      writeFileSync(path.join(stateDir, 'baseline', 'environment.json'), JSON.stringify({ settings: { versionMenu: RECORDED_MENU } }));
+      restoreEnv();
+      restoreEnv = useTestEnv({ OPT2_STATE_DIR: stateDir });
+      const ctx = adminS2Request({ circuit: 'cArch', item: 'list' });
+      const data = await load(ctx);
+      expect(data.server).toEqual({ ...RECORDED_MENU, javaVersion: '' });
+      const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
+      expect($('ul.version a.no-link').map((_, link) => $(link).text().replace(/\s+/g, ' ').trim()).get()).toEqual([
+        'Core Version 7.6.1',
+        'App Server ColdFusion (2023,0,26,331018)',
+        'DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)',
+        'OS Version UNIX (6.12.105+)',
+      ]);
+      expect((await load(compactEdit())).server).toBeNull();
+      expect((await load(anonymousRequest())).server).toBeNull();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('loads the session site prompt counts into the header badges and their tally', async () => {

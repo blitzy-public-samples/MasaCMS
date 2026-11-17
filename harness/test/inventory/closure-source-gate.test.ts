@@ -20,6 +20,7 @@ import {
   stripComments,
 } from '../../src/inventory/closure.js';
 import type {
+  CallTarget,
   CfmlComponent,
   CfmlFunction,
   CfmlUnit,
@@ -893,6 +894,30 @@ describe('call chains and actual arguments', () => {
       ],
     ]);
   });
+
+  it.each<[string, string, CallTarget, string | null]>([
+    [
+      'a local the extractor cannot type',
+      'var bean = variables.dao.read(arguments.id); bean.getRazunaSettings().set(arguments.data).save();',
+      { bean: 'razunaSettings', method: 'save' },
+      'm/razuna.cfc',
+    ],
+    ['a factory call with a computed name', 'getBean(arguments.name).getStats().setLockID("").save();', { bean: 'stats', method: 'save' }, 'm/stats.cfc'],
+    ['a resolved head broken by a non-fluent call', 'variables.dao.read(arguments.id).getStats().delete();', { bean: 'stats', method: 'delete' }, 'm/stats.cfc'],
+    ['an accessor that names no bean', 'var bean = variables.dao.read(arguments.id); bean.getObject().save();', { method: 'save' }, null],
+    ['a non-fluent call after the accessor', 'var bean = variables.dao.read(arguments.id); bean.getStats().read(1).save();', { method: 'save' }, null],
+  ])('resumes an unresolved chain at a bean accessor past %s', (_label, body, target, resolved) => {
+    const file = 'm/manager.cfc';
+    const source = `component {\n function f() {\n  ${body}\n }\n}`;
+    const unit = component(file, source);
+    const beans: Record<string, string> = { dao: 'm/dao.cfc', razunasettings: 'm/razuna.cfc', stats: 'm/stats.cfc' };
+    const ctx: ClosureContext = {
+      tree: memorySourceTree({ [file]: source }),
+      index: { resolveBean: (name) => beans[name.toLowerCase()] ?? null, ormTable: () => null, parsed: (p) => (p === file ? unit : null) },
+    };
+    const last = extractCalls(fn(unit, 'f'), unit, ctx).at(-1);
+    expect([last?.target, last?.resolved]).toEqual([target, resolved]);
+  });
 });
 
 describe('literal text', () => {
@@ -997,10 +1022,12 @@ describe('extractSqlWrites', () => {
   it('finds the cfquery writes of the DAO fixture with their lines and WHERE argument references', () => {
     const unit = fixtureComponent('dao-writes.cfc');
     const writes = (name: string) => withoutOffsets(extractSqlWrites(fn(unit, name), unit));
-    expect(writes('create')).toEqual([{ table: 'tfixture', op: 'insert', line: 7, endLine: 12, whereParams: [], tableExpr: 'tfixture' }]);
-    expect(writes('update')).toEqual([{ table: 'tfixture', op: 'update', line: 20, endLine: 22, whereParams: ['userid'], tableExpr: 'tfixture' }]);
+    expect(writes('create')).toEqual([
+      { table: 'tfixture', op: 'insert', line: 7, endLine: 12, whereParams: [], tableExpr: 'tfixture', columns: ['fixtureid', 'siteid', 'name'] },
+    ]);
+    expect(writes('update')).toEqual([{ table: 'tfixture', op: 'update', line: 20, endLine: 22, whereParams: ['userid'], tableExpr: 'tfixture', columns: ['name'] }]);
     expect(writes('deleteMembership')).toEqual([
-      { table: 'tfixturemembers', op: 'delete', line: 30, endLine: 30, whereParams: ['userid', 'groupid'], tableExpr: 'tfixturemembers' },
+      { table: 'tfixturemembers', op: 'delete', line: 30, endLine: 30, whereParams: ['userid', 'groupid'], tableExpr: 'tfixturemembers', columns: null },
     ]);
     expect(writes('trackAsync')).toEqual([
       {
@@ -1010,6 +1037,7 @@ describe('extractSqlWrites', () => {
         endLine: 39,
         whereParams: [],
         tableExpr: 'tfixturestats',
+        columns: ['statid', 'siteid'],
         thread: { name: 'fixtureThread#createUUID()#', line: 36, endLine: 41 },
       },
     ]);
@@ -1021,8 +1049,8 @@ describe('extractSqlWrites', () => {
   it('finds the queryExecute writes of the manager fixture with placeholder WHERE parameters and the thread write', () => {
     const unit = fixtureComponent('manager-writes.cfc');
     const writes = (name: string) => withoutOffsets(extractSqlWrites(fn(unit, name), unit));
-    expect(writes('rename')).toEqual([{ table: 'tfixture', op: 'update', line: 5, endLine: 5, whereParams: ['userid'], tableExpr: 'tfixture' }]);
-    expect(writes('purgeSite')).toEqual([{ table: 'tfixture', op: 'delete', line: 9, endLine: 9, whereParams: ['siteid'], tableExpr: 'tfixture' }]);
+    expect(writes('rename')).toEqual([{ table: 'tfixture', op: 'update', line: 5, endLine: 5, whereParams: ['userid'], tableExpr: 'tfixture', columns: ['name'] }]);
+    expect(writes('purgeSite')).toEqual([{ table: 'tfixture', op: 'delete', line: 9, endLine: 9, whereParams: ['siteid'], tableExpr: 'tfixture', columns: null }]);
     expect(writes('trackStats')).toEqual([
       {
         table: 'tfixturestats',
@@ -1031,6 +1059,7 @@ describe('extractSqlWrites', () => {
         endLine: 14,
         whereParams: [],
         tableExpr: 'tfixturestats',
+        columns: ['statid', 'siteid'],
         thread: { name: 'fixtureStats', line: 13, endLine: 15 },
       },
     ]);
@@ -1046,9 +1075,9 @@ describe('extractSqlWrites', () => {
     const f = fn(unit, 'f');
     const writes = extractSqlWrites(f, unit);
     expect(withoutOffsets(writes)).toEqual([
-      { table: 'ta', op: 'insert', line: 1, endLine: 1, whereParams: [], tableExpr: 'ta' },
-      { table: 'tb', op: 'update', line: 1, endLine: 1, whereParams: ['id'], tableExpr: '[dbo].[TB]' },
-      { table: 'tc', op: 'delete', line: 1, endLine: 1, whereParams: ['k'], tableExpr: 'dbo.tc' },
+      { table: 'ta', op: 'insert', line: 1, endLine: 1, whereParams: [], tableExpr: 'ta', columns: ['a'] },
+      { table: 'tb', op: 'update', line: 1, endLine: 1, whereParams: ['id'], tableExpr: '[dbo].[TB]', columns: ['x'] },
+      { table: 'tc', op: 'delete', line: 1, endLine: 1, whereParams: ['k'], tableExpr: 'dbo.tc', columns: null },
     ]);
     expect(offsetsPointAt(f, writes, 6)).toEqual(['INSERT', 'UPDATE', 'DELETE']);
   });
@@ -1059,7 +1088,7 @@ describe('extractSqlWrites', () => {
       ['component {', '  function f() {', '    queryExecute("', '      UPDATE tmulti', '      SET a = 1', '      WHERE id = :id', '    ");', '  }', '}'].join('\n'),
     );
     expect(withoutOffsets(extractSqlWrites(fn(unit, 'f'), unit))).toEqual([
-      { table: 'tmulti', op: 'update', line: 4, endLine: 6, whereParams: ['id'], tableExpr: 'tmulti' },
+      { table: 'tmulti', op: 'update', line: 4, endLine: 6, whereParams: ['id'], tableExpr: 'tmulti', columns: ['a'] },
     ]);
   });
 

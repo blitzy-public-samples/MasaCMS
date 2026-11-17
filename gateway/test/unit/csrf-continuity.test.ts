@@ -226,6 +226,13 @@ describe('csrfTokenFromRequest', () => {
       expected: `${TOKEN}, ${SECOND}`,
     },
     {
+      name: 'a session-managed rest call takes the X-csrf_token header over the merged param',
+      family: 'rest',
+      headers: { 'x-csrf_token': HEADER_VALUE },
+      params: { csrf_token: TOKEN },
+      expected: HEADER_VALUE,
+    },
+    {
       name: 'other families ignore the header and read the param',
       family: 'admin',
       headers: { 'x-csrf_token': HEADER_VALUE },
@@ -423,18 +430,43 @@ describe('createCsrfContinuity beforeLegacy', () => {
     expect(h.calls).toEqual([]);
   });
 
-  it.each<[string, string | RouteKeyResult]>([
-    ['a rest route key', 'Rest:/_api/rest/v1/default/content'],
-    ['a computed rest key', computedKey('rest:/_api/rest/v1/default/content', 'rest', { siteId: 'default' })],
+  it.each<[string, string | RouteKeyResult, boolean | undefined]>([
+    ['a rest route key', 'Rest:/_api/rest/v1/default/content', undefined],
+    ['a computed rest key', computedKey('rest:/_api/rest/v1/default/content', 'rest', { siteId: 'default' }), undefined],
     [
       'a reload key whose served route is rest',
       computedKey('reload:application', 'reload', { afterReload: computedKey('rest:/_api/rest/v1/default/content', 'rest') }),
+      undefined,
     ],
-  ])('returns no handle for %s without resolving or claiming', async (_name, route) => {
+    ['a rest key the inventory records sessionless', computedKey('rest:/_api/rest/v1/default/content', 'rest'), true],
+  ])('returns no handle for %s without resolving or claiming', async (_name, route, sessionless) => {
     const h = harness();
+    if (sessionless !== undefined) {
+      const restRoute = 'rest:/_api/rest/v1/default/content';
+      h.routes.set(restRoute, { ...routeFacts('validates', CONTEXT), route: restRoute, sessionless });
+    }
 
     await expect(h.continuity.beforeLegacy(request(), route, 'target-primary')).resolves.toBeUndefined();
-    expect(h.calls).toEqual([]);
+    expect(h.calls).toEqual([['facts.get', 'rest:/_api/rest/v1/default/content']]);
+  });
+
+  it('arbitrates a rest key the inventory records session-managed, reading its X-csrf_token headers', async () => {
+    const h = harness();
+    const key = 'rest:variationtargeting.save{session}';
+    h.routes.set(key, { ...routeFacts('validates', 'arguments.id'), route: key, sessionless: false });
+    const headers = { 'user-agent': USER_AGENT, 'x-csrf_token': HEADER_VALUE, 'x-csrf_token_expires': HEADER_EXPIRES };
+    const handle = await h.continuity.beforeLegacy(
+      request({ headers }),
+      computedKey(key, 'rest', { baseKey: 'rest:variationtargeting.save', variant: 'session', siteId: 'tenant-a' }),
+      'legacy-primary',
+    );
+
+    expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get', 'identity.claim']);
+    expect(onlyCall(h, 'sessions.resolveLegacyBound')[1]).toStrictEqual({ mode: 'legacy-primary', adopt: true, siteId: 'tenant-a' });
+    expect(onlyCall(h, 'identity.claim')).toStrictEqual([
+      { sessionId: SESSION_ID, token: HEADER_VALUE, expires: HEADER_EXPIRES, context: 'arguments.id' },
+    ]);
+    expect(handle).toStrictEqual(handleOf({ claimedTokens: [HEADER_VALUE], setCookies: SET_COOKIES }));
   });
 
   it.each<SessionResolution>([
@@ -883,9 +915,42 @@ describe('createCsrfContinuity on the committed inventory facts', () => {
     context: string;
   }
 
+  const REST_HEADERS = { 'x-csrf_token': HEADER_VALUE, 'x-csrf_token_expires': HEADER_EXPIRES };
+  const REST_TARGETING = '_api/rest/v1/default/variationTargeting';
+  const REST_SESSION_SAVE: LegacyCall = {
+    method: 'POST',
+    path: `/INDEX.CFM/${REST_TARGETING}`,
+    query: {},
+    form: { siteid: 'default', contentid: '00000000000000000000000000000000001' },
+    headers: REST_HEADERS,
+  };
+  const REST_SESSION_DELETE: LegacyCall = {
+    method: 'DELETE',
+    path: `/Index.cfm/${REST_TARGETING}/A1B2C3D4-E5F6-7890-ABCDEF1234567890`,
+    query: {},
+    form: {},
+    headers: REST_HEADERS,
+  };
+
   const VALIDATING: ValidatingCase[] = [
     { name: 'a JSON API save', call: JSON_SAVE, key: 'api:content.save', token: HEADER_VALUE, expires: HEADER_EXPIRES, context: 'arguments.id' },
     { name: 'a public login form post', call: PUBLIC_LOGIN, key: 'page:login', token: TOKEN, expires: EXPIRES, context: 'login' },
+    {
+      name: 'a session-managed REST save behind /INDEX.CFM',
+      call: REST_SESSION_SAVE,
+      key: 'rest:variationtargeting.save{session}',
+      token: HEADER_VALUE,
+      expires: HEADER_EXPIRES,
+      context: 'arguments.id',
+    },
+    {
+      name: 'a session-managed REST delete behind /Index.cfm',
+      call: REST_SESSION_DELETE,
+      key: 'rest:variationtargeting.delete{session}',
+      token: HEADER_VALUE,
+      expires: HEADER_EXPIRES,
+      context: 'arguments.id',
+    },
   ];
 
   it.each(VALIDATING.flatMap((c) => [true, false].map((consumed) => ({ ...c, consumed }))))(
@@ -950,6 +1015,22 @@ describe('createCsrfContinuity on the committed inventory facts', () => {
     expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get']);
     expect(onlyCall(h, 'sessions.resolveLegacyBound')[1]).toMatchObject({ adopt: false });
     expect(handle?.claimedTokens).toEqual([]);
+  });
+
+  it.each<{ name: string; call: LegacyCall; key: string }>([
+    {
+      name: 'a REST save behind the mapped /index.cfm',
+      call: { ...REST_SESSION_SAVE, path: `/index.cfm/${REST_TARGETING}`, form: { contentid: '00000000000000000000000000000000001' } },
+      key: 'rest:variationtargeting.save',
+    },
+    { name: 'a REST save carrying a siteid', call: { ...REST_SESSION_SAVE, path: `/${REST_TARGETING}` }, key: 'rest:variationtargeting.save{siteid}' },
+    { name: 'a bare upper-case REST delete', call: { ...REST_SESSION_DELETE, path: '/_API/REST/v1/default/variationTargeting/A1B2C3D4-E5F6-7890-ABCDEF1234567890' }, key: 'rest:variationtargeting.delete' },
+  ])('returns no handle for $name, which legacy serves sessionless', async ({ call, key }) => {
+    const { h, req, route } = committedCall(call);
+    expect(route.key).toBe(key);
+
+    await expect(h.continuity.beforeLegacy(req, route, 'target-primary')).resolves.toBeUndefined();
+    expect(h.ops()).toEqual(['facts.get']);
   });
 
   /** Identity's claims by token and the legacy session's used-token ledger, kept across one test's requests. */

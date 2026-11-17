@@ -585,6 +585,7 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
     [/^SELECT pg_snapshot_xmin\(pg_current_snapshot\(\)\)::text AS value$/, (_m, _params, _session, tx) =>
       answer([{ value: String(tx.xid ?? nextXid) }])],
     [/^SELECT pg_snapshot_xmax\(pg_current_snapshot\(\)\)::text AS value$/, () => answer([{ value: String(nextXid) }])],
+    [/^SELECT pg_current_xact_id\(\)::text AS xid$/, (_m, _params, _session, tx) => answer([{ xid: String(xidOf(tx)) }])],
     [/^SELECT to_regclass\(\$1\) IS NOT NULL AS outbox, to_regclass\(\$2\) IS NOT NULL AS inbox$/, () => answer([{ outbox: true, inbox: true }])],
     [/^SELECT pg_advisory_xact_lock\(hashtextextended\(\$1, 0\)\)$/, () => answer([{ pg_advisory_xact_lock: '' }])],
     [/^SELECT count\(\*\)::integer AS total FROM (\w+)\.(\w+)$/, countRows],

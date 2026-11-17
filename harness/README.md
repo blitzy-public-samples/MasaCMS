@@ -47,7 +47,7 @@ A variable without a default is required by the commands under "Needed by"; the 
 | `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR` | all | see [State outside the checkout](#state-outside-the-checkout) | Run state and the pristine baseline |
 | `OPT2_REPORTS_DIR` | `up.sh`, `test-all.sh` | `opt2/reports` | Reports directory; a relative value resolves against the checkout. Also passed to the migration service and the `opt2-*` CLIs |
 
-`clean-checkout-proof.sh` passes its environment to the other three except `OPT2_REPORTS_DIR`, so the clone writes its reports inside the clone. It reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes, except that `MURA_APPRELOADKEY` reaches only gateway, web, identity, people, programs-sites, strategies-content and migration, `MURA_S3ASSETS`, which can embed S3 credentials, reaches only web, and every process gets `MURA_PORT` and `MURA_PROXYPORT` set to the gateway port, as legacy's `server.json` does. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from `repro/ports.env` and the generated secrets; see [platform configuration](../platform/README.md#configuration).
+`clean-checkout-proof.sh` passes its environment to the other three except `OPT2_REPORTS_DIR`, so the clone writes its reports inside the clone. It reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes, except that `MURA_APPRELOADKEY` reaches only gateway, web, identity, people, programs-sites, strategies-content and migration, `MURA_S3ASSETS`, which can embed S3 credentials, reaches only web, and every process gets `MURA_PORT` and `MURA_PROXYPORT` set to the gateway port, as legacy's `server.json` does. Web alone gets `MURA_WEBROOT`, set to this checkout, which Masa always takes as its webroot (`expandPath('/muraWRM')`) whatever `MURA_WEBROOT` says. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from `repro/ports.env` and the generated secrets; see [platform configuration](../platform/README.md#configuration).
 
 ### `up.sh`
 
@@ -81,10 +81,10 @@ Needs the stack `up.sh` recorded. It exports the `cutoverDir` of `up.json` as `O
 | 1 Legacy baseline | `baseline:run` (the official runner, which answers HTTP 500 with 0 specs, and the diagnostic runner); `baseline:compare` |
 | 2 Platform on stub | `npm test` in `platform`, `gateway` and `services/stub`; `test:e2e -- isolation/platform-proof` |
 | 3 Each service | `npm test` in identity, people, programs-sites, strategies-content, communications, reporting, surveys, timesheets, finance and e-signature, then `web`, `migration` and `harness` |
-| 4 Migration | Reconcile `after-backfill`; `golden:workload` through the gateway; feed and reconcile `after-feed-1`; each reconciling fault; snapshot `Sk`; `opt2-ops drain-and-suspend`; checkpoint `Ck` |
+| 4 Migration | Reconcile `after-backfill`; `golden:workload` through the gateway; feed and reconcile `after-feed-1`; each reconciling fault; snapshot `Sk`; `feed --snapshot` to `Sk` (reconciles `after-feed-<k>`); `opt2-ops drain-and-suspend`; checkpoint `Ck` |
 | 5 Capture | `golden:capture` against legacy directly, plus the browser captures; reset legacy and target to `Ck`, verify, `opt2-ops resume` |
-| 6 Cut-over | `opt2-migrate transition --to v0002`, with GS-ID-09 crossing it; reconcile `post-cutover` |
-| 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol and the gateway authorisation matrix; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
+| 6 Cut-over | `opt2-migrate transition --to v0002`, with GS-ID-09 crossing it; feed; reconcile `post-cutover` |
+| 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol, the gateway authorisation matrix and the synthetic modules' `/v1` writes; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
 | 8 Rollback | People-roster rehearsal: `opt2-migrate rollback-set`, transition to `v0003`, `rollback rebaseline`, `golden:replay -- --rehearsal`, feed, reconcile `rollback-after`, `golden:compare`, `rollback report` |
 | 9 Reports | `opt2-migrate window report`, `report:speed`, `check:reviewability`, `check:deck -- --render`, the migration service's `windows.json` and `transitions.json` |
 
@@ -96,6 +96,12 @@ Needs the stack `up.sh` recorded. It exports the `cutoverDir` of `up.json` as `O
 ### One stack at a time
 
 Every command takes the lock `$HOME/.opt2/run.lock`, which records the holder pid and checkout path, and refuses to run while another checkout holds it. The lock sits under `$HOME`, not the state directory, so a clean clone sees it too.
+
+- **One command at a time.** Each command also holds the per-command flock `$HOME/.opt2/run.lock.flock` while it runs. `up.sh` records its stack in `run.lock` only once its port check has passed, so a refused rerun leaves a live stack's record alone.
+- **Waiting.** By default a command refuses at once. `OPT2_LOCK_WAIT=<seconds>` waits up to that long instead. `up.sh` and `clean-checkout-proof.sh` claim the stack, so they queue first come, first served in `$HOME/.opt2/run.queue/`. The first waiter takes the flock only once no other checkout's stack holds `run.lock`, so it never blocks that stack's own `test-all.sh` or `down.sh`. A claimant with `OPT2_LOCK_WAIT=0` refuses while others are queued. `test-all.sh` and `down.sh`, and the checkout whose live stack holds `run.lock`, wait only for the running command.
+- **Recovery.** `down.sh` marks `run.lock` as in teardown before it stops anything. If it fails or is interrupted, the mark stays, and every other checkout treats the stack as held until a rerun of that checkout's `down.sh` completes. Until then, that checkout's `up.sh`, `test-all.sh` and `clean-checkout-proof.sh` refuse too.
+- **Nothing to tear down.** `down.sh` in a checkout with no `run.lock` of its own, no `up.json` and no `tooling.json` reports nothing running and exits 0 without taking the lock.
+- **Commands started by another OPT-2 command.** These run under its flock. The parent exports the flock's token in `OPT2_LOCK_FLOCK_HELD`, and a child honours it only while that parent still holds the flock. `clean-checkout-proof.sh` holds it from its first `down.sh` to the clone's `down.sh`, so no other command gets in between. Any other value of `OPT2_LOCK_FLOCK_HELD` is ignored with a note.
 
 ### State outside the checkout
 
@@ -132,7 +138,7 @@ Shared tooling: Pub/Sub emulator 8085, Mailpit SMTP 1025 and API 8025. The stack
 
 ### Native processes
 
-No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY` and `OPT2_GATEWAY_ORIGIN` on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, and it queues no cluster reload commands (the start-up guard on content units).
+No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY` and `OPT2_GATEWAY_ORIGIN` on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, and it queues no cluster reload commands (the start-up guard on content units). Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`.
 
 ## Package
 
@@ -159,7 +165,7 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 | `test:contract` | `vitest.config.ts`: `test/reporting/check-pin*`, `test/reporting/check-synthetic*`, `test/golden/catalogue-response-paths*`, `test/route-key-parity*` | — |
 | `test:security` | `vitest.config.ts`: `test/security/`, `test/repro/secrets*` | — |
 | `test:e2e` | `vitest.e2e.config.ts` | `${OPT2_STATE_DIR}/e2e/results.json`; suite reports such as `opt2/reports/platform-proof.json` and `opt2/reports/observability.json` |
-| `inventory` | `src/inventory/generate.ts` | `opt2/inventory/legacy-inventory.{json,md}` |
+| `inventory` | `src/inventory/generate.ts` (`--live` captures `live-catalog.json`; other runs replay it) | `opt2/inventory/legacy-inventory.{json,md}`; with `--live`, `opt2/inventory/live-catalog.json` |
 | `inventory:cloc` | `src/inventory/cloc.ts` | `opt2/inventory/cloc.{json,md}` |
 | `inventory:assumptions` | `src/inventory/assumptions.ts` | `opt2/reports/assumptions.md` |
 | `baseline:environment` | `src/baseline/environment.ts` (`--phase local\|services`) | `opt2/reports/environment.md` |
@@ -189,13 +195,13 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 
 ## Layout
 
-- `legacy-baseline/`: the diagnostic TestBox runner, served from the legacy web root. Its `cfml/Application.cfc` extends `muraWRM.Application`, so `cfml/run.cfm` runs inside Masa's application. The runner names the 22 core bundles explicitly and leaves out `bundleValidatorSecurity`, which does not compile on ACF. `run.cfm?info=1` and `?info=entities` report the engine and the registered entities. `expected-baseline.json` holds the expected totals: 22 bundles, 683 specs, 662 passed, 21 failed, 0 errored.
-- `inventory/`: reviewed overrides for what the inventory extractor cannot classify (`role-overrides.yaml`, `writer-overrides.yaml`).
+- `legacy-baseline/`: the diagnostic TestBox runner, served from the legacy web root. Its `cfml/Application.cfc` extends `muraWRM.Application`, so `cfml/run.cfm` runs inside Masa's application. The runner names the 22 core bundles explicitly and leaves out `bundleValidatorSecurity`, which does not compile on ACF. `run.cfm?info=1` and `?info=entities` report the engine and the registered entities. `run.cfm?info=1` also reports the database, `server.java` and OS values the admin Version menu prints; `src/baseline/environment.ts` records them as `settings.versionMenu` in `${OPT2_STATE_DIR}/baseline/environment.json`, where web reads them. `expected-baseline.json` holds the expected totals: 22 bundles, 683 specs, 662 passed, 21 failed, 0 errored.
+- `inventory/`: reviewed overrides for what the inventory extractor cannot classify (`role-overrides.yaml`, `writer-overrides.yaml`), and the included admin views reviewed as partials rather than actions (`view-partials.yaml`).
 - `golden/`: the scenario catalogue (`catalogue.yaml`), the normaliser rules (`normalise.yaml`) and the committed golden sets (`sets/`, see [`golden/sets/README.md`](golden/sets/README.md)).
 - `security/`: the gitleaks configuration and its baseline, which holds pre-existing legacy findings only.
 - `src/`: the CLIs in the script table and their libraries (`baseline`, `events`, `golden` with the one normaliser in `golden/normalise/`, `inventory`, `isolation`, `lib`, `performance`, `reporting`, `repro`, `security`). `src/generated/` is build output.
 - `test/`: unit suites over `src/`, with recorded fixtures; no oracle or running stack.
-- `e2e/`: oracle and full-stack suites (`events`, `isolation`, `performance`, `security`, `ui`), run only through `test:e2e`.
+- `e2e/`: oracle and full-stack suites (`events`, `isolation`, `performance`, `security`, `synthetic`, `ui`), run only through `test:e2e`.
 - `repro/`: the four commands, `ports.env`, `server.json.template`, `otelcol-config.yaml` and `lib/` (lock, process control, pristine baseline, checkpoint `Ck`, `legacy-start.sh`).
 
 ## Boundaries

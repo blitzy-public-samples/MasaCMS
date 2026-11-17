@@ -100,7 +100,7 @@ export interface ChangesParams {
   limit?: number;
 }
 
-/** Query of a position read: which tenants' inboxes hold `eventIds`, and the published events of `publishedTopics`, one page when paged. */
+/** Query of a position read: which tenants' inboxes hold `eventIds`, the published events of `publishedTopics`, one page when paged, and the registry's tenants. */
 export interface PositionParams {
   eventIds?: readonly string[];
   publishedTopics?: readonly string[];
@@ -110,6 +110,8 @@ export interface PositionParams {
   publishedLimit?: number;
   /** Outbox `seq` the page ends at: an earlier answer's `publishedFrontier`; later rows are neither listed nor blocking. */
   publishedThrough?: string;
+  /** With true, the owner also lists its registry's tenants, each site's and its pools'. */
+  registeredTenants?: boolean;
 }
 
 /** A watermark to store: a `POST /watermark` body, or a stored record whose null sequence or LSN is sent as absent. */
@@ -166,7 +168,7 @@ export interface OwnersClient {
   exportPages(owner: DataOwner, params: ExportParams): AsyncIterable<ExportResponse>;
   /** One commit-safe change-feed page: the `ChangesPage` fields with legacy projections and operation statuses. */
   changes(owner: DataOwner, params: ChangesParams): Promise<ChangesResponse>;
-  /** Current write position and drain counts, with the receipts and published events `params` asks for; `timeoutMs` bounds the call. */
+  /** Current write position and drain counts, with the receipts, published events and registered tenants `params` asks for; `timeoutMs` bounds the call. */
   position(owner: DataOwner, params?: PositionParams, options?: { timeoutMs?: number }): Promise<PositionResponse>;
   /** @returns the watermark of `legacyTable` and `direction`, or null when the owner has none. */
   watermark(owner: DataOwner, legacyTable: string, direction: WatermarkDirection): Promise<WatermarkRecord | null>;
@@ -332,6 +334,7 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       const query = {
         eventIds: params.eventIds?.join(','),
         publishedTopics: params.publishedTopics?.join(','),
+        registeredTenants: params.registeredTenants === undefined ? undefined : String(params.registeredTenants),
         publishedAfter: params.publishedAfter,
         publishedLimit: decimal(params.publishedLimit),
         publishedThrough: params.publishedThrough,

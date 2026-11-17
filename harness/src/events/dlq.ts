@@ -25,8 +25,6 @@ import {
   type RawMessage,
   type TopicValidator,
 } from '@opt2/platform/events';
-import { cfUuid } from '@opt2/platform/legacy-compat';
-import { localTimestamp } from '@opt2/platform/outbox';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, fixtureForTenant, pubsubEmulatorAvailable, testEnvelope, withoutTenant } from '@opt2/platform/testing';
 
@@ -87,15 +85,15 @@ export interface DlqTarget {
   tenantId: string;
   /** Unit the consumer's effect is written to. */
   effectUnit: string;
-  /** A fresh valid envelope for `topic` in `tenantId`. */
-  buildEnvelope(): EventEnvelope;
-  /** Applications the consumer recorded for the aggregate. */
+  /** A fresh valid envelope for `topic` in `tenantId`, of an aggregate stored there that the consumer applies it to. */
+  buildEnvelope(deps: SeamDeps): Promise<EventEnvelope>;
+  /** Applications the consumer recorded for the aggregate since `buildEnvelope` returned its envelope. */
   effectCount(aggregateId: string, deps: SeamDeps): Promise<number>;
 }
 
-/** Who reads the stub's note projection through the gateway. */
+/** Who creates stub notes and reads their projection through the gateway. */
 export interface StubReader {
-  /** Gateway session of a user holding a stub read role. */
+  /** Gateway session of a user holding the stub create and read roles. */
   session: HttpSession;
   /** Sent as `siteid`; the gateway mints the user token for this site. */
   siteId: string;
@@ -112,8 +110,6 @@ export interface StubProjection {
 export interface StubDlqTargetOptions {
   /** Default `TENANT_A.tenantId`. */
   tenantId?: string;
-  /** Clock of the payload's `created` time. */
-  now?: () => number;
   /** Must be of `tenantId`'s site; default the seeded system user of its fixture site, logged in through the gateway. */
   reader?: StubReader;
 }
@@ -253,6 +249,28 @@ export async function readStubProjection(reader: StubReader, noteId: string): Pr
   return { applyCount, aggregateVersion, lastEventId: lastEventId.toLowerCase() };
 }
 
+/** Creates a note of the reader's site through the gateway; its `rowVersion` is left to the caller. */
+async function createStubNote(reader: StubReader): Promise<Omit<StubNotePayload, 'rowVersion'>> {
+  const result = await reader.session.post(STUB_NOTES_PATH, {
+    query: { siteid: reader.siteId },
+    json: { title: 'DLQ replay check', body: 'Dead-letter replay evidence.' },
+  });
+  const answer = `(status ${result.status}): ${result.text}`;
+  if (result.status !== 200) throw new Error(`stub note not created ${answer}`);
+  let body: unknown;
+  try {
+    body = JSON.parse(result.text);
+  } catch (err) {
+    throw new Error(`stub note create answer is not JSON ${answer}`, { cause: err });
+  }
+  const data = isRecord(body) && isRecord(body.data) ? body.data : {};
+  const { noteid: noteId, title, body: text, created } = data;
+  if (typeof noteId !== 'string' || typeof title !== 'string' || typeof text !== 'string' || typeof created !== 'string') {
+    throw new Error(`stub note create answer is malformed ${answer}`);
+  }
+  return { noteId, title, body: text, created };
+}
+
 /** Gateway session of the seeded system user of `tenantId`'s fixture site. */
 async function defaultStubReader(tenantId: string, deps: SeamDeps): Promise<StubReader> {
   const siteId = fixtureForTenant(tenantId)?.siteId;
@@ -265,10 +283,12 @@ async function defaultStubReader(tenantId: string, deps: SeamDeps): Promise<Stub
   return { session, siteId };
 }
 
-/** The stub's note subscription as a {@link DlqTarget}; the effect is the note projection's apply count, read through the gateway. */
+/**
+ * The stub's note subscription as a {@link DlqTarget}. Each envelope is the next version of a note created through the gateway
+ * once its own event is projected; the effect is that projection's apply count above its count at that point.
+ */
 export function stubDlqTarget(options: StubDlqTargetOptions = {}): DlqTarget {
   const tenantId = options.tenantId ?? TENANT_A.tenantId;
-  const now = options.now ?? Date.now;
   const { reader } = options;
   if (reader !== undefined && tenantIdForSite(reader.siteId) !== tenantId.toLowerCase()) {
     throw new RangeError(`reader site ${reader.siteId} is not of tenant ${tenantId}`);
@@ -276,28 +296,33 @@ export function stubDlqTarget(options: StubDlqTargetOptions = {}): DlqTarget {
   let validator: TopicValidator<StubNotePayload> | undefined;
   // Departs from Rule "WIP - Minimal Change 2" (no caching), which does not bind this refactor: one gateway login per target, not one per read.
   let readerOnce: Promise<StubReader> | undefined;
+  const readerFor = (deps: SeamDeps): Promise<StubReader> =>
+    (readerOnce ??= reader === undefined ? defaultStubReader(tenantId, deps) : Promise.resolve(reader));
+  // Apply count of each built note's projection when its envelope was built.
+  const baselines = new Map<string, number>();
   return {
     subscription: STUB_DLQ_SUBSCRIPTION,
     topic: STUB_NOTE_TOPIC,
     tenantId,
     effectUnit: STUB_EFFECT_UNIT,
-    buildEnvelope(): EventEnvelope {
-      const noteId = cfUuid();
-      const payload: StubNotePayload = {
-        noteId,
-        title: 'DLQ replay check',
-        body: `Dead-letter replay evidence for note ${noteId}.`,
-        created: localTimestamp(new Date(now())),
-        rowVersion: 1,
-      };
+    async buildEnvelope(deps: SeamDeps): Promise<EventEnvelope> {
+      const noteReader = await readerFor(deps);
+      const note = await createStubNote(noteReader);
+      const poll = await pollUntil(() => readStubProjection(noteReader, note.noteId), (projection) => projection !== null, deps);
+      if (poll.timedOut || poll.value === null) {
+        throw new Error(`stub note ${note.noteId} was not projected within ${poll.elapsedMs} ms`);
+      }
+      const { applyCount, aggregateVersion: projected } = poll.value;
+      const payload: StubNotePayload = { ...note, rowVersion: projected + 1 };
       validator ??= compileTopicSchema<StubNotePayload>(readTopicSchema(repoPath(topicSchemaRelativePath(STUB_NOTE_TOPIC))));
       const checked = validator.validatePayload(payload);
       if (!checked.ok) throw new Error(`stub note payload fails ${STUB_NOTE_TOPIC}: ${checked.errors.join('; ')}`);
-      return testEnvelope({ topic: STUB_NOTE_TOPIC, tenantId, aggregateId: noteId, aggregateVersion: 1, payload });
+      baselines.set(note.noteId, applyCount);
+      return testEnvelope({ topic: STUB_NOTE_TOPIC, tenantId, aggregateId: note.noteId, aggregateVersion: payload.rowVersion, payload });
     },
     async effectCount(aggregateId: string, deps: SeamDeps): Promise<number> {
-      readerOnce ??= reader === undefined ? defaultStubReader(tenantId, deps) : Promise.resolve(reader);
-      return (await readStubProjection(await readerOnce, aggregateId))?.applyCount ?? 0;
+      const applied = (await readStubProjection(await readerFor(deps), aggregateId))?.applyCount ?? 0;
+      return applied - (baselines.get(aggregateId) ?? 0);
     },
   };
 }
@@ -526,11 +551,11 @@ async function checkDeadLetterReplay(ctx: CheckContext): Promise<void> {
 
 /** Dead-letters a tenant-less copy of a valid event, replays the corrected copy and proves one republish and one effect. */
 export async function runDlqCheck(deps: DlqDeps = {}): Promise<DlqResult> {
-  const target = deps.target ?? stubDlqTarget({ now: deps.now });
+  const target = deps.target ?? stubDlqTarget();
   if (topicOfSubscription(target.subscription) !== target.topic) {
     throw new RangeError(`target subscription ${target.subscription} does not consume topic ${target.topic}`);
   }
-  const valid = target.buildEnvelope();
+  const valid = await target.buildEnvelope(deps);
   const evidence: DlqEvidence = {
     subscription: target.subscription,
     dlqTopic: dlqTopicName(target.subscription),

@@ -25,12 +25,10 @@ import {
   pushTo,
   runCleanup,
   seedRegistry,
-  testEnvelope,
   type CapturingPublisher,
   type TestSubscription,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { newNote, noteCreatedPayload } from '../../src/domain/note.js';
 import { NOTE_CREATED_SUBSCRIPTION, NOTE_CREATED_TOPIC } from '../../src/events/topics.js';
 import { TEST_CLOCK, buildDbApp, createFakeTaskPort, headersFor, type FakeTaskPort, type TestApp } from '../helpers/app.js';
 
@@ -184,14 +182,12 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
     let sub: TestSubscription | undefined;
     try {
       sub = await createTestSubscription(topic);
-      const note = newNote({ title: 'emulated', body: '' }, TEST_CLOCK);
-      const envelope = testEnvelope({
-        topic: NOTE_CREATED_TOPIC,
-        tenantId: TENANT_A.tenantId,
-        aggregateId: note.noteId,
-        aggregateVersion: note.rowVersion,
-        payload: noteCreatedPayload(note),
-      });
+      const headers = await headersFor('system-user', { site: TENANT_A.siteId });
+      const created = await app.inject({ method: 'POST', url: '/opt2/stub/notes', headers, payload: { title: 'emulated', body: '' } });
+      expect(created.statusCode).toBe(200);
+      const noteId = created.json<{ data: { noteid: string } }>().data.noteid;
+      const envelope = capturing.published.find((entry) => entry.envelope.aggregateId === noteId)?.envelope;
+      if (envelope === undefined) throw new Error(`The create flush published no event of note ${noteId}`);
       await publisher.publishRaw(topic.name, {
         data: encodeEnvelope(envelope),
         attributes: envelopeAttributes(envelope),
@@ -206,7 +202,7 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
 
       const res = await pushTo(app, NOTE_CREATED_SUBSCRIPTION, delivered);
       expect(res.statusCode).toBe(204);
-      expect(await projectionRows(TENANT_A.tenantId, note.noteId)).toEqual([{ note_id: note.noteId, apply_count: 1 }]);
+      expect(await projectionRows(TENANT_A.tenantId, noteId)).toEqual([{ note_id: noteId, apply_count: 1 }]);
     } finally {
       await runCleanup('emulator round trip', [() => publisher.close(), () => sub?.delete(), () => topic.delete()]);
     }

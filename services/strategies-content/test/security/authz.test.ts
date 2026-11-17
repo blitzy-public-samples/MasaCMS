@@ -473,7 +473,9 @@ const FAMILIES: readonly Family[] = [
   { family: 'health', match: [at('GET', '/healthz')], transport: 'service', declared: PUBLIC_CHECKED, allow: always, siteScoped: false },
   {
     family: 'JSON API',
-    match: ['/_api/json/v1', '/_api/ajax/v1'].flatMap((lead) => [lead, `${lead}/:siteid`, `${lead}/:siteid/*`].map((url) => at('DELETE,GET,POST,PUT', url))),
+    match: ['/_api/json/v1', '/_api/ajax/v1', '/index.cfm/_api/json/v1', '/index.cfm/_api/ajax/v1'].flatMap((lead) =>
+      [lead, `${lead}/:siteid`, `${lead}/:siteid/*`].map((url) => at('DELETE,GET,POST,PUT', url)),
+    ),
     transport: 'service',
     declared: PUBLIC_LENIENT,
     allow: always,
@@ -481,7 +483,7 @@ const FAMILIES: readonly Family[] = [
   },
   {
     family: 'REST API',
-    match: ['/_api/rest/v1', '/_api/rest/v1/:siteid', '/_api/rest/v1/:siteid/*'].map((url) => at('DELETE,GET,POST,PUT', url)),
+    match: ['/_api/rest/v1', '/index.cfm/_api/rest/v1'].flatMap((lead) => [lead, `${lead}/:siteid`, `${lead}/:siteid/*`].map((url) => at('DELETE,GET,POST,PUT', url))),
     transport: 'service',
     declared: PUBLIC_LENIENT,
     allow: userTokenOnly,
@@ -1139,7 +1141,9 @@ function legacyEnvelope(type: keyof typeof LEGACY_ERROR_MAP, method: string): st
 }
 
 const apiRoutes = (suffix: string): string[] =>
-  ['/_api/json/v1', '/_api/ajax/v1', '/_api/rest/v1'].flatMap((lead) => ['DELETE', 'GET', 'POST', 'PUT'].map((method) => `${method} ${lead}${suffix}`));
+  ['/_api/json/v1', '/_api/ajax/v1', '/_api/rest/v1']
+    .flatMap((lead) => [lead, `/index.cfm${lead}`])
+    .flatMap((lead) => ['DELETE', 'GET', 'POST', 'PUT'].map((method) => `${method} ${lead}${suffix}`));
 const rawRoutes = (circuit: string, action: string): string[] => ['GET', 'POST'].map((method) => `${method} /v1/raw/${circuit}/${action}`);
 
 const HANDLER_ANSWERS: readonly HandlerAnswer[] = [

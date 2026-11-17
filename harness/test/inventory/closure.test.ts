@@ -34,6 +34,8 @@ const LOOP_MANAGER = 'core/mura/fixture/loopManager.cfc';
 const FILE_MANAGER = 'core/mura/content/file/fileManager.cfc';
 const CFIXTURE = 'admin/core/controllers/cfixture.cfc';
 const CBRANCH = 'admin/core/controllers/cbranch.cfc';
+const APPROVE_VIEW = 'admin/core/views/cbranch/approve.cfm';
+const APPROVE_MEMBERS_VIEW = 'admin/core/views/cbranch/approveMembers.cfm';
 
 /** Committed CFML fixtures by their place in the temp tree. */
 const FIXTURES: Readonly<Record<string, string>> = {
@@ -98,7 +100,17 @@ const INLINE: Readonly<Record<string, string>> = {
 	public any function interpolated(rc) {
 		var example = "#application.userManager.delete(arguments.rc.userid)#";
 	}
+
+	public any function twice(rc) {
+		getBean('userManager').update(arguments.rc);
+		getBean('fixtureDAO').update(arguments.rc);
+	}
 }
+`,
+  [APPROVE_VIEW]: `<cfset getBean('fixtureDAO').update(rc)>
+<cfinclude template="approveMembers.cfm">
+`,
+  [APPROVE_MEMBERS_VIEW]: `<cfset getBean('fixtureDAO').deleteMembership(rc.userid, rc.groupid)>
 `,
   [FILE_MANAGER]: `<cfcomponent extends="mura.cfobject" output="false">
 
@@ -348,11 +360,11 @@ describe('parseCfmlComponent', () => {
 
 describe('extractSqlWrites', () => {
   it.each([
-    [FIXTURE_DAO, 'create', { table: 'tfixture', op: 'insert', line: 7, whereParams: [] }],
-    [FIXTURE_DAO, 'update', { table: 'tfixture', op: 'update', line: 20, whereParams: ['userid'] }],
-    [FIXTURE_DAO, 'deleteMembership', { table: 'tfixturemembers', op: 'delete', line: 30, whereParams: ['userid', 'groupid'] }],
-    [FIXTURE_MANAGER, 'rename', { table: 'tfixture', op: 'update', line: 5, whereParams: ['userid'] }],
-    [FIXTURE_MANAGER, 'purgeSite', { table: 'tfixture', op: 'delete', line: 9, whereParams: ['siteid'] }],
+    [FIXTURE_DAO, 'create', { table: 'tfixture', op: 'insert', line: 7, whereParams: [], columns: ['fixtureid', 'siteid', 'name'] }],
+    [FIXTURE_DAO, 'update', { table: 'tfixture', op: 'update', line: 20, whereParams: ['userid'], columns: ['name'] }],
+    [FIXTURE_DAO, 'deleteMembership', { table: 'tfixturemembers', op: 'delete', line: 30, whereParams: ['userid', 'groupid'], columns: null }],
+    [FIXTURE_MANAGER, 'rename', { table: 'tfixture', op: 'update', line: 5, whereParams: ['userid'], columns: ['name'] }],
+    [FIXTURE_MANAGER, 'purgeSite', { table: 'tfixture', op: 'delete', line: 9, whereParams: ['siteid'], columns: null }],
   ])('finds the request-time write of %s %s', (rel, name, expected) => {
     const unit = component(rel);
     const writes = extractSqlWrites(fn(unit, name), unit);
@@ -369,7 +381,38 @@ describe('extractSqlWrites', () => {
     const unit = component(rel);
     const writes = extractSqlWrites(fn(unit, name), unit);
     expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({ table: 'tfixturestats', op: 'insert', line, thread });
+    expect(writes[0]).toMatchObject({ table: 'tfixturestats', op: 'insert', line, thread, columns: ['statid', 'siteid'] });
+  });
+
+  const tagSql = (sql: string): string => `<cfcomponent><cffunction name="f"><cfquery>${sql}</cfquery></cffunction></cfcomponent>`;
+  const scriptSql = (sql: string): string => `component { function f() { queryExecute("${sql}"); } }`;
+
+  it.each<[string, string, string[] | null]>([
+    [
+      'UPDATE targets around cfqueryparam values and a cfif-guarded pair',
+      tagSql(
+        `UPDATE tusers SET Fname = <cfqueryparam cfsqltype="cf_sql_varchar" value="#arguments.fname#">,
+        <cfif arguments.password neq ''>Password = <cfqueryparam cfsqltype="cf_sql_varchar" value="#hash(arguments.password, 'SHA-256')#">,
+        passwordCreated = <cfqueryparam cfsqltype="cf_sql_timestamp" value="#now()#">,</cfif>
+        LastUpdate = #createODBCDateTime(now())#
+        WHERE UserID = <cfqueryparam cfsqltype="cf_sql_varchar" value="#arguments.userid#">`,
+      ),
+      ['fname', 'password', 'passwordcreated', 'lastupdate'],
+    ],
+    ['each cfif and cfelse alternative of a SET item', tagSql('UPDATE t SET <cfif x>a = 1<cfelse>b = 2</cfif>, c = 3 WHERE d = 1'), ['a', 'b', 'c']],
+    ['a qualified, bracketed SET target', scriptSql('UPDATE [dbo].[tusers] SET [tusers].[LastLogin] = :now WHERE UserID = :userid'), ['lastlogin']],
+    ['SET items around a subquery value', scriptSql('UPDATE t SET a = (SELECT max(b) FROM s WHERE c = 1), d = 2 WHERE e = 1'), ['a', 'd']],
+    ['SET items up to an UPDATE … FROM join', scriptSql('UPDATE t SET a = s.b FROM t INNER JOIN s ON s.id = t.id'), ['a']],
+    ['no columns for a dynamic SET target', tagSql('UPDATE t SET #arguments.column# = 1 WHERE id = 1'), null],
+    ['an INSERT column list with a bracketed and a cfif-guarded column', tagSql('INSERT INTO t (a, [B]<cfif x>, c</cfif>) VALUES (1, 2<cfif x>, 3</cfif>)'), ['a', 'b', 'c']],
+    ['no columns for an INSERT without a column list', scriptSql('INSERT INTO t VALUES (1, 2)'), null],
+    ['no columns for INSERT … SELECT without a column list', scriptSql('INSERT INTO t SELECT * FROM s'), null],
+    ['no columns for a dynamic INSERT column list', tagSql('INSERT INTO t (#columnList#) VALUES (#valueList#)'), null],
+    ['no columns for a DELETE', scriptSql('DELETE FROM t WHERE a = :a'), null],
+  ])('records the written columns: %s', (_label, source, columns) => {
+    const unit = parseCfmlComponent('core/mura/fixture/inline.cfc', source);
+    if (unit === null) throw new Error('inline component did not parse');
+    expect(extractSqlWrites(fn(unit, 'f'), unit).map((w) => w.columns)).toEqual([columns]);
   });
 });
 
@@ -471,6 +514,7 @@ describe('computeClosure', () => {
       method: 'deleteVersion',
       source: { path: CBRANCH, lines: [line, line] },
       conditional: false,
+      via: ['cbranch.upload', 'fileManager.deleteVersion'],
     });
   });
 
@@ -498,7 +542,7 @@ describe('computeClosure', () => {
     const line = lineWith(CBRANCH, "getBean('noSuchBean')");
     const result = closure(CBRANCH, 'orphan');
     expect(result.unresolved).toEqual([
-      { expr: "getBean('noSuchBean').save", kind: 'bean', source: { path: CBRANCH, lines: [line, line] } },
+      { expr: "getBean('noSuchBean').save", kind: 'bean', source: { path: CBRANCH, lines: [line, line] }, via: ['cbranch.orphan'] },
     ]);
     expect(result.tables).toEqual([]);
   });
@@ -508,10 +552,17 @@ describe('computeClosure', () => {
     const result = closure(CBRANCH, 'store');
     expect(result.tables).toEqual(['tfixture']);
     expect(result.writes).toEqual([
-      expect.objectContaining({ table: 'tfixture', op: 'save', component: FIXTURE_BEAN, method: 'save' }),
+      expect.objectContaining({
+        table: 'tfixture',
+        op: 'save',
+        component: FIXTURE_BEAN,
+        method: 'save',
+        columns: null,
+        via: ['cbranch.store', 'fixtureBean.save'],
+      }),
     ]);
     expect(result.unresolved).toEqual([
-      { expr: "getBean('fixture').save", kind: 'method', source: { path: CBRANCH, lines: [line, line] } },
+      { expr: "getBean('fixture').save", kind: 'method', source: { path: CBRANCH, lines: [line, line] }, via: ['cbranch.store'] },
     ]);
   });
 
@@ -574,6 +625,48 @@ describe('computeClosure', () => {
     ]);
   });
 
+  it('walks the methods an override reaches as callees under its condition, and rejects one the tree lacks', async () => {
+    const line = lineWith(CBRANCH, "getBean('noSuchBean')");
+    const { sourceSha } = await loadWriterOverrides(OVERRIDES_FIXTURE);
+    const reaching = (reaches: { component: string; method: string }[]): WriterOverrides =>
+      parseWriterOverrides(
+        stringify({
+          sourceSha,
+          writers: [
+            {
+              id: 'wov:fixture-orphan',
+              tables: [],
+              component: CBRANCH,
+              method: 'orphan',
+              op: 'save',
+              source: { path: CBRANCH, lines: [line, line] },
+              routeKeys: ['cbranch.orphan'],
+              keyScope: 'table',
+              trigger: 'request',
+              sessionEffects: 'none',
+              condition: 'the stored class is a fixture',
+              dynamic: true,
+              reaches,
+              reason: 'The saved bean is chosen from stored data at run time.',
+            },
+          ],
+        }),
+        'inline reaching override',
+      );
+    const result = closure(CBRANCH, 'orphan', {}, reaching([{ component: FIXTURE_DAO, method: 'update' }]));
+    expect(result.unresolved).toEqual([]);
+    expect(result.overrides).toEqual(['wov:fixture-orphan']);
+    expect(result.writes).toEqual([
+      expect.objectContaining({ table: 'tfixture', op: 'update', component: FIXTURE_DAO, method: 'update', conditional: true }),
+    ]);
+    expect(result.conditionalWrites).toEqual([
+      expect.objectContaining({ table: 'tfixture', condition: 'the stored class is a fixture' }),
+    ]);
+    expect(() => closure(CBRANCH, 'orphan', {}, reaching([{ component: FIXTURE_DAO, method: 'absent' }]))).toThrow(
+      `writer override wov:fixture-orphan reaches ${FIXTURE_DAO}#absent, which the source tree does not define`,
+    );
+  });
+
   it.each<[string, string[], string[]]>([
     ['literal', [], []],
     ['interpolated', ['application.userManager.delete'], ['tfixturemembers']],
@@ -581,6 +674,88 @@ describe('computeClosure', () => {
     const unit = component(CBRANCH);
     expect(extractCalls(fn(unit, method), unit, { tree, index }).map((c) => c.text)).toEqual(calls);
     expect(closure(CBRANCH, method).tables).toEqual(tables);
+  });
+
+  describe('call paths and written columns', () => {
+    it('records the call path of a nested write and the columns its INSERT names', () => {
+      expect(closure(CFIXTURE, 'update', { predicates: { action: 'Add' } }).writes).toEqual([
+        expect.objectContaining({
+          table: 'tfixture',
+          op: 'insert',
+          columns: ['fixtureid', 'siteid', 'name'],
+          via: ['cfixture.update', 'rosterManager.create', 'fixtureDAO.create'],
+        }),
+      ]);
+    });
+
+    it('roots a template entry at its body and labels an included template', () => {
+      expect(closure(APPROVE_VIEW, '').writes.map((w) => [w.table, w.op, w.columns, w.via])).toEqual([
+        ['tfixture', 'update', ['name'], ['approve.(template)', 'fixtureDAO.update']],
+        ['tfixturemembers', 'delete', null, ['approve.(template)', 'approveMembers.(template)', 'fixtureDAO.deleteMembership']],
+      ]);
+    });
+
+    it('gives a shared callee the path of each root, and the first path in walk order within one', () => {
+      const viaOf = (entry: string, method: string, predicates?: Predicates): string[][] =>
+        closure(entry, method, predicates === undefined ? {} : { predicates }).writes.map((w) => w.via);
+      const roster = viaOf(CFIXTURE, 'update', { action: 'Update' });
+      expect(roster).toEqual([['cfixture.update', 'rosterManager.update', 'fixtureDAO.update']]);
+      expect(viaOf(CBRANCH, 'save', { type: '2' })).toEqual([['cbranch.save', 'fixtureDAO.update']]);
+      expect(viaOf(CBRANCH, 'twice')).toEqual([['cbranch.twice', 'fixtureDAO.update']]);
+      expect(viaOf(CFIXTURE, 'update', { action: 'Update' })).toEqual(roster);
+    });
+
+    it('hands back the first call path of each visited method when asked', () => {
+      const paths = new Map<string, readonly string[]>();
+      const result = computeClosure({ component: CBRANCH, method: 'twice' }, { tree, index }, paths);
+      expect(Object.fromEntries(paths)).toEqual({
+        [`${CBRANCH}#twice`]: ['cbranch.twice'],
+        [`${ROSTER_MANAGER}#update`]: ['cbranch.twice', 'rosterManager.update'],
+        [`${FIXTURE_DAO}#update`]: ['cbranch.twice', 'fixtureDAO.update'],
+      });
+      expect([...paths.keys()].sort()).toEqual(result.visited);
+    });
+
+    it('carries the call path of each write onto its conditional write', () => {
+      expect(closure(CBRANCH, 'save').conditionalWrites.map((c) => [c.table, c.via])).toEqual([
+        ['tfixture', ['cbranch.save', 'fixtureDAO.update']],
+        ['tfixturemembers', ['cbranch.save', 'fixtureDAO.deleteMembership']],
+      ]);
+    });
+
+    it('lower-cases the reviewed columns of an override write', async () => {
+      const { sourceSha } = await loadWriterOverrides(OVERRIDES_FIXTURE);
+      const overrides = parseWriterOverrides(
+        stringify({
+          sourceSha,
+          writers: [
+            {
+              id: 'wov:fixture-lastlogin',
+              tables: ['tusers'],
+              columns: ['LastLogin'],
+              component: FIXTURE_MANAGER,
+              method: 'refreshLogin',
+              op: 'update',
+              source: { path: FIXTURE_MANAGER, lines: [18, 20] },
+              routeKeys: ['api:user.save'],
+              keyScope: ['userid'],
+              trigger: 'request',
+              sessionEffects: 'relogin',
+              reason: 'refreshLogin stamps the LastLogin column of the user it logs in again.',
+            },
+          ],
+        }),
+        'inline lastlogin override',
+      );
+      expect(closure(CBRANCH, 'relogin', {}, overrides).writes).toEqual([
+        expect.objectContaining({
+          table: 'tusers',
+          override: 'wov:fixture-lastlogin',
+          columns: ['lastlogin'],
+          via: ['cbranch.relogin', 'fixtureManager.refreshLogin'],
+        }),
+      ]);
+    });
   });
 
   it('terminates on a component that calls itself', () => {

@@ -262,6 +262,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
         return undefined;
       }),
     },
+    carry: { beforeLegacy: vi.fn(async () => undefined) },
     csrf: {
       beforeLegacy: vi.fn(async () => {
         calls.push('csrf.before');
@@ -1348,6 +1349,55 @@ describe('sessions of legacy-bound requests', () => {
     expect(h.calls).toContain('csrf.after');
   });
 
+  it.each<{ label: string; mode: SessionMode; family: RouteKeyResult['family']; url: string; carried: boolean }>([
+    { label: 'a target-primary admin request', mode: 'target-primary', family: 'admin', url: '/admin/?muraAction=cArch.loadSiteFlat', carried: true },
+    { label: 'a legacy-primary admin request', mode: 'legacy-primary', family: 'admin', url: '/admin/?muraAction=cArch.loadSiteFlat', carried: true },
+    { label: 'a target-primary page request', mode: 'target-primary', family: 'page', url: '/tenant-a/', carried: false },
+    { label: 'a legacy-primary JSON API request', mode: 'legacy-primary', family: 'api', url: '/_api/json/v1/default/content', carried: false },
+  ])('carries the session values target routes keep before legacy serves $label only when it is an admin one', async ({ mode, family, url, carried }) => {
+    const h = await harness(mode === 'target-primary' ? { active: indexOf('v0002', [], 'target') } : {});
+    h.setScript(() => ({ destination: 'legacy', family }));
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session(mode));
+    vi.mocked(h.deps.hydrator.ensureHydrated).mockResolvedValue(jarRow({}));
+    vi.mocked(h.deps.carry.beforeLegacy).mockImplementation(async () => {
+      h.calls.push('carry');
+    });
+    h.legacy.setHandler((_req, res) => {
+      h.calls.push('legacy');
+      sendBytes(res, 200, 'ok');
+    });
+
+    const res = await h.app.inject({ method: 'POST', url, headers: { 'user-agent': 'OPT2-browser' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(vi.mocked(h.deps.carry.beforeLegacy).mock.calls).toEqual(carried ? [[SESSION_ID, mode, { userAgent: 'OPT2-browser' }]] : []);
+    expect(h.calls.filter((call) => ['csrf.before', 'carry', 'legacy'].includes(call))).toEqual(
+      carried ? ['csrf.before', 'carry', 'legacy'] : ['csrf.before', 'legacy'],
+    );
+  });
+
+  it('carries nothing for a target-primary admin request whose session has no hydrated legacy session', async () => {
+    const h = await harness({ active: indexOf('v0002', [], 'target') });
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session('target-primary'));
+
+    expect((await h.app.inject({ method: 'GET', url: '/admin/?muraAction=cArch.loadSiteFlat' })).statusCode).toBe(200);
+    expect(h.deps.carry.beforeLegacy).not.toHaveBeenCalled();
+  });
+
+  it('answers the legacy 503 and releases the claim when the carry fails, forwarding nothing', async () => {
+    const h = await harness({ active: indexOf('v0002', [], 'target') });
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session('target-primary'));
+    vi.mocked(h.deps.hydrator.ensureHydrated).mockResolvedValue(jarRow({}));
+    vi.mocked(h.deps.csrf.beforeLegacy).mockResolvedValueOnce(claimed());
+    vi.mocked(h.deps.carry.beforeLegacy).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
+
+    const res = await h.app.inject({ method: 'POST', url: '/admin/?muraAction=cArch.loadSiteFlat', headers: { 'x-csrf_token': 'TOKEN-9' } });
+
+    expect([res.statusCode, res.body]).toEqual([503, adminUnavailableResponse().body]);
+    expect(h.legacy.requests).toHaveLength(0);
+    expect(h.deps.csrf.afterLegacy).toHaveBeenCalledWith(claimed(), undefined);
+  });
+
   it('withholds legacy session cookies when adoption after legacy fails in target-primary', async () => {
     const h = await harness({ active: indexOf('v0002', [], 'target') });
     vi.mocked(h.deps.resolver.adoptAfterLegacy).mockRejectedValueOnce(new Error('identity down'));
@@ -1870,6 +1920,7 @@ describe('legacy-primary legacy-bound requests while identity is unavailable', (
       adopt: refuse('adopt'),
       state: refuse('state'),
       adminSite: refuse('adminSite'),
+      adminState: refuse('adminState'),
       snapshot: refuse('snapshot'),
       end: refuse('end'),
       claim: refuse('claim'),
@@ -2023,6 +2074,7 @@ describe('Set-Cookie of legacy-primary target-served responses', () => {
         describe: async () => ({ body: { sessionId: 'L-1' } as LegacyDescribe, setCookies: [TRACKING, MOBILE] }),
       } as unknown as BridgeClient,
       jar: {
+        get: async () => undefined,
         findByLegacySessionId: async () => undefined,
         rebind: async (input: JarUpsert) => {
           const row: JarRow = { ...input, updatedAt: new Date() };

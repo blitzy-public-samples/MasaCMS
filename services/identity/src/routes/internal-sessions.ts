@@ -1,4 +1,4 @@
-/** Gateway-facing session routes: `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionSnapshot` and `endSession`. */
+/** Gateway-facing session routes: `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `getSessionSnapshot` and `endSession`. */
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import {
@@ -6,6 +6,7 @@ import {
   endSession,
   newSessionTokens,
   sessionAdminSite,
+  sessionAdminState,
   sessionCookies,
   sessionSnapshot,
   sessionState,
@@ -14,6 +15,7 @@ import {
   type SessionSnapshot,
 } from '../domain/sessions.js';
 import type { components, operations } from '../generated/openapi.js';
+import { adminStateOf } from './admin-sessions.js';
 
 type Schemas = components['schemas'];
 type SessionParams = operations['getSessionState']['parameters']['path'];
@@ -84,7 +86,7 @@ function snapshotBody(snapshot: SessionSnapshot): Schemas['SessionSnapshot'] {
   };
 }
 
-/** Registers the five session routes; only the gateway's invocation credential is accepted. */
+/** Registers the six session routes; only the gateway's invocation credential is accepted. */
 export async function registerSessionRoutes(app: FastifyInstance, deps: SessionRouteDeps): Promise<void> {
   const { sessions } = deps;
 
@@ -114,6 +116,12 @@ export async function registerSessionRoutes(app: FastifyInstance, deps: SessionR
     '/internal/v1/sessions/:sid/admin-site',
     { schema: { params: SESSION_PARAMS }, config: { opt2: ROUTE_AUTH } },
     async (request) => ({ siteId: await sessionAdminSite(sessions, request.params.sid) }),
+  );
+
+  app.get<{ Params: SessionParams; Reply: Schemas['AdminSessionState'] }>(
+    '/internal/v1/sessions/:sid/admin-state',
+    { schema: { params: SESSION_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    async (request) => adminStateOf(await sessionAdminState(sessions, request.params.sid)),
   );
 
   app.get<{ Params: SessionParams }>(

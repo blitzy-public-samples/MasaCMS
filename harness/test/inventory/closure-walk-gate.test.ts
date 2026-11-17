@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import {
+  CFML_TRUTHY,
   computeClosure,
   extractCalls,
   memorySourceTree,
@@ -684,12 +685,18 @@ const WALK_FILES: Readonly<Record<string, string>> = {
 };
 
 /** Plain-object component index over `tree`: case-insensitive beans, ORM tables by path, memoised parses. */
-function componentIndex(tree: SourceTree, beans: Readonly<Record<string, string>>, orm: Readonly<Record<string, string>> = {}): ComponentIndex {
+function componentIndex(
+  tree: SourceTree,
+  beans: Readonly<Record<string, string>>,
+  orm: Readonly<Record<string, string>> = {},
+  transients: readonly string[] = [],
+): ComponentIndex {
   const byName = new Map(Object.entries(beans).map(([name, p]) => [name.toLowerCase(), p]));
   const parsed = new Map<string, CfmlComponent | null>();
   return {
     resolveBean: (name) => byName.get(name.toLowerCase()) ?? null,
     ormTable: (p) => orm[p] ?? null,
+    transient: (p) => transients.includes(p),
     parsed(p) {
       if (!parsed.has(p)) parsed.set(p, p.endsWith('.cfc') && tree.exists(p) ? parseCfmlComponent(p, tree.readText(p)) : null);
       return parsed.get(p) ?? null;
@@ -966,7 +973,35 @@ describe('guard evaluation over request predicates', () => {
     ['len(rc.newFile)', { type: true }, [{ type: '2', newFile: true }], 'conditional'],
     ['len(rc.newFile)', { type: true }, [{ type: true, newFile: true }], 'pruned'],
     ['len(rc.newFile)', { type: false }, [{ type: true, newFile: true }], 'conditional'],
+    ["structKeyExists(rc, 'extendSetID')", {}, [{ extendSetID: true }, { extendSetID: '' }], 'pruned'],
+    ["structKeyExists(rc, 'extendSetID')", {}, [{ extendSetID: '' }], 'conditional'],
+    ['len(rc.extendSetID)', {}, [{ extendSetID: '' }], 'conditional'],
+    ["structKeyExists(rc, 'extendSetID')", { extendSetID: '' }, [], 'unconditional'],
+    ["rc.extendSetID eq ''", { extendSetID: '' }, [], 'unconditional'],
   ])('%s under %j excluding %j is %s', (guard, predicates, exclusions, verdict) => {
+    expect(verdictOf(guard, predicates, exclusions)).toBe(verdict);
+  });
+
+  const truthy: Predicates[] = [{ approved: CFML_TRUTHY }];
+  it.each<[string, Predicates, Predicates[], Verdict]>([
+    ['rc.approved', { approved: CFML_TRUTHY }, [], 'unconditional'],
+    ['not rc.approved', { approved: CFML_TRUTHY }, [], 'pruned'],
+    ['rc.approved', {}, truthy, 'pruned'],
+    ['not rc.approved', {}, truthy, 'unconditional'],
+    ['rc.approved eq 1', {}, truthy, 'pruned'],
+    ["rc.approved eq 'yes'", {}, truthy, 'pruned'],
+    ['rc.approved eq 0', {}, truthy, 'conditional'],
+    ['len(rc.approved)', {}, truthy, 'conditional'],
+    ['rc.approved eq 1', {}, [{ approved: 'true' }], 'conditional'],
+    ["rc.approved eq 'true'", { approved: CFML_TRUTHY }, [], 'conditional'],
+    ['len(rc.approved)', { approved: CFML_TRUTHY }, [], 'unconditional'],
+    ['len(rc.x)', { approved: 'yes' }, [{ approved: CFML_TRUTHY, x: true }], 'pruned'],
+    ['len(rc.x)', { approved: 'no' }, [{ approved: CFML_TRUTHY, x: true }], 'conditional'],
+    ['len(rc.x)', { approved: true }, [{ approved: CFML_TRUTHY, x: true }], 'conditional'],
+    ['len(rc.x)', { approved: CFML_TRUTHY }, [{ approved: true, x: true }], 'pruned'],
+    ['len(rc.x)', { approved: CFML_TRUTHY }, [{ approved: '0', x: true }], 'conditional'],
+    ['len(rc.x)', { approved: false }, [{ approved: CFML_TRUTHY, x: true }], 'conditional'],
+  ])('CFML-truthy predicate: %s under %j excluding %j is %s', (guard, predicates, exclusions, verdict) => {
     expect(verdictOf(guard, predicates, exclusions)).toBe(verdict);
   });
 
@@ -976,7 +1011,7 @@ describe('guard evaluation over request predicates', () => {
     });
     const closure = computeClosure({ component: 'probe/cprobe.cfc', method: 'probe' }, { tree: tree0, index: componentIndex(tree0, {}) });
     expect(closure.conditionalWrites).toEqual([
-      { table: 'tprobe', condition: 'len(rc.name) and rc.mode eq "x"', source: { path: 'probe/cprobe.cfc', lines: [4, 4] } },
+      { table: 'tprobe', condition: 'len(rc.name) and rc.mode eq "x"', source: { path: 'probe/cprobe.cfc', lines: [4, 4] }, via: ['cprobe.probe'] },
     ]);
     expect(closure.writes).toEqual([
       {
@@ -988,10 +1023,284 @@ describe('guard evaluation over request predicates', () => {
         trigger: 'request',
         whereParams: [],
         conditional: true,
+        columns: ['probeid'],
+        via: ['cprobe.probe'],
       },
     ]);
   });
 });
+
+/** How a write under `if (guard)` in `probe` lands when `entry(rc)` makes `call`; `prologue` opens probe's body. */
+function formalVerdict(call: string, guard: string, prologue = '', tag = false): Verdict {
+  const probe = tag
+    ? `<cfcomponent>\n<cffunction name="entry">\n  <cfargument name="rc">\n  <cfset ${call}>\n</cffunction>\n<cffunction name="probe">\n  <cfargument name="hash" required="true" default="false">\n  <cfargument name="mode">\n  ${prologue}\n  <cfif ${guard}>\n    <cfquery>INSERT INTO tprobe (probeid) VALUES (1)</cfquery>\n  </cfif>\n</cffunction>\n</cfcomponent>\n`
+    : `component {\n  public any function entry(rc) {\n    ${call};\n  }\n  public any function relay(flag="false") {\n    probe(hash=arguments.flag);\n  }\n  public any function probe(required hash="false", mode, count=2) {\n    ${prologue}\n    if (${guard}) {\n      queryExecute("INSERT INTO tprobe (probeid) VALUES (1)");\n    }\n  }\n}\n`;
+  const probeTree = memorySourceTree({ 'probe/cprobe.cfc': probe });
+  const closure = computeClosure({ component: 'probe/cprobe.cfc', method: 'entry' }, { tree: probeTree, index: componentIndex(probeTree, {}) });
+  if (closure.tables.length === 0) return 'pruned';
+  return closure.conditionalWrites.length === 0 ? 'unconditional' : 'conditional';
+}
+
+describe('guard evaluation over literal formals', () => {
+  it.each<[string, string, string, Verdict]>([
+    ['probe()', 'arguments.hash', '', 'pruned'],
+    ['probe()', 'hash', '', 'pruned'],
+    ['probe()', 'not arguments.hash', '', 'unconditional'],
+    ['probe(hash=true)', 'arguments.hash', '', 'unconditional'],
+    ["probe(hash='true')", 'hash', '', 'unconditional'],
+    ['probe(true)', 'arguments.hash', '', 'unconditional'],
+    ['probe(false)', 'arguments.hash', '', 'pruned'],
+    ['probe(hash=rc.flag)', 'arguments.hash', '', 'conditional'],
+    ['probe(hash=rc)', 'arguments.hash', '', 'conditional'],
+    ['probe(argumentCollection=rc)', 'arguments.hash', '', 'conditional'],
+    ['probe()', "arguments.mode eq 'x'", '', 'conditional'],
+    ["probe(mode='x')", "arguments.mode eq 'x'", '', 'unconditional'],
+    ["probe(mode='y')", "arguments.mode eq 'x'", '', 'pruned'],
+    ['probe()', 'arguments.count gt 1', '', 'unconditional'],
+    ['probe(count=0)', 'arguments.count gt 1', '', 'pruned'],
+    ['probe()', 'arguments.hash', 'arguments.hash = true;', 'conditional'],
+    ['probe()', 'hash', 'var hash = true;', 'conditional'],
+    ['probe()', 'arguments.hash', 'param name="arguments.hash" default=true;', 'conditional'],
+    ['probe()', 'arguments.hash', 'structAppend(arguments, rc);', 'conditional'],
+    ['probe()', 'arguments.hash', "arguments['hash'] = true;", 'conditional'],
+    ['relay()', 'arguments.hash', '', 'pruned'],
+    ['relay(flag=true)', 'arguments.hash', '', 'unconditional'],
+  ])('%s with guard %s after %j is %s', (call, guard, prologue, verdict) => {
+    expect(formalVerdict(call, guard, prologue)).toBe(verdict);
+  });
+
+  it.each<[string, string, Verdict]>([
+    ['probe()', 'arguments.hash', 'pruned'],
+    ['probe(hash=true)', 'arguments.hash', 'unconditional'],
+    ['probe()', '<cfset arguments.hash = true>', 'conditional'],
+  ])('tag function: %s with %s is %s', (call, item, verdict) => {
+    const [guard, prologue] = item.startsWith('<') ? ['arguments.hash', item] : [item, ''];
+    expect(formalVerdict(call, guard, prologue, true)).toBe(verdict);
+  });
+
+  it('leaves a formal of the entry itself undecided, since its caller is unknown', () => {
+    const probeTree = memorySourceTree({
+      'probe/cprobe.cfc': 'component {\n  public any function probe(hash=false) {\n    if (arguments.hash) {\n      queryExecute("INSERT INTO tprobe (probeid) VALUES (1)");\n    }\n  }\n}\n',
+    });
+    const closure = computeClosure({ component: 'probe/cprobe.cfc', method: 'probe' }, { tree: probeTree, index: componentIndex(probeTree, {}) });
+    expect(closure.conditionalWrites.map((c) => c.condition)).toEqual(['arguments.hash']);
+  });
+});
+
+const BEAN_FILES = {
+  bean: `component {\n  property name="approved" default="0";\n  property name="title" default="";\n  public any function save() {\n    setAllValues(variables.thingManager.save(this).getAllValues());\n    return this;\n  }\n  public any function getStatus() {\n    return 'x';\n  }\n  public any function loadExtras() {\n    variables.extras = 1;\n    return this;\n  }\n}\n`,
+  helper: `component {\n  public any function ping(d) {\n    pong(arguments.d);\n  }\n  public any function pong(d) {\n    ping(arguments.d);\n  }\n  public any function tick(d) {\n    tock(arguments.d);\n  }\n  public any function tock(d) {\n    arguments.d.notify = 'x';\n    tick(arguments.d);\n  }\n  public any function mark() {\n    setValue('notify', 'y');\n  }\n  public any function tag(d) {\n    arguments.d.notify = 'x';\n  }\n  public any function relay(d) {\n    tag(arguments.d);\n  }\n  public any function merge(d) {\n    structAppend(arguments.d, url);\n  }\n  public any function keep(d) {\n    variables.kept = arguments.d;\n    return this;\n  }\n  public any function setValue(k, v) {\n    variables.kept[arguments.k] = arguments.v;\n  }\n}\n`,
+};
+const DEFAULT_SAVE = "var thingBean = getBean('thing').loadBy(id=arguments.rc.id).set(arguments.rc);\n    thingBean.save();";
+
+/**
+ * Verdicts of a write under `if (guard)` in a manager `save(data)` a request-populated bean reaches, before and after
+ * the manager rebinds `data` to the values of the bean it copied them into.
+ */
+function beanVerdicts(guard: string, opts: { predicates?: Predicates; exclude?: Predicates[]; prologue?: string; save?: string } = {}): string {
+  const files = {
+    'probe/cprobe.cfc': `component {\n  public any function update(rc) {\n    ${opts.save ?? DEFAULT_SAVE}\n  }\n}\n`,
+    'probe/thingBean.cfc': BEAN_FILES.bean,
+    'probe/helper.cfc': BEAN_FILES.helper,
+    'probe/thingManager.cfc': `component {\n  public any function save(data) {\n    if (isObject(arguments.data)) {\n      arguments.data = arguments.data.getAllValues();\n    }\n    var nb = getBean('thing').loadBy(id=arguments.data.id);\n    nb.set(arguments.data);\n    ${opts.prologue ?? ''}\n    if (${guard}) {\n      queryExecute("INSERT INTO tprobe (probeid) VALUES (1)");\n    }\n    arguments.data = nb.getAllValues();\n    if (${guard}) {\n      queryExecute("INSERT INTO tprobe2 (probeid) VALUES (1)");\n    }\n  }\n}\n`,
+  };
+  const probeTree = memorySourceTree(files);
+  const closure = computeClosure(
+    { component: 'probe/cprobe.cfc', method: 'update', predicates: opts.predicates ?? {}, excludePredicates: opts.exclude ?? [] },
+    { tree: probeTree, index: componentIndex(probeTree, { thing: 'probe/thingBean.cfc', thingManager: 'probe/thingManager.cfc', helper: 'probe/helper.cfc' }) },
+  );
+  const verdict = (table: string): Verdict =>
+    !closure.tables.includes(table) ? 'pruned' : closure.conditionalWrites.some((c) => c.table === table) ? 'conditional' : 'unconditional';
+  return `${verdict('tprobe')}/${verdict('tprobe2')}`;
+}
+
+describe('guard evaluation over request-populated beans', () => {
+  const notify: Predicates[] = [{ notify: true }];
+  it.each<[string, string, Parameters<typeof beanVerdicts>[1], string]>([
+    ['excluded key read off the struct', 'len(arguments.data.notify)', { exclude: notify }, 'pruned/pruned'],
+    ['undecided key read off the struct', 'len(arguments.data.notify)', {}, 'conditional/conditional'],
+    ['pinned key read off the struct', 'len(arguments.data.notify)', { predicates: { notify: true } }, 'unconditional/unconditional'],
+    ['structKeyExists and len', "structKeyExists(arguments.data,'notify') and len(arguments.data.notify)", { exclude: notify }, 'pruned/pruned'],
+    ['isDefined and neq', "isDefined('arguments.data.notify') and arguments.data.notify neq ''", { exclude: notify }, 'pruned/pruned'],
+    ['presence alone, which an empty value satisfies', "structKeyExists(arguments.data,'notify')", { exclude: notify }, 'conditional/conditional'],
+    ['implicit getter on the copy', 'len(nb.getNotify())', { exclude: notify }, 'pruned/pruned'],
+    ['getValue on the copy', "len(nb.getValue('notify'))", { exclude: notify }, 'pruned/pruned'],
+    ['getAllValues view of the copy', 'len(nb.getAllValues().notify)', { exclude: notify }, 'pruned/pruned'],
+    ['declared property', 'nb.getApproved()', { exclude: [{ approved: true }] }, 'conditional/conditional'],
+    ['getter the bean defines', "nb.getStatus() eq 'x'", {}, 'conditional/conditional'],
+    ['key the body sets on the copy', 'len(nb.getNotify())', { exclude: notify, prologue: "nb.setNotify('x');" }, 'unconditional/unconditional'],
+    ['copy reloaded', 'len(nb.getNotify())', { exclude: notify, prologue: 'nb.loadBy(id=1);' }, 'conditional/conditional'],
+    ['load-named method that keeps the values', 'len(nb.getNotify())', { exclude: notify, prologue: 'nb.loadExtras();' }, 'pruned/pruned'],
+    ['callee cycle that leaves the struct', 'len(arguments.data.notify)', { exclude: notify, prologue: "getBean('helper').ping(arguments.data);" }, 'pruned/pruned'],
+    ['callee cycle that sets the key', 'len(arguments.data.notify)', { exclude: notify, prologue: "getBean('helper').tick(arguments.data);" }, 'conditional/conditional'],
+    ['method of the keeper that sets the key', 'len(arguments.data.notify)', { exclude: notify, prologue: "var h = getBean('helper');\n    h.keep(arguments.data);\n    h.mark();" }, 'conditional/conditional'],
+    ['struct bulk-merged', 'len(arguments.data.notify)', { exclude: notify, prologue: 'structAppend(arguments.data, url);' }, 'conditional/conditional'],
+    ['key a callee assigns', 'len(arguments.data.notify)', { exclude: notify, prologue: "getBean('helper').tag(arguments.data);" }, 'conditional/conditional'],
+    ['key a callee assigns through another', 'len(arguments.data.notify)', { exclude: notify, prologue: "getBean('helper').relay(arguments.data);" }, 'conditional/conditional'],
+    ['bulk merge in a callee', 'len(arguments.data.notify)', { exclude: notify, prologue: "getBean('helper').merge(arguments.data);" }, 'conditional/conditional'],
+    ['callee that keeps the struct, untouched', 'len(arguments.data.notify)', { exclude: notify, prologue: "var h = getBean('helper');\n    h.keep(arguments.data);" }, 'pruned/pruned'],
+    ['key set through the callee that keeps it', 'len(arguments.data.notify)', { exclude: notify, prologue: "var h = getBean('helper');\n    h.keep(arguments.data);\n    h.setValue('notify', 'x');" }, 'conditional/conditional'],
+    ['bean not populated from the request', 'len(arguments.data.notify)', { exclude: notify, save: "var thingBean = getBean('thing').loadBy(id=arguments.rc.id);\n    thingBean.save();" }, 'conditional/conditional'],
+    ['key the caller sets before saving', 'len(arguments.data.notify)', { exclude: notify, save: "var thingBean = getBean('thing').loadBy(id=arguments.rc.id).set(arguments.rc);\n    thingBean.setNotify('x');\n    thingBean.save();" }, 'unconditional/unconditional'],
+    ['population from a struct that is not the request', 'len(arguments.data.notify)', { exclude: notify, save: "var thingBean = getBean('thing').loadBy(id=arguments.rc.id).set(other);\n    thingBean.save();" }, 'conditional/conditional'],
+    ['population repeated on another branch', 'len(arguments.data.notify)', { exclude: notify, save: "if (len(arguments.rc.a)) {\n      thingBean = getBean('thing').loadBy(id=1).set(arguments.rc);\n    } else {\n      thingBean = getBean('thing').loadBy(id=2).set(arguments.rc);\n    }\n    thingBean.save();" }, 'pruned/pruned'],
+  ])('%s: %s is %s', (_label, guard, opts, verdicts) => {
+    expect(beanVerdicts(guard, opts)).toBe(verdicts);
+  });
+
+  it.each<[string, readonly string[] | undefined, Verdict]>([
+    ['populated with no keys of its own', [], 'pruned'],
+    ['populated, the caller setting the key', ['Notify'], 'conditional'],
+    ['not populated', undefined, 'conditional'],
+  ])('an entry bean %s gives %s', (_label, populated, verdict) => {
+    const probeTree = memorySourceTree({
+      'probe/thingBean.cfc': `component {\n  property name="approved" default="0";\n  public any function save() {\n    if (len(getNotify())) {\n      queryExecute("INSERT INTO tprobe (probeid) VALUES (1)");\n    }\n  }\n}\n`,
+    });
+    const closure = computeClosure(
+      { component: 'probe/thingBean.cfc', method: 'save', excludePredicates: [{ notify: true }], ...(populated === undefined ? {} : { populated }) },
+      { tree: probeTree, index: componentIndex(probeTree, {}) },
+    );
+    const got: Verdict = closure.tables.length === 0 ? 'pruned' : closure.conditionalWrites.length === 0 ? 'unconditional' : 'conditional';
+    expect(got).toBe(verdict);
+  });
+});
+
+/** A transient bean whose init leaves literals in its instance, with a defined getter that writes it. */
+const VALUE_BEAN = `component {
+  public any function init() {
+    variables.instance = structNew();
+    variables.instance.isNew = 1;
+    variables.instance.approved = 0;
+    variables.instance.title = '';
+    variables.instance.extendSetID = '';
+    return this;
+  }
+  public any function save() {
+    variables.thingManager.save(this);
+    return this;
+  }
+  public any function getAllValues() {
+    return variables.instance;
+  }
+  public any function getMerged() {
+    variables.instance.extendSetID = 'x';
+    return variables.instance;
+  }
+}
+`;
+
+/**
+ * How a write under `if (guard)` in a manager `save(data)` lands when `update(rc)` runs `body`: the manager copies
+ * the saved bean's values into a loaded one, as contentManager.add does.
+ */
+function valueVerdict(body: string, guard: string, opts: { predicates?: Predicates; exclude?: Predicates[]; transient?: boolean } = {}): Verdict {
+  const probeTree = memorySourceTree({
+    'probe/cprobe.cfc': `component {\n  public any function update(rc) {\n    ${body}\n  }\n}\n`,
+    'probe/thingBean.cfc': VALUE_BEAN,
+    'probe/thingManager.cfc': `component {\n  public any function save(data) {\n    if (isObject(arguments.data)) {\n      arguments.data = arguments.data.getAllValues();\n    }\n    var nb = getBean('thing').loadBy(id=1);\n    nb.set(arguments.data);\n    if (${guard}) {\n      queryExecute("INSERT INTO tprobe (probeid) VALUES (1)");\n    }\n  }\n}\n`,
+  });
+  const closure = computeClosure(
+    { component: 'probe/cprobe.cfc', method: 'update', predicates: opts.predicates ?? {}, excludePredicates: opts.exclude ?? [] },
+    {
+      tree: probeTree,
+      index: componentIndex(probeTree, { thing: 'probe/thingBean.cfc', thingManager: 'probe/thingManager.cfc' }, {}, opts.transient === false ? [] : ['probe/thingBean.cfc']),
+    },
+  );
+  if (!closure.tables.includes('tprobe')) return 'pruned';
+  return closure.conditionalWrites.some((c) => c.table === 'tprobe') ? 'conditional' : 'unconditional';
+}
+
+const LOADED = "var b = getBean('thing').loadBy(id=arguments.rc.id);";
+const APPROVED: Predicates[] = [{ approved: CFML_TRUTHY }];
+
+describe('values of created beans flowing into a manager', () => {
+  it.each<[string, string, string, Parameters<typeof valueVerdict>[2], Verdict]>([
+    ['literal setter', `${LOADED}\n    b.setApproved(0);\n    b.save();`, 'nb.getApproved()', {}, 'pruned'],
+    ['literal set()', `${LOADED}\n    b.set('approved', 1);\n    b.save();`, 'nb.getApproved()', {}, 'unconditional'],
+    ['literal setValue()', `${LOADED}\n    b.setValue('approved', 0);\n    b.save();`, 'nb.getApproved()', {}, 'pruned'],
+    ['request parameter, excluded truthy', `${LOADED}\n    b.setApproved(arguments.rc.approved);\n    b.save();`, 'nb.getApproved()', { exclude: APPROVED }, 'pruned'],
+    ['request parameter, unconstrained', `${LOADED}\n    b.setApproved(arguments.rc.approved);\n    b.save();`, 'nb.getApproved()', {}, 'conditional'],
+    ['request parameter, pinned truthy', `${LOADED}\n    b.setApproved(arguments.rc.approved);\n    b.save();`, 'nb.getApproved()', { predicates: { approved: CFML_TRUTHY } }, 'unconditional'],
+    ['unknown value', `${LOADED}\n    b.setApproved(now());\n    b.save();`, 'nb.getApproved()', {}, 'conditional'],
+    ['no setter on a loaded bean', `${LOADED}\n    b.save();`, 'nb.getApproved()', {}, 'conditional'],
+    [
+      'every branch sets or aborts',
+      `${LOADED}\n    if (arguments.rc.perm eq 'author') {\n      b.setApproved(0);\n    } else if (arguments.rc.perm eq 'editor') {\n      b.setApproved(arguments.rc.approved);\n    } else {\n      abort;\n    }\n    b.save();`,
+      'nb.getApproved()',
+      { exclude: APPROVED },
+      'pruned',
+    ],
+    [
+      'a branch keeps the loaded value',
+      `${LOADED}\n    if (arguments.rc.perm eq 'author') {\n      b.setApproved(0);\n    } else if (arguments.rc.perm eq 'editor') {\n      b.setApproved(arguments.rc.approved);\n    }\n    b.save();`,
+      'nb.getApproved()',
+      { exclude: APPROVED },
+      'conditional',
+    ],
+    ['a later conditional setter', `${LOADED}\n    b.setApproved(0);\n    if (len(arguments.rc.x)) {\n      b.setApproved(1);\n    }\n    b.save();`, 'nb.getApproved()', {}, 'conditional'],
+    ['a later setter overwrites', `${LOADED}\n    b.setApproved(1);\n    b.setApproved(0);\n    b.save();`, 'nb.getApproved()', {}, 'pruned'],
+    ['fresh instance', "var b = getBean('thing');\n    b.setTitle('x');\n    b.save();", 'not nb.getIsNew()', {}, 'pruned'],
+    ['initialised instance', "var b = getBean('thing').init();\n    b.save();", 'not nb.getIsNew()', {}, 'pruned'],
+    ['loaded instance', `${LOADED}\n    b.save();`, 'not nb.getIsNew()', {}, 'conditional'],
+    ['shared, not transient, bean', "var b = getBean('thing');\n    b.save();", 'not nb.getIsNew()', { transient: false }, 'conditional'],
+    ['fresh instance lacks a key it never holds', "var b = getBean('thing');\n    b.save();", "isDefined('arguments.data.notify')", {}, 'pruned'],
+    ['loaded instance may hold any key', `${LOADED}\n    b.save();`, "isDefined('arguments.data.notify')", {}, 'conditional'],
+    ['fresh init literal', "var b = getBean('thing');\n    b.save();", 'len(arguments.data.extendSetID)', {}, 'pruned'],
+    ['fresh init literal a defined getter rewrites', "var b = getBean('thing');\n    b.getMerged();\n    b.save();", 'len(arguments.data.extendSetID)', {}, 'conditional'],
+  ])('%s: %s then %s %j is %s', (_label, body, guard, opts, verdict) => {
+    expect(valueVerdict(body, guard, opts)).toBe(verdict);
+  });
+});
+
+/** How the write `body` holds (marked `WRITE`) lands in `probe(mode)`, in script or tag syntax. */
+function bodyVerdict(body: string, tag = false): Verdict {
+  const write = tag ? '<cfquery>INSERT INTO tprobe (probeid) VALUES (1)</cfquery>' : 'queryExecute("INSERT INTO tprobe (probeid) VALUES (1)")';
+  const source = tag
+    ? `<cfcomponent>\n<cffunction name="probe">\n  <cfargument name="mode">\n  ${body.replace('WRITE', write)}\n</cffunction>\n</cfcomponent>\n`
+    : `component {\n  public any function probe(mode) {\n    ${body.replace('WRITE', write)}\n  }\n}\n`;
+  const probeTree = memorySourceTree({ 'probe/cprobe.cfc': source });
+  const closure = computeClosure({ component: 'probe/cprobe.cfc', method: 'probe' }, { tree: probeTree, index: componentIndex(probeTree, {}) });
+  if (closure.tables.length === 0) return 'pruned';
+  return closure.conditionalWrites.length === 0 ? 'unconditional' : 'conditional';
+}
+
+describe('guard evaluation over tracked locals', () => {
+  it.each<[string, string, Verdict]>([
+    ["var s = '';", 'isStruct(s)', 'pruned'],
+    ['var s = {};', 'isStruct(s)', 'unconditional'],
+    ['var s = [];', 'isArray(s) and arrayLen(s) gte 1', 'pruned'],
+    ["var s = '';", 'isJSON(s)', 'pruned'],
+    ["var s = '';\n    if (len(arguments.mode)) {\n      s = {};\n    }", 'isStruct(s)', 'conditional'],
+    ["var s = '';\n    if (arguments.hash) {\n      s = {};\n    }", 'isStruct(s)', 'pruned'],
+    ["var s = '';\n    if (arguments.hash) {\n      s = {};\n    } else {\n      s = [];\n    }", 'isArray(s)', 'unconditional'],
+    ["var s = {};\n    s = '';", 'isStruct(s)', 'pruned'],
+    ['var s = [];\n    arrayAppend(s, 1);', 'arrayLen(s) gte 1', 'conditional'],
+    ['var s = [];\n    s[1] = 2;', 'arrayLen(s) gte 1', 'conditional'],
+    ['var s = [];\n    keep(s);', 'arrayLen(s) gte 1', 'conditional'],
+    ["var s = '';\n    keep(s);", 'isStruct(s)', 'pruned'],
+    ["var s = '';\n    for (s in arguments.mode) {\n    }", 'isStruct(s)', 'conditional'],
+    ["var s = '';\n    s &= 'x';", "s eq ''", 'conditional'],
+    ["var s = '';\n    structAppend(local, arguments);", 'isStruct(s)', 'conditional'],
+  ])('after %j, %s is %s', (prologue, guard, verdict) => {
+    expect(formalVerdict('probe()', guard, prologue)).toBe(verdict);
+  });
+
+  it.each<[string, string, boolean, Verdict]>([
+    ['guard read before its body rewrites the local', "var s = {};\n    if (isStruct(s)) {\n      s = '';\n      WRITE;\n    }", false, 'unconditional'],
+    ['for loop over an empty array', 'var items = [];\n    for (var i = 1; i <= arrayLen(items); i++) {\n      WRITE;\n    }', false, 'pruned'],
+    ['for loop over an unknown array', 'for (var i = 1; i <= arrayLen(arguments.mode); i++) {\n      WRITE;\n    }', false, 'unconditional'],
+    ['while loop whose condition is false', 'var items = [];\n    while (arrayLen(items)) {\n      WRITE;\n    }', false, 'pruned'],
+    ['every other path returns', "var s = '';\n    if (len(arguments.mode)) {\n      s = {};\n    } else {\n      return;\n    }\n    if (isStruct(s)) {\n      WRITE;\n    }", false, 'unconditional'],
+    ['tag index loop over an empty array', '<cfset var items = []>\n  <cfloop from="1" to="#arrayLen(items)#" index="i">\n    WRITE\n  </cfloop>', true, 'pruned'],
+    ['tag array loop over an empty array', '<cfset var items = []>\n  <cfloop array="#items#" index="x">\n    WRITE\n  </cfloop>', true, 'pruned'],
+    ['tag loop counting down', '<cfset var items = []>\n  <cfloop from="1" to="#arrayLen(items)#" index="i" step="-1">\n    WRITE\n  </cfloop>', true, 'unconditional'],
+    ['tag guard on a local the loop never fills', '<cfset var rcs = "">\n  <cfset var data = []>\n  <cfloop from="1" to="#arrayLen(data)#" index="s">\n    <cfset rcs = data[s]>\n  </cfloop>\n  <cfif isStruct(rcs)>\n    WRITE\n  </cfif>', true, 'pruned'],
+  ])('%s is %s', (_label, body, tag, verdict) => {
+    expect(bodyVerdict(body, tag)).toBe(verdict);
+  });
+});
+
+
 
 describe('branch pruning on the roster controller', () => {
   it.each<[Predicates, Predicates[], string[]]>([
@@ -1070,7 +1379,7 @@ describe('branch pruning on the roster controller', () => {
     const closure = closureOf(CTAG, 'update', { predicates });
     expect(closure.tables).toEqual(tables);
     expect(closure.conditionalWrites).toEqual([
-      { table: 'terrors', condition: 'cfcatch type="database"', source: at(tree, CTAG, 'INSERT INTO terrors') },
+      { table: 'terrors', condition: 'cfcatch type="database"', source: at(tree, CTAG, 'INSERT INTO terrors'), via: ['ctagbranch.update'] },
     ]);
     expect(closure.writes.find((w) => w.table === 'tcounters')?.whereParams).toEqual(['kind']);
   });
@@ -1079,7 +1388,7 @@ describe('branch pruning on the roster controller', () => {
     const closure = closureOf(CBRANCH, 'importRoster', { predicates: { importid: '7' } });
     expect(tableOps(closure)).toEqual(['timports:delete', 'timports:insert']);
     expect(closure.conditionalWrites).toEqual([
-      { table: 'timports', condition: 'catch(any e)', source: at(tree, CBRANCH, 'DELETE FROM timports') },
+      { table: 'timports', condition: 'catch(any e)', source: at(tree, CBRANCH, 'DELETE FROM timports'), via: ['cbranch.importRoster'] },
     ]);
   });
 
@@ -1102,7 +1411,12 @@ describe('branch pruning on the roster controller', () => {
   it('keeps the remove branch conditional on a CSRF check keyed by a request value', () => {
     const closure = closureOf(CFIXTURE, 'remove', { predicates: { userid: 'u1' } });
     expect(closure.conditionalWrites).toEqual([
-      { table: 'tusers', condition: 'arguments.rc.$.validateCSRFTokens(context=arguments.rc.userid)', source: at(tree, USER_MANAGER, 'DELETE FROM tusers') },
+      {
+        table: 'tusers',
+        condition: 'arguments.rc.$.validateCSRFTokens(context=arguments.rc.userid)',
+        source: at(tree, USER_MANAGER, 'DELETE FROM tusers'),
+        via: ['cfixture.remove', 'userManager.delete'],
+      },
     ]);
     expect(closure.writes[0]?.whereParams).toEqual(['userid']);
   });
@@ -1119,12 +1433,29 @@ describe('file store, session effects and threads', () => {
     const closure = closureOf(CBRANCH, 'update', { predicates: { action: 'Add' } });
     expect(closure.tables).toEqual(['tfiles', 'tusers', 'tusersinterests']);
     expect(closure.conditionalWrites).toEqual([
-      { table: 'tfiles', condition: 'len(arguments.rc.newFile)', source: at(tree, FILE_MANAGER, 'INSERT INTO tfiles') },
+      {
+        table: 'tfiles',
+        condition: 'len(arguments.rc.newFile)',
+        source: at(tree, FILE_MANAGER, 'INSERT INTO tfiles'),
+        via: ['cbranch.update', 'rosterManager.storePhoto', 'fileManager.create'],
+      },
     ]);
     expect(closure.fileStore).toBe(true);
     expect(closure.fileStoreEvidence).toEqual([
-      { component: FILE_MANAGER, method: 'create', source: at(tree, ROSTER, 'variables.fileManager.create('), conditional: true },
-      { component: FILE_WRITER, method: 'writeFile', source: at(tree, FILE_MANAGER, 'variables.fileWriter.writeFile('), conditional: true },
+      {
+        component: FILE_MANAGER,
+        method: 'create',
+        source: at(tree, ROSTER, 'variables.fileManager.create('),
+        conditional: true,
+        via: ['cbranch.update', 'rosterManager.storePhoto', 'fileManager.create'],
+      },
+      {
+        component: FILE_WRITER,
+        method: 'writeFile',
+        source: at(tree, FILE_MANAGER, 'variables.fileWriter.writeFile('),
+        conditional: true,
+        via: ['cbranch.update', 'rosterManager.storePhoto', 'fileManager.create', 'fileWriter.writeFile'],
+      },
     ]);
   });
 
@@ -1140,14 +1471,43 @@ describe('file store, session effects and threads', () => {
   it('upgrades file-store evidence first seen under a guard when an unconditional path reaches it', () => {
     const closure = walkClosureOf('walk/merge.cfc', 'photo');
     expect(closure.fileStoreEvidence).toEqual([
-      { component: 'fileDAO', method: 'purgeDeleted', source: at(walkTree, 'walk/merge.cfc', "getBean('fileDAO')"), conditional: false },
-      { component: 'filewriter', method: 'renameFile', source: at(walkTree, 'walk/fileManager.cfc', 'renameFile'), conditional: false },
-      { component: 'walk/fileManager.cfc', method: 'deleteVersion', source: at(walkTree, 'walk/merge.cfc', 'deleteVersion(1)'), conditional: false },
-      { component: 'walk/fileManager.cfc', method: 'deleteVersion', source: at(walkTree, 'walk/merge.cfc', 'deleteVersion(2)'), conditional: false },
+      {
+        component: 'fileDAO',
+        method: 'purgeDeleted',
+        source: at(walkTree, 'walk/merge.cfc', "getBean('fileDAO')"),
+        conditional: false,
+        via: ['merge.photo', 'merge.store', 'fileDAO.purgeDeleted'],
+      },
+      {
+        component: 'filewriter',
+        method: 'renameFile',
+        source: at(walkTree, 'walk/fileManager.cfc', 'renameFile'),
+        conditional: false,
+        via: ['merge.photo', 'merge.store', 'fileManager.deleteVersion', 'filewriter.renameFile'],
+      },
+      {
+        component: 'walk/fileManager.cfc',
+        method: 'deleteVersion',
+        source: at(walkTree, 'walk/merge.cfc', 'deleteVersion(1)'),
+        conditional: false,
+        via: ['merge.photo', 'merge.store', 'fileManager.deleteVersion'],
+      },
+      {
+        component: 'walk/fileManager.cfc',
+        method: 'deleteVersion',
+        source: at(walkTree, 'walk/merge.cfc', 'deleteVersion(2)'),
+        conditional: false,
+        via: ['merge.photo', 'merge.store', 'fileManager.deleteVersion'],
+      },
     ]);
     expect(closure.unresolved).toEqual([
-      { expr: 'variables.fileWriter.renameFile', kind: 'bean', source: at(walkTree, 'walk/fileManager.cfc', 'renameFile') },
-      { expr: "getBean('fileDAO').purgeDeleted", kind: 'bean', source: at(walkTree, 'walk/merge.cfc', "getBean('fileDAO')") },
+      {
+        expr: 'variables.fileWriter.renameFile',
+        kind: 'bean',
+        source: at(walkTree, 'walk/fileManager.cfc', 'renameFile'),
+        via: ['merge.photo', 'merge.store', 'fileManager.deleteVersion'],
+      },
+      { expr: "getBean('fileDAO').purgeDeleted", kind: 'bean', source: at(walkTree, 'walk/merge.cfc', "getBean('fileDAO')"), via: ['merge.photo', 'merge.store'] },
     ]);
   });
 
@@ -1204,25 +1564,36 @@ describe('file store, session effects and threads', () => {
     expect(closure.writes.find((w) => w.table === 'tgroups')).toMatchObject({ op: 'delete', trigger: 'thread', whereParams: ['siteid'], conditional: false });
   });
 
-  it.each<[string, string, string, [number, number], [number, number]]>([
-    [FIXTURE_MANAGER, 'trackStats', 'fixtureStats', [13, 15], [14, 14]],
-    [FIXTURE_DAO, 'trackAsync', 'fixtureThread#createUUID()#', [36, 41], [38, 39]],
-  ])('%s#%s runs its insert in thread %s', (component, method, name, threadLines, writeLines) => {
+  it.each<[string, string, string, [number, number], [number, number], string[]]>([
+    [FIXTURE_MANAGER, 'trackStats', 'fixtureStats', [13, 15], [14, 14], ['fixtureManager.trackStats']],
+    [FIXTURE_DAO, 'trackAsync', 'fixtureThread#createUUID()#', [36, 41], [38, 39], ['fixtureDAO.trackAsync']],
+  ])('%s#%s runs its insert in thread %s', (component, method, name, threadLines, writeLines, via) => {
     const closure = closureOf(component, method);
     expect(closure.threads).toEqual([{ name, component, method, source: { path: component, lines: threadLines } }]);
     expect(closure.writes).toEqual([
-      { table: 'tfixturestats', op: 'insert', component, method, source: { path: component, lines: writeLines }, trigger: 'thread', whereParams: [], conditional: false },
+      {
+        table: 'tfixturestats',
+        op: 'insert',
+        component,
+        method,
+        source: { path: component, lines: writeLines },
+        trigger: 'thread',
+        whereParams: [],
+        conditional: false,
+        columns: ['statid', 'siteid'],
+        via,
+      },
     ]);
   });
 
-  it.each<[string, string, string, [number, number], string[]]>([
-    [FIXTURE_MANAGER, 'rename', 'update', [5, 5], ['userid']],
-    [FIXTURE_MANAGER, 'purgeSite', 'delete', [9, 9], ['siteid']],
-    [FIXTURE_DAO, 'create', 'insert', [7, 12], []],
-    [FIXTURE_DAO, 'update', 'update', [20, 22], ['userid']],
-  ])('%s#%s %ss tfixture at lines %j keyed by %j', (component, method, op, lines, whereParams) => {
+  it.each<[string, string, string, [number, number], string[], string[] | null, string[]]>([
+    [FIXTURE_MANAGER, 'rename', 'update', [5, 5], ['userid'], ['name'], ['fixtureManager.rename']],
+    [FIXTURE_MANAGER, 'purgeSite', 'delete', [9, 9], ['siteid'], null, ['fixtureManager.purgeSite']],
+    [FIXTURE_DAO, 'create', 'insert', [7, 12], [], ['fixtureid', 'siteid', 'name'], ['fixtureDAO.create']],
+    [FIXTURE_DAO, 'update', 'update', [20, 22], ['userid'], ['name'], ['fixtureDAO.update']],
+  ])('%s#%s %ss tfixture at lines %j keyed by %j writing columns %j', (component, method, op, lines, whereParams, columns, via) => {
     expect(closureOf(component, method).writes).toEqual([
-      { table: 'tfixture', op, component, method, source: { path: component, lines }, trigger: 'request', whereParams, conditional: false },
+      { table: 'tfixture', op, component, method, source: { path: component, lines }, trigger: 'request', whereParams, conditional: false, columns, via },
     ]);
   });
 
@@ -1241,14 +1612,15 @@ describe('unresolved references', () => {
   it('reports each reference the walk cannot follow with its kind and line', () => {
     const closure = closureOf(CBRANCH, 'unresolvedCalls');
     const line = (marker: string): SourceRef => at(tree, CBRANCH, marker);
+    const via = ['cbranch.unresolvedCalls'];
     expect(closure.unresolved).toEqual([
-      { expr: "getBean('missingService').run", kind: 'bean', source: line("getBean('missingService')") },
-      { expr: 'new mura.roster.absentHelper', kind: 'component', source: line('absentHelper') },
-      { expr: 'new mura.roster.absentHelper().run', kind: 'component', source: line('absentHelper') },
-      { expr: 'application.rosterManager.absentMethod', kind: 'method', source: line('absentMethod') },
-      { expr: 'local.record.save', kind: 'receiver', source: line('local.record.save') },
-      { expr: 'application.ghostService.run', kind: 'component', source: line('ghostService') },
-      { expr: 'parts/absent.cfm', kind: 'include', source: line('parts/absent.cfm') },
+      { expr: "getBean('missingService').run", kind: 'bean', source: line("getBean('missingService')"), via },
+      { expr: 'new mura.roster.absentHelper', kind: 'component', source: line('absentHelper'), via },
+      { expr: 'new mura.roster.absentHelper().run', kind: 'component', source: line('absentHelper'), via },
+      { expr: 'application.rosterManager.absentMethod', kind: 'method', source: line('absentMethod'), via },
+      { expr: 'local.record.save', kind: 'receiver', source: line('local.record.save'), via },
+      { expr: 'application.ghostService.run', kind: 'component', source: line('ghostService'), via },
+      { expr: 'parts/absent.cfm', kind: 'include', source: line('parts/absent.cfm'), via },
     ]);
     expect(closure.writes).toEqual([]);
   });
@@ -1265,11 +1637,20 @@ describe('unresolved references', () => {
         trigger: 'request',
         whereParams: ['siteid'],
         conditional: false,
+        columns: null,
+        via: ['cbranch.purge', 'rosterManager.purgeTables', 'rosterDAO.purgeAny'],
         dynamic: true,
       },
     ]);
     expect(closure.tables).toEqual([]);
-    expect(closure.unresolved).toEqual([{ expr: '#arguments.tbl#', kind: 'table', source: at(tree, ROSTER_DAO, 'DELETE FROM #arguments.tbl#') }]);
+    expect(closure.unresolved).toEqual([
+      {
+        expr: '#arguments.tbl#',
+        kind: 'table',
+        source: at(tree, ROSTER_DAO, 'DELETE FROM #arguments.tbl#'),
+        via: ['cbranch.purge', 'rosterManager.purgeTables', 'rosterDAO.purgeAny'],
+      },
+    ]);
   });
 
   it('dispatches a missing method to onMissingMethod', () => {
@@ -1281,15 +1662,15 @@ describe('unresolved references', () => {
 
   it('ends a self-referential assignment as an unresolved bean', () => {
     expect(walkClosureOf('walk/loop.cfc', 'selfRef').unresolved).toEqual([
-      { expr: 'variables.dao.save', kind: 'bean', source: at(walkTree, 'walk/loop.cfc', 'variables.dao.save') },
+      { expr: 'variables.dao.save', kind: 'bean', source: at(walkTree, 'walk/loop.cfc', 'variables.dao.save'), via: ['loop.selfRef'] },
     ]);
   });
 
   it('resolves this and super in a template against the template itself', () => {
     const closure = walkClosureOf('walk/page.cfm', '');
     expect(closure.unresolved).toEqual([
-      { expr: 'this.render', kind: 'method', source: at(walkTree, 'walk/page.cfm', 'this.render') },
-      { expr: 'super.save', kind: 'receiver', source: at(walkTree, 'walk/page.cfm', 'super.save') },
+      { expr: 'this.render', kind: 'method', source: at(walkTree, 'walk/page.cfm', 'this.render'), via: ['page.(template)'] },
+      { expr: 'super.save', kind: 'receiver', source: at(walkTree, 'walk/page.cfm', 'super.save'), via: ['page.(template)'] },
     ]);
     expect(closure.visited).toEqual(['walk/page.cfm#']);
   });
@@ -1314,7 +1695,9 @@ describe('dynamic tables and ORM saves', () => {
       ['tuserstags', 'delete', ROSTER_DAO, 'purgeDefault'],
     ]);
     const line = at(tree, ROSTER_DAO, 'function purgeDefault').lines[0] + 1;
-    expect(closure.unresolved).toEqual([{ expr: '#arguments.tbl#', kind: 'table', source: { path: ROSTER_DAO, lines: [line, line] } }]);
+    expect(closure.unresolved).toEqual([
+      { expr: '#arguments.tbl#', kind: 'table', source: { path: ROSTER_DAO, lines: [line, line] }, via: ['cbranch.tables', 'rosterDAO.purgeDefault'] },
+    ]);
   });
 
   it('records ORM saves and deletes through the entity table, and #getTable()# through the receiver', () => {
@@ -1330,7 +1713,7 @@ describe('dynamic tables and ORM saves', () => {
   it('leaves #variables.table# unresolved on a component that declares no table', () => {
     const closure = closureOf(BASE_DAO, 'clear');
     expect(closure.writes.map((w) => [w.table, w.dynamic])).toEqual([[null, true]]);
-    expect(closure.unresolved).toEqual([{ expr: '#variables.table#', kind: 'table', source: at(tree, BASE_DAO, 'DELETE FROM') }]);
+    expect(closure.unresolved).toEqual([{ expr: '#variables.table#', kind: 'table', source: at(tree, BASE_DAO, 'DELETE FROM'), via: ['baseDAO.clear'] }]);
   });
 
   it('passes literal table names through intermediate calls', () => {
@@ -1357,11 +1740,11 @@ describe('templates and includes', () => {
     expect(closure.conditionalWrites.map((c) => [c.table, c.condition])).toEqual([['treloads', 'rc.reload eq "true"']]);
     expect(closure.threads).toEqual([{ name: 'warmup', component: ON_START, method: '', source: at(tree, ON_START, '<cfthread', 2) }]);
     expect(closure.unresolved).toEqual([
-      { expr: 'extra-missing.cfm', kind: 'include', source: at(tree, 'app/extra.cfm', 'extra-missing.cfm') },
-      { expr: '../../outside.cfm', kind: 'include', source: at(tree, ON_START, 'outside.cfm') },
-      { expr: '#variables.dynamicTemplate#', kind: 'include', source: at(tree, ON_START, 'dynamicTemplate') },
-      { expr: 'missing.cfm', kind: 'include', source: at(tree, ON_START, 'missing.cfm') },
-      { expr: 'this.missingHelper', kind: 'method', source: at(tree, ON_START, 'missingHelper') },
+      { expr: 'extra-missing.cfm', kind: 'include', source: at(tree, 'app/extra.cfm', 'extra-missing.cfm'), via: ['onStart.(template)', 'extra.(template)'] },
+      { expr: '../../outside.cfm', kind: 'include', source: at(tree, ON_START, 'outside.cfm'), via: ['onStart.(template)'] },
+      { expr: '#variables.dynamicTemplate#', kind: 'include', source: at(tree, ON_START, 'dynamicTemplate'), via: ['onStart.(template)'] },
+      { expr: 'missing.cfm', kind: 'include', source: at(tree, ON_START, 'missing.cfm'), via: ['onStart.(template)'] },
+      { expr: 'this.missingHelper', kind: 'method', source: at(tree, ON_START, 'missingHelper'), via: ['onStart.(template)'] },
     ]);
     expect(closure.visited).toEqual([
       'app/extra.cfm#',
@@ -1476,6 +1859,8 @@ describe('writer overrides', () => {
         trigger: 'request',
         whereParams: ['userid', 'siteid'],
         conditional: false,
+        columns: null,
+        via: ['fixtureManager.refreshLogin'],
         override: 'wov:fixture-relogin',
       },
     ]);
@@ -1489,8 +1874,8 @@ describe('writer overrides', () => {
 
   it('settles the unresolved calls of an overridden method and records a tablesFrom override by id', () => {
     expect(closureOf(CBRANCH, 'sync').unresolved).toEqual([
-      { expr: 'getBean(variables.jobName).run', kind: 'bean', source: at(tree, ROSTER, 'getBean(variables.jobName)') },
-      { expr: 'local.job.save', kind: 'receiver', source: at(tree, ROSTER, 'local.job.save') },
+      { expr: 'getBean(variables.jobName).run', kind: 'bean', source: at(tree, ROSTER, 'getBean(variables.jobName)'), via: ['cbranch.sync', 'rosterManager.syncAll'] },
+      { expr: 'local.job.save', kind: 'receiver', source: at(tree, ROSTER, 'local.job.save'), via: ['cbranch.sync', 'rosterManager.syncAll'] },
     ]);
     const closure = closureOf(CBRANCH, 'sync', {}, rosterOverrides);
     expect(closure.unresolved).toEqual([]);
@@ -1502,8 +1887,8 @@ describe('writer overrides', () => {
     const closure = closureOf(CBRANCH, 'purge', {}, rosterOverrides);
     expect(closure.overrides).toEqual(['wov:roster-purge']);
     expect(closure.conditionalWrites).toEqual([
-      { table: 'tusersmemb', condition: "arguments.scope eq 'all'", source: at(tree, ROSTER, 'function purgeTables') },
-      { table: 'tuserstags', condition: "arguments.scope eq 'all'", source: at(tree, ROSTER, 'function purgeTables') },
+      { table: 'tusersmemb', condition: "arguments.scope eq 'all'", source: at(tree, ROSTER, 'function purgeTables'), via: ['cbranch.purge', 'rosterManager.purgeTables'] },
+      { table: 'tuserstags', condition: "arguments.scope eq 'all'", source: at(tree, ROSTER, 'function purgeTables'), via: ['cbranch.purge', 'rosterManager.purgeTables'] },
     ]);
     expect(closure.writes.filter((w) => w.override !== undefined).map((w) => [w.table, w.component, w.method, w.trigger, w.whereParams])).toEqual([
       ['tusersmemb', ROSTER, 'purgeTables', 'request', ['userid']],
@@ -1520,7 +1905,9 @@ describe('writer overrides', () => {
   it('applies a template override with a null method to that template alone and settles only its gaps', () => {
     const closure = closureOf(ON_START, '', { trigger: 'appstart' }, rosterOverrides);
     expect(closure.overrides).toEqual(['wov:start-settings']);
-    expect(closure.unresolved).toEqual([{ expr: 'extra-missing.cfm', kind: 'include', source: at(tree, 'app/extra.cfm', 'extra-missing.cfm') }]);
+    expect(closure.unresolved).toEqual([
+      { expr: 'extra-missing.cfm', kind: 'include', source: at(tree, 'app/extra.cfm', 'extra-missing.cfm'), via: ['onStart.(template)', 'extra.(template)'] },
+    ]);
     expect(closure.writes.filter((w) => w.override !== undefined)).toEqual([
       {
         table: 'tsettings',
@@ -1531,6 +1918,8 @@ describe('writer overrides', () => {
         trigger: 'appstart',
         whereParams: [],
         conditional: false,
+        columns: null,
+        via: ['onStart.(template)'],
         override: 'wov:start-settings',
       },
     ]);
@@ -1647,7 +2036,7 @@ describe('walk termination and merging', () => {
     expect(walkClosureOf('walk/cycleA.cfc', 'run').tables).toEqual(['tcycles']);
     const closure = walkClosureOf('walk/cycleA.cfc', 'start');
     expect(closure.writes.map((w) => [w.table, w.component, w.method])).toEqual([['tcycles', 'walk/cycleA.cfc', 'run']]);
-    expect(closure.unresolved).toEqual([{ expr: 'this.absent', kind: 'method', source: at(walkTree, 'walk/cycleA.cfc', 'this.absent') }]);
+    expect(closure.unresolved).toEqual([{ expr: 'this.absent', kind: 'method', source: at(walkTree, 'walk/cycleA.cfc', 'this.absent'), via: ['cycleA.start'] }]);
   });
 
   it.each<[string, Array<[string, boolean]>, string[]]>([

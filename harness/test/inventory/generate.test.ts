@@ -7,23 +7,35 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { openSourceTree } from '../../src/inventory/closure.js';
 import { loadDecisionList, loadExceptions } from '../../src/inventory/disposition.js';
-import type { Disposition, DispositionStep } from '../../src/inventory/disposition.js';
+import type { Disposition, DispositionStep, ExceptionsList } from '../../src/inventory/disposition.js';
 import {
   GENERATED_BY,
   INVENTORY_JSON,
   INVENTORY_MD,
+  adminFacts,
   checkInventory,
   firstJsonDifference,
   generateInventory,
   main,
+  serviceFacts,
   writeInventory,
 } from '../../src/inventory/generate.js';
-import type { DispositionFields, GenerateResult, GeneratedFinding, InventoryInputs, LegacyInventory } from '../../src/inventory/generate.js';
+import type {
+  DispositionFields,
+  EntryReferences,
+  GenerateResult,
+  GeneratedFinding,
+  InventoryInputs,
+  LegacyInventory,
+} from '../../src/inventory/generate.js';
+import { LIVE_SNAPSHOT_JSON, readLiveSnapshot, writeLiveSnapshot } from '../../src/inventory/live-snapshot.js';
 import { loadRoleOverrides, loadWriterOverrides } from '../../src/inventory/overrides.js';
 import { loadTableOwnership } from '../../src/inventory/tables.js';
 import type { TableOwnership } from '../../src/inventory/tables.js';
 import { runCli, UsageError } from '../../src/lib/cli.js';
 import { gitArchiveExtract } from '../../src/lib/git.js';
+import { createReadOnlyMssql } from '../../src/lib/mssql.js';
+import type { ReadOnlyMssql } from '../../src/lib/mssql.js';
 import { assertOutsideRepo, opt2Path } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
 import { stableStringify } from '../../src/lib/report.js';
@@ -46,11 +58,18 @@ vi.mock('../../src/lib/git.js', async (importOriginal) => ({
   gitArchiveExtract: vi.fn(),
 }));
 
+// main --live opens SQL Server from the environment, so the mock hands it a fake read-only client instead.
+vi.mock('../../src/lib/mssql.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/lib/mssql.js')>()),
+  createReadOnlyMssql: vi.fn(),
+}));
+
 vi.mock('../../src/inventory/overrides.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/inventory/overrides.js')>();
   return {
     ...actual,
     loadRoleOverrides: async (p?: string) => (p === undefined ? defaults.get('roleOverrides') : actual.loadRoleOverrides(p)),
+    loadViewPartials: async (p?: string) => (p === undefined ? defaults.get('viewPartials') : actual.loadViewPartials(p)),
     loadWriterOverrides: async (p?: string) => (p === undefined ? defaults.get('writerOverrides') : actual.loadWriterOverrides(p)),
   };
 });
@@ -81,6 +100,36 @@ vi.mock('../../src/inventory/routes.js', async (importOriginal) => {
     ...actual,
     extractRoutes: (tree: Parameters<typeof actual.extractRoutes>[0], opts: Parameters<typeof actual.extractRoutes>[1]) =>
       actual.extractRoutes(tree, { ...opts, fixtureTree: opts.fixtureTree ?? null }),
+  };
+});
+
+// Each front-end extraction a run makes, so the inventory can be held to the unreachable methods it returned.
+const frontEndRuns = vi.hoisted(() => [] as import('../../src/inventory/frontend.js').FrontEndExtraction[]);
+
+vi.mock('../../src/inventory/frontend.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/inventory/frontend.js')>();
+  return {
+    ...actual,
+    extractFrontEnd: async (...args: Parameters<typeof actual.extractFrontEnd>) => {
+      const result = await actual.extractFrontEnd(...args);
+      frontEndRuns.push(result);
+      return result;
+    },
+  };
+});
+
+// Each relation extraction a run makes, so the inventory can be held to the unoriented edges it returned.
+const relationRuns = vi.hoisted(() => [] as import('../../src/inventory/relations.js').RelationExtraction[]);
+
+vi.mock('../../src/inventory/relations.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/inventory/relations.js')>();
+  return {
+    ...actual,
+    extractRelations: (...args: Parameters<typeof actual.extractRelations>) => {
+      const result = actual.extractRelations(...args);
+      relationRuns.push(result);
+      return result;
+    },
   };
 });
 
@@ -219,7 +268,109 @@ const CONTENT_SERVER = lines(
   '</cfcomponent>',
 );
 
-/** The doaction loop and two doAction cases, modelled on standardEventsHandler.cfc:521-640. */
+/** Guard kinds with the prefix of their fixture methods and doactions, and the reason the generator records. */
+const GUARD_CASES = [
+  ['cluster-broadcast', 'cluster', 'environment.ts asserts no broadcasting/peers (AAP 0.5.4)'],
+  ['site-load', 'site', 'loads a site missing from the registry, which start-up fills and the projector refreshes after every site change'],
+  ['entity-load', 'entity', 'declares a stored dynamic entity the factory lacks, which start-up and declareEntity register'],
+  ['trash-restore', 'trash', 'runs only for a bean carrying fromMuraTrash, which ctrash.restore sets (decision list)'],
+] as const;
+
+const GUARDS_PATH = 'core/mura/fixture/fixtureGuards.cfc';
+const GUARD_WRITE = '\t\t\tqueryExecute("DELETE FROM tfixturenopk WHERE siteid = :siteid", {siteid="default"});';
+const TRASH_FLAG = ['\t\tvar doPurge = false;', '\t\tif (arguments.restored.valueExists("fromMuraTrash")) {', '\t\t\tdoPurge = true;', '\t\t}'];
+
+/** Per guard kind, a write in its guarded branch and one in the opposite branch; `count` writes the table unguarded. */
+const FIXTURE_GUARDS = scriptCfc(
+  'extends="mura.cfobject"',
+  '\tpublic any function clusterGuarded() {',
+  '\t\tif (variables.broadcastClusterCommands) {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function clusterOpen() {',
+  '\t\tif (variables.broadcastClusterCommands) {',
+  '\t\t\treturn;',
+  '\t\t} else {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function siteGuarded(required string siteid) {',
+  '\t\tif (structKeyExists(variables.sites, arguments.siteid)) {',
+  '\t\t\treturn;',
+  '\t\t} else {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function siteOpen(required string siteid) {',
+  '\t\tif (structKeyExists(variables.sites, arguments.siteid)) {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function entityGuarded() {',
+  "\t\tif (super.containsBean( 'entity' )) {",
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function entityOpen() {',
+  "\t\tif (super.containsBean( 'entity' )) {",
+  '\t\t\treturn;',
+  '\t\t} else {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function trashGuarded(required any restored) {',
+  ...TRASH_FLAG,
+  '\t\tif (doPurge) {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function trashOpen(required any restored) {',
+  ...TRASH_FLAG,
+  '\t\tif (doPurge) {',
+  '\t\t\treturn;',
+  '\t\t} else {',
+  GUARD_WRITE,
+  '\t\t}',
+  '\t}',
+  '\tpublic any function count() {',
+  '\t\tqueryExecute("UPDATE tfixturenopk SET siteid = :siteid", {siteid="default"});',
+  '\t}',
+  // A bean save under a configuration setting, modelled on userUtility.cfc:419-432.
+  '\tpublic any function configLocal() {',
+  "\t\tvar autoresetpasswords = variables.configBean.getValue('autoresetpasswords');",
+  "\t\tvar record = getBean('fixtureRecordBean');",
+  '\t\tif (autoresetpasswords) {',
+  '\t\t\trecord.save();',
+  '\t\t}',
+  '\t}',
+  '\tpublic any function configInline() {',
+  "\t\tvar record = getBean('fixtureRecordBean');",
+  "\t\tif (variables.configBean.getValue('autoresetpasswords')) {",
+  '\t\t\trecord.save();',
+  '\t\t}',
+  '\t}',
+);
+
+/** Configuration-guard doactions with the guard conjunct the closure records. */
+const CONFIG_CASES = [
+  ['a setting held in a local', 'configLocal', 'autoresetpasswords'],
+  ['a setting read in the guard', 'configInline', "variables.configBean.getValue('autoresetpasswords')"],
+] as const;
+
+/** doAction cases calling each guard kind's guarded branch, its opposite branch, and its guarded branch with `count`. */
+const GUARD_DOACTIONS = GUARD_CASES.flatMap(([, prefix]) => {
+  const args = prefix === 'site' ? "'default'" : prefix === 'trash' ? 'arguments.event' : '';
+  const call = (method: string): string => `<cfset getBean('fixtureGuards').${method}(${method === 'count' ? '' : args})>`;
+  const cases: [value: string, body: string][] = [
+    [`${prefix}Guarded`, call(`${prefix}Guarded`)],
+    [`${prefix}Open`, call(`${prefix}Open`)],
+    [`${prefix}Mixed`, call(`${prefix}Guarded`) + call('count')],
+  ];
+  return cases.flatMap(([value, body]) => [`\t\t<cfcase value="${value}">`, `\t\t\t${body}`, '\t\t</cfcase>']);
+});
+
+/** The doaction loop and its doAction cases, modelled on standardEventsHandler.cfc:521-640. */
 const EVENTS_HANDLER = lines(
   '<cfcomponent extends="mura.cfobject" output="false">',
   '<cffunction name="standardDoActionsHandler" output="false">',
@@ -243,6 +394,8 @@ const EVENTS_HANDLER = lines(
   '\t\t<cfcase value="broadcast">',
   "\t\t\t<cfset getBean('fixtureCluster').broadcast('reload')>",
   '\t\t</cfcase>',
+  ...GUARD_DOACTIONS,
+  ...CONFIG_CASES.flatMap(([, method]) => [`\t\t<cfcase value="${method}">`, `\t\t\t<cfset getBean('fixtureGuards').${method}()>`, '\t\t</cfcase>']),
   '\t</cfswitch>',
   '</cffunction>',
   '</cfcomponent>',
@@ -339,6 +492,14 @@ const INLINE: Readonly<Record<string, string>> = {
     '\t\treturn new mura.client.api.#arguments.type#.#arguments.version#.#arguments.type#ApiUtility(siteid=variables.instance.siteid);',
     '\t}',
   ),
+  // A join of two primary keys: no key side, so the edge is unoriented.
+  'core/mura/fixture/fixtureStatsIterator.cfc': scriptCfc(
+    'extends="mura.cfobject"',
+    '\tpublic query function read() {',
+    '\t\treturn queryExecute("SELECT f.name FROM tfixture f INNER JOIN tfixturestats s ON s.statID = f.fixtureID");',
+    '\t}',
+  ),
+  [GUARDS_PATH]: FIXTURE_GUARDS,
   'core/mura/fixture/fixtureCluster.cfc': scriptCfc(
     'extends="mura.cfobject"',
     '\tpublic any function broadcast(required string command) {',
@@ -352,6 +513,19 @@ const INLINE: Readonly<Record<string, string>> = {
     '\tpublic any function save() {',
     "\t\tgetBean('fixtureDAO').update(userid=variables.userid, name=variables.name);",
     '\t\treturn this;',
+    '\t}',
+  ),
+  // Remote methods the core/mura request guard keeps HTTP from, modelled on muraProxy.cfc.
+  'core/mura/fixture/fixtureProxy.cfc': scriptCfc(
+    'extends="mura.cfobject"',
+    '\tremote any function login(required string username) {',
+    '\t\treturn "";',
+    '\t}',
+    '\tpublic any function helper() {',
+    '\t\treturn true;',
+    '\t}',
+    '\tremote any function callWithStringArgs(required string serviceName) {',
+    '\t\treturn "";',
     '\t}',
   ),
   'core/mura/fixture/fixtureUserBean.cfc': lines(
@@ -420,10 +594,12 @@ const TOP_LEVEL_KEYS = [
   'controllers',
   'coreMuraActionSearch',
   'frontEnd',
+  'unreachableRemote',
   'scheduledJobs',
   'routes',
   'tables',
   'relations',
+  'unorientedRelations',
   'storedProcedureCheck',
   'findings',
 ];
@@ -521,6 +697,7 @@ function disposedItems(inv: LegacyInventory): (DispositionFields & { id: string 
   return [
     ...inv.controllers.flatMap((c) => c.actions.flatMap((a) => a.variants)),
     ...inv.frontEnd,
+    ...inv.unreachableRemote,
     ...inv.scheduledJobs.flatMap((j) => j.steps),
     ...inv.routes,
     ...inv.entities,
@@ -555,6 +732,7 @@ beforeAll(async () => {
   committedBefore = await Promise.all(COMMITTED.map(fileState));
   inputs = {
     roleOverrides: await loadRoleOverrides(fixturePath('inventory/role-overrides.valid.yaml')),
+    viewPartials: { sourceSha: pin.sha, partials: [] },
     writerOverrides: await loadWriterOverrides(fixturePath('inventory/writer-overrides.valid.yaml')),
     variants: { sourceSha: pin.sha, variants: VARIANTS },
     ownership: withFixtureTables(await loadTableOwnership(fixturePath('inventory/mini-table-ownership.json'))),
@@ -596,10 +774,12 @@ describe('first run', () => {
       services: inv.services,
       controllers: inv.controllers,
       frontEnd: inv.frontEnd,
+      unreachableRemote: inv.unreachableRemote,
       scheduledJobs: inv.scheduledJobs,
       routes: inv.routes,
       tables: inv.tables,
       relations: inv.relations,
+      unorientedRelations: inv.unorientedRelations,
     };
     for (const [key, items] of Object.entries(arrays)) {
       const ids = items.map((item) => item.id);
@@ -657,14 +837,18 @@ describe('first run', () => {
     expect(counts.controllers.variants).toBe(inv.controllers.reduce((n, c) => n + c.actions.reduce((m, a) => m + a.variants.length, 0), 0));
     expect(counts.coreMuraActionFiles).toBe(inv.coreMuraActionSearch.filesMentioning);
     expect(counts.frontEnd).toBe(inv.frontEnd.length);
+    expect(counts.unreachableRemote).toBe(inv.unreachableRemote.length);
     expect(counts.scheduledJobs).toEqual({
       jobs: inv.scheduledJobs.length,
       siteMonitorSteps: inv.scheduledJobs.reduce((n, j) => n + j.steps.length, 0),
     });
     expect(Object.values(counts.routes).reduce((n, c) => n + c, 0)).toBe(inv.routes.length);
-    expect(counts.tables.staticTotal + counts.tables.fixture + counts.tables.dynamic + counts.tables.liveOnly).toBe(inv.tables.length);
+    expect(counts.tables.staticTotal + counts.tables.retired + counts.tables.fixture + counts.tables.dynamic + counts.tables.liveOnly).toBe(
+      inv.tables.length,
+    );
     expect(counts.relations.relations).toBe(inv.relations.length);
-    const sections = [inv.entities, inv.services, inv.controllers, inv.frontEnd, inv.scheduledJobs, inv.routes, inv.tables];
+    expect(counts.relations.unknownOrientation).toBe(inv.unorientedRelations.length);
+    const sections = [inv.entities, inv.services, inv.controllers, inv.frontEnd, inv.unreachableRemote, inv.scheduledJobs, inv.routes, inv.tables];
     expect(sections.every((a) => a.length > 0)).toBe(true);
   });
 
@@ -678,15 +862,57 @@ describe('first run', () => {
     expect(markdown.endsWith('\n') && !markdown.endsWith('\n\n')).toBe(true);
   });
 
-  it('leaves a write reached only under an environment guard out of the disposition write set', () => {
+  it('records a write reached only under an environment guard as a conditional write, outside the write set', () => {
     expect(first.inventory.frontEnd.find((e) => e.id === 'fe:doaction=broadcast')).toMatchObject({
-      writeSet: ['tclustercommands'],
-      environmentExcludedWrites: ['tclustercommands'],
+      writeSet: [],
+      conditionalWrites: [
+        expect.objectContaining({ kind: 'cluster-broadcast', unit: null, legacyTable: 'tclustercommands', op: 'insert', guard: GUARD_CASES[0][2] }),
+      ],
       owners: [],
     });
     expect(first.inventory.findings).toContainEqual(
       expect.objectContaining({ kind: 'unmatched-write', source: { path: 'core/mura/fixture/fixtureCluster.cfc', lines: [4, 4] } }),
     );
+  });
+
+  it.each(GUARD_CASES)('keeps a %s write only under its guard out of the write set, and a table also written unguarded in it', (kind, prefix, guard) => {
+    const entry = (branch: string) => first.inventory.frontEnd.find((e) => e.id === `fe:doaction=${prefix}${branch}`);
+    const at = (method: string) => ({
+      unit: 'content.fixture_nopk',
+      legacyTable: 'tfixturenopk',
+      source: expect.objectContaining({ path: GUARDS_PATH }),
+      via: expect.arrayContaining([`fixtureGuards.${method}`]),
+    });
+    const guarded = expect.objectContaining({ kind, op: 'delete', guard, ...at(`${prefix}Guarded`) });
+    expect(entry('Guarded')).toMatchObject({ writeSet: [], conditionalWrites: [guarded], owners: [] });
+    expect(entry('Open')).toMatchObject({
+      writeSet: [expect.objectContaining({ op: 'delete', condition: expect.any(String), override: null, ...at(`${prefix}Open`) })],
+      conditionalWrites: [],
+      owners: ['strategies-content'],
+    });
+    expect(entry('Mixed')).toMatchObject({
+      writeSet: [expect.objectContaining({ op: 'update', condition: null, override: null, ...at('count') })],
+      conditionalWrites: [guarded],
+      owners: ['strategies-content'],
+    });
+  });
+
+  it.each(CONFIG_CASES)('keeps a bean save under %s in the write set, conditioned on it', (_label, method, conjunct) => {
+    const entry = first.inventory.frontEnd.find((e) => e.id === `fe:doaction=${method}`);
+    expect(entry).toMatchObject({
+      writeSet: [
+        expect.objectContaining({
+          unit: 'people.fixture',
+          legacyTable: 'tfixture',
+          op: 'update',
+          via: expect.arrayContaining([`fixtureGuards.${method}`, 'fixtureRecordBean.save', 'fixtureDAO.update']),
+          override: null,
+        }),
+      ],
+      conditionalWrites: [],
+      owners: ['people'],
+    });
+    expect(entry?.writeSet[0]?.condition?.split(' && ')).toContain(conjunct);
   });
 
   it('disposes a split table once per target unit', () => {
@@ -700,6 +926,274 @@ describe('first run', () => {
 
   it('writes only the two inventory files into the output directory', async () => {
     expect((await readdir(outA)).sort(compareText)).toEqual([INVENTORY_JSON, INVENTORY_MD].sort(compareText));
+  });
+});
+
+const PROXY = 'core/mura/fixture/fixtureProxy.cfc';
+const PROXY_GUARD = 'core/mura/Application.cfc:6-9';
+
+describe('unreachable remote methods', () => {
+  it('keeps every remote method the front-end extraction found unreachable, and counts it', () => {
+    const extracted = frontEndRuns[0]?.unreachableRemote ?? [];
+    const inv = first.inventory;
+    expect(extracted.length).toBeGreaterThan(0);
+    expect(inv.counts.unreachableRemote).toBe(extracted.length);
+    expect(inv.unreachableRemote.map((u) => ({ id: u.id, component: u.component, method: u.method, line: u.source.lines[0], guard: u.guard }))).toEqual(
+      extracted
+        .map((r) => ({ id: `fe:unreachable:${r.path.toLowerCase()}#${r.method}`, component: r.path, method: r.method, line: r.line, guard: r.guard }))
+        .sort((a, b) => compareText(a.id, b.id)),
+    );
+  });
+
+  it.each([
+    { method: 'callWithStringArgs', span: [8, 10] },
+    { method: 'login', span: [2, 4] },
+  ])('retires $method at rule step 1 with its declaration span and guard, and routes nothing to it', ({ method, span }) => {
+    const id = `fe:unreachable:${PROXY.toLowerCase()}#${method}`;
+    const inv = first.inventory;
+    expect(inv.unreachableRemote.find((u) => u.id === id)).toEqual({
+      id,
+      component: PROXY,
+      method,
+      source: { path: PROXY, lines: span },
+      guard: PROXY_GUARD,
+      routeKey: null,
+      owningService: null,
+      owners: [],
+      ownerBasis: 'none',
+      disposition: 'retired',
+      dispositionStep: 1,
+      dispositionReason: 'unreachable over HTTP or the scheduler at the pinned SHA',
+      withheld: false,
+      legacyWrite: false,
+      haltedBy: null,
+      protocol: null,
+      decisionListRef: null,
+      decisionListGap: false,
+      correction: null,
+    });
+    expect([...inv.frontEnd, ...inv.routes].filter((e) => e.source.path === PROXY)).toEqual([]);
+    expect(first.markdown).toContain(`| \`${id}\` | \`${PROXY}:${String(span[0])}-${String(span[1])}\` | \`${PROXY_GUARD}\` | — | retired (1) |`);
+  });
+});
+
+describe('live run', () => {
+  const BROWSER = 'core/modules/v1/filebrowser/model/beans/filebrowser.cfc';
+  const VERSIONED_BASE = 'core/mura/bean/beanORMVersioned.cfc';
+  const registration = (fields: Record<string, unknown>): Record<string, unknown> => ({
+    table: null,
+    componentPath: null,
+    versioned: null,
+    bundleable: null,
+    historical: null,
+    registrationComplete: true,
+    origin: 'core',
+    ...fields,
+  });
+  const PROBE = {
+    generatedAt: '2026-11-13T00:00:00Z',
+    bundleableBeans: [],
+    versionedBeans: [],
+    entities: [
+      registration({
+        name: 'filebrowser',
+        table: 'm_filebrowser',
+        componentPath: 'muraWRM.core.modules.v1.filebrowser.model.beans.filebrowser',
+        origin: 'other',
+      }),
+    ],
+  };
+  const column = (table: string, name: string, ordinal: number): Record<string, unknown> => ({
+    TABLE_SCHEMA: 'dbo',
+    TABLE_NAME: table,
+    COLUMN_NAME: name,
+    DATA_TYPE: 'char',
+    CHARACTER_MAXIMUM_LENGTH: 35,
+    IS_NULLABLE: 'NO',
+    ORDINAL_POSITION: ordinal,
+  });
+  const CATALOG = {
+    tables: ['tfixture', 'tfixturestats'].map((name) => ({ TABLE_SCHEMA: 'dbo', TABLE_NAME: name })),
+    columns: [column('tfixture', 'fixtureID', 1), column('tfixture', 'SiteID', 2), column('tfixturestats', 'statID', 1)],
+    keys: [{ TABLE_SCHEMA: 'dbo', TABLE_NAME: 'tfixture', COLUMN_NAME: 'fixtureID', ORDINAL_POSITION: 1 }],
+  };
+  const db: ReadOnlyMssql = {
+    readOnlyQuery<T>(sql: string): Promise<T[]> {
+      if (sql.includes('INFORMATION_SCHEMA.TABLE_CONSTRAINTS')) return Promise.resolve(CATALOG.keys as T[]);
+      if (sql.includes('INFORMATION_SCHEMA.COLUMNS')) return Promise.resolve(CATALOG.columns as T[]);
+      if (sql.includes('INFORMATION_SCHEMA.TABLES')) return Promise.resolve(CATALOG.tables as T[]);
+      return Promise.resolve([]);
+    },
+    close: () => Promise.resolve(),
+  };
+  let inv: LegacyInventory;
+  let liveResult: GenerateResult;
+  let liveDir = '';
+  let probe: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    liveDir = path.join(tempRoot, 'archive-live');
+    await cp(archiveDir, liveDir, { recursive: true });
+    await mkdir(path.dirname(path.join(liveDir, BROWSER)), { recursive: true });
+    await writeFile(
+      path.join(liveDir, BROWSER),
+      lines('component entityname="filebrowser" extends="mura.bean.bean" table="m_filebrowser" {', '\tproperty name="filebrowserid" fieldtype="id";', '}'),
+      'utf8',
+    );
+    // The versioned base declares the siteID column of the ORM entity that extends it, as beanORMVersioned.cfc:80 does.
+    await mkdir(path.dirname(path.join(liveDir, VERSIONED_BASE)), { recursive: true });
+    await writeFile(
+      path.join(liveDir, VERSIONED_BASE),
+      lines('component extends="mura.bean.beanORM" {', '\tproperty name="site" fieldtype="many-to-one" cfc="site" fkcolumn="siteID";', '}'),
+      'utf8',
+    );
+    const fetch = vi.fn(async () => new Response(JSON.stringify(PROBE), { status: 200, headers: { 'content-type': 'application/json' } }));
+    probe = fetch;
+    liveResult = await run({ sourceTree: openSourceTree(liveDir), live: { origin: 'http://legacy.invalid:8080', db, fixturesLoaded: false, fetch } });
+    inv = liveResult.inventory;
+  });
+
+  it('completes with live table, siteID and stored-procedure figures', () => {
+    expect(inv.counts.liveStatus).toBe('live');
+    expect([inv.counts.tables.live, inv.counts.tables.withSiteIdLive, inv.counts.storedProcedures.live]).toEqual([2, 1, 0]);
+    expect(inv.storedProcedureCheck.live).toMatchObject({ procedures: 0, triggers: 0, functions: 0, total: 0, takenBeforeFixtures: true });
+  });
+
+  it('carries the live catalog key into tables[] beside the static one', () => {
+    expect(inv.tables.find((t) => t.table === 'tfixturestats')).toMatchObject({
+      primaryKey: [],
+      hasPrimaryKey: false,
+      hasPrimaryKeyLive: false,
+      staticPrimaryKey: ['statID'],
+      staticHasPrimaryKey: true,
+    });
+  });
+
+  it('gives a registration whose declared table no tables[] entry lists no writes, and reports it', () => {
+    expect(inv.entities.find((e) => e.id === 'ent:dynamic:filebrowser')).toMatchObject({
+      source: { path: BROWSER, lines: [1, 1] },
+      table: 'm_filebrowser',
+      writesTables: null,
+      owners: [],
+      disposition: 'carry',
+    });
+    expect(inv.findings).toContainEqual({
+      kind: 'absent-entity-table',
+      id: 'ent:dynamic:filebrowser',
+      source: { path: BROWSER, lines: [1, 1] },
+      detail: 'filebrowser declares table m_filebrowser, which no tables[] entry lists; the entity writes nothing to it',
+    });
+  });
+
+  it('explains the static siteID count by origin and inherited column, adding the live figure on a live run', () => {
+    const detail = (i: LegacyInventory): string | null | undefined =>
+      i.findings.find((f) => f.kind === 'count-difference' && f.measure === 'tables.withSiteId')?.detail;
+    expect(detail(first.inventory)).toBe('siteID on 2 bootstrap, 1 migration and 0 ORM-only tables');
+    expect(detail(inv)).toBe(
+      'siteID on 2 bootstrap, 1 migration and 1 ORM-only tables; ' +
+        'inherited from a base component: tfixtureversioned (core/mura/bean/beanORMVersioned.cfc:2); ' +
+        'live catalog 1, tables absent live: tfixturemigrated, tfixtureversioned, siteID absent live: tfixturestats',
+    );
+  });
+
+  it('states the static and live table and siteID figures in the Markdown', () => {
+    const { staticTotal, live, withSiteIdStatic, withSiteIdLive } = inv.counts.tables;
+    for (const [item, value] of Object.entries({ staticTotal, live, withSiteIdStatic, withSiteIdLive })) {
+      expect(liveResult.markdown).toContain(`| tables | ${item} | ${String(value)} |`);
+    }
+    expect(liveResult.markdown).toContain('- Stored procedures: static 0, live 0;');
+  });
+
+  it('rebuilds the same inventory and Markdown from the written snapshot without querying the live sources', async () => {
+    const dir = path.join(outRoot, 'live-replay');
+    await writeLiveSnapshot(liveResult.liveSnapshot ?? expect.unreachable('a live run returns its snapshot'), dir);
+    const probes = probe.mock.calls.length;
+    const replay = await run({ sourceTree: openSourceTree(liveDir), liveSnapshot: await readLiveSnapshot(path.join(dir, LIVE_SNAPSHOT_JSON)) });
+    expect(probe.mock.calls.length).toBe(probes);
+    expect(stableStringify(replay.inventory)).toBe(stableStringify(inv));
+    expect(replay.markdown).toBe(liveResult.markdown);
+    expect(replay.liveSnapshot).toEqual(liveResult.liveSnapshot);
+  });
+
+  it('takes live sources or a snapshot, not both', async () => {
+    await expect(
+      run({ sourceTree: openSourceTree(liveDir), live: { origin: 'http://legacy.invalid:8080', db, fixturesLoaded: false }, liveSnapshot: liveResult.liveSnapshot }),
+    ).rejects.toThrow('generateInventory takes live sources or a live snapshot, not both');
+  });
+});
+
+
+describe('unoriented relations', () => {
+  it('keeps every unoriented edge the relation extraction returned apart from relations[], counts it and renders it', () => {
+    const extracted = relationRuns[0]?.unoriented ?? [];
+    const inv = first.inventory;
+    expect(extracted.length).toBeGreaterThan(0);
+    expect(inv.unorientedRelations).toEqual(extracted);
+    expect(inv.counts.relations.unknownOrientation).toBe(inv.unorientedRelations.length);
+    const ordered = new Set(inv.relations.map((r) => r.id));
+    expect(inv.unorientedRelations.filter((r) => ordered.has(r.id) || r.orientation !== 'unknown')).toEqual([]);
+    for (const r of inv.unorientedRelations) {
+      expect(first.markdown).toContain(`| \`${r.id}\` | ${r.kind} | \`${r.source.path}:${String(r.source.lines[0])}\` |`);
+    }
+  });
+});
+
+describe('entry references', () => {
+  type Referenced = EntryReferences & Pick<DispositionFields, 'haltedBy'> & { id: string };
+  const REF = 'AAP 0.3.2';
+  const HALTED = 'EX-TEST-HALTED';
+  const FIX = 'EX-TEST-FIX';
+
+  /** Action variants, front-end entries and routes of `inv`, by id. */
+  function entriesOf(inv: LegacyInventory): Map<string, Referenced> {
+    const entries: Referenced[] = [...inv.controllers.flatMap((c) => c.actions.flatMap((a) => a.variants)), ...inv.frontEnd, ...inv.routes];
+    return new Map(entries.map((e) => [e.id, e]));
+  }
+
+  let held: Map<string, Referenced>;
+  beforeAll(async () => {
+    const exceptions: ExceptionsList = {
+      sourceSha: pin.sha,
+      entries: [
+        { id: FIX, routeKey: 'admin:cfixture.list', appliesTo: ['rest:user.findone'], decision: 'fix', status: 'open' },
+        {
+          id: HALTED,
+          routeKey: 'admin:cfixture.update{action=add}',
+          appliesTo: ['page:render', 'api:user.findone', 'admin:cfixture.remove*'],
+          decision: 'preserve',
+          status: 'halted',
+        },
+      ],
+    };
+    held = entriesOf((await run({ inputs: { ...inputs, exceptions } })).inventory);
+  });
+
+  it('gives every action variant, front-end entry and route both references', () => {
+    const entries = [...entriesOf(first.inventory).values()];
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.filter((e) => !('exceptionRef' in e) || !('expected' in e))).toEqual([]);
+  });
+
+  it.each([
+    ['ctl:cfixture.update{action=add}', null],
+    ['fe:render', { disposition: 'legacy-served', owningService: 'reporting', ref: REF }],
+    ['api:user.delete', { disposition: 'decision', owningService: null, ref: REF }],
+    ['rest:group.findone', { disposition: 'carry', owningService: 'identity', ref: REF }],
+    ['rte:/tasks/widgets', { disposition: 'legacy-served', owningService: null, ref: REF }],
+  ])('records the plan expectation of %s as %j', (id, expected) => {
+    expect(entriesOf(first.inventory).get(id)?.expected).toEqual(expected);
+  });
+
+  it.each([
+    ['ctl:cfixture.update{action=add}', HALTED, HALTED],
+    ['ctl:cfixture.remove{confirmed}', HALTED, HALTED],
+    ['fe:render', HALTED, HALTED],
+    ['api:user.findone', HALTED, HALTED],
+    ['ctl:cfixture.list', null, FIX],
+    ['rest:user.findone', null, FIX],
+    ['ctl:cfixture.update', null, null],
+  ])('gives %s the exceptionRef %s and haltedBy %s', (id, exceptionRef, haltedBy) => {
+    expect(held.get(id)).toMatchObject({ exceptionRef, haltedBy });
   });
 });
 
@@ -853,6 +1347,47 @@ describe('main', () => {
     expect(await readFile(path.join(copy.dir, INVENTORY_MD), 'utf8')).toBe(copy.markdown);
   });
 
+  it('writes a --live run snapshot beside the inventory, which --check replays and holds the inventory to', async () => {
+    const out = path.join(outRoot, 'main-live');
+    const snapshotFile = path.join(out, LIVE_SNAPSHOT_JSON);
+    const liveDb = { readOnlyQuery: () => Promise.resolve([]), close: vi.fn(() => Promise.resolve()) } as ReadOnlyMssql & { close: ReturnType<typeof vi.fn> };
+    vi.mocked(createReadOnlyMssql).mockResolvedValue(liveDb);
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ generatedAt: '2026-11-13T00:00:00Z', bundleableBeans: [], versionedBeans: [], entities: [] })));
+    try {
+      expect(await main(['--live', '--out', out], { LEGACY_ORIGIN: 'http://legacy.invalid:8080', OPT2_STATE_DIR: path.join(tempRoot, 'state') })).toEqual({
+        summary: expect.objectContaining({
+          liveStatus: 'live',
+          liveSnapshot: snapshotFile,
+          wrote: [path.join(out, INVENTORY_JSON), path.join(out, INVENTORY_MD), snapshotFile],
+        }),
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(liveDb.close).toHaveBeenCalledTimes(1);
+    const check = (): Promise<unknown> => main(['--check', '--out', out]);
+    expect(await check()).toMatchObject({
+      code: 0,
+      summary: { liveStatus: 'live', liveSnapshot: snapshotFile, wrote: [], check: { json: { match: true }, markdown: { match: true } } },
+    });
+
+    // One changed byte in the inventory fails the check.
+    const json = await readFile(path.join(out, INVENTORY_JSON), 'utf8');
+    await writeFile(path.join(out, INVENTORY_JSON), json.replace('"liveStatus": "live"', '"liveStatus": "livE"'), 'utf8');
+    expect(await check()).toMatchObject({ code: 1, summary: { check: { json: { match: false }, markdown: { match: true } } } });
+    await writeFile(path.join(out, INVENTORY_JSON), json, 'utf8');
+
+    // A snapshot that no longer matches the inventory fails it at the replayed field.
+    const snapshot = JSON.parse(await readFile(snapshotFile, 'utf8')) as { storedProcedures: { checkedAt: string } };
+    snapshot.storedProcedures.checkedAt = '2000-01-01T00:00:00.000Z';
+    await writeFile(snapshotFile, stableStringify(snapshot), 'utf8');
+    expect(await check()).toMatchObject({ code: 1, summary: { check: { json: { match: false, firstDifference: '$.storedProcedureCheck.live.checkedAt' } } } });
+
+    // Without a snapshot the run is pending-run, so the live inventory no longer matches.
+    await rm(snapshotFile);
+    expect(await check()).toMatchObject({ code: 1, summary: { liveStatus: 'pending-run', liveSnapshot: null, check: { json: { match: false } } } });
+  });
+
   it('exits 1 and names the gate when a before() gate matches no pattern or override', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     defaults.state.inputs = {
@@ -875,6 +1410,7 @@ describe('main', () => {
   it.each([
     { argv: ['--bogus'], code: 2 },
     { argv: ['--out', ''], code: 2 },
+    { argv: ['--check', '--live'], code: 2 },
     { argv: ['--help'], code: 0 },
   ])('exits $code for $argv', async ({ argv, code }) => {
     const written: string[] = [];
@@ -888,6 +1424,27 @@ describe('main', () => {
     extract.mockClear();
     await expect(main(['--live'], {})).rejects.toThrow(UsageError);
     expect(extract).not.toHaveBeenCalled();
+  });
+});
+
+describe('rule facts', () => {
+  it.each([
+    ['admin:razuna.getnodes', { servesTable: 'trazunasettings' }],
+    ['admin:carch.loadRepoManager', { runtimeCategory: 'framework-error' }],
+    ['admin:csettings.sitecopyselect', { servesBranch: 'admin:csettings.sitecopy' }],
+    ['admin:cplugins.list', { runtimeCategory: 'plugin' }],
+    ['admin:carch.emailtest', {}],
+  ])('gives the admin route %s the facts %j', (routeKey, fact) => {
+    expect(adminFacts(routeKey)).toEqual(fact);
+  });
+
+  it.each([
+    ['core/mura/MasaScope.cfc', { runtimeCategory: 'theme-render' }],
+    ['core/mura/content/file/razuna/razunaAPI.cfc', { servesTable: 'trazunasettings' }],
+    ['core/mura/formBuilder/formBuilderManager.cfc', { webRootFilesystem: true }],
+    ['core/mura/email/emailManager.cfc', {}],
+  ])('gives the component %s the facts %j', (componentPath, fact) => {
+    expect(serviceFacts(componentPath)).toEqual(fact);
   });
 });
 
