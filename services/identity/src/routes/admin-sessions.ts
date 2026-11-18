@@ -8,6 +8,7 @@ import {
   adminUrl,
   cfIsBoolean,
   cfListToArray,
+  cfLocationHeader,
   cfToBoolean,
   deleteCookieLegacy,
   javaTrim,
@@ -97,7 +98,10 @@ const PARAM_CRITERION = {
   properties: { Field: TEXT, Relationship: TEXT, Criteria: TEXT, Condition: TEXT },
 } as const;
 
-// The contract's AdminSessionState; the save drops its read-only `hasdefaultpassword`, which only login sets.
+/** Admin-state keys login sets, which the user-facing save drops; the gateway's import keeps legacy's `blockLoginUntil`. */
+const LOGIN_SET_KEYS: ReadonlySet<string> = new Set([LOGIN_SESSION_KEYS.hasDefaultPassword, LOGIN_SESSION_KEYS.blockLoginUntil]);
+
+// The contract's AdminSessionState.
 export const ADMIN_STATE_BODY = {
   type: 'object',
   additionalProperties: false,
@@ -127,6 +131,7 @@ export const ADMIN_STATE_BODY = {
     flash: { type: 'object', additionalProperties: { type: 'object', additionalProperties: TEXT } },
     nextPreserveKey: INTEGER,
     hasdefaultpassword: { type: 'boolean' },
+    blockLoginUntil: { type: 'string', pattern: '^(|\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3})$' },
     moduleTopIds: { type: 'object', additionalProperties: TEXT },
     mura: { type: 'object', additionalProperties: true },
   },
@@ -138,7 +143,7 @@ const ADMIN_STATE_SAVE_BODY = {
   properties: { ...ADMIN_STATE_BODY.properties, muraBase: { type: 'object', additionalProperties: true } },
 } as const;
 
-/** Every key of the contract's AdminSessionState but the write-only `muraBase`; other stored values, such as login's `blockLoginUntil`, stay internal. */
+/** Every key of the contract's AdminSessionState but the write-only `muraBase`; other stored values stay internal. */
 const ADMIN_STATE_KEYS = Object.keys({
   siteid: true,
   userFilesPath: true,
@@ -165,6 +170,7 @@ const ADMIN_STATE_KEYS = Object.keys({
   flash: true,
   nextPreserveKey: true,
   hasdefaultpassword: true,
+  blockLoginUntil: true,
   moduleTopIds: true,
   mura: true,
 } satisfies Record<Exclude<keyof AdminState, 'muraBase'>, true>) as ReadonlyArray<keyof AdminState>;
@@ -395,25 +401,26 @@ function loginDataOf(rc: Rc): LoginData {
   };
 }
 
-/** loginManager `handleSuccess` redirect target; S2IsPrivate users get the same target [legacy: core/mura/login/loginManager.cfc:110-156]. */
+/** loginManager `handleSuccess` redirect as its `location()` sends it; S2IsPrivate users get the same target [legacy: core/mura/login/loginManager.cfc:110-156]. */
 async function successLocation(db: TenantDb, data: LoginData, sessionSiteId: string): Promise<string> {
-  if (data.returnUrl === '') return data.linkServID === '' ? './' : `./?LinkServID=${data.linkServID}`;
+  if (data.returnUrl === '') return cfLocationHeader(data.linkServID === '' ? './' : `./?LinkServID=${data.linkServID}`);
   const entries = await registryEntries(db);
   const allowedDomains = accessControlOriginDomains(entries.map((entry) => ({ domain: entry.domains.join(',') })), {});
-  return sanitizeHref(data.returnUrl.replaceAll('doaction=logout', ''), { siteId: '', sessionSiteId, allowedDomains, siteDomain: siteDomainOf(entries) });
+  const href = sanitizeHref(data.returnUrl.replaceAll('doaction=logout', ''), { siteId: '', sessionSiteId, allowedDomains, siteDomain: siteDomainOf(entries) });
+  return cfLocationHeader(href);
 }
 
 /**
- * loginManager `handleFailure` redirect target of an admin login [legacy: core/mura/login/loginManager.cfc:236-241].
+ * loginManager `handleFailure` redirect of an admin login as its `location()` sends it [legacy: core/mura/login/loginManager.cfc:236-241].
  * @throws Error For a login without `isAdminLogin`, whose target is the site's `loginURL`, a site setting identity does not hold.
  */
 function failureLocation(data: LoginData): string {
   if (!cfToBoolean(data.isAdminLogin)) {
     throw new Error('A failed login without isAdminLogin redirects to the site loginURL, which identity does not hold');
   }
-  return (
+  return cfLocationHeader(
     `./?muraAction=cLogin.main&display=login&status=failed&rememberMe=${data.rememberMe}&contentid=${data.contentid}` +
-    `&LinkServID=${data.linkServID}&returnURL=${urlEncodedFormat(data.returnUrl)}&compactDisplay=${urlEncodedFormat(data.compactDisplay)}`
+      `&LinkServID=${data.linkServID}&returnURL=${urlEncodedFormat(data.returnUrl)}&compactDisplay=${urlEncodedFormat(data.compactDisplay)}`,
   );
 }
 
@@ -488,7 +495,7 @@ export async function registerAdminSessionRoutes(app: FastifyInstance, deps: Adm
     async (request) => {
       const user = relayedUserOf(request.opt2Auth);
       const { muraBase, ...posted } = request.body;
-      const values = Object.fromEntries(Object.entries(posted).filter(([key]) => key !== 'hasdefaultpassword')) as AdminState;
+      const values = Object.fromEntries(Object.entries(posted).filter(([key]) => !LOGIN_SET_KEYS.has(key))) as AdminState;
       const located = await locateSession(sessions, user.sid);
       const merged =
         located === undefined

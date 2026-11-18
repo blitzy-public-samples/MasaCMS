@@ -489,6 +489,15 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     [{ returnUrl: 'http://evil.com/admin/?doaction=logoutdoaction=logout&x=1' }, 'http://localhost/admin/?&x=1', 1],
     [{ returnUrl: 'https://alias-a.example.test//evil.com/admin/' }, 'https://alias-a.example.test/admin/', 1],
     [{ returnUrl: '//evil.com/admin/' }, '/evil.com/admin/', 1],
+    [{ returnUrl: '/admin/\r\nSet-Cookie: qasecc=1' }, '/admin/Set-Cookie: qasecc=1', 1],
+    [{ returnUrl: '/admin/\u2028Set-Cookie: qasecc=1' }, '/admin/(Set-Cookie: qasecc=1', 1],
+    [{ returnUrl: '/admin/%0d%0aSet-Cookie: qasecc=1' }, '/admin/Set-Cookie: qasecc=1', 1],
+    [{ returnUrl: '/admin/%0D%0ASet-Cookie: qasecc=1' }, '/admin/Set-Cookie: qasecc=1', 1],
+    [{ returnUrl: '/admin/\tX' }, '/admin/%09X', 1],
+    [{ returnUrl: '/\r\n/evil.example/x' }, '//evil.example/x', 1],
+    [{ returnUrl: '/\u0000/evil.example/x' }, '/evil.example/x', 1],
+    [{ returnUrl: '/admin/a\ufffdX' }, "/admin/a'X", 1],
+    [{ linkServID: 'L-1\r\n%0d%0aL' }, './?LinkServID=L-1L', 0],
   ])('redirects a successful login with %j to %j, reading the registry with %i statements', async (fields, location, reads) => {
     const { body } = await loginAs('editor', fields);
 
@@ -519,7 +528,27 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     });
   });
 
-  it('answers a held strike block as blocked and shows the block on the current session', async () => {
+  it.each<[Record<string, string>, string]>([
+    [{ returnUrl: '/admin/\r\nSet-Cookie: q=1' }, 'contentid=&LinkServID=&returnURL=%2Fadmin%2FSet%2DCookie%3A%20q%3D1'],
+    [{ returnUrl: '/admin/\u2028x\u00e9' }, 'contentid=&LinkServID=&returnURL=%2Fadmin%2F%E2%80%A8x%C3%A9'],
+    [{ contentid: 'ab\r\ncd%0d%0aef\u2028' }, 'contentid=abcdef(&LinkServID=&returnURL='],
+    [{ contentid: 'ab\u0001cd\tef\u0000gh' }, 'contentid=ab%01cd%09efgh&LinkServID=&returnURL='],
+    [{ contentid: 'abc\u0001' }, 'contentid=abc&LinkServID=&returnURL='],
+    [{ linkServID: 'L\r\n1' }, 'contentid=&LinkServID=L1&returnURL='],
+  ])('redirects a failed admin login with %j to the login page with %s, as legacy location() sends it', async (fields, target) => {
+    const { sid, csrfSecret } = await newSession();
+    // An unknown username per case, so no account collects the strikes these failures take.
+    const form = loginForm(csrfSecret, { username: `absent-${nextId('B')}`, password: 'wrong', ...fields });
+
+    const res = await send('POST', '/v1/sessions/login', await headersFor([], { sid }), form);
+
+    expect(res.json()).toMatchObject({
+      outcome: 'failed',
+      location: `./?muraAction=cLogin.main&display=login&status=failed&rememberMe=0&${target}&compactDisplay=false`,
+    });
+  });
+
+  it('answers a held strike block as blocked and shows the block on the current session and in its admin state', async () => {
     await gated(SITE_A, async (tx) => {
       await repo.ensureStrike(tx, 'reader', NOW);
       await repo.setStrike(tx, 'reader', { strikes: 5, lastattempt: NOW });
@@ -534,7 +563,7 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     const current = await send('GET', '/v1/sessions/current', await headersFor([], { sid }));
     expect(current.json()).toMatchObject({ user: { isLoggedIn: false }, roles: [], blockLoginUntil: expect.stringMatching(/^2026-06-30T12:1\d:\d\d\.\d{3}$/) });
     const state = await send('GET', '/v1/sessions/current/admin-state', await headersFor([], { sid }));
-    expect(state.json()).not.toHaveProperty(LOGIN_SESSION_KEYS.blockLoginUntil);
+    expect(state.json()).toHaveProperty(LOGIN_SESSION_KEYS.blockLoginUntil, (current.json() as { blockLoginUntil: string }).blockLoginUntil);
   });
 
   it('refuses a token of another CSRF context and consumes a valid token even when no credentials are posted', async () => {
@@ -638,14 +667,14 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     expect(ended.statusCode).toBe(401);
   });
 
-  it('stores admin values whole by key, drops the read-only default-password flag, refuses undeclared keys and an ended session', async () => {
+  it('stores admin values whole by key, drops the login-set default-password flag and strike block, refuses undeclared keys and an ended session', async () => {
     const { sid } = await newSession();
     const headers = await headersFor([], { sid });
     const first = { siteid: SITE_A, paramArray: [{ Field: 'tusers.lname', Relationship: 'Contains', Criteria: 'Ada', Condition: 'AND' }], datakeywords: 'qaxlbkw', filterBy: 'fname', mura: { errors: { a: 1 } } };
 
-    const saved = await send('POST', '/v1/sessions/current/admin-state', headers, { ...first, hasdefaultpassword: true });
+    const saved = await send('POST', '/v1/sessions/current/admin-state', headers, { ...first, hasdefaultpassword: true, blockLoginUntil: '2026-06-30T12:30:00.000' });
     const merged = await send('POST', '/v1/sessions/current/admin-state', headers, { mura: { objectInstanceId: 'x' }, dashboardSpan: 30 });
-    const undeclared = await send('POST', '/v1/sessions/current/admin-state', headers, { siteid: DEFAULT, blockLoginUntil: 'x' });
+    const undeclared = await send('POST', '/v1/sessions/current/admin-state', headers, { siteid: DEFAULT, loginAttempts: '0' });
     const read = await send('GET', '/v1/sessions/current/admin-state', headers);
     await send('POST', '/v1/sessions/logout', headers);
     const ended = await send('POST', '/v1/sessions/current/admin-state', headers, { siteid: DEFAULT });

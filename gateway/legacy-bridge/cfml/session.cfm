@@ -67,7 +67,8 @@ function readShared(required string name) {
 	return structKeyExists(scope, key) ? {"exists": true, "value": scope[key]} : {"exists": false};
 }
 
-// Sets a shared name in the attached session; "moduleTopIds" sets session[<key>] = {topid} for each module top key given.
+// Sets a shared name in the attached session; "moduleTopIds" sets session[<key>] = {topid} for each module top key given,
+// and "blockLoginUntil" a wire time as the date legacy's login holds (core/mura/user/userUtility.cfc:253), "" as "".
 function writeShared(required string name, required any value) {
 	if (arguments.name == "moduleTopIds") {
 		for (var key in arguments.value) {
@@ -75,6 +76,8 @@ function writeShared(required string name, required any value) {
 				session[key] = {topid = arguments.value[key]};
 			}
 		}
+	} else if (arguments.name == "blockLoginUntil") {
+		session.blockLoginUntil = len(arguments.value) ? variables.app.parseLegacyTime(arguments.value) : "";
 	} else if (left(arguments.name, 5) == "mura.") {
 		session.mura[sharedKey(arguments.name)] = arguments.value;
 	} else {
@@ -142,9 +145,9 @@ body = {};
 // The session.mura keys userUtility.setUserStruct sets for a logged-in user, in describe's wire spelling.
 userKeys = ["userID", "username", "siteID", "subtype", "password", "fname", "lname", "email", "remoteID", "company", "lastlogin", "passwordCreated"];
 // The session values target and legacy admin routes share, which op=carry sets and op=export reads; "__fw1" stands for the
-// FW/1 preserved contexts session["__fw1<key>"], which op=carry installs and op=export never reads, and "moduleTopIds"
-// for the module tops session[<key>].topid.
-sharedNames = ["flatViewArgs", "mura.nextN", "mura.alerts", "siteid", "userFilesPath", "topID", "openSectionList", "keywords", "datakeywords", "filterBy", "__fw1NextPreserveKey", "__fw1", "moduleid", "moduleTopIds", "mura.objectInstanceId"];
+// FW/1 preserved contexts session["__fw1<key>"], which op=carry installs and op=export never reads, "moduleTopIds"
+// for the module tops session[<key>].topid, and "blockLoginUntil" for login's strike block, a wire time or "".
+sharedNames = ["flatViewArgs", "mura.nextN", "mura.alerts", "siteid", "userFilesPath", "topID", "openSectionList", "keywords", "datakeywords", "filterBy", "__fw1NextPreserveKey", "__fw1", "moduleid", "moduleTopIds", "mura.objectInstanceId", "blockLoginUntil"];
 // The session keys holding a module's Site Manager top: before()'s "m<moduleid>" and the empty-tree reset's "<moduleid>", over
 // the module ids carch before() accepts (admin/core/controllers/carch.cfc:79-107, 216-240).
 moduleTopKeys = [];
@@ -268,7 +271,8 @@ try {
 				if (!isStruct(entry) || !structKeyExists(entry, "name") || !isSimpleValue(entry.name) || !arrayFind(sharedNames, entry.name)
 					|| !structKeyExists(entry, "value") || isNull(entry.value)
 					|| !structKeyExists(entry, "revision") || !isSimpleValue(entry.revision) || !len(entry.revision)
-					|| (entry.name == "__fw1" && !isContexts(entry.value)) || (entry.name == "moduleTopIds" && !isStruct(entry.value))) {
+					|| (entry.name == "__fw1" && !isContexts(entry.value)) || (entry.name == "moduleTopIds" && !isStruct(entry.value))
+					|| (entry.name == "blockLoginUntil" && !isSimpleValue(entry.value))) {
 					app.raise(400, "badRequest", "values entries need a shared name, a value and a revision");
 				}
 			}
@@ -313,7 +317,12 @@ try {
 					&& compare(session.opt2Carried[name].json, serializeJSON(held.value)) == 0) {
 					continue;
 				}
-				item = {"name": name, "value": isSimpleValue(held.value) ? javacast("string", held.value) : held.value};
+				if (name == "blockLoginUntil") {
+					// Legacy's login writes only "" or a date, so anything else reads as not blocked on both sides.
+					item = {"name": name, "value": isDate(held.value) ? app.formatLegacyTime(held.value) : ""};
+				} else {
+					item = {"name": name, "value": isSimpleValue(held.value) ? javacast("string", held.value) : held.value};
+				}
 				if (isStruct(held.value) && structKeyExists(session, "opt2Carried") && structKeyExists(session.opt2Carried, name)
 					&& len(session.opt2Carried[name].json)) {
 					base = deserializeJSON(session.opt2Carried[name].json);

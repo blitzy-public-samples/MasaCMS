@@ -10,6 +10,7 @@ import type { SessionAdminState } from '../../src/session/identity-client.js';
 import type { JarCookies, JarRow } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
 import { buildTestGateway, type TestGateway } from '../helpers/app.js';
+import { TEST_CLOCK } from '../helpers/env.js';
 import { SHARED_NAMES, sharedValue, type CarriedUserBean } from '../helpers/legacy-origin.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 0);
@@ -113,7 +114,7 @@ function sessionMismatch(): ServiceUnavailableError {
 }
 
 describe('createSessionCarry', () => {
-  it('shares the values session.cfm lists: the flat view, rows, alerts and object instance under mura; the site, its paths, the search keywords, the FW/1 counter and contexts and the module and its tops at the top', () => {
+  it("shares the values session.cfm lists: the flat view, rows, alerts and object instance under mura; the site, its paths, the search keywords, the FW/1 counter and contexts, the module and its tops and login's strike block at the top", () => {
     expect(SHARED_SESSION_VALUES).toEqual([
       { wire: 'flatViewArgs', identity: 'mura.flatViewArgs' },
       { wire: 'mura.nextN', identity: 'mura.nextN' },
@@ -130,6 +131,7 @@ describe('createSessionCarry', () => {
       { wire: 'moduleid', identity: 'moduleid' },
       { wire: 'moduleTopIds', identity: 'moduleTopIds' },
       { wire: 'mura.objectInstanceId', identity: 'mura.objectInstanceId' },
+      { wire: 'blockLoginUntil', identity: 'blockLoginUntil' },
     ]);
     expect(SHARED_SESSION_VALUES.map(({ wire }) => wire)).toEqual(bridgeSharedNames());
     expect(SHARED_NAMES).toEqual(bridgeSharedNames());
@@ -193,6 +195,19 @@ describe('createSessionCarry', () => {
     await carry.beforeLegacy(SESSION_ID, 'target-primary');
 
     expect(calls[1]?.[2]).toEqual([{ name: 'flatViewArgs', value, revision: revisionOf(value) }]);
+  });
+
+  it.each<[string, string]>([
+    ["a strike block's end", '2026-06-30T12:15:00.000'],
+    ['no block', ''],
+  ])("carries login's strike block as identity stores it and imports it as legacy exports it: %s", async (_label, blockLoginUntil) => {
+    const { calls, carry } = seam({ state: { blockLoginUntil }, exported: [{ name: 'blockLoginUntil', value: blockLoginUntil }] });
+
+    await carry.beforeLegacy(SESSION_ID, 'target-primary');
+    await carry.afterLegacy(SESSION_ID, 'target-primary');
+
+    expect(calls[1]?.[2]).toEqual([{ name: 'blockLoginUntil', value: blockLoginUntil, revision: revisionOf(blockLoginUntil) }]);
+    expect(calls[3]).toEqual(['identity.importAdminState', SESSION_ID, { blockLoginUntil }]);
   });
 
   it('sends the same revision for an unchanged value and a new one once a target route changed it', async () => {
@@ -823,5 +838,84 @@ describe('carch module, module tops and object instance across target-served and
       { sessionId: GATEWAY_SESSION, values: { moduleid: SITE, moduleTopIds: allTops, mura: { objectInstanceId: '' } } },
     ]);
     expect(identity.sessions.get(GATEWAY_SESSION)?.adminState).toMatchObject({ moduleid: SITE, moduleTopIds: allTops, mura: { objectInstanceId: '' } });
+  });
+});
+
+describe("login's strike block across target-served logins and the legacy-served login page at the committed v0002 (target-primary)", () => {
+  const GATEWAY_SESSION = 'B8C9D0E1-F2A3-B4C5-D6E7F8A9B0C1D2E3';
+  const TARGET_COOKIE = `CFID=T-CFID-7601; CFTOKEN=T-CFTOKEN-7601; JSESSIONID=${jsessionidForSessionId(GATEWAY_SESSION)}`;
+  const USER_ID = 'USER-CARRY-0005';
+  const LOGIN_PAGE = '/admin/?muraAction=cLogin.main&display=login&status=failed';
+  /** The block identity's login stored for a refused attempt, fifteen minutes after the suites' clock. */
+  const TARGET_BLOCK = '2026-06-30T12:15:00.000';
+  /** The block a legacy-served login set in the legacy session meanwhile. */
+  const LEGACY_BLOCK = new Date(2026, 5, 30, 12, 20, 0, 0);
+
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  /** A gateway at v0002 whose identity session holds `TARGET_BLOCK`, and whose legacy renders the login notice as main.cfm does. */
+  async function start(): Promise<TestGateway> {
+    gateway = await buildTestGateway({
+      version: 'v0002',
+      identity: {
+        sessions: [
+          {
+            sessionId: GATEWAY_SESSION,
+            userId: USER_ID,
+            epoch: 3,
+            state: 'active',
+            mode: 'target-primary',
+            adminState: { siteid: 'default', blockLoginUntil: TARGET_BLOCK },
+            snapshot: {
+              sessionId: GATEWAY_SESSION,
+              epoch: 3,
+              loginSnapshot: { user: { userID: USER_ID, username: 'admin', siteID: 'default', membershipIds: USER_ID }, roles: ['S2'] },
+              csrfSecretKey: 'CSRF-SECRET-CARRY-5',
+              usedTokens: [],
+            },
+          },
+        ],
+      },
+    });
+    gateway.legacy.setResponse((req, attached) => {
+      if (attached === undefined || !req.url.startsWith(LOGIN_PAGE)) return {};
+      // main.cfm:111 shows login.blocked while session.blockLoginUntil is a date after now().
+      const until = attached.values.blockLoginUntil;
+      return { body: until instanceof Date && until.getTime() > TEST_CLOCK.now().getTime() ? 'login.blocked' : 'login.failed' };
+    });
+    return gateway;
+  }
+
+  it("shows legacy's notice for identity's block, installs the block a target login cleared, and imports the block legacy's login set", async () => {
+    const { app, identity, legacy } = await start();
+    const page = async () => (await app.inject({ method: 'GET', url: LOGIN_PAGE, headers: { cookie: TARGET_COOKIE, 'user-agent': USER_AGENT } })).body;
+
+    const blocked = await page();
+    const stored = identity.sessions.get(GATEWAY_SESSION);
+    if (stored !== undefined) stored.adminState = { ...stored.adminState, blockLoginUntil: '' };
+    const cleared = await page();
+    const hydrated = legacy.bridgeCalls.find((call) => call.op === 'hydrate')?.legacySessionId ?? '';
+    const session = legacy.sessions.get(hydrated);
+    if (session !== undefined) session.values = { ...session.values, blockLoginUntil: LEGACY_BLOCK };
+    const legacyBlocked = await page();
+
+    expect([blocked, cleared, legacyBlocked]).toEqual(['login.blocked', 'login.failed', 'login.blocked']);
+    const ops = legacy.bridgeCalls.filter(({ op }) => op === 'carry' || op === 'export').map(({ op, body }) => [op, body]);
+    expect(ops).toEqual([
+      ['carry', { applied: ['siteid', 'blockLoginUntil'], serverTime: expect.any(String) }],
+      ['export', { values: [], serverTime: expect.any(String) }],
+      ['carry', { applied: ['blockLoginUntil'], serverTime: expect.any(String) }],
+      ['export', { values: [], serverTime: expect.any(String) }],
+      // Identity's block is unchanged since its install, so legacy's own block stands and goes out as a wire time.
+      ['carry', { applied: [], serverTime: expect.any(String) }],
+      ['export', { values: [{ name: 'blockLoginUntil', value: '2026-06-30T12:20:00.000' }], serverTime: expect.any(String) }],
+    ]);
+    expect(identity.adminStateImports).toEqual([{ sessionId: GATEWAY_SESSION, values: { blockLoginUntil: '2026-06-30T12:20:00.000' } }]);
+    expect(identity.sessions.get(GATEWAY_SESSION)?.adminState.blockLoginUntil).toBe('2026-06-30T12:20:00.000');
   });
 });

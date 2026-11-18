@@ -249,7 +249,8 @@ describe('request validation', () => {
     ['no body', undefined],
     ['no values', { muraBases: {} }],
     ['the values outside values', { siteid: SITE }],
-    ['a key the contract does not name', { values: { blockLoginUntil: '2026-06-30T12:30:00.000' } }],
+    ['a key the contract does not name', { values: { loginAttempts: '0' } }],
+    ['a strike block that is no local timestamp', { values: { blockLoginUntil: '2026-06-30 12:30' } }],
     ['a top-level value of the wrong type', { values: { topID: { nested: true } } }],
     ['mura that is not an object', { values: { mura: 'nextN' } }],
     ['a base that is not an object', { values: { mura: { flatViewArgs: {} } }, muraBases: { flatViewArgs: 'tab' } }],
@@ -416,7 +417,11 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       { siteid: 'tenant-b', mura: { flatViewArgs: { 'tenant-b': { tab: 1, sortby: 'lastupdate' } }, nextN: '20' } },
       { siteid: 'tenant-b', mura: { flatViewArgs: { 'tenant-b': { tab: 1, sortby: 'lastupdate' } }, nextN: '20' } },
     ],
-    ["the contract's values only, without login's internal block", { rb: 'en', blockLoginUntil: '2026-06-30T12:30:00.000' }, { rb: 'en' }],
+    [
+      "the contract's values only, login's strike block included",
+      { rb: 'en', blockLoginUntil: '2026-06-30T12:30:00.000', loginAttempts: '0' },
+      { rb: 'en', blockLoginUntil: '2026-06-30T12:30:00.000' },
+    ],
     ['{} when no admin state is stored', undefined, {}],
   ])('reads an active session admin state as %s', async (_label, adminState, expected) => {
     if (handle === undefined) throw new Error('PostgreSQL is not available');
@@ -430,22 +435,30 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     expect(res.json()).toEqual(expected);
   });
 
-  it('imports the values a legacy request changed, merging mura key by key and dropping the login-set default-password flag', async () => {
+  it("imports the values a legacy request changed, merging mura key by key, storing legacy's strike block and dropping the login-set default-password flag", async () => {
     if (handle === undefined) throw new Error('PostgreSQL is not available');
     const sid = nextSessionId();
     await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
-    await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { siteid: 'default', keywords: '', mura: { objectInstanceId: 'I1', nextN: '20' } }));
+    await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) =>
+      repo.mergeSessionAdminState(tx, sid, { siteid: 'default', keywords: '', blockLoginUntil: '', mura: { objectInstanceId: 'I1', nextN: '20' } }),
+    );
 
     const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), {
       values: {
         siteid: SITE,
         keywords: 'home',
+        blockLoginUntil: '2026-06-30T12:30:00.000',
         hasdefaultpassword: true,
         mura: { nextN: '5', alerts: { [SITE]: { cachenotice: false } } },
       },
     });
 
-    const expected = { siteid: SITE, keywords: 'home', mura: { objectInstanceId: 'I1', nextN: '5', alerts: { [SITE]: { cachenotice: false } } } };
+    const expected = {
+      siteid: SITE,
+      keywords: 'home',
+      blockLoginUntil: '2026-06-30T12:30:00.000',
+      mura: { objectInstanceId: 'I1', nextN: '5', alerts: { [SITE]: { cachenotice: false } } },
+    };
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual(expected);
     expect((await gateway('admin-state', sid)).json()).toEqual(expected);

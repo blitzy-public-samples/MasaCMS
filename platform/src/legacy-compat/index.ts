@@ -17,6 +17,7 @@ export * from './csrf.js';
 export * from './bridge-assertion.js';
 export * from './csv.js';
 export * from './admin-url.js';
+export * from './location.js';
 export * from './unavailable.js';
 export * from './debug-page.js';
 export * from './route-key.js';

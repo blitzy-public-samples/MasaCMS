@@ -1274,6 +1274,21 @@
         "replay": "opt2/reports/parity.json#GS-CO-08"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-LOGIN-LOCATION-BYTES",
+      "scenario": "GS-ID-01",
+      "routeKey": "admin:clogin.login",
+      "appliesTo": [],
+      "difference": "Legacy `clogin.login` sends its redirect through ColdFusion `location(url, false)` in loginManager `handleSuccess` and `handleFailure` (core/mura/login/loginManager.cfc:154,240). ACF scrubs that URL and Undertow writes it one byte per UTF-16 unit: CR, LF and NUL are dropped, other C0 controls become `%xx`, `%0a` and then `%0d` are removed ignoring case, and each unit goes out as its low byte, a CR or LF byte as a space, so U+2028 is sent as `(`. identity builds the same header (`cfLocationHeader` in platform/src/legacy-compat/location.ts, applied once in services/identity/src/routes/admin-sessions.ts) except for the bytes Node cannot put in a header value, DEL and every C0 control byte but TAB: for a DEL in `returnUrl`, `linkServID`, `contentid` or `rememberMe`, or a code unit there whose low byte is such a byte (U+0100, U+017F, the low surrogate of U+1F600), legacy sends the byte raw and web sends `%xx`.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible on every Node path, legacy served through the gateway included: the gateway relays legacy through undici, whose parser rejects those bytes, so halting the case to a `legacy-write` entry answers 503 and leaves the login's write window holding `identity.login_state`, `identity.user_device` and `identity.user_strike`, refusing every login. Golden capture, also undici, cannot record legacy's answer. The login therefore stays `target` with the nearest header Node can send, checked against the bytes captured from legacy in platform/test/unit/legacy-location.test.ts. Leading or trailing whitespace legacy sends, such as the space a trailing U+0120 becomes, is outside the field value (RFC 9110 section 5.5) and reads the same from both sides. The entry closes when the ingress can send a header value byte for byte.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-01.json",
+        "replay": "opt2/reports/parity.json#GS-ID-01"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

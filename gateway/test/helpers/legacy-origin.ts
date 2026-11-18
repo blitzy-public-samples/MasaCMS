@@ -507,8 +507,11 @@ export const SHARED_NAMES: readonly string[] = Object.freeze([
   'moduleid',
   'moduleTopIds',
   'mura.objectInstanceId',
+  'blockLoginUntil',
 ]);
 const MURA_PREFIX = 'mura.';
+/** session.cfm's name for login's strike block, a wire time or `""` on the wire and a Date or `""` in the session. */
+const BLOCK_LOGIN_UNTIL = 'blockLoginUntil';
 /** session.cfm's name for the FW/1 preserved contexts `session['__fw1<key>']`, which carry installs and export skips. */
 const CONTEXTS = '__fw1';
 /** session.cfm's name for the module tops `session[<key>].topid`. */
@@ -545,7 +548,7 @@ export function sharedValue(session: LegacySession, name: string): unknown {
   return name === 'siteid' ? session.siteId : structValue(session.values, name);
 }
 
-/** Sets a shared name in the session, as session.cfm's writeShared does. */
+/** Sets a shared name in the session, as session.cfm's writeShared does: the strike block's wire time as a Date. */
 function setSharedValue(session: LegacySession, name: string, value: unknown): void {
   if (name === MODULE_TOPS) {
     const tops = Object.entries(value as Record<string, unknown>).filter(
@@ -553,6 +556,7 @@ function setSharedValue(session: LegacySession, name: string, value: unknown): v
     );
     session.values = mergeStruct(session.values, Object.fromEntries(tops.map(([key, topId]) => [key, { TOPID: topId }])));
   } else if (name.startsWith(MURA_PREFIX)) session.user = mergeStruct(session.user, { [name.slice(MURA_PREFIX.length)]: value });
+  else if (name === BLOCK_LOGIN_UNTIL) session.values = mergeStruct(session.values, { [name]: String(value) === '' ? '' : requireTime(String(value)) });
   else if (name === 'siteid') session.siteId = String(value);
   else session.values = mergeStruct(session.values, { [name]: value });
 }
@@ -602,7 +606,7 @@ function carry(ctx: OpContext): CarryResult {
     const revision = isRecord(entry) ? structValue(entry, 'revision') : undefined;
     if (
       !isSimple(name) || !SHARED_NAMES.includes(String(name)) || value === undefined || value === null || !isSimple(revision) || String(revision) === ''
-      || (name === CONTEXTS && !isContexts(value)) || (name === MODULE_TOPS && !isRecord(value))
+      || (name === CONTEXTS && !isContexts(value)) || (name === MODULE_TOPS && !isRecord(value)) || (name === BLOCK_LOGIN_UNTIL && !isSimple(value))
     ) {
       throw badRequest('values entries need a shared name, a value and a revision');
     }
@@ -629,7 +633,7 @@ function carry(ctx: OpContext): CarryResult {
 
 /**
  * `op=export`: each shared value but the contexts the session holds whose JSON differs from the one installed last, simple
- * values as strings, a struct with the struct installed last as its base.
+ * values as strings, the strike block as a wire time or `""`, a struct with the struct installed last as its base.
  */
 function exportShared(ctx: OpContext): ExportResult {
   requireMethod(ctx.req, 'GET');
@@ -640,6 +644,10 @@ function exportShared(ctx: OpContext): ExportResult {
     const value = sharedValue(session, name);
     const installed = session.carried.get(name)?.json;
     if (value === undefined || value === null || installed === JSON.stringify(value)) continue;
+    if (name === BLOCK_LOGIN_UNTIL) {
+      values.push({ name, value: wireTimeOf(value) });
+      continue;
+    }
     const base: unknown = installed === undefined || installed === '' ? undefined : JSON.parse(installed);
     values.push({
       name,

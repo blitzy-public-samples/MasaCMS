@@ -5402,6 +5402,10 @@ components:
           type: boolean
           readOnly: true
           description: '`session.hasdefaultpassword`, which login sets for `admin`/`admin`; readers test its presence.'
+        blockLoginUntil:
+          type: string
+          pattern: '^(|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3})$'
+          description: '`session.blockLoginUntil`, which login sets: `''''` or the strike block''s end as a local timestamp. saveAdminSessionState ignores it; importSessionAdminState stores legacy''s value.'
         moduleTopIds:
           type: object
           description: '`session[''m<moduleid>''].topid` keyed by the legacy session key `m<moduleid>` (carch `before()`).'

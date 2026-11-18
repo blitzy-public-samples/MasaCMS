@@ -138,7 +138,7 @@ export async function registerSessionRoutes(app: FastifyInstance, deps: SessionR
     async (request) => adminStateOf(await sessionAdminState(sessions, request.params.sid)),
   );
 
-  // The import drops the read-only `hasdefaultpassword`, which only login sets, as the user-facing save does.
+  // The import drops `hasdefaultpassword`, which only login sets, and stores `blockLoginUntil`, which legacy's login sets too.
   app.post<{ Params: SessionParams; Body: Schemas['AdminSessionStateImport']; Reply: Schemas['AdminSessionState'] }>(
     '/internal/v1/sessions/:sid/admin-state',
     { schema: { params: SESSION_PARAMS, body: IMPORT_BODY }, config: { opt2: IMPORT_AUTH } },

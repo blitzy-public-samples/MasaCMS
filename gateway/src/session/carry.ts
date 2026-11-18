@@ -45,8 +45,10 @@ export interface SharedSessionValue {
  * the admin site switch (admin/Application.cfc:384-397); `session.keywords` (carch.cfc:490); the form data manager's
  * `session.datakeywords` and `session.filterBy` (admin/core/views/carch/datamanager.cfm:79-86); FW/1's preserve-key
  * counter and preserved contexts (admin/framework.cfc:1432-1456, 1554-1600), which carry installs but export never reads;
- * and carch's `session.moduleid`, module tops `session['m<moduleid>']` and `session[<moduleid>]`, and
- * `session.mura.objectInstanceId` (admin/Application.cfc:419-421, carch.cfc:73-107,216-240).
+ * carch's `session.moduleid`, module tops `session['m<moduleid>']` and `session[<moduleid>]`, and
+ * `session.mura.objectInstanceId` (admin/Application.cfc:419-421, carch.cfc:73-107,216-240); and login's strike block
+ * `session.blockLoginUntil`, which the login page reads (admin/core/views/clogin/main.cfm:111) and the bridge holds as a
+ * date, as legacy's login sets it (core/mura/user/userUtility.cfc:205,253).
  */
 export const SHARED_SESSION_VALUES: readonly SharedSessionValue[] = Object.freeze([
   { wire: 'flatViewArgs', identity: 'mura.flatViewArgs' },
@@ -64,6 +66,7 @@ export const SHARED_SESSION_VALUES: readonly SharedSessionValue[] = Object.freez
   { wire: 'moduleid', identity: 'moduleid' },
   { wire: 'moduleTopIds', identity: 'moduleTopIds' },
   { wire: 'mura.objectInstanceId', identity: 'mura.objectInstanceId' },
+  { wire: 'blockLoginUntil', identity: 'blockLoginUntil' },
 ]);
 
 /** Per-request facts the bridge call forwards. */
