@@ -31,6 +31,7 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { SURVEY_SCHEDULED_TOPIC, surveyScheduledValidator } from '../../src/events/survey-scheduled.js';
+import { FIXTURE_AUTHORIZATION_HEADER } from '../../src/legacy/fixture-auth.js';
 import { FIXTURE_ERROR_MAP } from '../../src/legacy/fixture-envelope.js';
 import type { ScheduledTaskRecord } from '../../src/legacy/tasks-view.js';
 import { createSurveysRepository, type SurveysRepository } from '../../src/repo/repository.js';
@@ -45,6 +46,11 @@ const TOKEN = 'launch-token-1';
 const JSON_HEADERS = { 'content-type': 'application/json' };
 const CSRF_HEADERS = { 'x-csrf_token': 'CSRF-TOKEN', 'x-csrf_token_expires': '260630140509000' };
 const SITE_A = '?siteid=tenant-a';
+/** `Basic` credentials of `text`, as an ACF task run sends them. */
+const basic = (text: string): string => `Basic ${Buffer.from(text, 'utf8').toString('base64')}`;
+/** The relayed task-run `Authorization` header holding `value`. */
+const taskAuthorization = (value: string): Record<string, string> => ({ [FIXTURE_AUTHORIZATION_HEADER]: value });
+const TASK_AUTHORIZATION = taskAuthorization(basic(`opt2-task:${TOKEN}`));
 const UNREGISTERED_TENANT_SITE = 'ghost';
 
 const INVALID_PARAMETERS = { code: 'invalid_request', message: 'Invalid parameters' };
@@ -530,9 +536,12 @@ describe.skipIf(!available)('surveys fixture routes', () => {
 
     it.each<[string, string, Record<string, string>]>([
       ['no task token', '', {}],
-      ['another task token', '&opt2TaskToken=wrong', {}],
-      ['the task token under two spellings, which the url scope joins', `&opt2TaskToken=${TOKEN}&OPT2TASKTOKEN=${TOKEN}`, {}],
-      ['a token outside the query', '', { 'x-opt2tasktoken': TOKEN }],
+      ['another task token', '', taskAuthorization(basic('opt2-task:wrong'))],
+      ['the task token only in the query', `&opt2TaskToken=${TOKEN}`, {}],
+      ['the task token in a header the gateway does not author', '', { 'x-opt2tasktoken': TOKEN }],
+      ['the task token in malformed Basic credentials', '', taskAuthorization(basic(`opt2-task:${TOKEN}`).slice(0, -1))],
+      ['the task token under another scheme', '', taskAuthorization(`Bearer ${basic(`opt2-task:${TOKEN}`).slice('Basic '.length)}`)],
+      ['the task token without the colon before it', '', taskAuthorization(basic(TOKEN))],
     ])('answers forbidden with %s and leaves the survey scheduled', async (_case, query, headers) => {
       const id = await scheduled();
       const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}${query}`, headers });
@@ -544,24 +553,25 @@ describe.skipIf(!available)('surveys fixture routes', () => {
 
     it('launches once by GET with the task token and answers a repeat POST with the same row', async () => {
       const id = await scheduled();
-      const first = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id.toLowerCase()}/launch${SITE_A}&OPT2TASKTOKEN=${TOKEN}` });
+      const first = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id.toLowerCase()}/launch${SITE_A}`, headers: TASK_AUTHORIZATION });
       expect(first.statusCode).toBe(200);
       expect(first.json()).toEqual({
         apiversion: 'v1',
         method: 'surveys.surveys.launch',
         data: expect.objectContaining({ survey_id: id, status: 'LAUNCHED', launched_at: '2026-06-30T14:05:09' }),
       });
-      const repeat = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}&opt2TaskToken=${TOKEN}`, body: {} });
+      const repeat = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}`, body: {}, headers: TASK_AUTHORIZATION });
       expect(repeat.statusCode).toBe(200);
       expect((repeat.json() as { data: unknown }).data).toEqual((first.json() as { data: unknown }).data);
     });
 
     it.each<[string, string]>([
-      ['padded', `%20${TOKEN}%09`],
-      ['holding a NUL', `${TOKEN}%00`],
-    ])('launches with a task token %s, as the script-protected url scope holds it', async (_case, token) => {
+      ['the scheme in another case', `bASIC ${basic(`opt2-task:${TOKEN}`).slice('Basic '.length)}`],
+      ['an empty user name', basic(`:${TOKEN}`)],
+      ['the task user name', basic(`opt2-task:${TOKEN}`)],
+    ])('launches with Basic credentials holding the task token after %s, whatever the query token', async (_case, authorization) => {
       const id = await scheduled();
-      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}&opt2TaskToken=${token}` });
+      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}&opt2TaskToken=wrong`, headers: taskAuthorization(authorization) });
       expect([res.statusCode, res.json()]).toMatchObject([200, { method: 'surveys.surveys.launch', data: { survey_id: id, status: 'LAUNCHED' } }]);
     });
 
@@ -572,7 +582,7 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       ['a survey of another site', '?siteid=tenant-b', {}, 403, FORBIDDEN],
     ])('answers %s as the fixture does', async (_case, query, headers, status, error) => {
       const id = await scheduled();
-      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${query}&opt2TaskToken=${TOKEN}`, headers });
+      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${query}`, headers: { ...TASK_AUTHORIZATION, ...headers } });
       expect(res.statusCode).toBe(status);
       expect(res.json()).toMatchObject({ method: 'surveys.surveys.launch', error });
     });

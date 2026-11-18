@@ -68,7 +68,7 @@ import {
   type LegacyUpstream,
 } from './forward-legacy.js';
 import { forwardToTarget } from './forward-target.js';
-import { applyIdentityEncoding, forwardedHost } from './headers.js';
+import { FIXTURE_AUTHORIZATION_HEADER, applyIdentityEncoding, forwardedHost } from './headers.js';
 import {
   RELAY_ALIAS_PREFIX,
   WRITE_KINDS,
@@ -340,19 +340,22 @@ function withRequestStartCookies(list: readonly string[], start: readonly string
 
 /**
  * The destination's extra headers plus, when REST credential handling consumed params, the header naming them for the callee's
- * route key, and {@link UNREGISTERED_SITEID_HEADER} when the user token stands in for a `siteid` naming no registered site.
+ * route key, {@link UNREGISTERED_SITEID_HEADER} when the user token stands in for a `siteid` naming no registered site, and
+ * {@link FIXTURE_AUTHORIZATION_HEADER} with `fixtureAuthorization`, a fixture request's inbound `Authorization`, when given.
  */
 function targetExtraHeaders(
   destination: TargetDestination,
   resolution: SessionResolution | undefined,
   unregisteredSiteId: boolean,
+  fixtureAuthorization: string | undefined,
 ): Readonly<Record<string, string>> | undefined {
   const consumed = resolution === undefined || resolution.kind === 'response' ? [] : (resolution.consumedParams ?? []);
-  if (consumed.length === 0 && !unregisteredSiteId) return destination.extraHeaders;
+  if (consumed.length === 0 && !unregisteredSiteId && fixtureAuthorization === undefined) return destination.extraHeaders;
   return {
     ...destination.extraHeaders,
     ...(consumed.length === 0 ? {} : { [REST_CONSUMED_PARAMS_HEADER]: consumed.join(',') }),
     ...(unregisteredSiteId ? { [UNREGISTERED_SITEID_HEADER]: 'true' } : {}),
+    ...(fixtureAuthorization === undefined ? {} : { [FIXTURE_AUTHORIZATION_HEADER]: fixtureAuthorization }),
   };
 }
 
@@ -666,7 +669,13 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       path: destination.path,
       headers: stripInboundAuthHeaders(request.headers, { afterExchange: true }),
       userToken,
-      extraHeaders: targetExtraHeaders(destination, resolution, unregisteredSiteId),
+      // A fixture task run's Basic credential is stripped with Authorization, so it reaches the service in its own header.
+      extraHeaders: targetExtraHeaders(
+        destination,
+        resolution,
+        unregisteredSiteId,
+        result.family === 'fixture' ? request.headers.authorization : undefined,
+      ),
       method: destination.method,
       forwardBody: destination.forwardBody,
       rawTarget: destination.rawTarget,

@@ -14,6 +14,9 @@ export const HOP_BY_HOP_HEADERS: ReadonlySet<string> = new Set([
   'upgrade',
 ]);
 
+/** Gateway-authored header carrying a target-bound fixture request's inbound `Authorization` verbatim. */
+export const FIXTURE_AUTHORIZATION_HEADER = 'X-Opt2-Fixture-Authorization';
+
 /** Names of the forwarded-request headers the gateway adds to every forward. */
 export type ForwardedHeaderName = 'x-forwarded-for' | 'x-forwarded-proto' | 'x-forwarded-host';
 

@@ -13,7 +13,7 @@ interface CliIo {
 // Secret values never written to stdout or stderr.
 const SECRET_VARIABLES = ['MURA_DBPASSWORD', 'OPT2_BRIDGE_HMAC_KEY', 'PG_PASSWORD'] as const;
 const REDACTED = '[redacted]';
-// Task URLs carry opt2TaskToken and local push endpoints the push key in their query, so no URL keeps its query or fragment.
+// A query can hold a credential (the local push key; an opt2TaskToken in a captured task URL), so no URL keeps its query or fragment.
 const URL_QUERY = /(\bhttps?:\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/g;
 
 // Most causes reported after a failure; also ends a cyclic chain.

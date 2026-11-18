@@ -162,7 +162,7 @@ export async function schedulerStatus(ctx: Pick<SchedulerContext, 'db' | 'bridge
   return { stored, live };
 }
 
-/** Maps a status and the quiesce-owned background state to the contract's `SchedulerState`, task tokens removed from URLs. */
+/** Maps a status and the quiesce-owned background state to the contract's `SchedulerState`, task URLs as `displayUrl` returns them. */
 export function schedulerStateView(status: SchedulerStatus, background: BackgroundStateView): SchedulerStateView {
   const { sitemonitor, surveyTasks, nativeTasks } = status.stored;
   const liveMonitor = status.live.tasks.filter((task) => isSiteMonitorTask(task, status.live.siteMonitorTask));
@@ -213,7 +213,7 @@ function taskView(task: NativeTask, status: NativeTaskView['status']): NativeTas
   };
 }
 
-/** `url` without the fixture task token, which authorises the task's callback. */
+/** `url` without any `opt2TaskToken` query parameter, a callback credential a captured task definition may carry. */
 function displayUrl(url: string): string {
   if (!URL.canParse(url)) return url;
   const parsed = new URL(url);

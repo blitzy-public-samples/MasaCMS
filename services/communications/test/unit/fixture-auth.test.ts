@@ -66,6 +66,11 @@ function claims(roles: string[], s2 = false): UserClaims {
   };
 }
 
+/** Claims of the anonymous principal identity mints for a session without a login: `sub` '', and no roles as issued. */
+function principal(roles: string[] = [], s2 = false): UserClaims {
+  return { ...claims(roles, s2), sub: '' };
+}
+
 /** Headers of an anonymous request as the gateway forwards it: the gateway's invocation credential alone. */
 async function gatewayHeaders(): Promise<Record<string, string>> {
   return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}` };
@@ -162,6 +167,16 @@ describe('direct checks', () => {
     expect(userId(requestWith(claims([])))).toBe(USER_ID);
     expect(userId(requestWith())).toBe('');
   });
+
+  it.each<[string, UserClaims]>([
+    ['as identity mints it', principal()],
+    ['even beside the sender role and the s2 claim', principal([Roles.systemUser, Roles.communicationsSender], true)],
+  ])('treats the anonymous principal %s as a guest session', (_case, user) => {
+    const request = requestWith(user);
+    expect(() => requireLogin(request)).toThrow(expect.objectContaining({ type: 'authorization' }));
+    expect(() => requireAny(request, [FIXTURE_ROLES.sender])).toThrow(expect.objectContaining({ type: 'authorization' }));
+    expect({ roles: rolesHeld(request), userid: userId(request) }).toEqual({ roles: [], userid: '' });
+  });
 });
 
 describe('requireCsrf', () => {
@@ -192,6 +207,7 @@ describe('requireCsrf', () => {
     ['a HEAD', 'HEAD', SENDER, {}],
     ['a POST overridden to GET', 'POST', SENDER, { 'x-http-method-override': 'get' }],
     ['an anonymous POST', 'POST', undefined, {}],
+    ["the anonymous principal's POST", 'POST', principal(), {}],
   ])('skips %s without calling identity', async (_case, method, user, headers) => {
     const { request, consume } = csrfRequest(method, user, {}, headers);
     await expect(requireCsrf(request, {} as FastifyReply, '')).resolves.toBeUndefined();
@@ -276,12 +292,14 @@ describe('fixture check order through app.inject', () => {
     method: 'GET' | 'POST',
     url: string,
     params: Record<string, unknown>,
-    token?: { roles: readonly string[]; site?: string; s2?: boolean },
+    token?: { roles: readonly string[]; site?: string; s2?: boolean; sub?: string },
   ): Promise<{ status: number; body: { method: string; data?: Record<string, unknown>; error?: unknown } }> {
     const headers: Record<string, string> =
       token === undefined
         ? await gatewayHeaders()
-        : await userHeaders(await mintUserToken({ site: token.site ?? 'tenant-a', roles: token.roles, s2: token.s2, sub: USER_ID }));
+        : await userHeaders(
+            await mintUserToken({ site: token.site ?? 'tenant-a', roles: token.roles, s2: token.s2, sub: token.sub ?? USER_ID }),
+          );
     const query = method === 'GET' ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
     if (method === 'POST') headers['content-type'] = 'application/json';
     const res = await app.inject({
@@ -316,9 +334,10 @@ describe('fixture check order through app.inject', () => {
 
   /** Token roles of each persona the fixture denies, and of the one it allows. */
   const PERSONAS: ReadonlyArray<
-    readonly [string, { roles: readonly string[]; site?: string; s2?: boolean } | undefined, number]
+    readonly [string, { roles: readonly string[]; site?: string; s2?: boolean; sub?: string } | undefined, number]
   > = [
     ['anonymous', undefined, 401],
+    ['the anonymous principal', { roles: [], sub: '' }, 401],
     [Roles.member, { roles: [Roles.member] }, 403],
     [Roles.systemUser, { roles: [Roles.systemUser] }, 403],
     ['editor', { roles: [Roles.systemUser, 'm:000'] }, 403],

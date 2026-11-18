@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { hasAnyRole, Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
-import { csrfPreHandler, legacyScopesOf, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import { csrfPreHandler, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { FixtureApiError, type FixtureParams } from './fixture-envelope.js';
 
 /** The fixture role group names, in auth.cfc and role-map.json order. */
@@ -19,6 +19,12 @@ export interface FixtureSiteLookup {
 /** The request's verified user; identity is never read from params, headers or the body. */
 function verifiedUser(request: FastifyRequest): UserClaims | undefined {
   return request.opt2Auth.user;
+}
+
+/** The verified user of a logged-in session; the anonymous principal (`sub` '') is a guest session, as auth.cfc sees it. */
+function loggedInUser(request: FastifyRequest): UserClaims | undefined {
+  const user = verifiedUser(request);
+  return user !== undefined && user.sub !== '' ? user : undefined;
 }
 
 /** The `siteid` param, read ignoring case as a CFML struct key; undefined when absent. */
@@ -53,18 +59,18 @@ export async function resolveSite(
   return registered;
 }
 
-/** Returns the verified user's claims; throws authorization (401) for an anonymous caller. Call after resolveSite. */
+/** Returns the logged-in user's claims; throws authorization (401) for an anonymous caller. Call after resolveSite. */
 export function requireLogin(request: FastifyRequest): UserClaims {
-  const user = verifiedUser(request);
+  const user = loggedInUser(request);
   if (user === undefined) {
     throw new LegacyApiError('authorization');
   }
   return user;
 }
 
-/** The fixture roles the verified user holds for the token's site, in FIXTURE_ROLES order; [] when anonymous. */
+/** The fixture roles the logged-in user holds for the token's site, in FIXTURE_ROLES order; [] when anonymous. */
 export function rolesHeld(request: FastifyRequest): string[] {
-  const user = verifiedUser(request);
+  const user = loggedInUser(request);
   if (user === undefined) {
     return [];
   }
@@ -101,32 +107,41 @@ export function fixtureHttpMethod(request: FastifyRequest): string {
  */
 export async function requireCsrf(request: FastifyRequest, reply: FastifyReply, context: string): Promise<void> {
   const method = fixtureHttpMethod(request);
-  if (method === 'GET' || method === 'HEAD' || verifiedUser(request) === undefined || csrfValidated.has(request)) {
+  if (method === 'GET' || method === 'HEAD' || loggedInUser(request) === undefined || csrfValidated.has(request)) {
     return;
   }
   await csrfPreHandler({ contextOf: () => context }).call(request.server, request, reply);
   csrfValidated.add(request);
 }
 
-/** Whether the verified user is S2 or a member of the site's private-pool Admin group (`site-admin`). */
+/** Whether the logged-in user is S2 or a member of the site's private-pool Admin group (`site-admin`). */
 export function isSiteAdmin(request: FastifyRequest): boolean {
-  const user = verifiedUser(request);
+  const user = loggedInUser(request);
   return user !== undefined && (user.s2 || hasAnyRole(user.roles, [Roles.s2, Roles.siteAdmin]));
 }
 
-/** Whether the verified user is S2, a private-pool user (`system-user`) or a public-pool account (`member`) of the token's site. */
+/** Whether the logged-in user is S2, a private-pool user (`system-user`) or a public-pool account (`member`) of the token's site. */
 export function isSiteMember(request: FastifyRequest): boolean {
-  const user = verifiedUser(request);
+  const user = loggedInUser(request);
   return user !== undefined && (user.s2 || hasAnyRole(user.roles, [Roles.s2, Roles.systemUser, Roles.member]));
 }
 
+/** Header in which the gateway relays a fixture request's inbound `Authorization` verbatim. */
+export const FIXTURE_AUTHORIZATION_HEADER = 'x-opt2-fixture-authorization';
+
+/** A `Basic` value (scheme in any case) and its base64 credentials, as auth.cfc taskCredential matches them. */
+const BASIC_AUTHORIZATION = /^Basic +((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/i;
+
 /**
- * `url.opt2TaskToken` as ACF's url scope holds it after Masa's start-up scan: the query only, repeats and spellings
- * differing in case comma-joined in sent order, then script-protected (trimmed, NULs dropped); '' when absent.
+ * auth.cfc taskCredential over the relayed `Authorization`: the text after the first ':' of the UTF-8 decoded Basic
+ * credentials; '' for any other value, no ':' or no header. Query, form and body values are never read.
  */
 export function taskTokenOf(request: FastifyRequest): string {
-  const value = legacyScopesOf(request).url.entries.findLast(([name]) => name.toLowerCase() === 'opt2tasktoken')?.[1];
-  return typeof value === 'string' ? value : '';
+  const value = request.headers[FIXTURE_AUTHORIZATION_HEADER];
+  const encoded = typeof value === 'string' ? BASIC_AUTHORIZATION.exec(value)?.[1] : undefined;
+  const decoded = encoded === undefined ? '' : Buffer.from(encoded, 'base64').toString('utf8');
+  const colon = decoded.indexOf(':');
+  return colon === -1 ? '' : decoded.slice(colon + 1);
 }
 
 /** auth.cfc checkTaskToken: the lowercase hex SHA-256 of `token`'s UTF-8 bytes equals `storedHash`, compared in constant time. */

@@ -101,15 +101,21 @@ const WORKLOADS = [
   'service:tasks-invoker',
 ] as const;
 
-const EVERYONE: readonly string[] = ['anonymous', ...SITE_USERS, 'other-tenant', ...WORKLOADS];
+/** The gateway's anonymous principal for a visitor: a role-less tenant-a user token whose `sub` is ''. */
+const ANONYMOUS_PRINCIPAL: RoleSubject = Object.freeze({ name: 'anonymous-principal', kind: 'user', roles: Object.freeze([]) });
+
+/** ROLE_SET plus the anonymous principal, which ROLE_SET lacks. */
+const SUBJECTS: readonly RoleSubject[] = [...ROLE_SET, ANONYMOUS_PRINCIPAL];
+
+const EVERYONE: readonly string[] = ['anonymous', 'anonymous-principal', ...SITE_USERS, 'other-tenant', ...WORKLOADS];
 
 /** EVERYONE without `excluded`. */
 function everyoneBut(...excluded: string[]): string[] {
   return EVERYONE.filter((name) => !excluded.includes(name));
 }
 
-/** Subjects that present no user token: auth.cfc requireLogin and a user-role `requires` answer them 401. */
-const NO_USER: readonly string[] = ['anonymous', ...WORKLOADS];
+/** Subjects not logged in: auth.cfc requireLogin and a user-role `requires` answer them 401. */
+const NO_USER: readonly string[] = ['anonymous', 'anonymous-principal', ...WORKLOADS];
 
 /** Subjects that present no invocation credential on the service transport. */
 const NO_INVOCATION: readonly string[] = ['anonymous', TASKS_INVOKER_ROLE, PUBSUB_INVOKER_ROLE];
@@ -494,9 +500,14 @@ function errorOf(res: InjectResponse): ErrorBody | undefined {
   return typeof code === 'string' && typeof message === 'string' ? { code, message } : undefined;
 }
 
+/** Tenant-a credentials of `subject`; the anonymous principal's user token carries `sub` ''. */
+function credentialsOf(subject: RoleSubject): Promise<Record<string, string>> {
+  return headersFor(subject, { site: SITE_A, ...(subject === ANONYMOUS_PRINCIPAL ? { sub: '' } : {}) });
+}
+
 /** Every way one probe sent as one subject departs from its expectation. */
 async function mismatchesOf(key: string, entry: Expectation, subject: RoleSubject): Promise<string[]> {
-  const credentials = await headersFor(subject, { site: SITE_A });
+  const credentials = await credentialsOf(subject);
   const before = mark();
   const res = entry.send === undefined ? await inject(requestOf(entry), credentials) : await entry.send(subject, credentials);
   const at = `${key} as ${subject.name}`;
@@ -584,11 +595,11 @@ describe('route declarations', () => {
     expect(actual).toEqual(expected);
   });
 
-  it('probes exactly the ROLE_SET subjects', () => {
-    expect(ROLE_SET.map((subject) => subject.name).sort()).toEqual([...EVERYONE].sort());
+  it('probes exactly the ROLE_SET subjects and the anonymous principal', () => {
+    expect(SUBJECTS.map((subject) => subject.name).sort()).toEqual([...EVERYONE].sort());
   });
 
-  it('names only ROLE_SET subjects, and never one both admitted and answered 401', () => {
+  it('names only probed subjects, and never one both admitted and answered 401', () => {
     const named = Object.values(EXPECTED).flatMap((entry) => [...entry.allow, ...entry.deny401]);
     const overlapping = Object.entries(EXPECTED).flatMap(([key, entry]) =>
       entry.allow.filter((name) => entry.deny401.includes(name)).map((name) => `${key}: ${name}`),
@@ -601,7 +612,7 @@ describe('route admission', () => {
   for (const [key, entry] of Object.entries(EXPECTED)) {
     it(`admits exactly the expected subjects on ${key}, and denials leave no effect`, async () => {
       const mismatches: string[] = [];
-      for (const subject of ROLE_SET) mismatches.push(...(await mismatchesOf(key, entry, subject)));
+      for (const subject of SUBJECTS) mismatches.push(...(await mismatchesOf(key, entry, subject)));
       expect(mismatches).toEqual([]);
     });
   }

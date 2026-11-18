@@ -26,7 +26,7 @@ Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/event
 | Bulk targeting | `synthetic.usp_survey_bulk_target` (`200_usp_survey_bulk_target.sql`), reimplemented in `src/domain/bulk-target.ts` |
 | Seed | `synthetic.usp_seed_surveys` (`300_seed.sql`), loaded by `legacy-fixtures/cfml/seed.cfm` from the fixed-seed dataset |
 
-Scheduling in the fixture replaces the ACF tasks `opt2-survey-<id>-launch` and `opt2-survey-<id>-reminder-<n>`. They are addressed to `OPT2_GATEWAY_ORIGIN` and call back `…/{id}/launch` and `…/{id}/remind?reminder=<n>` with the schedule's `opt2TaskToken`, whose SHA-256 is stored as `task_token_hash`. In the transition that moves the surveys units (AAP 0.4.2, fixture survey tasks):
+Scheduling in the fixture replaces the ACF tasks `opt2-survey-<id>-launch` and `opt2-survey-<id>-reminder-<n>`. They are addressed to `OPT2_GATEWAY_ORIGIN` and call back `…/{id}/launch` and `…/{id}/remind?reminder=<n>` with the survey's task credential as the password of `Authorization: Basic`, whose SHA-256 is stored as `task_token_hash`. The gateway relays that header verbatim as `X-Opt2-Fixture-Authorization`; no query, form or body value is read. In the transition that moves the surveys units (AAP 0.4.2, fixture survey tasks):
 
 1. `gateway/legacy-bridge/cfml/scheduler.cfm?op=pause` pauses them.
 2. After activation, communications `/internal/v1/migration/adopt-scheduled-tasks` recreates them as Cloud Tasks and `communications.scheduled_task` rows, idempotent by task name.
@@ -87,8 +87,8 @@ Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answ
 | `GET` | `/{id}/responses` | `surveys.surveys.responses` | `surveys.manager` | One page of the survey's responses |
 | `POST` | `/{id}/responses` | `surveys.surveys.responses` | Site member: S2, `system-user` or `member` | Stores `answers` ([below](#multi-site-responses)) |
 | `GET` | `/{id}/tasks` | `surveys.surveys.tasks` | `surveys.manager` | Launch and reminder tasks with kind, callback route and offset; read from communications by up to 100 of the survey's own task names a call, keeping only the requested page |
-| `GET`, `POST` | `/{id}/launch` | `surveys.surveys.launch` | Task token `opt2TaskToken` | Launch callback: marks the survey `LAUNCHED` once |
-| `GET`, `POST` | `/{id}/remind` | `surveys.surveys.remind` | Task token `opt2TaskToken` | Reminder callback for `reminder=<n>`: stamps its `sent_at` once |
+| `GET`, `POST` | `/{id}/launch` | `surveys.surveys.launch` | Task token in `X-Opt2-Fixture-Authorization` | Launch callback: marks the survey `LAUNCHED` once |
+| `GET`, `POST` | `/{id}/remind` | `surveys.surveys.remind` | Task token in `X-Opt2-Fixture-Authorization` | Reminder callback for `reminder=<n>`: stamps its `sent_at` once |
 
 ### `/v1` APIs
 

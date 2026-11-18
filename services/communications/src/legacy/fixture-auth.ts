@@ -21,6 +21,12 @@ function verifiedUser(request: FastifyRequest): Opt2AuthContext['user'] {
   return request.opt2Auth.user;
 }
 
+/** The verified user of a logged-in session; the anonymous principal (`sub` '') is a guest session, as auth.cfc sees it. */
+function loggedInUser(request: FastifyRequest): Opt2AuthContext['user'] {
+  const user = verifiedUser(request);
+  return user !== undefined && user.sub !== '' ? user : undefined;
+}
+
 /** The `siteid` param, read ignoring case as a CFML struct key; undefined when absent. */
 function siteParam(params: FixtureParams): unknown {
   const key = Object.keys(params).find((name) => name.toLowerCase() === 'siteid');
@@ -64,18 +70,18 @@ export async function resolveSite(
   return registered;
 }
 
-/** Returns the verified user's claims; throws authorization (401) for an anonymous caller. Call after resolveSite. */
+/** Returns the logged-in user's claims; throws authorization (401) for an anonymous caller. Call after resolveSite. */
 export function requireLogin(request: FastifyRequest): UserClaims {
-  const user = verifiedUser(request);
+  const user = loggedInUser(request);
   if (user === undefined) {
     throw new LegacyApiError('authorization');
   }
   return user;
 }
 
-/** The fixture roles the verified user holds for the token's site, in auth.cfc's role-name order; [] when anonymous. */
+/** The fixture roles the logged-in user holds for the token's site, in auth.cfc's role-name order; [] when anonymous. */
 export function rolesHeld(request: FastifyRequest): string[] {
-  const user = verifiedUser(request);
+  const user = loggedInUser(request);
   if (user === undefined) {
     return [];
   }
@@ -112,7 +118,7 @@ export function fixtureHttpMethod(request: FastifyRequest): string {
  */
 export async function requireCsrf(request: FastifyRequest, reply: FastifyReply, context: string): Promise<void> {
   const method = fixtureHttpMethod(request);
-  if (method === 'GET' || method === 'HEAD' || verifiedUser(request) === undefined || csrfValidated.has(request)) {
+  if (method === 'GET' || method === 'HEAD' || loggedInUser(request) === undefined || csrfValidated.has(request)) {
     return;
   }
   await csrfPreHandler({ contextOf: () => context }).call(request.server, request, reply);

@@ -19,6 +19,7 @@ import {
   writeTestSecrets,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { FIXTURE_AUTHORIZATION_HEADER } from '../../src/legacy/fixture-auth.js';
 import { FIXTURE_REMIND_PATH, REMINDER_SENT_PATH, registerRemindRoutes } from '../../src/routes/remind.js';
 import { createSurveysRepository, reminderTaskName, type SurveysRepository } from '../../src/repo/repository.js';
 import { UNITS } from '../../src/repo/tables.js';
@@ -32,6 +33,9 @@ const TENANT_A = tenantIdForSite('tenant-a');
 const TENANT_B = tenantIdForSite('tenant-b');
 const SENT_AT = '2026-07-01T10:00:02.500';
 const UNREGISTERED_TENANT_SITE = 'ghost';
+/** `Basic` credentials of `text`, as an ACF task run sends them. */
+const basic = (text: string): string => `Basic ${Buffer.from(text, 'utf8').toString('base64')}`;
+const TASK_AUTHORIZATION = basic(`opt2-task:${TOKEN}`);
 
 type ReminderState = { task_name: string; sent_at: Date | null };
 
@@ -76,12 +80,20 @@ describe.skipIf(!available)('remind routes', () => {
     });
   }
 
-  /** Calls the remind callback as the ACF task does through the gateway, unless `headers` replaces the gateway's invocation credential. */
-  async function remind(method: 'GET' | 'POST', query: string, opts: { id?: string; headers?: Record<string, string>; body?: unknown } = {}) {
+  /**
+   * Calls the remind callback as the ACF task does through the gateway, its `Authorization` relayed as `authorization`
+   * (the task credential by default, none for null), unless `headers` replaces the gateway's invocation credential.
+   */
+  async function remind(
+    method: 'GET' | 'POST',
+    query: string,
+    opts: { id?: string; headers?: Record<string, string>; body?: unknown; authorization?: string | null } = {},
+  ) {
+    const relayed = opts.authorization === null ? {} : { [FIXTURE_AUTHORIZATION_HEADER]: opts.authorization ?? TASK_AUTHORIZATION };
     return app.inject({
       method,
       url: `/legacy-fixtures/cfml/api.cfm/surveys/surveys/${opts.id ?? surveyId}/remind?${query}`,
-      headers: { ...(opts.headers ?? (await serviceHeaders('gateway'))), ...(opts.body === undefined ? {} : JSON_HEADERS) },
+      headers: { ...(opts.headers ?? (await serviceHeaders('gateway'))), ...relayed, ...(opts.body === undefined ? {} : JSON_HEADERS) },
       payload: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   }
@@ -234,7 +246,7 @@ describe.skipIf(!available)('remind routes', () => {
 
   describe('fixture remind callback', () => {
     it('stamps the reminder once and answers its fixture row, by GET or POST and with any id case', async () => {
-      const res = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=2`);
+      const res = await remind('GET', 'siteid=tenant-a&reminder=2');
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({
         apiversion: 'v1',
@@ -249,33 +261,36 @@ describe.skipIf(!available)('remind routes', () => {
         },
       });
 
-      const again = await remind('POST', `opt2TaskToken=${TOKEN}`, { id: surveyId.toLowerCase(), body: { siteid: 'tenant-a', reminder: 2 } });
+      const again = await remind('POST', '', { id: surveyId.toLowerCase(), body: { siteid: 'tenant-a', reminder: 2 } });
       expect([again.statusCode, again.json().data]).toEqual([200, res.json().data]);
       expect((await reminders()).map((reminder) => reminder.sent_at)).toEqual([null, NOW]);
     });
 
-    it.each<[string, string, number, string]>([
-      ['an unknown site', 'siteid=nowhere&opt2TaskToken=x&reminder=1', 400, 'Invalid parameters'],
-      ['a site the registry no longer holds', `siteid=${UNREGISTERED_TENANT_SITE}&opt2TaskToken=${TOKEN}&reminder=1`, 400, 'Invalid parameters'],
-      ['a wrong token', 'siteid=tenant-a&opt2TaskToken=nope&reminder=1', 403, 'Insufficient Account Permissions'],
-      ['no token', 'siteid=tenant-a&reminder=1', 403, 'Insufficient Account Permissions'],
-      ['a repeated token', `siteid=tenant-a&opt2TaskToken=${TOKEN}&opt2TaskToken=${TOKEN}&reminder=1`, 403, 'Insufficient Account Permissions'],
-      ['a survey of another site', `siteid=tenant-b&opt2TaskToken=${TOKEN}&reminder=1`, 403, 'Insufficient Account Permissions'],
-      ['ordinal 0 after the token check', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=0`, 400, 'Invalid parameters'],
-      ['no ordinal', `siteid=tenant-a&opt2TaskToken=${TOKEN}`, 400, 'Invalid parameters'],
-      ['a signed non-ASCII ordinal', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=-%D9%A3`, 400, 'Invalid parameters'],
-      ['a non-ASCII ordinal, which ACF int() fails on', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=%D9%A3`, 500, 'Unhandled Exception'],
-      ['an ordinal the survey lacks', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=9`, 404, 'Not Found'],
-    ])('answers the fixture error for %s', async (_label, query, status, message) => {
-      const res = await remind('GET', query);
+    it.each<[string, string, string | null | undefined, number, string]>([
+      ['an unknown site', 'siteid=nowhere&reminder=1', basic('opt2-task:x'), 400, 'Invalid parameters'],
+      ['a site the registry no longer holds', `siteid=${UNREGISTERED_TENANT_SITE}&reminder=1`, undefined, 400, 'Invalid parameters'],
+      ['a wrong token', 'siteid=tenant-a&reminder=1', basic('opt2-task:nope'), 403, 'Insufficient Account Permissions'],
+      ['no token', 'siteid=tenant-a&reminder=1', null, 403, 'Insufficient Account Permissions'],
+      ['the token only in the query', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, null, 403, 'Insufficient Account Permissions'],
+      ['the token in malformed Basic credentials', 'siteid=tenant-a&reminder=1', TASK_AUTHORIZATION.slice(0, -1), 403, 'Insufficient Account Permissions'],
+      ['the token under another scheme', 'siteid=tenant-a&reminder=1', TASK_AUTHORIZATION.replace('Basic', 'Bearer'), 403, 'Insufficient Account Permissions'],
+      ['the token without the colon before it', 'siteid=tenant-a&reminder=1', basic(TOKEN), 403, 'Insufficient Account Permissions'],
+      ['a survey of another site', 'siteid=tenant-b&reminder=1', undefined, 403, 'Insufficient Account Permissions'],
+      ['ordinal 0 after the token check', 'siteid=tenant-a&reminder=0', undefined, 400, 'Invalid parameters'],
+      ['no ordinal', 'siteid=tenant-a', undefined, 400, 'Invalid parameters'],
+      ['a signed non-ASCII ordinal', 'siteid=tenant-a&reminder=-%D9%A3', undefined, 400, 'Invalid parameters'],
+      ['a non-ASCII ordinal, which ACF int() fails on', 'siteid=tenant-a&reminder=%D9%A3', undefined, 500, 'Unhandled Exception'],
+      ['an ordinal the survey lacks', 'siteid=tenant-a&reminder=9', undefined, 404, 'Not Found'],
+    ])('answers the fixture error for %s', async (_label, query, authorization, status, message) => {
+      const res = await remind('GET', query, { authorization });
       expect(res.statusCode).toBe(status);
       expect(res.json()).toMatchObject({ method: 'surveys.surveys.remind', error: { message } });
       expect(await nothingSent()).toBe(true);
     });
 
-    it('reads the token from the url only and answers notFound for another overriding method', async () => {
-      expect((await remind('POST', 'siteid=tenant-a&reminder=1', { body: { opt2TaskToken: TOKEN } })).statusCode).toBe(403);
-      const override = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, {
+    it('reads the token from the relayed Authorization only and answers notFound for another overriding method', async () => {
+      expect((await remind('POST', 'siteid=tenant-a&reminder=1', { body: { opt2TaskToken: TOKEN }, authorization: null })).statusCode).toBe(403);
+      const override = await remind('GET', 'siteid=tenant-a&reminder=1', {
         headers: { ...(await serviceHeaders('gateway')), 'x-http-method-override': 'DELETE' },
       });
       expect([override.statusCode, override.json().error.message]).toEqual([404, 'Not Found']);
@@ -283,14 +298,14 @@ describe.skipIf(!available)('remind routes', () => {
     });
 
     it('refuses a task run bypassing the gateway, its task token valid, with 401 before the handler, stamping nothing', async () => {
-      const res = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, { headers: {} });
+      const res = await remind('GET', 'siteid=tenant-a&reminder=1', { headers: {} });
       expect([res.statusCode, res.json().method]).toEqual([401, 'invalid']);
       expect(await nothingSent()).toBe(true);
     });
 
     it('answers forbidden for a user token of another site', async () => {
       const token = await mintUserToken({ sub: USER_ID, site: 'tenant-b', roles: [Roles.member] });
-      const res = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, {
+      const res = await remind('GET', 'siteid=tenant-a&reminder=1', {
         headers: { authorization: `Bearer ${token}`, ...(await serviceHeaders('gateway')) },
       });
       expect(res.statusCode).toBe(403);
@@ -298,7 +313,7 @@ describe.skipIf(!available)('remind routes', () => {
 
     it('answers the legacy 503 while the reminder unit is not target-authoritative', async () => {
       await admin("UPDATE $schema.unit_gate SET state = 'legacy' WHERE unit = 'surveys.survey_reminder'");
-      expect((await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`)).statusCode).toBe(503);
+      expect((await remind('GET', 'siteid=tenant-a&reminder=1')).statusCode).toBe(503);
     });
   });
 });

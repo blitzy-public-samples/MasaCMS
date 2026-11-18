@@ -500,7 +500,7 @@ paths:
         description: Legacy site id, also read from the body; empty means the session site, which a task run lacks, and an unknown site answers `invalidParameters`.
       - $ref: '#/components/parameters/UseDataNamespace'
       - $ref: '#/components/parameters/MethodOverride'
-      - $ref: '#/components/parameters/FixtureTaskToken'
+      - $ref: '#/components/parameters/FixtureTaskAuthorization'
     get:
       operationId: fixtureLaunchCallback
       summary: Launch task callback; marks the survey LAUNCHED the first time and returns its row.
@@ -612,7 +612,7 @@ paths:
         description: Legacy site id, also read from the body; empty means the session site, which a task run lacks, and an unknown site answers `invalidParameters`.
       - $ref: '#/components/parameters/UseDataNamespace'
       - $ref: '#/components/parameters/MethodOverride'
-      - $ref: '#/components/parameters/FixtureTaskToken'
+      - $ref: '#/components/parameters/FixtureTaskAuthorization'
       - $ref: '#/components/parameters/FixtureReminderQuery'
     get:
       operationId: fixtureRemindCallback
@@ -1828,11 +1828,11 @@ components:
       schema:
         type: integer
         minimum: 1
-    FixtureTaskToken:
-      name: opt2TaskToken
-      in: query
+    FixtureTaskAuthorization:
+      name: X-Opt2-Fixture-Authorization
+      in: header
       required: false
-      description: The schedule's task token, read from the query string only; absent or not matching answers `forbidden`.
+      description: The task run's `Authorization`, relayed verbatim by the gateway. The schedule's task token is the text after the first `:` of its UTF-8 decoded `Basic` credentials (scheme in any case); any other value, no `:`, no header or a token not matching answers `forbidden`. A query, form or body `opt2TaskToken` is not read.
       schema:
         type: string
     FixtureReminderQuery:
@@ -2827,14 +2827,14 @@ components:
           minLength: 1
     FixtureLaunchCallbackRequest:
       type: object
-      description: Body of a launch callback; a body `opt2TaskToken` and other parameters are ignored.
+      description: Body of a launch callback; other parameters, `opt2TaskToken` included, are ignored.
       additionalProperties: true
       properties:
         siteid:
           $ref: '#/components/schemas/SiteId'
     FixtureRemindCallbackRequest:
       type: object
-      description: Body of a reminder callback; a body `opt2TaskToken` and other parameters are ignored.
+      description: Body of a reminder callback; other parameters, `opt2TaskToken` included, are ignored.
       additionalProperties: true
       properties:
         siteid:

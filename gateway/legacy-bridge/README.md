@@ -217,6 +217,7 @@ Caller: the migration service, `migration/src/scheduler/`, and `opt2-ops` (AAP 0
 
 - ColdFusion always runs with `MURA_PING=false`, so Masa never registers `siteMonitor` itself (`core/appcfc/onApplicationStart_include.cfm:561`). The bridge alone maintains the native task, from the definition captured on first run.
 - Tasks are created through Masa's `utility.scheduleTask` (`<cfschedule attributeCollection>`, `core/mura/utility.cfc:1697-1699`), in the same default mode and group as Masa's own call.
+- Every save of a fixture survey task (`opt2-survey-<id>-<kind>`) also sets ACF's HTTP Basic `username` `opt2-task` and `password` the survey's task credential, re-derived by `legacy-fixtures/cfml/lib/auth.cfc` `surveyTaskCredential`; `describe` never returns either.
 - A task in the wire shape is `{task, group, url, port, interval, startDate, startTime, requestTimeOut, operation, paused, expired}`. Every field is a string (`""` when ACF reports none), except `paused` and `expired`, booleans.
   - `startDate` is `mm/dd/yyyy`, the form Masa passes (`:570`), and `startTime` is 24-hour `HH:mm:ss`. `cfschedule` accepts both back.
   - On ACF 2023, `cfschedule action="list"` returns a query whose `GROUP` is `DEFAULT` for Masa's tasks and which has no operation column, so `operation` is `""`; `restore` then omits it, which ACF accepts. `paused` is `STATUS` equal to `Paused`, and `expired` is `STATUS` equal to `Expired`.

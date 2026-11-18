@@ -92,6 +92,7 @@ The ColdFusion process also reads these variables on its start command:
 | Variable | Read by |
 |---|---|
 | `OPT2_GATEWAY_ORIGIN` | `surveys`: absolute `http(s)` origin that survey ACF tasks call back. Unset, scheduling answers `server_error` |
+| `OPT2_BRIDGE_HMAC_KEY` | `surveys`: key of the survey task credential. Unset, scheduling answers `server_error` |
 | `SMTP_HOST`, `SMTP_PORT`, `MAILPIT_API_URL` | `communications`: `cfmail` server and delivery lookup. Default `127.0.0.1`, `1025`, `http://127.0.0.1:8025` |
 
 ### `seed.cfm`
@@ -166,10 +167,10 @@ Gate: any of `timesheets.employee`, `timesheets.primary-approver`, `timesheets.s
 | GET | `surveys/surveys/{id}/responses` | `surveys.manager` | — | Paged |
 | POST | `surveys/surveys/{id}/responses` | a logged-in member of `siteid`: S2, a private-pool user or a public-pool account of that site, which must own or be targeted by the survey (else 403) | — | `answers`. Stored under the survey's site with `respondentSiteID` = the verified `siteid` |
 | GET | `surveys/surveys/{id}/tasks` | `surveys.manager` | — | Current ACF tasks with kind, callback route and offset |
-| GET, POST | `surveys/surveys/{id}/launch` | task callback: `opt2TaskToken` | — | Marks the survey LAUNCHED once |
-| GET, POST | `surveys/surveys/{id}/remind` | task callback: `opt2TaskToken` | — | `reminder=<n>`; stamps the reminder sent once |
+| GET, POST | `surveys/surveys/{id}/launch` | task callback: Basic task credential | — | Marks the survey LAUNCHED once |
+| GET, POST | `surveys/surveys/{id}/remind` | task callback: Basic task credential | — | `reminder=<n>`; stamps the reminder sent once |
 
-The callbacks authorise by the per-schedule task token, whose SHA-256 is stored in `synthetic.survey_schedule`; a wrong token answers 403. The bridge's `scheduler.cfm` lists, pauses and deletes these tasks (AAP 0.4.2).
+The callbacks authorise by the survey's task credential, the password of an `Authorization: Basic` header that the ACF task sends: the lowercase hex HMAC-SHA256 of `opt2-survey-task:<id>` under `OPT2_BRIDGE_HMAC_KEY`, whose SHA-256 is stored in `synthetic.survey_schedule`. A missing or wrong credential answers 403, and the task URL carries none. The bridge's `scheduler.cfm` lists, pauses and deletes these tasks (AAP 0.4.2).
 
 ### reporting → `services/reporting`
 

@@ -17,6 +17,7 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { fixtureHandler, fixtureMethod, fixtureSuccess } from '../../src/legacy/fixture-envelope.js';
 import {
+  FIXTURE_AUTHORIZATION_HEADER,
   FIXTURE_ROLES,
   checkTaskToken,
   isSiteAdmin,
@@ -69,6 +70,11 @@ function claims(roles: string[], s2 = false): UserClaims {
     iat: now,
     exp: now + 300,
   };
+}
+
+/** Claims of the anonymous principal identity mints for a session without a login: `sub` '', and no roles as issued. */
+function principal(roles: string[] = [], s2 = false): UserClaims {
+  return { ...claims(roles, s2), sub: '' };
 }
 
 /** Headers of a request as the gateway forwards it: the gateway's invocation credential, after the bearer user token if given. */
@@ -133,6 +139,21 @@ describe('direct checks', () => {
     expect(userId(requestWith())).toBe('');
     expect(userId(requestWith(claims([])))).toBe(USER_ID);
   });
+
+  it.each<[string, UserClaims]>([
+    ['as identity mints it', principal()],
+    ['even beside roles and the s2 claim', principal([Roles.surveysManager, Roles.member, Roles.siteAdmin], true)],
+  ])('treats the anonymous principal %s as a guest session', (_case, user) => {
+    const request = requestWith(user);
+    expect(() => requireLogin(request)).toThrow(expect.objectContaining({ type: 'authorization' }));
+    expect(() => requireAny(request, [Roles.surveysManager])).toThrow(expect.objectContaining({ type: 'authorization' }));
+    expect({ roles: rolesHeld(request), member: isSiteMember(request), admin: isSiteAdmin(request), userid: userId(request) }).toEqual({
+      roles: [],
+      member: false,
+      admin: false,
+      userid: '',
+    });
+  });
 });
 
 describe('requireCsrf', () => {
@@ -163,6 +184,7 @@ describe('requireCsrf', () => {
     ['a HEAD', 'HEAD', MANAGER, {}],
     ['a POST overridden to GET', 'POST', MANAGER, { 'x-http-method-override': 'get' }],
     ['an anonymous POST', 'POST', undefined, {}],
+    ["the anonymous principal's POST", 'POST', principal(), {}],
   ])('skips %s without calling identity', async (_case, method, user, headers) => {
     const { request, consume } = csrfRequest(method, user, {}, headers);
     await expect(requireCsrf(request, {} as FastifyReply, SURVEY_ID)).resolves.toBeUndefined();
@@ -256,9 +278,12 @@ describe('fixture check order through app.inject', () => {
   /** Status and parsed envelope of one injected request. */
   async function call(
     url: string,
-    opts: { roles?: string[]; site?: string; tid?: string; payload?: unknown } = {},
+    opts: { roles?: string[]; site?: string; tid?: string; sub?: string; payload?: unknown } = {},
   ): Promise<{ status: number; body: { method: string; data?: Record<string, unknown>; error?: unknown } }> {
-    const token = opts.roles === undefined ? undefined : await mintUserToken({ site: opts.site ?? 'tenant-a', tid: opts.tid, roles: opts.roles, sub: USER_ID });
+    const token =
+      opts.roles === undefined
+        ? undefined
+        : await mintUserToken({ site: opts.site ?? 'tenant-a', tid: opts.tid, roles: opts.roles, sub: opts.sub ?? USER_ID });
     const headers: Record<string, string> = await userHeaders(token);
     if (opts.payload !== undefined) headers['content-type'] = 'application/json';
     const res = await app.inject({
@@ -295,6 +320,15 @@ describe('fixture check order through app.inject', () => {
     const res = await call(url, opts);
     expect(res.status).toBe(status);
     expect(res.body).toMatchObject({ method: 'surveys.surveys', error });
+  });
+
+  it.each<[string, string, unknown, string]>([
+    ['a requireAny route', `${ROUTE}?siteid=tenant-a`, undefined, 'surveys.surveys'],
+    ['the login-only response POST', `${ROUTE}/X/responses?siteid=tenant-a`, {}, 'surveys.surveys.responses'],
+  ])('answers the gateway-forwarded anonymous principal 401 on %s', async (_case, url, payload, method) => {
+    const res = await call(url, { roles: [], sub: '', payload });
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ method, error: DENIED });
   });
 
   it.each([
@@ -400,18 +434,25 @@ describe('site membership and task tokens', () => {
     expect(isSiteMember(requestWith())).toBe(false);
   });
 
-  it.each<[string, Record<string, unknown> | undefined, string]>([
-    ['absent', {}, ''],
-    ['without a query', undefined, ''],
-    ['spelled two ways, comma-joined under the first spelling as the url scope joins it', { opt2TaskToken: 'first', OPT2TASKTOKEN: 'last' }, 'first,last'],
-    ['repeated, comma-joined as the url scope joins it', { opt2TaskToken: ['a', 'b'] }, 'a,b'],
-    // Masa's start-up scan of the same query on the legacy oracle: NULs dropped and the joined value trimmed.
-    ['padded and holding a NUL', { opt2TaskToken: ' tok\u0000en\t' }, 'token'],
-    ['repeated with padding, joined before the trim', { opt2TaskToken: [' a', 'b '] }, 'a,b'],
-    // A JSON null fails the scan, which then leaves only its NUL fix.
-    ['beside a value that fails the url scan', { opt2TaskToken: ' to\u0000ken ', x: 'null' }, ' token '],
-  ])('taskTokenOf a query %s', (_case, query, expected) => {
-    expect(taskTokenOf({ query, headers: {} } as unknown as FastifyRequest)).toBe(expected);
+  it.each<[string, string | string[] | undefined, string]>([
+    ['absent, a query token beside it', undefined, ''],
+    ['Basic credentials, after the user name', `Basic ${Buffer.from('opt2-task:secret').toString('base64')}`, 'secret'],
+    ['credentials with an empty user name', 'Basic OnNlY3JldA==', 'secret'],
+    ['a password holding colons, after the first only', 'Basic dTphOmI=', 'a:b'],
+    ['an empty password', 'Basic dTo=', ''],
+    ['UTF-8 credentials', 'Basic dTpww6Rzc3fDtnJk', 'pässwörd'],
+    ['the scheme in another case after several spaces', 'bAsIc   dTpzZWNyZXQ=', 'secret'],
+    ['credentials without a colon', 'Basic c2VjcmV0', ''],
+    ['empty credentials', 'Basic ', ''],
+    ['another scheme', 'Bearer dTpzZWNyZXQ=', ''],
+    ['no space after the scheme', 'BasicdTpzZWNyZXQ=', ''],
+    ['unpadded base64', 'Basic dTpzZWNyZXQ', ''],
+    ['base64url characters', 'Basic dT-_', ''],
+    ['trailing text', 'Basic dTpzZWNyZXQ= x', ''],
+    ['a header list', ['Basic dTpzZWNyZXQ='], ''],
+  ])('taskTokenOf a relayed Authorization %s', (_case, value, expected) => {
+    const headers = value === undefined ? {} : { [FIXTURE_AUTHORIZATION_HEADER]: value };
+    expect(taskTokenOf({ query: { opt2TaskToken: 'secret' }, headers } as unknown as FastifyRequest)).toBe(expected);
   });
 
   it.each<[string, string, string, boolean]>([

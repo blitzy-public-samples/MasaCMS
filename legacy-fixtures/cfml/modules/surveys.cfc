@@ -151,10 +151,10 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 
 		local.gateway = gatewayOrigin(structKeyExists(server.system.environment, "OPT2_GATEWAY_ORIGIN") ? server.system.environment.OPT2_GATEWAY_ORIGIN : "");
 
-		local.token = lCase(binaryEncode(binaryDecode(generateSecretKey("AES", 256), "base64"), "hex"));
+		local.token = variables.auth.surveyTaskCredential(local.tasks[1].name);
 		local.tokenHash = sqlParam(variables.envelope.sha256Hex(local.token), "cf_sql_char");
 
-		// Serialises reschedules of one survey so its ACF tasks always carry the token whose hash committed last.
+		// Serialises reschedules of one survey so the task listing kept for a rollback is the one this transaction replaces.
 		lock name="#local.taskBase#" type="exclusive" timeout="30" {
 			local.previous = scheduledTasks(local.taskBase);
 			local.tasksChanged = false;
@@ -179,8 +179,8 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 							"name" = local.task.name,
 							"url" = local.gateway.origin & variables.callbackPath & encodeForURL(local.surveyId) & "/" & local.task.action
 								& "?siteid=" & encodeForURL(arguments.route.siteid)
-								& (local.task.reminder ? "&reminder=" & local.task.reminder : "")
-								& "&opt2TaskToken=" & local.token,
+								& (local.task.reminder ? "&reminder=" & local.task.reminder : ""),
+							// The task credential travels as Basic auth from saveTask, never in the URL.
 							"port" = local.gateway.port,
 							"startDate" = dateFormat(local.task.runAt, "mm/dd/yyyy"),
 							"startTime" = timeFormat(local.task.runAt, "HH:mm:ss"),
@@ -238,7 +238,7 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 					queryExecute("UPDATE synthetic.survey SET status = 'SCHEDULED' WHERE survey_id = :id", {id = sqlParam(local.surveyId)});
 				}
 			} catch (any e) {
-				// The rollback kept the previous token hash, which the previous task URLs carry.
+				// The rollback kept the previous rows, which the restored tasks call back with the same derived credential.
 				if (local.tasksChanged) {
 					restoreTasks(local.taskBase, local.previous);
 				}
@@ -416,7 +416,7 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		))[1]};
 	}
 
-	private string function verifiedTaskSurvey(required struct route) hint="Inside the caller's transaction, locks the survey row and returns its id when url.opt2TaskToken matches its stored task token hash in the request site; raises forbidden otherwise, a missing survey included." {
+	private string function verifiedTaskSurvey(required struct route) hint="Inside the caller's transaction, locks the survey row and returns its id when the request's Basic task credential matches its stored task token hash in the request site; raises forbidden otherwise, a missing survey included." {
 		// Survey row before schedule, the order scheduleSurvey locks them, so the hash read is the last committed one.
 		local.survey = queryExecute(
 			"SELECT survey_id FROM synthetic.survey WITH (UPDLOCK, HOLDLOCK) WHERE survey_id = :id AND siteID = :siteid",
@@ -430,7 +430,7 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 			);
 			local.storedHash = local.schedule.recordCount ? local.schedule.task_token_hash[1] : "";
 		}
-		if (!variables.auth.checkTaskToken(url.opt2TaskToken ?: "", local.storedHash)) {
+		if (!variables.auth.checkTaskToken(variables.auth.taskCredential(), local.storedHash)) {
 			variables.envelope.raise("forbidden");
 		}
 		return local.survey.survey_id[1];
@@ -496,12 +496,12 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		return local.result;
 	}
 
-	private void function saveTask(required struct task) hint="Creates or updates an HTTP task in ACF's default group from {name, url, port, startDate, startTime, interval, requestTimeOut}." {
+	private void function saveTask(required struct task) hint="Creates or updates an HTTP task in ACF's default group from {name, url, port, startDate, startTime, interval, requestTimeOut}, its runs sending the survey's task credential as Basic auth." {
 		cfschedule(
 			action = "update",
 			task = arguments.task.name,
 			operation = "HTTPRequest",
-			url = arguments.task.url,
+			url = arguments.task.url, username = "opt2-task", password = variables.auth.surveyTaskCredential(arguments.task.name),
 			port = arguments.task.port,
 			startDate = arguments.task.startDate,
 			startTime = arguments.task.startTime,

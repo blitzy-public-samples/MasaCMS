@@ -20,6 +20,7 @@ import {
   type TenantlessEnvelope,
 } from '@opt2/platform/testing';
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
+import { FIXTURE_AUTHORIZATION_HEADER } from '../../src/legacy/fixture-auth.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 
 type HttpMethod = 'GET' | 'POST';
@@ -259,8 +260,16 @@ function v1Url(tail = ''): (seeded: Seeded) => string {
   return ({ surveyId }) => `/v1/surveys/${surveyId}${tail}?siteid=${SITE_A}`;
 }
 
-/** Query of an anonymous fixture task callback presenting TASK_TOKEN. */
-const CALLBACK_QUERY = `siteid=${SITE_A}&opt2TaskToken=${TASK_TOKEN}`;
+/** Query of an anonymous fixture task callback. */
+const CALLBACK_QUERY = `siteid=${SITE_A}`;
+
+/** The task run's `Authorization` as the gateway relays it: Basic credentials holding TASK_TOKEN. */
+const TASK_AUTHORIZATION = { [FIXTURE_AUTHORIZATION_HEADER]: `Basic ${Buffer.from(`opt2-task:${TASK_TOKEN}`, 'utf8').toString('base64')}` };
+
+/** A task run as the gateway forwards it: the gateway's invocation credential and the relayed task credential. */
+async function taskRun(): Promise<Record<string, string>> {
+  return { ...(await forwardedByGateway()), ...TASK_AUTHORIZATION };
+}
 
 /** Wire body of the seeded survey's `surveys-launch` task, naming `tenantId`. */
 function launchTask(seeded: Seeded, tenantId: string = TENANT_A.tenantId): Record<string, unknown> {
@@ -343,7 +352,7 @@ function storedStatus(ctx: TestApp, seeded: Seeded): unknown {
 
 /** Launches the seeded scheduled survey through the anonymous fixture launch callback, as the gateway forwards it. */
 async function launchThroughCallback(ctx: TestApp, seeded: Seeded): Promise<void> {
-  const res = await ctx.app.inject({ method: 'GET', url: fixtureUrl('/launch', CALLBACK_QUERY)(seeded), headers: await forwardedByGateway() });
+  const res = await ctx.app.inject({ method: 'GET', url: fixtureUrl('/launch', CALLBACK_QUERY)(seeded), headers: await taskRun() });
   expect(res.statusCode, res.body).toBe(200);
 }
 
@@ -648,7 +657,7 @@ const CASES: Record<string, Case[]> = {
       name: 'launches the scheduled survey for a task run presenting its task token',
       method: 'GET',
       url: fixtureUrl('/launch', CALLBACK_QUERY),
-      headers: forwardedByGateway,
+      headers: taskRun,
       seed: 'scheduled',
       status: 200,
       verify: ({ body }, ctx, seeded) => {
@@ -669,9 +678,22 @@ const CASES: Record<string, Case[]> = {
       },
     },
     {
+      name: 'refuses a task run presenting its task token only in the query as forbidden and leaves the survey scheduled',
+      method: 'GET',
+      url: fixtureUrl('/launch', `${CALLBACK_QUERY}&opt2TaskToken=${TASK_TOKEN}`),
+      headers: forwardedByGateway,
+      seed: 'scheduled',
+      status: 403,
+      verify: ({ body }, ctx, seeded) => {
+        expect(record(body).error).toEqual(FIXTURE_FORBIDDEN);
+        expect(storedStatus(ctx, seeded)).toBe('SCHEDULED');
+      },
+    },
+    {
       name: 'refuses a task run bypassing the gateway, its task token valid, before the handler and leaves the survey scheduled',
       method: 'GET',
       url: fixtureUrl('/launch', CALLBACK_QUERY),
+      headers: TASK_AUTHORIZATION,
       seed: 'scheduled',
       status: 401,
       verify: ({ body }, ctx, seeded) => {
@@ -685,7 +707,7 @@ const CASES: Record<string, Case[]> = {
       name: 'launches the scheduled survey for a POST task run presenting its task token',
       method: 'POST',
       url: fixtureUrl('/launch', CALLBACK_QUERY),
-      headers: forwardedByGateway,
+      headers: taskRun,
       payload: {},
       seed: 'scheduled',
       status: 200,
@@ -700,7 +722,7 @@ const CASES: Record<string, Case[]> = {
       name: 'stamps the first reminder for a task run presenting its task token',
       method: 'GET',
       url: fixtureUrl('/remind', `${CALLBACK_QUERY}&reminder=1`),
-      headers: forwardedByGateway,
+      headers: taskRun,
       seed: 'scheduled',
       status: 200,
       verify: ({ body }, _ctx, { surveyId }) => {
@@ -713,7 +735,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers a reminder ordinal the survey lacks as notFound',
       method: 'GET',
       url: fixtureUrl('/remind', `${CALLBACK_QUERY}&reminder=2`),
-      headers: forwardedByGateway,
+      headers: taskRun,
       seed: 'scheduled',
       status: 404,
       verify: ({ body }) => expect(record(body).error).toEqual(FIXTURE_NOT_FOUND),
@@ -722,7 +744,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers a reminder ordinal below 1 as invalidParameters',
       method: 'GET',
       url: fixtureUrl('/remind', `${CALLBACK_QUERY}&reminder=0`),
-      headers: forwardedByGateway,
+      headers: taskRun,
       seed: 'scheduled',
       status: 400,
       verify: ({ body }) => expect(record(body).error).toEqual(INVALID_PARAMETERS),
@@ -733,7 +755,7 @@ const CASES: Record<string, Case[]> = {
       name: 'stamps the reminder the POST body names for a task run presenting its task token',
       method: 'POST',
       url: fixtureUrl('/remind', CALLBACK_QUERY),
-      headers: forwardedByGateway,
+      headers: taskRun,
       payload: { reminder: 1 },
       seed: 'scheduled',
       status: 200,

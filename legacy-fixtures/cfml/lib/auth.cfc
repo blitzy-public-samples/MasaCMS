@@ -142,4 +142,31 @@ component output="false" hint="Masa-session authentication and role-group author
 		return createObject("java", "java.security.MessageDigest").isEqual(local.computed, local.stored);
 	}
 
+	public string function surveyTaskCredential(required string taskName) hint="Returns the Basic password of an opt2-survey-<id>-<kind> task, the lowercase hex HMAC-SHA256 of opt2-survey-task:<id> under OPT2_BRIDGE_HMAC_KEY, or an empty string for any other name; throws server_error when the key is unset." {
+		local.match = reFind("^opt2-survey-([0-9A-Za-z-]{35})-(launch|reminder-[1-9][0-9]*)$", arguments.taskName, 1, true);
+		if (!local.match.pos[1]) {
+			return "";
+		}
+		local.key = structKeyExists(server.system.environment, "OPT2_BRIDGE_HMAC_KEY") ? server.system.environment.OPT2_BRIDGE_HMAC_KEY : "";
+		if (!len(local.key)) {
+			throw(type="opt2fixture.server_error", message="OPT2_BRIDGE_HMAC_KEY is not set");
+		}
+		return lCase(hmac("opt2-survey-task:" & mid(arguments.taskName, local.match.pos[2], local.match.len[2]), local.key, "HMACSHA256", "UTF-8"));
+	}
+
+	public string function taskCredential() hint="Returns the text after the first colon of the request's Basic Authorization credentials decoded as UTF-8, or an empty string for any other or no Authorization header." {
+		local.header = cgi.http_authorization;
+		local.match = reFindNoCase("^Basic +((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$", local.header, 1, true);
+		if (!local.match.pos[1]) {
+			return "";
+		}
+		try {
+			local.text = local.match.len[2] ? charsetEncode(toBinary(mid(local.header, local.match.pos[2], local.match.len[2])), "utf-8") : "";
+		} catch (any e) {
+			return "";
+		}
+		local.colon = find(":", local.text);
+		return local.colon ? removeChars(local.text, 1, local.colon) : "";
+	}
+
 }
