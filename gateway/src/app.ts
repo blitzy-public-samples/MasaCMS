@@ -24,7 +24,7 @@ import {
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createResponseModes } from './admin/response-modes.js';
 import { createInflightStore } from './cutover/inflight.js';
-import { loadInventoryFacts, loadTableOwnership, loadVariants } from './cutover/loader.js';
+import { inventoryFactsOf, loadInventory, loadTableOwnership, loadVariants } from './cutover/loader.js';
 import { resolveGatewayPaths } from './cutover/paths.js';
 import { registerCutoverRoutes } from './cutover/routes.js';
 import { createCutoverState } from './cutover/state.js';
@@ -33,6 +33,7 @@ import { createSessionBarrier } from './dispatcher/barrier.js';
 import { registerEdgeRoute, type DispatcherDeps } from './dispatcher/dispatch.js';
 import { createMatcher, type MatcherDeps } from './dispatcher/match.js';
 import { RELAY_SERVICES, registerRelayRoutes, type RelayDeps } from './dispatcher/relay.js';
+import { createRequestWrites } from './dispatcher/request-writes.js';
 import { replyFromOptions } from './dispatcher/response-head.js';
 import { createSiteRegistry } from './dispatcher/site-registry.js';
 import { createWriteWindowClient } from './dispatcher/write-window.js';
@@ -188,7 +189,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // Read before createService opens a pool, so an invalid cut-over or inventory file fails without leaking one.
   const paths = resolveGatewayPaths(env);
-  const [variants, facts, ownership] = await Promise.all([loadVariants(paths), loadInventoryFacts(paths), loadTableOwnership(paths)]);
+  const [variants, inventory, ownership] = await Promise.all([loadVariants(paths), loadInventory(paths), loadTableOwnership(paths)]);
+  // The inventory is read once; routing keeps only the facts and request writes derived from it.
+  const facts = inventoryFactsOf(inventory);
+  const requestWrites = createRequestWrites(inventory, ownership);
 
   const app = await createService({
     name: SERVICE_NAME,
@@ -258,7 +262,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const sites =
     options.startBackground === false ? undefined : createSiteRegistry({ list: () => siteList.listSites(), logger: app.log });
   const routeKeyOptions = routeKeyOptionsOf(env, facts, sites?.siteExists);
-  const matcher = createMatcher({ state, variants, modes, env, clock, routeKeyOptions });
+  const matcher = createMatcher({ state, variants, modes, env, clock, routeKeyOptions, requestWrites });
   const windows = createWriteWindowClient({ client: migrationClient, facts });
   const relay: RelayDeps = {
     env,

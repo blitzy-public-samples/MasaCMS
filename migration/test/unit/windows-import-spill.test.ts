@@ -9,7 +9,7 @@ import { setImmediate as nextTurn, setTimeout as sleep } from 'node:timers/promi
 import type { Logger } from '@opt2/platform/logging';
 import { decodeRow, encodeKey, encodeRow, type ApplyRequest, type CanonicalColumn } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
 import type { BridgeClient, LegacyDb } from '../../src/legacy/index.js';
@@ -24,6 +24,7 @@ import {
   type Row,
   type StatementRecord,
 } from '../helpers/fake-legacy-db.js';
+import { writeInventoryFile } from '../helpers/fixtures.js';
 import { createOwnerDoubles, type OwnerFailure } from '../helpers/owner-double.js';
 
 // Every decodeRow call passes through, counted by encoding, so a test can tell which rows were decoded.
@@ -125,12 +126,13 @@ const KEYED: Scenario = {
   ],
   show: ['survey_id', 'title'],
   expected: {
+    // Deletes follow every upsert, in apply-encoding order.
     [FIRST]: [
       [undefined, 'upsert', undefined, '1', 'Renamed'],
       [undefined, 'upsert', undefined, '10', 'Ten'],
-      [undefined, 'delete', undefined, '11', 'Gone'],
-      [undefined, 'delete', undefined, '2', 'Deleted'],
       [undefined, 'upsert', undefined, '3', 'New'],
+      [undefined, 'delete', undefined, '2', 'Deleted'],
+      [undefined, 'delete', undefined, '11', 'Gone'],
     ],
     [SECOND]: [
       [undefined, 'upsert', undefined, '12', 'Twelve'],
@@ -165,9 +167,9 @@ const KEYLESS: Scenario = {
     [FIRST]: [
       [undefined, 'insert', undefined, 'A'],
       [undefined, 'insert', undefined, 'A'],
+      [undefined, 'insert', undefined, 'C'],
+      [undefined, 'insert', undefined, 'C'],
       [undefined, 'delete', undefined, 'B'],
-      [undefined, 'insert', undefined, 'C'],
-      [undefined, 'insert', undefined, 'C'],
       [undefined, 'delete', undefined, 'D'],
     ],
     [SECOND]: [[undefined, 'delete', undefined, 'E']],
@@ -291,8 +293,8 @@ const CLASS_MAP: Scenario = {
   expected: {
     [FIRST]: [
       [undefined, 'upsert', 'people', 'U1', 'new'],
-      [undefined, 'delete', 'people', 'U3', 'gone'],
       [undefined, 'upsert', 'people', 'X1', 'x2'],
+      [undefined, 'delete', 'people', 'U3', 'gone'],
     ],
   },
 };
@@ -319,8 +321,8 @@ const CARRIED: Scenario = {
   expected: {
     [FIRST]: [
       [undefined, 'upsert', undefined, 'U1', 'Anne', '2'],
-      [undefined, 'delete', undefined, 'U3', 'Gone', '2'],
       [undefined, 'upsert', undefined, 'U4', 'Dan', '2'],
+      [undefined, 'delete', undefined, 'U3', 'Gone', '2'],
     ],
   },
 };
@@ -365,9 +367,9 @@ const COMPOSITE_KEY: Scenario = {
   expected: {
     [FIRST]: [
       [undefined, 'upsert', undefined, 'H1', 'C2', '2'],
-      [undefined, 'delete', undefined, 'H1', 'C3', '1'],
       [undefined, 'upsert', undefined, 'H10', 'C1', '1'],
       [undefined, 'upsert', undefined, 'H2', 'C1', '1'],
+      [undefined, 'delete', undefined, 'H1', 'C3', '1'],
     ],
     [SECOND]: [[undefined, 'delete', undefined, 'H4', 'C1', '1']],
   },
@@ -409,6 +411,17 @@ interface Hooks {
 
 let databases = 0;
 let spillDir: string;
+let inventoryDir: string;
+let inventory: string;
+
+beforeAll(async () => {
+  inventoryDir = await mkdtemp(join(tmpdir(), 'opt2-window-spill-inventory-'));
+  inventory = await writeInventoryFile(inventoryDir);
+});
+
+afterAll(async () => {
+  await rm(inventoryDir, { recursive: true, force: true });
+});
 
 beforeEach(async () => {
   spillDir = await mkdtemp(join(tmpdir(), 'opt2-window-spill-test-'));
@@ -459,7 +472,7 @@ async function importOnce(scenario: Scenario, sortRunBytes: number | undefined, 
     },
   };
   const ctx = {
-    config: { ...CONFIG, backfill: { ...CONFIG.backfill, batchRows: BATCH_ROWS } },
+    config: { ...CONFIG, paths: { ...CONFIG.paths, inventory }, backfill: { ...CONFIG.backfill, batchRows: BATCH_ROWS } },
     legacy,
     catalog: CATALOG,
     owners,

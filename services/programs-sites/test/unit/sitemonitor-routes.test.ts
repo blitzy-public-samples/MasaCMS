@@ -10,7 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { parse } from 'yaml';
 import { collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
-import { ensureUnitGates } from '@opt2/platform/migration-kit';
+import { GATE_WAIT_MS, ensureUnitGates } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SITEMONITOR_INTERVAL_S, SITEMONITOR_QUEUE, slotName, slotStartS, type CreateTaskInput, type TaskPort } from '@opt2/platform/tasks';
 import { SYSTEM_TENANT_ID, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
@@ -334,7 +334,7 @@ describe('public caller budget', () => {
     };
   }
 
-  it('answers the legacy 503 at its budget, below the gateway timeout, and starts its pass with that deadline', async () => {
+  it("answers the legacy 503 at its budget, below the gateway's target forward bound, while its pass runs on to the queue deadline", async () => {
     const timers = manualBudgets();
     const settle = heldPass();
 
@@ -344,9 +344,10 @@ describe('public caller budget', () => {
     const res = await pending;
     await settle(PASS);
 
-    expect(PUBLIC_RUN_BUDGET_MS).toBeLessThan(SERVICE_CALL_TIMEOUT_MS);
+    expect(PUBLIC_RUN_BUDGET_MS).toBe(GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS - 1000);
+    expect(PUBLIC_RUN_BUDGET_MS).toBeLessThan(GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS);
     expect(timers.map((timer) => timer.ms)).toEqual([PUBLIC_RUN_BUDGET_MS]);
-    expect(runSpy.mock.calls.map(([deps]) => deps.deadlineMs)).toEqual([PUBLIC_RUN_BUDGET_MS]);
+    expect(runSpy.mock.calls.map(([deps]) => deps.deadlineMs)).toEqual([undefined]);
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
     assertContract('GET', RUN_CONTRACT_PATH, res);

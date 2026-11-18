@@ -481,7 +481,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
   ): Promise<WindowAttempt> => {
     // Masa's start-up rewrites `tcontent` rows across the table, so a reload's window takes the reload key's scope.
     const scopeKey = outcome.result.family === 'reload' ? outcome.result.baseKey : entry.route;
-    const scope = windows.scope(scopeKey, outcome.result.params, { siteid: outcome.result.siteId });
+    // Units written beyond the entry's own route have rows no keyScope of that route bounds.
+    const scope =
+      outcome.tableScope === true ? { table: true as const } : windows.scope(scopeKey, outcome.result.params, { siteid: outcome.result.siteId });
     const { windowId } = await windows.open({ routeKey: entry.route, units, scope, requestId: ex.requestId });
     ex.windowId = windowId;
     // The store has no upsert, so the row is inserted again with the window and routing re-read after it, as after a freeze.

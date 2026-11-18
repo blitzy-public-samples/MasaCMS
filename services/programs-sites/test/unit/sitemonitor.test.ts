@@ -15,7 +15,6 @@ import type { ServiceRequest } from '@opt2/platform/service-kit';
 import { mintTasksInvokerToken } from '@opt2/platform/testing';
 import { formatLegacyTime } from '../../src/jobs/dispatch.js';
 import { SITE_MONITOR_STEPS, type SiteMonitorStepName } from '../../src/jobs/steps.js';
-import { PUBLIC_RUN_BUDGET_MS } from '../../src/routes/sitemonitor.js';
 import {
   TEST_CLOCK,
   buildTestApp,
@@ -34,8 +33,8 @@ const CURSOR_TABLE = '"programs_sites"."sitemonitor_state"';
 // Fastify announces each route handler here as it starts; a public run's handler joins or starts the pass at once.
 const HANDLER_START = 'tracing:fastify.request.handler:start';
 const THE_TIME = TEST_CLOCK.now();
-// A public caller's pass ends at its budget.
-const DEADLINE_AT = new Date(THE_TIME.getTime() + PUBLIC_RUN_BUDGET_MS);
+// A public caller's pass ends at the queue deadline.
+const DEADLINE_AT = new Date(THE_TIME.getTime() + queueDefinition(SITEMONITOR_QUEUE).deadlineS * 1000);
 // No cursor row yet: legacy's cfparam default, contentServer.cfc:676.
 const DEFAULT_CURSOR = new Date(THE_TIME.getTime() - MINUTE_MS);
 const CATCH_UP = new Date(THE_TIME.getTime() - 30 * MINUTE_MS);

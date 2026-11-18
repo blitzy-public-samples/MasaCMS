@@ -290,6 +290,8 @@ export interface InventoryWriter {
   readonly sessionEffects: SessionEffect;
   readonly condition: string | null;
   readonly override: string | null;
+  /** Columns the writer sets, where the inventory records them. */
+  readonly columns?: readonly string[];
 }
 
 /** A legacy table with its writers. */

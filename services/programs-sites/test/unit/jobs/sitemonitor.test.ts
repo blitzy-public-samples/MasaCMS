@@ -539,15 +539,15 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-type GatedPass = Deferred<SiteMonitorResult> & { deadlineMs: number | undefined };
+type GatedPass = Deferred<SiteMonitorResult> & { args: unknown[] };
 
-/** Pass starter whose passes the test settles, each recorded with the deadline it started with. */
+/** Pass starter whose passes the test settles, each recorded with the arguments it started with. */
 function gatedStarter(): { start: SiteMonitorPassStarter; passes: GatedPass[] } {
   const passes: GatedPass[] = [];
   return {
     passes,
-    start: (deadlineMs) => {
-      const pass: GatedPass = { ...deferred<SiteMonitorResult>(), deadlineMs };
+    start: (...args: unknown[]) => {
+      const pass: GatedPass = { ...deferred<SiteMonitorResult>(), args };
       passes.push(pass);
       return pass.promise;
     },
@@ -585,10 +585,10 @@ describe('createSiteMonitorRunner', () => {
     const results = await Promise.all(callers);
 
     expect(results.every((result) => result === PASS)).toBe(true);
-    expect(passes.map((pass) => pass.deadlineMs)).toEqual([first]);
+    expect(passes.map((pass) => pass.args)).toEqual([[]]);
     expect(timers.map((timer) => [timer.ms, timer.signal.aborted])).toEqual(budgets.filter((b) => b !== undefined).map((b) => [b, true]));
     const next = runner.run();
-    expect(passes.map((pass) => pass.deadlineMs)).toEqual([first, undefined]);
+    expect(passes.map((pass) => pass.args)).toEqual([[], []]);
     passes[1]?.resolve(PASS);
     expect(await next).toBe(PASS);
   });
@@ -618,34 +618,53 @@ describe('createSiteMonitorRunner', () => {
     const err = await runError(caller, LegacyServiceUnavailableError);
 
     expect([err.surface, err.reason]).toEqual(['auto', 'sitemonitor-budget']);
-    expect(passes.map((pass) => pass.deadlineMs)).toEqual([undefined]);
+    expect(passes.map((pass) => pass.args)).toEqual([[]]);
     passes[0]?.resolve(PASS);
     expect(await task).toBe(PASS);
   });
 
-  it('ends a pass a public caller started at its budget: the caller gets the legacy 503 and no further step runs', async () => {
+  it('stops a public caller at its budget with the legacy 503 while the pass it started runs to completion for a caller joining it', async () => {
     let now = RUN_AT.getTime();
     const { timers, sleep } = manualTimers();
     const cursor = fakeCursor(STORED);
-    const dispatcher = recordingDispatcher({
-      beforeAnswer: (inv) => {
-        if (inv.step.step !== 'emailSend') return;
-        now += BUDGET_MS;
-        timers[0]?.expire();
+    const recorded = recordingDispatcher();
+    const windowReached = deferred<undefined>();
+    const windowClosed = deferred<undefined>();
+    // The write window of publishScheduledChangesets outlasts the caller's budget.
+    const dispatch: StepDispatcher = {
+      async dispatch(inv) {
+        if (inv.step.step === 'publishScheduledChangesets') {
+          windowReached.resolve(undefined);
+          await windowClosed.promise;
+        }
+        return recorded.dispatch(inv);
       },
-    });
-    let pass: Promise<SiteMonitorResult> | undefined;
-    const runner = createSiteMonitorRunner({
-      sleep,
-      start: (deadlineMs) => (pass = run(dispatcher, { clock: { now: () => new Date(now) }, cursor, ...(deadlineMs === undefined ? {} : { deadlineMs }) })),
-    });
+    };
+    const runner = createSiteMonitorRunner({ sleep, start: () => run(dispatch, { clock: { now: () => new Date(now) }, cursor }) });
 
-    await runError(runner.run(BUDGET_MS), LegacyServiceUnavailableError);
-    const stop = await runError(pass ?? Promise.resolve(), SiteMonitorUnavailableError);
+    const caller = runner.run(BUDGET_MS);
+    await windowReached.promise;
+    now += BUDGET_MS;
+    timers[0]?.expire();
+    const err = await runError(caller, LegacyServiceUnavailableError);
+    const joined = runner.run(BUDGET_MS);
+    windowClosed.resolve(undefined);
+    const result = await joined;
 
-    expect([stop.reason, stop.step]).toEqual(['deadline', 'publishScheduledChangesets']);
-    expect(dispatcher.calls.map(label)).toEqual(['sendReminders', 'emailSend']);
-    expect(cursor.writes).toEqual([]);
+    expect([err.surface, err.reason]).toEqual(['auto', 'sitemonitor-budget']);
+    expect([result.theTime, result.lastMonitored]).toEqual([RUN_AT, STORED]);
+    expect(result.steps.map(label)).toEqual([
+      'sendReminders',
+      'emailSend',
+      'publishScheduledChangesets',
+      'purgeDisplayWindow',
+      'clearOldCommands',
+      'onGlobalMonitor',
+      'setCursor',
+    ]);
+    expect(recorded.calls.map(label)).toEqual(result.steps.map(label));
+    expect(cursor.writes).toEqual([RUN_AT]);
+    expect(cursor.granted).toHaveLength(1);
     expect(cursor.released).toEqual(cursor.granted);
   });
 
@@ -665,7 +684,7 @@ describe('createSiteMonitorRunner', () => {
     const dispatcher = recordingDispatcher();
     const runners = Array.from({ length: 12 }, () =>
       createSiteMonitorRunner({
-        start: (deadlineMs) => run(dispatcher, { cursor, sleep: async () => undefined, ...(deadlineMs === undefined ? {} : { deadlineMs }) }),
+        start: () => run(dispatcher, { cursor, sleep: async () => undefined }),
       }),
     );
 
@@ -975,8 +994,7 @@ describe.skipIf(!available)('site-monitor adapters against PostgreSQL', () => {
     };
     const runners = Array.from({ length: instances }, () =>
       createSiteMonitorRunner({
-        start: (deadlineMs) =>
-          runSiteMonitor({ db: handle.app, clock: shared, dispatch, cursor, pollIntervalMs: 50, ...(deadlineMs === undefined ? {} : { deadlineMs }) }),
+        start: () => runSiteMonitor({ db: handle.app, clock: shared, dispatch, cursor, pollIntervalMs: 50 }),
       }),
     );
 

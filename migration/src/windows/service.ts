@@ -38,7 +38,16 @@ import {
 } from '../reports/index.js';
 import { ProjectionTimeoutError, type Projector } from '../reverse/index.js';
 
-import { importWindow, type ImportResult } from './import.js';
+import {
+  fingerprintKey,
+  fingerprintTables,
+  readFingerprints,
+  sameScope,
+  type FingerprintReader,
+  type TableFingerprint,
+  type WindowFingerprints,
+} from './fingerprints.js';
+import { importWindow, toExtractScope, type ImportResult } from './import.js';
 import { LEASE_RETRY_INTERVAL_MS, LeaseUnavailableError, acquireLeases, releaseLeases } from './leases.js';
 import { runLegacyStepWith, type LegacyStepInput, type LegacyStepResult, type WindowLifecycle } from './legacy-steps.js';
 import { boundLockWaits, isLockNotAvailable, timeoutSignal } from './lock-waits.js';
@@ -53,6 +62,7 @@ import {
   type FrozenRoutes,
   type ReloadWindowResult,
 } from './reload.js';
+import { capturePublishedCursors, deletionRoutes, type PublishedCursors } from './site-deletion.js';
 import { STARTUP_WINDOW_HOLDER_ENV } from './via-service.js';
 
 type Schemas = components['schemas'];
@@ -162,6 +172,8 @@ export interface WindowServiceOptions {
   restart?: typeof restartLegacy;
   shouldRun?: () => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
+  /** Reads row fingerprints of legacy tables before and after legacy executes; defaults to reading the live legacy database. */
+  readFingerprints?: FingerprintReader;
 }
 
 /** The open was refused and everything it took was given back; renders as the legacy 503 before legacy executes. */
@@ -268,6 +280,8 @@ const WINDOW_KIND: Readonly<Record<RowKind, WindowKind>> = {
 const COLUMNS =
   'window_id, route_key, units, scope, request_id, kind, state, phase, closed_gates, closing_gates, phases, lease_expires_at, legacy_status, rows_imported, attempts, outcome, error, opened_at, updated_at, closed_at, claimed_by, claim_expires_at';
 const REPORT_FILE = 'windows.json';
+/** Windows whose row fingerprints, or published-event cursors, one instance holds at most; the oldest is dropped beyond it, its import comparing in full or taking its cursors itself. */
+export const MAX_HELD_FINGERPRINTS = 16;
 const noop = (): void => undefined;
 
 interface WindowRow {
@@ -599,6 +613,20 @@ function recoveryAction(record: WindowRecord, at: Date): RecoveryAction {
   return 'none';
 }
 
+/** `work`'s outcome, or `signal`'s reason as soon as it aborts first; abandoned `work` runs on with its rejection handled. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => {
+      reject(signal.reason as Error);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    void work.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', abort);
+    });
+  });
+}
+
 /** Creates the window service over the context's `migration` pool, owners, gateway and legacy ports. */
 export function createWindowService(base: MigrationContext, options: WindowServiceOptions): WindowService {
   // Every owner and gateway call, including those of the modules it is passed to, is fenced by the claim it runs under.
@@ -609,6 +637,12 @@ export function createWindowService(base: MigrationContext, options: WindowServi
   const tails = new Map<string, Promise<void>>();
   const running = new Set<Promise<void>>();
   let loop: { stop(): Promise<void> } | undefined;
+  const fingerprintReader = options.readFingerprints ?? readFingerprints;
+  // Held although the Minimal Change rule bans new caching: that rule does not bind this refactor, and they spare each import a whole-table compare.
+  /** Row fingerprints each open window took before legacy executed, by window id, oldest first. */
+  const heldFingerprints = new Map<string, WindowFingerprints>();
+  /** Published-event cursors each open window holding the site unit took before legacy executed, by window id, oldest first. */
+  const heldCursors = new Map<string, PublishedCursors>();
 
   const now = (): Date => ctx.clock.now();
   // A window claim lasts one open budget plus one longest call and is renewed every third of the budget while an operation holds it.
@@ -648,6 +682,44 @@ export function createWindowService(base: MigrationContext, options: WindowServi
       if (tails.get(windowId) === tail) tails.delete(windowId);
     });
     return result;
+  }
+
+  // Bounded although the Minimal Change rule bans new timeouts: that rule does not bind this refactor, and an unbounded read would hold the window's gates.
+  /** Reads the row fingerprints of legacy `tables` under `scope` within `timeoutMs`, whatever the reader awaits; undefined, with a warning, when the read fails or outlasts it. */
+  async function takeFingerprints(windowId: string, tables: readonly string[], scope: WindowScope, timeoutMs: number): Promise<WindowFingerprints | undefined> {
+    const signal = timeoutSignal(timeoutMs);
+    try {
+      return await untilAborted(fingerprintReader(ctx, tables, toExtractScope(scope), signal), signal);
+    } catch (error) {
+      ctx.logger.warn({ error: serializeError(error) }, `Window ${windowId} took no row fingerprints; its import compares its tables in full`);
+      return undefined;
+    }
+  }
+
+  // Bounded like the fingerprint read, for the same reason.
+  /**
+   * Published-event cursors of the producers a site delete among `units` waits on, read within `timeoutMs`; undefined without
+   * the site unit, and, with a warning, when the read fails or outlasts it.
+   */
+  async function takeCursors(windowId: string, units: readonly string[], timeoutMs: number): Promise<PublishedCursors | undefined> {
+    const signal = timeoutSignal(timeoutMs);
+    try {
+      const routes = await untilAborted(deletionRoutes(ctx.config, ctx.catalog, units), signal);
+      return routes === undefined ? undefined : await untilAborted(capturePublishedCursors(ctx, routes.producers, timeoutMs), signal);
+    } catch (error) {
+      ctx.logger.warn({ error: serializeError(error) }, `Window ${windowId} took no published-event cursors; its import takes them when it starts`);
+      return undefined;
+    }
+  }
+
+  /** Holds `value` for the window's import in `held`, dropping the oldest held beyond {@link MAX_HELD_FINGERPRINTS}. */
+  function hold<T>(held: Map<string, T>, windowId: string, value: T): void {
+    held.delete(windowId);
+    held.set(windowId, value);
+    for (const oldest of held.keys()) {
+      if (held.size <= MAX_HELD_FINGERPRINTS) break;
+      held.delete(oldest);
+    }
   }
 
   /** Writes `windows.json` from the window rows; a failure is logged, never thrown. */
@@ -1032,6 +1104,8 @@ export function createWindowService(base: MigrationContext, options: WindowServi
    * @throws WindowStateError when another instance took the window over; it gives the window back
    */
   async function giveBack(record: WindowRecord, reason: string, cause: unknown, from?: readonly WindowRowState[]): Promise<void> {
+    heldFingerprints.delete(record.windowId);
+    heldCursors.delete(record.windowId);
     record.error = { kind: 'refused', reason, message: messageOf(cause) };
     await keepClaim(record);
     try {
@@ -1112,6 +1186,14 @@ export function createWindowService(base: MigrationContext, options: WindowServi
             const owners = byOwner(targetUnits).map(([owner]) => owner);
             await options.projector.awaitProjection({ owners, timeoutMs: within() });
             addEvent(record, 'projection-awaited');
+            // Quiet gates and the awaited projection leave legacy holding what the target holds, within half the budget left.
+            const bound = Math.floor(within() / 2);
+            const [fingerprints, cursors] = await Promise.all([
+              takeFingerprints(record.windowId, fingerprintTables(ctx.catalog, targetUnits), record.scope, bound),
+              takeCursors(record.windowId, targetUnits, bound),
+            ]);
+            if (fingerprints !== undefined) hold(heldFingerprints, record.windowId, fingerprints);
+            if (cursors !== undefined) hold(heldCursors, record.windowId, cursors);
             within();
             await setPhase(record, 'executing', budget);
           }
@@ -1146,11 +1228,20 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     return record.attempts;
   }
 
-  /** One import over `units` as attempt `counted`, already persisted, else as a newly counted attempt. */
-  async function importOnce(record: WindowRecord, units: string[], scope: WindowScope, counted?: number): Promise<ImportResult> {
+  /** One import over `units` as attempt `counted`, already persisted, else as a newly counted attempt; `fingerprints` narrow it, a site delete awaits the events after `cursors`. */
+  async function importOnce(
+    record: WindowRecord,
+    units: string[],
+    scope: WindowScope,
+    counted?: number,
+    fingerprints?: WindowFingerprints,
+    cursors?: PublishedCursors,
+  ): Promise<ImportResult> {
     const attempt = counted ?? (await countAttempt(record));
     await options.hooks?.beforeImport?.(record, attempt);
-    const result = await importWindow(ctx, { windowId: record.windowId, attempt, units, scope });
+    const narrowing = fingerprints === undefined ? {} : { fingerprints, readFingerprints: fingerprintReader };
+    const watching = cursors === undefined ? {} : { publishedCursors: cursors };
+    const result = await importWindow(ctx, { windowId: record.windowId, attempt, units, scope, ...narrowing, ...watching });
     if (result.rowsImported > 0 || result.objectsTransferred > 0 || result.objectsRemoved.length > 0) {
       record.rowsImported += result.rowsImported;
       const rowsImported = Object.fromEntries(Object.entries(result.perOwner).map(([owner, counts]) => [owner, counts.rows]));
@@ -1164,11 +1255,30 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     return result;
   }
 
+  /** Fingerprints of `units`' legacy tables under the whole-table scope: `reused`'s when taken under it, the rest read live; undefined when that read fails. */
+  async function reloadFingerprints(windowId: string, units: readonly string[], reused: WindowFingerprints | undefined): Promise<WindowFingerprints | undefined> {
+    const scope: WindowScope = { table: true };
+    const tables = fingerprintTables(ctx.catalog, units);
+    if (reused === undefined || !sameScope(reused.scope, toExtractScope(scope))) return takeFingerprints(windowId, tables, scope, openBudgetMs);
+    const kept = new Map<string, TableFingerprint>();
+    const missing: string[] = [];
+    for (const table of tables) {
+      const found = reused.tables.get(fingerprintKey(table));
+      if (found === undefined) missing.push(table);
+      else kept.set(fingerprintKey(table), found);
+    }
+    if (missing.length === 0) return { scope: reused.scope, tables: kept, elapsedMs: 0 };
+    const read = await takeFingerprints(windowId, missing, scope, openBudgetMs);
+    return read === undefined ? undefined : { scope: reused.scope, tables: new Map([...kept, ...read.tables]), elapsedMs: read.elapsedMs };
+  }
+
   /**
    * Leases and gates every content unit under this window, sends Masa's reload request and imports the start-up table's
-   * units: keyed by content id when one content matched, whole when several did, not at all when none did.
+   * units: keyed by content id when one content matched, whole when several did, not at all when none did. A whole import
+   * is narrowed by fingerprints taken before the request, `reused`'s where this window's import last read them: a row
+   * changed since still differs, so it is imported.
    */
-  async function reloadInWindow(record: WindowRecord): Promise<void> {
+  async function reloadInWindow(record: WindowRecord, reused?: WindowFingerprints): Promise<void> {
     const contents = contentUnits(ctx.catalog);
     assertClaim();
     await acquireLeases(ctx, { units: contents, holderId: record.windowId, kind: 'window', budgetMs: openBudgetMs, sleep: options.sleep });
@@ -1179,15 +1289,16 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     // Start-up rewrites only the matching rows of its table, so only that table's units can change.
     const fed = new Set(ctx.catalog.unitsForLegacyTable(ctx.config.startupGuard.table).map((target) => target.unit));
     const startupUnits = targetContents.filter((unit) => fed.has(unit));
-    const contentIds = startupUnits.length > 0 ? await startupContentIds(await ctx.legacy.live()) : [];
+    const [only, ...more] = startupUnits.length > 0 ? await startupContentIds(await ctx.legacy.live()) : [];
+    const whole = only !== undefined && more.length > 0;
+    const fingerprints = whole ? await reloadFingerprints(record.windowId, startupUnits, reused) : undefined;
     assertClaim();
     // Legacy may have re-initialised before a transport failure, so the matched rows are imported either way.
     const sent = await sendReloadRequest(ctx).then(
       () => undefined,
       (error: unknown) => error ?? new Error('Reload request failed'),
     );
-    const [only, ...more] = contentIds;
-    if (only !== undefined) await importOnce(record, startupUnits, more.length === 0 ? { keys: { contentid: only } } : { table: true });
+    if (only !== undefined) await importOnce(record, startupUnits, whole ? { table: true } : { keys: { contentid: only } }, undefined, fingerprints);
     if (sent !== undefined) throw sent;
   }
 
@@ -1205,8 +1316,9 @@ export function createWindowService(base: MigrationContext, options: WindowServi
   /**
    * After an import that touched `tcontent`, converts rows Masa's start-up would rewrite before any legacy request can run.
    * Skipped while another guard sequence runs, since its reload converts every matching row and waits for this window's leases.
+   * `after` is that import's row fingerprints read after legacy executed, which the reload reuses.
    */
-  async function guardStartup(record: WindowRecord): Promise<void> {
+  async function guardStartup(record: WindowRecord, after?: WindowFingerprints): Promise<void> {
     const count = await countLiveStartupRows();
     if (count === 0) return;
     let frozen: FrozenRoutes | undefined;
@@ -1216,7 +1328,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
       },
       // Legacy already committed and the import is applied, so there is nothing left to commit.
       commit: async () => undefined,
-      runReloadWindow: () => reloadInWindow(record),
+      runReloadWindow: () => reloadInWindow(record, after),
       remainingStartupRows: countLiveStartupRows,
       async unfreeze() {
         if (frozen !== undefined) await unfreezeLegacyBound(ctx, frozen);
@@ -1313,12 +1425,17 @@ export function createWindowService(base: MigrationContext, options: WindowServi
         const whole = widened ? units.filter((unit) => contents.has(unit)) : [];
         const scoped = units.filter((unit) => !whole.includes(unit));
         let touchedContent = false;
-        if (scoped.length > 0) touchedContent = (await importOnce(record, scoped, record.scope, attempt)).touchedContent;
+        let after: WindowFingerprints | undefined;
+        if (scoped.length > 0) {
+          const result = await importOnce(record, scoped, record.scope, attempt, heldFingerprints.get(record.windowId), heldCursors.get(record.windowId));
+          touchedContent = result.touchedContent;
+          after = result.fingerprints;
+        }
         if (whole.length > 0) {
           touchedContent = (await importOnce(record, whole, { table: true }, scoped.length > 0 ? undefined : attempt)).touchedContent || touchedContent;
         }
         if (record.error?.kind === 'guard-frozen') await recoverGuard(record, record.error.frozen);
-        else if (touchedContent) await guardStartup(record);
+        else if (touchedContent) await guardStartup(record, after);
       }
       await keepClaim(record);
       await reopenGates(record);
@@ -1330,6 +1447,8 @@ export function createWindowService(base: MigrationContext, options: WindowServi
       await markImportPending(record, error);
       return 'import-pending';
     }
+    heldFingerprints.delete(record.windowId);
+    heldCursors.delete(record.windowId);
     record.error = null;
     record.outcome = final === 'resolved' ? 'resolved' : forwarded ? 'imported' : 'not-forwarded';
     record.closedAt = now();

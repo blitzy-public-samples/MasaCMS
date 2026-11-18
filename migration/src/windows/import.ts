@@ -2,7 +2,9 @@
 // differences between the live legacy rows and their exports, applied as the owners' own `legacy-window` writes.
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 
+import { serializeError } from '@opt2/platform/logging';
 import {
   LEGACY_PROGRAM_ID_COLUMN,
   MAX_EXPORT_MATCH_LENGTH,
@@ -39,24 +41,38 @@ import {
   type ExtractScope,
   type KeyValue,
   type ScopeFilter,
+  type ScopeValue,
 } from '../extract/index.js';
 import { SUPPORTED_FILE_STORE, objectKey, parseObjectKey, parseStoredName, storePath, withSpool, type StoredName } from '../files/index.js';
 import type { components } from '../generated/openapi.js';
 import { UnsupportedFileStoreError, quoteIdent, type LegacyDb, type LegacyFileEntry } from '../legacy/index.js';
+import { SITE_ROOT_TABLE, compareTableNames, computeDependencyOrder } from '../order/index.js';
 import { OwnerCallError, type DataOwner, type ExportParams, type LegacyTableTarget, type Unit, type UnitCatalog } from '../owners/index.js';
 import type { UnitTableShape } from '../reconcile/legacy-side.js';
 import { UnitRowSorter, type UnitRowSorterOptions } from '../reconcile/sorted-rows.js';
+import { readTargetTenants } from '../reconcile/target-side.js';
 import { FILE_OBJECT_UNIT } from '../reverse/files.js';
+import { diffFingerprints, fingerprintKey, readFingerprints, sameScope, type FingerprintReader, type TableChange, type WindowFingerprints } from './fingerprints.js';
+import {
+  DELETION_WAIT_MS,
+  awaitDeletionReceipts,
+  capturePublishedCursors,
+  deletionRoutes,
+  type DeletionRoutes,
+  type PublishedCursors,
+} from './site-deletion.js';
+import { REGISTRATION_WAIT_MS, addedSiteTenants, awaitRegistration, siteEventConsumers } from './site-registration.js';
 
 /** `windowOpen`'s scope: the writers' keyScope values, or the whole table. */
 export type WindowScope = components['schemas']['WindowScope'];
 
 /** Context members the import reads; target data only through `owners`, legacy rows through `legacy`, file bytes through `bridge`. */
-// `config` is read for the backfill batch size, the umbrella site, the ownership file and the start-up guard table.
-export type WindowImportContext = Pick<MigrationContext, 'config' | 'legacy' | 'catalog' | 'owners' | 'bridge' | 'logger'>;
+// `config` is read for the backfill batch size, the umbrella site, the ownership file and the start-up guard table;
+// `clock` times the waits for new tenants' registration and for deleted tenants' receipts.
+export type WindowImportContext = Pick<MigrationContext, 'config' | 'legacy' | 'catalog' | 'owners' | 'bridge' | 'logger' | 'clock'>;
 
-/** Bytes each table's sorted runs hold in memory before spilling, and the spill directory's parent; default to the extractor's. */
-export type WindowImportOptions = UnitRowSorterOptions;
+/** Bytes each table's sorted runs hold in memory before spilling, and the spill directory's parent, default to the extractor's; `sleep` replaces the timer between registration and receipt reads. */
+export type WindowImportOptions = UnitRowSorterOptions & { sleep?: (ms: number) => Promise<void> };
 
 /** One import attempt of a window; `units` lists only the window's `target`-authoritative units. */
 export interface ImportInput {
@@ -64,6 +80,12 @@ export interface ImportInput {
   attempt: number;
   units: string[];
   scope: WindowScope;
+  /** Row fingerprints of the units' legacy tables from before legacy executed; used only when taken under `scope`. */
+  fingerprints?: WindowFingerprints;
+  /** Reads the fingerprints the tables have now; defaults to reading them from the live legacy database. */
+  readFingerprints?: FingerprintReader;
+  /** Published-event cursors taken before legacy executed; a site delete awaits the events after them, and the attempt takes those it lacks. */
+  publishedCursors?: PublishedCursors;
 }
 
 /** What one attempt sent: `rows` counts rows the owners applied, `writePositions` the highest xid per owner. */
@@ -76,6 +98,8 @@ export interface ImportResult {
   /** True when `tcontent` was among the imported tables, so the caller runs the start-up guard check. */
   touchedContent: boolean;
   writePositions: Map<string, string>;
+  /** Row fingerprints this attempt read of the units' legacy tables after legacy executed; absent when it read none. */
+  fingerprints?: WindowFingerprints;
 }
 
 /** An attempt failed at a legacy read, an owner call or a row it cannot place; a later attempt recomputes the whole diff. */
@@ -377,6 +401,16 @@ interface ApplyTarget {
   readonly columns: CanonicalColumn[];
 }
 
+/** Where one table's apply rows go in every tenant. */
+type TableTarget = Omit<ApplyTarget, 'tenantId'>;
+
+/** What one table's first pass sent, the tenants it sent upserts or inserts to, and where its deferred deletes go. */
+interface ImportedTable {
+  readonly target: TableTarget;
+  readonly sent: number;
+  readonly upserted: readonly string[];
+}
+
 const trimmed = (value: unknown): string => (typeof value === 'string' ? value.replace(/ +$/, '') : '');
 
 /** State one attempt shares across its tables and files: scope, lookups, sort bounds, live sites, results and batch sequences. */
@@ -397,6 +431,7 @@ class ImportSession {
   readonly #facts: ReadonlyMap<string, TableFacts>;
   readonly #sequences = new Map<string, number>();
   readonly #manifests = new Map<string, readonly ObjectManifestEntry[]>();
+  readonly #registered = new Map<DataOwner, Promise<string[]>>();
   #sites: Promise<readonly LiveSite[]> | undefined;
   #programSites: Promise<ReadonlyMap<number, string>> | undefined;
 
@@ -431,6 +466,23 @@ class ImportSession {
     const ids = new Set((await this.sites()).map((site) => tenantIdForSite(site.siteId)));
     ids.add(tenantIdForSite(this.umbrellaSiteId));
     return [...ids].sort();
+  }
+
+  /** Tenants `owner`'s registry names, sites and their pools, read once per owner. */
+  registeredTenants(owner: DataOwner): Promise<string[]> {
+    let tenants = this.#registered.get(owner);
+    if (tenants === undefined) {
+      tenants = readTargetTenants(this.ctx, owner);
+      this.#registered.set(owner, tenants);
+    }
+    return tenants;
+  }
+
+  /** Tenants `owner`'s exports are read in, in order: live sites and the umbrella, the scope's sites and `owner`'s registered tenants. */
+  async tableTenants(owner: DataOwner): Promise<string[]> {
+    // A site legacy deleted inside the window is no longer live, yet its target rows must still be read to be deleted.
+    const sites = this.scope === 'table' ? [] : (this.scope.siteid ?? []).map(trimmed).filter((site) => site !== '');
+    return [...new Set([...(await this.tenants()), ...sites.map((site) => tenantIdForSite(site)), ...(await this.registeredTenants(owner))])].sort();
   }
 
   /** `synthetic.program_site` as program id to site id, read once. */
@@ -748,6 +800,45 @@ function exportMatchOf(filter: ScopeFilter): ExportParams['match'] {
   return JSON.stringify(match).length <= MAX_EXPORT_MATCH_LENGTH ? match : undefined;
 }
 
+/** Changed keys a table is read by in place of the window's scope. */
+type ChangedKeys = Extract<TableChange, { kind: 'keys' }>;
+
+/** One owner export read of a table: its `match`, and for one share of split changed keys, the filter that share's rows pass. */
+interface ExportRead {
+  readonly match: ExportParams['match'];
+  readonly share?: ScopeFilter;
+}
+
+/** Export reads of `keys`: the values split into shares whose match text the owner accepts, so a long key list stays a narrow read. */
+function keyReads(columns: readonly CatalogColumn[], keys: ChangedKeys): ExportRead[] {
+  const reads: ExportRead[] = [];
+  const read = (values: readonly ScopeValue[]): void => {
+    const share = buildScopeFilter(columns, { [keys.column]: values });
+    reads.push({ match: exportMatchOf(share), share });
+  };
+  const empty = JSON.stringify({ [keys.column]: [] }).length;
+  let values: ScopeValue[] = [];
+  let length = empty;
+  for (const value of keys.values) {
+    const text = JSON.stringify(value).length;
+    // Each value after the first adds its separating comma.
+    if (values.length > 0 && length + 1 + text > MAX_EXPORT_MATCH_LENGTH) {
+      read(values);
+      values = [];
+      length = empty;
+    }
+    length += text + (values.length > 0 ? 1 : 0);
+    values.push(value);
+  }
+  if (values.length > 0) read(values);
+  return reads;
+}
+
+/** The owner's export lacks the column a table's changed keys were found by, so the table is read under the window's scope instead. */
+class KeysUntestableError extends Error {
+  override readonly name = 'KeysUntestableError';
+}
+
 /** How one table is compared: the owner's table definition, its layout, and the scope and filter both sides read with. */
 interface TablePlan {
   readonly definition: ExportTable;
@@ -756,16 +847,18 @@ interface TablePlan {
   readonly filter: ScopeFilter;
 }
 
-/** The scope both sides read with and its filter, widened to the whole table when the export lacks a column the filter tests. */
+/** The scope both sides read with and its filter, `keys` or else the window's widened when the export lacks a filter column. @throws KeysUntestableError when it lacks the column of `keys` */
 function tableScope(
   session: ImportSession,
   table: string,
   columns: readonly CatalogColumn[],
   filter: ScopeFilter,
   layout: TableLayout,
+  keys?: ExtractScope,
 ): { scope: ExtractScope; filter: ScopeFilter } {
   const testable = filter.terms.every((term) => layout.compare.some((column) => column.name.toLowerCase() === term.column.name.toLowerCase()));
-  if (testable) return { scope: session.scope, filter };
+  if (testable) return { scope: keys ?? session.scope, filter };
+  if (keys !== undefined) throw new KeysUntestableError(`the owner's export of ${table} lacks its key column ${filter.terms[0]?.column.name ?? ''}`);
   // A target row whose scope column the owner does not export cannot be placed in or out of scope, and leaving it out
   // would hide a legacy delete, so both sides compare the whole table instead.
   session.ctx.logger.info(`window ${session.input.windowId} compares all of ${table}: its owner's export lacks a scope column`);
@@ -802,6 +895,14 @@ async function* plannedRows(
   for await (const change of diffMultisetStreams(before, after)) {
     for (let index = 0; index < change.removed; index++) yield plan('delete', change.row);
     for (let index = 0; index < change.added; index++) yield plan('insert', change.row);
+  }
+}
+
+/** The upserts and inserts of `rows`; each delete is handed to `defer` instead. */
+async function* withoutDeletes(rows: AsyncIterable<PlannedRow>, defer: (row: PlannedRow) => Promise<void>): AsyncGenerator<PlannedRow, void, undefined> {
+  for await (const planned of rows) {
+    if (planned.row.op === 'delete') await defer(planned);
+    else yield planned;
   }
 }
 
@@ -972,14 +1073,88 @@ class HeldTenants {
   }
 }
 
-/** Brings one unit's share of one legacy table in step with the live legacy rows in the window's scope, through byte-bounded sorted runs. */
-async function importTable(session: ImportSession, unit: string, table: string, target: LegacyTableTarget): Promise<void> {
+/** Sort shape of deferred deletes: keyless, so each step and tenant's rows order by their apply encoding. */
+const DEFERRED_SHAPE: SortShape = { keyed: false, keyColumns: [], columns: [] };
+
+/** A deferred delete rebuilt from its apply encoding, program id and discriminator payload. */
+function deferredRowOf(encoding: string, programId: number | undefined, payload: string | undefined): PlannedRow {
+  const discriminator = payload === undefined ? {} : { discriminator: JSON.parse(payload) as Discriminator };
+  return { programId, row: { op: 'delete', row: encoding, ...discriminator } };
+}
+
+/** Deletes every step planned, held in one byte-bounded sorter until all upserts are sent, then read from the last step to the first. */
+class DeferredDeletes {
+  readonly #rows: UnitRowSorter<PlannedRow>;
+  readonly #steps: number;
+  readonly #width: number;
+
+  constructor(steps: number, sorting: WindowImportOptions) {
+    this.#steps = steps;
+    this.#width = String(steps).length;
+    this.#rows = new UnitRowSorter(DEFERRED_SHAPE, deferredRowOf, sorting);
+  }
+
+  /** Holds `planned`, a delete of step `step` in `tenantId`. */
+  add(step: number, tenantId: string, planned: PlannedRow): Promise<void> {
+    const { programId, row } = planned;
+    const held: CanonicalRow = { table: '', key: row.row, keyValues: [], encoding: row.row, row: {} };
+    if (programId !== undefined) held.legacyProgramId = programId;
+    return this.#rows.add(this.#groupOf(step, tenantId), held, row.discriminator === undefined ? undefined : JSON.stringify(row.discriminator));
+  }
+
+  /** Ends the input. */
+  sort(): Promise<void> {
+    return this.#rows.sort();
+  }
+
+  /** Tenants holding deletes of `step`, in order. */
+  tenantsOf(step: number): string[] {
+    const prefix = this.#prefixOf(step);
+    return this.#rows.tenants().flatMap((group) => (group.startsWith(prefix) ? [group.slice(prefix.length)] : []));
+  }
+
+  /** Deletes of `step` in `tenantId`; steps are read from the last to the first, each one's tenants in order. */
+  rows(step: number, tenantId: string): AsyncGenerator<PlannedRow, void, undefined> {
+    return this.#rows.rows(this.#groupOf(step, tenantId));
+  }
+
+  /** Removes any spill files, read or not. */
+  dispose(): Promise<void> {
+    return this.#rows.dispose();
+  }
+
+  #groupOf(step: number, tenantId: string): string {
+    return `${this.#prefixOf(step)}${tenantId}`;
+  }
+
+  // Later steps take lower prefixes, so the sorter's ascending group order walks the steps backwards.
+  #prefixOf(step: number): string {
+    return `${String(this.#steps - 1 - step).padStart(this.#width, '0')}:`;
+  }
+}
+
+/**
+ * Brings one unit's share of one legacy table in step with the live legacy rows in the window's scope, or with those of
+ * `keys` when given, through byte-bounded sorted runs: upserts and inserts are sent, each planned delete is handed to
+ * `defer` with its tenant.
+ * @returns where the table's rows went and how many were sent.
+ * @throws KeysUntestableError, before anything is sent, when the owner's export lacks the column of `keys`
+ */
+async function importTable(
+  session: ImportSession,
+  unit: string,
+  table: string,
+  target: LegacyTableTarget,
+  defer: (tenantId: string, row: PlannedRow) => Promise<void>,
+  keys?: ChangedKeys,
+): Promise<ImportedTable> {
   const { ctx } = session;
   const deps = { legacy: ctx.legacy, catalog: ctx.catalog };
   const shape = await describeLegacyTable(deps, { table });
   const { columns: liveColumns } = await readTableCatalog(await ctx.legacy.live(), shape.parts[0]?.ref ?? table);
-  const liveFilter = buildScopeFilter(liveColumns, session.scope);
-  const match = exportMatchOf(liveFilter);
+  const keyScope: ExtractScope | undefined = keys === undefined ? undefined : { [keys.column]: keys.values };
+  const liveFilter = buildScopeFilter(liveColumns, keyScope ?? session.scope);
+  const reads: ExportRead[] = keys === undefined ? [{ match: exportMatchOf(liveFilter) }] : keyReads(liveColumns, keys);
   const sorters: { dispose(): Promise<void> }[] = [];
   const sorter = <T>(created: UnitRowSorter<T>): UnitRowSorter<T> => {
     sorters.push(created);
@@ -989,40 +1164,44 @@ async function importTable(session: ImportSession, unit: string, table: string, 
   let targetSettled: Promise<void> = Promise.resolve();
   const reading = { stopped: false };
   try {
-    // The owner may return more rows than the match names, so each tenant's rows are filtered here as they arrive.
+    // The owner may return more rows than the match names, so each tenant's rows are filtered here as they arrive; a
+    // share's filter also keeps each row to the one read whose match names it.
     const first: { side?: TargetSide } = {};
     let sideFixed = (): void => undefined;
     const fixed = new Promise<void>((resolve) => {
       sideFixed = resolve;
     });
-    const readTarget = (tenantId: string, withKeys: boolean): Promise<void> =>
-      readTenantExport(session, target.owner, { unit, tenantId, match }, table, async (exported) => {
-        if (reading.stopped) throw new Error(`the import of ${table} ended before its ${target.owner} export was read`);
-        if (first.side === undefined) {
-          const layout = layoutOf(exported, target, shape.folded);
-          const keyShape = keyShapeOf(layout);
-          first.side = {
-            plan: { definition: exported, layout, ...tableScope(session, table, liveColumns, liveFilter, layout) },
-            before: sorter(
-              new UnitRowSorter(rowShapeOf(layout), (encoding, programId, _payload, keyValues) => decodedRowOf(table, layout, encoding, programId, {}, keyValues), session.sorting),
-            ),
-            held: sorter(new UnitRowSorter(keyShape, (encoding, programId, tenantId) => heldKeyOf(table, keyShape, encoding, programId, tenantId ?? ''), session.sorting)),
-          };
-          sideFixed();
-        }
-        const { plan, before, held } = first.side;
-        // Decoding validates the owner's row, and its encoding over the same columns is that row unchanged.
-        const reuse = !plan.layout.folded && plan.filter.terms.length === 0;
-        for (const exportRow of exported.rows) {
-          const values: Values = decodeRow(plan.definition.columns, exportRow.row);
-          if (plan.layout.folded) values[LEGACY_PROGRAM_ID_COLUMN] = programText(exportRow, table);
-          if (!rowInScope(plan.filter, values)) continue;
-          const row = canonicalRowOf(table, plan.layout, values, exportRow.legacyProgramId, reuse ? exportRow.row : undefined);
-          await before.add(tenantId, row);
-          if (withKeys) await held.add(KEY_ORDER, keyRowOf(row, plan.layout), tenantId);
-        }
-      });
-    const tenants = await session.tenants();
+    const readTarget = async (tenantId: string, withKeys: boolean): Promise<void> => {
+      for (const { match, share } of reads) {
+        await readTenantExport(session, target.owner, { unit, tenantId, match }, table, async (exported) => {
+          if (reading.stopped) throw new Error(`the import of ${table} ended before its ${target.owner} export was read`);
+          if (first.side === undefined) {
+            const layout = layoutOf(exported, target, shape.folded);
+            const keyShape = keyShapeOf(layout);
+            first.side = {
+              plan: { definition: exported, layout, ...tableScope(session, table, liveColumns, liveFilter, layout, keyScope) },
+              before: sorter(
+                new UnitRowSorter(rowShapeOf(layout), (encoding, programId, _payload, keyValues) => decodedRowOf(table, layout, encoding, programId, {}, keyValues), session.sorting),
+              ),
+              held: sorter(new UnitRowSorter(keyShape, (encoding, programId, tenantId) => heldKeyOf(table, keyShape, encoding, programId, tenantId ?? ''), session.sorting)),
+            };
+            sideFixed();
+          }
+          const { plan, before, held } = first.side;
+          // Decoding validates the owner's row, and its encoding over the same columns is that row unchanged.
+          const reuse = !plan.layout.folded && plan.filter.terms.length === 0;
+          for (const exportRow of exported.rows) {
+            const values: Values = decodeRow(plan.definition.columns, exportRow.row);
+            if (plan.layout.folded) values[LEGACY_PROGRAM_ID_COLUMN] = programText(exportRow, table);
+            if (!rowInScope(plan.filter, values) || (share !== undefined && !rowInScope(share, values))) continue;
+            const row = canonicalRowOf(table, plan.layout, values, exportRow.legacyProgramId, reuse ? exportRow.row : undefined);
+            await before.add(tenantId, row);
+            if (withKeys) await held.add(KEY_ORDER, keyRowOf(row, plan.layout), tenantId);
+          }
+        });
+      }
+    };
+    const tenants = await session.tableTenants(target.owner);
     // The legacy side starts once the first export page fixes the plan, while the remaining pages are still read.
     const targetRead = (async () => {
       for (const tenantId of tenants) {
@@ -1125,12 +1304,16 @@ async function importTable(session: ImportSession, unit: string, table: string, 
     await after.sort();
 
     const writableColumns = target.ownedColumns === 'whole-table' ? undefined : target.ownedColumns;
+    const applied: TableTarget = { owner: target.owner, unit, table, legacyTable: definition.legacyTable, columns: applyColumns };
     let sent = 0;
+    const upserted: string[] = [];
     for (const tenantId of [...new Set([...before.tenants(), ...after.tenants()])].sort()) {
       const rows = plannedRows(layout, writableColumns, selector, applyColumns, before.rows(tenantId), after.rows(tenantId));
-      sent += await session.send({ owner: target.owner, unit, table, legacyTable: definition.legacyTable, tenantId, columns: applyColumns }, rows);
+      const count = await session.send({ ...applied, tenantId }, withoutDeletes(rows, (row) => defer(tenantId, row)));
+      if (count > 0) upserted.push(tenantId);
+      sent += count;
     }
-    if (sent > 0) ctx.logger.info(`window ${session.input.windowId} sent ${String(sent)} ${table} changes to ${target.owner} unit ${unit}`);
+    return { target: applied, sent, upserted };
   } finally {
     // A legacy-side failure stops the first pass at its next page; its sorters are disposed once it has settled.
     reading.stopped = true;
@@ -1250,8 +1433,11 @@ async function importFiles(session: ImportSession, unit: string, owner: DataOwne
   // An orphan resolves to the umbrella tenant from any site directory, so only a listing of every site can rule one out.
   const everySite = (await session.sites()).every((site) => listedDirs.has(site.siteId.toLowerCase()));
   const umbrella = everySite ? [tenantIdForSite(session.umbrellaSiteId)] : [];
+  // No live directory holds the files of a registered tenant without a live site, such as a site legacy deleted.
+  const live = new Set(await session.tenants());
+  const siteless = (await session.registeredTenants(owner)).filter((tenantId) => !live.has(tenantId));
   const manifest = new Map<string, ObjectManifestEntry>();
-  for (const tenantId of [...new Set([...listedTenants, ...umbrella, ...planned.map((object) => object.tenantId)])].sort()) {
+  for (const tenantId of [...new Set([...listedTenants, ...umbrella, ...siteless, ...planned.map((object) => object.tenantId)])].sort()) {
     for (const object of await session.manifest(owner, unit, tenantId)) manifest.set(object.key.toLowerCase(), object);
   }
 
@@ -1308,11 +1494,222 @@ function fileUnitOf(catalog: Pick<UnitCatalog, 'units'>): { unit: string; owner:
   return { unit: found.id, owner: found.owner };
 }
 
+/** One legacy table of one unit and the target its rows go to. */
+interface ImportStep {
+  readonly unit: string;
+  readonly table: string;
+  readonly target: LegacyTableTarget;
+}
+
+// Memoised although the Minimal Change rule bans new caching: that rule does not bind this refactor, and each order costs ~0.3 s.
+const ranksByCatalog = new WeakMap<WindowImportContext['catalog'], Map<string, ReadonlyMap<string, number>>>();
+
+/** Dependency-order position of each ownership table by lookup key, computed once per catalog and inventory file. */
+async function dependencyRanks(ctx: Pick<WindowImportContext, 'config' | 'catalog'>): Promise<ReadonlyMap<string, number>> {
+  const file = ctx.config.paths.inventory;
+  let byFile = ranksByCatalog.get(ctx.catalog);
+  if (byFile === undefined) {
+    byFile = new Map();
+    ranksByCatalog.set(ctx.catalog, byFile);
+  }
+  const known = byFile.get(file);
+  if (known !== undefined) return known;
+  const { order } = await computeDependencyOrder({ inventory: file, catalog: ctx.catalog });
+  // The order names each Program_<id> table, which folds to the ownership name its steps carry.
+  const ranks = new Map<string, number>();
+  for (const [position, name] of order.entries()) {
+    const key = tableKey(ctx.catalog.foldProgramTable(name).legacyTable);
+    if (!ranks.has(key)) ranks.set(key, position);
+  }
+  byFile.set(file, ranks);
+  return ranks;
+}
+
+/** `steps` parents first: by their table's dependency-order position, tables the order lacks after all others by name, then by unit. */
+async function orderedSteps(ctx: Pick<WindowImportContext, 'config' | 'catalog'>, steps: readonly ImportStep[]): Promise<ImportStep[]> {
+  const ranks = await dependencyRanks(ctx);
+  const rankOf = (step: ImportStep): number => ranks.get(genericTableKey(ctx.catalog, step.table)) ?? ranks.size;
+  return [...steps].sort((a, b) => rankOf(a) - rankOf(b) || compareTableNames(a.table, b.table) || (a.unit < b.unit ? -1 : a.unit > b.unit ? 1 : 0));
+}
+
+/** What legacy did to each fingerprinted table, by fingerprint key, the fingerprints read after, and the milliseconds each read took. */
+interface TableChanges {
+  readonly tables: ReadonlyMap<string, TableChange>;
+  readonly after: WindowFingerprints;
+  readonly beforeMs: number;
+  readonly afterMs: number;
+}
+
+/** How many steps an attempt skipped, narrowed to their changed keys, or compared under the window's scope. */
+interface ComparedSteps {
+  skipped: number;
+  narrowed: number;
+  whole: number;
+}
+
+/** Diffs `input`'s fingerprints against the same tables' read now; undefined, comparing in full, without ones taken under `scope` or when the read fails. */
+async function tableChanges(ctx: WindowImportContext, input: ImportInput, scope: ExtractScope): Promise<TableChanges | undefined> {
+  const before = input.fingerprints;
+  if (before === undefined || !sameScope(before.scope, scope)) return undefined;
+  const started = performance.now();
+  let after: WindowFingerprints;
+  try {
+    after = await (input.readFingerprints ?? readFingerprints)(ctx, [...before.tables.values()].map((fingerprint) => fingerprint.table), scope);
+  } catch (error) {
+    ctx.logger.warn({ error: serializeError(error) }, `window ${input.windowId} compares every table in full: reading its row fingerprints failed`);
+    return undefined;
+  }
+  const tables = new Map([...before.tables].map(([key, fingerprint]): [string, TableChange] => [key, diffFingerprints(fingerprint, after.tables.get(key))]));
+  return { tables, after, beforeMs: before.elapsedMs, afterMs: Math.round(performance.now() - started) };
+}
+
+/** Imports one step narrowed to its changed keys when it has them and the export can test their column, else under the window's scope. */
+async function importStep(
+  session: ImportSession,
+  step: ImportStep,
+  defer: (tenantId: string, row: PlannedRow) => Promise<void>,
+  change: TableChange | undefined,
+  compared: ComparedSteps,
+): Promise<ImportedTable> {
+  const { unit, table, target } = step;
+  if (change?.kind === 'keys') {
+    try {
+      const imported = await importTable(session, unit, table, target, defer, change);
+      compared.narrowed += 1;
+      return imported;
+    } catch (error) {
+      if (!(error instanceof KeysUntestableError)) throw error;
+    }
+  }
+  compared.whole += 1;
+  return importTable(session, unit, table, target, defer);
+}
+
+/** A step of the site table and what its first pass sent; undefined when it was skipped. */
+interface SiteStep {
+  readonly step: ImportStep;
+  readonly imported: ImportedTable | undefined;
+}
+
+/**
+ * Waits until the consumers of the `later` steps' events have registered the tenants of the sites this window added: those
+ * a site step upserted that its owner's registry lacked before the step, and those of site keys the fingerprints gained.
+ * @throws WindowImportError naming the consumers and tenants still unregistered after {@link REGISTRATION_WAIT_MS}.
+ */
+async function awaitAddedTenants(
+  session: ImportSession,
+  sites: readonly SiteStep[],
+  later: readonly ImportStep[],
+  changes: TableChanges | undefined,
+  sleep: WindowImportOptions['sleep'],
+): Promise<void> {
+  const { ctx, input } = session;
+  const added = new Set<string>();
+  for (const { step, imported } of sites) {
+    if (imported !== undefined && imported.upserted.length > 0) {
+      // The registry was read before the step sent anything and is memoised, so it still predates the step's upserts.
+      const known = new Set(await session.registeredTenants(step.target.owner));
+      for (const tenantId of imported.upserted) if (!known.has(tenantId)) added.add(tenantId);
+    }
+    // A retry finds the site applied already, so the fingerprints tell which sites legacy added.
+    const key = fingerprintKey(step.table);
+    const gained = changes === undefined ? [] : addedSiteTenants(input.fingerprints?.tables.get(key), changes.after.tables.get(key), siteSourceOf(session.facts(step.table)).column);
+    for (const tenantId of gained) added.add(tenantId);
+  }
+  if (added.size === 0) return;
+  const producers = new Set(later.flatMap((step) => (changes?.tables.get(fingerprintKey(step.table))?.kind === 'unchanged' ? [] : [step.target.owner])));
+  const consumers = await siteEventConsumers(ctx.config, producers);
+  if (consumers.length === 0) return;
+  const tenants = [...added].sort();
+  const { unregistered, waitedMs } = await awaitRegistration(ctx, consumers, tenants, sleep);
+  if (unregistered.length > 0) {
+    const named = unregistered.map(({ owner, missing, error }) => `${owner} lacks ${missing.join(', ')}${error === undefined ? '' : ` (${messageOf(error)})`}`);
+    throw new WindowImportError(
+      input.windowId,
+      `window ${input.windowId} import stopped after ${SITE_ROOT_TABLE}: new tenants are unregistered after ${String(REGISTRATION_WAIT_MS)} ms, ${named.join('; ')}`,
+      { ...(unregistered.length === 1 ? { owner: unregistered[0]?.owner } : {}), table: SITE_ROOT_TABLE },
+    );
+  }
+  ctx.logger.info(`window ${input.windowId} waited ${String(waitedMs)} ms for ${consumers.join(', ')} to register new tenants ${tenants.join(', ')}`);
+}
+
+/** Where a site delete of the window waits: its routes and each producer's cursor, or why the cursors could not be taken. */
+interface DeletionWatch {
+  readonly routes: DeletionRoutes;
+  readonly cursors: PublishedCursors | undefined;
+  readonly failure?: unknown;
+}
+
+/** Events of a consumer a timed-out site delete names at most. */
+const NAMED_RECEIPTS = 5;
+
+/** The window's deletion watch over its held cursors, taking now those of producers it lacks; undefined without the site unit. */
+async function watchDeletions(ctx: WindowImportContext, input: ImportInput): Promise<DeletionWatch | undefined> {
+  const routes = await deletionRoutes(ctx.config, ctx.catalog, input.units);
+  if (routes === undefined) return undefined;
+  const held: PublishedCursors = input.publishedCursors ?? new Map();
+  const lacking = new Map([...routes.producers].filter(([owner]) => !held.has(owner)));
+  if (lacking.size === 0) return { routes, cursors: held };
+  try {
+    return { routes, cursors: new Map([...held, ...(await capturePublishedCursors(ctx, lacking))]) };
+  } catch (error) {
+    return { routes, cursors: undefined, failure: error };
+  }
+}
+
+/**
+ * Waits until every consumer of the site topic received, in their tenant, the events published after the watch's cursors in
+ * `tenants`, the tenants of the sites the window deletes, so none meets one of them once its site is gone.
+ * @throws WindowImportError when the cursors could not be taken, or naming the consumers, events and tenants still pending after {@link DELETION_WAIT_MS}.
+ */
+async function awaitDeletedTenants(
+  session: ImportSession,
+  watch: DeletionWatch,
+  tenants: readonly string[],
+  sleep: WindowImportOptions['sleep'],
+): Promise<void> {
+  const { ctx, input } = session;
+  if (watch.routes.producers.size === 0) return;
+  const stopped = `window ${input.windowId} import stopped before the ${SITE_ROOT_TABLE} deletes of ${tenants.join(', ')}`;
+  if (watch.cursors === undefined) {
+    const owner = watch.failure instanceof OwnerCallError ? { owner: watch.failure.owner } : {};
+    throw new WindowImportError(input.windowId, `${stopped}: taking the published-event cursors failed, ${messageOf(watch.failure)}`, {
+      ...owner,
+      table: SITE_ROOT_TABLE,
+      cause: watch.failure,
+    });
+  }
+  const { missing, unlisted, awaited, waitedMs, waited } = await awaitDeletionReceipts(ctx, watch.routes, watch.cursors, tenants, sleep);
+  if (missing.length > 0 || unlisted.length > 0) {
+    const cause = (error: unknown): string => (error === undefined ? '' : ` (${messageOf(error)})`);
+    const named = [
+      ...unlisted.map(({ owner, error }) => `${owner} has events not yet listed${cause(error)}`),
+      ...missing.map(({ owner, events, error }) => {
+        const listed = events.slice(0, NAMED_RECEIPTS).map(({ eventId, topic, tenantId }) => `${eventId} (${topic}) in ${tenantId}`);
+        const more = events.length > NAMED_RECEIPTS ? ` and ${String(events.length - NAMED_RECEIPTS)} more` : '';
+        return `${owner} lacks receipts of ${listed.join(', ')}${more}${cause(error)}`;
+      }),
+    ];
+    const owners = [...new Set([...unlisted, ...missing].map(({ owner }) => owner))];
+    throw new WindowImportError(input.windowId, `${stopped}: receipts are missing after ${String(DELETION_WAIT_MS)} ms, ${named.join('; ')}`, {
+      ...(owners.length === 1 ? { owner: owners[0] } : {}),
+      table: SITE_ROOT_TABLE,
+    });
+  }
+  if (waited) {
+    ctx.logger.info(`window ${input.windowId} waited ${String(waitedMs)} ms for the receipts of ${String(awaited)} events in deleted tenants ${tenants.join(', ')}`);
+  }
+}
+
 /**
  * Imports what legacy wrote inside window `input.windowId`: for each unit's legacy tables, the scoped differences between
- * the live legacy rows and the owner's export are applied as `legacy-window` writes; units fed by `tfiles` (or
- * `content.file_object`) also move the store's new and changed files. No retry: a failed attempt is safe to repeat.
- * @param options bounds the memory each table's sorted runs take before they spill.
+ * the live legacy rows and the owner's export are applied as `legacy-window` writes, upserts in dependency order and then
+ * deletes in reverse; units fed by `tfiles` (or `content.file_object`) also move the store's new and changed files. With
+ * fingerprints from before legacy executed, a table whose rows kept them is not compared and a changed one only at its
+ * changed keys. Steps after the site table's wait until the consumers of their events have registered the sites it added,
+ * and the site table's deletes until those consumers received the events published in the deleted sites' tenants.
+ * No retry: a failed attempt is safe to repeat.
+ * @param options bounds the memory each table's sorted runs take before they spill, and replaces the registration and receipt timer.
  * @throws WindowImportError on any legacy, bridge or owner failure; UnsupportedFileStoreError when the store is not `fileDir`.
  */
 export async function importWindow(ctx: WindowImportContext, input: ImportInput, options: WindowImportOptions = {}): Promise<ImportResult> {
@@ -1320,6 +1717,7 @@ export async function importWindow(ctx: WindowImportContext, input: ImportInput,
   const contentTable = tableKey(ctx.config.startupGuard.table);
   let filesWanted = false;
   const fileUnits: { unit: string; owner: DataOwner }[] = [];
+  const steps: ImportStep[] = [];
   for (const unit of [...new Set(input.units)].sort()) {
     if (unit === FILE_OBJECT_UNIT) {
       filesWanted = true;
@@ -1331,10 +1729,61 @@ export async function importWindow(ctx: WindowImportContext, input: ImportInput,
         const found = ctx.catalog.unitsForLegacyTable(table).find((candidate) => candidate.unit === unit);
         return found === undefined ? Promise.reject(new Error(`unit ${unit} is not a target of its legacy table ${table}`)) : Promise.resolve(found);
       });
-      await guarded(input.windowId, { owner: target.owner, table }, () => importTable(session, unit, table, target));
+      steps.push({ unit, table, target });
+    }
+  }
+  const ordered = await guarded(input.windowId, {}, () => orderedSteps(ctx, steps));
+  const watch = await guarded(input.windowId, {}, () => watchDeletions(ctx, input));
+  const changes = await tableChanges(ctx, input, session.scope);
+  if (changes !== undefined) session.result.fingerprints = changes.after;
+  const compared: ComparedSteps = { skipped: 0, narrowed: 0, whole: 0 };
+  const deferred = new DeferredDeletes(ordered.length, session.sorting);
+  try {
+    // A skipped step sent nothing and holds no deletes.
+    const imported: (ImportedTable | undefined)[] = [];
+    const sites: SiteStep[] = [];
+    let registered = false;
+    for (const [index, step] of ordered.entries()) {
+      const { unit, table, target } = step;
+      const change = changes?.tables.get(fingerprintKey(table));
+      const siteStep = genericTableKey(ctx.catalog, table) === SITE_ROOT_TABLE;
+      if (!siteStep && !registered && sites.length > 0) {
+        registered = true;
+        await guarded(input.windowId, { table: SITE_ROOT_TABLE }, () => awaitAddedTenants(session, sites, ordered.slice(index), changes, options.sleep));
+      }
+      if (change?.kind === 'unchanged') {
+        compared.skipped += 1;
+        imported.push(undefined);
+      } else {
+        const defer = (tenantId: string, row: PlannedRow): Promise<void> => deferred.add(index, tenantId, row);
+        imported.push(await guarded(input.windowId, { owner: target.owner, table }, () => importStep(session, step, defer, change, compared)));
+      }
+      if (siteStep) sites.push({ step, imported: imported[index] });
       if (genericTableKey(ctx.catalog, table) === contentTable) session.result.touchedContent = true;
       if (tableKey(table) === FILES_TABLE) fileUnits.push({ unit, owner: target.owner });
     }
+    await guarded(input.windowId, {}, () => deferred.sort());
+    for (const [index, step] of [...imported.entries()].reverse()) {
+      if (step === undefined) continue;
+      const { target, sent } = step;
+      const tenants = deferred.tenantsOf(index);
+      if (watch !== undefined && tenants.length > 0 && genericTableKey(ctx.catalog, target.table) === SITE_ROOT_TABLE) {
+        await guarded(input.windowId, { table: SITE_ROOT_TABLE }, () => awaitDeletedTenants(session, watch, tenants, options.sleep));
+      }
+      let total = sent;
+      await guarded(input.windowId, { owner: target.owner, table: target.table }, async () => {
+        for (const tenantId of tenants) total += await session.send({ ...target, tenantId }, deferred.rows(index, tenantId));
+      });
+      if (total > 0) ctx.logger.info(`window ${input.windowId} sent ${String(total)} ${target.table} changes to ${target.owner} unit ${target.unit}`);
+    }
+    if (changes !== undefined) {
+      ctx.logger.info(
+        `window ${input.windowId} skipped ${String(compared.skipped)} unchanged tables, narrowed ${String(compared.narrowed)} to their changed keys ` +
+          `and compared ${String(compared.whole)} whole; row fingerprints took ${String(changes.beforeMs)} ms before and ${String(changes.afterMs)} ms after legacy executed`,
+      );
+    }
+  } finally {
+    await deferred.dispose();
   }
   if (filesWanted || fileUnits.length > 0) {
     await guarded(input.windowId, { table: FILES_TABLE }, async () => {

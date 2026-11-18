@@ -249,18 +249,22 @@ const CONTROLLER = objectWith({
   actions: arrayOf(objectWith({ id: NAME, action: NAME, variants: arrayOf(ACTION_VARIANT) })),
 });
 
-const WRITER = objectWith({
-  component: NAME,
-  method: NAME,
-  source: SOURCE_REF,
-  op: NAME,
-  routeKeys: arrayOf(NAME),
-  keyScope: arrayOf(NAME),
-  trigger: oneOfValues(WRITER_TRIGGERS),
-  sessionEffects: oneOfValues(SESSION_EFFECTS),
-  condition: nullable(TEXT),
-  override: nullable(TEXT),
-});
+const WRITER = objectWith(
+  {
+    component: NAME,
+    method: NAME,
+    source: SOURCE_REF,
+    op: NAME,
+    routeKeys: arrayOf(NAME),
+    keyScope: arrayOf(NAME),
+    trigger: oneOfValues(WRITER_TRIGGERS),
+    sessionEffects: oneOfValues(SESSION_EFFECTS),
+    condition: nullable(TEXT),
+    override: nullable(TEXT),
+    columns: arrayOf(NAME),
+  },
+  ['columns'],
+);
 
 const INVENTORY_FILE = objectWith({
   sourceSha: TEXT,
@@ -609,11 +613,15 @@ export function entityRemoteFunctionsOf(inventory: Pick<InventoryDoc, 'routes'>)
   );
 }
 
-/** Route facts per inventoried key, unioned over the entry points and table writers that carry it; the strongest CSRF fact wins. */
+/** Reads the inventory and returns its route facts, as {@link inventoryFactsOf} derives them. */
 export async function loadInventoryFacts(
   paths: Pick<GatewayPaths, 'inventoryFile' | 'tableOwnershipFile' | 'sourcePinFile'>,
 ): Promise<LoadedInventoryFacts> {
-  const inventory = await loadInventory(paths);
+  return inventoryFactsOf(await loadInventory(paths));
+}
+
+/** Route facts per inventoried key, unioned over the entry points and table writers that carry it; the strongest CSRF fact wins. */
+export function inventoryFactsOf(inventory: InventoryDoc): LoadedInventoryFacts {
   const collected = new Map<string, CollectedFacts>();
   const factsFor = (routeKey: string): CollectedFacts => {
     const route = normaliseRouteKey(routeKey);

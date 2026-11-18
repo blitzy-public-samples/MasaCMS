@@ -218,7 +218,11 @@ describe.skipIf(!pgUp)('window claim deadlines against PostgreSQL', () => {
       owners: owners.client,
       gateway,
     } as unknown as MigrationContext;
-    const service = createWindowService(ctx, { projector: { awaitProjection: () => Promise.resolve({ positions: new Map(), waitedMs: 0 }) } });
+    // The suite has no legacy database, so its windows hold fingerprints of no table.
+    const service = createWindowService(ctx, {
+      projector: { awaitProjection: () => Promise.resolve({ positions: new Map(), waitedMs: 0 }) },
+      readFingerprints: (_ctx, _tables, scope) => Promise.resolve({ scope, tables: new Map(), elapsedMs: 0 }),
+    });
     services.push(service);
     return { service, logger };
   }

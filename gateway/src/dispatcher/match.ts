@@ -1,10 +1,14 @@
 // Route key → active cut-over entry → destination; routing changes only through the active version.
 import { stripInboundAuthHeaders } from '@opt2/platform/auth';
 import {
+  SESSION_MANAGED_CONDITION,
   fixtureDispatchPath,
   matchRouteKey,
+  parseCookieHeader,
+  routeKeyForRequest,
   scannedRouteKey,
   type RouteKeyOptions,
+  type RouteKeyRequest,
   type RouteKeyResult,
   type ScannedRouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
@@ -16,6 +20,7 @@ import type { CutoverState } from '../cutover/state.js';
 import type { CutoverEntry, EntryKind, OwningService, RoutingIndex, VariantsFile } from '../cutover/types.js';
 import type { BodyParams } from './body.js';
 import { failContextFor, type FailContext } from './fail-closed.js';
+import { RENDER_ROUTE, asyncDoactionRoutes, type RequestFacts, type RequestWrites } from './request-writes.js';
 
 /** Gateway path prefix web relays its service calls through (`GATEWAY_SERVICE_PREFIX` of the gateway ↔ web contract). */
 export const RELAY_ALIAS_PREFIX = '/opt2/svc';
@@ -111,8 +116,13 @@ export interface RoutedOutcome {
   readonly urlScope: Record<string, string>;
   /** Whether legacy's start-up scan fails on the request's url or form scope. */
   readonly scanFailed: boolean;
-  /** Cut-over routes besides the entry's whose freeze also holds the request: a reload's own entry and the one behind it. */
+  /**
+   * Cut-over routes besides the entry's whose freeze also holds the request: a reload's own entry and the one behind it,
+   * the other entries an unmatched page's or an asynchronous request's doactions name, and the render entry whose units it adds.
+   */
   readonly holdRoutes?: readonly string[];
+  /** True when the entry's units include writes of other routes or of request start-up, whose rows no keyScope of the entry bounds. */
+  readonly tableScope?: boolean;
 }
 
 /** Outcome of matching one request. */
@@ -133,6 +143,8 @@ export interface MatcherDeps {
   clock: Clock;
   /** Legacy registries and settings the key depends on (site registry, admin dir, reload key); variants come from `variants`. */
   routeKeyOptions?: Omit<RouteKeyOptions, 'variants'>;
+  /** Request-conditional legacy writes; without them a legacy-bound request routes under its matched entry as listed. */
+  requestWrites?: RequestWrites;
 }
 
 const LEGACY: LegacyDestination = Object.freeze({ kind: 'legacy' });
@@ -195,22 +207,177 @@ function reloadRouting(reload: CutoverEntry | undefined, served: CutoverEntry | 
   return { entry, holdRoutes: Object.freeze(holdRoutes) };
 }
 
-/** A request's key, the entry it routes under, the scan facts it read and, for a reload, the routes also holding it. */
-type KeyedMatch = Pick<RoutedOutcome, 'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes'>;
+/** A request's key, the entry it routes under, the scan facts it read, the routes also holding it and its window's scope. */
+type KeyedMatch = Pick<RoutedOutcome, 'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes' | 'tableScope'>;
 
-/** The scanned key of `request` under `options` and the entry it routes under in `index`, if any. */
-function keyedMatch(request: ScannedRouteKeyRequest, options: RouteKeyOptions, index: RoutingIndex | undefined): KeyedMatch {
+/** A legacy-bound request's entry as the request makes it write, with the routes and window scope that come with it. */
+interface Shaped {
+  readonly entry: CutoverEntry | undefined;
+  readonly holdRoutes: readonly string[];
+  readonly tableScope: boolean;
+}
+
+/** Shapes the entries legacy serves one request under by the request-conditional writes the request can reach. */
+interface EntryShaper {
+  /**
+   * `matched` less the units only failing guards reach, or one composed for an unmatched page or template, plus the units of
+   * the page entries an asynchronous request's doactions name and of its pipeline.
+   */
+  served(result: RouteKeyResult, matched: CutoverEntry | undefined): Shaped;
+  /** `shaped` plus the units request start-up writes for the request keyed `result`. */
+  startup(result: RouteKeyResult, shaped: Shaped): Shaped;
+}
+
+const SAVEFORM_SUFFIX = '+saveform';
+const UNSHAPED: Shaped = Object.freeze({ entry: undefined, holdRoutes: Object.freeze([]), tableScope: false });
+
+/** The doactions, in order, and the saveform a page key lists: `page:<a>[,<b>…][+saveform]`, `page:saveform` or `page:render`. */
+function pageComponentsOf(baseKey: string): { actions: string[]; saveform: boolean } {
+  const body = baseKey.slice('page:'.length);
+  if (body === 'render') return { actions: [], saveform: false };
+  if (body === 'saveform') return { actions: [], saveform: true };
+  const saveform = body.endsWith(SAVEFORM_SUFFIX);
+  return { actions: (saveform ? body.slice(0, -SAVEFORM_SUFFIX.length) : body).split(','), saveform };
+}
+
+/**
+ * The shaper of one request under `index`: `factsOf` reads the request under one of its keys, `pageKeyOf` keys it as a page.
+ * A composed or widened entry keeps one route, so its in-flight row and window name only that route, as a reload's do.
+ */
+function createShaper(
+  index: RoutingIndex,
+  writes: RequestWrites,
+  factsOf: (key: RouteKeyResult) => RequestFacts,
+  pageKeyOf: () => RouteKeyResult,
+): EntryShaper {
+  /** The entry of a key the version does not list, before any unit is added. */
+  const unlisted = (result: RouteKeyResult): CutoverEntry => ({
+    route: result.key,
+    owningService: 'none',
+    tableVersion: index.table.tableVersion,
+    state: 'legacy',
+    kind: 'legacy-write',
+    group: null,
+    units: [],
+    disposition: 'legacy-served',
+  });
+
+  /**
+   * `shaped` writing `extra` units too; any new one makes it a table-scoped `legacy-write`, over only the written units
+   * of a read or static entry, that `heldBy`'s freeze also holds.
+   */
+  const widened = (result: RouteKeyResult, shaped: Shaped, extra: readonly string[], heldBy?: string): Shaped => {
+    const base = shaped.entry ?? unlisted(result);
+    const written = WRITE_KINDS.has(base.kind) ? base.units : [];
+    const added = extra.filter((unit) => !written.includes(unit));
+    if (added.length === 0) return shaped;
+    const entry: CutoverEntry = Object.freeze({ ...base, state: 'legacy', kind: 'legacy-write', units: [...written, ...added] });
+    const holdRoutes =
+      heldBy === undefined || heldBy === entry.route || shaped.holdRoutes.includes(heldBy) ? shaped.holdRoutes : [...shaped.holdRoutes, heldBy];
+    return { entry, holdRoutes, tableScope: true };
+  };
+
+  /** `entry` less the units only writes under failing guards reach. */
+  const reached = (entry: CutoverEntry, facts: RequestFacts): CutoverEntry => {
+    const units = writes.entryUnits(entry.route, entry.units, facts);
+    return units === entry.units ? entry : Object.freeze({ ...entry, units: [...units] });
+  };
+
+  /** An unmatched page key's entry: its first writing doaction's (or saveform's), else the render entry, over its writers' units. */
+  const composed = (result: RouteKeyResult, facts: RequestFacts): Shaped => {
+    const { actions, saveform } = pageComponentsOf(result.baseKey);
+    const routes = [...new Set([...actions.map((action) => `page:${action}`), ...(saveform ? ['page:saveform'] : [])])];
+    const listed = routes.flatMap((route) => index.entryFor(route) ?? []);
+    const writers = listed.filter((listedEntry) => WRITE_KINDS.has(listedEntry.kind));
+    const primary = writers[0] ?? index.entryFor(RENDER_ROUTE);
+    if (primary === undefined) return UNSHAPED;
+    const contributing = writers.length > 0 ? writers : WRITE_KINDS.has(primary.kind) ? [primary] : [];
+    const holdRoutes = listed.map((listedEntry) => listedEntry.route).filter((route) => route !== primary.route);
+    if (contributing.length === 0) return { entry: Object.freeze({ ...primary, state: 'legacy' }), holdRoutes, tableScope: false };
+    const units = [...new Set(contributing.flatMap((contributor) => reached(contributor, facts).units))];
+    const entry: CutoverEntry = Object.freeze({ ...primary, state: 'legacy', kind: 'legacy-write', units });
+    return { entry, holdRoutes, tableScope: contributing.length > 1 };
+  };
+
+  /** {@link EntryShaper.served}. */
+  const served = (result: RouteKeyResult, matched: CutoverEntry | undefined): Shaped => {
+    if (matched === undefined && result.family === 'cfm') {
+      // Legacy serves a missing template as a page of the same request (onMissingTemplate_include.cfm:109-140).
+      const page = pageKeyOf();
+      return served(page, entryOf(index, page));
+    }
+    const facts = factsOf(result);
+    let shaped = UNSHAPED;
+    if (matched !== undefined) shaped = { entry: reached(matched, facts), holdRoutes: [], tableScope: false };
+    else if (result.family === 'page') shaped = composed(result, facts);
+    for (const route of asyncDoactionRoutes(result, facts)) {
+      const acted = index.entryFor(route);
+      if (acted !== undefined && WRITE_KINDS.has(acted.kind)) shaped = widened(result, shaped, reached(acted, facts).units, route);
+    }
+    return widened(result, shaped, writes.pipelineUnits(result, facts), RENDER_ROUTE);
+  };
+
+  return {
+    served,
+    startup: (result, shaped) => {
+      const key = result.afterReload ?? result;
+      return widened(result, shaped, writes.startupUnits(key.family, factsOf(key)));
+    },
+  };
+}
+
+/** The fields a shaped entry gives a keyed match. */
+function shapedFields({ entry, holdRoutes, tableScope }: Shaped): Pick<KeyedMatch, 'entry' | 'holdRoutes' | 'tableScope'> {
+  return { entry, ...(holdRoutes.length > 0 ? { holdRoutes: Object.freeze([...holdRoutes]) } : {}), ...(tableScope ? { tableScope } : {}) };
+}
+
+/**
+ * The scanned key of `request` under `options` and the entry it routes under in `index`, if any; `shaping`, given the
+ * url scope the key read, shapes the entry of a legacy-bound request.
+ */
+function keyedMatch(
+  request: ScannedRouteKeyRequest,
+  options: RouteKeyOptions,
+  index: RoutingIndex | undefined,
+  shaping?: (urlScope: Record<string, string>) => EntryShaper,
+): KeyedMatch {
   const { result: keyed, urlScope, scanFailed, unhalted } = scannedRouteKey(request, options);
   // A key the halt variant replaced has no entry, so legacy serves the request as its unhalted key's legacy entry would.
   const result = unhalted ?? keyed;
   if (index === undefined) return { result, entry: undefined, urlScope, scanFailed };
   const matched = entryOf(index, result);
+  const shaper = shaping?.(urlScope);
   // A reload is never halted: scannedRouteKey keys it as sent.
   if (result.afterReload !== undefined) {
-    return { result, urlScope, scanFailed, ...reloadRouting(matched, entryOf(index, result.afterReload)) };
+    const behind = entryOf(index, result.afterReload);
+    if (shaper === undefined) return { result, urlScope, scanFailed, ...reloadRouting(matched, behind) };
+    // The route behind the reload is shaped first, so the reload's window gates what it can actually write.
+    const served = shaper.served(result.afterReload, behind);
+    const routing = reloadRouting(matched, served.entry);
+    const holdRoutes = [...new Set([...routing.holdRoutes, ...served.holdRoutes])].filter((route) => route !== routing.entry?.route);
+    const shaped = shaper.startup(result, { entry: routing.entry, holdRoutes, tableScope: served.tableScope });
+    return { result, urlScope, scanFailed, ...shapedFields(shaped) };
   }
   const entry = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
-  return { result, entry, urlScope, scanFailed };
+  // A target entry routes as listed; only what legacy writes for a request depends on the request.
+  if (shaper === undefined || (entry !== undefined && entry.state !== 'legacy')) return { result, entry, urlScope, scanFailed };
+  return { result, urlScope, scanFailed, ...shapedFields(shaper.startup(result, shaper.served(result, entry))) };
+}
+
+const SESSION_PROBE = 'opt2-session-probe';
+
+/** Whether legacy manages the session of a request to `path`, decided by the shared key's `sessionManaged` variant condition. */
+function isSessionManaged(path: string, options: RouteKeyOptions): boolean {
+  const bare: RouteKeyRequest = { method: 'GET', path, query: {}, headers: {} };
+  const { baseKey } = routeKeyForRequest(bare, options);
+  const variants = [{ route: baseKey, variant: SESSION_PROBE, when: [SESSION_MANAGED_CONDITION] }];
+  return routeKeyForRequest(bare, { ...options, variants }).variant === SESSION_PROBE;
+}
+
+/** Header `name` (lower-case) ignoring case; repeated values joined with `; `, as a Cookie header joins them. */
+function headerOf(headers: ScannedRouteKeyRequest['headers'], name: string): string | undefined {
+  const value = Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1];
+  return Array.isArray(value) ? value.join('; ') : value;
 }
 
 /** Path and `?query` (or '') of a request target. */
@@ -307,6 +474,23 @@ export function createMatcher(deps: MatcherDeps): Matcher {
     });
   };
 
+  /** Shaping of `request`'s legacy-bound entries under `index`, over the url scope its key read. */
+  const shapingFor =
+    (request: ScannedRouteKeyRequest, index: RoutingIndex, writes: RequestWrites) =>
+    (urlScope: Record<string, string>): EntryShaper => {
+      const url = Object.fromEntries(Object.entries(urlScope).map(([name, value]) => [name.toLowerCase(), value]));
+      const cookies = parseCookieHeader(headerOf(request.headers, 'cookie'));
+      let managed: boolean | undefined;
+      const sessionManaged = (): boolean => (managed ??= isSessionManaged(request.path, options));
+      const factsOf = (key: RouteKeyResult): RequestFacts => ({ params: key.params, url, method: request.method, cookies, sessionManaged });
+      const pageKeyOf = (): RouteKeyResult => {
+        const { result, unhalted } = scannedRouteKey({ ...request, path: '/' }, options);
+        const page = unhalted ?? result;
+        return page.afterReload ?? page;
+      };
+      return createShaper(index, writes, factsOf, pageKeyOf);
+    };
+
   return {
     async match(request, body, index = deps.state.active()) {
       const { path, search } = splitTarget(request.url);
@@ -330,9 +514,10 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
         multipartFileNames: body.files,
       };
-      const keyed = keyedMatch(keyRequest, options, index);
+      const shaping = deps.requestWrites === undefined || index === undefined ? undefined : shapingFor(keyRequest, index, deps.requestWrites);
+      const keyed = keyedMatch(keyRequest, options, index, shaping);
       const routed = (
-        { result, entry, urlScope, scanFailed, holdRoutes }: KeyedMatch,
+        { result, entry, urlScope, scanFailed, holdRoutes, tableScope }: KeyedMatch,
         destination: RoutedOutcome['destination'],
       ): RoutedOutcome => ({
         result,
@@ -342,6 +527,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         urlScope,
         scanFailed,
         ...(holdRoutes === undefined ? {} : { holdRoutes }),
+        ...(tableScope === undefined ? {} : { tableScope }),
       });
 
       if (index === undefined) return routed(keyed, unavailable('no-active-version'));
@@ -350,7 +536,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
       if (entry?.owningService === 'gateway') return routed(keyed, NOT_FOUND);
       if (entry === undefined || entry.state === 'legacy') {
         // Legacy serves an OPT-2 namespace path as one of its own (a page, through its root front controller), so it routes as that.
-        return routed(result.family === 'opt2' ? keyedMatch(keyRequest, legacyOptions, index) : keyed, LEGACY);
+        return routed(result.family === 'opt2' ? keyedMatch(keyRequest, legacyOptions, index, shaping) : keyed, LEGACY);
       }
       return routed(keyed, await targetDestination(request, result, entry));
     },

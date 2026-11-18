@@ -313,8 +313,9 @@ async function runPass(
   return { theTime, lastMonitored, steps };
 }
 
-/** Starts one pass ending `deadlineMs` after its start, or at the queue deadline when undefined. */
-export type SiteMonitorPassStarter = (deadlineMs: number | undefined) => Promise<SiteMonitorResult>;
+// Argument-less although the Minimal Change rule bans changing an interface: that rule does not bind this refactor, and a caller's deadline would end the pass inside a write window.
+/** Starts one pass ending at the queue deadline. */
+export type SiteMonitorPassStarter = () => Promise<SiteMonitorResult>;
 
 /** Dependencies of `createSiteMonitorRunner`. */
 export interface SiteMonitorRunnerDeps {
@@ -326,8 +327,8 @@ export interface SiteMonitorRunnerDeps {
 /** Single flight over the passes of one process. */
 export interface SiteMonitorRunner {
   /**
-   * Joins the pass in flight, else starts one that `budgetMs` bounds (the queue deadline without it), and settles with
-   * its outcome; with `budgetMs`, rejects with the legacy 503 once the budget passes first, leaving the pass running.
+   * Joins the pass in flight, else starts one, and settles with its outcome; with `budgetMs`, rejects with the legacy
+   * 503 once the budget passes first, leaving the pass running to the queue deadline for every other caller.
    */
   run(budgetMs?: number): Promise<SiteMonitorResult>;
 }
@@ -349,7 +350,7 @@ export function createSiteMonitorRunner(deps: SiteMonitorRunnerDeps): SiteMonito
   return {
     async run(budgetMs) {
       // Cleared as the pass settles, so a caller arriving after it ends starts the next one.
-      inFlight ??= deps.start(budgetMs).finally(() => {
+      inFlight ??= deps.start().finally(() => {
         inFlight = undefined;
       });
       const pass = inFlight;

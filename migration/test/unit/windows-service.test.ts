@@ -18,13 +18,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { loadConfig } from '../../src/config.js';
 import type { MigrationContext } from '../../src/context.js';
 import { STARTUP_CONTENT_IDS_SQL, STARTUP_COUNT_SQL } from '../../src/legacy/index.js';
-import { GateConflict, OwnerCallError, type DataOwner, type OwnersClient } from '../../src/owners/index.js';
+import { GateConflict, OwnerCallError, type DataOwner, type OwnersClient, type PositionParams } from '../../src/owners/index.js';
 import { loadUnitCatalog } from '../../src/owners/units.js';
 import { readSourceSha } from '../../src/reports/index.js';
 import { ProjectionTimeoutError, type Projector } from '../../src/reverse/index.js';
+import type { ExtractScope } from '../../src/extract/index.js';
+import { fingerprintKey, fingerprintTables, type FingerprintReader, type TableFingerprint, type WindowFingerprints } from '../../src/windows/fingerprints.js';
 import { WindowImportError, type ImportInput, type ImportResult } from '../../src/windows/import.js';
 import { acquireLeases, leasesOf } from '../../src/windows/leases.js';
 import {
+  MAX_HELD_FINGERPRINTS,
   WindowRefusedError,
   WindowStateError,
   createWindowService,
@@ -84,18 +87,26 @@ interface OwnersDouble {
   owners: OwnersClient;
   calls: GateCall[];
   applied: { owner: DataOwner; req: ApplyRequest }[];
+  /** Position asks, each answered with an empty published page through {@link FRONTIER}, or by `failPositions`' answer. */
+  positions: { owner: DataOwner; params: PositionParams | undefined }[];
+  failPositions(answer: () => Promise<never>): void;
   gate(unit: string): { state: 'open' | 'closed'; holderId: string | null; phase: GatePhase };
   closeAs(holderId: string, units: string[]): void;
   fault(owner: DataOwner, op: GateOp, fault: GateFault): void;
   opens(holderId: string): GateCall[];
 }
 
-/** Owners' gate endpoint with the platform's holder compare-and-set semantics and injected faults, and a recording apply. */
+/** Highest outbox `seq` the owners double reports as each published page's frontier. */
+const FRONTIER = '41';
+
+/** Owners' gate endpoint with the platform's holder compare-and-set semantics and injected faults, and a recording apply and position. */
 function ownersDouble(): OwnersDouble {
   const gates = new Map<string, { state: 'open' | 'closed'; holderId: string | null; phase: GatePhase }>();
   const faults = new Map<string, GateFault[]>();
   const calls: GateCall[] = [];
   const applied: { owner: DataOwner; req: ApplyRequest }[] = [];
+  const positions: { owner: DataOwner; params: PositionParams | undefined }[] = [];
+  let positionFailure: (() => Promise<never>) | undefined;
   const gateOf = (unit: string): { state: 'open' | 'closed'; holderId: string | null; phase: GatePhase } =>
     gates.get(unit) ?? { state: 'open', holderId: null, phase: 'quiet' };
   const conflict = (owner: DataOwner, units: string[]): GateConflict => new GateConflict(owner, { error: 'gate-conflict', units });
@@ -139,12 +150,22 @@ function ownersDouble(): OwnersDouble {
       applied.push({ owner, req: structuredClone(req) });
       return Promise.resolve({ batchId: req.batchId, duplicate: false, applied: req.rows.length, skipped: 0, writePositions: new Map() });
     },
+    position(owner: DataOwner, params?: PositionParams) {
+      positions.push({ owner, params: structuredClone(params) });
+      if (positionFailure !== undefined) return positionFailure();
+      const after = params?.publishedAfter ?? '0';
+      return Promise.resolve({ owner, position: '1', outbox: null, inbox: null, published: [], publishedNext: after, publishedComplete: true, publishedFrontier: FRONTIER });
+    },
   } as unknown as OwnersClient;
 
   return {
     owners,
     calls,
     applied,
+    positions,
+    failPositions(answer) {
+      positionFailure = answer;
+    },
     gate: gateOf,
     closeAs(holderId, units) {
       for (const unit of units) gates.set(unit, { state: 'closed', holderId, phase: 'quiet' });
@@ -280,6 +301,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       projector?: Pick<Projector, 'awaitProjection'>;
       restart?: WindowServiceOptions['restart'];
       sleep?: WindowServiceOptions['sleep'];
+      readFingerprints?: WindowServiceOptions['readFingerprints'];
       clock?: Clock;
       db?: TenantDb;
       legacy?: MigrationContext['legacy'];
@@ -304,11 +326,16 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       close: () => Promise.resolve(),
     } as unknown as MigrationContext;
     const projector = opts.projector ?? { awaitProjection: () => Promise.resolve({ positions: new Map(), waitedMs: 0 }) };
-    const { restart, sleep } = opts;
+    const { restart, sleep, readFingerprints } = opts;
     return {
       ctx,
       logger,
-      service: createWindowService(ctx, { projector, ...(restart === undefined ? {} : { restart }), ...(sleep === undefined ? {} : { sleep }) }),
+      service: createWindowService(ctx, {
+        projector,
+        ...(restart === undefined ? {} : { restart }),
+        ...(sleep === undefined ? {} : { sleep }),
+        ...(readFingerprints === undefined ? {} : { readFingerprints }),
+      }),
     };
   }
 
@@ -1005,6 +1032,340 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       );
     });
   });
+
+  describe('row fingerprints', () => {
+    /** One fingerprint read: what it was asked for, the state it handed out, and the gate calls and projection wait before it. */
+    interface FingerprintRead {
+      tables: readonly string[];
+      scope: ExtractScope;
+      state: WindowFingerprints;
+      gateCalls: string[];
+      projected: boolean;
+    }
+
+    /** A projector recording its wait, and a reader handing out a distinct empty state per read, recording each. */
+    function recorded(owners: OwnersDouble) {
+      const reads: FingerprintRead[] = [];
+      let projected = false;
+      const projector: Pick<Projector, 'awaitProjection'> = {
+        awaitProjection() {
+          projected = true;
+          return Promise.resolve({ positions: new Map(), waitedMs: 0 });
+        },
+      };
+      const readFingerprints = vi.fn<FingerprintReader>((_ctx, tables, scope) => {
+        const state: WindowFingerprints = { scope, tables: new Map(), elapsedMs: reads.length };
+        reads.push({ tables, scope, state, gateCalls: gateCallsOf(owners), projected });
+        return Promise.resolve(state);
+      });
+      return { reads, projector, readFingerprints };
+    }
+
+    const gateCallsOf = (owners: OwnersDouble): string[] => owners.calls.map(({ req }) => ('phase' in req ? `${req.op}:${String(req.phase)}` : req.op));
+    const importInputs = (): ImportInput[] => imports.importWindow.mock.calls.map(([, input]) => input as ImportInput);
+
+    it('reads them after the projection wait and before the executing phase, and hands them to every attempt of the scoped import', async () => {
+      const owners = ownersDouble();
+      const { reads, projector, readFingerprints } = recorded(owners);
+      const { service } = instance(owners, gatewayDouble(), { projector, readFingerprints });
+      const { windowId } = await service.open(openRequest([FINANCE, SURVEYS]));
+
+      expect(reads).toEqual([{ tables: fingerprintTables(CATALOG, [FINANCE, SURVEYS]), scope: 'table', state: expect.any(Object), gateCalls: ['close:quiet', 'close:quiet'], projected: true }]);
+      expect(gateCallsOf(owners)).toEqual(['close:quiet', 'close:quiet', 'phase:executing', 'phase:executing']);
+
+      imports.importWindow.mockRejectedValueOnce(new WindowImportError(windowId, 'owner unavailable'));
+      await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'import-pending' });
+      await service.runRecoveryPass();
+
+      expect((await rowOf(windowId)).state).toBe('closed');
+      expect(importInputs()).toEqual([1, 2].map((attempt) => expect.objectContaining({ attempt, units: [FINANCE, SURVEYS], scope: { table: true } })));
+      for (const input of importInputs()) {
+        expect(input.fingerprints).toBe(reads[0]?.state);
+        expect(input.readFingerprints).toBe(readFingerprints);
+      }
+    });
+
+    it('drops the fingerprints of each window it closes, so an open window keeps its own however many close meanwhile', async () => {
+      const owners = ownersDouble();
+      const { reads, readFingerprints } = recorded(owners);
+      const { service } = instance(owners, gatewayDouble(), { readFingerprints });
+      const held = await service.open(openRequest([FINANCE]));
+      // Held without a drop on close, these would push the open window's fingerprints past the bound.
+      for (let index = 0; index < MAX_HELD_FINGERPRINTS; index += 1) {
+        const { windowId } = await service.open(openRequest([SURVEYS]));
+        await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+      }
+      await expect(service.complete(held.windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+
+      expect(importInputs().at(-1)).toMatchObject({ windowId: held.windowId, units: [FINANCE] });
+      expect(importInputs().at(-1)?.fingerprints).toBe(reads[0]?.state);
+    });
+
+    it.each([
+      ['its reader fails', (): Promise<WindowFingerprints> => Promise.reject(new Error('Login failed for user'))],
+      ['the live legacy database is unavailable', undefined],
+    ] as [string, FingerprintReader | undefined][])('opens without fingerprints when %s, importing that window in full', async (_label, readFingerprints) => {
+      const { service, logger } = instance(ownersDouble(), gatewayDouble(), readFingerprints === undefined ? {} : { readFingerprints });
+      const opened = await service.open(openRequest([FINANCE]));
+
+      expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
+      expect(logger.calls).toContainEqual({
+        level: 'warn',
+        args: [{ error: expect.objectContaining({ type: expect.any(String) }) }, `Window ${opened.windowId} took no row fingerprints; its import compares its tables in full`],
+      });
+      await expect(service.complete(opened.windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+      expect(importInputs()).toHaveLength(1);
+      expect(importInputs()[0]).not.toHaveProperty('fingerprints');
+    });
+
+    it('bounds the read by half the open budget left, and opens once it is cut off', async () => {
+      const budgetMs = 1000;
+      let abortedAfterMs = Number.NaN;
+      const startedAt = Date.now();
+      const readFingerprints: FingerprintReader = (_ctx, _tables, _scope, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            abortedAfterMs = Date.now() - startedAt;
+            reject(signal.reason as Error);
+          });
+        });
+      // A frozen clock leaves the whole budget to the read, however long the stages before it take.
+      const { service } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, clock: manualClock(), readFingerprints });
+
+      await expect(service.open(openRequest([FINANCE]))).resolves.toMatchObject({ state: 'open', phase: 'executing' });
+      expect(abortedAfterMs).toBeGreaterThanOrEqual(budgetMs / 2 - 50);
+      expect(abortedAfterMs).toBeLessThan(budgetMs);
+    });
+
+    it.each([
+      ['connecting its SQL pool', (stall: () => Promise<never>) => ({ live: stall })],
+      [
+        'reading the table catalog',
+        (stall: () => Promise<never>) => {
+          const request = () => ({ input: () => request(), cancel: () => undefined, query: stall });
+          // A database of its own keeps the stalled catalog read out of every other test's memoised catalog.
+          const pool = { config: { database: `muradb_stalled_${cfUuid()}` }, request };
+          return { live: () => Promise.resolve(pool) };
+        },
+      ],
+    ] as [string, (stall: () => Promise<never>) => unknown][])(
+      'cuts the production read off at half the open budget while %s stalls, and opens within the budget',
+      async (_label, legacyOf) => {
+        const budgetMs = 1000;
+        const ended = deferred();
+        const stall = async (): Promise<never> => {
+          await delay(budgetMs * 1.5);
+          ended.resolve();
+          throw new Error('SQL connection wait failed');
+        };
+        // A frozen clock leaves the whole budget to the read, so only the read's own bound can end it.
+        const legacy = legacyOf(stall) as MigrationContext['legacy'];
+        const { service, logger } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, clock: manualClock(), legacy });
+        const startedAt = Date.now();
+
+        const opened = await service.open(openRequest([SURVEYS]));
+
+        expect(Date.now() - startedAt).toBeLessThan(budgetMs);
+        expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
+        expect(logger.calls).toContainEqual({
+          level: 'warn',
+          args: [{ error: expect.objectContaining({ type: 'TimeoutError' }) }, `Window ${opened.windowId} took no row fingerprints; its import compares its tables in full`],
+        });
+        // The abandoned read fails once its stall ends; an unhandled rejection would fail this test.
+        await ended.promise;
+        await delay(20);
+        await expect(service.complete(opened.windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+        expect(importInputs()).toHaveLength(1);
+        expect(importInputs()[0]).not.toHaveProperty('fingerprints');
+      },
+    );
+
+
+    it.each([
+      ['the instance that opened it, which hands them to the scoped import only', true],
+      ['another instance, which holds none and imports in full', false],
+    ])('imports a window a restart widened over the content units on %s', async (_label, sameInstance) => {
+      const owners = ownersDouble();
+      const gateway = gatewayDouble();
+      const clock = manualClock();
+      const { reads, readFingerprints } = recorded(owners);
+      const restart: WindowServiceOptions['restart'] = () => Promise.resolve({ exitCode: 0, durationMs: 1 });
+      const a = instance(owners, gateway, { clock, restart, readFingerprints });
+      const b = instance(owners, gateway, { clock, restart, readFingerprints });
+      const { windowId } = await a.service.open(openRequest([FINANCE]));
+      await a.service.stop();
+      clock.advance(CONFIG.windows.gatewayLeaseMs + 1);
+
+      await (sameInstance ? a : b).service.runRecoveryPass();
+
+      expect((await rowOf(windowId)).state).toBe('closed');
+      const [scoped, ...whole] = importInputs();
+      expect(scoped).toMatchObject({ units: [FINANCE], scope: { table: true } });
+      expect(scoped?.fingerprints).toBe(sameInstance ? reads[0]?.state : undefined);
+      expect(whole.length).toBeGreaterThan(0);
+      for (const input of whole) {
+        expect(input.units).not.toContain(FINANCE);
+        expect(input).not.toHaveProperty('fingerprints');
+      }
+    });
+
+    it.each([
+      ['several contents, reading the start-up table\'s fingerprints after closing their gates and before Masa\'s reload request', [CONTENT_ID, OTHER_CONTENT_ID], { table: true }, true],
+      ['one content, which it imports by its key without fingerprints', [CONTENT_ID], { keys: { contentid: CONTENT_ID } }, false],
+    ] as [string, string[], ImportInput['scope'], boolean][])('narrows the guard\'s reload import matching %s', async (_label, ids, scope, fingerprinted) => {
+      const owners = ownersDouble();
+      const { reads, readFingerprints } = recorded(owners);
+      const live = startupLegacy(ids, ids.length);
+      let readsAtReload = -1;
+      reloads.sendReloadRequest.mockImplementation(() => {
+        readsAtReload = reads.length;
+        live.convert();
+        return Promise.resolve({ status: 200 });
+      });
+      imports.importWindow.mockResolvedValueOnce({ ...NO_IMPORT, touchedContent: true });
+      const { service } = instance(owners, gatewayDouble(), { legacy: live.legacy, readFingerprints });
+      const { windowId } = await service.open(openRequest([FINANCE]));
+
+      await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+
+      const [scoped, reload] = importInputs();
+      expect(scoped?.fingerprints).toBe(reads[0]?.state);
+      expect(reload).toMatchObject({ windowId, units: [CONTENT], scope });
+      if (fingerprinted) {
+        expect(reload?.fingerprints).toBe(reads[1]?.state);
+        expect(reads[1]).toMatchObject({ tables: fingerprintTables(CATALOG, [CONTENT]), scope: 'table' });
+        expect(reads[1]?.gateCalls.at(-1)).toBe('close:importing');
+      } else {
+        expect(reload).not.toHaveProperty('fingerprints');
+      }
+      expect(reads).toHaveLength(fingerprinted ? 2 : 1);
+      expect(readsAtReload).toBe(reads.length);
+    });
+
+    it('cuts the guard\'s reload read off at one open budget while its reader outlasts it, importing the start-up table\'s units in full', async () => {
+      const budgetMs = 1000;
+      const live = startupLegacy([CONTENT_ID, OTHER_CONTENT_ID], 2);
+      reloads.sendReloadRequest.mockImplementation(() => {
+        live.convert();
+        return Promise.resolve({ status: 200 });
+      });
+      // The open's read answers at once; the reload's ignores its signal and fails only well past its bound.
+      let readCalls = 0;
+      const readFingerprints = vi.fn<FingerprintReader>((_ctx, _tables, scope) => {
+        readCalls += 1;
+        return readCalls === 1
+          ? Promise.resolve({ scope, tables: new Map(), elapsedMs: 0 })
+          : delay(budgetMs * 4).then(() => Promise.reject(new Error('SQL connection wait failed')));
+      });
+      imports.importWindow.mockResolvedValueOnce({ ...NO_IMPORT, touchedContent: true });
+      const { service, logger } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, legacy: live.legacy, readFingerprints });
+      const { windowId } = await service.open(openRequest([FINANCE]));
+      const startedAt = Date.now();
+
+      await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+
+      expect(Date.now() - startedAt).toBeLessThan(budgetMs * 3);
+      expect(readFingerprints).toHaveBeenCalledTimes(2);
+      const [, reload] = importInputs();
+      expect(reload).toMatchObject({ windowId, units: [CONTENT], scope: { table: true } });
+      expect(reload).not.toHaveProperty('fingerprints');
+      expect(logger.calls).toContainEqual({
+        level: 'warn',
+        args: [{ error: expect.objectContaining({ type: 'TimeoutError' }) }, `Window ${windowId} took no row fingerprints; its import compares its tables in full`],
+      });
+    });
+
+    it.each([
+      ['reuses the after-state the scoped import read under the whole-table scope, reading none of its tables live', 'table', true, true],
+      ['reads the start-up tables the after-state lacks', 'table', false, false],
+      ['reads every start-up table when the scoped import read its after-state under another scope', { siteid: ['tenant-a'] }, true, false],
+    ] as [string, ExtractScope, boolean, boolean][])('%s for the guard\'s reload, and every one for the recovering guard\'s', async (_label, scope, holds, reused) => {
+      const printOf = (table: string): TableFingerprint => ({ table, keyed: false, hashes: new Map() });
+      const startTables = fingerprintTables(CATALOG, [CONTENT]);
+      const reads: (readonly string[])[] = [];
+      const readFingerprints = vi.fn<FingerprintReader>((_ctx, tables, readScope) => {
+        reads.push(tables);
+        return Promise.resolve({ scope: readScope, tables: new Map(tables.map((table) => [fingerprintKey(table), printOf(table)])), elapsedMs: 0 });
+      });
+      const live = startupLegacy([CONTENT_ID, OTHER_CONTENT_ID], 2);
+      // The first reload request fails before legacy re-initialises, leaving the guard frozen for the recovery pass.
+      reloads.sendReloadRequest.mockRejectedValueOnce(new Error('reload connection reset'));
+      reloads.sendReloadRequest.mockImplementation(() => {
+        live.convert();
+        return Promise.resolve({ status: 200 });
+      });
+      const kept = new Map(startTables.map((table) => [fingerprintKey(table), printOf(table)] as const));
+      const after: WindowFingerprints = { scope, tables: new Map([...(holds ? kept : []), ['program_n.finance_record', printOf('Program_N.finance_record')]]), elapsedMs: 5 };
+      imports.importWindow.mockResolvedValue({ ...NO_IMPORT, touchedContent: true, fingerprints: after });
+      const { service } = instance(ownersDouble(), gatewayDouble(), { legacy: live.legacy, readFingerprints });
+      const { windowId } = await service.open(openRequest([FINANCE]));
+
+      await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'import-pending' });
+      await service.runRecoveryPass();
+
+      // The guards' reload imports carry only the start-up table's units; the recovery pass also widens the content units.
+      const [reload, recovery] = importInputs().filter((input) => input.units.length === 1 && input.units[0] === CONTENT);
+      expect(startTables).toContain('tcontent');
+      expect(reads).toEqual([fingerprintTables(CATALOG, [FINANCE]), ...(reused ? [] : [startTables]), startTables]);
+      expect(reload).toMatchObject({ windowId, units: [CONTENT], scope: { table: true } });
+      expect([...(reload?.fingerprints?.tables.keys() ?? [])].sort()).toEqual(startTables.map(fingerprintKey).sort());
+      for (const [key, print] of kept) expect(reload?.fingerprints?.tables.get(key) === print).toBe(reused);
+      expect(recovery).toMatchObject({ windowId, units: [CONTENT], scope: { table: true } });
+      for (const [key, print] of kept) expect(recovery?.fingerprints?.tables.get(key)).not.toBe(print);
+    });
+  });
+
+  describe('published-event cursors', () => {
+    const SITE = 'programs_sites.site';
+    const importInputs = (): ImportInput[] => imports.importWindow.mock.calls.map(([, input]) => input as ImportInput);
+    // Surveys publishes one topic a consumer of the site topic declares: communications' survey schedule.
+    const CAPTURE: PositionParams = { publishedTopics: ['surveys.survey.scheduled.v1'], publishedAfter: '0', publishedLimit: 1 };
+
+    it.each([
+      ['holds the site unit, taking its producers\' cursors at open', [SITE, SURVEYS], [{ owner: 'surveys', params: CAPTURE }], new Map([['surveys', FRONTIER]])],
+      ['lacks the site unit, asking no position', [FINANCE, SURVEYS], [], undefined],
+    ] as [string, string[], unknown[], Map<string, string> | undefined][])('hands every attempt of the scoped import the cursors a window took when it %s', async (_label, units, asked, cursors) => {
+      const owners = ownersDouble();
+      const { service } = instance(owners, gatewayDouble());
+      const { windowId } = await service.open(openRequest(units));
+
+      imports.importWindow.mockRejectedValueOnce(new WindowImportError(windowId, 'owner unavailable'));
+      await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'import-pending' });
+      await service.runRecoveryPass();
+
+      expect((await rowOf(windowId)).state).toBe('closed');
+      expect(owners.positions).toEqual(asked);
+      expect(importInputs()).toEqual([1, 2].map((attempt) => expect.objectContaining({ attempt, units })));
+      for (const input of importInputs()) {
+        if (cursors === undefined) expect(input).not.toHaveProperty('publishedCursors');
+        else expect(input.publishedCursors).toEqual(cursors);
+      }
+    });
+
+    it.each([
+      ['its owner fails the read', () => Promise.reject(new OwnerCallError('surveys', 'GET', `${MIGRATION_PATH_PREFIX}/position`, 503, { error: 'unavailable' })), 'OwnerCallError'],
+      ['its read outlasts half the open budget left', () => new Promise<never>(() => undefined), 'TimeoutError'],
+    ] as [string, () => Promise<never>, string][])('opens without cursors when %s, leaving them to the import', async (_label, answer, type) => {
+      const budgetMs = 1000;
+      const owners = ownersDouble();
+      owners.failPositions(answer);
+      // A frozen clock leaves the whole budget to the read, so only its own bound can end it.
+      const { service, logger } = instance(owners, gatewayDouble(), { windows: { openBudgetMs: budgetMs }, clock: manualClock() });
+      const startedAt = Date.now();
+      const opened = await service.open(openRequest([SITE, SURVEYS]));
+
+      expect(Date.now() - startedAt).toBeLessThan(budgetMs);
+      expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
+      expect(logger.calls).toContainEqual({
+        level: 'warn',
+        args: [{ error: expect.objectContaining({ type }) }, `Window ${opened.windowId} took no published-event cursors; its import takes them when it starts`],
+      });
+      await expect(service.complete(opened.windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
+      expect(importInputs()).toHaveLength(1);
+      expect(importInputs()[0]).not.toHaveProperty('publishedCursors');
+    });
+  });
+
 
   describe('windows.json written from the window rows', () => {
     const REPORT_AT = '2026-03-04T05:06:07.890Z';
