@@ -122,6 +122,7 @@ The gateway routes them by the active version in `gateway/cutover/versions/`, by
 | `POST` | `/v1/reporting/exports` | `reporting.exporter` | Queues a job; answers it `queued` |
 | `GET` | `/v1/reporting/exports/{id}` | `reporting.exporter` | One job |
 | `GET` | `/v1/reporting/exports/{id}/download-url` | `reporting.exporter` | A download URL valid for 15 minutes; 409 `not-ready` until `done` |
+| `GET` | `/v1/reporting/definitions` | `reporting.exporter` | The tenant's export definitions (id and name) by name, for the queue form's picker |
 
 In the cloud the download URL is a v4 signed Cloud Storage URL. Locally it is a path-only HMAC URL under `/opt2/files/reporting-exports/`.
 

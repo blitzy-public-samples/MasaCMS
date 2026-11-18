@@ -18,6 +18,8 @@ export const CSRF_PAIR: Readonly<CsrfTokens> = Object.freeze({
 
 export const LIST_PATH = '/v1/reporting/exports';
 export const LIST_ROUTE = routeKey('GET', 'reporting', LIST_PATH);
+export const DEFINITIONS_PATH = '/v1/reporting/definitions';
+export const DEFINITIONS_ROUTE = routeKey('GET', 'reporting', DEFINITIONS_PATH);
 export const CSRF_PATH = '/v1/csrf/tokens';
 export const CSRF_ROUTE = routeKey('POST', 'identity', CSRF_PATH);
 

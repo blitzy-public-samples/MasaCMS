@@ -1,12 +1,21 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Export-job operations of the fixture and `/v1/` routes: queue a job and its run, read and list jobs, open a done job's output. */
+/** Export-job operations of the fixture and `/v1/` routes: queue a job and its run, read and list jobs, list definitions, open a done job's output. */
 import { LEGACY_ERROR_MAP, LegacyApiError, LegacyServiceUnavailableError, cfDateFormat, cfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { SIGNED_URL_TTL_S } from '@opt2/platform/storage';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { ExportRunPayload, ReportingDeps } from './deps.js';
 import { discardOutputs, transitionJob, type JobState } from './job-state.js';
-import { findDefinition, findJob, listJobs, listUnfinishedJobs, type JobPage, type JobPaging } from '../repo/queries.js';
+import {
+  findDefinition,
+  findJob,
+  listDefinitions,
+  listJobs,
+  listUnfinishedJobs,
+  type ExportDefinitionSummaryRow,
+  type JobPage,
+  type JobPaging,
+} from '../repo/queries.js';
 import type { NewExportJob, ReportingRepository } from '../repo/repository.js';
 import { EXPORT_BUCKET, EXPORT_FORMATS, type ExportDefinitionRow, type ExportFormat, type ExportJobRow } from '../repo/tables.js';
 
@@ -197,6 +206,11 @@ export function getExportJob(deps: Pick<ReportingDeps, 'db'>, ref: ExportJobRef)
 /** One page of the tenant's jobs by `created`, then id, with the count of all of them. */
 export function listExportJobs(deps: Pick<ReportingDeps, 'db'>, input: { tenantId: string; paging: JobPaging }): Promise<JobPage> {
   return withTenant(deps.db, input.tenantId, (tx) => listJobs(tx, input.paging));
+}
+
+/** The id and name of every export definition of the tenant, by name, then id. */
+export function listExportDefinitions(deps: Pick<ReportingDeps, 'db'>, input: { tenantId: string }): Promise<ExportDefinitionSummaryRow[]> {
+  return withTenant(deps.db, input.tenantId, (tx) => listDefinitions(tx));
 }
 
 /** Where the tenant's done job `ref.jobId` stores its output; throws `LegacyApiError('server_error')` for a done job storing none. */

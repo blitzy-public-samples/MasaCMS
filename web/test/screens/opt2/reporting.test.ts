@@ -10,7 +10,7 @@ import { reportingActions, reportingScreens } from '@/screens/opt2/reporting';
 import { exportsBody, exportsScreen, type ExportsData, type QueuePosted } from '@/screens/opt2/reporting/exports';
 import { alertBox, noAccessUrl, opt2View } from '@/screens/opt2/shared';
 import { loadShellData, renderAdminDocument, serializeAdminDocument, type ShellView } from '@/shell/document';
-import { REPORTING_IDS, createExportInvalid, exportJobs } from '../../fixtures/opt2/reporting';
+import { REPORTING_IDS, createExportInvalid, exportDefinitionSummaries, exportJobs } from '../../fixtures/opt2/reporting';
 import { makeAdminRequest, opt2RoleRequest } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
@@ -26,6 +26,7 @@ import { makeScreenContext, renderScreenPage } from '../../helpers/screen-contex
 const LIST_PATH = '/v1/reporting/exports';
 const LIST_ROUTE = routeKey('GET', 'reporting', LIST_PATH);
 const QUEUE_ROUTE = routeKey('POST', 'reporting', LIST_PATH);
+const DEFINITIONS_ROUTE = routeKey('GET', 'reporting', '/v1/reporting/definitions');
 const downloadRoute = (id: string): string => routeKey('GET', 'reporting', `${LIST_PATH}/${id}/download-url`);
 
 /** The reporting post action the admin-actions route serves for `slug`. */
@@ -38,7 +39,7 @@ function registeredAction(slug: string): Opt2ActionDefinition {
 const queueAction = registeredAction('queue');
 const downloadAction = registeredAction('download');
 
-const LISTED: ExportsData = { jobs: exportJobs, total: exportJobs.length, page: 1 };
+const LISTED: ExportsData = { jobs: exportJobs, total: exportJobs.length, page: 1, definitions: exportDefinitionSummaries };
 
 const POSTED: QueuePosted = {
   definitionId: REPORTING_IDS.definitionTimesheetStatus,
@@ -87,10 +88,14 @@ function exporter(item: string, rc: Readonly<Record<string, string>> = {}): Admi
   return opt2RoleRequest(Roles.reportingExporter, { circuit: 'reporting', item, rc });
 }
 
-/** Screen context of `req` over a gateway answering the shell, every job on one page, then `routes`. */
+/** Screen context of `req` over a gateway answering the shell, every job on one page, every definition, then `routes`. */
 function ctxFor(req: AdminRequest, routes: FakeRouteTable = {}): ScreenContext & { gateway: FakeGatewayClient } {
   const listed: FakeReply = { status: 200, body: { data: exportJobs, total: exportJobs.length } };
-  return makeScreenContext({ req, gateway: fakeGatewayClient({ [LIST_ROUTE]: listed, ...routes }) });
+  const definitions: FakeReply = { status: 200, body: { data: exportDefinitionSummaries } };
+  return makeScreenContext({
+    req,
+    gateway: fakeGatewayClient({ [LIST_ROUTE]: listed, [DEFINITIONS_ROUTE]: definitions, ...routes }),
+  });
 }
 
 /** reporting's legacy error envelope at `status` with `message`. */

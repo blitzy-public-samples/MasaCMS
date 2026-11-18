@@ -1,5 +1,5 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** `/v1/reporting` routes of the OPT-2 reporting screen: the export job list, queueing a job, one job and a done job's download URL. */
+/** `/v1/reporting` routes of the OPT-2 reporting screen: the export job list, queueing a job, one job, a done job's download URL and the definitions. */
 import {
   AuthDenial,
   Roles,
@@ -18,7 +18,15 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import type { ReportingDeps } from '../domain/deps.js';
-import { ReportingDomainError, createExportJob, getExportJob, listExportJobs, openExportOutput, signedExportUrl } from '../domain/jobs.js';
+import {
+  ReportingDomainError,
+  createExportJob,
+  getExportJob,
+  listExportDefinitions,
+  listExportJobs,
+  openExportOutput,
+  signedExportUrl,
+} from '../domain/jobs.js';
 import type { components, operations } from '../generated/openapi.js';
 import { createExportFields, fixtureDenialOverride, requireExportJob, requireReadyOutput } from '../legacy/checks.js';
 import { FixtureApiError, fixtureMethod, fixtureOutcomeReason, fixtureParams, toFixtureError } from '../legacy/envelope.js';
@@ -34,6 +42,7 @@ type ExportListBody = OkBody<operations['listExports']>;
 type CreatedExportBody = OkBody<operations['createExport']>;
 type ExportJobBody = OkBody<operations['getExport']>;
 type DownloadUrlBody = OkBody<operations['getExportDownloadUrl']>;
+type DefinitionListBody = OkBody<operations['listDefinitions']>;
 type ExportPathParams = operations['getExport']['parameters']['path'];
 
 /** `listExports` query; `pageIndex` and `itemsPerPage`, the other `/v1` lists' paging names, alias `page` and `pageSize`. */
@@ -52,9 +61,11 @@ interface VerifiedCaller {
 const EXPORTS_PATH = '/v1/reporting/exports';
 const EXPORT_PATH = `${EXPORTS_PATH}/:id`;
 const DOWNLOAD_URL_PATH = `${EXPORT_PATH}/download-url`;
+const DEFINITIONS_PATH = '/v1/reporting/definitions';
 
 const EXPORTS_METHOD = fixtureMethod('exports');
 const DOWNLOAD_METHOD = fixtureMethod('exports', 'download');
+const DEFINITIONS_METHOD = fixtureMethod('definitions');
 
 /** The auth declaration of every `/v1/reporting` route, its denials rendered by `v1DenialRenderer`. */
 function exporterAuth(deps: ReportingDeps): Opt2RouteConfig {
@@ -111,8 +122,9 @@ function callerOf(request: FastifyRequest): VerifiedCaller {
   return { user };
 }
 
-/** Envelope `method` the fixture reports for the same operation. */
+/** Envelope `method` the fixture reports for the same operation; `reporting.definitions`, as api.cfm would name it, for the definitions read. */
 function envelopeMethod(request: FastifyRequest): string {
+  if (request.routeOptions.url === DEFINITIONS_PATH) return DEFINITIONS_METHOD;
   return request.routeOptions.url === DOWNLOAD_URL_PATH ? DOWNLOAD_METHOD : EXPORTS_METHOD;
 }
 
@@ -167,6 +179,11 @@ export const reportingV1Plugin: FastifyPluginAsync<ReportingDeps> = async (insta
   instance.get<{ Params: ExportPathParams }>(DOWNLOAD_URL_PATH, { ...EXPORT_OPTIONS, config }, async (request): Promise<DownloadUrlBody> => {
     const output = await openExportOutput(deps, { tenantId: callerOf(request).user.tid, jobId: request.params.id });
     return { data: await signedExportUrl(deps, requireReadyOutput(output)) };
+  });
+
+  instance.get(DEFINITIONS_PATH, { config }, async (request): Promise<DefinitionListBody> => {
+    const rows = await listExportDefinitions(deps, { tenantId: callerOf(request).user.tid });
+    return { data: rows.map((row) => ({ definition_id: row.definition_id, name: row.name })) };
   });
 };
 

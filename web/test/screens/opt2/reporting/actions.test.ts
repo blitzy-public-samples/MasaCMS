@@ -16,6 +16,7 @@ import {
   REPORTING_IDS,
   createExportAccepted,
   createExportInvalid,
+  exportDefinitionSummaries,
   exportDownloadUrls,
   exportJobs,
 } from '../../../fixtures/opt2/reporting';
@@ -23,7 +24,7 @@ import { editorRequest, opt2RoleRequest } from '../../../helpers/admin-request';
 import { fragmentModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../../helpers/fake-gateway';
-import { CSRF_PAIR, LIST_PATH, LIST_ROUTE, contextFor, jobValues, shellAndCsrfRoutes } from './support';
+import { CSRF_PAIR, DEFINITIONS_ROUTE, LIST_PATH, LIST_ROUTE, contextFor, jobValues, shellAndCsrfRoutes } from './support';
 
 const QUEUE_ROUTE = routeKey('POST', 'reporting', LIST_PATH);
 const downloadPath = (id: string): `/${string}` => `${LIST_PATH}/${id}/download-url`;
@@ -47,11 +48,12 @@ function exporterPost(action: string, rc: Readonly<Record<string, string>>): Adm
   return opt2RoleRequest(Roles.reportingExporter, { circuit: 'reporting', item: action, rc });
 }
 
-/** A gateway serving the list, CSRF and shell routes plus `routes`. */
+/** A gateway serving the list, definitions, CSRF and shell routes plus `routes`. */
 function gatewayWith(routes: Readonly<Record<string, FakeReply>>): FakeGatewayClient {
   return fakeGatewayClient({
     ...shellAndCsrfRoutes('tenant-a'),
     [LIST_ROUTE]: { status: 200, body: { data: exportJobs, total: exportJobs.length } },
+    [DEFINITIONS_ROUTE]: { status: 200, body: { data: exportDefinitionSummaries } },
     ...routes,
   });
 }
@@ -153,20 +155,24 @@ describe('reporting actions', () => {
       expect(jobValues(body)).toHaveLength(exportJobs.length);
       expect(gateway.calls.map(({ service, method, path }) => `${service} ${method} ${path}`).sort()).toEqual([
         'identity POST /v1/csrf/tokens',
+        'reporting GET /v1/reporting/definitions',
         'reporting GET /v1/reporting/exports',
         'reporting POST /v1/reporting/exports',
       ]);
     });
 
-    it('keeps a posted format selected on re-render', async () => {
+    it.each([
+      { field: 'definitionId', index: 0, value: REPORTING_IDS.definitionFinanceRecords },
+      { field: 'format', index: 1, value: 'pdf' },
+    ])('keeps a posted $field selected on re-render', async ({ field, index, value }) => {
       const gateway = gatewayWith({ [QUEUE_ROUTE]: envelope(404, 'Not Found') });
 
-      const body = renderedBody(await submitQueue(contextFor(exporterPost('queue', { ...POSTED, format: 'pdf' }), gateway)));
+      const body = renderedBody(await submitQueue(contextFor(exporterPost('queue', { ...POSTED, [field]: value }), gateway)));
 
-      expect(fragmentModel(body).controls[1]).toMatchObject({ name: 'format', value: 'pdf', selected: ['pdf'] });
+      expect(fragmentModel(body).controls[index]).toMatchObject({ name: field, value, selected: [value] });
     });
 
-    it('encodes hostile posted values in the re-rendered form', async () => {
+    it('selects no definition for a posted id no option holds, never emitting it as markup', async () => {
       const gateway = gatewayWith({ [QUEUE_ROUTE]: createExportInvalid });
       const hostile = '"><script>alert(1)</script>';
 
@@ -174,7 +180,11 @@ describe('reporting actions', () => {
       const $ = cheerio.load(body, null, false);
 
       expect($('script').length).toBe(0);
-      expect($('#definitionId').attr('value')).toBe(hostile);
+      expect($('#definitionId option').toArray().map((el) => $(el).attr('value'))).toEqual(
+        exportDefinitionSummaries.map((definition) => definition.definition_id),
+      );
+      expect($('#definitionId option[selected]').length).toBe(0);
+      expect(body).not.toContain('alert(1)');
     });
 
     it.each([

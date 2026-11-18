@@ -8,6 +8,7 @@ type S = components['schemas'];
 type ListExportsBody = operations['listExports']['responses'][200]['content']['application/json'];
 type DownloadUrlBody = operations['getExportDownloadUrl']['responses'][200]['content']['application/json'];
 type CreateExportBody = operations['createExport']['responses'][200]['content']['application/json'];
+type ListDefinitionsBody = operations['listDefinitions']['responses'][200]['content']['application/json'];
 type CreateExportBadRequestBody =
   operations['createExport']['responses'][400]['content']['application/json;charset=utf-8'];
 
@@ -26,6 +27,7 @@ export const REPORTING_IDS = Object.freeze({
 } as const);
 
 const EXPORTS_PATH = '/opt2/svc/reporting/v1/reporting/exports';
+const DEFINITIONS_PATH = '/opt2/svc/reporting/v1/reporting/definitions';
 const OBJECT_PREFIX = `/opt2/files/reporting-exports/${TENANT_A.tenantId}`;
 const URL_EXPIRES = 1782821700;
 const URL_EXPIRES_AT = '2026-06-30T12:15:00.000Z';
@@ -53,6 +55,11 @@ export const exportDefinitions: S['ExportDefinition'][] = [
     columns: ['ledger_id', 'account', 'amount'],
   },
 ];
+
+/** {@link exportDefinitions} as reporting `listDefinitions` answers them: id and name, by name. */
+export const exportDefinitionSummaries: S['ExportDefinitionSummary'][] = [...exportDefinitions]
+  .sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0))
+  .map(({ definition_id, name }) => ({ definition_id, name }));
 
 export const exportJobs: S['ExportJob'][] = [
   {
@@ -213,4 +220,8 @@ export const reportingAnswers = {
     body: { data: donePdfUrl } satisfies DownloadUrlBody,
   },
   [`POST ${EXPORTS_PATH}`]: { status: 200, body: createExportAccepted },
+  [`GET ${DEFINITIONS_PATH}`]: {
+    status: 200,
+    body: { data: exportDefinitionSummaries } satisfies ListDefinitionsBody,
+  },
 } satisfies FakeRouteTable;

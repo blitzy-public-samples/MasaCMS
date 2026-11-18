@@ -19,7 +19,7 @@ import {
 } from '@/screens/opt2/reporting/exports';
 import { noAccessUrl, OPT2_LABEL_KEYS, type Opt2LabelName } from '@/screens/opt2/shared';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
-import { REPORTING_IDS, exportJobs } from '../../../fixtures/opt2/reporting';
+import { REPORTING_IDS, exportDefinitionSummaries, exportJobs } from '../../../fixtures/opt2/reporting';
 import {
   adminS2Request,
   anonymousRequest,
@@ -29,7 +29,17 @@ import {
 import { fragmentModel, domModel, normaliseIds, type DomControl, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { fakeGatewayClient, type FakeGatewayClient } from '../../../helpers/fake-gateway';
-import { CSRF_PAIR, CSRF_PATH, LIST_PATH, LIST_ROUTE, contextFor, jobValues, shellAndCsrfRoutes } from './support';
+import {
+  CSRF_PAIR,
+  CSRF_PATH,
+  DEFINITIONS_PATH,
+  DEFINITIONS_ROUTE,
+  LIST_PATH,
+  LIST_ROUTE,
+  contextFor,
+  jobValues,
+  shellAndCsrfRoutes,
+} from './support';
 
 /** Display text of each job state. */
 const STATE_TEXT: Readonly<Record<ExportJob['state'], string>> = {
@@ -76,15 +86,30 @@ const FORMAT_CONTROL = control({
   ],
 });
 
+/** The definition picker offering every listed definition by name, none selected. */
+const DEFINITION_CONTROL = control({
+  tag: 'select',
+  name: 'definitionId',
+  type: 'select-one',
+  options: exportDefinitionSummaries.map((definition) => ({
+    value: definition.definition_id,
+    label: definition.name,
+    selected: false,
+  })),
+});
+
+/** Every job on its only page, with every definition. */
+const LISTED: ExportsData = { jobs: exportJobs, total: exportJobs.length, page: 1, definitions: exportDefinitionSummaries };
+
 /** The DOM model of the list of `jobs` on its only page, with an empty queue form. */
 function listModel(jobs: readonly ExportJob[]): DomModel {
   const done = jobs.filter((job) => job.state === 'done');
   return {
     title: '',
     headings: ['Export Jobs'],
-    labels: ['Definition ID', 'Format', 'As Of', ...jobs.flatMap((job) => valuesOf(job).map(([label]) => label))],
+    labels: ['Definition', 'Format', 'As Of', ...jobs.flatMap((job) => valuesOf(job).map(([label]) => label))],
     controls: [
-      control({ name: 'definitionId' }),
+      DEFINITION_CONTROL,
       FORMAT_CONTROL,
       control({ name: 'asOf', type: 'date' }),
       control({ name: 'csrf_token', type: 'hidden', value: CSRF_PAIR.token }),
@@ -106,9 +131,13 @@ function exporterRequest(rc: Readonly<Record<string, string>> = {}): AdminReques
   return opt2RoleRequest(Roles.reportingExporter, { circuit: 'reporting', item: 'exports', rc });
 }
 
-/** A gateway answering the list with `body` and issuing CSRF pairs. */
+/** A gateway answering the list with `body` and the definitions, and issuing CSRF pairs. */
 function listGateway(body: unknown = { data: exportJobs, total: exportJobs.length }): FakeGatewayClient {
-  return fakeGatewayClient({ ...shellAndCsrfRoutes('tenant-a'), [LIST_ROUTE]: { status: 200, body } });
+  return fakeGatewayClient({
+    ...shellAndCsrfRoutes('tenant-a'),
+    [LIST_ROUTE]: { status: 200, body },
+    [DEFINITIONS_ROUTE]: { status: 200, body: { data: exportDefinitionSummaries } },
+  });
 }
 
 /** `exportsBody` over loaded data, as markup. */
@@ -165,16 +194,17 @@ describe('reporting/exports', () => {
   });
 
   describe('loadExports', () => {
-    it("reads the token tenant's first page and issues the queue form's CSRF pair", async () => {
+    it("reads the token tenant's first page and definitions and issues the queue form's CSRF pair", async () => {
       const gateway = listGateway();
 
       const data = await loadExports(contextFor(exporterRequest(), gateway));
 
-      expect(data).toEqual({ jobs: exportJobs, total: exportJobs.length, page: 1 });
-      expect(gateway.calls).toHaveLength(2);
+      expect(data).toEqual(LISTED);
+      expect(gateway.calls).toHaveLength(3);
       expect(gateway.calls).toEqual(
         expect.arrayContaining([
           { service: 'reporting', method: 'GET', path: LIST_PATH, query: { page: '1', pageSize: String(PAGE_SIZE) } },
+          { service: 'reporting', method: 'GET', path: DEFINITIONS_PATH },
           { service: 'identity', method: 'POST', path: CSRF_PATH, json: { contexts: [''] } },
         ]),
       );
@@ -200,18 +230,24 @@ describe('reporting/exports', () => {
       expect(list?.query).toEqual({ page: String(expected), pageSize: String(PAGE_SIZE) });
     });
 
-    it.each([
-      { status: 401, type: GatewayDenialError },
-      { status: 403, type: GatewayDenialError },
-      { status: 400, type: Error },
-      { status: 500, type: Error },
-    ])('rejects with $type.name when reporting answers $status', async ({ status, type }) => {
-      const gateway = fakeGatewayClient({ ...shellAndCsrfRoutes('tenant-a'), [LIST_ROUTE]: { status, body: {} } });
+    it.each(
+      [
+        { route: LIST_ROUTE, operation: 'listExports' },
+        { route: DEFINITIONS_ROUTE, operation: 'listDefinitions' },
+      ].flatMap((read) => [
+        { ...read, status: 401, type: GatewayDenialError },
+        { ...read, status: 403, type: GatewayDenialError },
+        { ...read, status: 400, type: Error },
+        { ...read, status: 500, type: Error },
+      ]),
+    )('rejects with $type.name when reporting answers $operation with $status', async ({ route, operation, status, type }) => {
+      const gateway = listGateway();
+      gateway.setRoute(route, { status, body: {} });
 
       const failure = await loadExports(contextFor(exporterRequest(), gateway)).catch((e: unknown) => e);
 
       expect(failure).toBeInstanceOf(type);
-      expect(failure).toMatchObject({ message: `listExports answered HTTP ${status}` });
+      expect(failure).toMatchObject({ message: `${operation} answered HTTP ${status}` });
     });
 
     it.each([
@@ -219,6 +255,10 @@ describe('reporting/exports', () => {
       {
         outage: 'a 503 answer',
         arrange: (gateway: FakeGatewayClient) => gateway.setRoute(LIST_ROUTE, { status: 503, body: {} }),
+      },
+      {
+        outage: 'a 503 answer to the definitions read',
+        arrange: (gateway: FakeGatewayClient) => gateway.setRoute(DEFINITIONS_ROUTE, { status: 503, body: {} }),
       },
     ])('propagates GatewayUnavailableError on $outage', async ({ arrange }) => {
       const gateway = listGateway();
@@ -230,7 +270,7 @@ describe('reporting/exports', () => {
 
   describe('exportsBody', () => {
     it('renders every job with its state and a Download button for each done job', async () => {
-      const body = await renderedBody({ jobs: exportJobs, total: exportJobs.length, page: 1 });
+      const body = await renderedBody(LISTED);
 
       expect(fragmentModel(body)).toEqual(listModel(exportJobs));
       expect(jobValues(body)).toEqual(exportJobs.map(valuesOf));
@@ -258,7 +298,7 @@ describe('reporting/exports', () => {
     });
 
     it('posts the queue form to the queue action with the CSRF pair, in legacy admin classes only', async () => {
-      const body = await renderedBody({ jobs: exportJobs, total: exportJobs.length, page: 1 });
+      const body = await renderedBody(LISTED);
       const $ = cheerio.load(body, null, false);
 
       expect($('form[name="form1"]').attr('action')).toBe('/opt2/admin-actions/reporting/queue?siteid=tenant-a');
@@ -273,7 +313,7 @@ describe('reporting/exports', () => {
     });
 
     it('shows the empty-list message when the tenant has no jobs', async () => {
-      const body = await renderedBody({ jobs: [], total: 0, page: 1 });
+      const body = await renderedBody({ ...LISTED, jobs: [], total: 0 });
 
       expect(fragmentModel(body)).toEqual(listModel([]));
       expect(body).toContain('<div class="help-block-empty">There are no export jobs.</div>');
@@ -293,7 +333,7 @@ describe('reporting/exports', () => {
       { page: 2, total: 100, links: [{ href: '/opt2/admin/reporting/exports?siteid=tenant-a&page=1', text: 'Previous' }] },
       { page: 1, total: 50, links: [] },
     ])('links page $page of $total jobs to its neighbours', async ({ page, total, links }) => {
-      const body = await renderedBody({ jobs: exportJobs, total, page });
+      const body = await renderedBody({ ...LISTED, total, page });
 
       expect(fragmentModel(body).links).toEqual(links);
       expect(body.includes('<ul class="pagination">')).toBe(links.length > 0);
@@ -308,7 +348,7 @@ describe('reporting/exports', () => {
       });
       const ctx = contextFor(req, listGateway());
       await ctx.csrf.prefetch(['']);
-      const $ = cheerio.load(toString(exportsBody(ctx, { jobs: exportJobs, total: 120, page: 2 })), null, false);
+      const $ = cheerio.load(toString(exportsBody(ctx, { ...LISTED, total: 120, page: 2 })), null, false);
 
       const targets = [
         ...$('form').toArray().map((el) => $(el).attr('action')),
@@ -321,7 +361,7 @@ describe('reporting/exports', () => {
     it('encodes service values instead of emitting them as markup', async () => {
       const hostile = { ...exportJobs[0], error: '<img src=x onerror=alert(1)>' } as unknown as ExportJob;
 
-      const body = await renderedBody({ jobs: [hostile], total: 1, page: 1 });
+      const body = await renderedBody({ ...LISTED, jobs: [hostile], total: 1 });
       const $ = cheerio.load(body, null, false);
 
       expect($('img').length).toBe(0);
@@ -345,7 +385,7 @@ describe('reporting/exports', () => {
       const ctx = { ...contextFor(exporterRequest(), listGateway()), rb: fr };
       await ctx.csrf.prefetch(['']);
 
-      const body = toString(exportsBody(ctx, { jobs: exportJobs, total: 120, page: 1 }));
+      const body = toString(exportsBody(ctx, { ...LISTED, total: 120 }));
 
       expect(read(body)).toBe(fr.rbKey(OPT2_LABEL_KEYS[name]));
     });

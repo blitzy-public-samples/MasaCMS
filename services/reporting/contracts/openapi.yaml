@@ -459,6 +459,45 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/reporting/definitions:
+    get:
+      operationId: listDefinitions
+      summary: Lists the tenant's export definitions by name, for the export queue form's definition picker.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: Every definition of the tenant, ordered by name, then id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ExportDefinitionSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /opt2/files/reporting-exports/{tenantId}/{objectName}:
     parameters:
       - name: tenantId
@@ -2032,6 +2071,19 @@ components:
           description: Source column names in output order, stored as JSON text.
           items:
             type: string
+    ExportDefinitionSummary:
+      type: object
+      description: 'An export definition as the queue form offers it: its id and name.'
+      required:
+        - definition_id
+        - name
+      additionalProperties: false
+      properties:
+        definition_id:
+          $ref: '#/components/schemas/CfUuid'
+        name:
+          type: string
+          maxLength: 100
     CreateExportRequest:
       type: object
       description: An export of one definition; parameter names match case-insensitively, as a CFML scope reads them.

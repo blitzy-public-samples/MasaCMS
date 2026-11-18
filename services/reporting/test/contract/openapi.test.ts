@@ -55,6 +55,7 @@ const SITE_A = TENANT_A.siteId;
 const ON_SITE_A = `siteid=${SITE_A}`;
 const FIXTURE_EXPORTS = `${FIXTURE_PREFIX}/exports`;
 const V1_EXPORTS = '/v1/reporting/exports';
+const V1_DEFINITIONS = '/v1/reporting/definitions';
 const RUN_QUEUE = QUEUES['reporting-export-run'];
 const SITE_CHANGED_PATH = pushPath(SITE_CHANGED_SUBSCRIPTION);
 const JOB_UNIT: ReportingUnit = 'reporting.export_job';
@@ -273,6 +274,7 @@ describe('route registrations against the contract', () => {
     keyOf('POST', V1_EXPORTS),
     keyOf('GET', `${V1_EXPORTS}/{id}`),
     keyOf('GET', `${V1_EXPORTS}/{id}/download-url`),
+    keyOf('GET', V1_DEFINITIONS),
     keyOf('GET', `/opt2/files/${EXPORT_BUCKET}/{tenantId}/{objectName}`),
     keyOf('GET', '/internal/v1/exports/{exportId}/source-scope'),
     keyOf('POST', RUN_QUEUE.targetPath),
@@ -356,6 +358,7 @@ const cases: Record<string, () => Promise<CaseResult>> = {
     }),
   getExport: () => call('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}?${ON_SITE_A}`),
   getExportDownloadUrl: () => call('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}/download-url?${ON_SITE_A}`),
+  listDefinitions: () => call('reporting.exporter', 'GET', `${V1_DEFINITIONS}?${ON_SITE_A}`),
   downloadExportObject: async () => {
     const issued = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}/download-url?${ON_SITE_A}`);
     const result = await call({}, 'GET', issued.json<{ data: { url: string } }>().data.url);
@@ -503,6 +506,7 @@ describe('fixture routes', () => {
       ['POST', V1_EXPORTS, csrf()],
       ['GET', `${V1_EXPORTS}/${done.job_id}`, {}],
       ['GET', `${V1_EXPORTS}/${done.job_id}/download-url`, {}],
+      ['GET', V1_DEFINITIONS, {}],
     ];
     const payload = { definitionId: definition.definition_id, format: 'csv' };
     const answered: Array<[string, number]> = [];
@@ -526,8 +530,19 @@ describe('/v1 routes', () => {
     ['another site', 'reporting.exporter', `${V1_EXPORTS}?siteid=tenant-b`, 403],
     ['anonymous', 'anonymous', `${V1_EXPORTS}?${ON_SITE_A}`, 401],
     ['a member', 'member', `${V1_EXPORTS}?${ON_SITE_A}`, 403],
+    ['another site on the definitions read', 'reporting.exporter', `${V1_DEFINITIONS}?siteid=tenant-b`, 403],
+    ['anonymous on the definitions read', 'anonymous', `${V1_DEFINITIONS}?${ON_SITE_A}`, 401],
+    ['a member on the definitions read', 'member', `${V1_DEFINITIONS}?${ON_SITE_A}`, 403],
   ])('answers a list with %s in the legacy error envelope', async (_label, name, url, status) => {
     expect((await send(name, 'GET', url)).statusCode).toBe(status);
+  });
+
+  it("answers the tenant's definitions by name as id and name only", async () => {
+    const res = await send('reporting.exporter', 'GET', `${V1_DEFINITIONS}?${ON_SITE_A}`);
+    expect({ status: res.statusCode, body: res.json<unknown>() }).toEqual({
+      status: 200,
+      body: { data: [financeDefinition, definition].map(({ definition_id, name }) => ({ definition_id, name })) },
+    });
   });
 
   it('answers a create with the queued job and a write position', async () => {

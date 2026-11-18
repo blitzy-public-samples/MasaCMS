@@ -43,10 +43,14 @@ export interface JobObjectPage {
 /** An `export_job` row naming a stored object; the repository stores one only after its SHA-256 matched `output_sha256`. */
 type StoredOutputRow = Pick<ExportJobRow, 'job_id' | 'content_type'> & { object_key: string; output_sha256: string };
 
+/** The id and name of an `export_definition` row, without its JSON `columns` text. */
+export type ExportDefinitionSummaryRow = Pick<ExportDefinitionRow, 'definition_id' | 'name'>;
+
 interface Statements {
   readonly job: string;
   readonly jobForUpdate: string;
   readonly definition: string;
+  readonly definitions: string;
   readonly countJobs: string;
   readonly jobPage: string;
   readonly unfinishedJobs: string;
@@ -69,6 +73,7 @@ function statementsFor(schema: string): Statements {
     job: `${job} WHERE "job_id" = $1`,
     jobForUpdate: `${job} WHERE "job_id" = $1 FOR UPDATE`,
     definition: `SELECT ${columnList(EXPORT_DEFINITION)} FROM ${qualified(schema, EXPORT_DEFINITION.table)} WHERE "definition_id" = $1`,
+    definitions: `SELECT "definition_id", "name" FROM ${qualified(schema, EXPORT_DEFINITION.table)} ORDER BY "name", "definition_id" COLLATE "C"`,
     countJobs: `SELECT count(*)::integer AS "total" FROM ${jobTable}`,
     jobPage: `${job} ORDER BY "created", "job_id" COLLATE "C" LIMIT $1 OFFSET $2`,
     // SQL Server compares the fixture's siteID case-insensitively.
@@ -100,6 +105,14 @@ export async function findDefinition(tx: TenantTx, definitionId: string): Promis
   await awaitReadable(tx, [EXPORT_DEFINITION.unit]);
   const { rows } = await tx.query<ExportDefinitionRow>(statements.definition, [definitionId]);
   return rows[0] ?? null;
+}
+
+/** The id and name of every export definition of the tenant, by name, then id. */
+export async function listDefinitions(tx: TenantTx): Promise<ExportDefinitionSummaryRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [EXPORT_DEFINITION.unit]);
+  const { rows } = await tx.query<ExportDefinitionSummaryRow>(statements.definitions);
+  return rows;
 }
 
 /** One page of the tenant's jobs by `created`, then id, and their total, read as envelope.cfc `queryPage()` reads it. */

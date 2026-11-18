@@ -1,5 +1,5 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** `/v1/reporting/exports`, the local export file route and the export source scope read through the full reporting app, registered over either test database. */
+/** `/v1/reporting/exports`, `/v1/reporting/definitions`, the local export file route and the export source scope read through the full reporting app, registered over either test database. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER, Roles, serviceRole } from '@opt2/platform/auth';
 import { cfUuid, legacyErrorResponse } from '@opt2/platform/legacy-compat';
@@ -10,6 +10,7 @@ import {
   TENANT_A,
   TENANT_B,
   TENANT_LIST,
+  TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   mintServiceToken,
   mintUserToken,
@@ -18,7 +19,7 @@ import {
 } from '@opt2/platform/testing';
 import type { components } from '../../src/generated/openapi.js';
 import { FIXTURE_ERROR_MAP, type FixtureErrorType } from '../../src/legacy/envelope.js';
-import { EXPORT_BUCKET, exportObjectKey, type ExportJobRow, type ExportState } from '../../src/repo/tables.js';
+import { EXPORT_BUCKET, exportObjectKey, type ExportDefinitionRow, type ExportJobRow, type ExportState } from '../../src/repo/tables.js';
 import { toV1ExportJob } from '../../src/routes/v1.js';
 import { exportRunTaskName } from '../../src/tasks/enqueue.js';
 import {
@@ -38,6 +39,7 @@ import { definitionFor, jobFor, seedDefinitions } from './fixtures.js';
 
 type ExportJob = components['schemas']['ExportJob'];
 type SignedUrl = components['schemas']['SignedUrl'];
+type ExportDefinitionSummary = components['schemas']['ExportDefinitionSummary'];
 
 /** What the contract assertions read of an injected response. */
 interface InjectedResponse {
@@ -47,6 +49,7 @@ interface InjectedResponse {
 }
 
 const EXPORTS = '/v1/reporting/exports';
+const DEFINITIONS = '/v1/reporting/definitions';
 const EXPORTER = Roles.reportingExporter;
 const BYTES = Buffer.from('timesheet_id,status\r\n1,SUBMITTED\r\n');
 const NOW_MS = TEST_CLOCK.now().getTime();
@@ -135,7 +138,12 @@ interface IssuedDownload {
   url: string;
 }
 
-/** Registers the three `/v1` route describes, each over its own `mode` test app, through `suite`. */
+/** `row` as `listDefinitions` answers it: its id and name only. */
+function summaryOf(row: ExportDefinitionRow): ExportDefinitionSummary {
+  return { definition_id: row.definition_id, name: row.name };
+}
+
+/** Registers the four `/v1` route describes, each over its own `mode` test app, through `suite`. */
 export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = describe): void {
   suite('/v1/reporting/exports', () => {
     let t: TestApp<TenantDb>;
@@ -332,6 +340,8 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       { subject: Roles.member, status: 403, method: 'GET' as const, url: EXPORTS },
       { subject: Roles.member, status: 403, method: 'POST' as const, url: EXPORTS },
       { subject: Roles.member, status: 403, method: 'GET' as const, url: `${EXPORTS}/${cfUuid()}/download-url` },
+      { subject: 'anonymous', status: 401, method: 'GET' as const, url: DEFINITIONS },
+      { subject: Roles.member, status: 403, method: 'GET' as const, url: DEFINITIONS },
     ])('answers $subject on $method $url with $status before any effect', async ({ subject, status, method, url }) => {
       const before = t.tasks.calls.length;
       const headers = await headersFor(subject);
@@ -351,6 +361,7 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
         { method: 'POST' as const, url: EXPORTS },
         { method: 'GET' as const, url: `${EXPORTS}/${cfUuid()}` },
         { method: 'GET' as const, url: `${EXPORTS}/${cfUuid()}/download-url` },
+        { method: 'GET' as const, url: DEFINITIONS },
       ].flatMap((route) => [
         { ...route, who: 'an anonymous session', credentials: () => anonymousHeaders(TENANT_A.siteId), type: 'authorization' as const },
         { ...route, who: 'an unregistered token site', credentials: () => headersFor(UNREGISTERED_SITE_USER, 'nosuchsite'), type: 'invalidParameters' as const },
@@ -368,7 +379,11 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
 
       expect(res.statusCode).toBe(FIXTURE_ERROR_MAP[type].status);
       assertContract(method, url, res);
-      const envelopeMethod = url.endsWith('/download-url') ? 'reporting.exports.download' : 'reporting.exports';
+      const envelopeMethod = url.endsWith('/download-url')
+        ? 'reporting.exports.download'
+        : url === DEFINITIONS
+          ? 'reporting.definitions'
+          : 'reporting.exports';
       expect(res.json()).toStrictEqual(fixtureErrorOf(type, envelopeMethod));
       expect(t.tasks.calls.length).toBe(before);
       expect((await getAs(t, EXPORTS)).json<{ total: number }>().total).toBe(0);
@@ -420,6 +435,48 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       const foreign = await getAs(t, url, EXPORTER, TENANT_B.siteId);
       expect(foreign.statusCode).toBe(404);
       expect(foreign.json()).toMatchObject(fixtureErrorOf('notFound', 'reporting.exports.download'));
+    });
+  });
+
+  suite(`GET ${DEFINITIONS}`, () => {
+    let t: TestApp<TenantDb>;
+    const sheetsA = definitionFor(TENANT_A, 'timesheets.sheets');
+    const financeA = definitionFor(TENANT_A, 'finance.records');
+    const brokenA = definitionFor(TENANT_A, 'broken');
+    const sheetsB = definitionFor(TENANT_B, 'timesheets.sheets');
+    const financeB = definitionFor(TENANT_B, 'finance.records');
+    const brokenB = definitionFor(TENANT_B, 'broken');
+    // Seeded after its namesake, whose id sorts after its own.
+    const twinA: ExportDefinitionRow = { ...financeA, definition_id: '00000000-0000-0000-0000000000000000' };
+    const malformedA = definitionFor(TENANT_A, 'timesheets.sheets', { definition_id: cfUuid(), name: 'Malformed columns', columns: '["timesheet_id",' });
+
+    beforeAll(async () => {
+      t = await buildTestApp({ db: mode });
+      // The umbrella tenant holds no definition.
+      await t.seed('export_definition', [sheetsA, financeA, brokenA, twinA, malformedA, sheetsB, financeB, brokenB]);
+    });
+
+    afterAll(async () => {
+      await t?.close();
+    });
+
+    it("lists only the caller's tenant's definitions, one whose columns are not JSON included, by name, then id, as id and name only", async () => {
+      const res = await getAs(t, DEFINITIONS);
+
+      expect(res.statusCode).toBe(200);
+      assertContract('GET', DEFINITIONS, res);
+      expect(res.json()).toStrictEqual({ data: [brokenA, twinA, financeA, malformedA, sheetsA].map(summaryOf) });
+      const other = await getAs(t, `${DEFINITIONS}?siteid=${TENANT_B.siteId}`, EXPORTER, TENANT_B.siteId);
+      expect(other.statusCode).toBe(200);
+      expect(other.json()).toStrictEqual({ data: [brokenB, financeB, sheetsB].map(summaryOf) });
+    });
+
+    it('answers an empty list to a tenant without definitions', async () => {
+      const res = await getAs(t, DEFINITIONS, EXPORTER, TENANT_UMBRELLA.siteId);
+
+      expect(res.statusCode).toBe(200);
+      assertContract('GET', DEFINITIONS, res);
+      expect(res.json()).toStrictEqual({ data: [] });
     });
   });
 

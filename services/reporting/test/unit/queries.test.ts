@@ -1,5 +1,5 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Reporting read queries against a throwaway `reporting` schema: fixture order and paging, unfinished jobs, manifest pages, index plans, value forms, isolation, read gates. */
+/** Reporting read queries against a throwaway `reporting` schema: fixture order and paging, unfinished jobs, the definition list, manifest pages, index plans, value forms, isolation, read gates. */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,7 +16,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { findDefinition, findJob, iterateJobObjects, listJobObjects, listJobs, listUnfinishedJobs } from '../../src/repo/queries.js';
+import { findDefinition, findJob, iterateJobObjects, listDefinitions, listJobObjects, listJobs, listUnfinishedJobs } from '../../src/repo/queries.js';
 import { EXPORT_DEFINITION, EXPORT_JOB, UNITS } from '../../src/repo/tables.js';
 
 let handle: ThrowawaySchema;
@@ -66,11 +66,11 @@ const PAGED_MANIFEST = PAGED_JOBS.filter((job) => job.objectKey !== undefined)
 const PAGED_IDS = PAGED_MANIFEST.map((object) => object.jobId);
 
 /** Inserts one export definition of the transaction tenant. */
-async function insertDefinition(tx: TenantTx, definitionId: string, siteId: string): Promise<void> {
+async function insertDefinition(tx: TenantTx, definitionId: string, siteId: string, name = 'Sheets'): Promise<void> {
   await tx.query(
     `INSERT INTO ${handle.schema}.export_definition (tenant_id, definition_id, siteid, name, source, columns)
-     VALUES ($1, $2, $3, 'Sheets', 'timesheets.sheets', '["timesheet_id","status"]')`,
-    [tx.tenantId, definitionId, siteId],
+     VALUES ($1, $2, $3, $4, 'timesheets.sheets', '["timesheet_id","status"]')`,
+    [tx.tenantId, definitionId, siteId, name],
   );
 }
 
@@ -180,6 +180,34 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
       expect(definition).toMatchObject({ definition_id: A_DEFINITION, source: 'timesheets.sheets', columns: '["timesheet_id","status"]' });
       expect(await findJob(tx, cfId('A', 4))).toBeNull();
       expect(await findDefinition(tx, cfId('D', 9))).toBeNull();
+    });
+  });
+
+  it("lists the tenant's definition ids and names by name, then id in byte order, none of another tenant's", async () => {
+    const tenantId = randomUUID();
+    // The lowercase id sorts after the uppercase ones in byte (C) order.
+    const definitions = [
+      { id: cfId('D', 7), name: 'Payroll' },
+      { id: cfId('d', 5), name: 'Payroll' },
+      { id: cfId('D', 6), name: 'Attendance' },
+      { id: cfId('D', 8), name: 'Payroll' },
+    ];
+    await handle.app.withTenant(tenantId, async (tx) => {
+      expect(await listDefinitions(tx)).toEqual([]);
+      for (const { id, name } of definitions) await insertDefinition(tx, id, 'definitions-site', name);
+    });
+
+    await handle.app.withTenant(tenantId, async (tx) => {
+      const rows = await listDefinitions(tx);
+      expect(rows).toStrictEqual([
+        { definition_id: cfId('D', 6), name: 'Attendance' },
+        { definition_id: cfId('D', 7), name: 'Payroll' },
+        { definition_id: cfId('D', 8), name: 'Payroll' },
+        { definition_id: cfId('d', 5), name: 'Payroll' },
+      ]);
+    });
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      expect(await listDefinitions(tx)).toStrictEqual([{ definition_id: A_DEFINITION, name: 'Sheets' }]);
     });
   });
 
@@ -387,6 +415,7 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
         const reads: ((tx: TenantTx) => Promise<unknown>)[] = [
           (tx) => findJob(tx, cfId('A', 5)),
           (tx) => findDefinition(tx, A_DEFINITION),
+          (tx) => listDefinitions(tx),
           (tx) => listJobs(tx, { pageIndex: 1, itemsPerPage: 2 }),
           (tx) => listUnfinishedJobs(tx, TENANT_A.siteId),
         ];

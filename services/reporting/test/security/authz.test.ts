@@ -169,6 +169,7 @@ const DENIAL_ERRORS: Readonly<Record<401 | 403, readonly ErrorBody[]>> = {
 
 const FIXTURE_EXPORTS = `${FIXTURE_PREFIX}/exports`;
 const V1_EXPORTS = '/v1/reporting/exports';
+const V1_DEFINITIONS = '/v1/reporting/definitions';
 const ON_SITE_A = `siteid=${SITE_A}`;
 /** The header a POST carries to be answered as a GET. */
 const OVERRIDE_GET: Readonly<Record<string, string>> = { 'x-http-method-override': 'GET' };
@@ -386,6 +387,7 @@ function expectations(): Readonly<Record<string, Expectation>> {
       method: 'GET',
       url: `${V1_EXPORTS}/${doneA.job_id}/download-url?${ON_SITE_A}`,
     })),
+    [`GET ${V1_DEFINITIONS}`]: exporterRoute(EXPORTER_ROUTE, fixed({ method: 'GET', url: `${V1_DEFINITIONS}?${ON_SITE_A}` })),
   };
 }
 
@@ -550,6 +552,7 @@ describe('transport separation', () => {
       { method: 'GET', url: `${V1_EXPORTS}?${ON_SITE_A}` },
       { method: 'POST', url: `${V1_EXPORTS}?${ON_SITE_A}`, headers: csrfFor(subject(EXPORTER)), payload: createBody() },
       { method: 'GET', url: `${V1_EXPORTS}/${doneA.job_id}/download-url?${ON_SITE_A}` },
+      { method: 'GET', url: `${V1_DEFINITIONS}?${ON_SITE_A}` },
       { method: 'GET', url: `${FIXTURE_EXPORTS}/${doneA.job_id}/download?${ON_SITE_A}` },
       { method: 'POST', url: `${FIXTURE_EXPORTS}?${ON_SITE_A}`, headers: csrfFor(subject(EXPORTER)), payload: createBody() },
     ];
@@ -587,6 +590,7 @@ describe('site boundary', () => {
     ['a create', () => ({ method: 'POST', url: `${V1_EXPORTS}?${ON_SITE_A}`, headers: csrfFor(subject(EXPORTER)), payload: createBody() })],
     ['a job read', () => ({ method: 'GET', url: `${V1_EXPORTS}/${doneA.job_id}?${ON_SITE_A}` })],
     ['a download URL', () => ({ method: 'GET', url: `${V1_EXPORTS}/${doneA.job_id}/download-url?${ON_SITE_A}` })],
+    ['the definition list', () => ({ method: 'GET', url: `${V1_DEFINITIONS}?${ON_SITE_A}` })],
   ])('refuses a tenant-a exporter sending siteid=tenant-b on /v1 %s, before any read, token use or write', async (_label, request) => {
     const outcome = await outcomeOf(toSiteB(request()), await headersFor(subject(EXPORTER), SITE_A));
     expect(outcome).toEqual({ status: 403, error: errorBody(LEGACY_ERROR_MAP.authorization), effects: NO_EFFECTS });
@@ -641,7 +645,7 @@ describe('anonymous sessions and unregistered sites', () => {
     const probes = exporterProbes();
     const outcomes: Array<[string, unknown]> = [];
     for (const [key, probe] of probes) outcomes.push([key, await outcomeOf(probe, await credentials())]);
-    expect(probes).toHaveLength(10);
+    expect(probes).toHaveLength(11);
     expect(outcomes).toEqual(probes.map(([key]) => [key, { status, error, effects: { ...NO_EFFECTS, transactions: 1 } }]));
   });
 });
@@ -806,6 +810,7 @@ describe('CSRF on writes', () => {
     ['/v1 list', `${V1_EXPORTS}?${ON_SITE_A}`],
     ['fixture list', `${FIXTURE_EXPORTS}?${ON_SITE_A}`],
     ['/v1 job read', `${V1_EXPORTS}/${'{job}'}?${ON_SITE_A}`],
+    ['/v1 definition list', `${V1_DEFINITIONS}?${ON_SITE_A}`],
   ])('consumes no token sent with the %s', async (_label, url) => {
     const before = mark();
     const res = await inject(

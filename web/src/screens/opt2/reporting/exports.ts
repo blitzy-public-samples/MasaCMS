@@ -31,13 +31,18 @@ export type ExportJob = components['schemas']['ExportJob'];
 
 export type ExportState = components['schemas']['ExportState'];
 
-/** One page of the tenant's export jobs. */
+/** An export definition as the queue form offers it: its id and name. */
+export type ExportDefinitionSummary = components['schemas']['ExportDefinitionSummary'];
+
+/** One page of the tenant's export jobs, with the definitions the queue form offers. */
 export interface ExportsData {
   readonly jobs: readonly ExportJob[];
   /** Count of every job of the tenant. */
   readonly total: number;
   /** One-based page number shown. */
   readonly page: number;
+  /** Every definition of the tenant, by name. */
+  readonly definitions: readonly ExportDefinitionSummary[];
 }
 
 /** Queue form values a re-render keeps. */
@@ -104,17 +109,20 @@ function pageOf(value: string | undefined): number {
 }
 
 /**
- * The `rc.page` page of the tenant's export jobs, with the queue form's CSRF pair issued; unavailability propagates.
- * @throws GatewayDenialError When reporting refuses the list (401 or 403).
+ * The `rc.page` page of the tenant's export jobs and every definition, with the queue form's CSRF pair issued;
+ * unavailability propagates.
+ * @throws GatewayDenialError When reporting refuses the list or the definitions (401 or 403).
  */
 export async function loadExports(ctx: ScreenContext): Promise<ExportsData> {
   const page = pageOf(ctx.req.rc.page);
-  const [response] = await Promise.all([
+  const [response, definitionsResponse] = await Promise.all([
     ctx.gateway.reporting.call('get', '/v1/reporting/exports', { query: { page, pageSize: PAGE_SIZE } }),
+    ctx.gateway.reporting.call('get', '/v1/reporting/definitions'),
     ctx.csrf.prefetch([QUEUE_CSRF_CONTEXT]),
   ]);
   const { data, total } = okBody(response, 'reporting', 'listExports');
-  return { jobs: data, total, page };
+  const definitions = okBody(definitionsResponse, 'reporting', 'listDefinitions').data;
+  return { jobs: data, total, page, definitions };
 }
 
 /** The labelled values of `job`, without the start, finish and error a job does not have yet. */
@@ -154,9 +162,10 @@ function pagination(ctx: ScreenContext, { page, total }: ExportsData): SafeHtml 
   return previous === null && next === null ? null : html`<ul class="pagination">${previous}${next}</ul>`;
 }
 
-/** The queue form: definition, format and optional business date, posted with the CSRF pair. */
-function queueForm(ctx: ScreenContext, posted: QueuePosted): SafeHtml {
-  const definition = controlGroup('Definition ID', textInput('definitionId', posted.definitionId, { maxlength: 35 }));
+/** The queue form: definition picked by name, format and optional business date, posted with the CSRF pair. */
+function queueForm(ctx: ScreenContext, posted: QueuePosted, definitions: readonly ExportDefinitionSummary[]): SafeHtml {
+  const choices = definitions.map((definition) => ({ value: definition.definition_id, label: definition.name }));
+  const definition = controlGroup('Definition', select('definitionId', choices, posted.definitionId));
   const format = controlGroup(opt2Label(ctx, 'Format'), select('format', FORMAT_OPTIONS, posted.format));
   const asOf = controlGroup('As Of', textInput('asOf', posted.asOf, { type: 'date' }));
   return postForm(actionUrl(ctx, 'queue'), html`${definition}${format}${asOf}`, 'Queue Export', {
@@ -169,7 +178,7 @@ export function exportsBody(ctx: ScreenContext, data: ExportsData, opts: Exports
   const downloadUrl = actionUrl(ctx, 'download');
   const jobs = jobBlocks(ctx, data.jobs, downloadUrl);
   return html`${pageHeader('Export Jobs')}${opts.alert}${block(
-    html`${queueForm(ctx, opts.posted ?? EMPTY_POSTED)}${jobs}${pagination(ctx, data)}`,
+    html`${queueForm(ctx, opts.posted ?? EMPTY_POSTED, data.definitions)}${jobs}${pagination(ctx, data)}`,
   )}`;
 }
 
