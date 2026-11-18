@@ -1,17 +1,14 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `GET /internal/v1/migration/objects` on the finance app: an uploaded attachment's bytes, 404s, 400s and authorisation. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
 import { ATTACHMENT_BUCKET, attachmentObjectKey } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 

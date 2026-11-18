@@ -113,7 +113,6 @@ function cfId(group: number, site: number, n: number): string {
   return `${String(group).padStart(8, '0')}-${String(site).padStart(4, '0')}-4000-${String(n).padStart(16, '0')}`;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Fake gateway
 
 interface Caller {
@@ -586,7 +585,6 @@ function isGet(call: GatewayCall, pathname: string, by: string): boolean {
   return call.method === 'GET' && call.url.pathname === pathname && call.caller?.site === by;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Run helpers
 
 let stateDir: string;
@@ -680,8 +678,6 @@ function keyOf(fixture: TenantFixture): TenantKey {
   if (entry === undefined) throw new Error(`no tenant key of ${fixture.siteId}`);
   return entry[0] as TenantKey;
 }
-
-// ---------------------------------------------------------------------------------------------------------------
 
 describe('TENANTS_BY_KEY and ACTORS', () => {
   it('maps the tenant keys to the seeded sites tenant-a, tenant-b and umbrella', () => {

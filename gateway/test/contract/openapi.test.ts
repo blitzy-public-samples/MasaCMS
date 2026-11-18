@@ -1,14 +1,13 @@
 /** Gateway contract: buildApp's routes and responses against contracts/openapi.yaml, and its identity and migration calls against theirs. */
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix, rolesForService, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { parseWritePosition } from '@opt2/platform/migration-kit';
-import type { ServiceClient, ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
+import { Ajv2020, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import {
   ROLE_SET,
   assertRequestMatchesOpenApi,

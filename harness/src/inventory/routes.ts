@@ -325,9 +325,7 @@ export const FAMILY_TABLE: readonly FamilyRow[] = Object.freeze([
   }),
 ]);
 
-// ---------------------------------------------------------------------------------------------------------------
 // Text scanning
-// ---------------------------------------------------------------------------------------------------------------
 
 type Span = readonly [number, number];
 
@@ -579,9 +577,7 @@ function cfSwitch(text: string, from: number, to: number): { expression: string;
   return { expression: (head[1] ?? '').trim(), cases };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Closures
-// ---------------------------------------------------------------------------------------------------------------
 
 /** A closure root: a function walked whole, over one span only (`keep`), or without some spans (`drop`). */
 interface Root {
@@ -1006,9 +1002,7 @@ function visitedCsrfCalls(w: Walker, visited: readonly string[]): CsrfCall[] {
   });
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Entries
-// ---------------------------------------------------------------------------------------------------------------
 
 type EntryCore = Pick<RouteEntry, 'id' | 'kind' | 'family' | 'routeKey' | 'source' | 'areaKey'>;
 
@@ -1086,9 +1080,7 @@ function keyerFor(base: RouteKeyOptions): Keyer {
   return async (entry, extra = {}) => (await inventoryRouteKey(entry, { ...base, ...extra })).key;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Route families
-// ---------------------------------------------------------------------------------------------------------------
 
 /** One case of a family branch, or the whole branch when the family has no switch. */
 export interface FamilyCase {
@@ -1313,9 +1305,7 @@ function redirectOf(body: string): RouteRedirect | null {
   return m === null ? null : { statusCode: Number(m[1]), from: m[2] ?? '', to: m[3] ?? '' };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // JSON API
-// ---------------------------------------------------------------------------------------------------------------
 
 /** An entity the JSON API serves: registered in `init`, possibly under a config guard, or declared in its config. */
 export interface JsonApiEntity {
@@ -1995,9 +1985,7 @@ async function apiEntries(b: BuildContext, reg: JsonApiRegistry, remote: readonl
   return out;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // OAuth endpoints and SOAP v1
-// ---------------------------------------------------------------------------------------------------------------
 
 /** The REST credential-exchange blocks of `processRequest` behind the OAuth endpoints (jsonApiUtility.cfc:422-835). */
 export interface OAuthSpans {
@@ -2131,9 +2119,7 @@ export function soapEntries(tree: SourceTree): RouteEntry[] {
     });
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Fixture routes
-// ---------------------------------------------------------------------------------------------------------------
 
 /** How the fixture front controller dispatches (api.cfm): modules, path grammar, module entry point and helpers. */
 export interface FixtureController {
@@ -3160,9 +3146,7 @@ async function fixtureEntries(b: BuildContext, tree: SourceTree): Promise<RouteE
   return [...byKey.values()];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Extraction
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Throws unless the JSON API default mode and the REST branch's mode are the ones {@link FAMILY_MODES} keys by. */
 function assertModes(tree: SourceTree, branches: readonly FamilyBranch[], reg: JsonApiRegistry): void {

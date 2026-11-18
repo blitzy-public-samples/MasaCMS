@@ -5,9 +5,9 @@
  * job, never from the caller.
  */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
 import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
@@ -33,10 +33,7 @@ import { EXPORT_SHEET_STATUS_PATH } from '../../src/routes/export-reads.js';
 import { registerRoutes } from '../../src/routes/index.js';
 import { recordingDb } from '../helpers/recording-db.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
 const AS_OF = '2026-06-30';

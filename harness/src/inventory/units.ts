@@ -46,9 +46,7 @@ const USER_ROW_TYPE = '2';
 const OWNER_ROW_PREDICATE = /^\s*owner\s/i;
 const LOOKUP_DIRS: readonly string[] = ['admin', 'core'];
 
-// ---------------------------------------------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------------------------------------------
 
 /** One target unit a closure write reaches. */
 export interface InventoryWrite {
@@ -136,9 +134,7 @@ interface Branch {
 
 type OwnershipEntry = TableOwnership['tables'][number];
 
-// ---------------------------------------------------------------------------------------------------------------
 // Row-type evidence
-// ---------------------------------------------------------------------------------------------------------------
 
 const FIRST_FROM_TUSERS = /^\s*select\b(?:(?!\bfrom\b)[\s\S])*\bfrom\s+(?:\[?dbo\]?\s*\.\s*)?\[?tusers\]?(?![\w$])/i;
 const TYPE_LITERAL = /(?<![\w$.])(?:\[?tusers\]?\s*\.\s*)?\[?type\]?\s*=\s*'?(\d+)'?(?![\w$])/gi;
@@ -325,9 +321,7 @@ export class RowTypeLookups {
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Resolution
-// ---------------------------------------------------------------------------------------------------------------
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;

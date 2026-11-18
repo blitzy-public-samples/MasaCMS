@@ -23,8 +23,7 @@
   },
   "dependencies": {
     "@fastify/reply-from": "12.8.0",
-    "@opt2/platform": "file:../platform",
-    "ajv": "8.20.0"
+    "@opt2/platform": "file:../platform"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

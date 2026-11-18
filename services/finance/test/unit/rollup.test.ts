@@ -1,18 +1,15 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Finance rollups over the recording db: the rebuild each fixture write runs, checked against a bigint reference of `usp_finance_rollup`, and the fixture and `/v1` reads of its rows. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { BUSINESS_DATE, TENANT_A, TENANT_B, asOf, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
 import { getRollups } from '../../src/domain/rollup.js';
 import { FIXTURE_PREFIX } from '../../src/routes/fixture.js';
 import { TEST_CLOCK, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { programBindingRow, recordRow } from '../helpers/records.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const FIXTURE_ROLLUPS = `${FIXTURE_PREFIX}/rollups`;
 const V1_ROLLUPS = '/v1/finance/rollups';

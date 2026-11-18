@@ -3,9 +3,16 @@ import { readFile } from 'node:fs/promises';
 import { INVOCATION_HEADER, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { generateCsrfToken } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import {
+  Ajv2020,
+  ServiceUnavailableError,
+  createService,
+  loadEnv,
+  type AnySchemaObject,
+  type FastifyInstance,
+  type ValidateFunction,
+} from '@opt2/platform/service-kit';
 import { mintServiceToken, testVerifier } from '@opt2/platform/testing';
-import { Ajv2020, type AnySchemaObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import type { BridgeClient, LegacyUsedToken } from '../../src/session/bridge-client.js';

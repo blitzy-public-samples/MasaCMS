@@ -13,9 +13,7 @@ import type {
   WriterOverrides,
 } from './overrides.js';
 
-// ---------------------------------------------------------------------------------------------------------------
 // Source tree
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Options of `SourceTree.list`: file extensions to keep (with or without the dot) and whether to descend. */
 export interface ListOptions {
@@ -153,9 +151,7 @@ export function memorySourceTree(files: Readonly<Record<string, string>> | Reado
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Lexical helpers
-// ---------------------------------------------------------------------------------------------------------------
 
 const IDENT_START = /[A-Za-z_$]/;
 const IDENT_PART = /[\w$]/;
@@ -515,9 +511,7 @@ export function parseAttributes(source: string): Record<string, string> {
   return attrs;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // CFML model
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Component declaration: attributes with lower-cased keys and the 1-based line span up to `{` or `>`. */
 export interface CfmlDeclaration {
@@ -586,9 +580,7 @@ export interface CfmlTemplate extends CfmlUnit {
   syntax: 'template';
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Script tokens
-// ---------------------------------------------------------------------------------------------------------------
 
 interface Token {
   k: 'id' | 'str' | 'num' | 'p';
@@ -655,9 +647,7 @@ function isWord(t: Token | undefined, w: string): boolean {
   return t !== undefined && t.k === 'id' && t.v.toLowerCase() === w;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Component and template parsing
-// ---------------------------------------------------------------------------------------------------------------
 
 const ACCESS = new Set(['public', 'private', 'remote', 'package']);
 
@@ -946,9 +936,7 @@ export function parseCfmTemplate(path: string, source: string): CfmlTemplate {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Control structure: guards and threads
-// ---------------------------------------------------------------------------------------------------------------
 
 /** A branch condition as the source states it: an expression, a switch case, or a combination. */
 export type GuardCondition =
@@ -1403,9 +1391,7 @@ function tagRegions(text: string, out: Region[], exits: Exit[]): void {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Guard evaluation over request parameters
-// ---------------------------------------------------------------------------------------------------------------
 
 /** A predicate that holds when the parameter is present and CFML-true, as the gateway matches a `truthy` variant. */
 export interface TruthyPredicate {
@@ -2307,9 +2293,7 @@ function conditionEx(c: GuardCondition, env: GuardEnv): Ex {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Function analysis: call chains, SQL writes, assignments
-// ---------------------------------------------------------------------------------------------------------------
 
 /** An actual argument: named (`name=expr`) or positional. */
 export interface CallArgument {
@@ -2849,9 +2833,7 @@ export function extractSqlWrites(fn: CfmlFunction, component?: CfmlUnit): SqlWri
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Call resolution
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Lookups the closure walk needs; services.ts and entities.ts implement it and generate.ts composes them. */
 export interface ComponentIndex {
@@ -3435,9 +3417,7 @@ export function extractCalls(
   return resolveCalls(resolver, { receiver: ctx.receiver ?? component.path, unit: component, fn }).map((c) => c.site);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Write closure
-// ---------------------------------------------------------------------------------------------------------------
 
 /** An entry point: a component method (or `''` for a `.cfm`), the request predicates of its branch, and the more specific variants it excludes. */
 export interface ClosureEntry {
@@ -3564,9 +3544,7 @@ const FILE_WRITER_METHODS = new Set(['writefile', 'movefile', 'copyfile', 'renam
 const RENDITION_CACHE_METHODS = new Set(['getcustomimage']);
 const SESSION_RANK: Record<SessionEffects, number> = { none: 0, relogin: 1, login: 2, logout: 3 };
 
-// ---------------------------------------------------------------------------------------------------------------
 // File operations on the file store
-// ---------------------------------------------------------------------------------------------------------------
 
 /** A path operand of a file operation and what the operation does to the object it names. */
 interface FileOperand {

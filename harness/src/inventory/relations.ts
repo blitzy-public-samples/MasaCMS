@@ -184,9 +184,7 @@ function bestPerId(relations: Iterable<Relation>): Relation[] {
   return [...best.values()].sort((a, b) => compareText(a.id, b.id));
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Component model
-// ---------------------------------------------------------------------------------------------------------------
 
 interface DeclaredProperty {
   prop: CfmlProperty;
@@ -315,9 +313,7 @@ function createModel(tree: SourceTree, entities: readonly EntityEntry[], index: 
   return { tree, tables: byTable, entities: tabled, target, resolve, has };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // ORM relations
-// ---------------------------------------------------------------------------------------------------------------
 
 /** `primaryKey` stands for the entity's own key (bean.cfc 271-275). */
 function translateKey(name: string, ownKey: string | null): string | null {
@@ -414,9 +410,7 @@ export function extractOrmRelations(
   return bestPerId(ormRelationsOf(createModel(tree, entities, index, tables)));
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // DAO join predicates
-// ---------------------------------------------------------------------------------------------------------------
 
 interface SqlSpan {
   start: number;
@@ -783,9 +777,7 @@ export function extractDaoJoins(tree: SourceTree, tables: readonly TableEntry[],
   return bestPerId(daoJoinsOf(createModel(tree, entities, ormEntityIndex(entities), tables)));
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Fixture relations
-// ---------------------------------------------------------------------------------------------------------------
 
 const keyList = z.array(z.string().min(1));
 
@@ -926,9 +918,7 @@ export function tenantParentRelations(ownership: FixtureOwnership): Relation[] {
   return bestPerId(out);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Union
-// ---------------------------------------------------------------------------------------------------------------
 
 /** `r` with inventory table names and column spelling, its id recomputed and its tenant derivation from `child`. */
 function canonical(r: Relation, child: TableEntry, parent: TableEntry): Relation {

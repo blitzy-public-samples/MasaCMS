@@ -21,9 +21,7 @@ export const NO_OWNER = 'none';
 /** Legacy table that stands for the file store in owner derivation: `tfiles` and the stored objects share its owner. */
 export const FILE_STORE_TABLE = 'tfiles';
 
-// ---------------------------------------------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------------------------------------------
 
 /** One of the four dispositions every inventoried item takes. */
 export type Disposition = 'retired' | 'decision' | 'legacy-served' | 'carry';
@@ -140,9 +138,7 @@ export interface WriteSetOwners {
   decisionTables: string[];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Inputs
-// ---------------------------------------------------------------------------------------------------------------
 
 const decisionListSchema = z.looseObject({
   sourceSha: z.string(),
@@ -224,9 +220,7 @@ export async function loadExceptions(path: string = EXCEPTIONS_LIST_PATH): Promi
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Constant tables
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Entity owner of each area's read-side items; writing items take their write-set owners. */
 export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
@@ -527,9 +521,7 @@ export const FIXTURE_MODULE_SERVICES: Readonly<Record<string, string>> = Object.
 /** The ten target services, the only values an `owningService` takes besides null. */
 export const TARGET_SERVICES: ReadonlySet<string> = new Set([...MIGRATED_SERVICES, ...Object.values(FIXTURE_MODULE_SERVICES)]);
 
-// ---------------------------------------------------------------------------------------------------------------
 // Keys and owners
-// ---------------------------------------------------------------------------------------------------------------
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -741,9 +733,7 @@ export function ownersOfWriteSet(
   return { owners: [...owners].sort(compareText), decisionTables: [...decisionTables].sort(compareText) };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // The rule
-// ---------------------------------------------------------------------------------------------------------------
 
 interface Outcome {
   disposition: Disposition;

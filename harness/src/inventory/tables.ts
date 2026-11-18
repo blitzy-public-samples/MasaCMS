@@ -69,9 +69,7 @@ const CFML_SCOPES: ReadonlySet<string> = new Set([
   'application',
 ]);
 
-// ---------------------------------------------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Where a table's entry comes from; bootstrap outranks orm, which outranks migration. */
 export type TableOrigin = 'bootstrap' | 'migration' | 'orm' | 'dynamic' | 'fixture' | 'live-only';
@@ -245,9 +243,7 @@ export interface LiveCatalogTable {
   hasSiteId: boolean;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Names and lexing
-// ---------------------------------------------------------------------------------------------------------------
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -365,9 +361,7 @@ function wordPattern(word: string): string {
   return word.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // SQL schema statements
-// ---------------------------------------------------------------------------------------------------------------
 
 interface ParsedColumn {
   name: string;
@@ -534,9 +528,7 @@ function alterEvents(
   return [];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // CFML schema updates: dialect branches and dbUtility calls
-// ---------------------------------------------------------------------------------------------------------------
 
 interface DialectSpan {
   start: number;
@@ -700,9 +692,7 @@ function updateEvents(text: string): SchemaEvent[] {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Static extraction
-// ---------------------------------------------------------------------------------------------------------------
 
 type StaticOrigin = 'bootstrap' | 'migration' | 'orm';
 
@@ -975,9 +965,7 @@ function applyUpdates(tree: SourceTree, drafts: Map<string, Draft>): void {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Serialized-document columns
-// ---------------------------------------------------------------------------------------------------------------
 
 const SERIALIZER_HINT = /deserializeJSON|serializeJSON|wddx|isJSON|serialize\s*=\s*true/i;
 const DESERIALIZE_CALL =
@@ -1091,9 +1079,7 @@ function serializedColumnsOf(tree: SourceTree, drafts: ReadonlyMap<string, Draft
   return found;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // extractTables
-// ---------------------------------------------------------------------------------------------------------------
 
 function liveDefaults(): Pick<TableEntry, 'live' | 'liveStatus'> {
   return { live: null, liveStatus: 'pending-run' };
@@ -1250,9 +1236,7 @@ export function extractFixtureTables(tree: SourceTree): TableEntry[] {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------
 // Ownership
-// ---------------------------------------------------------------------------------------------------------------
 
 const keySpan = z.tuple([z.int().min(1), z.int().min(1)]);
 const ownershipTarget = z.looseObject({ unit: z.string().min(1), owner: z.string().min(1) });
@@ -1334,9 +1318,7 @@ export function assignOwners(tables: readonly TableEntry[], ownership: TableOwne
   return out;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Writers
-// ---------------------------------------------------------------------------------------------------------------
 
 interface WriterAcc {
   entry: WriterEntry;
@@ -1552,9 +1534,7 @@ export function attachWriters(
   return { tables: out, unmatched: misses };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Live catalog
-// ---------------------------------------------------------------------------------------------------------------
 
 const LIVE_TABLES_SQL = `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'`;
 const LIVE_COLUMNS_SQL =

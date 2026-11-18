@@ -2,10 +2,10 @@
 /** Route registry wiring: the fixture, `/v1`/`/v2`, export read and migration object modules always, the attachment file route only over local storage. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -16,10 +16,7 @@ import type { FinanceRepository } from '../../src/repo/repository.js';
 import { ATTACHMENT_BUCKET, attachmentObjectKey } from '../../src/repo/tables.js';
 import { registerRoutes, type FinanceDeps } from '../../src/routes/index.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, unknown>>;
 };
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);

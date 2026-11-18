@@ -1,8 +1,8 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Provider contract of timesheets: the app and contracts/openapi.yaml agree on metadata, routes, declarations, calls and every response shape. */
 import { readFileSync } from 'node:fs';
-import { load } from 'js-yaml';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { pushPath, topicOfSubscription } from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
@@ -62,7 +62,7 @@ interface Principals {
 
 type CaseRun = (ctx: Ctx, as: Principals) => Promise<CaseResult>;
 
-const DOC = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head', 'trace'] as const;

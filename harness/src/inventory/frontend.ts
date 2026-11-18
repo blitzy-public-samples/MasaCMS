@@ -152,9 +152,7 @@ export interface HttpReachability {
   allow: string[] | null;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Lexical helpers over comment-stripped CFML (offsets are those of the original text)
-// ---------------------------------------------------------------------------------------------------------------
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -460,9 +458,7 @@ function functionAt(unit: CfmlUnit, offset: number): CfmlFunction | undefined {
   return holding.sort((a, b) => b.offset - a.offset || (a.name === '' ? 1 : 0) - (b.name === '' ? 1 : 0))[0];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Reachability: the nearest Application.cfc and whether its onRequestStart aborts
-// ---------------------------------------------------------------------------------------------------------------
 
 interface RequestGuard {
   guard: string;
@@ -614,9 +610,7 @@ export function isHttpReachable(tree: SourceTree, rel: string): boolean {
   return httpReachability(tree, rel).reachable;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Closures: overlays that isolate a branch, merging, and evidence read from the code
-// ---------------------------------------------------------------------------------------------------------------
 
 const SESSION_RANK: Record<SessionEffects, number> = { none: 0, relogin: 1, login: 2, logout: 3 };
 
@@ -858,9 +852,7 @@ class VisitedBodies {
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Page render: the root request plus the handler, validator and translator methods it dispatches by name
-// ---------------------------------------------------------------------------------------------------------------
 
 const DISPATCH_CALL = /\.\s*get(Handler|Validator|Translator)\s*\(\s*(["'])((?:(?!\2).)*)\2\s*\)/gi;
 const KIND_METHOD: Record<string, string> = { handler: 'handle', validator: 'validate', translator: 'translate' };
@@ -949,9 +941,7 @@ function rootPageBranch(unit: CfmlUnit, fn: CfmlFunction): Branch {
   return { unit, fn, keep: api === undefined ? [[from, to]] : [[from, api.bodyStart], [api.bodyEnd, to]] };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // doaction values: doAction cases, comparisons that act on a value, and links or hidden inputs naming one
-// ---------------------------------------------------------------------------------------------------------------
 
 // `$.event('doaction')`, `arguments.event.getValue("doaction")`, `request.doaction` and the like.
 const DOACTION_REF = String.raw`(?:(?<![\w$])(?:[\w$]+(?:\(\s*\))?\s*\.\s*)*(?:event|getValue)\s*\(\s*["']doaction["']\s*\)|(?<![\w$.])(?:request|rc|url|form|event)\.doaction\b)`;
@@ -1175,9 +1165,7 @@ function siteRank(s: DoactionSite): number {
   return 4;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Entries
-// ---------------------------------------------------------------------------------------------------------------
 
 /** State shared by the entry builders of one extraction. */
 interface Run {

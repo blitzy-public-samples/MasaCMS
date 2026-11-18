@@ -2,10 +2,10 @@
 /** Timesheets fixture routes through `app.inject` against a throwaway `timesheets` schema, compared with legacy-fixtures/cfml/modules/timesheets.cfc. */
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
-import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { AuthDenial, INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash, cfUuid } from '@opt2/platform/legacy-compat';
 import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
@@ -30,10 +30,7 @@ import { TIMESHEETS_UNITS, type ApprovalActionRow, type TimesheetDayRow, type Ti
 import { FIXTURE_PREFIX, parseFixtureAsOf, resolveFixtureProgram, timesheetsFixturePlugin } from '../../src/routes/fixture.js';
 import { recordingDb, statementsOn } from '../helpers/recording-db.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const CLOCK = fixedClock(NOW);

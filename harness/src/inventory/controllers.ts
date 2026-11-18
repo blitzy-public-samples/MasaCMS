@@ -78,9 +78,7 @@ const LIFECYCLE_METHODS: Readonly<Record<string, ExclusionReason>> = Object.free
 /** Callable through FW/1: public or remote functions. */
 const CALLABLE_ACCESS = new Set(['public', 'remote']);
 
-// ---------------------------------------------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Extractor pattern id of a classified `before()` gate. */
 export type GatePatternId = ExtractorPattern['id'];
@@ -280,9 +278,7 @@ export interface CoreMuraActionSearch {
   files: MuraActionMention[];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Text scanning
-// ---------------------------------------------------------------------------------------------------------------
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -438,9 +434,7 @@ function normaliseExpression(text: string): string {
   return out.replace(/(?<![\w$.])(?:arguments|variables|application)\./gi, '');
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Boolean conditions
-// ---------------------------------------------------------------------------------------------------------------
 
 /** A CFML condition: comparisons and other operands are atoms joined by `!`/`not`, `&&`/`and` and `||`/`or`. */
 type Cond =
@@ -705,9 +699,7 @@ function atomsOf(c: Cond, out: Array<Extract<Cond, { k: 'atom' }>> = []): Array<
   return out;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // before() gates
-// ---------------------------------------------------------------------------------------------------------------
 
 /** What an atom of a gate tests: a membership, module grant or login, the requested action, a local flag, or unknown. */
 type GateAtom =
@@ -1198,9 +1190,7 @@ function gateBranches(
   return { fallback, named };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Circuits, actions and views
-// ---------------------------------------------------------------------------------------------------------------
 
 function sourceRef(p: string, from: number, to: number): SourceRef {
   return { path: p, lines: [from, Math.max(from, to)] };
@@ -1338,9 +1328,7 @@ function scanActionReferences(tree: SourceTree): Map<string, SourceRef[]> {
   return new Map([...found].map(([key, refs]) => [key, [...refs.values()].sort(byPlace)]));
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Variants and write closures
-// ---------------------------------------------------------------------------------------------------------------
 
 type PredicateValue = Predicates[string];
 
@@ -1534,9 +1522,7 @@ function mergeClosures(closures: readonly WriteClosure[]): WriteClosure {
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // CSRF and response mode
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Text an action runs: its comment-stripped method body, or its view with includes spliced in. */
 interface ActionText {
@@ -1692,9 +1678,7 @@ function responseFacts(
   return facts('page');
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Extraction
-// ---------------------------------------------------------------------------------------------------------------
 
 /** State shared by the controllers of one extraction. */
 interface ExtractionState {
@@ -2018,9 +2002,7 @@ export async function extractControllers(ctx: ClosureContext, inputs: Controller
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Core muraAction search
-// ---------------------------------------------------------------------------------------------------------------
 
 const MURA_ACTION = /muraAction/gi;
 // A read of the action: a scope member (url.muraAction, rc.muraAction) or an isDefined('….muraAction') test.

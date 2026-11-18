@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as ajv2020Module from 'ajv/dist/2020.js';
 import * as undici from 'undici';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z as zod } from 'zod';
@@ -101,6 +102,7 @@ const VALUE_EXPORTS = {
   './json-stream.js': [jsonStream, ['JSON_CONTENT_TYPE', 'jsonListStream']],
   './csrf-hook.js': [csrfHook, ['csrfPreHandler', 'csrfTokenFrom', 'CSRF_CONSUME_PATH', 'IDENTITY_SERVICE']],
   undici: [undici, ['Agent']],
+  'ajv/dist/2020.js': [ajv2020Module, ['Ajv2020']],
 } as const satisfies Record<string, readonly [Record<string, unknown>, readonly string[]]>;
 
 const reexported = Object.entries(VALUE_EXPORTS).flatMap(([from, [module, names]]) =>

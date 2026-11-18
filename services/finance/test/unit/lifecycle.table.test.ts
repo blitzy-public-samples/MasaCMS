@@ -1,8 +1,8 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The generated finance transition table: its agreement with the lifecycle and the fixture-oracle export, and every row driven through both route families. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { CHANGELOG_TABLE } from '@opt2/platform/migration-kit';
 import { SAME_NEW_VERSION, generateTable, serializeTable, type TransitionTableRow } from '@opt2/platform/state-machine';
 import { assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
@@ -13,10 +13,7 @@ import { FIXTURE_PREFIX } from '../../src/routes/fixture.js';
 import { TEST_CLOCK, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { programBindingRow, recordRow, versionRow } from '../helpers/records.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const TABLE_TEXT = readFileSync(new URL('../generated/transition-table.json', import.meta.url), 'utf8');
 const ROWS = JSON.parse(TABLE_TEXT) as TransitionTableRow[];

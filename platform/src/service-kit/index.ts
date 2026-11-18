@@ -1,4 +1,4 @@
-/** Public surface of `@opt2/platform/service-kit`: the kit's own exports, plus the Fastify types, zod, and undici's `Agent` and `Dispatcher` types they are used with. */
+/** Public surface of `@opt2/platform/service-kit`: the kit's own exports, plus the Fastify types, zod, undici's `Agent` and `Dispatcher` types, and Ajv's draft 2020-12 validator. */
 export { systemClock, fixedClock, isClock, type Clock } from './clock.js';
 export {
   baseEnvSchema,
@@ -98,3 +98,4 @@ export type {
 } from 'fastify';
 export { z } from 'zod';
 export { Agent, type Dispatcher } from 'undici';
+export { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';

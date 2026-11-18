@@ -1,9 +1,9 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `/v1/timesheets` routes through `app.inject` against a throwaway `timesheets` schema and an identity CSRF double, each answer checked against contracts/openapi.yaml. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfUuid, etag } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord } from '@opt2/platform/logging';
@@ -39,10 +39,7 @@ import { TIMESHEETS_UNITS, type ApprovalActionRow, type BlackoutRow, type Timesh
 import { allowedActions, timesheetsV1Plugin } from '../../src/routes/v1.js';
 import { recordingDb, statementsOn } from '../helpers/recording-db.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 

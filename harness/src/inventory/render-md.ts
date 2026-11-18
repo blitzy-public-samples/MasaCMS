@@ -188,9 +188,7 @@ export interface RenderableInventory {
   findings?: readonly InventoryFinding[];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Cells
-// ---------------------------------------------------------------------------------------------------------------
 
 // One line per row and no column breaks: line breaks fold to a space and pipes are escaped, inside code spans too.
 function oneLine(value: string): string {
@@ -275,9 +273,7 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
   return [row(header), row(header.map(() => '---')), ...rows.map(row)];
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Sections
-// ---------------------------------------------------------------------------------------------------------------
 
 // Row order of the committed rendering; sections and items it does not name follow, in code-unit order.
 const COUNT_ORDER: Readonly<Record<string, readonly string[]>> = {
@@ -648,9 +644,7 @@ function findingsSection(inv: RenderableInventory, findings: readonly InventoryF
   );
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Document
-// ---------------------------------------------------------------------------------------------------------------
 
 /**
  * Renders the inventory as the title and body lines of `opt2/inventory/legacy-inventory.md`, for

@@ -167,9 +167,7 @@ export function stepId(step: string): string {
   return `${JOB_ID}.${step}`;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Output types
-// ---------------------------------------------------------------------------------------------------------------
 
 /** The ACF task Masa registers at start-up, as `scheduleTask(...)` declares it. */
 export interface JobRegistration {
@@ -296,9 +294,7 @@ export interface JobWriteEvidence {
   closure: WriteClosure;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Text helpers
-// ---------------------------------------------------------------------------------------------------------------
 
 const SCHEDULER_TRIGGER: Trigger = 'scheduler';
 const SESSION_RANK: Readonly<Record<WriteClosure['sessionEffects'], number>> = { none: 0, relogin: 1, login: 2, logout: 3 };
@@ -433,9 +429,7 @@ function splitTopLevel(text: string, sep: string): string[] {
   return parts.map((p) => p.trim()).filter((p) => p !== '');
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Registration (script start-up template)
-// ---------------------------------------------------------------------------------------------------------------
 
 /** A script `if`/`else` branch holding an offset: its condition, or `else`. */
 interface ScriptBranch {
@@ -637,9 +631,7 @@ export function parseRegistration(tree: SourceTree): JobRegistration {
   throw new Error(`${STARTUP_PATH}: no scheduleTask call registers ${SITE_MONITOR_ENDPOINT}`);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Handler block (tag-mode API handler)
-// ---------------------------------------------------------------------------------------------------------------
 
 interface Tag {
   name: string;
@@ -814,9 +806,7 @@ function findBlock(ctx: ClosureContext): MonitorBlock {
   throw new Error(`${CONTENT_SERVER_PATH}: no handler branch tests the ${SITE_MONITOR_ENDPOINT} endpoint`);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Calls and steps
-// ---------------------------------------------------------------------------------------------------------------
 
 // settingsManager.getSite returns the site's settingsBean (settingsManager.cfc getSite), so a call chained on it is that bean's.
 const RETURN_BEANS: Readonly<Record<string, string>> = { 'settingsmanager.getsite': 'settingsBean' };
@@ -937,9 +927,7 @@ function assignment(tag: Tag): { name: string; expr: string } | null {
   return m?.[1] === undefined || m[2] === undefined ? null : { name: m[1], expr: squash(m[2]) };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Write closures
-// ---------------------------------------------------------------------------------------------------------------
 
 function uniqueBy<T>(items: readonly T[], key: (x: T) => string): T[] {
   const seen = new Set<string>();
@@ -1046,9 +1034,7 @@ function stepClosure(ctx: ClosureContext, calls: readonly ActionCall[], via: rea
   return mergeClosures(parts, gaps);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Steps and semantics
-// ---------------------------------------------------------------------------------------------------------------
 
 interface StepSpan {
   key: string;

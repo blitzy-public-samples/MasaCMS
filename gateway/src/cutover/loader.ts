@@ -1,9 +1,14 @@
 // Loads and schema-validates the committed cut-over files, reads the inventory facts routing needs, and builds the routing index.
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import { ROUTE_FAMILIES, entityRemoteFunctionsFromKeys, normaliseRouteKey } from '@opt2/platform/legacy-compat';
-import { EnvFileError } from '@opt2/platform/service-kit';
+import {
+  Ajv2020,
+  EnvFileError,
+  type AnySchemaObject,
+  type ErrorObject,
+  type ValidateFunction,
+} from '@opt2/platform/service-kit';
 import type { GatewayPaths } from './paths.js';
 import type {
   Authority,

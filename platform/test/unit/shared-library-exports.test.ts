@@ -1,10 +1,12 @@
 import * as cloudSqlConnector from '@google-cloud/cloud-sql-connector';
 import * as pubsub from '@google-cloud/pubsub';
+import * as ajv from 'ajv/dist/2020.js';
 import * as jose from 'jose';
 import pgDriver from 'pg';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import * as auth from '../../src/auth/index.js';
 import * as events from '../../src/events/index.js';
+import * as kit from '../../src/service-kit/index.js';
 import * as tenancy from '../../src/tenancy/index.js';
 
 /** Library bindings each subpath re-exports: subpath, barrel, exported name, the library's own binding and its runtime type. */
@@ -22,6 +24,7 @@ const REEXPORTS: readonly (readonly [string, Record<string, unknown>, string, un
   ['auth', auth, 'createLocalJWKSet', jose.createLocalJWKSet, 'function'],
   ['auth', auth, 'exportJWK', jose.exportJWK, 'function'],
   ['auth', auth, 'exportPKCS8', jose.exportPKCS8, 'function'],
+  ['service-kit', kit, 'Ajv2020', ajv.Ajv2020, 'function'],
 ];
 
 describe('shared library re-exports', () => {
@@ -62,5 +65,9 @@ describe('shared library re-exports', () => {
     expectTypeOf<events.protos.google.pubsub.v1.IPubsubMessage>().toEqualTypeOf<pubsub.protos.google.pubsub.v1.IPubsubMessage>();
     expectTypeOf<auth.JWK>().toEqualTypeOf<jose.JWK>();
     expectTypeOf<auth.JSONWebKeySet>().toEqualTypeOf<jose.JSONWebKeySet>();
+    expectTypeOf<kit.Ajv2020>().toEqualTypeOf<ajv.Ajv2020>();
+    expectTypeOf<kit.ValidateFunction>().toEqualTypeOf<ajv.ValidateFunction>();
+    expectTypeOf<kit.ErrorObject>().toEqualTypeOf<ajv.ErrorObject>();
+    expectTypeOf<kit.AnySchemaObject>().toEqualTypeOf<ajv.AnySchemaObject>();
   });
 });

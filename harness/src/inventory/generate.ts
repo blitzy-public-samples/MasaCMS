@@ -120,9 +120,7 @@ export const INVENTORY_JSON = 'legacy-inventory.json';
 /** File name of the Markdown rendering in the output directory. */
 export const INVENTORY_MD = 'legacy-inventory.md';
 
-// ---------------------------------------------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Owner and disposition fields written onto every disposed item. */
 export interface DispositionFields {
@@ -351,9 +349,7 @@ export interface GenerateResult {
   extractDir: string | null;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Facts no extractor yields
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Rule-step facts of an item beyond its writes: a CFML-runtime dependence, an owner held in stored data, or what it serves. */
 export interface RuntimeFact {
@@ -485,9 +481,7 @@ const AAP_FIGURES: Readonly<Record<string, number>> = Object.freeze({
   coreMuraActionFiles: 21,
 });
 
-// ---------------------------------------------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------------------------------------------
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -649,9 +643,7 @@ function unsettled(units: UnitResolver, refs: readonly UnresolvedRef[]): Unresol
   return refs.filter((u) => units.settling(u) === null);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Dispositions
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Applies `decide` to one item, optionally under a narrowed ownership view, and records its findings. */
 interface Disposer {
@@ -1166,9 +1158,7 @@ function tableItems(tables: readonly TableEntry[], ownership: TableOwnership, d:
   });
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Generation
-// ---------------------------------------------------------------------------------------------------------------
 
 const PENDING_LIVE_CHECK: PendingLiveCheck = Object.freeze({
   procedures: null,
@@ -1482,9 +1472,7 @@ export async function generateInventory(opts: GenerateOptions = {}): Promise<Gen
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Output
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Writes the inventory JSON and its Markdown rendering into `outDir`; returns both absolute paths. */
 export async function writeInventory(inv: LegacyInventory, outDir: string): Promise<string[]> {
@@ -1567,9 +1555,7 @@ export async function checkInventory(result: Pick<GenerateResult, 'inventory' | 
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // CLI
-// ---------------------------------------------------------------------------------------------------------------
 
 const USAGE = 'inventory [--live] [--check] [--out <dir>] [--keep-extract]';
 const HELP = `${USAGE} [--help]
