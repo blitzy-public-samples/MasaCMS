@@ -30,7 +30,7 @@ import { PeopleReadDeniedError, type PeopleClient, type PersonSummary } from '..
 import { createEsignatureRepository } from '../../src/repo/repository.js';
 import { UNITS } from '../../src/repo/tables.js';
 import { FIXTURE_OPERATIONS, FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/routes/fixture.js';
-import { AUDITOR_USER_ID, OTHER_USER_ID, SIGNER_USER_ID, userHeaders } from '../helpers/tokens.js';
+import { AUDITOR_USER_ID, OTHER_USER_ID, SIGNER_USER_ID, gatewayHeaders, userHeaders } from '../helpers/tokens.js';
 
 const P = `${FIXTURE_PREFIX}/requests`;
 const NOW = new Date(2026, 5, 30, 14, 5, 9, 124);
@@ -222,14 +222,14 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     return contract ? conforms(res, method, url) : res;
   }
 
-  /** Sends `method` to `url` without any credential, as a request outside a Masa session reaches the fixture. */
+  /** Sends `method` to `url` with the gateway's invocation credential alone, as a request outside a Masa session reaches the fixture. */
   async function sendAnonymous(method: 'GET' | 'POST', url: string, payload?: Record<string, unknown>): Promise<Injected> {
-    return conforms(await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) }), method, url);
+    return conforms(await app.inject({ method, url, headers: await gatewayHeaders(), ...(payload === undefined ? {} : { payload }) }), method, url);
   }
 
   /**
-   * Sends `method` to `url` over a socket as SIGNER, or without credentials when `anonymous`, `override` as X-HTTP-Method-Override
-   * when given, with a valid CSRF token on a POST override; a socket, because `app.inject` keeps the HEAD body Node never sends.
+   * Sends `method` to `url` over a socket as SIGNER, or with the gateway's invocation credential alone when `anonymous`, `override` as
+   * X-HTTP-Method-Override when given, with a valid CSRF token on a POST override; a socket, because `app.inject` keeps the HEAD body Node never sends.
    */
   async function sendOverSocket(
     method: string,
@@ -237,7 +237,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     { override, body, anonymous = false }: { override?: string; body?: { type: string; text: string }; anonymous?: boolean } = {},
   ): Promise<Answer> {
     const headers = {
-      ...(anonymous ? {} : await userHeaders({ sub: SIGNER_USER_ID, roles: SIGNER })),
+      ...(anonymous ? await gatewayHeaders() : await userHeaders({ sub: SIGNER_USER_ID, roles: SIGNER })),
       ...(override === 'POST' ? CSRF : {}),
       ...(override === undefined ? {} : { 'x-http-method-override': override }),
       ...(body === undefined ? {} : { 'content-type': body.type }),
@@ -460,11 +460,20 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
   });
 
   it.each<[string, () => Promise<Injected>, number, string, string, string]>([
-    ['no credential', () => sendAnonymous('GET', `${P}?siteid=${TENANT_A.siteId}`), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
-    ['site: no credential and no site, so the default this registry lacks', () => sendAnonymous('GET', P), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
-    ['site: no credential and an unknown query site', () => sendAnonymous('GET', `${P}?siteid=nosuch`), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
-    ['site: no credential and an unknown JSON body site', () => sendAnonymous('POST', P, { siteid: 'nosuch' }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
-    ['site: no credential and a non-simple JSON body site', () => sendAnonymous('POST', P, { siteid: { id: TENANT_A.siteId } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['no user token', () => sendAnonymous('GET', `${P}?siteid=${TENANT_A.siteId}`), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    // The handler answers this unknown site 400, so the 401 shows the refusal came before it ran.
+    [
+      'a direct create without an invocation credential',
+      async () => conforms(await app.inject({ method: 'POST', url: P, headers: CSRF, payload: { ...CREATE, siteid: 'nosuch' } }), 'POST', P),
+      401,
+      'esignature.requests',
+      'invalid_request',
+      'Insufficient Account Permissions',
+    ],
+    ['site: no user token and no site, so the default this registry lacks', () => sendAnonymous('GET', P), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: no user token and an unknown query site', () => sendAnonymous('GET', `${P}?siteid=nosuch`), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: no user token and an unknown JSON body site', () => sendAnonymous('POST', P, { siteid: 'nosuch' }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: no user token and a non-simple JSON body site', () => sendAnonymous('POST', P, { siteid: { id: TENANT_A.siteId } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
     ['an anonymous session with its own site', () => send('GET', P, ANONYMOUS_SESSION), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
     ['an anonymous session with another registered site', () => send('GET', `${P}?siteid=${TENANT_B.siteId}`, ANONYMOUS_SESSION), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
     ['site: an anonymous session with an unknown query site', () => send('GET', `${P}?siteid=nosuch`, ANONYMOUS_SESSION), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
@@ -541,13 +550,15 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     const before = logLines.length;
     expect((await send('GET', `${P}?pageIndex=1%D9%A1`)).statusCode).toBe(500);
     expect((await sendAnonymous('GET', `${P}?siteid=${TENANT_A.siteId}`)).statusCode).toBe(401);
-    expect((await app.inject({ url: P, headers: { authorization: 'Bearer not-a-token' } })).statusCode).toBe(401);
+    expect((await app.inject({ url: P, headers: { ...(await gatewayHeaders()), authorization: 'Bearer not-a-token' } })).statusCode).toBe(401);
+    expect((await app.inject({ url: `${P}?siteid=${TENANT_A.siteId}` })).statusCode).toBe(401);
     expect((await send('GET', `${P}?siteid=${TENANT_B.siteId}`)).statusCode).toBe(403);
     const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
     expect(lines.filter(({ message }) => message === 'unhandled fixture exception')).toHaveLength(1);
     expect(lines.filter(({ severity }) => severity === 'WARNING').map(({ message }) => message)).toEqual([
       'request denied: authorization',
       'request denied: invalid-credential',
+      'request denied: missing-credential',
       'request denied: site-mismatch',
     ]);
     for (const line of lines) expect(validateLogRecord(line).errors).toEqual([]);

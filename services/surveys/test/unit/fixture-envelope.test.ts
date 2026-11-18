@@ -317,7 +317,7 @@ describe('fixture routes', () => {
   const survey = { surveyid: SURVEY_ID, title: 'Pulse', version: '2', overdue: 'no', reminders: [{ offset_minutes: '30' }] };
   const surveyJson = `"surveyid":"${SURVEY_ID}","title":"Pulse","version":2,"overdue":false,"reminders":[{"offset_minutes":30}]`;
   let app: FastifyInstance;
-  let tokens: Record<'member' | 'managerB', Record<string, string>>;
+  let tokens: Record<'gateway' | 'member' | 'managerB', Record<string, string>>;
   let seen: FixtureContext | undefined;
   /** The context the schedule route last ran with, cleared once read. */
   const takeSeen = (): FixtureContext | undefined => {
@@ -403,6 +403,7 @@ describe('fixture routes', () => {
     );
     await app.ready();
     tokens = {
+      gateway: await headersFor('service:gateway'),
       member: await headersFor(Roles.member),
       managerB: await headersFor(Roles.surveysManager, { site: TENANT_B.siteId }),
     };
@@ -412,7 +413,7 @@ describe('fixture routes', () => {
     await app.opt2.shutdown();
   });
 
-  /** Injects one request and returns its wire view, its log lines and logger `error` calls, and whether it logged an unhandled fixture exception. */
+  /** Injects one request as the gateway forwards it; returns its wire view, log lines, logger `error` calls and whether it logged an unhandled fixture exception. */
   async function call(
     url: string,
     opts: { method?: 'GET' | 'POST'; payload?: string; contentType?: string; headers?: Record<string, string> } = {},
@@ -423,7 +424,7 @@ describe('fixture routes', () => {
       method: opts.method ?? 'GET',
       url,
       ...(opts.payload === undefined ? {} : { payload: opts.payload }),
-      headers: { ...opts.headers, ...(opts.contentType === undefined ? {} : { 'content-type': opts.contentType }) },
+      headers: { ...tokens.gateway, ...opts.headers, ...(opts.contentType === undefined ? {} : { 'content-type': opts.contentType }) },
     });
     const lines = logLines.slice(before);
     return {
@@ -591,8 +592,8 @@ describe('surveys fixture routes over the recording database', () => {
     `"created":"2026-06-29T10:00:00","createdbyid":"${MANAGER_ID}","lastupdate":"","lastupdatebyid":"","launched_at":""}],` +
     '"startindex":2,"endindex":2,"itemsperpage":1,"totalitems":2,"totalpages":2,"pageindex":2}';
 
-  type Caller = 'manager' | 'managerB' | 'member' | 'systemUser';
-  /** One injected request; no `as` sends it anonymously, a `body` is sent as JSON. */
+  type Caller = 'gateway' | 'manager' | 'managerB' | 'member' | 'systemUser';
+  /** One injected request; no `as` sends it anonymously through the gateway, a `body` is sent as JSON. */
   interface Req {
     method?: 'GET' | 'POST';
     url: string;
@@ -628,6 +629,7 @@ describe('surveys fixture routes over the recording database', () => {
     });
     t = await buildTestApp({ db });
     tokens = {
+      gateway: await headersFor('service:gateway'),
       manager: await headersFor(Roles.surveysManager),
       managerB: await headersFor(Roles.surveysManager, { site: TENANT_B.siteId }),
       member: await headersFor(Roles.member),
@@ -640,13 +642,13 @@ describe('surveys fixture routes over the recording database', () => {
   });
 
   /** Injects `req` and returns its wire view, its response headers, the row-changing statements it ran and the service calls it made. */
-  async function send({ method = 'GET', url, as, body, headers = {} }: Req) {
+  async function send({ method = 'GET', url, as = 'gateway', body, headers = {} }: Req) {
     const mark = t.db.transactions.length;
     const callMark = t.client.requests.length;
     const res = await t.app.inject({
       method,
       url,
-      headers: { ...(as === undefined ? {} : tokens[as]), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+      headers: { ...tokens[as], ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
       ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
     });
     const wire: Wire = { status: res.statusCode, contentType: res.headers['content-type'], etag: res.headers['etag'], body: res.body };

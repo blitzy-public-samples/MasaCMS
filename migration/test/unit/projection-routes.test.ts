@@ -19,7 +19,7 @@ import { parse } from 'yaml';
 
 import { createOwnersClient, type UnitCatalog } from '../../src/owners/index.js';
 import { createAwaiter, type AwaiterDeps } from '../../src/reverse/await.js';
-import { ProjectionTimeoutError, type AwaitProjectionRequest, type AwaitProjectionResult } from '../../src/reverse/index.js';
+import { ProjectionQuarantinedError, ProjectionTimeoutError, type AwaitProjectionRequest, type AwaitProjectionResult } from '../../src/reverse/index.js';
 import { PROJECTION_ROUTES, registerProjectionRoutes, type ProjectionRouteDeps } from '../../src/routes/projection.js';
 
 type Operation = Record<string, unknown>;
@@ -129,6 +129,7 @@ describe('answers', () => {
 
   it.each([
     ['a projection timeout', () => new ProjectionTimeoutError([{ owner: 'people', xid: '42', tenantsBehind: ['tenant-a'] }], 5000)],
+    ['a quarantined position', () => new ProjectionQuarantinedError([{ owner: 'people', xid: '42', tenantId: '3f9c3a52-1c1b-5d4e-8f00-0a1b2c3d4e5f' }])],
     ['an unreachable owner', () => new ServiceUnavailableError('people', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }))],
   ])('answers %s with the legacy 503', async (_label, failure) => {
     awaitProjection.mockRejectedValue(failure());
@@ -181,6 +182,7 @@ describe('answers over a real awaiter whose owner fails its position read', () =
       authority: unreached,
       catalog: UNREACHED_CATALOG,
       tenants: unreached,
+      quarantined: unreached,
       clock: { now: () => new Date() },
       defaults: { timeoutMs: DEFAULT_TIMEOUT_MS, pollIntervalMs: 250 },
     };

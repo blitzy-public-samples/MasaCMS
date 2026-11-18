@@ -35,8 +35,10 @@ const RELAY_PATH_PREFIX = `${RELAY_ALIAS_PREFIX}/`;
 // Decided on the computed key, which is decoded and lower-cased, so no spelling of the path skips verification.
 const SIGNED_FILE_KEY_PREFIX = `opt2:${LOCAL_SIGNED_URL_PREFIX}`;
 
-/** Request facts the matcher reads; a Fastify request with its raw buffered body satisfies it. */
-export type MatchRequest = AdminRequestLike;
+/** Request facts the matcher reads; a Fastify request satisfies it. */
+export interface MatchRequest extends AdminRequestLike {
+  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+}
 
 /** Why the gateway cannot serve a request; dispatch answers the legacy-shaped 503. */
 export type UnavailableReason = 'no-active-version' | 'admin-unmapped' | 'no-service-url';
@@ -277,7 +279,6 @@ export function createMatcher(deps: MatcherDeps): Matcher {
 
   const targetDestination = async (
     request: MatchRequest,
-    body: BodyParams,
     result: RouteKeyResult,
     entry: CutoverEntry,
   ): Promise<Exclude<Destination, RelayDestination>> => {
@@ -290,7 +291,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
     if (result.family === 'admin') {
       let web: AdminWebTarget;
       try {
-        web = mapAdminToWeb({ result, request, modes: deps.modes, form: body.form });
+        web = mapAdminToWeb({ result, request, modes: deps.modes });
       } catch (error) {
         // A target entry never falls back to legacy.
         if (error instanceof AdminMappingError) return unavailable('admin-unmapped');
@@ -351,7 +352,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         // Legacy serves an OPT-2 namespace path as one of its own (a page, through its root front controller), so it routes as that.
         return routed(result.family === 'opt2' ? keyedMatch(keyRequest, legacyOptions, index) : keyed, LEGACY);
       }
-      return routed(keyed, await targetDestination(request, body, result, entry));
+      return routed(keyed, await targetDestination(request, result, entry));
     },
   };
 }

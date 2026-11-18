@@ -73,11 +73,14 @@ function awaitRequestOf(body: unknown, defaultTimeoutMs: number): AwaitProjectio
   return { positions: parseWritePosition(formatWritePosition(parsed.data.positions)), timeoutMs: budget };
 }
 
-/** Registers `projectionAwait`; a budget that passes, or an owner, checkpoint, tenant set or authority that cannot be read, is the legacy 503. */
+/**
+ * Registers `projectionAwait`; a budget that passes, a quarantined position, or an owner, checkpoint, tenant set, quarantine or
+ * authority that cannot be read, is the legacy 503.
+ */
 export function registerProjectionRoutes(app: FastifyInstance, deps: ProjectionRouteDeps): void {
   app.post<{ Body: unknown; Reply: ProjectionAwaitResponse }>(AWAIT_PATH, { config: { opt2: ROUTE_AUTH } }, async (request) => {
-    // ProjectionTimeoutError, owner unavailability and ProjectionUnavailableError are LegacyServiceUnavailableErrors: the service-kit error
-    // handler answers them with the JSON API `server_error` 503 and logs the pending positions, so none is caught here.
+    // ProjectionTimeoutError, ProjectionQuarantinedError, owner unavailability and ProjectionUnavailableError are LegacyServiceUnavailableErrors:
+    // the service-kit error handler answers them with the JSON API `server_error` 503 and logs the pending positions, so none is caught here.
     const result = await deps.projector.awaitProjection(awaitRequestOf(request.body, deps.defaultTimeoutMs));
     // The contract's ProjectionAwaitResponse admits no `waitedMs`, so the awaiter's timing is not answered.
     return { applied: true, positions: Object.fromEntries(result.positions) };

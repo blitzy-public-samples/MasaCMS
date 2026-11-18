@@ -1,5 +1,6 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 // The surveys module's registrations: slugs, owning service, roles, the OPT-2 nav link, and legacy admin classes only.
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { surveysActions, surveysScreens } from '@/screens/opt2/surveys';
 import { OPT2_NAV_MODULES } from '@/shell/nav';
@@ -30,6 +31,20 @@ const LEGACY_CLASSES = new Set([
   'form-actions',
   'alert',
   'alert-error',
+  'actions',
+  'show-actions',
+  'mi-ellipsis-v',
+  'actions-menu',
+  'hide',
+  'actions-list',
+  'mi-calendar',
+  'mi-bullseye',
+  'mi-list-alt',
+  'table-responsive',
+  'hidden-xs',
+  'hidden-sm',
+  'hidden-md',
+  'title',
   // State badges, styled by admin.css `.mura .label-success`, `-info`, `-inverse` and `-important`.
   'label',
   'label-success',
@@ -70,5 +85,17 @@ describe('surveys registrations', () => {
     const classes = [...html.matchAll(/ class="([^"]*)"/g)].flatMap(([, list]) => (list ?? '').split(' '));
     expect(classes.length).toBeGreaterThan(0);
     expect(classes.filter((name) => !LEGACY_CLASSES.has(name))).toEqual([]);
+  });
+
+  it.each(['schedule', 'targets'])('ends a block with the %s form and its in-flow action row', async (screen) => {
+    const html = await bodyHtml(screen, managerRequest({ surveyid: SURVEY_IDS.multiSiteSurvey }), surveysGateway());
+    const $ = cheerio.load(html, null, false);
+    const form = $('form[name="form1"]');
+
+    expect($('.mura-actions')).toHaveLength(0);
+    expect(form.parent().is('.block-content')).toBe(true);
+    expect(form.nextAll()).toHaveLength(0);
+    expect(form.children().last().is('.form-actions')).toBe(true);
+    expect(form.closest('.block-constrain').next('.block-constrain').find('h2').length).toBeGreaterThan(0);
   });
 });

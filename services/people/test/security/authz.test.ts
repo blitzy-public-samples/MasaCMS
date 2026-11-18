@@ -119,7 +119,7 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'GET', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'PUT', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
-  { method: 'GET', url: '/healthz', transport: 'service', public: true, siteCheck: true },
+  { method: 'GET', url: '/healthz', transport: 'service', public: true, invocationOptional: true, siteCheck: true },
   { method: 'DELETE', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
   { method: 'GET', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
@@ -348,6 +348,11 @@ async function actorCredential(actor: TestActor, overrides: { tid?: string } = {
     mintServiceToken({ caller: 'gateway', audience: SERVICE_NAME }),
   ]);
   return { headers: { authorization: `Bearer ${userToken}`, [INVOCATION_HEADER]: `Bearer ${gatewayToken}` }, query: '' };
+}
+
+/** An anonymous visitor's request as the gateway forwards it: the gateway's invocation credential alone. */
+function visitorCredential(): Promise<Credential> {
+  return credentialOf(subjectNamed(serviceRole('gateway')));
 }
 
 interface Probe {
@@ -615,6 +620,8 @@ function expectedOutcome(entry: RouteMatrixEntry, request: Probe, subject: RoleS
   if (entry.transport === 'cloud-tasks') return presented === 'tasks' ? REACHED : DENIED_401;
   // The service transport verifies a bearer in Authorization as a user token, so a managed-delivery token fails, public routes included.
   if (presented === 'tasks') return DENIED_401;
+  // No credential and the push key both lack the invocation credential, which only an invocationOptional route lets be absent.
+  if ((presented === 'none' || presented === 'push-key') && entry.invocationOptional !== true) return DENIED_401;
   if (entry.requires !== undefined) {
     const roles =
       presented === 'user'
@@ -826,7 +833,7 @@ describe('cEditProfile gate: any logged-in user, acting only on themselves', () 
 
 describe('favorites templates: public, acting for the url userID as legacy does, never for a user people does not own', () => {
   it.each([
-    ['an anonymous caller', () => Promise.resolve(NO_CREDENTIAL)],
+    ['an anonymous caller', visitorCredential],
     ['a signed-in system user', () => actorCredential(SYSTEM_USER_A)],
   ])('refuses %s a save for a userID naming no person with the legacy 503 before any write', async (_label, credential) => {
     const url = `${FAVORITES}/saveFavorite.cfm?userID=${STRANGER_ID}&${ON_SITE_A}&favoriteName=Probe&favoriteLocation=${STRANGER_ID}&favoriteType=Page`;
@@ -839,7 +846,7 @@ describe('favorites templates: public, acting for the url userID as legacy does,
   const GROUP_LOOKUP = ['POST /internal/v1/group-favorites:lookup'];
 
   it('answers an anonymous delete of an id no favorite holds with the removal notice, writing nothing', async () => {
-    const result = await probe(get(`${FAVORITES}/deleteFavorite.cfm?favoriteID=${STRANGER_ID}`, false));
+    const result = await probe(get(`${FAVORITES}/deleteFavorite.cfm?favoriteID=${STRANGER_ID}`, false), await visitorCredential());
     expect([result.res.statusCode, result.res.body]).toEqual([200, 'Your favorite has been removed.']);
     expect([result.writes, result.identityCalls, result.published, result.tasks], describeResult(result)).toEqual([0, GROUP_LOOKUP, 0, 0]);
   });
@@ -847,7 +854,7 @@ describe('favorites templates: public, acting for the url userID as legacy does,
   it("refuses an anonymous delete of a group's favorite, which identity holds, with the legacy 503, writing nothing", async () => {
     const groupFavorite = cfUuid();
     identity.seedGroupFavorites(groupFavorite);
-    const result = await probe(get(`${FAVORITES}/deleteFavorite.cfm?favoriteID=${groupFavorite}`, false));
+    const result = await probe(get(`${FAVORITES}/deleteFavorite.cfm?favoriteID=${groupFavorite}`, false), await visitorCredential());
     expect(result.res.statusCode, describeResult(result)).toBe(503);
     expect([result.writes, result.identityCalls, result.published, result.tasks], describeResult(result)).toEqual([0, GROUP_LOOKUP, 0, 0]);
   });
@@ -862,7 +869,7 @@ describe('JSON API user and address: AllowAccess needs the Users module, AllowAc
   }
 
   it.each(['user', 'address'])('refuses another %s record to anonymous and system-user callers with 401, never data', async (entity) => {
-    for (const credential of [NO_CREDENTIAL, await actorCredential(SYSTEM_USER_A)]) {
+    for (const credential of [await visitorCredential(), await actorCredential(SYSTEM_USER_A)]) {
       const result = await probe(read(entity, STRANGER_ID), credential);
       expect(isFindOneRefusal(result), describeResult(result)).toBe(true);
     }
@@ -882,7 +889,7 @@ describe('JSON API user and address: AllowAccess needs the Users module, AllowAc
   });
 
   it('refuses an anonymous save without CSRF tokens with invalidTokens before any write', async () => {
-    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/user`, 'fname=Probe', false));
+    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/user`, 'fname=Probe', false), await visitorCredential());
     const { code, message } = LEGACY_ERROR_MAP.invalidTokens;
     expect(result.res.statusCode, describeResult(result)).toBe(400);
     expect(errorEnvelope(result.res)).toEqual({ apiversion: 'v1', method: 'save', error: { message, code } });
@@ -890,7 +897,7 @@ describe('JSON API user and address: AllowAccess needs the Users module, AllowAc
   });
 
   it('refuses an anonymous save on the sessionless REST family with 401 and a Basic challenge before any write', async () => {
-    const result = await probe(postForm(`/_api/rest/v1/${SITE_A}/user`, 'fname=Probe', false));
+    const result = await probe(postForm(`/_api/rest/v1/${SITE_A}/user`, 'fname=Probe', false), await visitorCredential());
     expect(result.res.statusCode, describeResult(result)).toBe(401);
     expect(result.res.headers['www-authenticate']).toBe('Basic');
     expect(errorEnvelope(result.res)?.error).toEqual(AUTHORIZATION_ERROR);
@@ -934,7 +941,7 @@ describe('fixture archive gate: site, login, site admin, then the person', () =>
   }
 
   it('refuses an anonymous archive with the fixture authorization envelope', async () => {
-    const result = await probe(archive());
+    const result = await probe(archive(), await visitorCredential());
     expect(result.res.statusCode, describeResult(result)).toBe(401);
     expect(result.res.body).toBe(JSON.stringify(fixtureRefusal('Insufficient Account Permissions')));
     expect(archivedNothing(result) && result.identityCalls.length === 0).toBe(true);

@@ -1,5 +1,6 @@
 // Read-after-write barrier: awaitProjection against a real owner changelog and the projector's legacy checkpoints, and its route on the migration app.
 import { readFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { LegacyServiceUnavailableError, apiUnavailableResponse, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { WRITE_POSITION_HEADER, isApplied, parseWritePosition, type RepositoryRow } from '@opt2/platform/migration-kit';
@@ -17,6 +18,7 @@ import {
   readCheckpoints,
   type AwaitProjectionResult,
   type CheckpointRow,
+  type CycleResult,
   type Projector,
   type StartupGuardRunner,
 } from '../src/reverse/index.js';
@@ -68,8 +70,14 @@ const DIRECT_COMMIT: StartupGuardRunner = { run: (commit) => commit() };
 /** Short budgets the awaiter must exhaust in real time; well under a second. */
 const SHORT_BUDGET_MS = 300;
 
-/** Projector cycles driven until a write is projected; foreign transactions on a shared cluster can hold the horizon a few cycles. */
-const MAX_CYCLES = 100;
+/**
+ * Longest the projector cycles are driven for a write to pass the horizon, which any open transaction of the cluster holds
+ * back, such as a concurrent suite's held row lock; well under the test timeout.
+ */
+const PROJECTION_WAIT_MS = 30_000;
+
+/** Pause between the cycles driven within {@link PROJECTION_WAIT_MS}. */
+const CYCLE_PAUSE_MS = 50;
 
 const ROW_HELD = imageSizeRow({ name: 'held-open' });
 const ROW_NEWER = imageSizeRow({ name: 'newer-commit' });
@@ -201,16 +209,38 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
   let tc: TestContext;
   let projector: Projector;
 
-  /** Runs projector cycles until the tenant checkpoint has passed `xid`, and returns that checkpoint. */
+  /** Runs projector cycles, {@link CYCLE_PAUSE_MS} apart, until the tenant checkpoint has passed `xid`, and returns that checkpoint. */
   async function cycleUntilProjected(xid: string): Promise<CheckpointRow> {
-    let checkpoint: CheckpointRow | undefined;
-    for (let cycle = 1; cycle <= MAX_CYCLES; cycle += 1) {
+    const deadline = Date.now() + PROJECTION_WAIT_MS;
+    for (let cycles = 1; ; cycles += 1) {
       const result = await projector.runOnce();
       expect(result.errors).toEqual([]);
-      checkpoint = await tenantCheckpoint(tc.legacy);
+      const checkpoint = await tenantCheckpoint(tc.legacy);
       if (checkpoint !== undefined && isApplied(xid, checkpoint.appliedHorizon)) return checkpoint;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Position ${xid} not projected after ${String(cycles)} cycles in ${String(PROJECTION_WAIT_MS)} ms; applied horizon ${checkpoint?.appliedHorizon ?? 'none'}`,
+        );
+      }
+      await delay(CYCLE_PAUSE_MS);
     }
-    throw new Error(`Position ${xid} not projected after ${String(MAX_CYCLES)} cycles; applied horizon ${checkpoint?.appliedHorizon ?? 'none'}`);
+  }
+
+  /**
+   * Starts projector cycles, {@link CYCLE_PAUSE_MS} apart, until one reaches the closed gate, and returns that held cycle;
+   * a cycle whose horizon has not passed the stored checkpoint commits no batch and so ends without reaching it.
+   */
+  async function cycleToGate(): Promise<{ cycle: Promise<CycleResult> }> {
+    const deadline = Date.now() + PROJECTION_WAIT_MS;
+    for (let cycles = 1; ; cycles += 1) {
+      const arrived = gate.nextArrival();
+      const cycle = projector.runOnce();
+      const ended = await Promise.race([arrived.then(() => undefined), cycle]);
+      if (ended === undefined) return { cycle };
+      expect(ended.errors).toEqual([]);
+      if (Date.now() >= deadline) throw new Error(`No projector cycle reached the gate after ${String(cycles)} cycles in ${String(PROJECTION_WAIT_MS)} ms`);
+      await delay(CYCLE_PAUSE_MS);
+    }
   }
 
   function rowsUrl(): string {
@@ -243,7 +273,7 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
     const held = await owner.openTransaction();
     await held.write(TARGET_TABLE, targetRow(ROW_HELD));
 
-    const response = await fetchPgOwnerRows(rowsUrl(), { method: 'POST', json: targetRow(ROW_NEWER) });
+    const response = await fetchPgOwnerRows(OWNER, rowsUrl(), { method: 'POST', json: targetRow(ROW_NEWER) });
     expect(response.status).toBe(200);
     const written = parseWritePosition(response.headers.get(WRITE_POSITION_HEADER) ?? undefined);
     const newerXid = written.get(OWNER);
@@ -252,7 +282,8 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
     expect(BigInt(newerXid)).toBeGreaterThan(BigInt(held.xid));
 
     const positions = new Map([[OWNER, newerXid]]);
-    const awaited = track(projector.awaitProjection({ positions, timeoutMs: 10_000 }), tc.legacy);
+    // Outlasts cycleUntilProjected below, so only the newer write's projection settles it.
+    const awaited = track(projector.awaitProjection({ positions, timeoutMs: PROJECTION_WAIT_MS + 10_000 }), tc.legacy);
 
     await expect(projector.runOnce()).resolves.toMatchObject({ leader: true, ran: true, errors: [] });
     const behind = await tenantCheckpoint(tc.legacy);
@@ -286,9 +317,7 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
     gate.close();
     const delayed = await owner.write((tx, repo) => repo.upsert(tx, TARGET_TABLE, targetRow(ROW_DELAYED)));
     const positions = new Map([[OWNER, delayed.xid]]);
-    const arrived = gate.nextArrival();
-    const cycle = projector.runOnce();
-    await arrived;
+    const { cycle } = await cycleToGate();
 
     const timedOut = await rejectionOf(projector.awaitProjection({ positions, timeoutMs: SHORT_BUDGET_MS }));
     expect(timedOut).toBeInstanceOf(ProjectionTimeoutError);
@@ -380,12 +409,15 @@ describe(`POST ${AWAIT_PATH} on the migration app`, () => {
       cutover: { versions: [V0001, PROGRAMS_SITES_TARGET] },
       bridge: false,
       env: { LOG_LEVEL: 'fatal' },
+      // The barrier reads `projector_quarantine` of a migrated `migration` schema.
+      migrationDb: true,
     });
     configPaths.current = tc.ctx.config.paths;
     try {
       app = await buildApp({
         env: tc.ctx.env,
         verifierOverride: testVerifier('migration'),
+        db: tc.ctx.db,
         legacy: tc.legacy,
         owners: tc.ctx.owners,
         gateway: tc.gateway,

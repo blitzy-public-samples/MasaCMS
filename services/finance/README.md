@@ -100,8 +100,8 @@ Served under `/legacy-fixtures/cfml/api.cfm/finance` in the Masa envelope. The g
 | `GET` | `/internal/v1/finance/records` | `service:reporting` | One page of records for a running export job, once reporting confirms the job's scope |
 | `POST` | `/internal/v1/events/finance.programs-sites.site.changed.v1` | `service:pubsub-invoker` (local push key locally) | Push delivery into `finance.tenant_registry` |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate,objects}` | `platform.migration` | Backfill, feed, reconciliation, unit gates and attachment bytes for the reverse projection |
-| `GET` | `/opt2/files/finance-attachments/{tenantId}/{objectName}` | public; the signature is the credential | Local storage adapter downloads |
-| `GET` | `/healthz` | public | Liveness probe |
+| `GET` | `/opt2/files/finance-attachments/{tenantId}/{objectName}` | public; the caller's invocation credential, and the signature for the object | Local storage adapter downloads, forwarded by the gateway |
+| `GET` | `/healthz` | public, invocation credential optional | Liveness probe |
 
 ## Events
 

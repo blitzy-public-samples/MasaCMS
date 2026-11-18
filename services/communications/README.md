@@ -76,7 +76,7 @@ Every route declares `config.opt2.requires` or `config.opt2.public`; anything el
 
 ### Fixture routes
 
-Paths below are under `/legacy-fixtures/cfml/api.cfm/communications`. Each answers in the Masa envelope with the method name shown; transport is `service`. The routes are public on the platform because, as in `api.cfm`, the handler checks the site first, then login, the `communications.sender` group and, on writes, the CSRF token of the collection context `''`, which identity consumes once.
+Paths below are under `/legacy-fixtures/cfml/api.cfm/communications`. Each answers in the Masa envelope with the method name shown; transport is `service`. The routes are public on the platform, which still requires the caller's invocation credential, because, as in `api.cfm`, the handler checks the site first, then login, the `communications.sender` group and, on writes, the CSRF token of the collection context `''`, which identity consumes once.
 
 | Method | Path | Method name | Does |
 |---|---|---|---|
@@ -122,7 +122,7 @@ Used by the OPT-2 screens at `/opt2/admin/communications/*` (templates, sends, d
 | `POST` | `/internal/v1/events/communications.surveys.survey.scheduled.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Seam 2 |
 | `POST` | `/internal/v1/outbox/sweep` | `cloud-tasks` (queue `communications-outbox-sweep`, every 60 s) | `service:tasks-invoker` | Creates the next sweep task, publishes every unpublished outbox row, sends login mail still `queued` after 30 s and re-queues task rows whose queue call was lost |
 | `POST` | `/internal/v1/task-queues/{queue}/pause`, `/resume`, `/ensure` | `service` | `platform.migration`, `platform.operator` | Controls `surveys-launch`, `communications-reminders` and `communications-outbox-sweep`, the queues this service creates tasks on |
-| `GET` | `/healthz` | `service` | public | Liveness probe |
+| `GET` | `/healthz` | `service` | public, invocation credential optional | Liveness probe |
 
 ## Events
 

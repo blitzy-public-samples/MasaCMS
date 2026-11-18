@@ -178,21 +178,20 @@ describe('e-signature screen markup', () => {
     }
   });
 
-  it('shows each audit entry as read-only label and value rows, with no grid', async () => {
+  it('shows the audit entries as label and value rows in one block, a rule between each, no grid', async () => {
     const $ = cheerio.load(await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID })), null, false);
-    const entries = $('div.block-content div.block-content').toArray();
-    expect(entries).toHaveLength(auditChain.items?.length ?? 0);
-    for (const entry of entries) {
-      expect($(entry).find('label').toArray().map((el) => $(el).text())).toEqual([
-        'Sequence',
-        'Action',
-        'Actor',
-        'Detail',
-        'At',
-        'Previous Hash',
-        'Hash',
-      ]);
+    const content = $('div.block-content');
+    expect(content).toHaveLength(1);
+    expect($('div.block-constrain')).toHaveLength(1);
+    expect(content.find('.block')).toHaveLength(0);
+    const entries: string[][] = [[]];
+    for (const child of content.children('div.mura-control-group, hr').toArray()) {
+      if ($(child).is('hr')) entries.push([]);
+      else entries.at(-1)?.push($(child).children('label').text());
     }
+    expect(entries).toEqual(
+      (auditChain.items ?? []).map(() => ['Sequence', 'Action', 'Actor', 'Detail', 'At', 'Previous Hash', 'Hash']),
+    );
     expect($('table')).toHaveLength(0);
     expect($('label[for]')).toHaveLength(0);
   });

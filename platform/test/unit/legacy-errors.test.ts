@@ -181,6 +181,22 @@ describe('legacyErrorResponse', () => {
     expect(response.headers).toEqual({ 'Content-Type': JSON_CONTENT_TYPE, ETag: etag(response.body), 'WWW-Authenticate': 'Bearer' });
   });
 
+  it("reports a fault as server_error's stacktrace, after its message and code, with the serializer's lower-cased keys", () => {
+    const stacktrace = { Message: 'Element RC.userBean is undefined in ARGUMENTS.', Type: 'Expression' };
+    const response = legacyErrorResponse('server_error', { stacktrace });
+    expect(response).toEqual({
+      status: 500,
+      headers: { 'Content-Type': JSON_CONTENT_TYPE, ETag: etag(response.body) },
+      body: '{"apiversion":"v1","method":"invalid","error":{"message":"Unhandled Exception","code":"server_error","stacktrace":{"message":"Element RC.userBean is undefined in ARGUMENTS.","type":"Expression"}}}',
+    });
+    expect(legacyErrorResponse('server_error', { stacktrace: undefined })).toEqual(legacyErrorResponse('server_error'));
+  });
+
+  it('reports no stacktrace for a type a named catch block answers', () => {
+    const stacktrace = { Message: 'm', Type: 'Expression' };
+    expect(legacyErrorResponse('invalidTokens', { stacktrace })).toEqual(legacyErrorResponse('invalidTokens'));
+  });
+
   it('reports the method under the request context it is given', () => {
     expect(legacyErrorResponse('badRequest', { method: 'origin', methodCtx: { hasOrigin: true } }).body).toBe(
       errorBody('origin', 'Bad Request', 'invalid_request'),
@@ -199,6 +215,7 @@ describe('LegacyApiError', () => {
       methodCtx: { restMode: true },
       wwwAuthenticate: 'Bearer error="invalid_access_token"',
       data: { reason: 'expired' },
+      stacktrace: { Message: 'm', Type: 'Expression' },
     });
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(LegacyApiError);
@@ -211,13 +228,15 @@ describe('LegacyApiError', () => {
       methodCtx: { restMode: true },
       wwwAuthenticate: 'Bearer error="invalid_access_token"',
       data: { reason: 'expired' },
+      stacktrace: { Message: 'm', Type: 'Expression' },
     });
   });
 
   it('leaves every option undefined when none is given', () => {
     const err = new LegacyApiError('badRequest');
     expect(err.message).toBe('badRequest: Bad Request');
-    expect([err.method, err.params, err.methodCtx, err.wwwAuthenticate, err.data]).toEqual([
+    expect([err.method, err.params, err.methodCtx, err.wwwAuthenticate, err.data, err.stacktrace]).toEqual([
+      undefined,
       undefined,
       undefined,
       undefined,

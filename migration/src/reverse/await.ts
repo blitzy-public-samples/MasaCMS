@@ -9,9 +9,10 @@ import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { MigrationContext } from '../context.js';
 import type { CurrentAuthority } from '../cutover/index.js';
 import type { LegacyDb } from '../legacy/index.js';
-import { OwnerCallError, type DataOwner, type OwnersClient, type UnitCatalog } from '../owners/index.js';
+import { OwnerCallError, UNAVAILABLE_STATUSES, type DataOwner, type OwnersClient, type UnitCatalog } from '../owners/index.js';
 
 import { readCheckpoints, readyHorizonOf, type CheckpointRow } from './apply-legacy.js';
+import type { QuarantinedPosition } from './quarantine.js';
 
 /** Write positions to await, and owners whose current write positions are read first and then awaited. */
 export interface AwaitProjectionRequest {
@@ -53,8 +54,23 @@ export class ProjectionTimeoutError extends LegacyServiceUnavailableError {
   }
 }
 
+/** A listed position's write is quarantined: legacy could not take it, and no later change of its row has repaired it; renders as the legacy 503. */
+export class ProjectionQuarantinedError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'ProjectionQuarantinedError';
+
+  constructor(readonly quarantined: QuarantinedPosition[]) {
+    const positions = formatWritePosition(new Map(quarantined.map(({ owner, xid }) => [owner, xid])));
+    super(`Projection of ${positions} is quarantined: legacy could not take the write`, 'auto', 'projection-quarantined');
+  }
+
+  /** The message, which names only the quarantined owners and their xids, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.message;
+  }
+}
+
 /** A read the await depends on. */
-export type ProjectionRead = 'checkpoint' | 'tenant set' | 'cut-over authority';
+export type ProjectionRead = 'checkpoint' | 'tenant set' | 'cut-over authority' | 'quarantine';
 
 /** A read the await depends on failed, so no position can be reported applied; renders as the legacy 503. */
 export class ProjectionUnavailableError extends LegacyServiceUnavailableError {
@@ -85,6 +101,8 @@ export interface AwaiterDeps {
   catalog: Pick<UnitCatalog, 'ownerOf'>;
   /** Tenants the projector streams; read on every poll, within `budget`. */
   tenants: (budget: ReadBudget) => Promise<readonly string[]>;
+  /** Unrepaired quarantined changes at exactly the given positions; read on every poll after the checkpoints, within `budget`. */
+  quarantined: (positions: WritePositions, budget: ReadBudget) => Promise<readonly QuarantinedPosition[]>;
   clock: MigrationContext['clock'];
   /** Replaces the timer, for example in tests. */
   sleep?: (ms: number) => Promise<void>;
@@ -95,14 +113,12 @@ export interface AwaiterDeps {
 export interface Awaiter {
   /**
    * Resolves once every position is applied in legacy.
-   * @throws ProjectionTimeoutError when the budget passes first; ServiceUnavailableError when an owner whose position is read is unavailable;
-   * ProjectionUnavailableError when the checkpoint, tenant set or cut-over authority cannot be read.
+   * @throws ProjectionTimeoutError when the budget passes first; ProjectionQuarantinedError at once when a listed position's write is
+   * quarantined; ServiceUnavailableError when an owner whose position is read is unavailable; ProjectionUnavailableError when the
+   * checkpoint, tenant set, quarantine or cut-over authority cannot be read.
    */
   awaitProjection(req: AwaitProjectionRequest): Promise<AwaitProjectionResult>;
 }
-
-/** Owner answers that mean the owner is unavailable. */
-const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 function checkpointKey(owner: string, tenantId: string): string {
   return `${owner}\u0000${tenantId.toLowerCase()}`;
@@ -167,7 +183,7 @@ async function withinBudget<T>(remainingMs: number, read: (budget: ReadBudget) =
   }
 }
 
-/** Creates the awaiter; it polls `opt2_sync.projector_checkpoint`, committed with the projected rows, at the configured interval. */
+/** Creates the awaiter; it polls `opt2_sync.projector_checkpoint`, committed with the projected rows, and the quarantine of listed positions at the configured interval. */
 export function createAwaiter(deps: AwaiterDeps): Awaiter {
   const sleep = deps.sleep ?? ((ms: number) => delay(ms));
 
@@ -194,14 +210,21 @@ export function createAwaiter(deps: AwaiterDeps): Awaiter {
     return failClosed('cut-over authority', () => deps.authority(budget));
   }
 
-  async function readPending(positions: WritePositions, budget: ReadBudget): Promise<PendingPosition[]> {
+  /** The positions still behind, and the quarantined changes at the `listed` ones. */
+  async function readPending(
+    positions: WritePositions,
+    listed: WritePositions,
+    budget: ReadBudget,
+  ): Promise<{ behind: PendingPosition[]; quarantined: readonly QuarantinedPosition[] }> {
     const [tenants, checkpoints] = await Promise.all([
       failClosed('tenant set', () => deps.tenants(budget)),
       failClosed('checkpoint', () =>
         deps.legacy.live().then((pool) => readCheckpoints(pool, { owners: [...positions.keys()] }, { signal: budget.signal })),
       ),
     ]);
-    return pendingPositions(positions, tenants, checkpoints);
+    // A change is recorded before the batch that leaves it out commits, so a read after the checkpoints sees the record of every horizon they hold.
+    const quarantined = listed.size === 0 ? [] : await failClosed('quarantine', () => deps.quarantined(listed, budget));
+    return { behind: pendingPositions(positions, tenants, checkpoints), quarantined };
   }
 
   return {
@@ -219,9 +242,12 @@ export function createAwaiter(deps: AwaiterDeps): Awaiter {
       const projected = positions.size === 0 ? new Set<string>() : projectedOwners(await within(readAuthority), deps.catalog);
       // Gates reject target writes on `legacy` units and window imports are never projected, so other owners have nothing to await.
       const awaited: WritePositions = new Map([...positions].filter(([owner]) => projected.has(owner)));
+      // A listed position names one write; an owner's current position names none, so only listed ones can be quarantined.
+      const listed: WritePositions = new Map([...(req.positions ?? [])].filter(([owner]) => projected.has(owner)));
       if (awaited.size > 0) pending = unread(awaited);
       for (;;) {
-        const behind = awaited.size === 0 ? [] : await within((budget) => readPending(awaited, budget));
+        const { behind, quarantined } = awaited.size === 0 ? { behind: [], quarantined: [] } : await within((budget) => readPending(awaited, listed, budget));
+        if (quarantined.length > 0) throw new ProjectionQuarantinedError([...quarantined]);
         if (behind.length > 0) pending = behind;
         if (elapsed() > timeoutMs) throw timedOut();
         if (behind.length === 0) return { positions, waitedMs: elapsed() };

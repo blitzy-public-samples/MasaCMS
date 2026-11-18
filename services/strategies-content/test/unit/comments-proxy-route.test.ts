@@ -1,13 +1,13 @@
-/** `commentsProxy.cfc` get, flag and getContentStats over a throwaway content schema: remote argument binding, bodies, tenancy, gates and the error page. */
+/** `commentsProxy.cfc` get, flag and getContentStats over a throwaway content schema: remote argument binding, bodies, tenancy, gates and onError's pages. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML, UNREGISTERED_SITEID_HEADER } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, LegacyFaultError, UNREGISTERED_SITEID_HEADER, legacyDebugPageHtml } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, qualified } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -54,6 +54,8 @@ const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
 let handle: ThrowawaySchema;
 let stateDir: string;
 let app: FastifyInstance;
+/** The service with configBean `debuggingEnabled` false. */
+let quietApp: FastifyInstance;
 let deps: DomainDeps;
 /** The `message` of every log line the service writes. */
 const logMessages: string[] = [];
@@ -68,9 +70,13 @@ async function visitorHeaders(site = SITE): Promise<Record<string, string>> {
 }
 
 /** Sends one proxy call and checks the answer against the contract. */
-async function call(method: 'GET' | 'POST', query: string, opts: { headers?: Record<string, string>; payload?: string } = {}): Promise<InjectResponse> {
+async function call(
+  method: 'GET' | 'POST',
+  query: string,
+  opts: { headers?: Record<string, string>; payload?: string; service?: FastifyInstance } = {},
+): Promise<InjectResponse> {
   const headers = opts.headers ?? (await visitorHeaders());
-  const res = await app.inject({
+  const res = await (opts.service ?? app).inject({
     method,
     url: `${COMMENTS_PROXY_PATH}${query}`,
     headers: opts.payload === undefined ? headers : { ...FORM, ...headers },
@@ -128,34 +134,44 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
 
     stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-comments-proxy-'));
     await writeTestSecrets(stateDir);
-    app = await createService({
-      name: SERVICE,
-      version: '1.0.0',
-      env: loadEnv(undefined, {
-        PORT: '8114',
-        OPT2_SERVICE_NAME: SERVICE,
-        OPT2_ENV: 'local',
-        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
-        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
-        OPT2_TOKEN_AUDIENCE: 'opt2-local',
-        OPT2_STATE_DIR: stateDir,
-        TZ: 'UTC',
-      }),
-      clock,
-      verifierOverride: testVerifier(SERVICE),
-      pool: db,
-      logger: createLogger({
-        service: SERVICE,
+    /** The service with the comments proxy routes, under the given configBean `debuggingEnabled` or the settings template's. */
+    const start = async (debuggingEnabled?: boolean): Promise<FastifyInstance> => {
+      const service = await createService({
+        name: SERVICE,
         version: '1.0.0',
-        env: 'local',
-        destination: { write: (line: string) => void logMessages.push(String((JSON.parse(line) as { message?: unknown }).message)) },
-      }),
-    });
-    registerCommentsProxyRoutes(app, { domain: deps });
-    await app.ready();
+        env: loadEnv(undefined, {
+          PORT: '8114',
+          OPT2_SERVICE_NAME: SERVICE,
+          OPT2_ENV: 'local',
+          OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+          OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+          OPT2_TOKEN_AUDIENCE: 'opt2-local',
+          OPT2_STATE_DIR: stateDir,
+          TZ: 'UTC',
+        }),
+        clock,
+        verifierOverride: testVerifier(SERVICE),
+        pool: db,
+        logger: createLogger({
+          service: SERVICE,
+          version: '1.0.0',
+          env: 'local',
+          destination: { write: (line: string) => void logMessages.push(String((JSON.parse(line) as { message?: unknown }).message)) },
+        }),
+      });
+      registerCommentsProxyRoutes(service, { domain: deps }, debuggingEnabled);
+      await service.ready();
+      return service;
+    };
+    // Unset, MURA_DEBUGGINGENABLED takes the settings template's `debuggingenabled=true`.
+    vi.stubEnv('MURA_DEBUGGINGENABLED', undefined);
+    app = await start();
+    vi.unstubAllEnvs();
+    quietApp = await start(false);
   });
 
   afterAll(async () => {
+    await quietApp?.opt2.shutdown();
     await app?.opt2.shutdown();
     await handle?.drop();
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
@@ -285,13 +301,10 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     ['a repeated method', 'GET', `?method=get&method=flag&commentID=${COMMENT}`, undefined],
     ['an argument get does not declare', 'GET', `?method=get&commentID=${COMMENT}&contentID=${CONTENT}`, undefined],
     ['a form argument flag does not declare', 'POST', '', `method=flag&commentID=${COMMENT}&callback=cb`],
-    ['no commentID', 'GET', '?method=flag', undefined],
-    ['no contentID', 'GET', '?method=getContentStats', undefined],
     ['a JSON body, which binds nothing', 'POST', '', undefined],
     ['an argumentCollection that is not a JSON object', 'GET', `?method=get&commentID=${COMMENT}&argumentCollection=%5B1%5D`, undefined],
     ['an argumentCollection that is not JSON', 'GET', `?method=get&commentID=${COMMENT}&argumentCollection=x`, undefined],
     ['an argumentCollection struct member', 'GET', `?method=get&argumentCollection=${encodeURIComponent('{"commentID":{"a":1}}')}`, undefined],
-    ['an argumentCollection null member', 'GET', `?method=get&argumentCollection=${encodeURIComponent('{"commentID":null}')}`, undefined],
     ['an argumentCollection undeclared member', 'GET', `?method=get&commentID=${COMMENT}&argumentCollection=${encodeURIComponent('{"foo":1}')}`, undefined],
   ])('answers %s with the ColdFusion error page and no write', async (label, method, query, form) => {
     const before = await flagCount(COMMENT);
@@ -307,6 +320,25 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     expect(res.statusMessage).toBe('An Error Occurred');
     expect(res.headers['content-type']).toBe('text/html;charset=UTF-8');
     expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(await flagCount(COMMENT)).toBe(before);
+  });
+
+  // Own oracle: flag of tenant-b without commentID answers `Element COMMENTID is undefined in ARGUMENTS.` as type Expression.
+  it.each<[string, 'GET' | 'POST', string, string | undefined, string]>([
+    ['flag without commentID', 'GET', '?method=flag', undefined, 'COMMENTID'],
+    ['a form flag naming only its siteid', 'POST', '', `method=flag&siteid=${SITE}`, 'COMMENTID'],
+    ['get without commentID', 'GET', '?method=get', undefined, 'COMMENTID'],
+    ['an argumentCollection null member, which binds nothing', 'GET', `?method=get&argumentCollection=${encodeURIComponent('{"commentID":null}')}`, undefined, 'COMMENTID'],
+    ['getContentStats without contentID', 'GET', '?method=getContentStats', undefined, 'CONTENTID'],
+  ])("answers %s with legacy's debug page of the undefined argument and no write, or the error page with debugging off", async (_label, method, query, form, name) => {
+    const before = await flagCount(COMMENT);
+    const payload = form === undefined ? {} : { payload: form };
+    const res = await call(method, query, payload);
+    const message = `Element ${name} is undefined in ARGUMENTS.`;
+    expect([res.statusCode, res.statusMessage, res.headers['content-type']]).toEqual([500, 'An Error Occurred', 'text/html;charset=UTF-8']);
+    expect(res.body).toBe(legacyDebugPageHtml(new LegacyFaultError(message), (text) => text));
+    expect(res.body).toContain(`<h1>500 Error</h1><h2>${message}<br /></h2><h3>Type:Expression<br /></h3></div>`);
+    expect((await call(method, query, { ...payload, service: quietApp })).body).toBe(LEGACY_ERROR_PAGE_HTML);
     expect(await flagCount(COMMENT)).toBe(before);
   });
 

@@ -90,7 +90,7 @@ SQL Server is the only supported source: `MURA_DBTYPE` naming anything else (the
 
 ## Schema `migration`
 
-DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql); roles `migration_owner`, `migration_app`, `migration_migrator`.
+DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql) and [`db/migrations/0002_projector_quarantine.sql`](db/migrations/0002_projector_quarantine.sql); roles `migration_owner`, `migration_app`, `migration_migrator`.
 
 | Table | Holds |
 |---|---|
@@ -99,6 +99,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql); r
 | `write_window` | Route key, units, scope, kind (`request`, `legacy-step`, `startup`, `reload`), state, phase history, rows imported, outcome |
 | `unit_lease` | One holder per unit, kind `window` or `transition` |
 | `projector_cursor` | Reporting mirror of the projector cursor and applied horizon per owner and tenant. The authoritative checkpoint is `opt2_sync.projector_checkpoint` in SQL Server, committed with each batch |
+| `projector_quarantine` | Changes the projector could not write into legacy (a SQL Server data error or a missing legacy row), and the other changes of their operation, each recorded before its batch commits without it: owner, tenant, changelog `xid`/`seq`, legacy table, op, legacy key, reason, batch. `repaired_at`, `repaired_xid` and `repaired_seq` are set once a later change of the same keyed row is written |
 | `scheduler_state` | Keys `sitemonitor`, `nativeTasks`, `surveyTasks` and `background` (the `opt2-ops` record) |
 | `file_manifest` | Per snapshot and site: path, `fileID`, variant, extension, size, SHA-256, orphan flag, object key, transfer time |
 
@@ -145,8 +146,10 @@ Orphan classification (the in-flight waits of step 3, reload windows and `opt2-o
 
 - For each owner and tenant, reads `/internal/v1/migration/changes?after=<cursor>` below the owner's commit-safe horizon. Rows with origin `legacy-window`, `migration-feed` or `backfill` are passed over; rows of an open multi-participant operation (the roster write protocol) are held until every participant's rows are read, then applied together.
 - Each batch is one SQL Server transaction that also upserts `opt2_sync.projector_checkpoint`, so a crash never re-applies a committed batch. Split tables update only `target`-authoritative columns; keyless tables delete exactly one row matching the before-image.
+- A change legacy cannot take (a SQL Server data error such as truncation, NULL, conversion, overflow, duplicate key or constraint, or no legacy row for an update or keyless delete) is recorded in `migration.projector_quarantine`, logged, and left out of its batch, which then commits with the rest and the checkpoint; any other failure stops the stream at its checkpoint. Every other change of the batch that belongs to the same operation is recorded and left out with it, so legacy never holds part of an operation.
+- A later change of a quarantined keyed row replays it: an update writes its whole after-image, inserting the row when legacy has none. Once the batch commits, the earlier records of that row are marked repaired and one INFO line names them. A crash between the commit and the marking leaves them unrepaired. Keyless rows are never repaired.
 - After batches touching `tsettings` or content, the projector calls `site.cfm?op=refresh` and `jobs.cfm?job=purgeCache`. `content.file_object` changes go to the legacy store through `files.cfm?op=put|delete`; finance attachments go back into `Program_<id>.finance_attachment`.
-- `projectionAwait` answers once every listed `<owner>=<xid>` position is below that owner's applied horizon, or 503 after `timeoutMs` (default 5 s).
+- `projectionAwait` answers once every listed `<owner>=<xid>` position is below that owner's applied horizon, or 503 after `timeoutMs` (default 5 s). It answers 503 at once when a listed position has an unrepaired quarantine record (`ProjectionQuarantinedError`). Owners' current positions and positions without such a record are awaited as before.
 
 ### Reconciliation (`src/reconcile/`)
 

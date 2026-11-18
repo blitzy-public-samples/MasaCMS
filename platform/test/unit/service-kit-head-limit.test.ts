@@ -42,7 +42,7 @@ async function listening(maxHeaderSize: number | undefined): Promise<number> {
     ...(maxHeaderSize === undefined ? {} : { maxHeaderSize }),
   });
   apps.push(app);
-  app.get<{ Querystring: { h: string } }>('/head', { config: { opt2: { public: true } } }, async (request) => ({
+  app.get<{ Querystring: { h: string } }>('/head', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({
     length: Buffer.byteLength(String(request.headers[request.query.h])),
   }));
   await app.listen({ port: 0, host: '127.0.0.1' });

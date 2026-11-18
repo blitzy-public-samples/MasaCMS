@@ -87,6 +87,7 @@ export const routeMatrixFileSchema = z
           // The exporter writes these flags only when set, so `false` is rejected like any other foreign value.
           public: z.literal(true).optional(),
           edge: z.literal(true).optional(),
+          invocationOptional: z.literal(true).optional(),
           siteCheck: z.boolean(),
         })
         .strict(),
@@ -221,6 +222,9 @@ const MANAGED_TRANSPORTS = TRANSPORTS.filter((transport): transport is ManagedTr
 // User requests arrive through the gateway, so they also carry its invocation credential and that credential's roles.
 const USER_REQUEST_CALLER = 'gateway';
 
+/** Package whose own routes see a subject's own credentials; the gateway forwards to every other package's routes. */
+const GATEWAY_PACKAGE = 'gateway';
+
 /** The only reader of `RoleSubject` fields. */
 function subjectView(subject: RoleSubject): SubjectView {
   const isUser = subject.kind === 'user';
@@ -260,16 +264,19 @@ function roleVerdict(route: RouteMatrixEntry, roles: readonly string[], hasUser:
   return deny(!hasUser && requires.some((role) => !isServiceRole(role)) ? 401 : 403, 'missing-role');
 }
 
-function verdictFor(route: RouteMatrixEntry, view: SubjectView): Verdict {
+/** Verdict of one subject on one route; `forwarded` when the gateway's forward attaches its own invocation credential. */
+function verdictFor(route: RouteMatrixEntry, view: SubjectView, forwarded: boolean): Verdict {
   if (route.transport !== 'service') {
     return view.invokerOf === route.transport ? roleVerdict(route, view.roles, false) : deny(401, 'managed-transport');
   }
+  // A public route still needs an invocation credential, which the gateway's forward supplies, unless it declares invocationOptional.
+  const passesWithoutOwnCredential = route.public === true && (forwarded || route.invocationOptional === true);
   if (view.kind === 'anonymous') {
-    return route.public === true ? allow('public') : deny(401, 'anonymous');
+    return passesWithoutOwnCredential ? allow('public') : deny(401, 'anonymous');
   }
   // Managed invokers present no invocation credential here, and the invocation verifier refuses theirs.
   if (view.invokerOf !== undefined) {
-    return route.public === true ? allow('public') : deny(401, 'managed-transport');
+    return passesWithoutOwnCredential ? allow('public') : deny(401, 'managed-transport');
   }
   const verdict = roleVerdict(route, view.roles, view.kind === 'user');
   // The preHandler site check follows the role check, public routes included, and refuses only a supplied `siteid`
@@ -283,11 +290,12 @@ function compareText(a: string, b: string): number {
 }
 
 /**
- * Expectation of every subject on every non-edge route of `matrix` for a path-only request, sorted by package, url,
- * method and subject.
+ * Expectation of every subject on every non-edge route of `matrix` for a path-only request through the gateway, sorted
+ * by package, url, method and subject.
  */
 export function expectationsFor(matrix: LoadedMatrix, subjects: readonly RoleSubject[] = ROLE_SET): Expectation[] {
   const views = subjects.map(subjectView);
+  const forwarded = matrix.package !== GATEWAY_PACKAGE;
   // An edge route forwards to another route, whose owning package's matrix carries the outcome.
   return matrix.matrix.routes
     .filter((route) => route.edge !== true)
@@ -299,7 +307,7 @@ export function expectationsFor(matrix: LoadedMatrix, subjects: readonly RoleSub
           url: route.url,
           transport: route.transport,
           subject: view.name,
-          ...verdictFor(route, view),
+          ...verdictFor(route, view, forwarded),
         }),
       ),
     )

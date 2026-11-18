@@ -126,6 +126,8 @@ interface Declared {
   transport: Transport;
   requires?: readonly string[];
   public?: true;
+  /** A public route that admits a caller without an invocation credential. */
+  invocationOptional?: true;
   /** `false` where the handler checks the site itself. */
   siteCheck?: false;
 }
@@ -338,7 +340,7 @@ async function sendScheduledTasks(subject: RoleSubject, credentials: Record<stri
 /** Every registered route, keyed `<METHOD> <fastify url>`, with its declaration, tenant-a probe and admitted subjects. */
 const EXPECTED: Readonly<Record<string, Expectation>> = {
   'GET /healthz': {
-    declared: { transport: 'service', public: true },
+    declared: { transport: 'service', public: true, invocationOptional: true },
     request: { method: 'GET', url: '/healthz' },
     // A tasks-invoker token in Authorization is verified, and refused, as a user token.
     allow: everyoneBut(TASKS_INVOKER_ROLE),
@@ -457,9 +459,9 @@ function effectsSince(from: Mark): Effects {
   };
 }
 
-/** Effects a refused request may leave: a fixture route's own site lookup, nothing else. */
-function deniedEffects(declared: Declared, effects: Effects): Effects {
-  return declared.public === true ? { ...NO_EFFECTS, transactions: effects.transactions } : NO_EFFECTS;
+/** Effects a refused request may leave: a fixture route's own site lookup once the platform admits the caller, nothing else. */
+function deniedEffects(declared: Declared, subject: string, effects: Effects): Effects {
+  return declared.public === true && !NO_INVOCATION.includes(subject) ? { ...NO_EFFECTS, transactions: effects.transactions } : NO_EFFECTS;
 }
 
 interface ErrorBody {
@@ -515,7 +517,7 @@ async function mismatchesOf(key: string, entry: Expectation, subject: RoleSubjec
     problems.push(`${at}: unexpected denial error ${JSON.stringify(error)}`);
   }
   const effects = effectsSince(before);
-  if (!isDeepStrictEqual(effects, deniedEffects(entry.declared, effects))) {
+  if (!isDeepStrictEqual(effects, deniedEffects(entry.declared, subject.name, effects))) {
     problems.push(`${at}: denial left effects ${JSON.stringify(effects)}`);
   }
   return problems;
@@ -542,6 +544,7 @@ function comparable(declared: Declared | RouteMatrixEntry): Record<string, unkno
     transport: declared.transport,
     ...(declared.requires === undefined ? {} : { requires: [...declared.requires].sort() }),
     ...(declared.public === true ? { public: true } : {}),
+    ...(declared.invocationOptional === true ? { invocationOptional: true } : {}),
     ...(declared.siteCheck === false ? { siteCheck: false } : {}),
     ...('edge' in declared && declared.edge === true ? { edge: true } : {}),
   };
@@ -696,14 +699,25 @@ describe('transport separation', () => {
     }
   });
 
-  it('answers the push key on a fixture route as an anonymous caller', async () => {
-    const { status, error, effects } = await outcomeOf(withPushKey(FIXTURE_SEND), {});
-    expect({ status, error, effects: { ...effects, transactions: 0 } }).toEqual({
-      status: 401,
-      error: errorBody(LEGACY_ERROR_MAP.authorization),
-      effects: NO_EFFECTS,
-    });
-  });
+  // A public route still needs the caller's invocation credential unless it declares invocationOptional.
+  const INVOCATION_REQUIRED = Object.entries(EXPECTED).filter(([, entry]) => entry.declared.public === true && entry.declared.invocationOptional !== true);
+  const DIRECT_CALLS: readonly [string, (request: ProbeRequest) => Promise<[ProbeRequest, Record<string, string>]>][] = [
+    ['no credential', (request) => Promise.resolve([request, {}])],
+    ['the push key alone', (request) => Promise.resolve([withPushKey(request), {}])],
+    [
+      'a sender user token alone',
+      async (request) => [request, { authorization: `Bearer ${await mintUserToken({ sub: SAMPLE_IDS.userId, site: SITE_A, roles: ['system-user', SENDER] })}` }],
+    ],
+  ];
+
+  it.each(INVOCATION_REQUIRED.flatMap(([key, entry]) => DIRECT_CALLS.map(([label, direct]) => ({ key, entry, label, direct }))))(
+    'refuses $key called directly with $label before its handler runs',
+    async ({ entry, direct }) => {
+      const [request, credentials] = await direct(requestOf(entry));
+      const outcome = await outcomeOf(request, credentials);
+      expect(outcome).toEqual({ status: 401, error: errorBody(LEGACY_ERROR_MAP.authorization), effects: NO_EFFECTS });
+    },
+  );
 
   it('refuses a wrong push key on the push routes', async () => {
     for (const [subscription, envelope] of [

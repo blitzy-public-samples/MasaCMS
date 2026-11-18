@@ -163,14 +163,15 @@ describe('legacySettingsEnvSchema', () => {
   /** Every Masa setting variable web reads, the set web/README.md lists. */
   const VARIABLES = [
     'TITLE', 'CONTEXT', 'ADMINDIR', 'ADMINDOMAIN', 'ADMINEMAIL', 'ADMINSSL', 'SESSIONTIMEOUT', 'RENDERMURAALERTS',
-    'SECURECOOKIES', 'SESSIONHISTORY', 'WINDOWDOCUMENTDOMAIN', 'LOCALE', 'ALLOWAUTOUPDATES', 'FILEMANAGERENABLED',
-    'FMSHOWSITEFILES', 'FMSHOWAPPLICATIONROOT', 'MODE', 'DBTYPE', 'PORT', 'HTMLEDITORTYPE', 'FILEDELIM', 'SITEIDINURLS',
-    'INDEXFILEINURLS', 'LEGACYINDEXFILELOCATION', 'KEEPMETAKEYWORDS', 'FORMPOLLS', 'PROXYSERVER', 'PROXYUSER',
+    'SECURECOOKIES', 'COOKIEDOMAIN', 'SESSIONHISTORY', 'WINDOWDOCUMENTDOMAIN', 'LOCALE', 'ALLOWAUTOUPDATES',
+    'FILEMANAGERENABLED', 'FMSHOWSITEFILES', 'FMSHOWAPPLICATIONROOT', 'MODE', 'DBTYPE', 'PORT', 'HTMLEDITORTYPE', 'FILEDELIM',
+    'SITEIDINURLS', 'INDEXFILEINURLS', 'LEGACYINDEXFILELOCATION', 'KEEPMETAKEYWORDS', 'FORMPOLLS', 'PROXYSERVER', 'PROXYUSER',
     'SHOWUSAGETABS', 'FILEASSETPATH', 'COREPATH', 'PLUGINSPATH', 'EXPIREPASSWORDS', 'STRONGPASSWORDS', 'WEBROOT',
-    'APPRELOADKEY', 'JAVAENABLED', 'INDEXFILEINAPI', 'SITEDIR', 'ASSETPATH', 'FILEDIR', 'S3ASSETS', 'HASHURLS',
+    'APPRELOADKEY', 'JAVAENABLED', 'DEBUGGINGENABLED', 'INDEXFILEINAPI', 'SITEDIR', 'ASSETPATH', 'FILEDIR', 'S3ASSETS',
+    'HASHURLS',
   ].map((key) => `MURA_${key}`);
 
-  it('declares the 43 MURA_<KEY> variables web reads', () => {
+  it('declares the 45 MURA_<KEY> variables web reads', () => {
     expect(Object.keys(legacySettingsEnvSchema.in.shape).sort()).toEqual([...VARIABLES].sort());
   });
 
@@ -203,6 +204,7 @@ describe('legacySettings', () => {
         ['sessionTimeout', 'sessiontimeout', '180', 180],
         ['renderMuraAlerts', 'rendermuraalerts', 'true', true],
         ['secureCookies', 'securecookies', 'false', false],
+        ['cookieDomain', 'cookiedomain', '', ''],
         ['sessionHistory', 'sessionhistory', '0', 0],
         ['windowDocumentDomain', 'windowdocumentdomain', '', ''],
         ['defaultLocale', 'locale', 'Server', 'Server'],
@@ -219,6 +221,7 @@ describe('legacySettings', () => {
         ['serverPort', 'port', '${cgi.SERVER_PORT}', ''],
         ['appReloadKey', 'appreloadkey', 'appreload', 'appreload'],
         ['javaEnabled', 'javaenabled', 'true', true],
+        ['debuggingEnabled', 'debuggingenabled', 'true', true],
         ['fileDir', 'filedir', '', ''],
         ['hasProxyServer', 'proxyserver', '', false],
         ['hasProxyUser', 'proxyuser', '', false],
@@ -318,6 +321,9 @@ describe('legacySettings', () => {
     [{ MURA_SESSIONTIMEOUT: '30' }, 'sessionTimeout', 30],
     [{ MURA_SESSIONTIMEOUT: '1e3' }, 'sessionTimeout', 1000],
     [{ MURA_SESSIONTIMEOUT: '12abc' }, 'sessionTimeout', 12],
+    [{ MURA_COOKIEDOMAIN: '.Example.test' }, 'cookieDomain', '.Example.test'],
+    [{ MURA_COOKIEDOMAIN: '' }, 'cookieDomain', ''],
+    [{ MURA_COOKIEDOMAIN: '${application.cookieDomain}' }, 'cookieDomain', ''],
     [{ MURA_SESSIONHISTORY: '7' }, 'sessionHistory', 7],
     [{ MURA_SESSIONHISTORY: 'week' }, 'sessionHistory', 1],
     [{ MURA_LOCALE: 'en_US' }, 'defaultLocale', 'en_US'],
@@ -338,6 +344,12 @@ describe('legacySettings', () => {
     [{ MURA_JAVAENABLED: 'false' }, 'javaEnabled', false],
     [{ MURA_JAVAENABLED: 'no' }, 'javaEnabled', false],
     [{ MURA_JAVAENABLED: 'maybe' }, 'javaEnabled', true],
+    [{ MURA_DEBUGGINGENABLED: 'false' }, 'debuggingEnabled', false],
+    [{ MURA_DEBUGGINGENABLED: 'no' }, 'debuggingEnabled', false],
+    [{ MURA_DEBUGGINGENABLED: '0' }, 'debuggingEnabled', false],
+    [{ MURA_DEBUGGINGENABLED: 'maybe' }, 'debuggingEnabled', true],
+    [{ MURA_DEBUGGINGENABLED: '' }, 'debuggingEnabled', true],
+    [{ MURA_DEBUGGINGENABLED: '${application.x}' }, 'debuggingEnabled', true],
     [{ MURA_FILEDIR: '/srv/masa/sites/' }, 'fileDir', '/srv/masa/sites'],
     [{ MURA_FILEDIR: 's3://bucket/assets' }, 'fileDir', 's3://bucket/assets'],
     [{ MURA_S3ASSETS: 's3://bucket', MURA_FILEDIR: '/srv/masa/sites' }, 'fileDir', 's3://bucket/masa/sites'],

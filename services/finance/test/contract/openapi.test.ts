@@ -311,7 +311,8 @@ const cases: Record<string, (ctx: Ctx) => Promise<CaseResult>> = {
   getLocalAttachmentObject: async (ctx) => {
     const url = await signedAttachmentUrl(ctx);
     expect(url.split('/')[4]).toBe(TENANT);
-    const result = await send(ctx, 'GET', url);
+    // The signed URL is path-only; the gateway forwards it with its own invocation credential.
+    const result = await send(ctx, 'GET', url, await asService('gateway'));
     expect(result.response.headers['content-type']).toBe(ctx.seeded.attachment.content_type);
     expect(result.response.rawPayload.equals(ctx.seeded.bytes)).toBe(true);
     return result;
@@ -389,7 +390,8 @@ const errorCases: readonly (readonly [string, number, (ctx: Ctx) => Promise<Case
       return send(ctx, 'POST', recordUrl(ctx, V1, '/transitions/submit'), await asUser(PREPARER));
     },
   ],
-  ['the file route with a tampered signature', 403, async (ctx) => send(ctx, 'GET', tamperedSignature(await signedAttachmentUrl(ctx)))],
+  ['the file route with a tampered signature', 403, async (ctx) => send(ctx, 'GET', tamperedSignature(await signedAttachmentUrl(ctx)), await asService('gateway'))],
+  ['the file route called directly without an invocation credential', 401, async (ctx) => send(ctx, 'GET', await signedAttachmentUrl(ctx))],
 ];
 
 describe('contract document', () => {
@@ -460,6 +462,22 @@ describe('finance app against the contract', () => {
     expect(actual[`POST ${PUSH_PATH}`]).toEqual(declaration(['service:pubsub-invoker'], undefined, 'pubsub-push'));
     expect(actual[`GET /opt2/files/${ATTACHMENT_BUCKET}/{tenantId}/{objectName}`]).toEqual(declaration(undefined, true, 'service'));
     expect(actual['GET /healthz']).toEqual(declaration(undefined, true, 'service'));
+  });
+
+  it('lets the invocation credential be absent exactly where the contract security admits no credential', () => {
+    const routes = declaredRoutes(collectRouteMatrix(ctx.app).routes, DOC);
+    // `[]` or an empty requirement `{}` admits a request without credentials; an absent `security` inherits the document's.
+    const admitsNone = (security: unknown): boolean =>
+      Array.isArray(security) && (security.length === 0 || security.some((requirement) => isRecord(requirement) && Object.keys(requirement).length === 0));
+    const actual = Object.fromEntries(routes.map((route) => [`${route.method} ${templateOf(route.url)}`, route.invocationOptional === true]));
+    const contracted = Object.fromEntries(
+      routes.map((route) => {
+        const { template, operation } = findOperation(DOC, route.method, templateOf(route.url));
+        return [`${route.method} ${template}`, admitsNone(operation.security)];
+      }),
+    );
+    expect(actual).toEqual(contracted);
+    expect(Object.keys(actual).filter((key) => actual[key])).toEqual(['GET /healthz']);
   });
 
   it('has exactly one response case per contract operation', () => {

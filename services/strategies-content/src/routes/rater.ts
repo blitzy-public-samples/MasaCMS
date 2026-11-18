@@ -1,10 +1,17 @@
 /** `rater/ajax/saveRate.cfm`: saves the posted rating and answers the item's average rating as Mura.json encodes it. */
 import { AuthDenial, assertSiteMatches, type Opt2RouteConfig } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_TYPE, javaTrim } from '@opt2/platform/legacy-compat';
+import {
+  LEGACY_HTML_CONTENT_TYPE,
+  LegacyFaultError,
+  javaTrim,
+  legacyDebuggingEnabled,
+  legacyRuntimeErrorResponse,
+} from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { legacyScopesOf, sendLegacyResponse, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { actorFromClaims, writeContextFor, type DomainDeps } from '../domain/context.js';
 import { saveRate, storedRate } from '../domain/stats.js';
+import { esapiEncode } from '../legacy/admin-markup.js';
 import { muraJsonEncode } from '../legacy/cfjson.js';
 
 /** The route context this route reads: a structural subset of `ContentRouteContext`. */
@@ -22,13 +29,8 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ public: true, transport: 'se
 /** The getAvgRating query's columns. */
 const AVG_RATING_COLUMNS: readonly string[] = Object.freeze(['DOWNVOTES', 'THEAVG', 'THECOUNT', 'UPVOTES']);
 
-/** The ColdFusion error page legacy answers a save it cannot run, having written nothing. */
-const UNRUNNABLE_SAVE = {
-  status: 500,
-  statusText: LEGACY_ERROR_STATUS_TEXT,
-  headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE },
-  body: LEGACY_ERROR_PAGE_HTML,
-};
+/** The form fields the template passes to raterManager.saveRate, in its order (saveRate.cfm:79-84). */
+const RATE_FORM_FIELDS: readonly string[] = Object.freeze(['contentID', 'siteID', 'userID', 'rate']);
 
 /** Widths of the `tcontentratings` key columns: contentID and userID char(35), siteID char(25). */
 const ID_LENGTH = 35;
@@ -48,23 +50,33 @@ interface RateFields {
 }
 
 /**
- * The template's `form.contentID`, `form.siteID`, `form.userID` and `form.rate`, read ignoring case; undefined where legacy
- * fails the save: a missing field, a rate {@link storedRate} refuses, or a trimmed id that is empty, which the rating insert
- * binds as NULL, or longer than its key column, which SQL Server refuses.
+ * The template's `form.contentID`, `form.siteID`, `form.userID` and `form.rate`, read ignoring case. Where legacy fails the
+ * save: the fault of the first missing field, read in that order; undefined for an engine error, a rate {@link storedRate}
+ * refuses or a trimmed id that is empty, which the rating insert binds as NULL, or longer than its key column, which SQL
+ * Server refuses.
  */
-function rateFields(request: FastifyRequest): RateFields | undefined {
+function rateFields(request: FastifyRequest): RateFields | LegacyFaultError | undefined {
   const form = new Map(legacyScopesOf(request).form.entries.map(([name, value]) => [name.toLowerCase(), String(value)]));
-  const [contentId, siteId, userId, rateText] = ['contentid', 'siteid', 'userid', 'rate'].map((name) => form.get(name));
-  if (contentId === undefined || siteId === undefined || userId === undefined || rateText === undefined) return undefined;
+  const missing = RATE_FORM_FIELDS.find((name) => !form.has(name.toLowerCase()));
+  if (missing !== undefined) return new LegacyFaultError(`Element ${missing.toUpperCase()} is undefined in FORM.`);
+  const [contentId = '', siteId = '', userId = '', rateText = ''] = RATE_FORM_FIELDS.map((name) => form.get(name.toLowerCase()));
   const rate = storedRate(rateText);
   const keys: ReadonlyArray<readonly [string, number]> = [[contentId, ID_LENGTH], [siteId, SITE_ID_LENGTH], [userId, ID_LENGTH]];
   if (rate === undefined || keys.some(([id, width]) => !fitsKeyColumn(javaTrim(id), width))) return undefined;
   return { contentId, siteId, userId, rate };
 }
 
-/** Registers `GET` and `POST` of the rater's save, as the template answers any method, written in the verified token's tenant. */
-export function registerRaterRoutes(app: FastifyInstance, ctx: RaterRouteContext): void {
+/**
+ * Registers `GET` and `POST` of the rater's save, as the template answers any method, written in the verified token's tenant.
+ * @param debuggingEnabled configBean `debuggingEnabled`, which selects onError's page for a save legacy cannot run.
+ */
+export function registerRaterRoutes(
+  app: FastifyInstance,
+  ctx: RaterRouteContext,
+  debuggingEnabled: boolean = legacyDebuggingEnabled(),
+): void {
   const { domain } = ctx;
+  const errorPage = { debuggingEnabled, encodeHtml: (text: string) => esapiEncode('html', text) };
 
   app.route({
     method: ['GET', 'POST'],
@@ -72,7 +84,10 @@ export function registerRaterRoutes(app: FastifyInstance, ctx: RaterRouteContext
     config: { opt2: ROUTE_AUTH },
     async handler(request, reply) {
       const fields = rateFields(request);
-      if (fields === undefined) return sendLegacyResponse(reply, UNRUNNABLE_SAVE);
+      // Legacy writes nothing for a save it cannot run.
+      if (fields === undefined || fields instanceof LegacyFaultError) {
+        return sendLegacyResponse(reply, legacyRuntimeErrorResponse(fields, errorPage));
+      }
       const claims = request.opt2Auth.user;
       if (claims === undefined) throw AuthDenial.unauthenticated('missing-credential');
       assertSiteMatches(fields.siteId, claims);

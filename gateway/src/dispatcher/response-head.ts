@@ -161,6 +161,18 @@ function upstreamHeaderLines(
 }
 
 /**
+ * `head`'s reason phrase as the client response writes it while `statusCode` is its status, else undefined.
+ * Throws as `writeHead` does for a phrase it rejects.
+ */
+export function upstreamReasonPhrase(head: RawResponseHead, statusCode: number): string | undefined {
+  if (statusCode !== head.statusCode) return undefined;
+  // undici decodes the reason phrase as UTF-8; re-encoded, Node's latin1 write restores the upstream's bytes.
+  const reason = Buffer.from(head.statusMessage, 'utf8').toString('latin1');
+  validateHeaderValue('statusMessage', reason);
+  return reason;
+}
+
+/**
  * Writes the response head from `head`: its reason phrase while `statusCode` is its status, {@link upstreamHeaderLines},
  * no Date the upstream did not send, the client's HTTP/1.0 or HTTP/1.1, and `Connection` and framing for the client
  * connection, which, when it closes, gets a close-delimited body in place of a chunked one. Throws as `writeHead` does,
@@ -175,10 +187,8 @@ export function writeUpstreamHead(
 ): void {
   const closes = clientCloses(res, statusCode, received, headers);
   const lines = upstreamHeaderLines(head, received, headers, closes ? 'close' : 'keep-alive', !closes && res.useChunkedEncodingByDefault);
-  // undici decodes the reason phrase as UTF-8; re-encoded, Node's latin1 write restores the upstream's bytes.
-  const reason = statusCode === head.statusCode ? Buffer.from(head.statusMessage, 'utf8').toString('latin1') : undefined;
   // writeHead's own checks, ahead of the state changes below, which Node offers no way to undo.
-  if (reason !== undefined) validateHeaderValue('statusMessage', reason);
+  const reason = upstreamReasonPhrase(head, statusCode);
   for (let index = 0; index + 1 < lines.length; index += 2) {
     validateHeaderName(lines[index] as string);
     validateHeaderValue(lines[index] as string, lines[index + 1] as string);

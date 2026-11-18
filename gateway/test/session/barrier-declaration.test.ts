@@ -236,11 +236,13 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
         afterLegacyLogout: async () => undefined,
         completePending: async () => undefined,
         afterLegacyLogin: async () => undefined,
+        afterTargetLogin: () => undefined,
       } as unknown as DispatcherDeps['invalidation'],
       facts: { get: () => undefined, routes: () => [] },
       auth: app.opt2.auth,
       relay: { env: { OPT2_SERVICE_URLS: {} }, invocation: app.opt2.auth.invocationMinter, barrier, sessionMode: () => 'target-primary' },
       legacyOrigin: legacy.url,
+      cookieSettings: { secure: false, domain: '' },
       clock: systemClock,
     };
     await app.register(replyFrom);

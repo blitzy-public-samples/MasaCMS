@@ -96,7 +96,7 @@ Served under `/legacy-fixtures/cfml/api.cfm/esignature` in the Masa envelope (`m
 | `GET` | `/requests/{id}/verify` | `fixtureVerifyStored` | as audit |
 | `POST` | `/requests/{id}/verify` | `fixtureVerifySupplied` | as audit; `entries`, a copy of the chain |
 
-- **Checks.** The routes are `public` on the platform because the handler applies the fixture's own checks in its order: path, site, login, role, existence, validation, state. `siteid` defaults to the token's site, else `default`; for a logged-in user it must resolve to the token's tenant. Each `POST` consumes a CSRF token through identity (`POST /internal/v1/csrf/consume`) after the role check, with the route's `{id}` as context (empty for `/requests`).
+- **Checks.** The routes are `public` on the platform because the handler applies the fixture's own checks in its order: path, site, login, role, existence, validation, state. Before the handler runs, the platform refuses a call to these routes without the caller's invocation credential with 401 `authorization`. `siteid` defaults to the token's site, else `default`; for a logged-in user it must resolve to the token's tenant. Each `POST` consumes a CSRF token through identity (`POST /internal/v1/csrf/consume`) after the role check, with the route's `{id}` as context (empty for `/requests`).
 - **Method override.** The `…ByGet`, `…ByPost`, `…ByPut`, `…ByPatch`, `…ByDelete`, `…ByOptions` and `…ByHead` operations answer as the operation `X-HTTP-Method-Override` selects, and 404 `notFound` otherwise. There is no `requests/{id}` read; it answers 404.
 
 ### OPT-2 screens
@@ -117,7 +117,7 @@ Served under `/legacy-fixtures/cfml/api.cfm/esignature` in the Masa envelope (`m
 |---|---|---|---|
 | `POST` | `/internal/v1/events/e-signature.programs-sites.site.changed.v1` | `service:pubsub-invoker` (local push key locally) | Push delivery into `esignature.tenant_registry` (`pushSiteChanged`) |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` | `platform.migration` | Backfill, feed, reconciliation and unit gates of the owned units |
-| `GET` | `/healthz` | public | Liveness probe |
+| `GET` | `/healthz` | public, invocation credential optional | Liveness probe |
 
 ## Events
 

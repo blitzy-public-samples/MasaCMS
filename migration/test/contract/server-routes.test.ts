@@ -81,7 +81,7 @@ describe('the composed migration service', () => {
     }));
     const expected = OPERATIONS.map(({ method, url, operation }) =>
       operation.operationId === 'healthz'
-        ? { method, url, transport: 'service', public: true, siteCheck: true }
+        ? { method, url, transport: 'service', public: true, invocationOptional: true, siteCheck: true }
         : {
             method,
             url,

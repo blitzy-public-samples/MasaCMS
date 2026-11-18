@@ -14,15 +14,23 @@ import {
 import { BUSINESS_DATE, TENANT_A } from '@opt2/platform/testing';
 import { setServiceClientForTests } from '@/lib/gateway-client';
 import type { UserUpdateResult } from '@/screens/cusers/update';
+import * as adminPage from '../../app/admin/[circuit]/[action]/route';
 import * as adminActions from '../../app/admin-actions/[circuit]/[action]/route';
 import * as adminRaw from '../../app/admin-raw/[circuit]/[action]/route';
 import * as opt2Actions from '../../app/opt2/admin-actions/[module]/[action]/route';
 import { CSRF_BY_CONTEXT } from '../fixtures/identity/csrf';
-import { LOGOUT_DELETE_COOKIES, logoutAnswer } from '../fixtures/identity/session-login';
+import {
+  LOGOUT_DELETE_COOKIES,
+  SESSION_SET_COOKIES,
+  loginSessionAnonymous,
+  loginSuccessRedirect,
+  logoutAnswer,
+} from '../fixtures/identity/session-login';
 import { TIMESHEET_IDS, TIMESHEETS_AS_OF, timesheetsAnswersByRole } from '../fixtures/opt2/timesheets';
 import { PERSON_IDS } from '../fixtures/people/user-list';
 import { duplicateUsernameResult, routeToListUsersResult } from '../fixtures/people/validation-errors';
 import { TENANT_A_USERS_CSV_BODY, USERS_CSV_HEADERS, tenantAUsersCsv } from '../fixtures/people/users-csv';
+import { profileUpdateSuccess } from '../fixtures/people/profile';
 import { siteById, type FixtureSiteId } from '../fixtures/programs-sites/sites';
 import { adminS2Session, tenantASiteAdminSession } from '../fixtures/session';
 import { CONTENT_HIST_IDS, CONTENT_IDS } from '../fixtures/strategies-content/carch';
@@ -39,7 +47,7 @@ import {
   type InMemoryGateway,
   type RecordedRequest,
 } from '../helpers/fake-gateway';
-import { adminRequest, formWithCsrf, routeParams, type AdminRequestOptions } from '../helpers/requests';
+import { adminRequest, formWithCsrf, routeParams, type AdminRequestOptions, type BrowserPart } from '../helpers/requests';
 import { SUBJECTS, serviceInvocation, syntheticSubject, type WebTestSubject } from '../helpers/tokens';
 
 // Request log lines are recorded instead of written to stdout.
@@ -54,8 +62,11 @@ const ADMIN_STATE = routeKey('GET', 'identity', '/v1/sessions/current/admin-stat
 const SAVE_ADMIN_STATE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
 const CSRF_TOKENS = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const LOGOUT = routeKey('POST', 'identity', '/v1/sessions/logout');
+const LOGIN = routeKey('POST', 'identity', '/v1/sessions/login');
+const HREF_DOMAINS = routeKey('GET', 'programs-sites', '/v1/href-domains');
 const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
 const UPDATE_USER = routeKey('POST', 'people', '/v1/users:update');
+const UPDATE_PROFILE = routeKey('POST', 'people', '/v1/profile:update');
 const ROUTE_USER = routeKey('GET', 'people', '/v1/users/route');
 const USERS_CSV = routeKey('GET', 'people', '/v1/users/download');
 const CARCH_UPDATE = routeKey('POST', 'strategies-content', '/v1/raw/carch/update');
@@ -98,6 +109,12 @@ const JANE_SMITH_UPDATE = Object.freeze({
 });
 
 const savedUser: UserUpdateResult = { written: true, errors: {}, passwordExpired: false };
+
+/** `fields` as multipart text parts, then `extra`, as a browser without scripts serialises a form. */
+const partsOf = (fields: Record<string, string>, ...extra: BrowserPart[]): BrowserPart[] => [
+  ...Object.entries(fields).map(([name, value]) => ({ name, value })),
+  ...extra,
+];
 
 const primaryApprover = syntheticSubject('timesheets.primary-approver');
 const employee = syntheticSubject('timesheets.employee');
@@ -210,7 +227,7 @@ async function serve(request: Request): Promise<Response> {
     if (request.method !== 'POST') throw new TypeError('opt2/admin-actions exports POST only');
     return opt2Actions.POST(request, routeParams({ module: second, action: third }));
   }
-  const route = tree === 'admin-actions' ? adminActions : tree === 'admin-raw' ? adminRaw : undefined;
+  const route = tree === 'admin' ? adminPage : tree === 'admin-actions' ? adminActions : tree === 'admin-raw' ? adminRaw : undefined;
   if (route === undefined) throw new TypeError(`No route module serves ${request.url}`);
   const params = routeParams({ circuit: first, action: second });
   return request.method === 'POST' ? route.POST(request, params) : route.GET(request, params);
@@ -234,6 +251,57 @@ const relayed = (filter: (request: RecordedRequest) => boolean): string[] =>
 
 const toService = (service: string) => (request: RecordedRequest) =>
   request.path.startsWith(`${SERVICE_PREFIX}${service}/`);
+
+describe('admin page mode', () => {
+  it('POST clogin.login relays the credentials posted in its body to identity, then answers its redirect', async () => {
+    install({
+      [CURRENT_SESSION]: loginSessionAnonymous,
+      [LOGIN]: loginSuccessRedirect,
+      [HREF_DOMAINS]: { status: 200, body: { allowedDomains: ['localhost'], siteDomain: 'localhost' } },
+    });
+    const posted = formWithCsrf(
+      { muraAction: 'cLogin.login', username: 'admin', password: 'posted-p@ss,word', isAdminLogin: 'true', compactDisplay: 'false' },
+      POSTED_CSRF,
+    );
+
+    const { request, response } = await send('/admin/clogin/login', { originalUrl: '/admin/index.cfm', form: posted });
+
+    expect(request.method).toBe('POST');
+    expect(new URL(request.url).search).toBe('');
+    expectLegacyHeaders(response);
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(loginSuccessRedirect.body.location);
+    expect(response.headers.getSetCookie()).toEqual(expect.arrayContaining([...SESSION_SET_COOKIES]));
+    const login = gateway.requests.find((recorded) => `${recorded.method} ${recorded.path}` === LOGIN);
+    expect(login?.form).toMatchObject({
+      username: 'admin',
+      password: 'posted-p@ss,word',
+      isAdminLogin: 'true',
+      [CSRF_FIELD_TOKEN]: POSTED_CSRF.token,
+      [CSRF_FIELD_EXPIRES]: POSTED_CSRF.expires,
+    });
+  });
+
+  it('POST cEditProfile.update with an empty newFile file part saves through people and redirects home', async () => {
+    install({
+      ...sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession),
+      [UPDATE_PROFILE]: { status: 200, body: profileUpdateSuccess },
+    });
+    const fields = formWithCsrf({ siteid: SITE, fname: 'Jane', lname: 'Smith', email: 'jane_smith@example.com' }, POSTED_CSRF);
+
+    const { response } = await send('/admin/ceditprofile/update', {
+      user: SUBJECTS.siteAdmin,
+      parts: partsOf(fields, { name: 'newFile', filename: '' }),
+    });
+
+    expectLegacyHeaders(response);
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('./');
+    expect(relayed(toService('people'))).toEqual([UPDATE_PROFILE]);
+    const save = gateway.requests.find((recorded) => `${recorded.method} ${recorded.path}` === UPDATE_PROFILE);
+    expect(save?.form).toMatchObject({ ...fields, newFile: '' });
+  });
+});
 
 describe('admin-actions redirect mode', () => {
   it('GET clogin.logout ends the session and redirects to home.redirect with identity cookies', async () => {
@@ -323,6 +391,38 @@ describe('admin-actions redirect mode', () => {
     expect(response.status).toBe(404);
     expect(relayed(toService('people'))).toEqual([]);
     expect(relayed((recorded) => recorded.method !== 'GET')).toEqual([]);
+  });
+
+  it('POST cUsers.update of a scriptless Add User form, with an empty newfile text and file part, relays the add to people', async () => {
+    install({
+      ...sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession),
+      [UPDATE_USER]: { status: 200, body: savedUser },
+      [ROUTE_USER]: { status: 200, body: routeToListUsersResult },
+    });
+    const fields = formWithCsrf({ ...JANE_SMITH_UPDATE, action: 'Add', userid: '' }, POSTED_CSRF);
+
+    const { response } = await send('/admin-actions/cusers/update', {
+      user: SUBJECTS.siteAdmin,
+      parts: partsOf(fields, { name: 'newfile', value: '' }, { name: 'newfile', filename: '' }),
+    });
+
+    expectLegacyHeaders(response);
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(`./?muraAction=cUsers.listusers&siteid=${SITE}&ispublic=0`);
+    expect(relayed(toService('people'))).toEqual([UPDATE_USER, ROUTE_USER]);
+  });
+
+  it.each<[string, BrowserPart[]]>([
+    ['a newfile text value', [{ name: 'newfile', value: 'x' }, { name: 'newfile', filename: '' }]],
+    ['a chosen photo file', [{ name: 'newfile', value: '' }, { name: 'newfile', value: 'png bytes', filename: 'p.png', type: 'image/png' }]],
+  ])('answers 404 for a scriptless Add User form with %s, which stays on legacy, without a write', async (_label, photo) => {
+    install(sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession));
+    const fields = formWithCsrf({ ...JANE_SMITH_UPDATE, action: 'Add', userid: '' }, POSTED_CSRF);
+
+    const { response } = await send('/admin-actions/cusers/update', { user: SUBJECTS.siteAdmin, parts: partsOf(fields, ...photo) });
+
+    expect(response.status).toBe(404);
+    expect(relayed(toService('people'))).toEqual([]);
   });
 
   it('POST cChangesets.rollback answers 404 for the withheld rollback, which stays on legacy, unrelayed', async () => {

@@ -130,14 +130,14 @@ In the cloud the download URL is a v4 signed Cloud Storage URL. Locally it is a 
 
 | Method | Path | Requires | Does |
 |---|---|---|---|
-| `GET` | `/opt2/files/reporting-exports/{tenantId}/{objectName}` | public; the signature is the credential | Serves the local storage adapter's downloads |
+| `GET` | `/opt2/files/reporting-exports/{tenantId}/{objectName}` | public; the signature is the credential, beside the invocation credential the gateway forwards it with | Serves the local storage adapter's downloads |
 | `GET` | `/internal/v1/exports/{exportId}/source-scope` | `service:finance`, `service:timesheets` | Returns a job's stored scope. The producer checks it before serving the job's source read |
 | `POST` | `/internal/v1/tasks/exports/run` (`QUEUES['reporting-export-run'].targetPath`) | `service:tasks-invoker` only | Runs the job the task payload's `jobId` names to `done` or `failed`. A `running` job, left by an interrupted delivery, is reclaimed: `started_at` restarts and the run takes a new claim, so the earlier delivery's finish is skipped and its object deleted. A `done` or `failed` job is answered with its state unchanged; a job the task's tenant does not hold answers 400 `badRequest`. The fixture's runner thread leaves any job past `queued` unchanged |
 | `POST` | `/internal/v1/task-queues/{queue}/{pause,resume,ensure}` | `platform.migration`, `platform.operator` | Queue control for `reporting-export-run`. `ensure` answers 400, because the queue is not a recurring chain |
 | `POST` | `/internal/v1/events/reporting.programs-sites.site.changed.v1` | `service:pubsub-invoker` (the local push key locally) | Push delivery into `reporting.tenant_registry` |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` | `platform.migration` | Backfill, feed, reconciliation and unit gates. `export` also returns the `reporting-exports` object manifest |
 | `GET` | `/internal/v1/migration/objects?tenantId=&jobId=` | `platform.migration` | Streams one job's stored output, which the reverse projection writes into `synthetic.export_job.output`; 404 when the job names no stored object |
-| `GET` | `/healthz` | public | Liveness probe |
+| `GET` | `/healthz` | public, invocation credential optional | Liveness probe |
 
 ## Integration
 

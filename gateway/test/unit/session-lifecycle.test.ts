@@ -636,6 +636,25 @@ describe('invalidation', () => {
     expect(seam.ops()).toEqual(['identity.mintToken', 'identity.state']);
   }
 
+  it('after a target login forgets the pre-login state and token within the check interval', async () => {
+    const seam = createSeam();
+    const anonymous = await seam.tokenCache.get(SESSION, 'tenant-a', 1);
+    await seam.stateCheck.check(SESSION);
+    // Identity's login bumps the epoch and keeps the session id.
+    seam.identity.states.set(SESSION, active(2));
+    seam.calls.length = 0;
+
+    seam.invalidation().afterTargetLogin(SESSION);
+
+    expect(seam.calls).toEqual([]);
+    await expect(seam.stateCheck.check(SESSION)).resolves.toEqual({ ...active(2), epochChanged: false });
+    // Even at the pre-login epoch the token is minted again rather than served from the cache.
+    const minted = await seam.tokenCache.get(SESSION, 'tenant-a', 1);
+    expect(minted.token).not.toBe(anonymous.token);
+    expect(minted.claims.epoch).toBe(2);
+    expect(seam.ops()).toEqual(['identity.state', 'identity.mintToken']);
+  });
+
   it('after a target logout ends the legacy session, then drops the jar and the cached tokens', async () => {
     const seam = createSeam([jarOf('target-primary', '3')]);
     await primeCaches(seam);
@@ -643,10 +662,13 @@ describe('invalidation', () => {
     seam.onCall = (op) => {
       if (op === 'bridge.end') rowsAtEnd.push(seam.db.tables.legacy_jar.length);
     };
+    // Identity's logout ended the session, so it has no snapshot.
+    seam.identity.snapshots.delete(SESSION);
 
     await seam.invalidation().afterTargetLogout(SESSION, { userAgent: USER_AGENT });
 
     expect(seam.calls).toEqual([
+      ['identity.snapshot', SESSION],
       ['bridge.end', JAR_COOKIES, { userAgent: USER_AGENT, legacySessionId: LEGACY_SESSION_ID }],
     ]);
     expect(rowsAtEnd).toEqual([1]);
@@ -672,6 +694,7 @@ describe('invalidation', () => {
       tokenCache: seam.tokenCache,
       state: seam.stateCheck,
     });
+    seam.identity.snapshots.delete(SESSION);
 
     await invalidation.afterTargetLogout(SESSION);
 
@@ -806,6 +829,84 @@ describe('a legacy-served identity logout through the gateway at the committed v
 
     expect([next.statusCode, next.headers.location]).toEqual([302, LOGIN_LOCATION]);
     expect(legacy.bridgeCalls.filter((call) => call.op === 'hydrate')).toHaveLength(1);
+  });
+
+  it('keeps the ColdFusion session legacy kept through a public doaction=logout, so neither the followed hop nor the next page sets a session cookie', async () => {
+    const legacySessionId = 'OPT2LOGOUT_7201_72017201';
+    const jarCookies = {
+      CFID: { name: 'CFID', value: '7201', attributes: 'path=/;HttpOnly' },
+      CFTOKEN: { name: 'CFTOKEN', value: '72017201', attributes: 'path=/;HttpOnly' },
+    };
+    // A member logged in through legacy earlier: identity keys the session by its legacy session id, whose jar it holds.
+    gateway = await buildTestGateway({
+      version: 'v0002',
+      seed: {
+        jars: [{ session_id: GATEWAY_SESSION, legacy_session_id: legacySessionId, mode: 'target-primary', hydrated_epoch: '3', cookies: jarCookies }],
+      },
+      identity: {
+        sessions: [
+          {
+            sessionId: GATEWAY_SESSION,
+            legacySessionId,
+            userId: USER_ID,
+            epoch: 3,
+            state: 'active',
+            mode: 'target-primary',
+            snapshot: {
+              sessionId: GATEWAY_SESSION,
+              epoch: 3,
+              loginSnapshot: { user: { ...USER, membershipIds: MEMBERSHIP_IDS }, roles: [...ROLES] },
+              csrfSecretKey: CSRF_SECRET,
+              usedTokens: [],
+            },
+          },
+        ],
+      },
+    });
+    const { app, identity, legacy, memory } = gateway;
+    legacy.createSession({
+      legacySessionId,
+      cfid: jarCookies.CFID.value,
+      cftoken: jarCookies.CFTOKEN.value,
+      user: { ...USER },
+      memberships: ROLES.join(','),
+      membershipIds: MEMBERSHIP_IDS,
+      csrfSecretKey: CSRF_SECRET,
+    });
+    // Masa's logout clears session.mura under a fresh secret and keeps the ColdFusion session (loginManager.cfc:476-516).
+    legacy.setResponse((req, attached) => {
+      if (req.url.includes('doaction=logout')) {
+        if (attached !== undefined) {
+          Object.assign(attached, { isLoggedIn: false, user: {}, memberships: '', membershipIds: '', csrfSecretKey: 'CSRF-SECRET-LOGGED-OUT' });
+        }
+        return { status: 302, headers: { location: './' }, setCookies: REMEMBER_ME_DELETIONS };
+      }
+      return { body: attached?.isLoggedIn === false ? '<p>anonymous</p>' : '<p>other</p>' };
+    });
+    const headers = { cookie: TARGET_COOKIE, 'user-agent': USER_AGENT };
+    const legacyCookiesOf = (url: string) => {
+      const sent = parseCookieHeader(legacy.requests.filter((request) => request.url === url).at(-1)?.headers.cookie);
+      return [sent.get('CFID'), sent.get('CFTOKEN')];
+    };
+
+    const logout = await app.inject({ method: 'GET', url: '/?doaction=logout', headers });
+
+    expect([logout.statusCode, logout.headers['set-cookie']]).toEqual([302, REMEMBER_ME_DELETIONS]);
+    expect(legacyCookiesOf('/?doaction=logout')).toEqual(['7201', '72017201']);
+    expect(identity.calls.end).toBe(1);
+    expect(identity.sessions.get(GATEWAY_SESSION)).toMatchObject({ state: 'active', epoch: 5, userId: '' });
+    expect(memory?.tables.legacy_jar.filter((row) => row.session_id === GATEWAY_SESSION)).toEqual([
+      expect.objectContaining({ legacy_session_id: legacySessionId, mode: 'target-primary', hydrated_epoch: '5', identity_end_pending_at: null }),
+    ]);
+
+    for (const step of ['followed hop', 'next page']) {
+      const page = await app.inject({ method: 'GET', url: '/', headers });
+      expect([step, page.statusCode, page.body, page.headers['set-cookie']]).toEqual([step, 200, '<p>anonymous</p>', undefined]);
+      expect(legacyCookiesOf('/')).toEqual(['7201', '72017201']);
+    }
+    expect(legacy.sessions.size).toBe(1);
+    expect(legacy.bridgeCalls.filter((call) => call.op === 'hydrate')).toEqual([]);
+    expect(identity.calls.end).toBe(1);
   });
 });
 

@@ -17,6 +17,7 @@ import { ContentQueryError, SqlParams, firstById, type SortDirection } from './c
 import { sqlFeedSource, type BeanFeedSource, type FeedColumn, type FeedRunner, type FeedTableSpec } from './bean-feed-sql.js';
 import * as feedQueries from './feed-queries.js';
 import * as fileQueries from './files.js';
+import { isLegacyLimited, legacyStorable } from './legacy-limits.js';
 import {
   APPROVAL_ACTION,
   APPROVAL_ASSIGNMENT,
@@ -997,9 +998,45 @@ function storableIds(ids: readonly string[]): string[] {
   return ids.filter((id) => !id.includes('\u0000') && !/[\uD800-\uDFFF]/u.test(id));
 }
 
+/** `repository` whose writes reject a row wider than its legacy columns, writing nothing; migration applies write legacy's own rows as given. */
+function legacyWidthRepository(repository: Repository): Repository {
+  const storable = (table: string, row: RepositoryRow, ctx: WriteContext | undefined): RepositoryRow =>
+    isMigrationAuthority(ctx?.authority) || !isLegacyLimited(table) ? row : legacyStorable(table, row);
+  return Object.freeze({
+    ...repository,
+    async insert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx?: WriteContext): Promise<R> {
+      return repository.insert<R>(tx, table, storable(table, row, ctx), ctx);
+    },
+    async insertAbsent<R = RepositoryRow>(
+      tx: TenantTx,
+      table: string,
+      rows: readonly RepositoryRow[],
+      conflict: readonly string[],
+      ctx?: WriteContext,
+    ): Promise<R[]> {
+      return repository.insertAbsent<R>(tx, table, rows.map((row) => storable(table, row, ctx)), conflict, ctx);
+    },
+    async update<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, patch: RepositoryRow, ctx?: WriteContext): Promise<R | null> {
+      return repository.update<R>(tx, table, key, storable(table, patch, ctx), ctx);
+    },
+    async upsert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx?: WriteContext): Promise<R> {
+      return repository.upsert<R>(tx, table, storable(table, row, ctx), ctx);
+    },
+    async replaceOne<R = RepositoryRow>(
+      tx: TenantTx,
+      table: string,
+      beforeContentRow: RepositoryRow,
+      afterContentRow: RepositoryRow,
+      ctx?: WriteContext,
+    ): Promise<R | null> {
+      return repository.replaceOne<R>(tx, table, beforeContentRow, storable(table, afterContentRow, ctx), ctx);
+    },
+  });
+}
+
 /** Builds the content repository: the platform repository of `OWNED_TABLES` and one helper namespace per content area. */
 export function createContentRepository({ clock = systemClock, schema = SCHEMA }: ContentRepositoryOptions = {}) {
-  const platform: Repository = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock, legacyText: windows1252Text });
+  const platform: Repository = legacyWidthRepository(createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock, legacyText: windows1252Text }));
   const name = (def: TableDef): string => qualified(schema, def.table);
   /** An id column as SQL Server's CI_AS `=` compares it; leakproof, unlike lower(), so its expression index applies under forced RLS. */
   const ciIdExpr = (column: string, collation: 'legacy_ci' | 'legacy_char_ci'): string =>
@@ -3539,11 +3576,13 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
     /**
      * approvalChainBean.save's `groupID` handling: orders the listed groups' memberships, removes the unlisted ones, then
-     * moves the chain's requests to the first group.
+     * moves the chain's requests to the first group. Memberships carry the chain's `siteId`, as getBean copies it
+     * ('' binds NULL; a reordered membership keeps its own site when the chain has none).
      */
     async replaceChainMemberships(
       tx: TenantTx,
       chainId: string,
+      siteId: string,
       groupIds: readonly string[],
       ctx?: WriteContext,
     ): Promise<{ memberships: ApprovalMembershipRow[]; removed: ApprovalMembershipRow[] }> {
@@ -3553,16 +3592,22 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       const unlisted = current.filter((membership) => !listedLower.has((membership.groupid ?? '').toLowerCase()));
       const known = [...current];
       const memberships: ApprovalMembershipRow[] = [];
+      const site = siteId === '' ? {} : { siteid: siteId };
       for (const [index, groupId] of listed.entries()) {
         const existing = known.find((membership) => (membership.groupid ?? '').toLowerCase() === groupId.toLowerCase());
         const saved =
           existing !== undefined
-            ? ((await platform.update<ApprovalMembershipRow>(tx, APPROVAL_MEMBERSHIP.table, keyOf(APPROVAL_MEMBERSHIP, existing), { orderno: index + 1 }, ctx)) ??
-              existing)
+            ? ((await platform.update<ApprovalMembershipRow>(
+                tx,
+                APPROVAL_MEMBERSHIP.table,
+                keyOf(APPROVAL_MEMBERSHIP, existing),
+                { orderno: index + 1, ...site },
+                ctx,
+              )) ?? existing)
             : await platform.insert<ApprovalMembershipRow>(
                 tx,
                 APPROVAL_MEMBERSHIP.table,
-                { membershipid: cfUuid(), chainid: chainId, groupid: groupId, orderno: index + 1, created: clock.now() },
+                { membershipid: cfUuid(), chainid: chainId, groupid: groupId, orderno: index + 1, created: clock.now(), siteid: nullIfEmpty(siteId) },
                 ctx,
               );
         if (existing === undefined) {

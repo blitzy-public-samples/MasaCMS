@@ -28,6 +28,7 @@ import {
   SERVICE,
   TEST_CLOCK,
   buildTestApp,
+  gatewayHeaders,
   headersFor,
   identityOf,
   queueRun,
@@ -309,11 +310,16 @@ describe('route registrations against the contract', () => {
   const comparable = (entry: RouteMatrixEntry): Json => ({
     transport: entry.transport,
     ...(entry.requires === undefined ? { public: true } : { requires: [...entry.requires].sort() }),
+    ...(entry.invocationOptional === true ? { invocationOptional: true } : {}),
     siteCheck: entry.siteCheck,
   });
+  /** Whether `security` admits a call without credentials: empty, or offering the empty requirement. */
+  const admitsNoCredential = (security: unknown): boolean =>
+    Array.isArray(security) && (security.length === 0 || security.some((requirement) => Object.keys(requirement as object).length === 0));
   const declared = (operation: Json): Json => ({
     transport: operation['x-opt2-transport'],
     ...(operation['x-opt2-public'] === true ? { public: true } : { requires: [...(operation['x-opt2-requires'] as string[])].sort() }),
+    ...(admitsNoCredential(operation.security) ? { invocationOptional: true } : {}),
     siteCheck: operation['x-opt2-site-check'] !== false,
   });
 
@@ -322,7 +328,7 @@ describe('route registrations against the contract', () => {
     expect(registered).toEqual(contractOperations.map((op) => op.key).sort());
   });
 
-  it("declares every route's transport, roles, public flag and site check as its operation annotates them", () => {
+  it("declares every route's transport, roles, public flag, optional invocation credential and site check as its operation annotates them", () => {
     const routes = Object.fromEntries(collectRouteMatrix(t.app).routes.map((route) => [`${route.method} ${route.url}`, comparable(route)]));
     expect(routes).toEqual(Object.fromEntries(contractOperations.map((op) => [op.key, declared(op.operation)])));
   });
@@ -361,7 +367,7 @@ const cases: Record<string, () => Promise<CaseResult>> = {
   listDefinitions: () => call('reporting.exporter', 'GET', `${V1_DEFINITIONS}?${ON_SITE_A}`),
   downloadExportObject: async () => {
     const issued = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}/download-url?${ON_SITE_A}`);
-    const result = await call({}, 'GET', issued.json<{ data: { url: string } }>().data.url);
+    const result = await call(await gatewayHeaders(), 'GET', issued.json<{ data: { url: string } }>().data.url);
     expect(String(result.res.headers['content-type']).split(';')[0]).toBe(done.content_type);
     return result;
   },
@@ -583,7 +589,7 @@ describe('export file route', () => {
   it('serves the bytes a /v1 download URL signs, under the signed disposition', async () => {
     const issued = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}/download-url?${ON_SITE_A}`);
     const { url } = issued.json<{ data: { url: string } }>().data;
-    const res = await send({}, 'GET', url);
+    const res = await send(await gatewayHeaders(), 'GET', url);
     expect({ status: res.statusCode, sha: createHash('sha256').update(res.rawPayload).digest('hex'), disposition: res.headers['content-disposition'] }).toEqual({
       status: 200,
       sha: done.output_sha256,
@@ -595,7 +601,7 @@ describe('export file route', () => {
     ['a tampered signature', async () => (await t.storage.signedUrl(EXPORT_BUCKET, done.object_key ?? '')).replace(/sig=[0-9a-f]{64}/, `sig=${'0'.repeat(64)}`), 403],
     ['no stored object', async () => t.storage.signedUrl(EXPORT_BUCKET, exportObjectKey(TENANT_A.tenantId, cfUuid(), 'csv')), 404],
   ])('answers a URL with %s in the legacy error envelope', async (_label, url, status) => {
-    expect((await send({}, 'GET', await url())).statusCode).toBe(status);
+    expect((await send(await gatewayHeaders(), 'GET', await url())).statusCode).toBe(status);
   });
 });
 

@@ -3,9 +3,6 @@ import type { RouteKeyResult } from '@opt2/platform/legacy-compat';
 import type { AdminResponseMode, ResponseModes } from './response-modes.js';
 
 const ADMIN_PREFIX = 'admin:';
-const URLENCODED = 'application/x-www-form-urlencoded';
-const MULTIPART = 'multipart/form-data';
-const HASH = 0x23;
 
 /** Gateway-authored header carrying the browser's request target as received. */
 export const ORIGINAL_URL_HEADER = 'X-Opt2-Original-Url';
@@ -19,15 +16,12 @@ export const WEB_PREFIX_BY_MODE: Readonly<Record<AdminResponseMode, string>> = O
   redirect: '/admin-actions',
 });
 
-/** Request facts the mapping reads; a Fastify request with its raw buffered body satisfies it. */
+/** Request facts the mapping reads; a Fastify request satisfies it. */
 export interface AdminRequestLike {
   /** Request target as received: path and query. */
   readonly url: string;
   /** Request-line method, not an `X-HTTP-Method-Override`. */
   readonly method: string;
-  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
-  /** Raw body `Buffer`, when one was buffered. */
-  readonly body?: unknown;
 }
 
 /** The request web receives for a target admin action. */
@@ -64,72 +58,41 @@ function circuitAndAction(result: RouteKeyResult): [string, string] {
   return [circuit, action];
 }
 
-/** Media type of the request's `Content-Type`, lower-cased; '' when absent. */
-function mediaTypeOf(headers: AdminRequestLike['headers']): string {
-  const value = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-  const contentType = typeof value === 'string' ? value : (value?.[0] ?? '');
-  return (contentType.split(/[;,]/, 1)[0] ?? '').trim().toLowerCase();
-}
-
 /**
- * Url-encoded body bytes as query text, unchanged except for the bytes a request target cannot carry (controls,
- * space, `#`, non-ASCII), which are percent-encoded so web decodes the same values instead of failing or truncating.
+ * Method and body web receives: a page keeps a POST with its body and a HEAD, and gets any other method as a bodiless
+ * GET, since legacy fills the form scope only for a POST; the other modes keep both as sent.
  */
-function queryTextOf(bytes: Buffer): string {
-  let text = '';
-  for (const byte of bytes) {
-    text += byte > 0x20 && byte < 0x7f && byte !== HASH ? String.fromCharCode(byte) : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
-  }
-  return text;
-}
-
-/** Form fields a POST carries into a page-mode query: url-encoded bytes, multipart text fields, otherwise none. */
-function postedFields(request: AdminRequestLike, form: Readonly<Record<string, string>>): string {
-  const mediaType = mediaTypeOf(request.headers);
-  if (mediaType === URLENCODED) return Buffer.isBuffer(request.body) ? queryTextOf(request.body) : '';
-  if (mediaType !== MULTIPART) return '';
-  return Object.entries(form)
-    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
-    .join('&');
+function webMethodOf(responseMode: AdminResponseMode, method: string): Pick<AdminWebTarget, 'method' | 'forwardBody'> {
+  if (responseMode !== 'page') return { method, forwardBody: true };
+  const upper = method.toUpperCase();
+  if (upper === 'POST') return { method: upper, forwardBody: true };
+  return { method: upper === 'HEAD' ? upper : 'GET', forwardBody: false };
 }
 
 /**
- * The web request for an admin action the active version marks `target`; the dispatcher merges `headers` after
- * stripping inbound `X-OPT2-*` headers.
- * @param form The body's text fields as `bodyParamsFrom` reads them, in body order; read for a multipart POST to a page.
+ * The web request for an admin action the active version marks `target`: the web path, the original query byte for
+ * byte, and the method and body {@link webMethodOf} gives; the dispatcher merges `headers` after stripping inbound
+ * `X-OPT2-*` headers.
  * @throws AdminMappingError For a key that is not a core admin action or has no inventoried response mode.
  */
 export function mapAdminToWeb({
   result,
   request,
   modes,
-  form,
 }: {
   result: RouteKeyResult;
   request: AdminRequestLike;
   modes: ResponseModes;
-  form: Readonly<Record<string, string>>;
 }): AdminWebTarget {
   const [circuit, action] = circuitAndAction(result);
   const info = modes.modeFor(result.key);
   if (info === undefined) throw new AdminMappingError(result.key, 'no inventoried response mode');
   const { responseMode, contentType } = info;
-  const page = responseMode === 'page';
-  const requestMethod = request.method.toUpperCase();
-
   const queryAt = request.url.indexOf('?');
-  let query = queryAt === -1 ? undefined : request.url.slice(queryAt + 1);
-  if (page && requestMethod === 'POST') {
-    const fields = postedFields(request, form);
-    if (fields !== '') query = query ? `${query}&${fields}` : fields;
-  }
-
   const webPath = `${WEB_PREFIX_BY_MODE[responseMode]}/${encodeURIComponent(circuit)}/${encodeURIComponent(action)}`;
   const target: AdminWebTarget = {
-    path: query === undefined ? webPath : `${webPath}?${query}`,
-    // A page reads no body and legacy fills its form scope only for a POST, so every method but HEAD becomes GET.
-    method: page && requestMethod !== 'HEAD' ? 'GET' : request.method,
-    forwardBody: !page,
+    path: queryAt === -1 ? webPath : `${webPath}${request.url.slice(queryAt)}`,
+    ...webMethodOf(responseMode, request.method),
     headers: Object.freeze({ [ORIGINAL_URL_HEADER]: request.url }),
     responseMode,
   };

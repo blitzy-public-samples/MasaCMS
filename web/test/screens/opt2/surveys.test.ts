@@ -176,14 +176,15 @@ describe('surveys body helpers', () => {
 });
 
 describe('surveys labels', () => {
-  const rowLinks = [fr('email.schedule'), 'Targets', 'Responses'];
+  // The unlabelled row-actions toggle, then the menu links.
+  const rowLinks = ['', fr('email.schedule'), 'Targets', 'Responses'];
 
   it.each([
     {
       screen: 'surveys',
       rc: {},
       routes: { [routeKey('GET', 'surveys', '/v1/surveys')]: { status: 200, body: { data: surveys, total: 500 } } },
-      headers: [fr('params.title'), fr('email.status'), 'Launch', 'Reminders', fr('params.created'), ''],
+      headers: ['', fr('params.title'), fr('email.status'), 'Launch', 'Reminders', fr('params.created')],
       labels: [],
       links: [...rowLinks, ...rowLinks, fr('sitemanager.next')],
     },
@@ -196,8 +197,8 @@ describe('surveys labels', () => {
           body: { data: surveyResponses.multiSite, total: 500 },
         },
       },
-      headers: [],
-      labels: ['Respondent Site', 'Respondent', fr('formbuilder.matrix.answers'), 'Submitted'],
+      headers: ['Submitted', 'Respondent Site', 'Respondent', fr('formbuilder.matrix.answers')],
+      labels: [],
       links: ['Surveys', fr('email.schedule'), 'Targets', fr('sitemanager.next')],
     },
   ])('renders the $screen labels from the French admin bundle', async ({ screen, rc, routes, ...expected }) => {

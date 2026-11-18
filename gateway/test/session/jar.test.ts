@@ -968,6 +968,21 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
     expect(after?.identityEndPendingAt).toBeUndefined();
   });
 
+  it('clears the mark inside a locked section at the version read before it, keeping the jar the section upserts', async () => {
+    await jar.upsert(INPUT);
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+    const read = await jar.get(SESSION_ID);
+
+    const stored = await jar.withSessionLock(SESSION_ID, async (locked) => {
+      await locked.clearIdentityEndPending(SESSION_ID, read?.updatedAt);
+      return locked.upsert({ ...INPUT, hydratedEpoch: 12 });
+    });
+
+    expect(stored).toMatchObject({ ...INPUT, hydratedEpoch: 12 });
+    expect(stored).not.toHaveProperty('identityEndPendingAt');
+    await expect(jar.get(SESSION_ID)).resolves.toEqual(stored);
+  });
+
 
   it('keeps the mark of a jar through upserts, epoch updates and a rebind to the same session', async () => {
     await jar.upsert(INPUT);

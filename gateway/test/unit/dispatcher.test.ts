@@ -342,6 +342,23 @@ describe('edge dispatch', () => {
     expect(forwardedToLegacy(legacy)).toEqual([]);
   });
 
+  it("writes a target route's request start cookies under the configured MURA_SECURECOOKIES and MURA_COOKIEDOMAIN", async () => {
+    gateway = await buildTestGateway({ version: 'v0002', env: { MURA_SECURECOOKIES: 'true', MURA_COOKIEDOMAIN: '.example.test' } });
+    const res = await gateway.app.inject({
+      method: 'POST',
+      url: '/core/modules/v1/rater/ajax/saveRate.cfm',
+      headers: { 'content-type': URLENCODED },
+      payload: 'contentID=C1&siteID=default&rate=5',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(gateway.targets['strategies-content']?.requests).toHaveLength(1);
+    const startCookies = [res.headers['set-cookie'] ?? []].flat().filter((value) => /^(MXP_TRACKINGID|mobileFormat)=/.test(value));
+    expect(startCookies).toEqual([
+      expect.stringMatching(/^MXP_TRACKINGID=[^;]+; path=\/; domain=\.example\.test; secure; HttpOnly; Max-Age=946080000; Expires=/),
+      expect.stringMatching(/^mobileFormat=false; path=\/; domain=\.example\.test; secure; HttpOnly; Max-Age=946080000; Expires=/),
+    ]);
+  });
+
   it('answers the legacy bridge with a bodiless 404 that never reaches legacy', async () => {
     const { app, legacy } = await started('v0001');
     const res = await app.inject({ method: 'GET', url: BRIDGE_SESSION });

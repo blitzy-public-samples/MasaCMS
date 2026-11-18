@@ -468,7 +468,7 @@ export async function saveChain(deps: DomainDeps, actor: Actor, input: ChainSave
     };
     // A chain id beyond the membership's char(35) fails each membership's validation, so legacy writes none.
     if (input.groupId !== undefined && input.chainId.length <= ID_LENGTH) {
-      await repo.approvals.replaceChainMemberships(tx, input.chainId, input.groupId.split(','), write);
+      await repo.approvals.replaceChainMemberships(tx, input.chainId, values.siteid, input.groupId.split(','), write);
     }
     const errors = validateChain(values);
     if (Object.keys(errors).length > 0) {
@@ -608,7 +608,15 @@ async function approve(scope: ActionScope, request: ApprovalRequestValues, comme
   await writeAction(
     tx,
     repo,
-    { requestId: request.requestid, groupId: request.groupid, chainId: request.chainid, actionType: 'Approval', comments, userId: actor.userId },
+    {
+      requestId: request.requestid,
+      groupId: request.groupid,
+      chainId: request.chainid,
+      siteId: request.siteid,
+      actionType: 'Approval',
+      comments,
+      userId: actor.userId,
+    },
     writeContextFor(actor),
   );
   const memberships = await repo.approvals.chainMemberships(tx, { chainId: request.chainid });
@@ -642,7 +650,15 @@ async function reject(scope: ActionScope, request: ApprovalRequestValues, commen
   await writeAction(
     tx,
     deps.repository,
-    { requestId: request.requestid, groupId: request.groupid, chainId: request.chainid, actionType: 'Rejection', comments, userId: actor.userId },
+    {
+      requestId: request.requestid,
+      groupId: request.groupid,
+      chainId: request.chainid,
+      siteId: request.siteid,
+      actionType: 'Rejection',
+      comments,
+      userId: actor.userId,
+    },
     writeContextFor(actor),
   );
   const saved = await saveRequest(tx, deps.repository, { ...request, status: REJECTED_STATUS }, actor, site);

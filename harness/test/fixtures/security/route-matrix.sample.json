@@ -5,6 +5,7 @@
       "url": "/healthz",
       "transport": "service",
       "public": true,
+      "invocationOptional": true,
       "siteCheck": true
     },
     {

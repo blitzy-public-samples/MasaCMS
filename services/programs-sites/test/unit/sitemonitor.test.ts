@@ -1,4 +1,5 @@
 /** Site monitor on the composed app without PostgreSQL: real passes through buildApp's own client, task port and cursor store. */
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   CLOUD_TASKS_HEADERS,
@@ -19,6 +20,7 @@ import {
   TEST_CLOCK,
   buildTestApp,
   createRecordingDb,
+  headersFor,
   type FakeTaskRecord,
   type RecordingDb,
   type TestApp,
@@ -29,6 +31,8 @@ const TASK_PATH = '/internal/v1/jobs/sitemonitor';
 const LEGACY_STEPS_PATH = '/internal/v1/legacy-steps';
 const AUTHORITY_PATH = '/internal/v1/authority';
 const CURSOR_TABLE = '"programs_sites"."sitemonitor_state"';
+// Fastify announces each route handler here as it starts; a public run's handler joins or starts the pass at once.
+const HANDLER_START = 'tracing:fastify.request.handler:start';
 const THE_TIME = TEST_CLOCK.now();
 // A public caller's pass ends at its budget.
 const DEADLINE_AT = new Date(THE_TIME.getTime() + PUBLIC_RUN_BUDGET_MS);
@@ -140,6 +144,11 @@ function gateLegacySteps(test: TestApp): { reached: Promise<void>; open: () => v
   return { reached, open };
 }
 
+/** The gateway's invocation credential, which every public caller's request arrives with. */
+function viaGateway(): Promise<Record<string, string>> {
+  return headersFor('service:gateway');
+}
+
 /** Lets the requests already sent reach their handlers. */
 function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -188,7 +197,7 @@ describe('public /_api/sitemonitor on the composed app', () => {
   ] as const)('%s %s runs a first pass on legacy, stores the cursor at theTime and answers ""', async (method, url) => {
     const test = await composedApp();
 
-    const res = await test.app.inject({ method, url });
+    const res = await test.app.inject({ method, url, headers: await viaGateway() });
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe('');
@@ -211,7 +220,7 @@ describe('public /_api/sitemonitor on the composed app', () => {
     const targetCapable = SITE_MONITOR_STEPS.filter((step) => step.targetPath !== undefined);
     test.client.setAuthority([...targetCapable.flatMap((step) => step.units), 'content.file'], 'target');
 
-    const res = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor' });
+    const res = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor', headers: await viaGateway() });
 
     expect(res.statusCode).toBe(200);
     expect(test.client.requestsTo('migration', AUTHORITY_PATH)).toEqual([]);
@@ -229,7 +238,7 @@ describe('public /_api/sitemonitor on the composed app', () => {
     const test = await composedApp();
     test.client.failStep('emailSend');
 
-    const res = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor' });
+    const res = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor', headers: await viaGateway() });
 
     expect(res.statusCode).toBe(503);
     expect(stepBodies(test)).toEqual(FIRST_PASS.slice(0, 3).map(([step, at]) => legacyStepBody(step, at)));
@@ -240,12 +249,20 @@ describe('public /_api/sitemonitor on the composed app', () => {
     const test = await composedApp();
     const gate = gateLegacySteps(test);
 
-    const during = Array.from({ length: 5 }, () => test.app.inject({ method: 'GET', url: '/_api/sitemonitor/' }));
+    const headers = await viaGateway();
+    let started = 0;
+    const onHandlerStart = (): void => {
+      started += 1;
+    };
+    subscribe(HANDLER_START, onHandlerStart);
+    const during = Array.from({ length: 5 }, () => test.app.inject({ method: 'GET', url: '/_api/sitemonitor/', headers }));
     await gate.reached;
-    await nextTurn();
+    // Each caller verifies its invocation credential first; the gate opens once every handler has joined the pass.
+    await until(() => started === during.length);
+    unsubscribe(HANDLER_START, onHandlerStart);
     gate.open();
     const answers = await Promise.all(during);
-    const after = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor/' });
+    const after = await test.app.inject({ method: 'GET', url: '/_api/sitemonitor/', headers });
 
     expect([...answers, after].map((res) => [res.statusCode, res.body])).toEqual(Array.from({ length: 6 }, () => [200, '']));
     expect(stepBodies(test).slice(0, FIRST_PASS.length)).toEqual(FIRST_PASS.map(([step, at]) => legacyStepBody(step, at)));
@@ -322,7 +339,7 @@ describe(`POST ${TASK_PATH} on the composed app`, () => {
     const test = await composedApp();
     const gate = gateLegacySteps(test);
 
-    const publicRun = test.app.inject({ method: 'GET', url: '/_api/sitemonitor' });
+    const publicRun = test.app.inject({ method: 'GET', url: '/_api/sitemonitor', headers: await viaGateway() });
     await gate.reached;
     const task = invokeChainTask(test);
     await until(() => test.tasksSinceStartup().length === 1);

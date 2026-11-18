@@ -87,8 +87,9 @@ function renderTargets(ctx: ScreenContext, data: TargetsData, text: string, aler
     targets.map((target) => [target.siteId, target.groupName ?? 'All users', dateTimeText(target.created)]),
     'This survey has no targets.',
   );
-  return html`${surveyHeader(ctx, survey, 'targets')}${alert}${block(
-    html`${form}<h2>Current Targets</h2><p class="help-block">Total targets: ${targets.length}</p>${grid}`,
+  // The form ends its block, as legacy action rows do: the next heading carries no top margin.
+  return html`${surveyHeader(ctx, survey, 'targets')}${alert}${block(form)}${block(
+    html`<h2>Current Targets</h2><p class="help-block">Total targets: ${targets.length}</p>${grid}`,
   )}`;
 }
 

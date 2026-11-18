@@ -403,12 +403,21 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
   });
 
-  it('answers a save without a valid token with 500 and writes nothing', async () => {
+  it('answers a save without a valid token with the 500 naming the unset user bean and writes nothing', async () => {
     const userid = nextId('B');
     const missing = await send('POST', '/v1/groups', await admin(), { userid, groupname: 'NoToken' });
     const otherContext = await send('POST', '/v1/groups', await admin(), { userid, groupname: 'NoToken', ...csrfFields(ids.editors) });
 
     expect([missing.statusCode, otherContext.statusCode]).toEqual([500, 500]);
+    const unsetUserBean = {
+      message: 'Unhandled Exception',
+      code: 'server_error',
+      stacktrace: { message: 'Element RC.userBean is undefined in ARGUMENTS.', type: 'Expression' },
+    };
+    expect([missing.json(), otherContext.json()]).toEqual([
+      { apiversion: 'v1', method: 'invalid', error: unsetUserBean },
+      { apiversion: 'v1', method: 'invalid', error: unsetUserBean },
+    ]);
     expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
   });
 
@@ -423,6 +432,8 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
 
     expect([created.statusCode, updated.statusCode]).toEqual([500, 500]);
     expect(created.json()).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
+    // The column's refusal is the SQL Server driver's text, which no stacktrace reproduces.
+    expect(created.json()).not.toHaveProperty('error.stacktrace');
     expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
     expect(await gated(SITE, (tx) => repo.findGroup(tx, ids.parent))).toMatchObject({ groupname: 'Parent', email: null, subtype: 'Default', tablist: null });
   });

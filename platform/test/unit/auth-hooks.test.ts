@@ -179,6 +179,24 @@ const INVALID_DECLARATIONS: readonly InvalidDeclaration[] = [
     config: { requires: [Roles.s2], edge: true },
     problem: 'an edge route must be public on the service transport',
   },
+  {
+    label: 'invocationOptional on a role route',
+    url: '/v1/notes',
+    config: { requires: [Roles.s2], invocationOptional: true },
+    problem: 'an invocationOptional route must be public on the service transport',
+  },
+  {
+    label: 'invocationOptional on a task route',
+    url: SWEEP_URL,
+    config: { requires: [TASKS_INVOKER_ROLE], transport: 'cloud-tasks', invocationOptional: true },
+    problem: 'an invocationOptional route must be public on the service transport',
+  },
+  {
+    label: 'invocationOptional on an edge route',
+    url: '/v1/proxy',
+    config: { public: true, edge: true, invocationOptional: true },
+    problem: 'an edge route cannot be invocationOptional',
+  },
 ];
 
 interface ValidDeclaration {
@@ -191,6 +209,12 @@ interface ValidDeclaration {
 const VALID_DECLARATIONS: readonly ValidDeclaration[] = [
   { label: 'an anyOf role list', url: '/v1/notes', config: { requires: [Roles.siteAdmin, Roles.s2] }, transport: 'service' },
   { label: 'a public route', url: '/healthz', config: { public: true }, transport: 'service' },
+  {
+    label: 'a public route whose invocation credential is optional',
+    url: '/.well-known/jwks.json',
+    config: { public: true, invocationOptional: true },
+    transport: 'service',
+  },
   { label: 'an edge route', url: '/v1/proxy', config: { public: true, edge: true }, transport: 'service' },
   {
     label: 'a site-check opt-out',
@@ -325,13 +349,6 @@ describe('request authentication and role checks', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toStrictEqual({ ok: true });
     expect(handled).toHaveBeenCalledOnce();
-  });
-
-  it('admits an anonymous request to a public route with no identities', async () => {
-    const res = await app.inject({ url: '/v1/open' });
-
-    expect(res.statusCode).toBe(200);
-    expect(lastAuth()).toEqual({ roles: [], transport: 'service' });
   });
 
   it('still verifies credentials presented to a public route', async () => {
@@ -611,11 +628,63 @@ describe('request authentication and role checks', () => {
       expect(suppliedSiteIdsOf(request)).toStrictEqual(siteIds);
     });
 
-    it('skips the check for an anonymous request to a public route', async () => {
-      const res = await app.inject({ url: `/v1/open?siteid=${SITE_B}` });
+    it('skips the check for a request without a user token to a public route', async () => {
+      const res = await app.inject({ url: `/v1/open?siteid=${SITE_B}`, headers: { [INVOCATION_HEADER]: await invocationFrom('gateway') } });
 
       expect(res.statusCode).toBe(200);
     });
+  });
+});
+
+describe('invocation credential on public routes', () => {
+  const OPEN_URL = '/v1/open';
+  const PROBE_URL = '/v1/probe';
+  const INVALID_INVOCATION = { [INVOCATION_HEADER]: 'Bearer not-a-service-token' };
+  const reasons: string[] = [];
+  let probed: FastifyInstance;
+
+  async function userTokenAlone(): Promise<Record<string, string>> {
+    return { authorization: `Bearer ${await mintUserToken({ sub: USER_ID, site: SITE_A, roles: [Roles.member] })}` };
+  }
+
+  beforeEach(() => {
+    reasons.length = 0;
+    probed = trackedApp();
+    registerAuth(probed, { transports, onDenial: (denial) => void reasons.push(denial.reason) });
+    probed.get(OPEN_URL, { config: { opt2: { public: true } } }, ok);
+    probed.post(OPEN_URL, { config: { opt2: { public: true } } }, ok);
+    probed.get(PROBE_URL, { config: { opt2: { public: true, invocationOptional: true } } }, ok);
+  });
+
+  it.each([
+    { label: 'GET without credentials', method: 'GET' as const, url: OPEN_URL, headers: async () => ({}), reason: 'missing-credential' },
+    { label: 'POST without credentials', method: 'POST' as const, url: OPEN_URL, headers: async () => ({}), reason: 'missing-credential' },
+    { label: 'an invalid invocation credential', method: 'GET' as const, url: OPEN_URL, headers: async () => INVALID_INVOCATION, reason: 'invalid-credential' },
+    { label: 'an invalid invocation credential', method: 'GET' as const, url: PROBE_URL, headers: async () => INVALID_INVOCATION, reason: 'invalid-credential' },
+    { label: 'a user token alone', method: 'GET' as const, url: PROBE_URL, headers: userTokenAlone, reason: 'missing-credential' },
+  ])('answers $label on $url with the legacy 401, reason $reason, without running the handler', async ({ method, url, headers, reason }) => {
+    const res = await probed.inject({ method, url, headers: await headers() });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['www-authenticate']).toBeUndefined();
+    expect(res.json()).toStrictEqual(DENIED_ENVELOPE);
+    expect(reasons).toStrictEqual([reason]);
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'no credentials', url: PROBE_URL, caller: undefined },
+    { label: "the gateway's invocation credential", url: PROBE_URL, caller: 'gateway' },
+    { label: "the gateway's invocation credential", url: OPEN_URL, caller: 'gateway' },
+  ])('admits $label on $url', async ({ url, caller }) => {
+    const headers = caller === undefined ? {} : { [INVOCATION_HEADER]: await invocationFrom(caller) };
+
+    const res = await probed.inject({ url, headers });
+
+    expect(res.statusCode).toBe(200);
+    const service = caller === undefined ? {} : { service: { name: caller, roles: [serviceRole(caller)] } };
+    expect(lastAuth()).toEqual({ ...service, roles: caller === undefined ? [] : [serviceRole(caller)], transport: 'service' });
+    expect(reasons).toStrictEqual([]);
   });
 });
 
@@ -786,6 +855,7 @@ describe('route matrix', () => {
     (instance) => instance.get('/v1/notes', { config: { opt2: { requires: [Roles.siteAdmin, Roles.s2] } } }, ok),
     (instance) => instance.post('/v1/notes', { config: { opt2: { requires: [Roles.siteAdmin], siteCheck: false } } }, ok),
     (instance) => instance.get('/healthz', { config: { opt2: { public: true } } }, ok),
+    (instance) => instance.get('/.well-known/jwks.json', { config: { opt2: { public: true, invocationOptional: true } } }, ok),
     (instance) =>
       instance.post(PUSH_URL, { config: { opt2: { requires: [PUBSUB_INVOKER_ROLE], transport: 'pubsub-push' } } }, ok),
     (instance) =>
@@ -807,6 +877,8 @@ describe('route matrix', () => {
   });
 
   const EXPECTED_ROUTES: RouteMatrixEntry[] = [
+    service('GET', '/.well-known/jwks.json', { public: true, invocationOptional: true }),
+    service('HEAD', '/.well-known/jwks.json', { public: true, invocationOptional: true }),
     service('GET', '/healthz', { public: true }),
     service('HEAD', '/healthz', { public: true }),
     { method: 'POST', url: PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], siteCheck: true },

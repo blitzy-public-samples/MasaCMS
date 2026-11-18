@@ -1,4 +1,5 @@
 // `cCategory.update`: the strategies-content save, then FW/1's list redirect or the form re-rendered (server-only).
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
 import { relayContext } from '@/lib/request-context';
 import { structValue } from '../carch/model';
@@ -23,7 +24,7 @@ const RERENDERS = new WeakMap<ScreenContext, CcategoryEditData>();
 /**
  * `update()`: posts every rc field, the CSRF pair included, for the owner to validate and run `rc.action`. The owner's
  * redirect answers with the list; otherwise the bean and its errors are kept for the view.
- * @throws TypeError When the owner returns no bean (a rejected token), as legacy fails.
+ * @throws LegacyFaultError When the owner returns no bean (a rejected token), as legacy fails reading it.
  * @throws GatewayDenialError When strategies-content answers 401 or 403; any other non-2xx answer, such as the owner
  * failing a request without `rc.action` after its token check, throws `Error`.
  */
@@ -37,7 +38,7 @@ export async function updateCategory(ctx: ScreenContext): Promise<PageController
   if (redirect !== null) return LIST_REDIRECT;
   const model = data?.rc;
   if (!isStruct(model) || structValue(model, 'categoryBean') === undefined) {
-    throw new TypeError('Element RC.categoryBean is undefined in ARGUMENTS.');
+    throw new LegacyFaultError('Element RC.categoryBean is undefined in ARGUMENTS.');
   }
   // The contract hands the bean's error struct over at the top level, in struct order.
   RERENDERS.set(ctx, { ...categoryEditDataOf(model), errors: errorEntriesOf(errors) });

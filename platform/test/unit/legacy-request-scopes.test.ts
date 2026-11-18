@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  appendFormScopeValue,
+  formScopeInputsOf,
   isJsonContentType,
   legacyScopeParams,
   legacyScopeValue,
@@ -73,6 +75,56 @@ describe('legacyScopeValue and portcullisInputsOf', () => {
   });
 });
 
+// The ACF 2023 oracle's form-scope value for one name posted with these values, url-encoded and multipart alike; it
+// reads a file part as the upload's temporary path, '' when no file is chosen, which the port reads as the file name.
+const FORM_JOINS: ReadonlyArray<readonly [readonly (string | { readonly file: string })[], string]> = [
+  [['', { file: '' }], ''],
+  [[{ file: '' }, ''], ''],
+  [['x', { file: '' }], 'x'],
+  [[{ file: '' }, { file: '' }], ''],
+  [['', { file: 'p.png' }], 'p.png'],
+  [['', ''], ''],
+  [['a', '', 'b'], 'a,b'],
+  [['', 'b'], 'b'],
+  [[' ', 'b'], ' ,b'],
+  [['a', ' '], 'a'],
+  [['', ' '], ''],
+  [['\t', 'x'], '\t,x'],
+  [['', 'a', ''], 'a'],
+  [['a', ','], 'a,,'],
+  [['', ','], ','],
+  [[',', { file: '' }], ','],
+];
+
+describe('appendFormScopeValue and formScopeInputsOf', () => {
+  const cases = FORM_JOINS.map(([values, joined]) => [JSON.stringify(values), values, joined] as const);
+
+  it.each(cases)('joins a form name posted as %s into %j, where the url scope keeps every value', (_label, values, joined) => {
+    const texts = values.map((value) => (typeof value === 'string' ? value : value.file));
+    const parts = values.map((value) => (typeof value === 'string' ? field('v', value) : file('v', value.file)));
+    const hasFile = values.some((value) => typeof value !== 'string');
+
+    expect(texts.reduce<string | undefined>(appendFormScopeValue, undefined)).toBe(joined);
+    expect(formScopeInputsOf({ v: parts })).toStrictEqual([['v', joined, hasFile]]);
+    if (!hasFile) expect(formScopeInputsOf({ v: texts })).toStrictEqual([['v', joined, false]]);
+    expect(portcullisInputsOf({ v: parts })).toStrictEqual([['v', texts.join(','), hasFile]]);
+  });
+
+  it.each<[string, Record<string, unknown>, unknown[]]>([
+    ['an empty spelling before a filled one', { v: '', V: 'b' }, [['v', 'b', false]]],
+    ['a blank spelling before a filled one', { q: ' ', Q: 'b' }, [['q', ' ,b', false]]],
+    ['an empty value between repeated spellings', { v: ['a', ''], V: 'b' }, [['v', 'a,b', false]]],
+    ['a text field beside an empty file part', { newFile: '', NEWFILE: file('NEWFILE', '') }, [['newFile', '', true]]],
+    ['a filled file part after an empty text field', { newFile: field('newFile', ''), NewFile: file('NewFile', 'me.png') }, [['newFile', 'me.png', true]]],
+  ])('joins names differing only in case, %s, as the form scope does', (_label, fields, inputs) => {
+    expect(formScopeInputsOf(fields)).toStrictEqual(inputs);
+  });
+
+  it.each([undefined, 'text', ['a']])('has no inputs for a %j body', (fields) => {
+    expect(formScopeInputsOf(fields)).toStrictEqual([]);
+  });
+});
+
 describe('legacyScopesFrom', () => {
   it('scans the url and form scopes apart, renamed names after the rest and stripped-name copies last', () => {
     const query = Object.assign(Object.create(null) as Record<string, unknown>, { 'site-id': ' tenant-b ', 'amp;q': 'x\u0000y', r: ['1', '2'] });
@@ -141,6 +193,22 @@ describe('legacyScopesFrom', () => {
       entries: [['q', '1,2'], ['r', '3']],
       failed: false,
     });
+  });
+
+  it.each<[string, Record<string, unknown>, Array<[string, string]>]>([
+    ['a text newfile and an empty file part', { newfile: [field('newfile', ''), file('newfile', '')] }, [['newfile', '']]],
+    ['repeated values around an empty one', { v: ['a', '', 'b'] }, [['v', 'a,b']]],
+    ['an empty value before a filled one', { v: ['', 'b'] }, [['v', 'b']]],
+    ['a comma beside an empty file part', { v: [field('v', ','), file('v', '')] }, [['v', ',']]],
+    ['names differing only in case, the empty spelling first', { newFile: '', NEWFILE: file('NEWFILE', '') }, [['newFile', '']]],
+  ])('joins the form scope of %s as ACF does', (_label, body, entries) => {
+    expect(legacyScopesFrom({ query: {}, body, headers: {} }).form).toStrictEqual({ entries, failed: false });
+  });
+
+  it('keeps every value of a repeated url name while the form scope skips the empty one', () => {
+    const scopes = legacyScopesFrom({ query: { x: ['', 'b'] }, body: { x: ['', 'b'] }, headers: FORM, url: '/p?x=&x=b' });
+    expect(scopes.url).toStrictEqual({ entries: [['x', ',b']], failed: false });
+    expect(scopes.form).toStrictEqual({ entries: [['x', 'b']], failed: false });
   });
 
   it('has empty scopes for a request without query or body', () => {

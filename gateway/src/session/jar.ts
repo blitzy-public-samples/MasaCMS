@@ -72,6 +72,8 @@ export interface JarStatements {
 export interface LockedJar extends JarStatements {
   /** Takes the ColdFusion session's lock until the section ends. */
   lockNative(legacySessionId: string): Promise<void>;
+  /** As {@link LegacyJar.clearIdentityEndPending}, inside the section. */
+  clearIdentityEndPending(sessionId: string, updatedAt?: Date): Promise<void>;
 }
 
 /**

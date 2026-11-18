@@ -270,6 +270,13 @@ describe.skipIf(!(await pgAvailable()))('ccategory admin routes', () => {
     expect(consumed).toEqual([]);
   });
 
+  it('fails an add whose name tcontentcategories.name (nvarchar(50)) cannot store, writing nothing, as the legacy insert fails', async () => {
+    const before = await changelogCount();
+    const res = await send('POST', LIST, { form: { action: 'add', categoryID: '', name: 'n'.repeat(255), ...CSRF }, contract: false });
+    expect(res.statusCode).toBe(500);
+    expect(await changelogCount()).toBe(before);
+  });
+
   it.each([
     ['GET', LIST],
     ['GET', `${LIST}/F0000003-AAAA-BBBB-CCCCDDDDEEEEFFFF`],

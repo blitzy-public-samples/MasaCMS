@@ -184,7 +184,7 @@ describe('registered operations', () => {
     // `requires` is an any-of set, so its order is not compared.
     const declared = collectRouteMatrix(app).routes.map((route) => ({ ...route, ...(route.requires ? { requires: [...route.requires].sort() } : {}) }));
     const expected = [
-      { method: 'GET', url: '/healthz', transport: 'service', public: true, siteCheck: true },
+      { method: 'GET', url: '/healthz', transport: 'service', public: true, invocationOptional: true, siteCheck: true },
       ...MIGRATION_ROUTES.map(({ method, path, url }) => {
         const operation = CONTRACT.find((entry) => entry.method === method && entry.path === path)?.operation ?? {};
         return {

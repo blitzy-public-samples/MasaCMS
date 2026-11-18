@@ -1,5 +1,5 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { attr, html, join, type SafeHtml } from '@/lib/html';
+import { attr, html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { ScreenContext } from '../../registry';
 import {
@@ -8,12 +8,17 @@ import {
   block,
   canUse,
   controlGroup,
+  detailList,
+  formActions,
+  gridTable,
   opt2Label,
   opt2View,
   pageHeader,
   postForm,
+  submitButton,
   textInput,
   valueRows,
+  type FormButton,
 } from '../shared';
 import {
   FINANCE_MODULE,
@@ -77,17 +82,44 @@ function summaryRows(ctx: ScreenContext, record: FinanceRecordDetail): SafeHtml 
   ]);
 }
 
-function versionRows(ctx: ScreenContext, version: Version): SafeHtml {
-  return valueRows([
-    [opt2Label(ctx, 'Version'), version.version],
-    [opt2Label(ctx, 'Action'), version.action],
-    [opt2Label(ctx, 'State'), financeStateBadge(ctx, version.state)],
-    [opt2Label(ctx, 'Title'), version.title],
-    ['Amount', amountCell(version.amount)],
-    ['Period', version.period],
-    ['Actor', version.actor_user_id],
-    [opt2Label(ctx, 'Created'), version.created],
+/**
+ * Classes of the version grid's columns: amount, period, actor and created hide on narrow screens, as in legacy
+ * lists; the actor id also below 1200 px, where it pushes the nowrap columns past the content beside the sidebar.
+ */
+const VERSION_COLUMN_CLASSES: ReadonlyArray<string | undefined> = [
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  'hidden-xs',
+  'hidden-xs hidden-sm',
+  'hidden-xs hidden-sm hidden-md',
+  'hidden-xs',
+];
+
+/** The version history grid, one row per version as finance lists them, values as serialized. */
+function versionGrid(ctx: ScreenContext, versions: readonly Version[]): SafeHtml {
+  const headers = [
+    opt2Label(ctx, 'Version'),
+    opt2Label(ctx, 'Action'),
+    opt2Label(ctx, 'State'),
+    opt2Label(ctx, 'Title'),
+    'Amount',
+    'Period',
+    'Actor',
+    opt2Label(ctx, 'Created'),
+  ];
+  const rows = versions.map((version) => [
+    version.version,
+    version.action,
+    financeStateBadge(ctx, version.state),
+    version.title,
+    amountCell(version.amount),
+    version.period,
+    version.actor_user_id,
+    version.created,
   ]);
+  return gridTable(headers, rows, 'No versions.', { varWidthColumn: 3, columnClasses: VERSION_COLUMN_CLASSES });
 }
 
 function attachmentRows(ctx: ScreenContext, attachment: Attachment): SafeHtml {
@@ -102,31 +134,34 @@ function attachmentRows(ctx: ScreenContext, attachment: Attachment): SafeHtml {
   ]);
 }
 
-/** `items` in order with a rule between each, or the empty-list message when there are none. */
-function detailList(items: readonly SafeHtml[], emptyMessage: string): SafeHtml {
-  return items.length === 0 ? html`<div class="help-block-empty">${emptyMessage}</div>` : join(items, html`<hr>`);
-}
-
-/** One button per lifecycle action whose role the user holds, each posting the record's CSRF pair. */
-function transitionButtons(ctx: ScreenContext, id: string, csrf: SafeHtml): SafeHtml | null {
-  const buttons = TRANSITIONS.filter(({ role }) => canUse(ctx.req, [role])).map(({ action, label }) =>
-    actionButton(label(ctx), financeActionUrl(ctx, action, { id }), {}, csrf),
-  );
-  return buttons.length === 0 ? null : html`<div class="btn-group">${buttons}</div>`;
-}
-
 /**
- * The attachment upload form. Its button stays inside the form: legacy styles pin every form `.mura-actions` bar to
- * the same fixed slot, so a page holds one, the edit form's.
+ * One POST form carrying the record's CSRF pair, with a button group of the lifecycle actions whose role the user
+ * holds, each button posting to its own action; null when the user holds none.
  */
+function transitionForm(ctx: ScreenContext, id: string, csrf: SafeHtml): SafeHtml | null {
+  const buttons: FormButton[] = TRANSITIONS.filter(({ role }) => canUse(ctx.req, [role])).map(({ action, label }) => ({
+    label: label(ctx),
+    formAction: financeActionUrl(ctx, action, { id }),
+  }));
+  const first = buttons[0];
+  if (first === undefined) return null;
+  return html`<form method="post"${attr('action', first.formAction)}>${csrf}<div class="btn-group">${buttons.map(
+    submitButton,
+  )}</div></form>`;
+}
+
+/** The attachment upload form; unnamed, as the page's edit form is `form1`. */
 function uploadForm(ctx: ScreenContext, actionUrl: string, csrf: SafeHtml): SafeHtml {
   const fields = controlGroup(opt2Label(ctx, 'File'), textInput('file', '', { type: 'file', required: true }));
-  return html`<form novalidate="novalidate"${attr('action', actionUrl)} method="post" enctype="multipart/form-data">${fields}<div class="form-actions"><button class="btn mura-primary" type="submit">Upload</button>${csrf}</div></form>`;
+  return html`<form novalidate="novalidate"${attr('action', actionUrl)} method="post" enctype="multipart/form-data">${fields}${formActions(
+    [{ label: 'Upload', primary: true }],
+    csrf,
+  )}</form>`;
 }
 
 /**
- * The preparer's upload and edit forms; the edit form comes last so the fixed Save bar never covers the Upload
- * button. Amounts stay the decimal text finance serialized or the user typed.
+ * The preparer's upload and edit forms, one block each. Amounts stay the decimal text finance serialized or the user
+ * typed.
  */
 function preparerForms(ctx: ScreenContext, record: FinanceRecordDetail, csrf: SafeHtml, edit?: EditValues): SafeHtml {
   const id = record.record_id;
@@ -138,18 +173,20 @@ function preparerForms(ctx: ScreenContext, record: FinanceRecordDetail, csrf: Sa
     'Amount',
     textInput('amount', values.amount, { required: true }),
   )}${controlGroup('Period', textInput('period', values.period, { required: true }))}`;
-  return html`<h2>Upload Attachment</h2>${uploadForm(ctx, financeActionUrl(ctx, 'upload', { id }), csrf)}<h2>Edit Record</h2>${postForm(
-    financeActionUrl(ctx, 'edit', { id }),
-    editFields,
-    opt2Label(ctx, 'Save'),
-    { hidden: csrf },
+  return html`${block(
+    html`<h2>Upload Attachment</h2>${uploadForm(ctx, financeActionUrl(ctx, 'upload', { id }), csrf)}`,
+  )}${block(
+    html`<h2>Edit Record</h2>${postForm(financeActionUrl(ctx, 'edit', { id }), editFields, opt2Label(ctx, 'Save'), {
+      hidden: csrf,
+    })}`,
   )}`;
 }
 
 /**
  * The record detail: summary, transition buttons for the user's roles, version history, attachments with their
  * download buttons and, for a preparer, the upload and edit forms. `rerender` carries a refused write's alert, which
- * replaces the read's own alert, and the posted edit fields.
+ * replaces the read's own alert, and the posted edit fields. Each form ends its block, as legacy action rows do:
+ * legacy headings carry no top margin, so a heading after a form's buttons would touch them.
  */
 export function renderRecord(ctx: ScreenContext, data: RecordData, rerender: RecordRerender = {}): SafeHtml {
   const back = [{ label: 'Finance Records', href: recordsUrl(ctx) }];
@@ -157,21 +194,16 @@ export function renderRecord(ctx: ScreenContext, data: RecordData, rerender: Rec
   if (!result.ok) return html`${pageHeader('Finance Record', back)}${block(rerender.alert ?? result.alert)}`;
   const record = result.body;
   const csrf = ctx.csrf.render(record.record_id);
-  const versions = detailList(
-    record.versions.map((version) => versionRows(ctx, version)),
-    'No versions.',
-  );
   const attachments = detailList(
     record.attachments.map((attachment) => attachmentRows(ctx, attachment)),
     'No attachments.',
   );
   const forms = canUse(ctx.req, [PREPARER]) ? preparerForms(ctx, record, csrf, rerender.edit) : null;
   return html`${pageHeader(record.title, back)}${block(
-    html`${rerender.alert}${summaryRows(ctx, record)}${transitionButtons(ctx, record.record_id, csrf)}<h2>${opt2Label(
-      ctx,
-      'Version History',
-    )}</h2>${versions}<h2>Attachments</h2>${attachments}${forms}`,
-  )}`;
+    html`${rerender.alert}${summaryRows(ctx, record)}${transitionForm(ctx, record.record_id, csrf)}`,
+  )}${block(
+    html`<h2>${opt2Label(ctx, 'Version History')}</h2>${versionGrid(ctx, record.versions)}<h2>Attachments</h2>${attachments}`,
+  )}${forms}`;
 }
 
 /** The record detail inside the shell, with Finance marked in the OPT-2 nav group. */

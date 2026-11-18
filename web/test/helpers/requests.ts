@@ -38,7 +38,36 @@ export interface MultipartFile {
   readonly data: Uint8Array | string;
 }
 
-/** What one gateway-forwarded request carries; at most one of `form`, `multipart` and `json`. */
+/**
+ * One multipart part as a browser serialises it: a text field, or a file part when `filename` is given (`''` for an
+ * empty file input), with `type` defaulting to `application/octet-stream`.
+ */
+export interface BrowserPart {
+  readonly name: string;
+  readonly value?: string;
+  readonly filename?: string;
+  readonly type?: string;
+}
+
+const BROWSER_BOUNDARY = '----opt2WebTestBoundary';
+
+/** Multipart body and content type of `parts` in order, repeated names and empty file names kept as sent. */
+export function browserMultipart(parts: readonly BrowserPart[]): { body: string; contentType: string } {
+  const lines = parts.flatMap(({ name, value = '', filename, type = 'application/octet-stream' }) => [
+    `--${BROWSER_BOUNDARY}`,
+    filename === undefined
+      ? `Content-Disposition: form-data; name="${name}"`
+      : `Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${type}`,
+    '',
+    value,
+  ]);
+  return {
+    body: [...lines, `--${BROWSER_BOUNDARY}--`, ''].join('\r\n'),
+    contentType: `multipart/form-data; boundary=${BROWSER_BOUNDARY}`,
+  };
+}
+
+/** What one gateway-forwarded request carries; at most one of `form`, `multipart`, `parts` and `json`. */
 export interface AdminRequestOptions {
   /** Defaults to `POST` with a body, else `GET`. */
   method?: string;
@@ -47,6 +76,8 @@ export interface AdminRequestOptions {
   /** Url-encoded body pairs; an array repeats its key. */
   form?: Record<string, string | string[]>;
   multipart?: Record<string, string | Blob | MultipartFile>;
+  /** Multipart parts serialised as a browser sends them; for repeated names and empty file inputs. */
+  parts?: readonly BrowserPart[];
   json?: unknown;
   /** Subject whose minted user token goes in `Authorization`; none for `anonymous`. */
   user?: WebTestSubject | WebTestSubjectKey;
@@ -129,12 +160,13 @@ function formDataOf(parts: Record<string, string | Blob | MultipartFile>): FormD
 }
 
 /** Body and content type of the one body option given. */
-function bodyOf({ form, multipart, json }: AdminRequestOptions): { body?: BodyInit; contentType?: string } {
-  if ([form, multipart, json].filter((part) => part !== undefined).length > 1) {
-    throw new TypeError('Give at most one of form, multipart and json');
+function bodyOf({ form, multipart, parts, json }: AdminRequestOptions): { body?: BodyInit; contentType?: string } {
+  if ([form, multipart, parts, json].filter((part) => part !== undefined).length > 1) {
+    throw new TypeError('Give at most one of form, multipart, parts and json');
   }
   if (form !== undefined) return { body: searchParamsOf(form), contentType: FORM_CONTENT_TYPE };
   if (multipart !== undefined) return { body: formDataOf(multipart) };
+  if (parts !== undefined) return browserMultipart(parts);
   if (json !== undefined) return { body: JSON.stringify(json), contentType: JSON_CONTENT_TYPE };
   return {};
 }

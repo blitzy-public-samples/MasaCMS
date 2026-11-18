@@ -1,5 +1,5 @@
 // cperm.main's model and permission grid against admin/core/views/cperm/main.cfm.
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LegacyFaultError, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/identity';
 import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
@@ -192,9 +192,9 @@ describe('loadCpermMain', () => {
     });
   });
 
-  it('reads a node without an active row, whose crumbdata is empty, as untitled and unassigned', async () => {
+  it('reads a node without an active row outside Site Manager, whose crumbdata is empty, as untitled and unassigned', async () => {
     const model = await loadCpermMain(
-      contextFor(mainRequest({ contentid: ROOT, moduleid: CONTENT_MODULE_ID }), {
+      contextFor(mainRequest({ contentid: ROOT, moduleid: COMPONENTS_MODULE }), {
         crumbs: [],
         chains: [],
       }),
@@ -445,7 +445,8 @@ describe('renderCpermMain', () => {
     const ctx = contextFor(mainRequest({ contentid: ROOT, moduleid: CONTENT_MODULE_ID }));
     await ctx.csrf.prefetch([ROOT]);
 
-    expect(() => renderCpermMain(MODEL, ctx)).toThrow(RangeError);
+    expect(() => renderCpermMain(MODEL, ctx)).toThrow(LegacyFaultError);
+    expect(() => renderCpermMain(MODEL, ctx)).toThrow('The element at position 1 cannot be found.');
   });
 
   it('throws when the node token was not prefetched', () => {

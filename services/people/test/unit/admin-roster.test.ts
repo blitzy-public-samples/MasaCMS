@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { adminUrl, cfUuid } from '@opt2/platform/legacy-compat';
 import { buildTestApp, type TestApp } from '../helpers/app.js';
 import { MODULE_008_ONLY, MODULE_USER_A, SITE_ADMIN_A, type TestActor } from '../helpers/fixtures.js';
+import { captureRequestLogs, type RequestLogCapture } from '../helpers/request-logs.js';
 import {
   GROUP,
   LEGACY_503,
@@ -27,6 +28,21 @@ import {
 } from '../helpers/roster-posts.js';
 
 const EDIT_PROFILE_URL = adminUrl({ circuit: 'cEditProfile', action: 'edit' });
+/** The legacy 500 `server_error` envelope naming the unset user bean as its debugging `stacktrace`. */
+const UNSET_USER_BEAN_ERROR = {
+  apiversion: 'v1',
+  method: 'invalid',
+  error: {
+    message: 'Unhandled Exception',
+    code: 'server_error',
+    stacktrace: { message: 'Element RC.userBean is undefined in ARGUMENTS.', type: 'Expression' },
+  },
+};
+
+/** The captured lines reporting an unhandled error. */
+function unhandledLines(logs: RequestLogCapture): string[] {
+  return logs.lines.filter((line) => (JSON.parse(line) as { message?: unknown }).message === 'unhandled error');
+}
 
 describe('cUsers roster writes people never executes', () => {
   let testApp: TestApp;
@@ -82,18 +98,24 @@ describe('cUsers roster writes people never executes', () => {
     ['an update', STORED_USER],
   ])('fails %s whose token identity refuses as legacy fails on the unset user bean, writing nothing', async (_name, userid) => {
     testApp.identity.csrf.rejectAll();
-    const { status } = await send(testApp.app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm(userid === STORED_USER ? 'Update' : 'Add'), query: userQuery(userid) });
+    const logs = captureRequestLogs(testApp.app);
+    const { status, body } = await send(testApp.app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm(userid === STORED_USER ? 'Update' : 'Add'), query: userQuery(userid) });
     expect(status).toBe(500);
+    expect(body).toEqual(UNSET_USER_BEAN_ERROR);
     expect(csrfContexts(testApp.identity)).toEqual([[userid, false]]);
     expect(accountSteps(testApp.identity)).toEqual([]);
     expect(testApp.db.writes()).toEqual([]);
+    expect(unhandledLines(logs)).toEqual([]);
   });
 
   it('fails a user save without a token before asking identity', async () => {
-    const { status } = await send(testApp.app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Update'), query: userQuery(STORED_USER), withoutToken: true });
+    const logs = captureRequestLogs(testApp.app);
+    const { status, body } = await send(testApp.app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Update'), query: userQuery(STORED_USER), withoutToken: true });
     expect(status).toBe(500);
+    expect(body).toEqual(UNSET_USER_BEAN_ERROR);
     expect(testApp.identity.requests).toEqual([]);
     expect(testApp.db.writes()).toEqual([]);
+    expect(unhandledLines(logs)).toEqual([]);
   });
 
   it.each<[string, TestActor, string, string]>([

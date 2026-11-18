@@ -342,8 +342,8 @@ describe('health, deny by default and legacy headers', () => {
     },
   ])('registers only the methods $label declares and answers its HEAD with $head.status', async ({ url, methods, head }) => {
     const { app } = await build();
-    app.get('/v1/get-only', { config: { opt2: { public: true } } }, () => 'listed');
-    app.route({ method: ['GET', 'HEAD'], url: '/v1/get-and-head', config: { opt2: { public: true } }, handler: () => 'listed' });
+    app.get('/v1/get-only', { config: { opt2: { public: true, invocationOptional: true } } }, () => 'listed');
+    app.route({ method: ['GET', 'HEAD'], url: '/v1/get-and-head', config: { opt2: { public: true, invocationOptional: true } }, handler: () => 'listed' });
     await app.ready();
     const registered = collectRouteMatrix(app).routes.filter((route) => route.url === url);
     expect(registered.map((route) => route.method)).toStrictEqual(methods);
@@ -363,7 +363,7 @@ describe('health, deny by default and legacy headers', () => {
 
   it('keeps a header the route already set', async () => {
     const { app } = await build();
-    app.get('/custom', { config: { opt2: { public: true } } }, async (_request, reply) =>
+    app.get('/custom', { config: { opt2: { public: true, invocationOptional: true } } }, async (_request, reply) =>
       reply.header('Generator', 'custom').send('x'),
     );
     const res = await app.inject({ method: 'GET', url: '/custom' });
@@ -388,7 +388,7 @@ describe('no-case path prefixes', () => {
   async function probed(overrides: Partial<CreateServiceOptions> = { noCasePathPrefixes: PREFIXES }): Promise<FastifyInstance> {
     const { app } = await build(overrides);
     for (const url of [...PREFIXES.map((prefix) => `${prefix}*`), '/internal/v1/probe']) {
-      app.get(url, { config: { opt2: { public: true } } }, async (request) => ({ url: request.url, originalUrl: request.originalUrl }));
+      app.get(url, { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({ url: request.url, originalUrl: request.originalUrl }));
     }
     return app;
   }
@@ -424,7 +424,7 @@ describe('no-case path prefixes', () => {
 
   it('routes the longest matching prefix under its own spelling', async () => {
     const { app } = await build({ noCasePathPrefixes: ['/_api', '/_api/sitemonitor'] });
-    app.get('/_api/*', { config: { opt2: { public: true } } }, async (request) => request.url);
+    app.get('/_api/*', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => request.url);
     const res = await app.inject({ method: 'GET', url: '/_API/SITEMONITOR/Run' });
     expect(res.body).toBe('/_api/sitemonitor/Run');
   });
@@ -457,7 +457,7 @@ describe('legacy fixture paths', () => {
   async function probed(overrides: Partial<CreateServiceOptions> = { legacyFixturePaths: true }): Promise<FastifyInstance> {
     const { app } = await build(overrides);
     for (const url of [LIST, RESPONSES, TARGETS, ARCHIVE, SITEMONITOR, CATCH_ALL]) {
-      app.get(url, { config: { opt2: { public: true } } }, async (request) => ({ route: request.routeOptions.url, url: request.url }));
+      app.get(url, { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({ route: request.routeOptions.url, url: request.url }));
     }
     return app;
   }
@@ -524,7 +524,7 @@ describe('path parameters', () => {
     expect(sid).toHaveLength(length);
     const { app } = await build();
     for (const declared of [PLAIN, PATTERN]) {
-      app.get<{ Params: { sid: string } }>(declared, { config: { opt2: { public: true } } }, async (request) => ({
+      app.get<{ Params: { sid: string } }>(declared, { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({
         route: request.routeOptions.url,
         sid: request.params.sid,
       }));
@@ -540,7 +540,7 @@ describe('path parameters', () => {
 describe('legacy error mapping', () => {
   async function failing(error: unknown, url = '/fail'): Promise<FastifyInstance> {
     const { app } = await build();
-    app.get(url, { config: { opt2: { public: true } } }, async () => {
+    app.get(url, { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
       throw error;
     });
     return app;
@@ -559,6 +559,19 @@ describe('legacy error mapping', () => {
     expect(res.headers.etag).toBe(etag(res.body));
     expect(res.json()).toStrictEqual({ apiversion: 'v1', method: 'findOne', error: { code, message } });
     expect(res.body).toBe(legacyErrorResponse(type, { method: 'findOne' }).body);
+  });
+
+  it('reports the fault a server_error LegacyApiError carries as its stacktrace', async () => {
+    const stacktrace = { Message: 'Element RC.userBean is undefined in ARGUMENTS.', Type: 'Expression' };
+    const app = await failing(new LegacyApiError('server_error', { stacktrace }));
+    const res = await app.inject({ method: 'GET', url: '/fail?method=findOne' });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toStrictEqual({
+      apiversion: 'v1',
+      method: 'findOne',
+      error: { message: 'Unhandled Exception', code: 'server_error', stacktrace: { message: stacktrace.Message, type: stacktrace.Type } },
+    });
+    expect(res.headers.etag).toBe(etag(res.body));
   });
 
   it('prefers the method, params and challenge the LegacyApiError carries', async () => {
@@ -607,7 +620,7 @@ describe('legacy error mapping', () => {
 
   it('answers an unhandled API error with the 500 server_error envelope and logs it without detail', async () => {
     const { app, lines } = await build();
-    app.get('/boom', { config: { opt2: { public: true } } }, async () => {
+    app.get('/boom', { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
       throw new Error('password=hunter2 leaked');
     });
     const res = await app.inject({ method: 'GET', url: '/boom' });
@@ -643,7 +656,7 @@ describe('legacy error mapping', () => {
     { code: '22001', file: 'varchar.c', status: 500, errorCode: 'server_error', message: 'Unhandled Exception', logged: true },
   ])('answers PostgreSQL error $code from $file with $status, logging only an unhandled error', async ({ code, file, status, errorCode, message, logged }) => {
     const { app, lines } = await build();
-    app.post('/notes', { config: { opt2: { public: true } } }, async () => {
+    app.post('/notes', { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
       throw Object.assign(new Error('database refused the value'), { code, severity: 'ERROR', file });
     });
     const res = await app.inject({ method: 'POST', url: '/notes?method=save', payload: { title: 'a\u0000b' } });
@@ -686,7 +699,7 @@ describe('legacy error mapping', () => {
     ],
   ])('answers %s on the API surface with the legacy 503 envelope and logs a warning with its safe message', async (_label, error, type, message) => {
     const { app, lines } = await build();
-    app.get('/busy', { config: { opt2: { public: true } } }, async () => {
+    app.get('/busy', { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
       throw error;
     });
     const res = await app.inject({ method: 'GET', url: '/busy?method=save' });
@@ -732,7 +745,7 @@ describe('legacy error mapping', () => {
     },
   ])('answers a DatabaseUnavailableError on the $surface surface with the legacy 503 and one ERROR line', async ({ path: url, contentType, read, expected }) => {
     const { app, lines } = await build();
-    app.get(url, { config: { opt2: { public: true } } }, () => {
+    app.get(url, { config: { opt2: { public: true, invocationOptional: true } } }, () => {
       throw new DatabaseUnavailableError('ECONNREFUSED', refused());
     });
     const res = await app.inject({ method: 'GET', url: `${url}?method=save` });
@@ -785,7 +798,7 @@ describe('legacy error mapping', () => {
     app.get(
       '/validated',
       {
-        config: { opt2: { public: true } },
+        config: { opt2: { public: true, invocationOptional: true } },
         schema: { querystring: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
       },
       async () => 'never',
@@ -809,7 +822,7 @@ describe('legacy error mapping', () => {
   /** A service echoing the body of a route whose schema, nested object included, declares `additionalProperties: false`. */
   async function closedBodyRoute(): Promise<FastifyInstance> {
     const { app } = await build();
-    app.post('/closed', { config: { opt2: { public: true } }, schema: { body: CLOSED_BODY } }, (request, reply) => reply.send({ body: request.body }));
+    app.post('/closed', { config: { opt2: { public: true, invocationOptional: true } }, schema: { body: CLOSED_BODY } }, (request, reply) => reply.send({ body: request.body }));
     return app;
   }
 
@@ -833,7 +846,7 @@ describe('legacy error mapping', () => {
 
   it('answers a Fastify client error with badRequest', async () => {
     const { app } = await build();
-    app.post('/small', { bodyLimit: 8, config: { opt2: { public: true } } }, async () => 'never');
+    app.post('/small', { bodyLimit: 8, config: { opt2: { public: true, invocationOptional: true } } }, async () => 'never');
     const res = await app.inject({
       method: 'POST',
       url: '/small',
@@ -848,7 +861,7 @@ describe('legacy error mapping', () => {
 describe('body parsing and legacy params', () => {
   async function echo(options?: LegacyParamsOptions): Promise<FastifyInstance> {
     const { app } = await build();
-    app.post('/echo', { config: { opt2: { public: true } } }, async (request) => ({
+    app.post('/echo', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({
       bodyIsUndefined: request.body === undefined,
       isBuffer: Buffer.isBuffer(request.body),
       params: legacyParamsOf(request, options),
@@ -959,7 +972,7 @@ describe('body parsing and legacy params', () => {
       const { type, fieldname, mimetype, value } = part as Record<string, unknown>;
       return { type, fieldname, mimetype, value };
     };
-    app.post('/raw', { config: { opt2: { public: true } } }, async (request) =>
+    app.post('/raw', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) =>
       Object.fromEntries(Object.entries(request.body as Record<string, unknown>).map(([name, held]) => [name, Array.isArray(held) ? held.map(view) : view(held)])),
     );
     const boundary = 'opt2boundary';
@@ -1028,7 +1041,7 @@ describe('body parsing and legacy params', () => {
     'answers a multipart body over the body bound sent $sent with the Post Size page, reading no further than the bound',
     async ({ method, kind, count, mib, declared, pulled: [least, most] }) => {
       const { app } = await build();
-      app.route({ method, url: '/upload', config: { opt2: { public: true } }, handler: () => 'never' });
+      app.route({ method, url: '/upload', config: { opt2: { public: true, invocationOptional: true } }, handler: () => 'never' });
       const boundary = 'opt2boundary';
       const { body, length, pulled } = lazyMultipartBody(boundary, kind, count, mib);
       expect(length).toBeGreaterThan(LEGACY_POST_LIMIT_BYTES);
@@ -1052,7 +1065,7 @@ describe('body parsing and legacy params', () => {
 
   it('still spools every file of a multipart body just under the body bound, counting and hashing each in full', async () => {
     const { app } = await build();
-    app.put('/sizes', { config: { opt2: { public: true } } }, (request) =>
+    app.put('/sizes', { config: { opt2: { public: true, invocationOptional: true } } }, (request) =>
       Promise.all(
         multipartFilesOf(request).map(async ({ filename, size, sha256, stream }) => {
           const read = createHash('sha256');
@@ -1099,7 +1112,7 @@ describe('body parsing and legacy params', () => {
         listings.push(await readdir(dir));
         pluginUploads.push(request.tmpUploads);
       };
-      app.post('/spool', { config: { opt2: { public: true } } }, async (request) => {
+      app.post('/spool', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => {
         const read = await Promise.all(multipartFilesOf(request).map((file) => text(file.stream())));
         await snapshot(request);
         if (fail) throw new Error('handler failed');
@@ -1172,7 +1185,7 @@ describe('body parsing and legacy params', () => {
     vi.stubEnv('TMPDIR', dir);
     try {
       const { app, lines } = await build();
-      app.post('/spool', { config: { opt2: { public: true } } }, async () => {
+      app.post('/spool', { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
         // A directory in the spool file's place makes its delete fail.
         const spooled = `${dir}/${(await readdir(dir))[0] ?? ''}`;
         await rm(spooled);
@@ -1210,7 +1223,7 @@ describe('body parsing and legacy params', () => {
     try {
       const { app } = await build();
       let handled = false;
-      app.post('/spool', { config: { opt2: { public: true } } }, async () => {
+      app.post('/spool', { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
         handled = true;
         return 'handled';
       });
@@ -1256,7 +1269,7 @@ describe('body parsing and legacy params', () => {
 
   it('writes a legacy response object with its status, headers, reason phrase and body', async () => {
     const { app } = await build();
-    app.get('/legacy', { config: { opt2: { public: true } } }, async (_request, reply) =>
+    app.get('/legacy', { config: { opt2: { public: true, invocationOptional: true } } }, async (_request, reply) =>
       sendLegacyResponse(reply, { status: 202, statusText: 'Queued', headers: { 'Content-Type': 'text/csv' }, body: 'a,b' }),
     );
     const res = await app.inject({ method: 'GET', url: '/legacy' });
@@ -1277,7 +1290,7 @@ describe('legacy script protection of params', () => {
     app.route({
       method: ['GET', 'POST'],
       url: path,
-      config: { opt2: { public: true } },
+      config: { opt2: { public: true, invocationOptional: true } },
       handler: async (request) => {
         calls += 1;
         return { params: legacyParamsOf(request), files: multipartFilesOf(request).map(({ field, filename }) => ({ field, filename })) };
@@ -1680,7 +1693,7 @@ describe('siteid check on the scanned scopes', () => {
 describe('legacyScopesOf', () => {
   async function scopes(): Promise<FastifyInstance> {
     const { app } = await build();
-    app.post('/scopes', { config: { opt2: { public: true } } }, async (request) => {
+    app.post('/scopes', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => {
       const { url, form, json, jsonBody } = legacyScopesOf(request);
       return { url, form, json, jsonBodyIsBody: jsonBody === request.body, jsonBody };
     });
@@ -1915,7 +1928,7 @@ describe('request scope and context', () => {
 
   it('gives an anonymous request an empty scope', async () => {
     const { app } = await build();
-    app.get('/anon', { config: { opt2: { public: true } } }, async (request) => ({ scope: request.opt2 }));
+    app.get('/anon', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({ scope: request.opt2 }));
     const res = await app.inject({ method: 'GET', url: '/anon' });
     expect(res.json()).toStrictEqual({ scope: {} });
   });
@@ -2360,7 +2373,7 @@ describe('request log line', () => {
     { label: 'a matched route carrying a secret parameter', url: `/x/${PATH_SECRET}/state`, status: 200, route: '/x/:sid/state', warnings: [], leaks: [PATH_SECRET] },
   ])('logs $label under $route, with no path text in any line', async ({ url, status, route, warnings, leaks }) => {
     const { app, lines } = await build();
-    app.get('/x/:sid/state', { config: { opt2: { public: true } } }, () => ({ ok: true }));
+    app.get('/x/:sid/state', { config: { opt2: { public: true, invocationOptional: true } } }, () => ({ ok: true }));
     const res = await app.inject({ method: 'GET', url });
     expect(res.statusCode).toBe(status);
     const outcomes = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
@@ -2534,7 +2547,7 @@ describe('request log line', () => {
     async ({ headers, scope, verified }) => {
       const { app, lines } = await build();
       let seen: unknown;
-      app.post('/deliveries/:id', { config: { opt2: { public: true } } }, async (request) => {
+      app.post('/deliveries/:id', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => {
         recordEventScope(request, DELIVERY);
         seen = { store: currentRequestContext()?.tenantId, request: request.opt2.tenantId };
         throw new LegacyServiceUnavailableError();
@@ -2607,7 +2620,7 @@ describe('request log line', () => {
     async ({ headers, records, status, reason, warning, scope, verified }) => {
       const { app, lines } = await build();
       let seen: unknown;
-      app.get('/recorded/:id', { config: { opt2: { public: true } } }, async (request, reply) => {
+      app.get('/recorded/:id', { config: { opt2: { public: true, invocationOptional: true } } }, async (request, reply) => {
         for (const record of records) recordLogScope(request, record);
         if (reason !== null) recordOutcomeReason(request, reason);
         seen = { store: currentRequestContext()?.tenantId, user: currentRequestContext()?.user?.sub, request: request.opt2.tenantId };

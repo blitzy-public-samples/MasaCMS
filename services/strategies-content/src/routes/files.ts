@@ -48,7 +48,7 @@ const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
 const DOWNLOAD_AUTH: { opt2: Opt2RouteConfig } = {
   opt2: { transport: 'service', requires: [Roles.s2, Roles.siteAdmin, moduleRole(SITE_MANAGER_MODULE_ID)] },
 };
-// The HMAC over bucket, key, expiry and disposition is the credential.
+// The URL's HMAC stands in for a user token; the caller's invocation credential is still required.
 const LOCAL_FILE_AUTH: { opt2: Opt2RouteConfig } = { opt2: { transport: 'service', public: true } };
 
 const VARIANT = /^(_[^/\\\u0000-\u001F\u007F]+)?$/;

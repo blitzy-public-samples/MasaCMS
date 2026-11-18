@@ -44,6 +44,11 @@ describe('legacyStorable', () => {
 
   it.each<[string, LegacyLimitedTable, RepositoryRow, RepositoryRow]>([
     ['a value at the width', 'user_tag', { tag: 'x'.repeat(100), siteid: 's'.repeat(25) }, { tag: 'x'.repeat(100), siteid: 's'.repeat(25) }],
+    ['char(35) ids at their width', 'trash', { objectid: 'O'.repeat(35), parentid: 'P'.repeat(35), deleteid: 'D'.repeat(35) }, {
+      objectid: 'O'.repeat(35),
+      parentid: 'P'.repeat(35),
+      deleteid: 'D'.repeat(35),
+    }],
     ['only trailing spaces beyond the width, cut', 'person', { fname: `${'x'.repeat(50)}   `, notes: ' n ' }, { fname: 'x'.repeat(50), notes: ' n ' }],
     ['NULL, absent and unlimited columns', 'person', { fname: null, tags: 'x'.repeat(300) }, { fname: null, tags: 'x'.repeat(300) }],
     ['surrogate pairs within the width', 'person', { fname: smile.repeat(25) }, { fname: smile.repeat(25) }],
@@ -63,6 +68,10 @@ describe('legacyStorable', () => {
     ['a space then text beyond the width', 'person', { fname: `${'x'.repeat(50)} y` }, 'fname', 'width'],
     ['surrogate pairs beyond the width', 'person', { fname: smile.repeat(26) }, 'fname', 'width'],
     ['a varchar(25) site id of 26', 'trash', { siteid: 's'.repeat(26) }, 'siteid', 'width'],
+    ['a posted char(35) photo file id of 36', 'person', { photofileid: 'F'.repeat(36) }, 'photofileid', 'width'],
+    ['a posted char(35) address id of 36', 'user_address', { addressid: 'A'.repeat(36) }, 'addressid', 'width'],
+    ['a posted char(35) address user id of 36', 'user_address', { userid: 'U'.repeat(36) }, 'userid', 'width'],
+    ['a posted char(35) trash delete id of 36', 'trash', { deleteid: 'D'.repeat(36) }, 'deleteid', 'width'],
     ['a tinyint below 0', 'person', { keepprivate: -1 }, 'keepprivate', 'range'],
     ['a tinyint above 255', 'user_address', { isprimary: 256 }, 'isprimary', 'range'],
     ['a NaN float', 'user_address', { longitude: Number.NaN }, 'longitude', 'range'],

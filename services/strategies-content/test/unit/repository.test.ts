@@ -1,9 +1,12 @@
 /** The content repository over a throwaway `content` schema: legacy storage rules, one changelog row per written row, keyless multiplicity, multi-row legacy writes, reads, tenant isolation and unit gates. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
+import { Roles } from '@opt2/platform/auth';
+import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates, requestMigrationAuthority } from '@opt2/platform/migration-kit';
+import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { OutsideTenantTransactionError, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { LegacyStorageError } from '../../src/repo/legacy-limits.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import { cfId as batchId } from '../helpers/content-fixture.js';
@@ -500,6 +503,50 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
     expect(await inA((tx) => repo.files.readFileMetas(tx, []))).toEqual(new Map());
   });
 
+  it.each([
+    {
+      label: 'insertCategory of a 255-character name',
+      table: 'category',
+      name: 'n'.repeat(255),
+      write: (tx: TenantTx, name: string) => repo.categories.insertCategory(tx, { siteid: SITE, name }),
+      limit: 50,
+    },
+    {
+      label: 'insertChangeset of a 255-character name',
+      table: 'changeset',
+      name: 'c'.repeat(255),
+      write: (tx: TenantTx, name: string) => repo.changesets.insertChangeset(tx, { siteid: SITE, name, published: 0 }, { tags: ['t1'] }),
+      limit: 100,
+    },
+  ])('rejects the $label as legacy SQL Server does, writing no row and no changelog row', async ({ table, name, write, limit }) => {
+    const { result, changes } = await newChanges(() =>
+      inA(async (tx) => {
+        // The transaction commits past the caught error, so anything written would stay.
+        const error = await write(tx, name).catch((caught: unknown) => caught);
+        const stored = await tx.query<{ n: number }>(`SELECT count(*)::integer AS n FROM ${handle.schema}.${table} WHERE name = $1`, [name]);
+        return { error, rows: stored.rows[0]?.n };
+      }),
+    );
+    expect(result.error).toBeInstanceOf(LegacyStorageError);
+    expect(result.error).toMatchObject({ table, column: 'name', limit });
+    expect(result.rows).toBe(0);
+    expect(changes).toEqual([]);
+  });
+
+  it('cuts trailing spaces past a legacy width on insert and update, and writes migration applies as given', async () => {
+    const category = await inA((tx) => repo.categories.insertCategory(tx, { siteid: SITE, name: `${'w'.repeat(50)}   ` }));
+    expect(category.name).toBe('w'.repeat(50));
+    await expect(inA((tx) => repo.categories.updateCategory(tx, category.categoryid, { name: 'w'.repeat(51) }))).rejects.toBeInstanceOf(LegacyStorageError);
+    const authority = runWithRequestContext({ ...newRequestContext(), service: { name: 'migration', roles: [Roles.platformMigration] } }, () =>
+      requestMigrationAuthority(),
+    );
+    expect(authority).toBeDefined();
+    const applied = await inA((tx) =>
+      repo.platform.insert<{ name: string }>(tx, 'category', { categoryid: cfId('W', 1), siteid: SITE, name: 'w'.repeat(51) }, { origin: 'backfill', authority }),
+    );
+    expect(applied.name).toBe('w'.repeat(51));
+  });
+
   it('writes and queries change sets as changesetManager does', async () => {
     const due = await inA((tx) =>
       repo.changesets.insertChangeset(tx, { siteid: SITE, name: 'b-due', published: 0, publishdate: new Date(2026, 5, 29, 8, 0, 33) }, { categoryIds: [cfId('K', 1), cfId('K', 1).toLowerCase()], tags: ['t1', 'T1', 't2'] }),
@@ -548,13 +595,16 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
     const chain = await inA((tx) => repo.approvals.insertChain(tx, { siteid: SITE, name: 'Chain', description: '' }));
     expect(chain).toMatchObject({ lastupdate: NOW, description: null });
     const [g1, g2, g3] = [cfId('A', 71), cfId('A', 72), cfId('A', 73)];
-    await inA((tx) => repo.approvals.replaceChainMemberships(tx, chain.chainid, [g1, g2]));
+    const first = await inA((tx) => repo.approvals.replaceChainMemberships(tx, chain.chainid, SITE, [g1, g2]));
+    expect(first.memberships.map((row) => [row.groupid, row.siteid])).toEqual([[g1, SITE], [g2, SITE]]);
+    // A membership stored without a site, as rows written before the chain's site was carried are, takes the chain's on reorder.
+    await inA((tx) => repo.platform.update(tx, 'approval_membership', { membershipid: first.memberships[0]?.membershipid }, { siteid: '' }));
     const r1 = await inA((tx) => repo.approvals.insertRequest(tx, { contenthistid: cfId('H', 91), chainid: chain.chainid, groupid: g2, siteid: SITE }));
     const r2 = await inA((tx) => repo.approvals.insertRequest(tx, { contenthistid: cfId('H', 92), chainid: chain.chainid, groupid: '', siteid: SITE }));
     expect(r2.groupid).toBeNull();
     await inA((tx) => repo.approvals.insertAction(tx, { requestid: r1.requestid, chainid: chain.chainid, actiontype: 'Approve', siteid: SITE }));
-    const { memberships, removed } = await inA((tx) => repo.approvals.replaceChainMemberships(tx, chain.chainid, [g3, g1]));
-    expect(memberships.map((row) => [row.groupid, row.orderno])).toEqual([[g3, 1], [g1, 2]]);
+    const { memberships, removed } = await inA((tx) => repo.approvals.replaceChainMemberships(tx, chain.chainid, SITE, [g3, g1]));
+    expect(memberships.map((row) => [row.groupid, row.orderno, row.siteid])).toEqual([[g3, 1, SITE], [g1, 2, SITE]]);
     expect(removed.map((row) => row.groupid)).toEqual([g2]);
     const listed = await inA((tx) => repo.approvals.chainMemberships(tx, { chainId: chain.chainid }));
     expect(listed.map((row) => row.groupid)).toEqual([g3, g1]);
@@ -571,6 +621,15 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
     expect(await inA((tx) => repo.approvals.requestsByStatus(tx, { status: 'Pending', chainId: chain.chainid }))).toHaveLength(0);
     expect(await inA((tx) => repo.approvals.actionsForRequest(tx, { requestId: r1.requestid }))).toHaveLength(0);
     expect(await inA((tx) => repo.approvals.chainMemberships(tx, { chainId: chain.chainid }))).toHaveLength(0);
+  });
+
+  it('stores NULL as the site of a new membership of a chain without a site, keeping a reordered membership\u2019s own', async () => {
+    const chainId = cfId('A', 75);
+    const [kept, added] = [cfId('A', 76), cfId('A', 77)];
+    await inA((tx) => repo.platform.insert(tx, 'approval_membership', { membershipid: cfId('A', 78), chainid: chainId, groupid: kept, orderno: 1, siteid: SITE }));
+    const { memberships } = await inA((tx) => repo.approvals.replaceChainMemberships(tx, chainId, '', [added, kept]));
+    expect(memberships.map((row) => [row.groupid, row.orderno, row.siteid])).toEqual([[added, 1, null], [kept, 2, SITE]]);
+    expect(await inA((tx) => repo.approvals.chainMemberships(tx, { chainId }))).toEqual(memberships);
   });
 
   it('writes form responses byte-exact and filters them as getData does', async () => {

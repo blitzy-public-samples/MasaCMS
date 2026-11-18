@@ -224,6 +224,11 @@ function headersAs(name: string): Promise<Record<string, string>> {
   return authHeadersFor(subject(name), { audience: 'programs-sites' });
 }
 
+/** The gateway's invocation credential, which every public caller's request arrives with. */
+function viaGateway(): Promise<Record<string, string>> {
+  return headersAs('service:gateway');
+}
+
 /** A system task wire body for the chain slot containing RUN_AT. */
 function taskBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const slot = slotStartS(Math.floor(RUN_AT.getTime() / 1000), SITEMONITOR_INTERVAL_S);
@@ -289,7 +294,7 @@ describe('letter case of the legacy paths', () => {
     runSpy.mockResolvedValueOnce(PASS);
     const { app: built } = await buildTestApp();
     try {
-      const res = await built.inject({ method: 'GET', url: '/_API/SITEMONITOR/' });
+      const res = await built.inject({ method: 'GET', url: '/_API/SITEMONITOR/', headers: await viaGateway() });
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toBe('');
@@ -333,7 +338,7 @@ describe('public caller budget', () => {
     const timers = manualBudgets();
     const settle = heldPass();
 
-    const pending = app.inject({ method: 'GET', url: '/_api/sitemonitor/' });
+    const pending = app.inject({ method: 'GET', url: '/_api/sitemonitor/', headers: await viaGateway() });
     await until(() => timers.length === 1);
     timers[0]?.expire();
     const res = await pending;
@@ -358,7 +363,7 @@ describe('public caller budget', () => {
       payload: taskBody(),
     });
     await until(() => runSpy.mock.calls.length === 1);
-    const pending = app.inject({ method: 'GET', url: '/_api/sitemonitor' });
+    const pending = app.inject({ method: 'GET', url: '/_api/sitemonitor', headers: await viaGateway() });
     await until(() => timers.length === 1);
     timers[0]?.expire();
     const res = await pending;
@@ -442,7 +447,7 @@ describe.skipIf(!available)('public legacy run', () => {
     ['PATCH', '/_API/SITEMONITOR'],
     ['OPTIONS', '/index.cfm/_api/sitemonitor'],
   ] as const)('%s %s runs one pass and answers the empty legacy page', async (method, url) => {
-    const res = await app.inject({ method, url });
+    const res = await app.inject({ method, url, headers: await viaGateway() });
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe('');
@@ -474,7 +479,7 @@ describe.skipIf(!available)('public legacy run', () => {
     [503, 503],
   ])('answers %i from a legacy step as %i and leaves the cursor', async (stepStatus, status) => {
     migration.stepStatus = stepStatus;
-    const res = await app.inject({ method: 'GET', url: '/index.cfm/_api/sitemonitor/' });
+    const res = await app.inject({ method: 'GET', url: '/index.cfm/_api/sitemonitor/', headers: await viaGateway() });
 
     expect(res.statusCode).toBe(status);
     expect(migration.steps).toEqual(['sendReminders']);
@@ -567,12 +572,14 @@ describe.skipIf(!available)('authorisation', () => {
       payload: { lastMonitored: SEEDED_TEXT },
     });
 
-    // Only the tasks-invoker token, which the service transport cannot verify as a user token, is refused the public run.
-    expect(run.statusCode).toBe(name === 'service:tasks-invoker' ? 401 : 200);
-    expect(task.statusCode).toBe(name === 'service:tasks-invoker' ? 200 : 401);
+    // The public run waives the user token, not the invocation credential.
+    const runAdmitted = !unauthenticatedOnService.has(name);
+    const taskAdmitted = name === 'service:tasks-invoker';
+    expect(run.statusCode).toBe(runAdmitted ? 200 : 401);
+    expect(task.statusCode).toBe(taskAdmitted ? 200 : 401);
     const stateStatus = name === 'service:migration' ? 200 : unauthenticatedOnService.has(name) ? 401 : 403;
     expect([read.statusCode, write.statusCode]).toEqual([stateStatus, stateStatus]);
-    // Exactly one of the public run and the task route admits each subject.
-    expect(runSpy).toHaveBeenCalledTimes(1);
+    // Each admission runs one pass; anonymous and the push key reach neither route.
+    expect(runSpy).toHaveBeenCalledTimes(Number(runAdmitted) + Number(taskAdmitted));
   });
 });

@@ -78,7 +78,7 @@ const FROZEN_ROUTE = (await committedTable('v0001')).entries[0]?.route;
 if (FROZEN_ROUTE === undefined) throw new TypeError('committed v0001 has no entry');
 
 const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
-  { operationId: 'healthz', method: 'GET', url: '/healthz', transport: 'service', public: true, siteCheck: true },
+  { operationId: 'healthz', method: 'GET', url: '/healthz', transport: 'service', public: true, invocationOptional: true, siteCheck: true },
   {
     operationId: 'cutoverActivate',
     method: 'POST',
@@ -242,7 +242,7 @@ function presentedBy(subject: RoleSubject): Presented {
 function expectedDenial(row: ExpectedRoute, subject: RoleSubject): AuthDenial | undefined {
   if (row.edge === true) return undefined;
   const { invocation, userRoles = [], foreignBearer } = presentedBy(subject);
-  if (invocation === undefined && row.public !== true) return AuthDenial.unauthenticated('missing-credential');
+  if (invocation === undefined && row.invocationOptional !== true) return AuthDenial.unauthenticated('missing-credential');
   if (foreignBearer === true) return AuthDenial.invalidToken();
   if (row.public === true) return undefined;
   return hasAnyRole([...userRoles, ...(invocation ?? [])], row.requires ?? []) ? undefined : AuthDenial.forbidden();

@@ -46,7 +46,7 @@ export type ScreenOwner = 'identity' | 'people' | 'programs-sites' | 'strategies
 /** FW/1 request context a screen reads. */
 export type Rc = AdminRequest['rc'];
 
-/** A redirect- or raw-mode request body as web received it. */
+/** An admin request body as web received it. */
 export type ScreenRequestBody = RequestBody;
 
 /** Everything a screen receives for one request. */
@@ -63,7 +63,7 @@ export interface ScreenContext {
   hooks: ShellHooks;
   /** Injectable clock. */
   now: Date;
-  /** The request body; absent in page mode and on requests without one. */
+  /** The request body; absent on requests without one. */
   body?: ScreenRequestBody;
 }
 

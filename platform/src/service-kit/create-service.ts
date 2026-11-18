@@ -952,7 +952,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     done();
   });
 
-  app.get('/healthz', { config: { opt2: { public: true } } }, async () => ({ status: 'ok' }));
+  // Liveness probes carry no invocation credential.
+  app.get('/healthz', { config: { opt2: { public: true, invocationOptional: true } } }, async () => ({ status: 'ok' }));
 
   const headers = Object.entries(legacyHeaders());
   app.addHook('onSend', (request, reply, payload, done) => {
@@ -1030,6 +1031,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
           params: error.params ?? params,
           methodCtx: error.methodCtx,
           wwwAuthenticate: error.wwwAuthenticate,
+          stacktrace: error.stacktrace,
         }),
       );
     }

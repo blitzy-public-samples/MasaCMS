@@ -189,6 +189,22 @@ describe('finance records screen', () => {
     ]);
   });
 
+  it('puts the plain Filter button with its icon right after the state select, above the list, with no action bar', async () => {
+    const { view } = await renderList();
+    const $ = cheerio.load(toString(view.body), null, false);
+    const form = $('form[method="get"]');
+    const groups = form.children('.mura-control-group').toArray();
+
+    expect(form.find('.mura-actions, .form-actions')).toHaveLength(0);
+    expect(groups.map((group) => $(group).children().toArray().map((el) => el.tagName))).toEqual([
+      ['label', 'select'],
+      ['button'],
+    ]);
+    expect(form.find('.mura-control-group > button').attr('class')).toBe('btn');
+    expect(form.find('.mura-control-group > button').html()).toBe('<i class="mi-filter"></i> Filter');
+    expect(form.nextAll('table.mura-table-grid')).toHaveLength(2);
+  });
+
   it('marks negative amounts text-danger and each state with its badge, in the list and the rollups', async () => {
     const [first, second, ...rest] = financeRecords;
     const [rollup, ...otherRollups] = financeRollups;

@@ -4,10 +4,11 @@ import { currentAuthority } from '../cutover/index.js';
 
 import { createAwaiter, type AwaitProjectionRequest, type AwaitProjectionResult } from './await.js';
 import { createProjectorLoop, liveTenantSites, type CycleResult, type ProjectorHooks, type StartupGuardRunner } from './projector.js';
+import { quarantinedPositions } from './quarantine.js';
 
 export { PROJECTOR_LOCK_KEY } from './projector.js';
 export type { ProjectorHooks, OperationChangePoint, StartupGuardRunner, CycleResult } from './projector.js';
-export { ProjectionTimeoutError } from './await.js';
+export { ProjectionQuarantinedError, ProjectionTimeoutError } from './await.js';
 export type { AwaitProjectionRequest, AwaitProjectionResult, PendingPosition, ReadBudget } from './await.js';
 export { CHECKPOINT_TABLE, readCheckpoints, ProjectionConflictError } from './apply-legacy.js';
 export type { CheckpointRow, LegacyEffect } from './apply-legacy.js';
@@ -22,7 +23,7 @@ export interface Projector {
 
 /**
  * Creates the projector loop and its awaiter; the awaiter reads the loop's tenant set, or the live `tsettings` before the
- * first cycle, and each await holds a demand on the loop while it waits.
+ * first cycle, and `migration.projector_quarantine`, and each await holds a demand on the loop while it waits.
  */
 export function createProjector(ctx: MigrationContext, opts: { hooks?: ProjectorHooks; startupGuard: StartupGuardRunner }): Projector {
   const loop = createProjectorLoop(ctx, { hooks: opts.hooks ?? {}, startupGuard: opts.startupGuard });
@@ -32,6 +33,7 @@ export function createProjector(ctx: MigrationContext, opts: { hooks?: Projector
     catalog: ctx.catalog,
     authority: ({ timeoutMs }) => currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths, timeoutMs }),
     tenants: async ({ signal }) => loop.lastTenants() ?? [...(await liveTenantSites(ctx.legacy, { signal })).keys()],
+    quarantined: (positions, { signal }) => ctx.db.withMetadata((tx) => quarantinedPositions(tx, positions), { signal }),
     clock: ctx.clock,
     defaults: { timeoutMs: ctx.config.projection.defaultAwaitTimeoutMs, pollIntervalMs: ctx.config.projection.idlePollMs },
   });

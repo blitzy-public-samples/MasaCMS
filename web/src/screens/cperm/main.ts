@@ -10,6 +10,7 @@ import {
   TOP_NODE_ID,
   cpermDefaults,
   cpermGate,
+  emptyZoomFault,
   renderBackNav,
   renderIcon,
   renderNoGroups,
@@ -66,6 +67,8 @@ type Struct = Readonly<Record<string, unknown>>;
 
 const STRATEGIES_CONTENT = 'strategies-content';
 const CRUMBS_OPERATION = 'getContentCrumbs';
+/** `tcontent.ContentID` width; an id empty or longer names no node, and strategies-content refuses it. */
+const MAX_CONTENT_ID_LENGTH = 35;
 const CHAINS_OPERATION = 'listApprovalChains';
 
 /** `rc[name]` after the cperm defaults; `''` for a name neither rc nor the defaults hold. */
@@ -173,20 +176,25 @@ async function loadAdminGroupId(ctx: ScreenContext, siteid: string): Promise<str
  * The `cperm.main` model: identity's group verdicts, strategies-content's crumbs and chains, and the form's CSRF pair.
  * Gateway unavailability propagates as `GatewayUnavailableError`.
  * @throws GatewayDenialError When identity or strategies-content answers 401 or 403.
+ * @throws LegacyFaultError {@link emptyZoomFault} for the Site Manager module and a node without crumbs.
  */
 export async function loadCpermMain(ctx: ScreenContext): Promise<CpermMainModel> {
   const rc = cpermDefaults(ctx.req.rc);
   const siteid = param(rc, 'siteid');
   const contentid = param(rc, 'contentid');
+  const isContentModule = cfEq(param(rc, 'moduleid'), CONTENT_MODULE_ID);
+  const namesNoNode = contentid === '' || contentid.length > MAX_CONTENT_ID_LENGTH;
   const [permissions, crumbData, chains] = await Promise.all([
     ctx.gateway.identity.call('get', '/v1/permissions/content/{contentId}', {
       params: { contentId: contentid },
       query: relayFields(ctx.req, { siteid }),
     }),
-    loadCrumbData(ctx, siteid, contentid),
+    namesNoNode ? Promise.resolve<readonly Struct[]>([]) : loadCrumbData(ctx, siteid, contentid),
     loadChains(ctx, siteid),
     ctx.csrf.prefetch([contentid]),
   ]);
+  // The view's dspZoom fails on an empty crumb list before it prints a verdict, whatever identity answers for the id.
+  if (isContentModule && crumbData.length === 0) throw emptyZoomFault();
   const { groups, publicGroups } = okBody(permissions, 'identity', 'getContentPermissions');
   const toGroup = ({ groupId, groupName, perm }: components['schemas']['ContentGroupVerdict']): CpermMainGroup => ({
     userid: groupId,
@@ -197,7 +205,7 @@ export async function loadCpermMain(ctx: ScreenContext): Promise<CpermMainModel>
   const nodeText = (key: string): string => (node === undefined ? '' : structText(node, key, CRUMBS_OPERATION));
   return {
     title: nodeText('title'),
-    crumbs: cfEq(param(rc, 'moduleid'), CONTENT_MODULE_ID) ? crumbData.map(zoomCrumbOf) : [],
+    crumbs: isContentModule ? crumbData.map(zoomCrumbOf) : [],
     privateGroups: groups.map(toGroup),
     publicGroups: publicGroups.map(toGroup),
     chains,
@@ -416,7 +424,7 @@ function chainSelect(model: CpermMainModel, ctx: CpermMainRenderContext): SafeHt
 /**
  * The `cperm.main` view body, whitespace as ACF serves it.
  * @throws Error When the CSRF pair of `rc.contentid` was not prefetched.
- * @throws RangeError For the Site Manager module with no crumbs, where legacy's dspZoom also fails.
+ * @throws LegacyFaultError {@link emptyZoomFault} for the Site Manager module with no crumbs.
  */
 export function renderCpermMain(model: CpermMainModel, ctx: CpermMainRenderContext): CpermMainView {
   const { rb } = ctx;

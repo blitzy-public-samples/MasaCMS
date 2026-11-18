@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { parse } from 'yaml';
-import { collectRouteMatrix } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
 import { LEGACY_JSON_CONTENT_TYPE, etag, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { EnvValidationError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -26,6 +26,7 @@ import {
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   authHeadersFor,
+  mintServiceToken,
   mintUserToken,
   testVerifier,
   writeTestSecrets,
@@ -71,7 +72,7 @@ interface StubIdentity {
   calls: Array<Record<string, unknown>>;
 }
 
-/** One injected request: who sends it, extra headers and the body. */
+/** One injected request: who sends it, absent meaning a caller without a user token as the gateway forwards it, extra headers and the body. */
 interface Call {
   as?: Subject;
   site?: string;
@@ -227,6 +228,11 @@ async function headersAs(name: Subject, site: string): Promise<Record<string, st
   return authHeadersFor(subject, { audience: 'programs-sites', site });
 }
 
+/** The gateway's invocation credential alone, as it forwards a caller without a user token. */
+async function forwardedByGateway(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'programs-sites' })}` };
+}
+
 type Verb = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'PATCH';
 
 /** A request path in the contract's spelling: no front controller, the API prefix in lower case and no trailing slash. */
@@ -240,7 +246,7 @@ function contractPath(url: string): string {
 
 /** Injects `call` and checks the answer against the contract. */
 async function send(method: Verb, url: string, call: Call = {}) {
-  const credentials = call.as === undefined ? {} : await headersAs(call.as, call.site ?? TENANT_A.siteId);
+  const credentials = call.as === undefined ? await forwardedByGateway() : await headersAs(call.as, call.site ?? TENANT_A.siteId);
   const res = await app.inject({ method, url, headers: { ...credentials, ...call.headers }, payload: call.payload });
   assertResponseMatchesOpenApi(OPENAPI, {
     method,
@@ -811,7 +817,7 @@ describe('path, method and case forms', () => {
     ['/_api/json/v1/tenant-a/site/x/y/z', 'GET', 200],
     ['/_api/json/v1/tenant-a/site/x/y/z', 'POST', 503],
   ] as const)('%s under %s resolves as the entity route of the path site, a POST being the withheld save', async (url, method, status) => {
-    const res = await app.inject({ method, url });
+    const res = await app.inject({ method, url, headers: await forwardedByGateway() });
     expect(res.statusCode).toBe(status);
   });
 

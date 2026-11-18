@@ -209,9 +209,9 @@ const COOKIE_NOW = new Date('2026-11-16T18:57:12Z');
 const scopeCookie = (pair: string, secure = ''): string =>
   `${pair}; Max-Age=946080000; Expires=Wed, 08-Nov-2056 06:57:12 GMT; Path=/; ${secure}HttpOnly; SameSite=Lax`;
 
-/** A utility.setCookie `<cfcookie>` as legacy ACF wrote it at {@link COOKIE_NOW}, `secure` after the path. */
-const cfCookie = (pair: string, secure = ''): string =>
-  `${pair}; path=/; ${secure}Max-Age=946080000; Expires=Wed, 08-Nov-2056 18:57:12 GMT`;
+/** A utility.setCookie `<cfcookie>` as legacy ACF wrote it at {@link COOKIE_NOW}, `domain` and `secure` after the path. */
+const cfCookie = (pair: string, attributes = ''): string =>
+  `${pair}; path=/; ${attributes}Max-Age=946080000; Expires=Wed, 08-Nov-2056 18:57:12 GMT`;
 
 /** Replaces every `MURA_` variable with `vars`. */
 function useSettings(vars: Readonly<Record<string, string>> = {}): void {
@@ -593,16 +593,74 @@ describe('buildAdminRequest', () => {
       expect(request.rc.fuseaction).toBe('cUsers.list');
     });
 
-    it('takes the posted fields of a page-mode POST from the received query', async () => {
+    it.each<[string, URLSearchParams | undefined, Record<string, string>, Record<string, string>]>([
+      ['a POST from its body', new URLSearchParams('fname=Ann&userid=U2'), { fname: 'Ann', userid: 'U2' }, { userid: 'U2', fname: 'Ann' }],
+      ['a GET as empty', undefined, {}, { userid: 'U1' }],
+    ])('takes the form scope of a page-mode %s, never from received query pairs', async (_label, form, formScope, rc) => {
       const { request } = await build({
         target: '/admin/?muraAction=cusers.update&userid=U1',
-        received: new URLSearchParams('muraAction=cusers.update&userid=U1&fname=Ann&userid=U2'),
+        received: new URLSearchParams('muraAction=cusers.update&userid=U1&fname=Bob&extra=1'),
+        form,
       });
 
-      expect(request.rc).toMatchObject({ muraAction: 'core:cusers.update', userid: 'U2', fname: 'Ann' });
+      expect(request.mode).toBe('page');
+      expect(request.rc).toMatchObject({ muraAction: 'core:cusers.update', ...rc });
+      expect(request.rc.extra).toBeUndefined();
+      expect(request.rc.fname).toBe(formScope.fname);
       expect(request.currentUrl).toBe('./?&muraAction=cusers.update&userid=U1');
-      expect({ ...request.formScope }).toEqual({ fname: 'Ann', userid: 'U2' });
-      expect(request.formScope.FNAME).toBe('Ann');
+      expect({ ...request.formScope }).toEqual(formScope);
+    });
+
+    // The ACF 2023 oracle's form-scope value for one name posted with these values, url-encoded and multipart alike;
+    // it reads a file part as the upload's temporary path, which web reads as the file name.
+    const FORM_JOINS: ReadonlyArray<readonly [readonly (string | { readonly file: string })[], string]> = [
+      [['', { file: '' }], ''],
+      [[{ file: '' }, ''], ''],
+      [['x', { file: '' }], 'x'],
+      [[{ file: '' }, { file: '' }], ''],
+      [['', { file: 'p.png' }], 'p.png'],
+      [['', '', { file: '' }], ''],
+      [['', ''], ''],
+      [['a', '', 'b'], 'a,b'],
+      [['', 'b'], 'b'],
+      [[' ', 'b'], ' ,b'],
+      [['a', ' '], 'a'],
+      [[' ', ' '], ' '],
+      [['', ' '], ''],
+      [['\t', 'x'], '\t,x'],
+      [['a', '', '', 'b'], 'a,b'],
+      [['', 'a', ''], 'a'],
+      [['a ', 'b'], 'a ,b'],
+      [['a', ','], 'a,,'],
+      [[',', 'a'], ',,a'],
+      [['', ','], ','],
+    ];
+    const formCases = FORM_JOINS.flatMap(([values, joined]) => {
+      const pairs = values.map((value): [string, string] => ['v', typeof value === 'string' ? value : value.file]);
+      const multipart = new FormData();
+      for (const value of values) multipart.append('v', typeof value === 'string' ? value : new File([], value.file));
+      const encodings: Array<readonly [string, FormData | URLSearchParams]> = [['multipart', multipart]];
+      if (values.every((value) => typeof value === 'string')) encodings.unshift(['url-encoded', new URLSearchParams(pairs)]);
+      return encodings.map(([encoding, form]) => [encoding, JSON.stringify(values), joined, form, pairs] as const);
+    });
+
+    it.each(formCases)('joins a %s form scope posted as %s into %j, as ACF does', async (_encoding, _values, joined, form, pairs) => {
+      const { request } = await build({ mode: 'redirect', target: '/admin/?muraAction=cusers.update', form });
+
+      expect(request.formScope.v).toBe(joined);
+      expect(request.relayScopes.posted.v).toBe(joined);
+      expect(mergeFw1Context([], {}, pairs).v).toBe(joined);
+    });
+
+    it.each([
+      ['x=&x=b', 'x', ',b'],
+      ['y=a&y=', 'y', 'a,'],
+      ['z=&z=', 'z', ','],
+    ])('keeps every value of a repeated url name in %s', async (query, name, joined) => {
+      const { request } = await build({ target: `/admin/?muraAction=cusers.list&${query}` });
+
+      expect(request.rc[name]).toBe(joined);
+      expect(mergeFw1Context([], new URLSearchParams(query), {})[name]).toBe(joined);
     });
 
     it('reads the body of a redirect request, a file part as its file name', async () => {
@@ -713,11 +771,7 @@ describe('buildAdminRequest', () => {
     it('builds rc and currentURL from the scanned scopes, keeping the form scope as posted', async () => {
       const { request } = await build({
         target: '/admin/?muraAction=cUsers.search&search=%20an%20',
-        received: new URLSearchParams([
-          ['muraAction', 'cUsers.search'],
-          ['search', ' an '],
-          ['fname', ' <script>x</script>Ann '],
-        ]),
+        form: new URLSearchParams([['fname', ' <script>x</script>Ann ']]),
       });
 
       expect(request.rc).toMatchObject({ search: 'an', fname: '[INVALID]Ann' });
@@ -1349,6 +1403,57 @@ describe('buildAdminRequest', () => {
     });
   });
 
+  describe('CORS origin echo', () => {
+    const ECHOED = (origin: string): Record<string, string> => ({
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
+    });
+    const domains = { allowedDomains: ['localhost', 'tenant-a.example.test'], siteDomain: 'localhost' };
+    const hrefDomainCalls = (gateway: FakeGatewayClient): unknown[] =>
+      gateway.calls.filter(({ path }) => path === '/v1/href-domains');
+
+    it.each<[label: string, subject: WebTestSubjectKey, origin: string, expected: Record<string, string>]>([
+      ['an anonymous request from a listed domain', 'anonymous', 'http://localhost:8080', ECHOED('http://localhost:8080')],
+      ['an anonymous request from a sub-domain', 'anonymous', 'https://www.tenant-a.example.test', ECHOED('https://www.tenant-a.example.test')],
+      ['an anonymous request from an unlisted domain', 'anonymous', 'http://evil.example', {}],
+      ['a lookalike of a listed domain', 'anonymous', 'http://evillocalhost', {}],
+      ['a logged-in request from a listed domain', 'member', 'http://LOCALHOST', ECHOED('http://LOCALHOST')],
+      ['a logged-in request from an unlisted domain', 'member', 'http://evil.example', {}],
+    ])('answers %s', async (_label, subject, origin, expected) => {
+      const { request, gateway } = await build({
+        subject,
+        target: '/admin/',
+        headers: { origin },
+        routes: { [HREF_DOMAINS]: { status: 200, body: domains } },
+      });
+
+      expect(request.accessControlHeaders).toEqual(expected);
+      expect(hrefDomainCalls(gateway)).toHaveLength(1);
+    });
+
+    it("reads a logged-in user's registry domains for the token's site", async () => {
+      const { gateway } = await build({
+        subject: 'member',
+        target: '/admin/',
+        headers: { origin: 'http://localhost' },
+        routes: { [HREF_DOMAINS]: siteChecked(SUBJECTS.member.site, { status: 200, body: domains }) },
+      });
+
+      expect(hrefDomainCalls(gateway)).toEqual([expect.objectContaining({ query: { siteid: SUBJECTS.member.site } })]);
+    });
+
+    it.each<[WebTestSubjectKey, number]>([
+      ['anonymous', 1],
+      ['member', 0],
+    ])('echoes nothing without an Origin, and %s reads the registry domains %i times', async (subject, calls) => {
+      const { request, gateway } = await build({ subject, target: '/admin/' });
+
+      expect(request.accessControlHeaders).toEqual({});
+      expect(hrefDomainCalls(gateway)).toHaveLength(calls);
+    });
+  });
+
+
   describe('advanced search', () => {
     it('keeps each complete criterion of param', async () => {
       const { request } = await build({
@@ -1466,15 +1571,20 @@ describe('buildAdminRequest', () => {
       for (const [name, value] of Object.entries(values)) expect(request.cookies.get(name)).toBe(value);
     });
 
-    it('marks them secure under secureCookies', async () => {
-      useSettings({ MURA_SECURECOOKIES: 'true' });
+    it.each<[Record<string, string>, string, string]>([
+      [{ MURA_SECURECOOKIES: 'true' }, 'Secure; ', 'secure; '],
+      [{ MURA_COOKIEDOMAIN: '.example.test' }, '', 'domain=.example.test; '],
+      [{ MURA_COOKIEDOMAIN: '.example.test', MURA_SECURECOOKIES: 'true' }, 'Secure; ', 'domain=.example.test; secure; '],
+    ])('applies %j to the setCookie cookies, the rb cookie taking no domain', async (settings, rbAttributes, attributes) => {
+      useSettings(settings);
 
-      const { request } = await build({ subject: 'qaEditor', target: '/admin/', now: COOKIE_NOW });
+      const { request } = await build({ subject: 'qaEditor', target: '/admin/?rb=pt_BR', now: COOKIE_NOW });
 
       expect(request.pendingSetCookies).toEqual([
-        scopeCookie('rb=', 'Secure; '),
-        cfCookie('ADMINCONTROLWIDTH=300', 'secure; '),
-        cfCookie('ADMINSIDEBAR=off', 'secure; '),
+        scopeCookie('rb=', rbAttributes),
+        scopeCookie('RB=pt%5FBR', rbAttributes),
+        cfCookie('ADMINCONTROLWIDTH=300', attributes),
+        cfCookie('ADMINSIDEBAR=off', attributes),
       ]);
     });
   });

@@ -138,16 +138,15 @@ async function updateRequest(): Promise<Request> {
 }
 
 describe('request log line', () => {
-  it.each<{ outcome: string; status: number; failure?: Error; rethrown?: boolean }>([
+  it.each<{ outcome: string; status: number; failure?: Error }>([
     { outcome: 'an answered request', status: 302 },
     { outcome: 'a mapped 503', status: 503, failure: new GatewayUnavailableError('people', 503) },
-    { outcome: 'a rethrown error', status: 500, failure: new RangeError('screen failed'), rethrown: true },
-  ])('identifies the web request span for $outcome', async ({ status, failure, rethrown }) => {
+    { outcome: "an unmapped error answered with legacy's 500", status: 500, failure: new RangeError('screen failed') },
+  ])('identifies the web request span for $outcome', async ({ status, failure }) => {
     screen.failure = failure;
 
     const answered = handleAdminAction(await updateRequest(), { circuit: 'cusers', action: 'update' });
-    if (rethrown === true) await expect(answered).rejects.toBe(failure);
-    else expect((await answered).status).toBe(status);
+    expect((await answered).status).toBe(status);
 
     await flushTracing();
     const spans = (tracing.exporter?.getFinishedSpans() ?? []).filter((span) => span.name === SPAN_NAME);

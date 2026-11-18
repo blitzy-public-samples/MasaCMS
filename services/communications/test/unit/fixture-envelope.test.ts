@@ -1,6 +1,7 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture envelope, error map, paging and handler of the communications fixture routes (legacy-fixtures/cfml/lib/envelope.cfc). */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
   cfHash,
   LEGACY_ERROR_MAP,
@@ -12,7 +13,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { createLogger, serializeError, validateLogRecord } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { testVerifier } from '@opt2/platform/testing';
+import { mintServiceToken, testVerifier } from '@opt2/platform/testing';
 import {
   FIXTURE_ERROR_MAP,
   FIXTURE_LEGACY_ERROR_TYPES,
@@ -308,8 +309,11 @@ describe('fixture routes', () => {
   };
   let app: FastifyInstance;
   let seen: FixtureContext | undefined;
+  /** The gateway's invocation credential, which it attaches to every request it forwards. */
+  let gateway: Record<string, string>;
 
   beforeAll(async () => {
+    gateway = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}` };
     app = await createService({
       name: 'communications',
       version: '1.0.0',
@@ -376,7 +380,7 @@ describe('fixture routes', () => {
     await app.opt2.shutdown();
   });
 
-  /** Injects one request and returns its wire view, its log lines and logger `error` calls, and whether it logged an unhandled fixture exception. */
+  /** Injects one request as the gateway forwards it and returns its wire view, its log lines and logger `error` calls, and whether it logged an unhandled fixture exception. */
   async function call(
     url: string,
     opts: { method?: 'GET' | 'POST'; payload?: string; contentType?: string } = {},
@@ -387,7 +391,7 @@ describe('fixture routes', () => {
       method: opts.method ?? 'GET',
       url,
       ...(opts.payload === undefined ? {} : { payload: opts.payload }),
-      ...(opts.contentType === undefined ? {} : { headers: { 'content-type': opts.contentType } }),
+      headers: { ...gateway, ...(opts.contentType === undefined ? {} : { 'content-type': opts.contentType }) },
     });
     const lines = logLines.slice(before);
     return {
@@ -494,7 +498,7 @@ describe('fixture routes', () => {
 
   it('lets service-kit answer a FixtureApiError that escapes fixtureHandler as a legacy error, unlogged', async () => {
     const before = logLines.length;
-    const res = await app.inject({ method: 'GET', url: `${PREFIX}/escaped/invalidParameters` });
+    const res = await app.inject({ method: 'GET', url: `${PREFIX}/escaped/invalidParameters`, headers: gateway });
 
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toMatchObject({ apiversion: 'v1', error: { message: 'Invalid parameters', code: 'invalid_request' } });

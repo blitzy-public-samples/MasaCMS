@@ -103,6 +103,9 @@ const POSITION = '[a-z][a-z0-9-]*=[0-9]+';
 /** Supplied text of migration's ProjectionTimeoutError: the awaited positions, joined by `,`, and the budget in ms. */
 const PROJECTION_TIMEOUT_TEXT = `Projection of (?:${POSITION}(?:,${POSITION})*)? was not applied in legacy within [0-9]+ ms`;
 
+/** Supplied text of migration's ProjectionQuarantinedError: the quarantined positions, joined by `,`. */
+const PROJECTION_QUARANTINED_TEXT = `Projection of ${POSITION}(?:,${POSITION})* is quarantined: legacy could not take the write`;
+
 /** Environment variable name. */
 const ENV_KEY = '[A-Z][A-Z0-9_]*';
 
@@ -132,7 +135,7 @@ const UNPUBLISHED_TEXT = String.raw`Outbox publish of [1-9][0-9]* committed even
 
 /** Every text `safeErrorMessage` produces besides REDACTED, platform and migration errors' supplied texts included, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \(${ENV_ENTRY}(?:; ${ENV_ENTRY})*\))?|${ENV_FILE_TEXT}|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT}|${MSSQL_TEXT}|${OPT2_SYNC_TEXT}|${PROJECTION_TIMEOUT_TEXT}|${UNPUBLISHED_TEXT})$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \(${ENV_ENTRY}(?:; ${ENV_ENTRY})*\))?|${ENV_FILE_TEXT}|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT}|${MSSQL_TEXT}|${OPT2_SYNC_TEXT}|${PROJECTION_TIMEOUT_TEXT}|${PROJECTION_QUARANTINED_TEXT}|${UNPUBLISHED_TEXT})$`,
 );
 
 /** Text that is exactly one RULE_REASON. */

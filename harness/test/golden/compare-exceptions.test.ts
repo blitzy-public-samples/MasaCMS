@@ -1,10 +1,12 @@
 // Exceptions entries excuse only the differences their selectors describe.
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { GoldenSet } from '../../src/golden/capture.js';
+import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE, LegacyFaultError, legacyDebugPageHtml } from '@opt2/platform/legacy-compat';
+import type { GoldenSet, GoldenStep } from '../../src/golden/capture.js';
 import { loadCatalogue, scenarioById, type Scenario } from '../../src/golden/catalogue.js';
 import {
   classifyScenario,
@@ -14,6 +16,7 @@ import {
   type ScenarioVerdict,
 } from '../../src/golden/compare.js';
 import type { DifferenceSelector, ExceptionEntry } from '../../src/golden/errors.js';
+import { createNormaliseState, normaliseBody } from '../../src/golden/normalise/index.js';
 import type { NormalisedTable } from '../../src/golden/normalise/rows.js';
 import { loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
 import type { ReplayOutput } from '../../src/golden/replay.js';
@@ -245,5 +248,93 @@ describe('exceptions list selectors', () => {
     const poolMove = entries.find((candidate) => candidate.id === 'EX-ROSTER-POOLMOVE');
     expect(poolMove).toMatchObject({ scenario: 'GS-PE-02', decision: 'preserve', status: 'open' });
     expect(poolMove?.matches).toStrictEqual([{ step: 'update', path: 'status', kind: ['status'], actual: 503 }]);
+  });
+});
+
+describe("GS-PUB-04's rate-ajax step on legacy's debug page, under the committed list", () => {
+  const RATE_AJAX = 'rate-ajax';
+  const SAVE_RATE = 'cfm:/core/modules/v1/rater/ajax/saverate.cfm';
+  const CONTENT_ID_FAULT = new LegacyFaultError('Element CONTENTID is undefined in FORM.');
+  // Legacy's debugging-on onError page for the rate-ajax GET, trimmed to its style and errorBox headings.
+  const DEBUG_PAGE = readFileSync(new URL('../fixtures/golden/legacy-debug-page-saverate.html', import.meta.url), 'utf8');
+  // The fault's text holds nothing esapiEncode('html') changes.
+  const TARGET_PAGE = legacyDebugPageHtml(CONTENT_ID_FAULT, (text) => text);
+
+  let pub04: Scenario;
+  let committed: ExceptionEntry[];
+
+  beforeAll(async () => {
+    pub04 = scenarioById(await loadCatalogue(), 'GS-PUB-04');
+    committed = exceptionEntries(await loadExceptionsList());
+  });
+
+  /** The rate-ajax step answering `html` at `status`, normalised as capture and replay normalise an HTML step. */
+  function rateAjax(html: string, status: number): GoldenStep {
+    const { domModel, maskedPaths } = normaliseBody(
+      LEGACY_HTML_CONTENT_TYPE,
+      html,
+      { state: createNormaliseState(), rules, scenario: pub04 },
+      SAVE_RATE,
+    );
+    return {
+      name: RATE_AJAX,
+      index: 1,
+      routeKey: SAVE_RATE,
+      request: { method: 'GET', url: '/core/modules/v1/rater/ajax/saveRate.cfm?rate=5', headers: {}, body: { kind: 'none' } },
+      response: { status, headers: {}, body: html, rawSha256: '0'.repeat(64) },
+      normalised: { name: RATE_AJAX, index: 1, routeKey: SAVE_RATE, status, domModel, maskedPaths },
+    };
+  }
+
+  /** Classifies a replay answering `replayed` against a golden set answering `captured`, under the committed list. */
+  function classifyPub04(captured: [string, number], replayed: [string, number]): ScenarioVerdict {
+    const sideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+    const golden: GoldenSet = {
+      sourceSha: SHA,
+      scenarioId: pub04.id,
+      capturedAt: '2026-01-01T00:00:00.000Z',
+      origin: 'legacy',
+      tableVersion: null,
+      fixtures: { available: true, reason: null },
+      steps: [rateAjax(...captured)],
+      sideEffects,
+    };
+    const replay: ReplayOutput = {
+      sourceSha: SHA,
+      scenarioId: pub04.id,
+      replayedAt: '2026-01-01T00:00:01.000Z',
+      origin: 'gateway',
+      tableVersion: pub04.tableVersion,
+      steps: [rateAjax(...replayed)],
+      sideEffects,
+      halted: [],
+    };
+    return classifyScenario(golden, replay, { scenario: pub04, exceptions: committed, rules, decisionList: DECISIONS });
+  }
+
+  it("passes the platform's debug page of the fault against legacy's, with no difference", () => {
+    const verdict = classifyPub04([DEBUG_PAGE, 500], [TARGET_PAGE, 500]);
+    expect(verdict).toMatchObject({ result: 'pass', exceptionId: null });
+    expect(verdict.differences).toStrictEqual([]);
+  });
+
+  it.each<[string, [string, number], [string, number], string[]]>([
+    [
+      'error.html in place of the debug page, which no entry excuses',
+      [DEBUG_PAGE, 500],
+      [LEGACY_ERROR_PAGE_HTML, 500],
+      ['domModel.headings[0].text', 'domModel.headings[1]', 'domModel.headings[2]', 'domModel.title'],
+    ],
+    ['the fail-closed 503 in place of the 500', [DEBUG_PAGE, 500], [TARGET_PAGE, 503], ['status']],
+    [
+      "the debug page of another field's fault",
+      [DEBUG_PAGE.replace('Element CONTENTID is undefined in FORM.', 'Element RATE is undefined in FORM.'), 500],
+      [TARGET_PAGE, 500],
+      ['domModel.headings[1].text'],
+    ],
+  ])('fails %s', (_title, captured, replayed, unexcused) => {
+    const verdict = classifyPub04(captured, replayed);
+    expect(verdict).toMatchObject({ result: 'fail' });
+    expect(excuses(verdict)).toStrictEqual(unexcused.map((path) => [path, undefined]));
   });
 });

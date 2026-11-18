@@ -210,6 +210,8 @@ interface Row {
   actsForUser?: true;
   /** The cUsers `before()` conjunction: S2, a site admin, or the Users and Site Manager grants together. */
   cusers?: true;
+  /** A public route that admits a caller without an invocation credential. */
+  invocationOptional?: true;
   /** Legacy gate the declaration reproduces. */
   source?: string;
   probe: Probe;
@@ -352,8 +354,8 @@ const EXPECTED: Readonly<Record<string, Row>> = {
   'GET /index.cfm/_api/rest/v1*': jsonApi('rest', 'GET', '/index.cfm'),
   'POST /index.cfm/_api/rest/v1*': jsonApi('rest', 'POST', '/index.cfm'),
   'PUT /index.cfm/_api/rest/v1*': jsonApi('rest', 'PUT', '/index.cfm'),
-  'GET /.well-known/jwks.json': service('public', { method: 'GET', url: '/.well-known/jwks.json' }),
-  'GET /healthz': service('public', { method: 'GET', url: '/healthz' }),
+  'GET /.well-known/jwks.json': service('public', { method: 'GET', url: '/.well-known/jwks.json' }, { invocationOptional: true }),
+  'GET /healthz': service('public', { method: 'GET', url: '/healthz' }, { invocationOptional: true }),
 
   'POST /internal/v1/tokens': service(GATEWAY_ONLY, {
     method: 'POST',
@@ -507,16 +509,16 @@ function cusersAdmits(roles: readonly string[]): boolean {
 /** The answer `record` is owed on `row`: admission, or the denial of the auth hooks or of the row's handler gate. */
 function expectedOutcome(row: Row, record: SubjectRecord): Outcome {
   const { credential, roles } = record;
-  const isPublic = row.allow === 'public';
+  const invocationOptional = row.invocationOptional === true;
   const holdsRole = row.allow === 'public' || row.allow.some((role) => roles.includes(role));
   if (row.transport !== 'service') {
     const accepted = row.transport === 'pubsub-push' ? credential === 'push-key' : credential === 'tasks-token';
     return accepted && holdsRole ? ADMITTED : AuthDenial.unauthenticated('wrong-scheme');
   }
-  // The tasks token is no invocation credential, and on a public route it fails verification as a user token.
-  if (credential === 'tasks-token') return isPublic ? AuthDenial.invalidToken() : AuthDenial.unauthenticated('missing-credential');
+  // The tasks token is no invocation credential; where that credential may be absent, it fails verification as a user token.
+  if (credential === 'tasks-token') return invocationOptional ? AuthDenial.invalidToken() : AuthDenial.unauthenticated('missing-credential');
   if (credential === 'none' || credential === 'push-key') {
-    return isPublic && row.actsForUser !== true ? ADMITTED : AuthDenial.unauthenticated('missing-credential');
+    return invocationOptional && row.actsForUser !== true ? ADMITTED : AuthDenial.unauthenticated('missing-credential');
   }
   const user = credential === 'user';
   if (!holdsRole) {
@@ -656,11 +658,17 @@ function declarationOf(route: RouteMatrixEntry): Record<string, unknown> {
     allow: route.public === true ? 'public' : [...(route.requires ?? [])].sort(),
     siteCheck: route.siteCheck,
     ...(route.edge === true ? { edge: true } : {}),
+    ...(route.invocationOptional === true ? { invocationOptional: true } : {}),
   };
 }
 
 function declaredBy(row: Row): Record<string, unknown> {
-  return { transport: row.transport, allow: row.allow === 'public' ? 'public' : [...row.allow].sort(), siteCheck: row.siteCheck === undefined };
+  return {
+    transport: row.transport,
+    allow: row.allow === 'public' ? 'public' : [...row.allow].sort(),
+    siteCheck: row.siteCheck === undefined,
+    ...(row.invocationOptional === true ? { invocationOptional: true } : {}),
+  };
 }
 
 const rolesClaim = (claims: Record<string, unknown> | undefined): string[] =>
@@ -817,9 +825,11 @@ describe('anonymous group.save on the JSON API (jsonApiUtility.cfc:1903-2035)', 
     expect([res.statusCode, res.json(), effects()]).toEqual([400, envelope('invalidTokens'), before]);
   });
 
-  it('answers a REST save without credentials with the Basic challenge, with no effect', async () => {
+  it('answers a REST save without user credentials, as the gateway forwards it, with the Basic challenge, with no effect', async () => {
     const before = effects();
-    const res = await t.app.inject({ method: 'POST', url: `/_api/rest/v1/${SITE_A}/group/`, headers: FORM, payload: 'groupname=Mine' });
+    const gateway = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE_NAME })}`;
+    const headers = { ...FORM, [INVOCATION_HEADER]: gateway };
+    const res = await t.app.inject({ method: 'POST', url: `/_api/rest/v1/${SITE_A}/group/`, headers, payload: 'groupname=Mine' });
     const owed = legacyErrorResponse('authorization', { method: 'Not Available', wwwAuthenticate: WWW_AUTHENTICATE.basic });
     expect([res.statusCode, res.body, res.headers['www-authenticate'], effects()]).toEqual([401, owed.body, WWW_AUTHENTICATE.basic, before]);
   });

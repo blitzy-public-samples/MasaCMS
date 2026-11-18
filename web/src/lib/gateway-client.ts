@@ -2,7 +2,7 @@
 import { Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { InvocationMinter } from '@opt2/platform/auth';
-import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, legacyFaultOf } from '@opt2/platform/legacy-compat';
 import {
   createServiceClient,
   decodeServiceBody,
@@ -194,11 +194,14 @@ export class GatewayDenialError extends Error {
 }
 
 /** A facade answer as {@link okBody} reads it. */
-type CallResult<T> = { readonly ok: true; readonly body: T } | { readonly ok: false; readonly status: number };
+type CallResult<T> =
+  | { readonly ok: true; readonly body: T }
+  | { readonly ok: false; readonly status: number; readonly body?: unknown };
 
 /**
  * The 2xx body of `operation`'s answer from `service`.
  * @throws GatewayDenialError For 401 or 403.
+ * @throws LegacyFaultError For an error envelope whose `stacktrace` names the fault legacy raises there.
  * @throws Error For any other non-2xx status.
  */
 export function okBody<T>(response: CallResult<T>, service: WebServiceName, operation: string): T {
@@ -206,6 +209,8 @@ export function okBody<T>(response: CallResult<T>, service: WebServiceName, oper
   if (response.status === 401 || response.status === 403) {
     throw new GatewayDenialError(service, operation, response.status);
   }
+  const fault = legacyFaultOf(response.body);
+  if (fault !== undefined) throw fault;
   throw new Error(`${operation} answered HTTP ${response.status}`);
 }
 

@@ -9,6 +9,7 @@ import {
   UndeclaredRouteError,
   collectRouteMatrix,
   hasAnyRole,
+  serviceRole,
   type RouteMatrixEntry,
 } from '@opt2/platform/auth';
 import type { Clock } from '@opt2/platform/service-kit';
@@ -359,11 +360,13 @@ function hasAdmittedEffects(route: RouteMatrixEntry, outcome: Outcome): boolean 
   return outcome.writes > 0 && outcome.objects === (route.url.endsWith('/attachments') ? 1 : 0);
 }
 
-/** Whether `route`'s declaration admits `subject`, from its public flag, transport, `requires` and `siteCheck` alone. */
+/** Whether `route`'s declaration admits `subject`, from its public and invocationOptional flags, transport, `requires` and `siteCheck` alone. */
 function expectAllowed(route: RouteMatrixEntry, subject: RoleSubject): boolean {
   const kind = classOf(subject);
-  // A presented bearer token is always verified: the service scheme refuses the tasks-invoker token in Authorization even on a public route.
-  if (route.public === true) return !(route.transport === 'service' && kind === 'tasks-invoker');
+  // Only users and services carry an invocation credential; an invocationOptional route lets it be absent, but still refuses the tasks-invoker token in Authorization as a user token.
+  if (route.public === true) {
+    return route.transport !== 'service' || kind === 'user' || kind === 'service' || (route.invocationOptional === true && kind !== 'tasks-invoker');
+  }
   const granted = hasAnyRole(subject.roles, route.requires ?? []);
   switch (route.transport) {
     case 'pubsub-push':
@@ -578,6 +581,20 @@ describe('authorisation matrix', () => {
     expect(offending, offending.join('\n')).toEqual([]);
   });
 
+  it('answers 401 to callers without an invocation credential on public service routes that do not make it optional', () => {
+    const uncredentialed: readonly SubjectClass[] = ['anonymous', 'push-invoker', 'tasks-invoker'];
+    const probed = cells.filter(
+      (cell) =>
+        cell.route.transport === 'service' &&
+        cell.route.public === true &&
+        cell.route.invocationOptional !== true &&
+        uncredentialed.includes(classOf(cell.subject)),
+    );
+    expect(probed.some((cell) => cell.route.url.startsWith(FILE_ROUTE_PREFIX))).toBe(true);
+    const offending = probed.filter((cell) => cell.status !== 401 || cell.writes !== 0 || cell.objects !== 0).map(cellName);
+    expect(offending, offending.join('\n')).toEqual([]);
+  });
+
   it('runs allowed requests in the token tenant only', () => {
     const probed = cells.filter(
       (cell) => cell.expected && cell.status === admittedStatus(cell.route) && cell.subject.kind === 'user' && !isOtherTenant(cell.subject),
@@ -658,8 +675,11 @@ describe('site boundary', () => {
 });
 
 describe('signed attachment URLs', () => {
+  // A signed URL is path-only; the gateway forwards it with its own invocation credential.
+  const forwarded = (): Promise<Record<string, string>> => headersFor(serviceRole('gateway'));
+
   it('serves an attachment only for a valid signature', async () => {
-    const res = await withApp((h) => h.t.app.inject({ method: 'GET', url: h.fileUrl }));
+    const res = await withApp(async (h) => h.t.app.inject({ method: 'GET', url: h.fileUrl, headers: await forwarded() }));
     expect({ status: res.statusCode, contentType: res.headers['content-type'], served: res.rawPayload.equals(FILE_BYTES) }).toEqual({
       status: 200,
       contentType: PDF,
@@ -684,7 +704,7 @@ describe('signed attachment URLs', () => {
       };
       const out: Record<string, { status: number; served: boolean }> = {};
       for (const [label, url] of Object.entries(urls)) {
-        const res = await h.t.app.inject({ method: 'GET', url });
+        const res = await h.t.app.inject({ method: 'GET', url, headers: await forwarded() });
         out[label] = { status: res.statusCode, served: res.rawPayload.equals(FILE_BYTES) };
       }
       return out;
@@ -694,7 +714,7 @@ describe('signed attachment URLs', () => {
     const clock: Clock = { now: () => new Date(TEST_CLOCK.now().getTime() + offsetMs) };
     answers['an expired signature'] = await withApp(async (h) => {
       offsetMs = SIGNED_URL_TTL_MS + 1_000;
-      const res = await h.t.app.inject({ method: 'GET', url: h.fileUrl });
+      const res = await h.t.app.inject({ method: 'GET', url: h.fileUrl, headers: await forwarded() });
       return { status: res.statusCode, served: res.rawPayload.equals(FILE_BYTES) };
     }, clock);
 

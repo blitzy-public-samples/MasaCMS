@@ -144,7 +144,7 @@ type Method = 'GET' | 'POST';
 interface Call {
   method: Method;
   url: string;
-  /** Token roles; null sends no token. */
+  /** Token roles; null sends no user token, only the gateway's invocation credential. */
   roles?: readonly string[] | null;
   tenant?: TenantFixture;
   body?: Record<string, unknown>;
@@ -189,15 +189,12 @@ describe('communications fixture routes', () => {
 
   const domainMocks = (): Mock[] => [listTemplates, createTemplate, listMessages, submitMessage, getMessage].map((fn) => vi.mocked(fn) as Mock);
 
-  /** Injects one call with a user token unless `roles` is null, and checks the answer against the operation of `contractMethod`. */
+  /** Injects one call as the gateway forwards it, with a user token unless `roles` is null, and checks the answer against the operation of `contractMethod`. */
   async function inject({ method, url, roles = SENDER, tenant = TENANT_A, body, headers = {} }: Call, contractMethod: Method = method) {
-    const auth: Record<string, string> =
-      roles === null
-        ? {}
-        : {
-            authorization: `Bearer ${await mintUserToken({ site: tenant.siteId, roles, sub: USER_ID })}`,
-            [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}`,
-          };
+    const auth: Record<string, string> = {
+      ...(roles === null ? {} : { authorization: `Bearer ${await mintUserToken({ site: tenant.siteId, roles, sub: USER_ID })}` }),
+      [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}`,
+    };
     const res = await app.inject({
       method,
       url,
@@ -497,7 +494,7 @@ describe('communications fixture routes over the recording database', () => {
   type Caller = 'sender' | 'senderB' | 'systemUser';
   type ErrorType = FixtureErrorType | 'authorization' | 'invalidParameters' | 'invalidTokens' | 'server_error';
 
-  /** One injected request; no `as` sends it anonymously, a `body` is sent as JSON. */
+  /** One injected request; no `as` sends it anonymously, with the gateway's invocation credential alone; a `body` is sent as JSON. */
   interface Req {
     method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS';
     url: string;
@@ -588,6 +585,7 @@ describe('communications fixture routes over the recording database', () => {
 
   let t: TestApp;
   let tokens: Record<Caller, Record<string, string>>;
+  let gateway: Record<string, string>;
 
   beforeAll(async () => {
     const [templates, messages] = await Promise.all([
@@ -623,6 +621,7 @@ describe('communications fixture routes over the recording database', () => {
       senderB: await headersFor(FIXTURE_ROLES.sender, { site: TENANT_B.siteId }),
       systemUser: await headersFor(Roles.systemUser),
     };
+    gateway = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SCHEMA })}` };
   });
 
   afterAll(async () => {
@@ -636,7 +635,7 @@ describe('communications fixture routes over the recording database', () => {
     const res = await t.app.inject({
       method,
       url,
-      headers: { ...(as === undefined ? {} : tokens[as]), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+      headers: { ...(as === undefined ? gateway : tokens[as]), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
       ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
     });
     return {

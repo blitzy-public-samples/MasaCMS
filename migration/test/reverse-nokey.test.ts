@@ -484,6 +484,7 @@ describe.skipIf(!PG)(`keyless reverse projection from a PostgreSQL owner${PG ? '
     expect(legacy.multiset(MEMBERS.qualified)).toEqual(expectedMultiset(MEMBER_COLUMNS, [[R, 1], [R_STAR, 1], [U, 1]]));
     expect(multiset(legacyEncodings(legacy, MEMBERS.qualified))).toEqual(multiset(await targetEncodings(started)));
     const stored = await fetchPgOwnerRows<{ rows: Array<{ legacy_row_hash: string }> }>(
+      started.owner,
       `${started.url}${PG_OWNER_ROWS_PATH}/${MEMBER_TARGET_TABLE}?tenantId=${TENANT_A.tenantId}`,
     );
     expect(stored.status).toBe(200);

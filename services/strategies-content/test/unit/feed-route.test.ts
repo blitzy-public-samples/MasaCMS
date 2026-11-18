@@ -19,7 +19,7 @@ import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
 import { RSS_CONTENT_TYPE, feedErrorPacket, renderFeed, type RssFeedView, type RssItemView } from '../../src/legacy/rss.js';
 import type { ContentRepository } from '../../src/repo/repository.js';
 import { FEED_PATHS, registerFeedRoutes, type FeedRouteContext, type FeedSiteSource } from '../../src/routes/feed.js';
-import { SERVICE, testEnv, userHeaders } from '../helpers/app.js';
+import { SERVICE, serviceHeaders, testEnv, userHeaders } from '../helpers/app.js';
 import { ADMIN, END, HOME, NOW, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
@@ -281,12 +281,12 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     // Own oracle: `/_api/feed/v1?1feedid=x` answers the empty page, as the start-up scan drops a name starting with a digit.
     ['a feedid name the start-up scan drops', `/_api/feed/v1/tenant-a/?1feedid=${UNKNOWN_FEED}`],
   ])('answers the unmatched empty page for %s', async (_label, url) => {
-    const res = await get(url, {}, false);
+    const res = await get(url, await serviceHeaders('gateway'), false);
     expect({ status: res.statusCode, type: res.headers['content-type'], body: res.body }).toEqual({ status: 200, type: HTML, body: '' });
   });
 
   it.each([MOZILLA, 'curl/8.5.0'])('answers a defined, non-public method with the 400 WDDX packet for user agent %s', async (ua) => {
-    const res = await get(`/_api/feed/v1/tenant-a/rss20/?feedid=${UNKNOWN_FEED}`, { 'user-agent': ua });
+    const res = await get(`/_api/feed/v1/tenant-a/rss20/?feedid=${UNKNOWN_FEED}`, { ...(await serviceHeaders('gateway')), 'user-agent': ua });
     const expected = feedErrorPacket('invalidMethodCall', ua);
     expect({ status: res.statusCode, type: res.headers['content-type'], body: res.body }).toEqual({ status: 400, type: expected.contentType, body: expected.body });
   });
@@ -296,7 +296,7 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     ['method=feed, invoked without its params', `/_api/feed/v1/tenant-a/feed/?feedid=${UNKNOWN_FEED}`, false],
     ['an unknown feed', `/_api/feed/v1/tenant-a/?feedid=${UNKNOWN_FEED}`, true],
   ])('answers render404 for %s', async (_label, url, authenticated) => {
-    const res = await get(url, authenticated ? await as(SITE_ID) : {});
+    const res = await get(url, authenticated ? await as(SITE_ID) : await serviceHeaders('gateway'));
     expect({ status: res.statusCode, message: res.statusMessage, type: res.headers['content-type'], body: res.body }).toEqual({
       status: 404,
       message: 'Content Not Found',

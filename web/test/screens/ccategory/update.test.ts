@@ -1,6 +1,7 @@
 // cCategory.update against ccategory.cfc update() and update.cfm: the save, then the list redirect or the form.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
@@ -141,7 +142,9 @@ describe('updateCategory', () => {
       updateRequest({ ...ADD_FORM, action: 'update', categoryID: BETA_ID }),
       categoryGateway({ [SAVE_ROUTE]: written(fields) }),
     );
-    await expect(updateCategory(ctx)).rejects.toThrow('Element RC.categoryBean is undefined in ARGUMENTS.');
+    const failure = updateCategory(ctx);
+    await expect(failure).rejects.toBeInstanceOf(LegacyFaultError);
+    await expect(failure).rejects.toThrow('Element RC.categoryBean is undefined in ARGUMENTS.');
   });
 
   it('relays a request without rc.action, so the owner checks its token before failing it', async () => {

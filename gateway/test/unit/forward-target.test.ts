@@ -33,6 +33,7 @@ import {
   type TargetForwardContext,
   type TargetUpstream,
 } from '../../src/dispatcher/forward-target.js';
+import { replyFromOptions } from '../../src/dispatcher/response-head.js';
 import {
   sendBytes,
   sendJson,
@@ -90,11 +91,15 @@ interface Harness {
 
 /**
  * A gateway stand-in whose catch-all forwards to `service` through `forwardTo` with the current overrides; `logger` replaces the
- * `logs` capture.
+ * `logs` capture, and `gatewayAgent` forwards through the gateway's own reply-from dispatcher.
  */
 async function startHarness(
   service: () => HttpDouble,
-  { logger, forwardTo = forwardToTarget }: { logger?: Logger; forwardTo?: typeof forwardToTarget } = {},
+  {
+    logger,
+    forwardTo = forwardToTarget,
+    gatewayAgent = false,
+  }: { logger?: Logger; forwardTo?: typeof forwardToTarget; gatewayAgent?: boolean } = {},
 ): Promise<Harness> {
   const minted: InvocationTarget[] = [];
   const recorded: Harness['recorded'] = [];
@@ -129,7 +134,7 @@ async function startHarness(
         });
   app.removeAllContentTypeParsers();
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
-  await app.register(replyFrom);
+  await app.register(replyFrom, gatewayAgent ? replyFromOptions() : {});
 
   const forward = (request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> => {
     const { traced, ...fields } = overrides;
@@ -419,12 +424,62 @@ describe('forwardToTarget web', () => {
     expect(res.headers['content-type']).toBe('application/javascript');
   });
 
-  it('fails closed on a web 500', async () => {
-    service.setHandler((_req, res) => sendBytes(res, 500, 'boom'));
+  it("passes a web 500 through with web's body and legacy headers", async () => {
+    service.setHandler((_req, res) => sendBytes(res, 500, LEGACY_ERROR_PAGE_HTML, { 'content-type': LEGACY_HTML_CONTENT_TYPE }));
     harness.set({ service: 'web', isWeb: true, failContext: ADMIN, path: '/admin/cusers/list' });
     const res = await harness.app.inject({ method: 'GET', url: '/admin/' });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(500);
     expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(res.headers['content-type']).toBe(LEGACY_HTML_CONTENT_TYPE);
+    expect(res.headers.generator).toBe(legacyHeaders().Generator);
+    expect(harness.logs.filter((line) => line.msg.startsWith('fail-closed'))).toEqual([]);
+    await expectSettledOnce(harness);
+  });
+});
+
+describe('forwardToTarget reason phrase', () => {
+  /** Status line and body one client of `port` receives for `GET /admin/`. */
+  function statusLineOf(port: number): Promise<{ status: number | undefined; reason: string | undefined; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/admin/', method: 'GET', agent: false }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.once('end', () => resolve({ status: res.statusCode, reason: res.statusMessage, body: Buffer.concat(chunks).toString('utf8') }));
+        res.once('error', reject);
+      });
+      req.once('error', reject);
+      req.end();
+    });
+  }
+
+  const WEB: Overrides = { service: 'web', isWeb: true, failContext: ADMIN, path: '/admin/cusers/list' };
+
+  // A UTF-8 phrase as the status line carries it: Node writes and reads the line's bytes as latin1.
+  const UTF8_PHRASE = Buffer.from('Fehler \u00e9', 'utf8').toString('latin1');
+
+  it.each<{ label: string; overrides: Overrides; status: number; sent: string; reason: string; body: string }>([
+    { label: "web's legacy error page", overrides: WEB, status: 500, sent: 'An Error Occurred', reason: 'An Error Occurred', body: LEGACY_ERROR_PAGE_HTML },
+    { label: "a service's legacy 500", overrides: {}, status: 500, sent: 'An Error Occurred', reason: 'An Error Occurred', body: '{}' },
+    { label: 'a service 404 with its own phrase', overrides: {}, status: 404, sent: 'Nothing Here', reason: 'Nothing Here', body: '' },
+    { label: 'a UTF-8 phrase, byte for byte', overrides: {}, status: 500, sent: UTF8_PHRASE, reason: UTF8_PHRASE, body: '{}' },
+    { label: 'an empty phrase', overrides: {}, status: 500, sent: '', reason: 'Internal Server Error', body: '{}' },
+    { label: "web's page redirect, rewritten to 302", overrides: WEB, status: 307, sent: 'Temporary Redirect', reason: 'Found', body: '' },
+  ])('answers $label over the socket with reason "$reason"', async ({ overrides, status, sent, reason, body }) => {
+    const target = await startHttpDouble((_req, res) => {
+      res.writeHead(status, sent, status === 307 ? { location: '/admin/?muraAction=cusers.list' } : {});
+      res.end(body);
+    });
+    const h = await startHarness(() => target, { gatewayAgent: true });
+    try {
+      h.set(overrides);
+      await h.app.listen({ host: '127.0.0.1', port: 0 });
+      const answered = await statusLineOf((h.app.server.address() as AddressInfo).port);
+      expect(answered).toEqual({ status: status === 307 ? 302 : status, reason, body });
+      expect(h.logs.filter((line) => line.msg.startsWith('fail-closed'))).toEqual([]);
+    } finally {
+      await h.app.close();
+      await target.close();
+    }
   });
 });
 
@@ -502,6 +557,32 @@ describe('forwardToTarget response', () => {
     res = await harness.app.inject({ method: 'GET', url: '/v1/notes' });
     expect(res.headers.generator).toBe('Masa CMS 7.6.1 (service)');
     expect(res.rawPayload.length).toBeGreaterThan(0);
+  });
+
+  it.each<{ label: string; ctx: Overrides; status: number; upstream: Record<string, string>; expected: string | undefined }>([
+    { label: 'a service 200 when identity is negotiated', ctx: { identityEncoding: true }, status: 200, upstream: {}, expected: 'identity' },
+    { label: 'a service 500 when identity is negotiated', ctx: { identityEncoding: true }, status: 500, upstream: {}, expected: 'identity' },
+    {
+      label: 'a service response naming its own encoding',
+      ctx: { identityEncoding: true },
+      status: 200,
+      upstream: { 'content-encoding': 'gzip' },
+      expected: 'gzip',
+    },
+    { label: 'a service 200 when identity is not negotiated', ctx: {}, status: 200, upstream: {}, expected: undefined },
+    {
+      label: 'a page-mode 302 when identity is negotiated',
+      ctx: { identityEncoding: true, service: 'web', isWeb: true, failContext: ADMIN, path: '/admin/home/redirect' },
+      status: 307,
+      upstream: { location: '/admin/?muraAction=cLogin.main' },
+      expected: 'identity',
+    },
+    { label: 'the legacy 503 of an unavailable service', ctx: { identityEncoding: true }, status: 503, upstream: {}, expected: undefined },
+  ])('answers $label with Content-Encoding $expected', async ({ ctx, status, upstream, expected }) => {
+    service.setHandler((_req, res) => sendBytes(res, status, '', upstream));
+    harness.set(ctx);
+    const res = await harness.app.inject({ method: 'GET', url: '/v1/notes' });
+    expect(res.headers['content-encoding']).toBe(expected);
   });
 
   it('replaces Set-Cookie with the mapped list, also when the service sent none', async () => {
@@ -676,7 +757,13 @@ describe('forwardToTarget fail-closed line', () => {
     ['a service 502', 502, {}, 'fail-closed: people unavailable: answered 502', false],
     ['a service 503', 503, {}, 'fail-closed: people unavailable: answered 503', false],
     ['a service 504', 504, {}, 'fail-closed: people unavailable: answered 504', false],
-    ['a web 500', 500, { service: 'web', isWeb: true, path: '/admin/cusers/list' }, 'fail-closed: web answered 500', false],
+    ...([502, 503, 504] as const).map((status): [string, number, Overrides, string, boolean] => [
+      `a web ${status}`,
+      status,
+      { service: 'web', isWeb: true, path: '/admin/cusers/list' },
+      `fail-closed: web unavailable: answered ${status}`,
+      false,
+    ]),
   ])('logs %s as one ERROR line naming the owner, the route key and the 503', async (_case, failure, overrides, message, hasError) => {
     let h = harness;
     if (failure === 'refused') {

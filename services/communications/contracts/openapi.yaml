@@ -21,7 +21,7 @@ paths:
       x-opt2-public: true
       x-opt2-site-check: false
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       parameters:
@@ -63,7 +63,7 @@ paths:
       x-opt2-public: true
       x-opt2-site-check: false
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       parameters:
@@ -110,7 +110,7 @@ paths:
       x-opt2-public: true
       x-opt2-site-check: false
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       parameters:
@@ -152,7 +152,7 @@ paths:
       x-opt2-public: true
       x-opt2-site-check: false
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       parameters:
@@ -201,7 +201,7 @@ paths:
       x-opt2-public: true
       x-opt2-site-check: false
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       parameters:
@@ -253,7 +253,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -279,7 +279,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -305,7 +305,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -331,7 +331,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -357,7 +357,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -383,7 +383,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -409,7 +409,7 @@ paths:
       x-opt2-site-check: false
       x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
       security:
-        - {}
+        - invocationCredential: []
         - userToken: []
           invocationCredential: []
       responses:
@@ -1679,7 +1679,7 @@ components:
                           - Invalid parameters
                           - Bad Request
     FixtureUnauthorized:
-      description: 'Fixture 401 `authorization` without a logged-in session user, or the platform''s refusal of a presented credential.'
+      description: 'Fixture 401 `authorization` without a logged-in session user, or the platform''s refusal of a missing invocation credential or a presented credential.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

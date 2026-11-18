@@ -355,6 +355,8 @@ const SELECT_KEYS = `SELECT key, value FROM ${SCHEDULER_STATE_TABLE} WHERE key =
 const SELECT_KEY = `SELECT value FROM ${SCHEDULER_STATE_TABLE} WHERE key = $1`;
 const LOCK_KEY = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 const UPSERT_PREFIX = `INSERT INTO ${SCHEDULER_STATE_TABLE} (key, value, updated_at) VALUES ($1, $2::jsonb, now()) ON CONFLICT (key)`;
+/** The projection barrier's read of quarantined positions, which the in-memory schema answers with none. */
+const QUARANTINED_POSITIONS = /^SELECT DISTINCT owner, xid::text AS xid, tenant_id::text AS tenant_id\s+FROM "migration"\."projector_quarantine"/;
 
 /** A `migration` schema database and the way to empty it between cases. */
 export interface MigrationDb {
@@ -364,13 +366,14 @@ export interface MigrationDb {
 }
 
 /**
- * `migration.scheduler_state` in memory, answering exactly the statements the scheduler and background modules issue; any other
- * statement fails the call, and a failed transaction is undone. The same statements run on PostgreSQL in {@link postgresMigrationDb}.
+ * `migration.scheduler_state` in memory, answering exactly the statements the scheduler and background modules issue, and the
+ * projection barrier's quarantine read with an empty quarantine; any other statement fails the call, and a failed transaction
+ * is undone. The same statements run on PostgreSQL in {@link postgresMigrationDb}.
  */
 export function memoryMigrationDb(): MigrationDb {
   let rows = new Map<string, unknown>();
   const run = (text: string, values: readonly unknown[]): QueryResult => {
-    if (text === LOCK_KEY) return queryResult([]);
+    if (text === LOCK_KEY || QUARANTINED_POSITIONS.test(text)) return queryResult([]);
     if (text === SELECT_KEYS) {
       const keys = (values[0] as string[]).filter((key) => rows.has(key));
       return queryResult(keys.map((key) => ({ key, value: structuredClone(rows.get(key)) })));

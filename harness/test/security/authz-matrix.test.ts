@@ -123,8 +123,11 @@ function allowedSubjects(expectations: readonly Expectation[]): Set<string> {
   return new Set(expectations.filter((expectation) => expectation.outcome === 'allow').map((e) => e.subject));
 }
 
-/** Outcome a subject gets on a route, derived from its declaration independently of the module. */
-function expectedOutcome(route: RouteMatrixEntry, subject: RoleSubject): Outcome {
+/** A public route without `invocationOptional`. */
+const OPEN_ROUTE: RouteMatrixEntry = { method: 'GET', url: '/v1/open', transport: 'service', public: true, siteCheck: true };
+
+/** Outcome a subject gets on a route, derived from its declaration independently of the module; `forwarded` off the gateway. */
+function expectedOutcome(route: RouteMatrixEntry, subject: RoleSubject, forwarded: boolean): Outcome {
   const invoker = subject.kind === 'service' && hasAnyRole(subject.roles, [PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE]);
   if (route.transport !== 'service') {
     const invokerRole = route.transport === 'pubsub-push' ? PUBSUB_INVOKER_ROLE : TASKS_INVOKER_ROLE;
@@ -132,7 +135,9 @@ function expectedOutcome(route: RouteMatrixEntry, subject: RoleSubject): Outcome
     return invoker && granted ? 'allow' : 'deny';
   }
   if (subject.kind !== 'user') {
-    return route.public === true || (!invoker && hasAnyRole(subject.roles, route.requires ?? [])) ? 'allow' : 'deny';
+    const ownCredential = subject.kind === 'service' && !invoker;
+    const publicPass = route.public === true && (ownCredential || forwarded || route.invocationOptional === true);
+    return publicPass || (!invoker && hasAnyRole(subject.roles, route.requires ?? [])) ? 'allow' : 'deny';
   }
   const roles = [...subject.roles, serviceRole('gateway')];
   const granted = route.public === true || hasAnyRole(roles, route.requires ?? []);
@@ -267,6 +272,7 @@ describe('routeMatrixFileSchema', () => {
   it('accepts the sample matrix', () => {
     expect(routeMatrixFileSchema.safeParse(JSON.parse(SAMPLE_TEXT)).success).toBe(true);
     expect(SAMPLE.routes).toHaveLength(6);
+    expect(sampleRoute(HEALTH_URL).invocationOptional).toBe(true);
   });
 
   it.each([
@@ -279,6 +285,7 @@ describe('routeMatrixFileSchema', () => {
     ['an empty requires list', { ...valid, requires: [] }],
     ['public set to false', { ...valid, public: false }],
     ['edge set to false', { ...valid, edge: false }],
+    ['invocationOptional set to false', { ...valid, invocationOptional: false }],
     ['an unknown entry field', { ...valid, owner: 'people' }],
   ])('rejects %s', (_case, entry) => {
     expect(routeMatrixFileSchema.safeParse({ routes: [entry] }).success).toBe(false);
@@ -399,6 +406,14 @@ describe('loadMatrices', () => {
       'an edge route that is not public',
       { method: 'GET', url: '/v1/notes', transport: 'service', requires: ['s2'], edge: true, siteCheck: true },
     ],
+    [
+      'an invocationOptional route that is not public',
+      { method: 'GET', url: '/v1/notes', transport: 'service', requires: ['s2'], invocationOptional: true, siteCheck: true },
+    ],
+    [
+      'an invocationOptional edge route',
+      { method: 'GET', url: '/v1/notes', transport: 'service', public: true, edge: true, invocationOptional: true, siteCheck: true },
+    ],
   ])('rejects a route the platform refuses at start-up: %s', async (_case, route) => {
     await writeMatrix(PEOPLE, { routes: [route] });
     const err = await matrixErrorOf(loadMatrices(dir, { packages: [PEOPLE] }));
@@ -474,13 +489,17 @@ describe('expectationsFor', () => {
     }
   });
 
-  it('agrees with the independent verdict for every route and subject', () => {
-    const sited = expectationsFor(peopleMatrix(SITED));
-    for (const route of SITED.routes) {
+  it.each([
+    { pkg: PEOPLE.name, forwarded: true },
+    { pkg: 'gateway', forwarded: false },
+  ])('agrees with the independent verdict for every route and subject of $pkg', ({ pkg, forwarded }) => {
+    const matrix: RouteMatrix = { routes: [...SITED.routes, OPEN_ROUTE] };
+    const sited = expectationsFor({ package: pkg, file: `${pkg}.json`, matrix });
+    for (const route of matrix.routes) {
       const expectations = sited.filter((expectation) => expectation.url === route.url);
       for (const subject of ROLE_SET) {
         expect(expectationOf(expectations, route.url, subject.name).outcome, `${subject.name} ${route.url}`).toBe(
-          expectedOutcome(route, subject),
+          expectedOutcome(route, subject, forwarded),
         );
       }
     }
@@ -573,6 +592,28 @@ describe('expectationsFor', () => {
         });
       }
       expect(expectationOf(expectations, HEALTH_URL, serviceRole(caller)).outcome).toBe('allow');
+    }
+  });
+
+  const CREDENTIALLESS_REASONS: Readonly<Record<string, ExpectationReason>> = {
+    anonymous: 'anonymous',
+    [serviceRole('pubsub-invoker')]: 'managed-transport',
+    [serviceRole('tasks-invoker')]: 'managed-transport',
+  };
+
+  it.each([
+    { label: "the gateway's own public route", pkg: 'gateway', route: OPEN_ROUTE, verdict: 'deny 401' },
+    { label: "the gateway's own invocationOptional route", pkg: 'gateway', route: { ...OPEN_ROUTE, invocationOptional: true as const }, verdict: 'allow' },
+    { label: "an owner's public route, which the gateway's forward reaches", pkg: PEOPLE.name, route: OPEN_ROUTE, verdict: 'allow' },
+  ])('gives anonymous and the managed invokers $verdict on $label and allows every other subject', ({ pkg, route, verdict }) => {
+    const expectations = expectationsFor({ package: pkg, file: `${pkg}.json`, matrix: { routes: [route] } });
+    expect(expectations).toHaveLength(ROLE_SET.length);
+    for (const expectation of expectations) {
+      const reason = CREDENTIALLESS_REASONS[expectation.subject];
+      const denied = verdict === 'deny 401' && reason !== undefined;
+      expect(expectation, expectation.subject).toMatchObject(
+        denied ? { outcome: 'deny', status: 401, reason } : { outcome: 'allow', reason: 'public' },
+      );
     }
   });
 

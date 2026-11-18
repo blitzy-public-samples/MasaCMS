@@ -545,6 +545,8 @@ describe('rater save', () => {
     ['a call without a user token', 401, 'POST', '', fields(), () => serviceHeaders('gateway')],
     ['a missing rate field', 500, 'POST', '', fields({}, 'rate'), () => visitor()],
     ['a GET, which posts no form fields', 500, 'GET', `?${fields()}`, undefined, () => visitor()],
+    ['a direct POST without an invocation credential', 401, 'POST', '', fields(), async () => ({})],
+    ['a direct GET without an invocation credential', 401, 'GET', `?${fields()}`, undefined, async () => ({})],
   ])('answers %s with the contract %i, writing nothing', async (_label, status, method, query, form, headers) => {
     const res = await call({ method, url: `${url}${query}`, headers: { ...(await headers()), ...(form === undefined ? {} : FORM_TYPE) }, ...(form === undefined ? {} : { payload: form }) });
     expect({ status: res.statusCode, writes: t.db.writes().length }).toEqual({ status, writes: 0 });
@@ -690,7 +692,8 @@ describe('signed file downloads', () => {
     });
     expect(body.url.startsWith(`/opt2/files/content-files/${filePool}/${FILE_A}.pdf?expires=`)).toBe(true);
 
-    const file = await call({ method: 'GET', url: body.url });
+    // The signed URL is path-only; the gateway forwards it with its own invocation credential.
+    const file = await call({ method: 'GET', url: body.url, headers: await contentHeaders('anonymous') });
     expect({ status: file.statusCode, type: file.headers['content-type'], disposition: file.headers['content-disposition'], bytes: file.rawPayload }).toEqual({
       status: 200,
       type: 'application/pdf',
@@ -721,14 +724,15 @@ describe('signed file downloads', () => {
     expect(res.statusCode).toBe(status);
   });
 
-  it.each<[string, number, () => Promise<string>]>([
+  it.each<[string, number, () => Promise<string>, (() => Promise<Record<string, string>>)?]>([
     ['a tampered signature', 403, async () => (await t.storage.signedUrl(CONTENT_FILES_BUCKET, key)).replace(/sig=[0-9a-f]/, (m) => `sig=${m.endsWith('0') ? '1' : '0'}`)],
     ['an expired signature', 403, () => t.storage.signedUrl(CONTENT_FILES_BUCKET, key, { expiresS: -1 })],
     ['a malformed signature', 403, async () => `/opt2/files/content-files/${key}?expires=1&sig=xyz`],
     ['a signed key that stores nothing', 404, () => t.storage.signedUrl(CONTENT_FILES_BUCKET, `${filePool}/${FILE_MISSING}.pdf`)],
-  ])('answers getLocalContentFile for %s with the contract %i', async (_label, status, signed) => {
+    ['a valid signature called directly without an invocation credential', 401, () => t.storage.signedUrl(CONTENT_FILES_BUCKET, key), async () => ({})],
+  ])('answers getLocalContentFile for %s with the contract %i', async (_label, status, signed, headers = () => contentHeaders('anonymous')) => {
     await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
-    const res = await call({ method: 'GET', url: await signed() });
+    const res = await call({ method: 'GET', url: await signed(), headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
 });
@@ -1054,7 +1058,7 @@ describe('full app responses', () => {
       name: 'refuses an unverifiable bearer token with the legacy 401 and its challenge',
       method: 'GET',
       url: contentUrl(''),
-      headers: async () => ({ authorization: 'Bearer not-a-token' }),
+      headers: async () => ({ ...(await contentHeaders('anonymous')), authorization: 'Bearer not-a-token' }),
       status: 401,
       verify: (res) => {
         expect(errorOf(res)).toEqual({ message: 'Invalid Access Token', code: 'invalid_token' });

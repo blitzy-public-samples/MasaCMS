@@ -175,6 +175,7 @@ function harness(row?: JarRow): Harness {
     setHydratedEpoch: unexpected('locked.setHydratedEpoch'),
     drop: unexpected('locked.drop'),
     rebind: unexpected('locked.rebind'),
+    clearIdentityEndPending: unexpected('locked.clearIdentityEndPending'),
   };
   h.options = {
     barrier: {

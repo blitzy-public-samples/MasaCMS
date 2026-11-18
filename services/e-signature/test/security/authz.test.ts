@@ -71,6 +71,7 @@ interface ExpectedRoute {
   transport: Transport;
   requires?: readonly string[];
   public?: true;
+  invocationOptional?: true;
   siteCheck: boolean;
 }
 
@@ -94,7 +95,7 @@ const FIXTURE_METHODS: readonly Method[] = ['DELETE', 'GET', 'HEAD', 'OPTIONS', 
 // api.cfm runs for every request method and resolves the site before esignature.cfc checks login and role, so the fixture routes are
 // public on the platform with the site check off, and their handler applies FIXTURE_ROLES.
 const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
-  { method: 'GET', url: '/healthz', transport: 'service', public: true, siteCheck: true },
+  { method: 'GET', url: '/healthz', transport: 'service', public: true, invocationOptional: true, siteCheck: true },
   ...FIXTURE_URLS.flatMap((url) =>
     FIXTURE_METHODS.map((method): ExpectedRoute => ({ method, url, transport: 'service', public: true, siteCheck: false })),
   ),
@@ -154,7 +155,7 @@ function ordered<T extends { method: string; url: string }>(routes: readonly T[]
   return [...routes].sort((a, b) => a.url.localeCompare(b.url, 'en') || a.method.localeCompare(b.method, 'en'));
 }
 
-/** A declaration in comparable form: `requires` sorted, `public` only when set. */
+/** A declaration in comparable form: `requires` sorted, `public` and `invocationOptional` only when set. */
 function comparable(route: ExpectedRoute | RouteMatrixEntry): Record<string, unknown> {
   return {
     method: route.method,
@@ -162,6 +163,7 @@ function comparable(route: ExpectedRoute | RouteMatrixEntry): Record<string, unk
     transport: route.transport,
     ...(route.requires === undefined ? {} : { requires: [...route.requires].sort() }),
     ...(route.public === true ? { public: true } : {}),
+    ...(route.invocationOptional === true ? { invocationOptional: true } : {}),
     siteCheck: route.siteCheck,
   };
 }
@@ -181,10 +183,12 @@ interface ContractOperation {
   transport: string | undefined;
   requires: string[];
   public: boolean;
+  /** `security: []`: the operation admits a caller presenting no credential. */
+  invocationOptional: boolean;
   siteCheck: boolean;
 }
 
-/** Operations under `paths:`, read by indentation: path keys at 2 spaces, methods at 4, `x-opt2-*` at 6 and `requires` items at 8. */
+/** Operations under `paths:`, read by indentation: path keys at 2 spaces, methods at 4, `x-opt2-*` and `security` at 6 and `requires` items at 8. */
 function contractOperations(contract: string): ContractOperation[] {
   const operations: ContractOperation[] = [];
   let inPaths = false;
@@ -209,7 +213,7 @@ function contractOperations(contract: string): ContractOperation[] {
       const method = /^ {4}([a-z]+):\s*$/.exec(line)?.[1];
       operation =
         path !== undefined && method !== undefined && HTTP_METHODS.includes(method)
-          ? { method: method.toUpperCase(), url: path.replace(/\{(\w+)\}/g, ':$1'), transport: undefined, requires: [], public: false, siteCheck: true }
+          ? { method: method.toUpperCase(), url: path.replace(/\{(\w+)\}/g, ':$1'), transport: undefined, requires: [], public: false, invocationOptional: false, siteCheck: true }
           : undefined;
       if (operation !== undefined) operations.push(operation);
       inRequires = false;
@@ -222,6 +226,7 @@ function contractOperations(contract: string): ContractOperation[] {
       if (extension?.[1] === 'transport') operation.transport = extension[2];
       if (extension?.[1] === 'public') operation.public = extension[2] === 'true';
       if (extension?.[1] === 'site-check') operation.siteCheck = extension[2] !== 'false';
+      if (/^ {6}security:\s*\[\]\s*$/.test(line)) operation.invocationOptional = true;
       continue;
     }
     const item = /^ {8}- (\S+)\s*$/.exec(line);
@@ -238,6 +243,7 @@ function comparableOperation(operation: ContractOperation): Record<string, unkno
     transport: operation.transport,
     ...(operation.requires.length === 0 ? {} : { requires: [...operation.requires].sort() }),
     ...(operation.public ? { public: true } : {}),
+    ...(operation.invocationOptional ? { invocationOptional: true } : {}),
     siteCheck: operation.siteCheck,
   };
 }
@@ -287,8 +293,9 @@ function expectedVerdict(route: RouteMatrixEntry, subject: RoleSubject): Verdict
   if (route.transport === 'cloud-tasks') return isTasksInvoker(subject) && hasAnyRole(grantedRoles(subject), requires) ? 'allow' : 401;
   // The tasks-invoker token in Authorization is verified as a user token and refused, public routes included.
   if (isTasksInvoker(subject)) return 401;
+  // Public routes require the invocation credential too; only an invocationOptional route admits a caller without one.
+  if (!presentsInvocation(subject) && route.invocationOptional !== true) return 401;
   if (route.public === true) return isFixtureRoute(route) ? fixtureVerdict(route, subject) : 'allow';
-  if (!presentsInvocation(subject)) return 401;
   if (!hasAnyRole(grantedRoles(subject), requires)) {
     return subject.kind !== 'user' && requires.some((role) => !isServiceRole(role)) ? 401 : 403;
   }

@@ -191,20 +191,23 @@ export type LegacyLimit = number | 'tinyint' | 'float' | 'datetime';
 /** First and last local times a SQL Server `datetime` holds once rounded to 1/300 s. */
 const DATETIME_RANGE = [new Date(1752, 11, 31, 23, 59, 59, 999).getTime(), new Date(9999, 11, 31, 23, 59, 59, 998).getTime()] as const;
 
-/** Live legacy catalog limits of the caller-supplied columns the write helpers set; `char(35)`, `max` and `int` columns need none. */
+/** Live legacy catalog limits of the caller-supplied columns the write helpers set; generated ids, `max` and `int` columns need none. */
 const LEGACY_LIMITS = {
   person: {
     groupname: 255, fname: 50, lname: 50, email: 255, company: 50, jobtitle: 50, mobilephone: 50, website: 255, subtype: 50,
-    lastupdateby: 50, lastupdatebyid: 35, siteid: 50, imname: 100, imservice: 50, keepprivate: 'tinyint',
+    lastupdateby: 50, lastupdatebyid: 35, siteid: 50, imname: 100, imservice: 50, keepprivate: 'tinyint', photofileid: 35,
   },
   user_address: {
-    siteid: 50, addressname: 50, address1: 50, address2: 50, city: 50, state: 50, zip: 50, country: 50, phone: 50, fax: 50,
-    isprimary: 'tinyint', addressurl: 200, longitude: 'float', latitude: 'float', addressemail: 100,
+    addressid: 35, userid: 35, siteid: 50, addressname: 50, address1: 50, address2: 50, city: 50, state: 50, zip: 50, country: 50,
+    phone: 50, fax: 50, isprimary: 'tinyint', addressurl: 200, longitude: 'float', latitude: 'float', addressemail: 100,
   },
   user_tag: { siteid: 25, tag: 100 },
   user_favorite: { userid: 35, favoritename: 255, favorite: 1000, type: 30, siteid: 25, datecreated: 'datetime' },
   extend_data_user_activity: { siteid: 25, remoteid: 35, datetimevalue: 'datetime', numericvalue: 'float', stringvalue: 255 },
-  trash: { siteid: 25, objectlabel: 255, objectclass: 50, objecttype: 50, objectsubtype: 50, deleteddate: 'datetime', deletedby: 50 },
+  trash: {
+    objectid: 35, parentid: 35, siteid: 25, objectlabel: 255, objectclass: 50, objecttype: 50, objectsubtype: 50, deleteddate: 'datetime',
+    deletedby: 50, deleteid: 35,
+  },
   person_archive: { siteid: 50, effective_from: 'datetime', archived_at: 'datetime', archived_by: 50 },
 } as const satisfies Partial<Record<PeopleTableName, Readonly<Record<string, LegacyLimit>>>>;
 

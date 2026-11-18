@@ -1,11 +1,11 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-// The surveys responses screen: DOM snapshot of single- and multi-site responses, the empty list, whole answers,
-// paging, safe markup, denials, unavailability and unread surveys.
+// The surveys responses screen: DOM snapshot of single- and multi-site responses, the grid of one row per response,
+// the empty list, whole answers, paging, safe markup, denials, unavailability and unread surveys.
 import { load } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { SURVEY_IDS, multiSiteSurvey, scheduleInvalid, surveyResponses } from '../../../fixtures/opt2/surveys';
-import { fragmentModel, type DomControl, type DomModel } from '../../../helpers/dom-model';
+import { fragmentModel, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { routeKey } from '../../../helpers/fake-gateway';
 import { renderScreenPage } from '../../../helpers/screen-context';
@@ -37,28 +37,7 @@ const headerLinks = (surveyId: string) => [
   { href: `/opt2/admin/surveys/targets?siteid=${SITE}&surveyid=${surveyId}`, text: 'Targets' },
 ];
 
-/** The read-only answers textarea of a response, its value left to each case. */
-const ANSWERS_CONTROL: Omit<DomControl, 'value'> = {
-  tag: 'textarea',
-  name: 'answers',
-  type: 'textarea',
-  checked: false,
-  selected: [],
-  options: [],
-};
-
-/** Each response block's label and value pairs in order, a textarea's value as its raw content. */
-function responseEntries(html: string): string[][][] {
-  const $ = load(html);
-  return $('.block-content .block-content')
-    .toArray()
-    .map((content) =>
-      $(content)
-        .children('.mura-control-group')
-        .toArray()
-        .map((group) => [$(group).children('label').text(), $(group).children('div, textarea').text()]),
-    );
-}
+const HEADERS = ['Submitted', 'Respondent Site', 'Respondent', 'Answers'];
 
 let restoreEnv: () => void;
 beforeEach(() => {
@@ -95,21 +74,13 @@ describe('surveys responses screen', () => {
     expect(fragmentModel(html)).toEqual<DomModel>({
       title: '',
       headings: [`Responses: ${title}`],
-      labels: ['Respondent Site', 'Respondent', 'Answers', 'Submitted'],
-      controls: [{ ...ANSWERS_CONTROL, value: answers }],
+      labels: [],
+      controls: [],
       buttons: [],
       links: headerLinks(surveyId),
-      tables: [],
+      tables: [{ headers: HEADERS, rows: [[row.submitted, row.site, row.respondent, answers]] }],
       alerts: [],
     });
-    expect(responseEntries(html)).toEqual([
-      [
-        ['Respondent Site', row.site],
-        ['Respondent', row.respondent],
-        ['Answers', answers],
-        ['Submitted', row.submitted],
-      ],
-    ]);
     expect(surveysCalls(gateway).map(({ method, path, query }) => ({ method, path, query }))).toEqual([
       { method: 'GET', path: `/v1/surveys/${surveyId}`, query: { siteid: SITE } },
       {
@@ -131,8 +102,14 @@ describe('surveys responses screen', () => {
     expect(html).not.toContain('Previous');
   });
 
-  it('shows long answers whole and unparsed in a labelled read-only control of each response', async () => {
-    const answers = `{"q1":"3","q2":"${'Approvals & reminders arrive late on "Fridays". '.repeat(4)}"}`;
+  it.each([
+    {
+      label: 'long JSON',
+      answers: `{"q1":"3","q2":"${'Approvals & reminders arrive late on "Fridays". '.repeat(4)}"}`,
+    },
+    { label: 'compact JSON', answers: '{"q1":4,"q2":"Somewhat","q3":5,"q4":2,"q5":"Very","q6":1}' },
+    { label: 'non-JSON text', answers: 'Line one,\nline two: { not json' },
+  ])('shows $label answers whole and unparsed as the text of the row, in one block', async ({ answers }) => {
     const [response] = surveyResponses.multiSite;
     const [other] = surveyResponses.singleSite;
     const gateway = surveysGateway({
@@ -141,17 +118,25 @@ describe('surveys responses screen', () => {
 
     const $ = load(await bodyHtml('responses', managerRequest({ surveyid: MULTI }), gateway));
 
-    expect(answers.length).toBeGreaterThan(200);
-    const controls = $('textarea').toArray().map((el) => $(el));
-    expect(controls.map((control) => control.attr('id'))).toEqual([
-      `answers-${response?.responseId}`,
-      `answers-${other?.responseId}`,
-    ]);
-    const [long] = controls;
-    expect(long?.text()).toBe(answers);
-    expect(long?.is('[readonly]')).toBe(true);
-    expect($(`label[for="answers-${response?.responseId}"]`).text()).toBe('Answers');
-    expect($('table, .var-width')).toHaveLength(0);
+    expect($('div.block-content')).toHaveLength(1);
+    expect($('div.block-content .block')).toHaveLength(0);
+    const grid = $('div.block-content > div.table-responsive > table.mura-table-grid');
+    expect(grid).toHaveLength(1);
+    const rows = grid.find('tbody > tr').toArray();
+    expect(rows.map((tr) => $(tr).children('td').last().text())).toEqual([answers, other?.answers]);
+    expect($('textarea, .var-width, .mura-control-group')).toHaveLength(0);
+  });
+
+  it('hides the respondent columns responsively and aligns the answers left with no variable width', async () => {
+    const $ = load(await bodyHtml('responses', managerRequest({ surveyid: MULTI }), surveysGateway()));
+
+    const classes = (selector: string): (string | undefined)[] =>
+      $(selector)
+        .toArray()
+        .map((cell) => $(cell).attr('class'));
+    const columns = [undefined, 'hidden-xs', 'hidden-xs hidden-sm hidden-md', 'title'];
+    expect(classes('table.mura-table-grid thead th')).toEqual(columns);
+    expect(classes('table.mura-table-grid tbody td')).toEqual(columns);
   });
 
   it.each([

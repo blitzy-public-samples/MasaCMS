@@ -233,6 +233,29 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       expect(await columnOf(db, 'person', 'lname', STORED_USER)).toEqual(['Multipart']);
     }));
 
+  // Without its script the add form posts its URL text input and its file input both as newFile.
+  it('adds a user posted as multipart with an empty newFile text field and an empty newFile file part', () =>
+    onPeople(async ({ app, identity, db }) => {
+      const returnurl = './?muraAction=cUsers.listUsers&ispublic=0';
+      const fields = userForm('Add', { returnurl, newFile: '' });
+      const { status, body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(''), files: [{ field: 'newFile', filename: '' }] });
+      expect(status).toBe(200);
+      expect(body).toEqual({ written: true, redirect: { url: returnurl }, errors: {} });
+      expect(await columnOf(db, 'person', 'fname', soleOperation(identity).operation.userId)).toEqual(['Robin']);
+    }));
+
+  it.each<[string, Record<string, string>, string]>([
+    ['a filled newFile text field', { newFile: 'x' }, ''],
+    ['a chosen newFile file', { newFile: '' }, 'me.png'],
+  ])('answers an Add posted as multipart with %s with the legacy 503, writing nothing', (_name, extra, filename) =>
+    onPeople(async ({ app, identity }) => {
+      const { status, body } = await send(app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Add', extra), query: userQuery(''), files: [{ field: 'newFile', filename }] });
+      expect(status).toBe(503);
+      expect(body).toMatchObject(LEGACY_503);
+      expect(accountSteps(identity)).toEqual([]);
+      expect(csrfContexts(identity)).toEqual([]);
+    }));
+
   it.each<[string, Record<string, string>, boolean, string[], string[]]>([
     ["people's missing email", { email: '' }, false, ['email'], ['prepare', 'abort']],
     ["identity's taken username", {}, true, ['username'], ['prepare']],

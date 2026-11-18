@@ -14,7 +14,7 @@ import {
 import { archivePerson, getPersonArchive, parseArchiveInput, type ArchiveArgs, type ArchiveDeps } from '../../src/domain/archive.js';
 import { PERSON_ARCHIVED_TOPIC, personArchivedSchema } from '../../src/events/topics.js';
 import { DuplicateArchiveError } from '../../src/repo/repository.js';
-import { TEST_CLOCK, buildTestApp, createRecordingDb, userHeaders, type RecordingDb, type RecordedStatement, type TestApp } from '../helpers/app.js';
+import { TEST_CLOCK, buildTestApp, createRecordingDb, headersFor, userHeaders, type RecordingDb, type RecordedStatement, type TestApp } from '../helpers/app.js';
 import {
   ARCHIVED_AT_TEXT,
   EFFECTIVE_FROM_TEXT,
@@ -347,15 +347,20 @@ interface CheckCase {
 
 const PUBLIC_THEN_PRIVATE = [TENANT_UMBRELLA.tenantId, TENANT_A.tenantId];
 const anonymous = async (): Promise<Record<string, string>> => userHeaders({ sub: '', site: TENANT_A.siteId, roles: [] });
+/** A visitor without a session as the gateway forwards it: the gateway's invocation credential alone. */
+const visitor = (): Promise<Record<string, string>> => headersFor('service:gateway');
 
 const CHECK_CASES: ReadonlyArray<[string, CheckCase]> = [
   [
     'an unregistered siteid answers invalidParameters before the login check',
-    { call: async () => ({ userId: SYSTEM_USER_A_PERSON.userid, query: { siteid: 'nosuchsite' } }), row: LEGACY_ERROR_MAP.invalidParameters, sites: ['nosuchsite'], identityCalls: [], csrfContexts: [], reads: [] },
+    {
+      call: async () => ({ userId: SYSTEM_USER_A_PERSON.userid, headers: await visitor(), query: { siteid: 'nosuchsite' } }),
+      row: LEGACY_ERROR_MAP.invalidParameters, sites: ['nosuchsite'], identityCalls: [], csrfContexts: [], reads: [],
+    },
   ],
   [
     'an absent siteid falls back to default, where an anonymous call answers authorization',
-    { call: async () => ({ userId: SYSTEM_USER_A_PERSON.userid }), row: LEGACY_ERROR_MAP.authorization, sites: [DEFAULT_SITE.siteId], identityCalls: [], csrfContexts: [], reads: [] },
+    { call: async () => ({ userId: SYSTEM_USER_A_PERSON.userid, headers: await visitor() }), row: LEGACY_ERROR_MAP.authorization, sites: [DEFAULT_SITE.siteId], identityCalls: [], csrfContexts: [], reads: [] },
   ],
   [
     'a siteid other than the token site answers forbidden',
@@ -367,7 +372,7 @@ const CHECK_CASES: ReadonlyArray<[string, CheckCase]> = [
   [
     'an effective method other than GET and POST answers notFound before the login check',
     {
-      call: async () => ({ userId: SYSTEM_USER_A_PERSON.userid, headers: { 'x-http-method-override': 'delete' } }),
+      call: async () => ({ userId: SYSTEM_USER_A_PERSON.userid, headers: { ...(await visitor()), 'x-http-method-override': 'delete' } }),
       row: NOT_FOUND, sites: [DEFAULT_SITE.siteId], identityCalls: [], csrfContexts: [], reads: [],
     },
   ],
@@ -451,8 +456,9 @@ describe('the fixture archive route over the recording database', () => {
     expect(t.db.writes()).toEqual([]);
   });
 
-  it('answers a call without any credential as the anonymous principal', async () => {
+  it('refuses a direct call without the invocation credential with the fixture authorization error before any lookup', async () => {
     expectFixtureError(await callArchive(t.app, { userId: SYSTEM_USER_A_PERSON.userid, query: { siteid: TENANT_A.siteId } }), LEGACY_ERROR_MAP.authorization);
+    expect([siteLookups(t.db), personReads(t.db), t.identity.requests]).toEqual([[], [], []]);
   });
 
   it('renders a presented user token that fails verification as the fixture authorization error', async () => {

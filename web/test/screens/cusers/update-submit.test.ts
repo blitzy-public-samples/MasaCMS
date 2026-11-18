@@ -1,6 +1,6 @@
 // cUsers.update (cusers.cfc 290-353) for its carried variants against identity's group and people's person contracts.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { legacyScopeParams, portcullisScan } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, legacyScopeParams, portcullisScan } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { receiveRequestBody, type ReceivedBody, type RequestBody } from '@/lib/request-body';
@@ -290,19 +290,23 @@ describe('cUsers.update relay', () => {
     expect(ownerScan(query)).toEqual(write.actionUrl);
   });
 
-  it.each(['Delete', 'invalid', ''])('writes nothing and fails for a group action %j', async (action) => {
+  it.each(['invalid', '', undefined])("writes nothing and fails on legacy's unset user bean for a group action %j", async (action) => {
     const gateway = fakeGatewayClient();
-    const req = updateRequest({ userid: GROUP_ID }, { ...GROUP_FIELDS, action, ...CSRF });
+    const req = updateRequest({ userid: GROUP_ID }, { ...GROUP_FIELDS, ...(action === undefined ? {} : { action }), ...CSRF });
 
-    await expect(updateGroupAction.submit(contextFor(req, gateway))).rejects.toThrow(/no group write/);
+    const failure = updateGroupAction.submit(contextFor(req, gateway));
+    await expect(failure).rejects.toBeInstanceOf(LegacyFaultError);
+    await expect(failure).rejects.toMatchObject({ message: 'Element RC.userBean is undefined in ARGUMENTS.', type: 'Expression' });
     expect(gateway.calls).toEqual([]);
   });
 
-  it('fails without a group action', async () => {
+  it('writes nothing and fails for a group delete, which legacy serves', async () => {
     const gateway = fakeGatewayClient();
-    const req = updateRequest({ userid: GROUP_ID }, { ...GROUP_FIELDS, ...CSRF });
+    const req = updateRequest({ userid: GROUP_ID }, { ...GROUP_FIELDS, action: 'Delete', ...CSRF });
 
-    await expect(updateGroupAction.submit(contextFor(req, gateway))).rejects.toThrow(/no group write for action ''/);
+    const failure = updateGroupAction.submit(contextFor(req, gateway));
+    await expect(failure).rejects.toThrow('cUsers.update: a group delete is served by legacy');
+    await expect(failure).rejects.not.toBeInstanceOf(LegacyFaultError);
     expect(gateway.calls).toEqual([]);
   });
 });
@@ -395,7 +399,19 @@ describe('cUsers.update outcome', () => {
     { answer: 'no answer', error: GatewayUnavailableError },
     { answer: 'HTTP 503', reply: { status: 503 }, error: GatewayUnavailableError },
     { answer: 'HTTP 403', reply: { status: 403 }, error: GatewayDenialError },
-    { answer: 'HTTP 500 for a rejected token', reply: { status: 500, body: {} }, error: Error },
+    { answer: 'HTTP 500 naming no fault', reply: { status: 500, body: {} }, error: Error },
+    {
+      answer: 'HTTP 500 naming the unset user bean of a rejected token',
+      reply: {
+        status: 500,
+        body: {
+          apiversion: 'v1',
+          method: 'invalid',
+          error: { message: 'Unhandled Exception', code: 'server_error', stacktrace: { message: 'Element RC.userBean is undefined in ARGUMENTS.', type: 'Expression' } },
+        },
+      },
+      error: LegacyFaultError,
+    },
   ])('propagates $answer from the owner without routing', async ({ reply, error }) => {
     for (const write of WRITES) {
       const gateway = fakeGatewayClient(reply === undefined ? {} : { [write.route]: reply });

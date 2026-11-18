@@ -3,7 +3,7 @@ import { Roles, type Role } from '@opt2/platform/auth';
 import { html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { block, opt2Gate, opt2Label, opt2View, pageHeader, valueRows, type ValueRow } from '../shared';
+import { block, detailList, opt2Gate, opt2Label, opt2View, pageHeader, valueRows, type ValueRow } from '../shared';
 import {
   AUDIT_SCREEN,
   ESIGNATURE,
@@ -63,10 +63,9 @@ function entryRows(ctx: ScreenContext, entry: AuditEntry): ValueRow[] {
   ];
 }
 
-/** Each entry as read-only rows in a block of its own, in the given order; a grid row would overflow on the hashes. */
-function entryBlocks(ctx: ScreenContext, items: readonly AuditEntry[]): SafeHtml {
-  if (items.length === 0) return html`<div class="help-block-empty">${EMPTY_MESSAGE}</div>`;
-  return html`${items.map((entry) => block(valueRows(entryRows(ctx, entry))))}`;
+/** Each entry as read-only rows in the given order, a rule between each; a grid row would overflow on the hashes. */
+function entryList(ctx: ScreenContext, items: readonly AuditEntry[]): SafeHtml {
+  return detailList(items.map((entry) => valueRows(entryRows(ctx, entry))), EMPTY_MESSAGE);
 }
 
 /** The audit chain body: header, then the entries and their paging, or the service's alert. */
@@ -75,7 +74,7 @@ export function auditBody(ctx: ScreenContext, data: AuditData): SafeHtml {
   const id = requestIdOf(ctx.req.rc);
   // The contract's paged-list base types `items` as unknown[], which the chain's schema narrows.
   const items: readonly AuditEntry[] = data.body.items;
-  const entries = entryBlocks(ctx, items);
+  const entries = entryList(ctx, items);
   // Header links are the module's request links, which carry the session site the gateway mints the token for.
   return html`${pageHeader(TITLE, requestLinks(ctx, id, AUDIT_SCREEN))}${block(
     html`${entries}${pagination(ctx, AUDIT_SCREEN, data.body, { id })}`,

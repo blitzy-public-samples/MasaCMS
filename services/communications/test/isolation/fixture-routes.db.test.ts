@@ -34,7 +34,7 @@ const DENIED = { code: 'invalid_request', message: 'Insufficient Account Permiss
 interface Call {
   method: 'GET' | 'POST';
   url: string;
-  /** Token roles; null sends no token. */
+  /** Token roles; null sends no user token, only the gateway's invocation credential. */
   roles?: readonly string[] | null;
   body?: Record<string, unknown>;
   headers?: Record<string, string>;
@@ -159,13 +159,10 @@ describe.skipIf(!available)(title, () => {
     ],
   ])('answers %s with the fixture %i envelope, storing nothing and logging its fixed reason', async (_case, status, call, error, warning) => {
     const { method, url, roles = SENDER, body, headers = {} } = call;
-    const auth: Record<string, string> =
-      roles === null
-        ? {}
-        : {
-            authorization: `Bearer ${await mintUserToken({ site: TENANT_A.siteId, roles, sub: USER_ID })}`,
-            [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SCHEMA })}`,
-          };
+    const auth: Record<string, string> = {
+      ...(roles === null ? {} : { authorization: `Bearer ${await mintUserToken({ site: TENANT_A.siteId, roles, sub: USER_ID })}` }),
+      [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SCHEMA })}`,
+    };
     const before = logLines.length;
 
     const res = await app.inject({

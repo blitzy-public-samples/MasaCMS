@@ -18,7 +18,7 @@ import { TENANT_A, poolTenantExpectation, testVerifier, writeTestSecrets } from 
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import { contentDisposition, registerFileRoutes, signContentDownload } from '../../src/routes/files.js';
-import { SERVICE, createRecordingDb, testEnv, userHeaders, type RecordingDb } from '../helpers/app.js';
+import { SERVICE, createRecordingDb, serviceHeaders, testEnv, userHeaders, type RecordingDb } from '../helpers/app.js';
 
 // Mid-second, so the reported expiry's truncation to the signed second is observable.
 const NOW = new Date('2026-06-30T12:00:00.750Z');
@@ -148,7 +148,8 @@ describe('file routes over local storage', () => {
     expect(url.split('?')[0]).toBe(`/opt2/files/content-files/${FILE_POOL}/${objectName}`);
     expect(new Set(db.statements.flatMap((s) => (s.tenantId === null ? [] : [s.tenantId])))).toEqual(new Set([FILE_POOL]));
 
-    const served = await app.inject({ method: 'GET', url });
+    // The signed URL is path-only; the gateway forwards it with its own invocation credential.
+    const served = await app.inject({ method: 'GET', url, headers: await serviceHeaders('gateway') });
     expect({
       status: served.statusCode,
       length: served.headers['content-length'],
@@ -167,7 +168,7 @@ describe('file routes over local storage', () => {
     const failing: LocalStorageAdapter = { ...local, open: () => Promise.reject(new Error('disk unreadable')) };
     const built = await buildApp(failing);
     try {
-      const res = await built.app.inject({ method: 'GET', url: await local.signedUrl(CONTENT_FILES_BUCKET, `${FILE_POOL}/${FILE_ID}.pdf`) });
+      const res = await built.app.inject({ method: 'GET', url: await local.signedUrl(CONTENT_FILES_BUCKET, `${FILE_POOL}/${FILE_ID}.pdf`), headers: await serviceHeaders('gateway') });
       expect({ status: res.statusCode, code: (res.json() as { error: { code: string } }).error.code }).toEqual({ status: 500, code: 'server_error' });
     } finally {
       await built.app.close();
@@ -199,7 +200,7 @@ describe('file routes over cloud storage', () => {
   });
 
   it('answers the local object route with the legacy 404', async () => {
-    const res = await app.inject({ method: 'GET', url: await local.signedUrl(CONTENT_FILES_BUCKET, `${FILE_POOL}/${FILE_ID}.pdf`) });
+    const res = await app.inject({ method: 'GET', url: await local.signedUrl(CONTENT_FILES_BUCKET, `${FILE_POOL}/${FILE_ID}.pdf`), headers: await serviceHeaders('gateway') });
     expect(res.statusCode).toBe(404);
   });
 });

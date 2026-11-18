@@ -57,7 +57,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -91,7 +91,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -127,7 +127,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -163,7 +163,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -203,7 +203,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -235,7 +235,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -269,7 +269,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -303,7 +303,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -342,7 +342,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -374,7 +374,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -408,7 +408,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -442,7 +442,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -482,7 +482,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -514,7 +514,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -548,7 +548,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -582,7 +582,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -619,7 +619,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -653,7 +653,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -689,7 +689,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -725,7 +725,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -765,7 +765,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -797,7 +797,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -831,7 +831,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -865,7 +865,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -904,7 +904,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -936,7 +936,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -970,7 +970,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -1004,7 +1004,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -1044,7 +1044,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -1076,7 +1076,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -1110,7 +1110,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -1144,7 +1144,7 @@ paths:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
@@ -1181,7 +1181,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -1219,7 +1219,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -1259,7 +1259,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -1299,7 +1299,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/LegacyEntityName'
@@ -1343,7 +1343,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1379,7 +1379,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1417,7 +1417,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1455,7 +1455,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1498,7 +1498,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1534,7 +1534,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1572,7 +1572,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1610,7 +1610,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1654,7 +1654,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1690,7 +1690,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1728,7 +1728,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1766,7 +1766,7 @@ paths:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/XClientId'
@@ -1799,7 +1799,7 @@ paths:
       tags: [sessions]
       x-opt2-transport: service
       x-opt2-public: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
         '200':
           description: The session as legacy holds it.
@@ -1889,7 +1889,7 @@ paths:
       tags: [sessions]
       x-opt2-transport: service
       x-opt2-public: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
@@ -1932,7 +1932,7 @@ paths:
       tags: [sessions]
       x-opt2-transport: service
       x-opt2-public: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
         '200':
           description: The redirect legacy answers with.
@@ -1954,7 +1954,7 @@ paths:
       tags: [csrf]
       x-opt2-transport: service
       x-opt2-public: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         required: true
         content:
@@ -1983,7 +1983,7 @@ paths:
       tags: [sessions]
       x-opt2-transport: service
       x-opt2-public: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         required: true
         content:

@@ -145,9 +145,10 @@ function renderSchedule(
     ]),
     'No launch or reminder tasks are scheduled.',
   );
+  // The form ends its block, as legacy action rows do: the next heading carries no top margin.
   return html`${surveyHeader(ctx, survey, 'schedule')}${alert}${block(
-    html`<p>${status}: ${surveyStatusBadge(ctx, survey.status)}</p>${form}<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`,
-  )}`;
+    html`<p>${status}: ${surveyStatusBadge(ctx, survey.status)}</p>${form}`,
+  )}${block(html`<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`)}`;
 }
 
 /** Loads and renders the schedule body of `surveyId`: `opts.alert` after the header, the form holding `opts.values`. */

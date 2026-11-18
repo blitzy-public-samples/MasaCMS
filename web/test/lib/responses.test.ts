@@ -1,6 +1,6 @@
 // The default Content-Language comes from the MURA_LOCALE setting, so every suite pins it.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { html, raw } from '@/lib/html';
 import { mergeFw1Context } from '@/lib/request-context';
@@ -14,6 +14,7 @@ import {
   htmlResponse,
   isCompactDisplay,
   jsonResponse,
+  legacyError,
   legacyUnavailable,
   negotiatesIdentityEncoding,
   notFound,
@@ -30,6 +31,7 @@ const builders: Array<[string, (context?: LegacyResponseContext) => Response]> =
   ['downloadResponse', (context) => downloadResponse({ status: 200, headers: {}, body: 'a' }, context)],
   ['fw1Redirect', (context) => fw1Redirect('./', { context })],
   ['legacyUnavailable', (context) => legacyUnavailable(context)],
+  ['legacyError', (context) => legacyError(context)],
   ['notFound', (context) => notFound(context)],
 ];
 
@@ -83,6 +85,18 @@ describe('responses', () => {
       [null, null],
     ])('answers Accept-Encoding %j with Content-Encoding %j', (acceptEncoding, expected) => {
       expect(build({ acceptEncoding }).headers.get('content-encoding')).toBe(expected);
+    });
+  });
+
+  describe.each(builders.filter(([name]) => name !== 'legacyUnavailable'))('%s CORS echo', (_name, build) => {
+    it.each<[LegacyResponseContext, string | null, string | null]>([
+      [{ accessControl: { 'Access-Control-Allow-Origin': 'http://a.example', 'Access-Control-Allow-Credentials': 'true' } }, 'http://a.example', 'true'],
+      [{ accessControl: {} }, null, null],
+      [{}, null, null],
+    ])('answers %o with the Origin echo %j and credentials %j', (context, origin, credentials) => {
+      const res = build(context);
+      expect(res.headers.get('access-control-allow-origin')).toBe(origin);
+      expect(res.headers.get('access-control-allow-credentials')).toBe(credentials);
     });
   });
 
@@ -308,13 +322,30 @@ describe('responses', () => {
     });
   });
 
-  it('legacyUnavailable answers the error.html page with 503', async () => {
-    const res = legacyUnavailable();
-    expect(res.status).toBe(503);
+  it.each<[string, () => Response, number]>([
+    ['legacyUnavailable', () => legacyUnavailable(), 503],
+    ['legacyError', () => legacyError(), 500],
+  ])('%s answers the error.html page with %i', async (_name, build, status) => {
+    const res = build();
+    expect(res.status).toBe(status);
     expect(res.statusText).toBe('An Error Occurred');
     // The legacy wire form: the servlet container drops the space before `charset`.
     expect(res.headers.get('content-type')).toBe('text/html;charset=UTF-8');
     expect(await res.text()).toBe(LEGACY_ERROR_PAGE_HTML);
+  });
+
+  it.each<[string | undefined, string]>([
+    [undefined, '<h2>Element &lt;X&gt; is undefined in RC.<br /></h2><h3>Type:Expression<br /></h3></div>'],
+    ['true', '<h2>Element &lt;X&gt; is undefined in RC.<br /></h2><h3>Type:Expression<br /></h3></div>'],
+    ['false', ''],
+  ])('legacyError answers a fault with MURA_DEBUGGINGENABLED %j with its debug page, or error.html when off', async (setting, headings) => {
+    vi.stubEnv('MURA_DEBUGGINGENABLED', setting);
+    resetLegacySettingsForTests();
+    const res = legacyError(undefined, new LegacyFaultError('Element <X> is undefined in RC.'));
+    expect([res.status, res.statusText, res.headers.get('content-type')]).toEqual([500, 'An Error Occurred', 'text/html;charset=UTF-8']);
+    const body = await res.text();
+    if (headings === '') expect(body).toBe(LEGACY_ERROR_PAGE_HTML);
+    else expect(body.endsWith(`<h1>500 Error</h1>${headings}`)).toBe(true);
   });
 
   it('notFound answers an empty 404', async () => {

@@ -9,11 +9,17 @@ import {
   type Opt2RouteConfig,
 } from '@opt2/platform/auth';
 import {
+  REQUEST_START_COOKIE_NAMES,
   REST_CONSUMED_PARAMS_HEADER,
   UNREGISTERED_SITEID_HEADER,
   isLegacySessionCookie,
+  isLegacySessionManaged,
+  negotiatesIdentityEncoding,
   parseCookieHeader,
   parseSetCookie,
+  requestStartSetCookies,
+  type RequestStartOptions,
+  type RouteFamily,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import {
@@ -62,7 +68,7 @@ import {
   type LegacyUpstream,
 } from './forward-legacy.js';
 import { forwardToTarget } from './forward-target.js';
-import { forwardedHost } from './headers.js';
+import { applyIdentityEncoding, forwardedHost } from './headers.js';
 import {
   RELAY_ALIAS_PREFIX,
   WRITE_KINDS,
@@ -95,6 +101,9 @@ const EDGE_ROUTE_CONFIG: Opt2RouteConfig = Object.freeze({ public: true, edge: t
 /** Namespace of the gateway's own routes; the edge dispatches nothing under it. */
 const INTERNAL_NAMESPACE = '/internal/v1';
 
+/** Families whose target routes legacy's servlet container and request start never serve: web's runtime files, OPT-2 paths, the bridge. */
+const NO_LEGACY_START_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['static', 'opt2', 'bridge']);
+
 /** Collaborators of the dispatcher; `app.ts` builds each once. */
 export interface DispatcherDeps {
   matcher: Matcher;
@@ -121,6 +130,8 @@ export interface DispatcherDeps {
   relay: RelayDeps;
   /** Legacy Masa origin, e.g. `http://127.0.0.1:8080`. */
   legacyOrigin: string;
+  /** configBean `secureCookies` and `cookieDomain`, which utility.setCookie applies to the request start's cookies. */
+  cookieSettings: Required<Pick<RequestStartOptions, 'secure' | 'domain'>>;
   /** Bounds the freeze wait. */
   clock: Clock;
 }
@@ -294,6 +305,37 @@ function prepend(extras: readonly string[], list: readonly string[]): string[] {
 /** `Set-Cookie` values a resolution hands the client. */
 function setCookiesOf(resolution: LegacyBoundResolution | undefined): string[] {
   return resolution === undefined || resolution.kind === 'response' ? [] : resolution.setCookies;
+}
+
+/** The request start's `Set-Cookie` values for the client's own request, as legacy would send them at `now` under `settings`. */
+function requestStartCookiesOf(
+  request: FastifyRequest,
+  body: BodyParams,
+  now: Date,
+  settings: DispatcherDeps['cookieSettings'],
+): string[] {
+  return requestStartSetCookies(
+    {
+      cookieHeader: request.headers.cookie,
+      userAgent: userAgentOf(request),
+      query: request.query,
+      url: request.url,
+      form: body.form,
+      sessionManaged: isLegacySessionManaged(pathOf(request.url)),
+    },
+    { now, secure: settings.secure, domain: settings.domain },
+  );
+}
+
+/** `list` without request-start cookies, then `start` with the `MXP_TRACKINGID` legacy's session owes in `list` kept for its own; `list` alone without `start`. */
+function withRequestStartCookies(list: readonly string[], start: readonly string[] | undefined): string[] {
+  if (start === undefined) return [...list];
+  const nameOf = (value: string): string => parseSetCookie(value).name.toLowerCase();
+  const owedTracking = list.findLast((value) => nameOf(value) === 'mxp_trackingid');
+  return [
+    ...list.filter((value) => !REQUEST_START_COOKIE_NAMES.has(nameOf(value))),
+    ...start.map((value) => (owedTracking !== undefined && nameOf(value) === 'mxp_trackingid' ? owedTracking : value)),
+  ];
 }
 
 /**
@@ -575,6 +617,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     const { request, reply } = ex;
     const { result, entry } = route.outcome;
     const userAgent = userAgentOf(request);
+    const legacyStart = !NO_LEGACY_START_FAMILIES.has(result.family);
+    const identityEncoding = legacyStart && negotiatesIdentityEncoding(request.headers['accept-encoding']);
+    const startCookies = legacyStart ? requestStartCookiesOf(request, ex.body, clock.now(), deps.cookieSettings) : undefined;
     let resolution: SessionResolution | undefined;
     let sessionId: string | undefined;
     let userToken: string | undefined;
@@ -588,7 +633,10 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         mode,
         siteId: result.siteId,
       });
-      if (resolution.kind === 'response') return sendLegacyResponse(reply, resolution);
+      if (resolution.kind === 'response') {
+        if (identityEncoding) applyIdentityEncoding(reply);
+        return sendLegacyResponse(reply, resolution);
+      }
       // A legacy logout of the session began: unless legacy shows it kept the login, the request goes on anonymously.
       if (resolution.kind === 'session' && (await keptThroughPending(request, resolution, mode, userAgent))) {
         const check = await deps.stateCheck.check(resolution.sessionId);
@@ -608,6 +656,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     const extras = setCookiesOf(resolution);
     const loggedOut = sessionId;
     const logoutKey = entry?.route ?? result.key;
+    const loggedIn = legacySessionEffect(result, deps.facts) === 'login' ? sessionId : undefined;
     ex.forwarded = true;
     return forwardToTarget(request, reply, {
       service: destination.service,
@@ -628,11 +677,17 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       invocation: deps.auth.invocationMinter,
       barrier: deps.barrier,
       mapSetCookies: async (setCookies) =>
-        prepend(extras, mode === 'target-primary' ? clientTargetSetCookies(jar, setCookies, clock.now()) : setCookies),
+        withRequestStartCookies(
+          prepend(extras, mode === 'target-primary' ? clientTargetSetCookies(jar, setCookies, clock.now()) : setCookies),
+          startCookies,
+        ),
+      identityEncoding,
       beforeSend: async () => {
         if (loggedOut !== undefined && isTargetLogout(logoutKey)) {
           await deps.invalidation.afterTargetLogout(loggedOut, { userAgent });
         }
+        // Identity has committed the login's epoch bump by now, and the session id is kept, so its next request re-reads it.
+        if (loggedIn !== undefined) deps.invalidation.afterTargetLogin(loggedIn);
       },
       onSettled: ex.row === undefined ? undefined : () => ex.dropRow(),
       onAbandoned: ex.row === undefined ? undefined : () => ex.abandonRow(),
@@ -650,7 +705,10 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     let resolution: LegacyBoundResolution | undefined;
     let sessionId: string | undefined;
     let cookieHeader: string | undefined;
-    // A static entry is a file: it reads no session or data, so it needs no barrier, hydration or claim.
+    // A static entry is a file: it reads no session or data, so it needs no barrier, hydration or claim. Its response maps
+    // only a session legacy creates for a target-primary browser naming none; a named session's cookies reach legacy unmapped.
+    const mapsSessionCookies =
+      !isStatic || (mode === 'target-primary' && sessionIdFromTargetCookies(parseCookieHeader(request.headers.cookie)) === undefined);
     if (!isStatic) {
       if (mode === 'target-primary') await endOwedLegacySession(request, userAgent);
       resolution = await deps.resolver.resolveLegacyBound(input, {
@@ -778,7 +836,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
       cookieHeader,
       sessionMode: mode,
-      beforeSend: isStatic ? undefined : beforeSend,
+      beforeSend: mapsSessionCookies ? beforeSend : undefined,
       onSettled,
       failContext: outcome.failContext,
     };

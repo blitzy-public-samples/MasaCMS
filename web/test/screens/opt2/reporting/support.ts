@@ -1,5 +1,5 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-// Screen contexts, canned gateway routes and the job-block reader of the reporting screen tests. Minimal Change asks
+// Screen contexts, canned gateway routes and the job-grid reader of the reporting screen tests. Minimal Change asks
 // for helper reuse, but helpers/screen-context.ts imports the screen registry, which loads every circuit and OPT-2
 // module; these suites must run without them, so the context and the three shell routes are built here.
 import * as cheerio from 'cheerio';
@@ -51,16 +51,16 @@ export function shellAndCsrfRoutes(siteId: string): FakeRouteTable {
   };
 }
 
-/** The `[label, value]` read-only rows of each job block in `markup`, in document order. */
-export function jobValues(markup: string): Array<Array<[string, string]>> {
+/** The cell texts of each job row of the job grid in `markup`, in document order. */
+export function jobValues(markup: string): string[][] {
   const $ = cheerio.load(markup);
-  return $('.block-content .block-content')
+  return $('table.mura-table-grid > tbody > tr')
     .toArray()
-    .map((job) =>
-      $(job)
-        .children('.mura-control-group')
+    .map((row) =>
+      $(row)
+        .children('td')
         .toArray()
-        .map((row): [string, string] => [$(row).children('label').text(), $(row).children('div').text()]),
+        .map((cell) => $(cell).text()),
     );
 }
 

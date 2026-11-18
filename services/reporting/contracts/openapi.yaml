@@ -517,12 +517,15 @@ paths:
     get:
       operationId: downloadExportObject
       summary: Serves an export object of the local storage adapter through its signed URL.
-      description: The signature is the credential, checked with `verifySignedUrl` of `@opt2/platform/storage`; only the local adapter issues these URLs.
+      description: The signature is the credential, checked with `verifySignedUrl` of `@opt2/platform/storage`; the gateway forwards the URL with its invocation credential. Only the local adapter issues these URLs.
       tags:
         - files
       x-opt2-transport: service
       x-opt2-public: true
-      security: []
+      security:
+        - invocationCredential: []
+        - userToken: []
+          invocationCredential: []
       parameters:
         - name: expires
           in: query
@@ -557,6 +560,9 @@ paths:
               schema:
                 type: string
                 format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: No verified invocation credential is presented.
         '403':
           $ref: '#/components/responses/Forbidden'
           description: The signature is malformed, wrong or expired.

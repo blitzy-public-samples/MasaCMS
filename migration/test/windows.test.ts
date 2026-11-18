@@ -542,7 +542,7 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
           },
         });
         const read = () =>
-          fetchPgOwnerRows<{ rows?: { height: string }[] }>(`${owner.url}${PG_OWNER_ROWS_PATH}/image_size?tenantId=${TENANT_A.tenantId}&budgetMs=100`);
+          fetchPgOwnerRows<{ rows?: { height: string }[] }>(owner.owner, `${owner.url}${PG_OWNER_ROWS_PATH}/image_size?tenantId=${TENANT_A.tenantId}&budgetMs=100`);
         expect((await read()).body.rows?.map((row) => row.height)).toEqual([legacyRow.height]);
 
         const opened = await service.open({ routeKey: 'admin:csettings.updatesite{action=delete}', units: [UNITS.imageSize], scope: { keys: { siteid: 'tenant-a' } }, requestId: cfUuid() });

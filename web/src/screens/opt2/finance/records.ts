@@ -7,7 +7,6 @@ import {
   amountCell,
   block,
   controlGroup,
-  formActions,
   gridTable,
   hiddenField,
   opt2Label,
@@ -15,6 +14,7 @@ import {
   opt2View,
   pageHeader,
   select,
+  submitButton,
   type GridCell,
   type Label,
   type SelectOption,
@@ -115,14 +115,16 @@ async function loadRecords(ctx: ScreenContext): Promise<RecordsData> {
   };
 }
 
-/** GET form re-listing the records of the chosen state, keeping the requested `asOf`. */
+/**
+ * GET form re-listing the records of the chosen state, keeping the requested `asOf`; the Filter button follows the
+ * select in a control group of its own, as cUsers.listUsers sets its filter buttons above the list.
+ */
 function filterForm(ctx: ScreenContext, { state, asOf }: RecordsData): SafeHtml {
-  const fields = controlGroup(opt2Label(ctx, 'State'), select('state', stateOptions(ctx), state ?? ''));
+  const stateSelect = controlGroup(opt2Label(ctx, 'State'), select('state', stateOptions(ctx), state ?? ''));
+  const filter = submitButton({ label: html`<i class="mi-filter"></i> ${opt2Label(ctx, 'Filter')}` });
+  const filterRow = html`<div class="mura-control-group">${filter}</div>`;
   const hidden = html`${hiddenField('siteid', sessionSite(ctx))}${asOf === undefined ? null : hiddenField('asOf', asOf)}`;
-  return html`<form method="get"${attr('action', opt2ScreenUrl(FINANCE_MODULE, 'records'))}>${fields}${formActions(
-    [{ label: opt2Label(ctx, 'Filter') }],
-    hidden,
-  )}</form>`;
+  return html`<form method="get"${attr('action', opt2ScreenUrl(FINANCE_MODULE, 'records'))}>${stateSelect}${filterRow}${hidden}</form>`;
 }
 
 /** Previous and next page links of the list; null when every record fits the first page. */

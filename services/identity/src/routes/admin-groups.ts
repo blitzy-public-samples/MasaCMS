@@ -5,6 +5,7 @@
 import { AuthDenial, Roles, moduleRole, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
   LegacyApiError,
+  UNSET_USER_BEAN_FAULT,
   cfDateTimeFormat,
   cfIsBoolean,
   cfIsNumeric,
@@ -260,7 +261,7 @@ async function saveInputOf(deps: AdminGroupRouteDeps, rc: Rc, caller: CusersCall
 
 /**
  * `update()` of one `type=1` action: the CSRF check under `rc.userid`, then the save [legacy: admin/core/controllers/cusers.cfc:316-331].
- * @throws LegacyApiError `invalidParameters` for a photo or extended-attribute save, `server_error` for a missing or invalid token.
+ * @throws LegacyApiError `invalidParameters` for a photo or extended-attribute save, `server_error` naming the unset user bean for a missing or invalid token.
  */
 async function saveGroup(
   deps: AdminGroupRouteDeps,
@@ -275,7 +276,9 @@ async function saveGroup(
   const actor = await actorOf(deps.sessions, caller.user);
   const input = await saveInputOf(deps, rc, caller, actor, userId);
   // Without a valid token legacy runs no save and then fails reading the unset `rc.userBean`.
-  if (!(await validateCsrfForRoute({ csrf: deps.csrf }, request, userId))) throw new LegacyApiError('server_error');
+  if (!(await validateCsrfForRoute({ csrf: deps.csrf }, request, userId))) {
+    throw new LegacyApiError('server_error', { stacktrace: UNSET_USER_BEAN_FAULT });
+  }
   const result = await save(deps.groups, actor, input);
   return { written: result.written, group: groupAccount(result.group), errors: result.errors };
 }

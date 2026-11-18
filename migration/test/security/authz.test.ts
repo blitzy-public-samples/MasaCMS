@@ -82,6 +82,8 @@ interface ExpectedRoute {
   url: string;
   requires?: readonly string[];
   public?: true;
+  /** A public route that admits a caller without an invocation credential. */
+  invocationOptional?: true;
   siteCheck: boolean;
 }
 
@@ -90,7 +92,7 @@ const PROGRAMS_SITES = serviceRole('programs-sites');
 const OPERATOR = Roles.platformOperator;
 
 const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
-  { operationId: 'healthz', method: 'GET', path: '/healthz', url: '/healthz', public: true, siteCheck: true },
+  { operationId: 'healthz', method: 'GET', path: '/healthz', url: '/healthz', public: true, invocationOptional: true, siteCheck: true },
   {
     operationId: 'windowOpen',
     method: 'POST',
@@ -229,6 +231,7 @@ function matrixEntryOf(row: ExpectedRoute): RouteMatrixEntry {
     url: row.url,
     transport: 'service',
     ...(row.public === true ? { public: true as const } : { requires: [...(row.requires ?? [])].sort() }),
+    ...(row.invocationOptional === true ? { invocationOptional: true as const } : {}),
     siteCheck: row.siteCheck,
   };
 }
@@ -470,7 +473,7 @@ function presentedBy(subject: RoleSubject): Presented {
 /** The denial the service transport and `row`'s roles give `subject`; undefined when the subject is admitted. */
 function expectedDenial(row: ExpectedRoute, subject: RoleSubject): AuthDenial | undefined {
   const { invocation, userRoles = [], foreignBearer } = presentedBy(subject);
-  if (invocation === undefined && row.public !== true) return UNAUTHENTICATED;
+  if (invocation === undefined && row.invocationOptional !== true) return UNAUTHENTICATED;
   // The service transport verifies any Authorization bearer as a user token, so a tasks token is refused on /healthz too.
   if (foreignBearer === true) return AuthDenial.invalidToken();
   if (row.public === true) return undefined;

@@ -1,4 +1,5 @@
 // The cperm controller's `before()` gate and rc defaults, and the markup the permission views share (server-only).
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import type { ScreenGate } from '@/lib/access-gate';
 import { encodeHtmlAttr, html, raw, type SafeHtml } from '@/lib/html';
 import { administersRequestedSite, type RequestContext } from '@/lib/request-context';
@@ -140,16 +141,21 @@ function crumbAnchor(crumb: ZoomCrumb, indent: string): string {
   return `${indent}<a \n${indent}\thref="${crumbLink(crumb)}"\n${indent}>${label}</a>`;
 }
 
+/** `dspZoom` reading the node crumb of an empty crumb list (core/mura/content/contentRendererUtility.cfc:750). */
+export function emptyZoomFault(): LegacyFaultError {
+  return new LegacyFaultError('The element at position 1 cannot be found.');
+}
+
 /**
  * Non-ajax `dspZoom`: the crumbs from the root down to the node, the node in `<strong>`, whitespace as ACF emits it.
- * @throws RangeError For an empty crumb list, where legacy fails reading the node crumb.
+ * @throws LegacyFaultError {@link emptyZoomFault} for an empty crumb list.
  */
 export function renderZoom(
   crumbs: readonly ZoomCrumb[],
   { className = 'breadcrumb' }: { readonly className?: string } = {},
 ): SafeHtml {
   const node = crumbs[0];
-  if (node === undefined) throw new RangeError('dspZoom needs at least the node crumb');
+  if (node === undefined) throw emptyZoomFault();
   let locked = '';
   let items = '';
   for (const crumb of crumbs.slice(1).reverse()) {

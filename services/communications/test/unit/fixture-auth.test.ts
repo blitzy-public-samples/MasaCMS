@@ -66,12 +66,14 @@ function claims(roles: string[], s2 = false): UserClaims {
   };
 }
 
+/** Headers of an anonymous request as the gateway forwards it: the gateway's invocation credential alone. */
+async function gatewayHeaders(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}` };
+}
+
 /** Headers of a user request as the gateway forwards it: the bearer user token plus the gateway's invocation credential. */
 async function userHeaders(token: string): Promise<Record<string, string>> {
-  return {
-    authorization: `Bearer ${token}`,
-    [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}`,
-  };
+  return { authorization: `Bearer ${token}`, ...(await gatewayHeaders()) };
 }
 
 /** Resolved site, or the thrown error type, of one direct resolveSite call; `jsonBody` makes it a JSON request. */
@@ -276,11 +278,10 @@ describe('fixture check order through app.inject', () => {
     params: Record<string, unknown>,
     token?: { roles: readonly string[]; site?: string; s2?: boolean },
   ): Promise<{ status: number; body: { method: string; data?: Record<string, unknown>; error?: unknown } }> {
-    const headers: Record<string, string> = {};
-    if (token !== undefined) {
-      const bearer = await mintUserToken({ site: token.site ?? 'tenant-a', roles: token.roles, s2: token.s2, sub: USER_ID });
-      Object.assign(headers, await userHeaders(bearer));
-    }
+    const headers: Record<string, string> =
+      token === undefined
+        ? await gatewayHeaders()
+        : await userHeaders(await mintUserToken({ site: token.site ?? 'tenant-a', roles: token.roles, s2: token.s2, sub: USER_ID }));
     const query = method === 'GET' ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
     if (method === 'POST') headers['content-type'] = 'application/json';
     const res = await app.inject({
@@ -392,10 +393,9 @@ describe('requireCsrf check order through app.inject', () => {
     vi.restoreAllMocks();
   });
 
-  /** Injects a tenant-a JSON message POST with `headers`, carrying a user token when `roles` is given. */
+  /** Injects a tenant-a JSON message POST with `headers` as the gateway forwards it, carrying a user token when `roles` is given. */
   async function send(roles: string[] | undefined, headers: Record<string, string>) {
-    const auth: Record<string, string> = {};
-    if (roles !== undefined) Object.assign(auth, await userHeaders(await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })));
+    const auth = roles === undefined ? await gatewayHeaders() : await userHeaders(await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID }));
     return app.inject({
       method: 'POST',
       url: `${PREFIX}/messages`,

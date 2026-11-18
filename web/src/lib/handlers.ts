@@ -1,7 +1,7 @@
 // Composition root of the admin entry points: authentication, request context, access gate, screen dispatch, session
 // persistence and each response mode's legacy answer (server-only).
 import { Readable } from 'node:stream';
-import { LegacyServiceUnavailableError, cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, LegacyServiceUnavailableError, cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { requestIdFrom, systemClock } from '@opt2/platform/service-kit';
 import {
   findOpt2Action,
@@ -21,7 +21,7 @@ import {
   type AdminDocument,
   type ShellView,
 } from '../shell/document';
-import { deniedGate, runGate, type ScreenGate } from './access-gate';
+import { applicationGate, deniedGate, runGate, type ScreenGate } from './access-gate';
 import { WebAuthError, authenticateRequest, type WebAuth } from './auth';
 import { createCsrfRenderer } from './csrf';
 import {
@@ -49,6 +49,7 @@ import {
   fw1Redirect,
   htmlResponse,
   jsonResponse,
+  legacyError,
   legacyUnavailable,
   notFound,
   withSetCookies,
@@ -92,6 +93,8 @@ interface Answers<T> {
   redirect(location: string, setCookies: readonly string[], context: LegacyResponseContext): T;
   notFound(context: LegacyResponseContext): T;
   unavailable(context: LegacyResponseContext): T;
+  /** Legacy's answer to a runtime error, for a failure the pipeline maps to no other answer; `fault` when web reproduces it. */
+  error(context: LegacyResponseContext, fault?: LegacyFaultError): T;
   refused(status: 401 | 403): T;
   /** Status the request is logged with. */
   statusOf(answer: T): number;
@@ -136,6 +139,7 @@ const RESPONSE_ANSWERS: Answers<Response> = {
   redirect: (location, setCookies, context) => fw1Redirect(location, { setCookies, context }),
   notFound: (context) => notFound(context),
   unavailable: (context) => legacyUnavailable(context),
+  error: (context, fault) => legacyError(context, fault),
   refused: (status) => new Response(null, { status }),
   statusOf: (response) => response.status,
   // Never handed out, so its body is unlocked. A body whose upstream already failed rejects the cancellation with that
@@ -157,7 +161,7 @@ interface PipelineRequest {
   readonly search: string;
   readonly headers: Headers;
   readonly searchParams: AdminRequestInput['searchParams'];
-  /** The request whose body is the form scope; absent in page mode, which never carries one. */
+  /** The request whose body is the form scope; absent on the synthetic-module screens, which read none. */
   readonly bodySource?: Request;
 }
 
@@ -182,7 +186,7 @@ function uploadsOf(form: FormData | URLSearchParams): UploadPart[] {
   return [...form].flatMap(([field, value]) => (typeof value === 'string' ? [] : [{ field, filename: value.name }]));
 }
 
-/** The answer for an error the pipeline maps, with the fixed reason of an expected refusal; others are rethrown. */
+/** The answer for a failed request, with the fixed reason of an expected refusal; an unmapped error gets legacy's 500. */
 function answerFailure<T>(
   error: unknown,
   input: Pick<PipelineRequest, 'mode' | 'headers'>,
@@ -200,14 +204,14 @@ function answerFailure<T>(
       };
     }
   }
-  throw error;
+  return { answer: answers.error(context, error instanceof LegacyFaultError ? error : undefined) };
 }
 
 /**
  * Authenticates, builds the request context, resolves and gates the screen, runs it, persists the session writes in
  * one identity call and writes the request's one log line in its span, then hands the answer over. Unavailability,
- * refused credentials and service denials become `answers` and persist nothing; any other error is logged and rethrown.
- * A staged body is then removed.
+ * refused credentials and service denials become `answers` and persist nothing; any other error is logged and answered
+ * with legacy's 500 error page, persisting nothing. A staged body is then removed.
  */
 async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>, resolve: Resolve<T>): Promise<T> {
   markPipelineRequest();
@@ -257,7 +261,12 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         mode: input.mode,
         now,
       });
-      context = { locale: req.session.locale, acceptEncoding: context.acceptEncoding };
+      context = {
+        locale: req.session.locale,
+        acceptEncoding: context.acceptEncoding,
+        // The set-up echoes the Origin only past its no-site redirects (admin/Application.cfc:440-451,521-533).
+        ...(applicationGate(req).kind === 'allow' ? { accessControl: req.accessControlHeaders } : {}),
+      };
       const dispatch = resolve(req, received === undefined ? [] : uploadsOf(received.form));
       if (dispatch === undefined) return answers.notFound(context);
       const ctx: ScreenContext = {
@@ -279,7 +288,6 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       return outcome.answer;
     } catch (error) {
       if (outcome !== undefined) answers.abandon(outcome.answer);
-      // An unmapped error is rethrown here and recorded as the failure by the span's handler.
       const mapped = answerFailure(error, input, answers, context);
       if (mapped.denial === undefined) failure = error;
       else denial = mapped.denial;
@@ -493,12 +501,12 @@ function documentDispatch<T>(
 /** The page screen of `route`: its redirect via `answers`, else its view via `answer`; undefined unless page mode. */
 function pageDispatch<T>(
   req: AdminRequest,
+  uploads: readonly UploadPart[],
   route: AdminRouteParams,
   answers: Answers<T>,
   answer: (doc: AdminDocument, req: AdminRequest, context: LegacyResponseContext) => T,
 ): Dispatch<T> | undefined {
-  // Page-mode requests never carry file parts: the gateway drops them when it folds a posted form into the query.
-  const screen = findScreen(route.circuit, route.action, req.rc, []);
+  const screen = findScreen(route.circuit, route.action, req.rc, uploads);
   if (screen === undefined || screen.mode !== 'page') return undefined;
   const view = documentDispatch(screen.gate, async (ctx) => screen.render(ctx, await loadData(screen, ctx)), answer);
   return {
@@ -557,8 +565,8 @@ function requestInput(mode: AdminMode, route: AdminRouteParams, request: Request
 
 /** Page mode as the complete legacy response: status, headers, cookies and the serialized layout. */
 export function handleAdminPage(request: Request, params: AdminRouteParams): Promise<Response> {
-  return withAdminPipeline(requestInput('page', params, request, false), RESPONSE_ANSWERS, (req) =>
-    pageDispatch(req, params, RESPONSE_ANSWERS, pageResponse),
+  return withAdminPipeline(requestInput('page', params, request, true), RESPONSE_ANSWERS, (req, uploads) =>
+    pageDispatch(req, uploads, params, RESPONSE_ANSWERS, pageResponse),
   );
 }
 

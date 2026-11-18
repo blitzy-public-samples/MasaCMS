@@ -1,4 +1,4 @@
-// Forwards a target-bound request to its owning service or to web with gateway-issued credentials; failures fail closed.
+// Forwards a target-bound request to its owning service or to web with gateway-issued credentials; an unavailable target fails closed.
 import { channel } from 'node:diagnostics_channel';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
@@ -19,11 +19,13 @@ import { replyFromCallee } from './callee-span.js';
 import { failClosed, isTargetUnavailable, neverSent, type FailContext } from './fail-closed.js';
 import {
   HOP_BY_HOP_HEADERS,
+  applyIdentityEncoding,
   applyLegacyHeaders,
   forwardedHeaders,
   isWebPageRedirect,
   normaliseWebResponseHeaders,
 } from './headers.js';
+import { recordResponseHead, upstreamReasonPhrase, type ResponseHeadSlot } from './response-head.js';
 import { settlingRelay } from './settling-relay.js';
 
 /** A target's status and headers as received; a `set-cookie` header is always a list. */
@@ -56,7 +58,7 @@ export interface TargetForwardContext {
   declaresWrite?: boolean;
   /** Session mode of the active version, reported with forwarding failures. */
   mode: SessionMode;
-  /** True for web, whose responses are normalised and whose every 5xx fails closed. */
+  /** True for web, whose responses are normalised. */
   isWeb: boolean;
   failContext: FailContext;
   /** Mints the gateway's own invocation credential for the callee. */
@@ -65,6 +67,8 @@ export interface TargetForwardContext {
   barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitPositions' | 'awaitOwners'>;
   /** Returns the `Set-Cookie` values the client receives for the target's (possibly empty) list. */
   mapSetCookies?: (setCookies: string[]) => Promise<string[]>;
+  /** True when the client's `Accept-Encoding` negotiates identity on a route legacy's servlet container serves. */
+  identityEncoding?: boolean;
   /** Runs once the client response is ready, before any byte is sent; a rejection answers the legacy-shaped 503 instead. */
   beforeSend?: (upstream: TargetUpstream) => Promise<void>;
   /** Called at most once, only when the target can no longer commit: its response completed or the request never reached it. */
@@ -188,9 +192,22 @@ function normaliseWebReply(reply: FastifyReply, path: string, statusCode: number
   for (const [name, value] of Object.entries(normalised)) reply.header(name, value);
 }
 
+/** Gives the reply the target's own non-empty reason phrase for `statusCode`; without one, or with one Node rejects, Node's default stays. */
+function keepReasonPhrase(reply: FastifyReply, slot: ResponseHeadSlot, statusCode: number): void {
+  if (slot.head === undefined) return;
+  let reason: string | undefined;
+  try {
+    reason = upstreamReasonPhrase(slot.head, statusCode);
+  } catch {
+    return;
+  }
+  if (reason !== undefined && reason !== '') reply.raw.statusMessage = reason;
+}
+
 /**
  * Forwards `request` to `ctx.serviceUrl` + `ctx.path` once, bounded by TARGET_FORWARD_TIMEOUT_MS and never retried.
- * Connection failure, timeout or an unavailable status sends the legacy-shaped 503 of `ctx.failContext`.
+ * Connection failure, timeout or an unavailable status sends the legacy-shaped 503 of `ctx.failContext`; any other
+ * status reaches the client with the target's reason phrase.
  */
 export async function forwardToTarget(
   request: FastifyRequest,
@@ -202,6 +219,8 @@ export async function forwardToTarget(
   let settled = false;
   /** Session whose declaration of this write the exchange still holds. */
   let declared: string | undefined;
+  /** The target's final response head as sent, recorded by reply-from's dispatcher when it is the gateway's. */
+  const targetHead: ResponseHeadSlot = {};
   /** Runs `onSettled` once; a later call returns at once and a failure is logged. */
   const settle = async (): Promise<void> => {
     if (settled) return;
@@ -295,14 +314,12 @@ export async function forwardToTarget(
       return;
     }
     const { statusCode } = res;
-    const unavailable = isTargetUnavailable(statusCode);
-    if (unavailable || (ctx.isWeb && statusCode >= 500)) {
+    if (isTargetUnavailable(statusCode)) {
       res.stream.resume();
       // The target answered, so the declaration ends: by the positions it lists, else it committed nothing.
       await recordPositions(res.headers[WRITE_POSITION_HEADER_LC]);
       await release();
-      const reason = unavailable ? `${ctx.service} unavailable: answered ${statusCode}` : `${ctx.service} answered ${statusCode}`;
-      failClosed(reply, ctx.failContext, { reason });
+      failClosed(reply, ctx.failContext, { reason: `${ctx.service} unavailable: answered ${statusCode}` });
       return;
     }
     const upstream = upstreamOf(res);
@@ -316,6 +333,7 @@ export async function forwardToTarget(
     const pageRedirect = ctx.isWeb && isWebPageRedirect({ path: ctx.path, statusCode });
     if (ctx.isWeb) normaliseWebReply(reply, ctx.path, statusCode);
     applyLegacyHeaders(reply);
+    if (ctx.identityEncoding === true) applyIdentityEncoding(reply);
     try {
       await ctx.beforeSend?.(upstream);
     } catch (error) {
@@ -330,6 +348,7 @@ export async function forwardToTarget(
       reply.code(LEGACY_REDIRECT_STATUS).send();
       return;
     }
+    keepReasonPhrase(reply, targetHead, statusCode);
     reply.send(res.stream);
   }
 
@@ -374,7 +393,9 @@ export async function forwardToTarget(
 
   let forwarded: FastifyReply;
   try {
-    forwarded = replyFromCallee(reply, ctx.service, `${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options);
+    forwarded = recordResponseHead(targetHead, () =>
+      replyFromCallee(reply, ctx.service, `${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options),
+    );
   } catch (error) {
     // reply-from rejects a path it cannot parse, and a GET or HEAD carrying a body, before anything is sent.
     return failUnsent(error, `forward to ${ctx.service} rejected before sending`);

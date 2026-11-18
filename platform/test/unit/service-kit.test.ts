@@ -2,6 +2,7 @@
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER } from '../../src/auth/index.js';
 import {
   LEGACY_ERROR_PAGE_HTML,
   LEGACY_ERROR_STATUS_TEXT,
@@ -25,7 +26,7 @@ import {
   type Clock,
   type FastifyInstance,
 } from '../../src/service-kit/index.js';
-import { testVerifier } from '../../src/testing/index.js';
+import { mintServiceToken, testVerifier } from '../../src/testing/index.js';
 
 const INSTANT = '2026-11-10T08:57:16.524Z';
 const INSTANT_MS = Date.parse(INSTANT);
@@ -185,6 +186,11 @@ describe('createService', () => {
     return { app, lines };
   }
 
+  /** The gateway's invocation credential, which every request to a service route carries. */
+  async function gatewayCredential(): Promise<Record<string, string>> {
+    return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'people' })}` };
+  }
+
   it('stamps app.opt2 and every request context with the injected clock', async () => {
     const clock = fixedClock(INSTANT);
     const { app } = await build(clock);
@@ -192,7 +198,7 @@ describe('createService', () => {
       startedAt: currentRequestContext()?.startedAt.toISOString(),
     }));
 
-    const res = await app.inject({ method: 'GET', url: '/started' });
+    const res = await app.inject({ method: 'GET', url: '/started', headers: await gatewayCredential() });
 
     expect(app.opt2.clock).toBe(clock);
     expect(res.json()).toStrictEqual({ startedAt: INSTANT });
@@ -213,7 +219,11 @@ describe('createService', () => {
       });
     }
 
-    const res = await app.inject({ method: 'GET', url: `${url}?method=findOne`, headers: { 'x-request-id': 'req-err' } });
+    const res = await app.inject({
+      method: 'GET',
+      url: `${url}?method=findOne`,
+      headers: { 'x-request-id': 'req-err', ...(await gatewayCredential()) },
+    });
 
     expect(res.statusCode).toBe(status);
     expect(res.headers.generator).toBe('Masa CMS 7.6.1');

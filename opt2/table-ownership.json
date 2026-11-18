@@ -1419,7 +1419,11 @@
       "rowIdentity": "key",
       "columns": ["groupID", "siteID", "created", "orderno", "membershipID", "chainID"],
       "serializedDocumentColumns": [],
-      "tenantResolution": "siteID-or-umbrella",
+      "tenantResolution": "parent:tapprovalchains",
+      "tenantParent": {
+        "table": "tapprovalchains",
+        "join": "tapprovalmemberships.chainID = tapprovalchains.chainID"
+      },
       "owner": "strategies-content",
       "ruleSteps": [1],
       "targets": [

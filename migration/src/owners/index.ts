@@ -10,7 +10,7 @@ export type {
   LoadUnitCatalogOptions,
 } from './units.js';
 
-export { createOwnersClient, OwnerCallError, GateConflict } from './client.js';
+export { createOwnersClient, OwnerCallError, GateConflict, UNAVAILABLE_STATUSES, isOwnerUnavailable, ENDPOINT_OWNERS } from './client.js';
 export type {
   OwnersClient,
   CreateOwnersClientOptions,

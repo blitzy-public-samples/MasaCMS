@@ -19,7 +19,7 @@ import {
   type WatermarkRecord,
   type WritePositions,
 } from '@opt2/platform/migration-kit';
-import { SERVICE_CALL_TIMEOUT_MS, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { callQueueControl, type QueueControlOp, type QueueControlResult } from '@opt2/platform/tasks';
 import type { paths as financePaths } from '../generated/clients/finance.js';
 import type { paths as reportingPaths } from '../generated/clients/reporting.js';
@@ -246,6 +246,27 @@ export class GateConflict extends OwnerCallError {
     this.units = body.units;
   }
 }
+
+/** Owner answers that mean the owner is unavailable. */
+export const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+/** True when a failed owner call found its owner unavailable: unreachable, timed out, or answering 502, 503 or 504. */
+export function isOwnerUnavailable(error: unknown): error is ServiceUnavailableError | OwnerCallError {
+  return error instanceof ServiceUnavailableError || (error instanceof OwnerCallError && UNAVAILABLE_STATUSES.has(error.status));
+}
+
+/** The owner each endpoint without an owner parameter calls. */
+export const ENDPOINT_OWNERS = {
+  putObject: CONTENT,
+  getObject: CONTENT,
+  deleteObject: CONTENT,
+  getAttachmentObject: FINANCE,
+  getExportObject: REPORTING,
+  siteMonitorState: PROGRAMS_SITES,
+  putSiteMonitorState: PROGRAMS_SITES,
+  adoptScheduledTasks: COMMUNICATIONS,
+  cancelAdoptedScheduledTasks: COMMUNICATIONS,
+} as const satisfies Partial<Record<keyof OwnersClient, DataOwner>>;
 
 interface CallOptions {
   query?: ServiceRequest['query'];

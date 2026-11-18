@@ -319,7 +319,8 @@ describe('envelopes the routes write', () => {
   });
 
   it('a forgot-password request writes identity.login-mail.requested.v1 for the matching account', async () => {
-    await send('anonymous', 'POST', '/v1/login-mail', { email: EDITOR.contact.email ?? '', siteid: SITE_A });
+    // A visitor's request, as the gateway forwards it with its own invocation credential.
+    await send('service:gateway', 'POST', '/v1/login-mail', { email: EDITOR.contact.email ?? '', siteid: SITE_A });
 
     expect(writtenEnvelopes(t)).toEqual([
       expect.objectContaining({

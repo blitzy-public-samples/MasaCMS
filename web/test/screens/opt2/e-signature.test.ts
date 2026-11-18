@@ -70,12 +70,15 @@ function eSignatureCalls(gateway: FakeGatewayClient) {
   return gateway.calls.filter((call) => call.service === 'e-signature');
 }
 
-/** The value texts of each audit entry's label and value rows, entries in rendered order. */
+/** The value texts of each audit entry's label and value rows, entries in rendered order between the block's rules. */
 function auditEntries(markup: string): string[][] {
   const $ = load(markup, null, false);
-  return $('div.block-content div.block-content')
-    .toArray()
-    .map((entry) => $(entry).children('div.mura-control-group').toArray().map((row) => $(row).children('div').text()));
+  const entries: string[][] = [[]];
+  for (const child of $('div.block-content').children('div.mura-control-group, hr').toArray()) {
+    if ($(child).is('hr')) entries.push([]);
+    else entries.at(-1)?.push($(child).children('div').text());
+  }
+  return entries;
 }
 
 /** `gate`'s decision for `req`, with the `secure()` of that request. */

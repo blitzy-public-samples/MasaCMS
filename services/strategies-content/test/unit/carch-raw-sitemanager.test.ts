@@ -440,7 +440,9 @@ describe('approvalaction', () => {
     expect(res.body.endsWith('} ')).toBe(true);
     expect(consumed).toEqual([]);
     expect('csrfContext' in carchRawActions.approvalaction).toBe(false);
-    expect(inserted('approval_action')).toEqual([expect.objectContaining({ requestid: REQUEST, actiontype: 'Rejection', comments: 'Not yet', userid: USER_ID })]);
+    expect(inserted('approval_action')).toEqual([
+      expect.objectContaining({ requestid: REQUEST, siteid: SITE, groupid: GROUP, actiontype: 'Rejection', comments: 'Not yet', userid: USER_ID }),
+    ]);
   });
 
   it('fails as legacy does without a comment, before writing', async () => {

@@ -421,6 +421,11 @@ describe('isSafeErrorText', () => {
     ['Projection of people=Ada was not applied in legacy within 600 ms', false],
     ['Projection of people=900 was not applied in legacy within 1.5 ms', false],
     ['Projection of people=900 was not applied in legacy within 600 ms for Ada', false],
+    ['Projection of programs-sites=802 is quarantined: legacy could not take the write', true],
+    ['Projection of e-signature=7,timesheets=18446744073709551614 is quarantined: legacy could not take the write', true],
+    ['Projection of  is quarantined: legacy could not take the write', false],
+    ['Projection of Ada Lovelace=802 is quarantined: legacy could not take the write', false],
+    ['Projection of people=802 is quarantined: legacy could not take the write for Ada', false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
   });

@@ -84,4 +84,91 @@ describe('expires="never" cookies', () => {
   ])('writes %s as ACF does', (_label, write, name, value, secure, now, expected) => {
     expect(write(name, value, secure, new Date(now))).toBe(expected);
   });
+
+  // Oracle: utility.setCookie's <cfcookie httpOnly=true> of the request start, and <cfcookie preserveCase=true> with
+  // secure, domain and httpOnly combined, as ACF 2023 wrote them on this host.
+  it.each<[label: string, name: string, value: string, secure: boolean, httpOnly: boolean, domain: string, now: string, expected: string]>([
+    [
+      'an HttpOnly cfcookie',
+      'MXP_TRACKINGID',
+      '3AA8C316%2DBB6C%2D6E65%2D2BD4F00C816B4752',
+      false,
+      true,
+      '',
+      '2026-11-18T01:27:26.402Z',
+      'MXP_TRACKINGID=3AA8C316%2DBB6C%2D6E65%2D2BD4F00C816B4752; path=/; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 01:27:26 GMT',
+    ],
+    [
+      'an HttpOnly cfcookie in the midnight hour',
+      'mobileFormat',
+      'false',
+      false,
+      true,
+      '',
+      '2026-11-18T00:30:21Z',
+      'mobileFormat=false; path=/; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 00:30:21 GMT',
+    ],
+    [
+      'a secure HttpOnly cfcookie',
+      'mobileFormat',
+      'true',
+      true,
+      true,
+      '',
+      '2026-11-18T13:00:00Z',
+      'mobileFormat=true; path=/; secure; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 13:00:00 GMT',
+    ],
+    [
+      'a secure HttpOnly cfcookie with a domain',
+      'ProbeA',
+      'a%2D1',
+      true,
+      true,
+      '.localhost',
+      '2026-11-18T02:36:29Z',
+      'ProbeA=a%2D1; path=/; domain=.localhost; secure; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 02:36:29 GMT',
+    ],
+    [
+      'an HttpOnly cfcookie with a domain',
+      'ProbeB',
+      'b%2D1',
+      false,
+      true,
+      '.localhost',
+      '2026-11-18T02:36:29Z',
+      'ProbeB=b%2D1; path=/; domain=.localhost; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 02:36:29 GMT',
+    ],
+    [
+      'a secure HttpOnly cfcookie with a blank domain',
+      'ProbeC',
+      'c%2D1',
+      true,
+      true,
+      '',
+      '2026-11-18T02:36:29Z',
+      'ProbeC=c%2D1; path=/; secure; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 02:36:29 GMT',
+    ],
+    [
+      'a secure cfcookie with a domain',
+      'ProbeD',
+      'd%2D1',
+      true,
+      false,
+      '.localhost',
+      '2026-11-18T02:36:29Z',
+      'ProbeD=d%2D1; path=/; domain=.localhost; secure; Max-Age=946080000; Expires=Fri, 10-Nov-2056 02:36:29 GMT',
+    ],
+    [
+      'an HttpOnly cfcookie with a domain without a leading dot',
+      'ProbeB',
+      'b%2D1',
+      false,
+      true,
+      'localhost',
+      '2026-11-18T02:36:29Z',
+      'ProbeB=b%2D1; path=/; domain=localhost; HttpOnly; Max-Age=946080000; Expires=Fri, 10-Nov-2056 02:36:29 GMT',
+    ],
+  ])('writes %s as ACF does', (_label, name, value, secure, httpOnly, domain, now, expected) => {
+    expect(cfcookieNeverCookie(name, value, secure, new Date(now), httpOnly, domain)).toBe(expected);
+  });
 });

@@ -87,7 +87,7 @@ Every tenant-owned table has `tenant_id uuid NOT NULL` and row-level security en
 
 ## Routes
 
-Every route declares `config.opt2.requires` or `config.opt2.public`; anything else fails start-up. `site-admin` is a member of the site's private-pool `Admin` group, and `system-user` any authenticated private-pool user.
+Every route declares `config.opt2.requires` or `config.opt2.public`; anything else fails start-up. A public route waives the user token, not the caller's invocation credential, which only `/healthz` may omit. `site-admin` is a member of the site's private-pool `Admin` group, and `system-user` any authenticated private-pool user.
 
 ### Legacy routes
 
@@ -145,7 +145,7 @@ The service implements the other routes in full, so a later version can move the
 | `POST /internal/v1/events/programs-sites.programs-sites.site.changed.v1` | Pub/Sub push | `service:pubsub-invoker` |
 | `POST /internal/v1/outbox/sweep` (`programs-sites-outbox-sweep`) | Cloud Tasks | `service:tasks-invoker` |
 | `POST /internal/v1/jobs/sitemonitor` (`programs-sites-sitemonitor`) | Cloud Tasks | `service:tasks-invoker` |
-| `GET /healthz` | service | public |
+| `GET /healthz` | service | public, invocation credential optional |
 
 Queues this service creates tasks on (`platform/src/tasks/queues.ts`): `programs-sites-sitemonitor`, `programs-sites-outbox-sweep`, `content-scheduled-publish` and `content-feed-import`.
 

@@ -10,10 +10,12 @@ import {
   type UserClaims,
 } from '@opt2/platform/auth';
 import {
+  appendFormScopeValue,
   cfEq,
   cfListToArray,
   cfcookieNeverCookie,
   cookieScopeNeverCookie,
+  corsHeaders,
   fallbackSiteId,
   parseCookieHeader,
   portcullisScan,
@@ -51,12 +53,12 @@ export type AdminMode = 'page' | 'redirect' | 'raw' | 'opt2';
 /** Inputs of {@link buildAdminRequest}, as the route adapters receive them. */
 export interface AdminRequestInput {
   readonly params: { readonly circuit?: string; readonly action?: string };
-  /** The query web received; in page mode it holds the original query followed by the posted fields. */
+  /** The query web received; the URL scope only without the gateway's original-URL header. */
   readonly searchParams: URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>;
   /** Path and query of the request web received; the browser's own on the `/opt2` routes the gateway forwards unchanged. */
   readonly receivedTarget: string;
   readonly headers: Headers;
-  /** The parsed body of redirect and raw requests. */
+  /** The parsed request body, the form scope; absent on requests whose body is not read. */
   readonly form?: FormData | URLSearchParams;
   readonly auth: WebAuth;
   readonly gateway: GatewayClient;
@@ -187,10 +189,7 @@ export interface AdminRequest {
   readonly circuit: string;
   readonly item: string;
   readonly rc: RequestContext;
-  /**
-   * CFML form scope as posted, before the start-up scan: the posted fields, or in page mode those the gateway appended
-   * to the query.
-   */
+  /** CFML form scope as posted, before the start-up scan: the fields of the request body. */
   readonly formScope: RequestContext;
   /** The scopes {@link relayContext} rebuilds an owner relay from. */
   readonly relayScopes: RelayScopes;
@@ -233,6 +232,8 @@ export interface AdminRequest {
   readonly httpHost: string;
   /** Trusted sanitizeHref domains of the token's site, else the session site; loaded only for anonymous requests. */
   readonly hrefDomains?: HrefDomains;
+  /** The set-up's `Access-Control-Allow-*` echo of an allowed `Origin` (admin/Application.cfc:521-533); empty otherwise. */
+  readonly accessControlHeaders?: Readonly<Record<string, string>>;
 }
 
 /** CFML struct of simple values: case-insensitive keys that keep their first-seen casing, in insertion order. */
@@ -282,13 +283,22 @@ function isPairs(input: ScopeInput): input is Iterable<readonly [string, string]
   return Symbol.iterator in input;
 }
 
-/** A CFML URL or form scope: repeated names joined with `,` in order, unnamed pairs dropped. */
+/** A CFML URL scope: repeated names joined with `,` in order, empty values included, unnamed pairs dropped. */
 function cfScope(input: ScopeInput): CfStruct {
   const scope = new CfStruct();
   for (const [name, value] of isPairs(input) ? input : Object.entries(input)) {
     if (name === '') continue;
     const previous = scope.get(name);
     scope.set(name, previous === undefined ? value : `${previous},${value}`);
+  }
+  return scope;
+}
+
+/** A CFML form scope, a repeated name joined as ACF joins it; unnamed pairs dropped. */
+function cfFormScope(input: ScopeInput): CfStruct {
+  const scope = new CfStruct();
+  for (const [name, value] of isPairs(input) ? input : Object.entries(input)) {
+    if (name !== '') scope.set(name, appendFormScopeValue(scope.get(name), value));
   }
   return scope;
 }
@@ -371,7 +381,7 @@ function mergeScopes(pathInfo: readonly string[], url: CfStruct, form: CfStruct)
 
 /** FW/1 request context: path segments, then URL, then form, each scope's `fuseaction` overriding its `muraAction`. */
 export function mergeFw1Context(pathInfo: readonly string[], url: ScopeInput, form: ScopeInput): RequestContext {
-  return contextView(mergeScopes(pathInfo, withFuseaction(cfScope(url)), withFuseaction(cfScope(form))));
+  return contextView(mergeScopes(pathInfo, withFuseaction(cfScope(url)), withFuseaction(cfFormScope(form))));
 }
 
 /** FW/1 `getFullyQualifiedAction` with the admin's default subsystem `core`, case kept. */
@@ -598,17 +608,6 @@ function bodyPairs(form: FormData | URLSearchParams): Pairs {
   return [...entries].map(([name, value]) => [name, typeof value === 'string' ? value : value.name] as const);
 }
 
-/** The received pairs left once the original query's pairs are taken out: the fields a page-mode POST carried. */
-function postedFields(received: Pairs, original: Pairs): Pairs {
-  const pending = new Map<string, number>();
-  for (const [name] of original) pending.set(name, (pending.get(name) ?? 0) + 1);
-  return received.filter(([name]) => {
-    const left = pending.get(name) ?? 0;
-    if (left > 0) pending.set(name, left - 1);
-    return left === 0;
-  });
-}
-
 /** Lower-cased names of the body's file parts. */
 function fileFieldsOf(form: AdminRequestInput['form']): Set<string> {
   if (!(form instanceof FormData)) return new Set();
@@ -637,15 +636,14 @@ export function requestScopes({ headers, searchParams, form }: AdminRequestInput
   url: Pairs;
   form: Pairs;
 } {
-  const received = receivedPairs(searchParams);
+  const posted = form === undefined ? [] : bodyPairs(form);
   const target = headers.get(ORIGINAL_URL_HEADER);
-  if (target === null) return { pathInfo: [], url: received, form: form === undefined ? [] : bodyPairs(form) };
+  if (target === null) return { pathInfo: [], url: receivedPairs(searchParams), form: posted };
   const queryAt = target.indexOf('?');
-  const url = [...new URLSearchParams(queryAt < 0 ? '' : target.slice(queryAt + 1))];
   return {
     pathInfo: pathInfoOf(queryAt < 0 ? target : target.slice(0, queryAt)),
-    url,
-    form: form === undefined ? postedFields(received, url) : bodyPairs(form),
+    url: [...new URLSearchParams(queryAt < 0 ? '' : target.slice(queryAt + 1))],
+    form: posted,
   };
 }
 
@@ -904,7 +902,7 @@ export function urlEncodedFormat(value: string): string {
 
 /** The `Set-Cookie` values the admin set-up writes at `now`, applied to `cookies`, in the order ACF emits them. */
 function adminCookies(cookies: Map<string, string>, rcRb: string, now: Date): string[] {
-  const { secureCookies } = legacySettings();
+  const { secureCookies, cookieDomain } = legacySettings();
   const pending: string[] = [];
   // ACF writes `cookie.rb` assignments URL-encoded, keeping the case of a `param` default and upper-casing the rest.
   const cookieScope = (name: string, value: string, maintainCase: boolean): void => {
@@ -919,7 +917,7 @@ function adminCookies(cookies: Map<string, string>, rcRb: string, now: Date): st
     ['ADMINSIDEBAR', 'off'],
   ] as const) {
     if (cookies.has(name)) continue;
-    pending.push(cfcookieNeverCookie(name, value, secureCookies, now));
+    pending.push(cfcookieNeverCookie(name, value, secureCookies, now, false, cookieDomain));
     cookies.set(name, value);
   }
   return pending;
@@ -993,7 +991,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   const identityLoad = loadIdentitySession(gateway, auth, isLoggedIn);
   const scopes = requestScopes(input);
   const postedUrl = withFuseaction(cfScope(scopes.url));
-  const posted = withFuseaction(cfScope(scopes.form));
+  const posted = withFuseaction(cfFormScope(scopes.form));
   const { url, form } = startupScan(postedUrl, posted, fileFieldsOf(input.form));
   const rc = mergeScopes(scopes.pathInfo, url, form);
   const relayScopes: RelayScopes = {
@@ -1069,6 +1067,10 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   // getSite does. Without a token, an empty session site means rc.siteid was not switched to, so that id is sent.
   const hrefSiteId = user !== undefined ? user.site : session.siteid === '' ? rcSiteId : session.siteid;
   const hrefDomains = isLoggedIn ? undefined : await loadHrefDomains(gateway, hrefSiteId, forwardedHost);
+  // getAccessControlOriginDomainArray is read only for a request carrying an Origin.
+  const origin = headers.get('origin') ?? undefined;
+  const originDomains =
+    origin === undefined ? undefined : (hrefDomains ?? (await loadHrefDomains(gateway, hrefSiteId, forwardedHost)));
   const modulePerm = (moduleId: string): boolean =>
     isS2 || isSiteAdmin || (isCoreModuleId(moduleId) && hasAnyRole(roles, [moduleRole(moduleId)]));
   return {
@@ -1104,6 +1106,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     serverName: hostName(forwardedHost),
     httpHost: forwardedHost,
     hrefDomains,
+    accessControlHeaders: corsHeaders(origin, originDomains?.allowedDomains ?? []),
   };
 }
 

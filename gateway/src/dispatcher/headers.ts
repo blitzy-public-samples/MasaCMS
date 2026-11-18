@@ -45,6 +45,11 @@ export function applyLegacyHeaders(reply: FastifyReply): void {
   }
 }
 
+/** Sets the servlet container's `Content-Encoding: identity` on a reply that names no encoding; for target and web responses only. */
+export function applyIdentityEncoding(reply: FastifyReply): void {
+  if (!reply.hasHeader('content-encoding')) reply.header('content-encoding', 'identity');
+}
+
 /** The web path a response answered (query allowed) and its status, which select the path-specific rules. */
 export interface WebResponseFacts {
   path: string;

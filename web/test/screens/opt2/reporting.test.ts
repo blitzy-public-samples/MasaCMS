@@ -62,6 +62,11 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'form-actions',
   // The list's Previous/Next, as admin/core/views/cusers/inc/dsp_nextn.cfm pages a list.
   'pagination',
+  // Responsive column hiding, as admin/core/views/cusers/inc/dsp_users_list.cfm hides list columns; hidden-md is
+  // the same admin.css utility one breakpoint up.
+  'hidden-xs',
+  'hidden-sm',
+  'hidden-md',
   // State badges, styled by admin.css `.mura .label-success`, `-info`, `-inverse` and `-important`.
   'label',
   'label-success',

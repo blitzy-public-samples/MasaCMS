@@ -42,6 +42,7 @@ import type { AccountPrepareRequest, AccountView, IdentityClient, LegacyErrors }
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
 import { EXTEND_ATTRIBUTE, EXTEND_SET, EXTEND_SUBTYPE, PEOPLE_UNITS } from '../../src/repo/tables.js';
 import { registerAdminProfileRoutes } from '../../src/routes/admin-profile.js';
+import { captureRequestLogs } from '../helpers/request-logs.js';
 
 const SERVICE = 'people';
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
@@ -297,14 +298,46 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     expect(await storedPerson(userId)).toEqual(before);
   });
 
-  it('fails as legacy does on the unset user bean when the token is refused, writing nothing', async () => {
+  /** A profile form post as multipart with a CSRF pair: text parts, then a `newFile` file part named `filename`, with bytes only when named. */
+  function profileMultipart(fields: Record<string, string>, filename: string): { contentType: string; payload: string } {
+    const boundary = 'opt2-profile-boundary';
+    const parts = Object.entries({ csrf_token: 'TOKEN', csrf_token_expires: '260630110000000', ...fields }).map(
+      ([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    );
+    parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="newFile"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n${filename === '' ? '' : 'PNG'}\r\n`);
+    return { contentType: `multipart/form-data; boundary=${boundary}`, payload: `${parts.join('')}--${boundary}--\r\n` };
+  }
+
+  it.each([
+    [200, 'an empty newFile text field and an empty newFile file part', '', ''],
+    [503, 'a filled newFile text field', 'x', ''],
+    [503, 'a chosen newFile file', '', 'me.png'],
+  ] as const)('answers %i to a profile save posted as multipart with %s', async (status, _name, newFile, filename) => {
+    const { userId } = await seedUser(TENANT_A.siteId, 0);
+    const before = await storedPerson(userId);
+    const { contentType, payload } = profileMultipart({ fname: 'Kai', lname: 'Lee', email: 'kai@example.com', jobtitle: 'Analyst', newFile }, filename);
+    const res = await send('POST', '/v1/profile:update', { ...(await headersFor(userId)), 'content-type': contentType }, payload);
+    expect(res.statusCode).toBe(status);
+    if (status === 200) {
+      expect(res.json()).toEqual({ written: true, redirect: { action: 'home.redirect', params: {} }, errors: {} });
+      expect(await storedPerson(userId)).toEqual({ fname: 'Kai', jobtitle: 'Analyst' });
+    } else {
+      expect(consumed).toEqual([]);
+      expect(await storedPerson(userId)).toEqual(before);
+    }
+  });
+
+  it('fails as legacy does on the unset user bean when the token is refused with the 500 server_error, writing nothing', async () => {
     const { userId } = await seedUser(TENANT_A.siteId, 0);
     const before = await storedPerson(userId);
     csrfValid = false;
+    const logs = captureRequestLogs(app);
     const res = await send('POST', '/v1/profile:update', { ...(await headersFor(userId)), ...FORM }, profileForm({ fname: 'Kai', email: 'kai@example.com' }));
     expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } });
     expect(identityCalls).toEqual([]);
     expect(await storedPerson(userId)).toEqual(before);
+    expect(logs.lines.filter((line) => (JSON.parse(line) as { message?: unknown }).message === 'unhandled error')).toEqual([]);
   });
 
   it('lists the active user subtypes of the site and the stored and default extended values', async () => {

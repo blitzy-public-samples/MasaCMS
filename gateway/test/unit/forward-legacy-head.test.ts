@@ -111,7 +111,8 @@ async function startGateway(
   app.route({
     method: ['GET', 'HEAD'],
     url: '/*',
-    config: { opt2: { public: true } },
+    // Declared as the gateway's edge catch-all, which browsers reach without an invocation credential.
+    config: { opt2: { public: true, edge: true } },
     handler: (request, reply) => {
       void forwardToLegacy(request, reply, {
         legacyOrigin,

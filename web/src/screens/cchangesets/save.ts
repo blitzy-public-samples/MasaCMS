@@ -64,7 +64,7 @@ async function loadSavedChangeset(ctx: ScreenContext): Promise<ChangesetEditData
 export const changesetSaveScreen: Omit<PageScreen<ChangesetEditData>, 'gate'> = Object.freeze({
   circuit: 'cchangesets',
   action: 'save',
-  // Inventoried as a page: the gateway folds the posted form into a page request, and the controller step writes.
+  // Inventoried as a page, whose controller step writes the posted form.
   mode: 'page',
   owner: SERVICE,
   redirect: saveChangeset,

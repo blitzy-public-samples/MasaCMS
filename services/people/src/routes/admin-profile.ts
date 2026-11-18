@@ -2,6 +2,7 @@
 import type { UserClaims } from '@opt2/platform/auth';
 import {
   ADMIN_HOME_ACTION,
+  LegacyApiError,
   LegacyServiceUnavailableError,
   PHOTO_CONDITION,
   cfDateTimeFormat,
@@ -212,9 +213,9 @@ async function refuseWithheldBranch(request: FastifyRequest): Promise<void> {
   }
 }
 
-/** A refused token skips the save, and legacy then fails on the unset `rc.userBean` (ceditprofile/update.cfm:76). */
+/** A refused token skips the save, and legacy then fails on the unset `rc.userBean` (ceditprofile/update.cfm:76): the 500 `server_error`. */
 function failOnUnsetUserBean(): never {
-  throw new Error(`${PROFILE_UPDATE_ACTION} refused its CSRF token; legacy fails on the unset rc.userBean`);
+  throw new LegacyApiError('server_error');
 }
 
 /** The legacy 503 of a session user identity holds no account of. */

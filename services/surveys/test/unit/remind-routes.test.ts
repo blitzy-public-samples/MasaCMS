@@ -76,11 +76,12 @@ describe.skipIf(!available)('remind routes', () => {
     });
   }
 
-  function remind(method: 'GET' | 'POST', query: string, opts: { id?: string; headers?: Record<string, string>; body?: unknown } = {}) {
+  /** Calls the remind callback as the ACF task does through the gateway, unless `headers` replaces the gateway's invocation credential. */
+  async function remind(method: 'GET' | 'POST', query: string, opts: { id?: string; headers?: Record<string, string>; body?: unknown } = {}) {
     return app.inject({
       method,
       url: `/legacy-fixtures/cfml/api.cfm/surveys/surveys/${opts.id ?? surveyId}/remind?${query}`,
-      headers: { ...opts.headers, ...(opts.body === undefined ? {} : JSON_HEADERS) },
+      headers: { ...(opts.headers ?? (await serviceHeaders('gateway'))), ...(opts.body === undefined ? {} : JSON_HEADERS) },
       payload: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   }
@@ -274,8 +275,16 @@ describe.skipIf(!available)('remind routes', () => {
 
     it('reads the token from the url only and answers notFound for another overriding method', async () => {
       expect((await remind('POST', 'siteid=tenant-a&reminder=1', { body: { opt2TaskToken: TOKEN } })).statusCode).toBe(403);
-      const override = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, { headers: { 'x-http-method-override': 'DELETE' } });
+      const override = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, {
+        headers: { ...(await serviceHeaders('gateway')), 'x-http-method-override': 'DELETE' },
+      });
       expect([override.statusCode, override.json().error.message]).toEqual([404, 'Not Found']);
+      expect(await nothingSent()).toBe(true);
+    });
+
+    it('refuses a task run bypassing the gateway, its task token valid, with 401 before the handler, stamping nothing', async () => {
+      const res = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, { headers: {} });
+      expect([res.statusCode, res.json().method]).toEqual([401, 'invalid']);
       expect(await nothingSent()).toBe(true);
     });
 

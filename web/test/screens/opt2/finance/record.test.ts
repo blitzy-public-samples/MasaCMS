@@ -1,6 +1,7 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 // finance/record: the record detail with version history, role transition buttons and attachments, inside the shell.
 import * as cheerio from 'cheerio';
+import { Roles } from '@opt2/platform/auth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
@@ -10,12 +11,14 @@ import {
   financeAttachments,
   financeRecordDetail,
   financeRecordVersions,
+  financeTransitionLegal,
 } from '../../../fixtures/opt2/finance';
 import { fragmentModel, type DomButton, type DomControl, type DomModel } from '../../../helpers/dom-model';
 import { routeKey } from '../../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../../helpers/screen-context';
 import {
   APPROVER,
+  CSRF_HEADERS,
   LOGOUT,
   NOACCESS,
   PREPARER,
@@ -57,6 +60,23 @@ const CSRF_CONTROLS: readonly DomControl[] = [
 
 const button = (text: string): DomButton => ({ text, type: 'submit', hasOnclick: false });
 
+/** The version history grid of `record`: one row per version, values as finance sent them. */
+function versionTable(record = financeRecordDetail): DomModel['tables'][number] {
+  return {
+    headers: VERSION_LABELS,
+    rows: record.versions.map((version) => [
+      String(version.version),
+      version.action,
+      STATE_TEXT[version.state],
+      version.title,
+      version.amount,
+      version.period,
+      version.actor_user_id,
+      version.created,
+    ]),
+  };
+}
+
 /** The detail body's DOM model of the RE-SUBMITTED fixture record for a user seeing `buttons` and, when `preparer`, the forms. */
 function detailModel(buttons: readonly string[], preparer: boolean): DomModel {
   const record = financeRecordDetail;
@@ -77,23 +97,22 @@ function detailModel(buttons: readonly string[], preparer: boolean): DomModel {
     ],
     labels: [
       ...SUMMARY_LABELS,
-      ...record.versions.flatMap(() => VERSION_LABELS),
       ...record.attachments.flatMap(() => ATTACHMENT_LABELS),
       ...(preparer ? ['File', 'Title', 'Amount', 'Period'] : []),
     ],
-    controls: [...buttons.flatMap(() => CSRF_CONTROLS), ...(preparer ? [...uploadControls, ...editControls] : [])],
+    controls: [...(buttons.length > 0 ? CSRF_CONTROLS : []), ...(preparer ? [...uploadControls, ...editControls] : [])],
     buttons: [
       ...buttons,
       ...financeAttachments.map((attachment) => attachment.file_name),
       ...(preparer ? ['Upload', 'Save'] : []),
     ].map(button),
     links: [BACK_LINK],
-    tables: [],
+    tables: [versionTable()],
     alerts: [],
   };
 }
 
-/** `[label, value]` of the record's summary, each version and each attachment, as finance sent them. */
+/** `[label, value]` of the record's summary and each attachment, as finance sent them. */
 function recordValues(record = financeRecordDetail): string[][] {
   const pairs = (labels: readonly string[], values: readonly string[]): string[][] =>
     labels.map((label, index) => [label, values[index] ?? '']);
@@ -107,18 +126,6 @@ function recordValues(record = financeRecordDetail): string[][] {
       record.created,
       record.lastupdate ?? '',
     ]),
-    ...record.versions.flatMap((version) =>
-      pairs(VERSION_LABELS, [
-        String(version.version),
-        version.action,
-        STATE_TEXT[version.state],
-        version.title,
-        version.amount,
-        version.period,
-        version.actor_user_id,
-        version.created,
-      ]),
-    ),
     ...record.attachments.flatMap((attachment) =>
       pairs(ATTACHMENT_LABELS, [
         attachment.file_name,
@@ -167,8 +174,8 @@ describe('finance record screen', () => {
     expect(model).toStrictEqual(detailModel(buttons, preparer));
   });
 
-  it('shows the summary, each version and each attachment as label and value rows, values as sent', async () => {
-    const { view } = await renderDetail(financeRequest(APPROVER, { id: RECORD_ID }));
+  it('shows the summary and each attachment as label and value rows and the versions as one grid, values as sent', async () => {
+    const { view, model } = await renderDetail(financeRequest(APPROVER, { id: RECORD_ID }));
     const body = toString(view.body);
     const $ = cheerio.load(body, null, false);
 
@@ -177,8 +184,97 @@ describe('finance record screen', () => {
     expect($('.label').toArray().map((badge) => $(badge).attr('class'))).toEqual(
       ['info', 'inverse', 'inverse', 'info', 'important', 'important', 'info'].map((tone) => `label label-${tone}`),
     );
-    expect($('table')).toHaveLength(0);
-    expect($('hr')).toHaveLength(financeRecordVersions.length - 1 + financeAttachments.length - 1);
+    expect(model.tables).toEqual([versionTable()]);
+    expect(model.tables[0]?.rows).toHaveLength(financeRecordVersions.length);
+    expect($('h2:contains("Version History") + table.mura-table-grid')).toHaveLength(1);
+    expect($('hr')).toHaveLength(financeAttachments.length - 1);
+  });
+
+  it('marks the secondary version columns hidden on narrow screens, the title taking the variable width', async () => {
+    const { view } = await renderDetail(financeRequest(APPROVER, { id: RECORD_ID }));
+    const $ = cheerio.load(toString(view.body), null, false);
+    const columns = [
+      undefined,
+      undefined,
+      undefined,
+      'var-width',
+      'hidden-xs',
+      'hidden-xs hidden-sm',
+      'hidden-xs hidden-sm hidden-md',
+      'hidden-xs',
+    ];
+
+    for (const [index, expected] of columns.entries()) {
+      const cells = $(`table.mura-table-grid tr > :nth-child(${index + 1})`).toArray();
+      expect(cells.map((cell) => $(cell).attr('class'))).toEqual(Array(financeRecordVersions.length + 1).fill(expected));
+    }
+  });
+
+  it('shows the empty-list message for a record without versions', async () => {
+    const bare = { ...financeRecordDetail, versions: [] };
+    const gateway = financeGateway({ [RECORD_ROUTE]: { status: 200, body: { data: bare } } });
+    const { view, model } = await renderDetail(undefined, gateway);
+
+    expect(model.tables).toEqual([]);
+    expect(toString(view.body)).toContain('<h2>Version History</h2><div class="help-block-empty">No versions.</div>');
+  });
+
+  it.each([
+    ['a preparer', financeRequest(PREPARER, { id: RECORD_ID }), ['submit', 'resubmit']],
+    ['an approver', financeRequest(APPROVER, { id: RECORD_ID }), ['approve', 'reject']],
+    ['a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['submit', 'resubmit', 'approve', 'reject']],
+  ])('groups the transitions of %s in one btn-group of one form posting the CSRF pair once', async (_, req, actions) => {
+    const { view } = await renderDetail(req);
+    const $ = cheerio.load(toString(view.body), null, false);
+    const form = $('form:has(> .btn-group)');
+    const url = (action: string): string => `/opt2/admin-actions/finance/${action}?siteid=${SITE}&id=${RECORD_ID}`;
+
+    expect(form).toHaveLength(1);
+    expect([form.attr('method'), form.attr('action')]).toEqual(['post', url(actions[0] ?? '')]);
+    expect(form.children('input').toArray().map((el) => [$(el).attr('name'), $(el).attr('value')])).toEqual([
+      ['csrf_token', FIXED_CSRF.token],
+      ['csrf_token_expires', FIXED_CSRF.expires],
+    ]);
+    expect(form.find('.btn-group > *').toArray().map((el) => [el.tagName, $(el).attr('class'), $(el).attr('formaction')])).toEqual(
+      actions.map((action) => ['button', 'btn', url(action)]),
+    );
+  });
+
+  it('leads each transition button, posted with the form CSRF pair, to its action and on to finance', async () => {
+    const { view } = await renderDetail(preparerApproverRequest({ id: RECORD_ID }));
+    const $ = cheerio.load(toString(view.body), null, false);
+    const form = $('form:has(> .btn-group)');
+    const posted = Object.fromEntries(form.children('input').toArray().map((el) => [$(el).attr('name'), $(el).attr('value')]));
+    const path = (action: string): `/${string}` => `/v1/finance/records/${RECORD_ID}/transitions/${action}`;
+    const buttons = form.find('.btn-group > button').toArray();
+
+    expect(buttons).toHaveLength(4);
+    for (const button of buttons) {
+      const url = new URL($(button).attr('formaction') ?? '', 'http://localhost');
+      const action = url.pathname.split('/').pop() ?? '';
+      const gateway = financeGateway({
+        [routeKey('POST', 'finance', path(action))]: { status: 200, body: financeTransitionLegal },
+      });
+      const ctx = makeScreenContext({ req: preparerApproverRequest({ ...Object.fromEntries(url.searchParams), ...posted }), gateway });
+
+      await expect(financeAction(action).submit(ctx)).resolves.toEqual({
+        kind: 'location',
+        location: `/opt2/admin/finance/record?siteid=${SITE}&id=${RECORD_ID}`,
+      });
+      expect(gateway.calls.filter(({ service }) => service === 'finance')).toEqual([
+        { service: 'finance', method: 'POST', path: path(action), headers: CSRF_HEADERS },
+      ]);
+    }
+  });
+
+  it('renders no transition form for a user holding neither finance role', async () => {
+    const { view } = await renderDetail(financeRequest(Roles.timesheetsEmployee, { id: RECORD_ID }));
+    const $ = cheerio.load(toString(view.body), null, false);
+
+    expect($('form .btn-group')).toHaveLength(0);
+    expect($('form').toArray().map((form) => $(form).attr('action'))).toEqual(
+      financeAttachments.map(({ attachment_id }) => `/opt2/admin-actions/finance/download?siteid=${SITE}&id=${RECORD_ID}&aid=${attachment_id}`),
+    );
   });
 
   it('reads the record once and issues the CSRF pair of its id for every form', async () => {
@@ -197,7 +293,6 @@ describe('finance record screen', () => {
         .map((form) => [$(form).attr('method'), $(form).attr('action'), $(form).attr('enctype') ?? '']),
     ).toEqual([
       ['post', `/opt2/admin-actions/finance/submit?siteid=${SITE}&id=${RECORD_ID}`, ''],
-      ['post', `/opt2/admin-actions/finance/resubmit?siteid=${SITE}&id=${RECORD_ID}`, ''],
       ...financeAttachments.map(({ attachment_id }) => [
         'post',
         `/opt2/admin-actions/finance/download?siteid=${SITE}&id=${RECORD_ID}&aid=${attachment_id}`,
@@ -232,15 +327,29 @@ describe('finance record screen', () => {
     }
   });
 
-  it('holds one fixed action bar, the edit form last, so no bar covers another form button', async () => {
+  it('ends a block with each form, so no heading follows a form inside its block', async () => {
+    const { view } = await renderDetail(preparerApproverRequest({ id: RECORD_ID }));
+    const $ = cheerio.load(toString(view.body), null, false);
+    const blocks = $('.block-content').toArray();
+
+    expect(blocks.map((content) => $(content).children('h2').first().text())).toEqual([
+      '',
+      'Version History',
+      'Upload Attachment',
+      'Edit Record',
+    ]);
+    expect($('.block-content > form').toArray().map((form) => $(form).nextAll().length)).toEqual([0, 0, 0]);
+    expect($('.block-content form').length).toBe(3 + financeAttachments.length);
+  });
+
+  it('puts the upload and edit buttons in in-flow action rows, with no fixed action bar and one form1', async () => {
     const { view } = await renderDetail();
     const $ = cheerio.load(toString(view.body), null, false);
 
-    expect($('.mura-actions').toArray().map((bar) => $(bar).closest('form').attr('action'))).toEqual([
-      `/opt2/admin-actions/finance/edit?siteid=${SITE}&id=${RECORD_ID}`,
-    ]);
-    expect($('form').last().find('.mura-actions button').text()).toBe('Save');
-    expect($('form[enctype] .form-actions > button.btn.mura-primary').text()).toBe('Upload');
+    expect($('.mura-actions')).toHaveLength(0);
+    expect($('form[enctype] > .form-actions > button.btn.mura-primary').text()).toBe('Upload');
+    expect($('form[name="form1"] > .form-actions > button.btn.mura-primary').text()).toBe('Save');
+    expect($('form[name="form1"]').attr('action')).toBe(`/opt2/admin-actions/finance/edit?siteid=${SITE}&id=${RECORD_ID}`);
   });
 
   it('renders inside the shell with Finance marked in the OPT-2 nav group', async () => {

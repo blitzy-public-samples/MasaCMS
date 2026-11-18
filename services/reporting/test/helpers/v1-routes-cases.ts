@@ -28,6 +28,7 @@ import {
   TEST_AS_OF,
   TEST_CLOCK,
   buildTestApp,
+  gatewayHeaders,
   headersFor,
   queuedRun,
   scopeUrl,
@@ -499,10 +500,10 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       return { job, key: job.object_key ?? '', url: (await downloadUrlOf(t, job)).url };
     }
 
-    it('serves the issued URL without credentials as the stored bytes, content type and length', async () => {
+    it('serves the issued URL the gateway forwards without a user token as the stored bytes, content type and length', async () => {
       const { job, url } = await issued();
 
-      const res = await t.app.inject({ method: 'GET', url });
+      const res = await t.app.inject({ method: 'GET', url, headers: await gatewayHeaders() });
 
       expect(res.statusCode).toBe(200);
       assertContract('GET', url, res);
@@ -543,7 +544,7 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       const url = await urlOf(await issued());
       expect(t.storage.verifySignedUrl(url)).toStrictEqual({ ok: false, reason });
 
-      const res = await t.app.inject({ method: 'GET', url });
+      const res = await t.app.inject({ method: 'GET', url, headers: await gatewayHeaders() });
 
       expect(res.statusCode).toBe(403);
       assertContract('GET', url, res);
@@ -554,7 +555,7 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       const url = await t.storage.signedUrl(EXPORT_BUCKET, exportObjectKey(TENANT_A.tenantId, cfUuid(), 'csv'));
       expect(t.storage.verifySignedUrl(url)).toMatchObject({ ok: true });
 
-      const res = await t.app.inject({ method: 'GET', url });
+      const res = await t.app.inject({ method: 'GET', url, headers: await gatewayHeaders() });
 
       expect(res.statusCode).toBe(404);
       assertContract('GET', url, res);

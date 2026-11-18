@@ -81,6 +81,11 @@ function asApprover(): Promise<Record<string, string>> {
   return headersFor({ roles: [Roles.financeApprover] }, { site: TENANT_A.siteId, sub: APPROVER_ID });
 }
 
+/** A signed URL is path-only; the gateway forwards it with its own invocation credential. */
+async function forwarded(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}` };
+}
+
 /** The committed tenant-a attachment row `attachmentId`, if any. */
 function storedAttachment(attachmentId: string): FinanceAttachmentRow | undefined {
   return t.db.rows('attachment', TENANT_A.tenantId).find((row) => row.attachment_id === attachmentId);
@@ -261,7 +266,7 @@ describe('/v1 attachments and local signed URLs', () => {
 
   it('serves the signed URL as the stored bytes under the stored content type', async () => {
     const { url } = await downloadUrl();
-    const res = await t.app.inject({ url });
+    const res = await t.app.inject({ url, headers: await forwarded() });
     expect(res.statusCode).toBe(200);
     expect(res.rawPayload.equals(BYTES)).toBe(true);
     expect(res.headers).toMatchObject({
@@ -279,7 +284,7 @@ describe('/v1 attachments and local signed URLs', () => {
     const { url } = await downloadUrl();
     const altered = tamper(url);
     expect(altered).not.toBe(url);
-    const res = await t.app.inject({ url: altered });
+    const res = await t.app.inject({ url: altered, headers: await forwarded() });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual(FORBIDDEN);
   });
@@ -288,9 +293,9 @@ describe('/v1 attachments and local signed URLs', () => {
     const { url } = await downloadUrl();
     const expires = Number(new URL(url, BASE_URL).searchParams.get('expires'));
     nowMs = expires * 1000 + 999;
-    expect((await t.app.inject({ url })).statusCode).toBe(200);
+    expect((await t.app.inject({ url, headers: await forwarded() })).statusCode).toBe(200);
     nowMs = (expires + 1) * 1000;
-    const res = await t.app.inject({ url });
+    const res = await t.app.inject({ url, headers: await forwarded() });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual(FORBIDDEN);
   });
@@ -311,7 +316,7 @@ describe('attachment Content-Type parameters', () => {
       headers: await asApprover(),
     });
     expect(res.statusCode).toBe(200);
-    return t.app.inject({ url: res.json<{ data: { url: string } }>().data.url });
+    return t.app.inject({ url: res.json<{ data: { url: string } }>().data.url, headers: await forwarded() });
   }
 
   // finance.cfc stores fileUpload's contentType/contentSubType, which keeps the part's parameters, lower-cased.

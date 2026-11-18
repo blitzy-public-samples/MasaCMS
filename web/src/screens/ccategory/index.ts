@@ -63,9 +63,8 @@ function pageAction<D>(
   });
 }
 
-// `update` is inventoried as a page: the gateway folds the posted form into a page request, its controller step
-// writes, and `update.cfm` includes `edit.cfm`. `js`, `dsp_nest`, `dsp_parents`, `dsp_secondary_menu` and
-// `dsp_tab_usage` are partials, not actions.
+// `update` is inventoried as a page: its controller step writes the posted form, and `update.cfm` includes `edit.cfm`.
+// `js`, `dsp_nest`, `dsp_parents`, `dsp_secondary_menu` and `dsp_tab_usage` are partials, not actions.
 /** The carried ccategory actions: the Categories list, the category form and its save. */
 export const ccategoryScreens: readonly ScreenDefinition[] = Object.freeze([
   pageAction<CcategoryListData>('list', { load: loadCcategoryList, render: renderCcategoryList }),

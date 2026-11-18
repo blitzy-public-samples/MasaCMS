@@ -30,8 +30,10 @@ interface Contract {
 const LABEL = 'SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/';
 const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
 const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
-// A fixture route checks an optional user token itself, so it is reachable without one.
-const OPTIONAL_USER_SECURITY: SecurityRequirement[] = [{}, { userToken: [], invocationCredential: [] }];
+// A public route checks an optional user token itself; the caller's invocation credential is still required.
+const OPTIONAL_USER_SECURITY: SecurityRequirement[] = [{ invocationCredential: [] }, { userToken: [], invocationCredential: [] }];
+// Paths whose route declares `invocationOptional`, so a caller may present no credential at all.
+const INVOCATION_OPTIONAL_PATHS: readonly string[] = ['/healthz'];
 
 const contract = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as Contract;
 const pin = JSON.parse(await readFile(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as {
@@ -97,7 +99,7 @@ describe('e-signature contract annotations', () => {
 
   it.each(operations)('$label resolves a security requirement of declared schemes', ({ op, path }) => {
     if (op['x-opt2-public'] === true) {
-      expect(op.security).toEqual(path.startsWith(FIXTURE_PREFIX) ? OPTIONAL_USER_SECURITY : []);
+      expect(op.security).toEqual(INVOCATION_OPTIONAL_PATHS.includes(path) ? [] : OPTIONAL_USER_SECURITY);
     } else {
       const resolved = securityOf(op);
       expect(resolved).not.toEqual([]);

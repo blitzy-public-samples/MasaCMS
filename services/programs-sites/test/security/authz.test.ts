@@ -134,6 +134,8 @@ interface Declared {
   transport: Transport;
   requires?: readonly string[];
   public?: true;
+  /** A public route that admits a caller without an invocation credential. */
+  invocationOptional?: true;
   /** `false` where the handler runs the site check itself. */
   siteCheck?: false;
 }
@@ -366,11 +368,17 @@ function probe(title: string, request: ProbeRequest, allow: readonly string[], e
 const MIGRATION_ONLY = ['service:migration'] as const;
 const QUEUE_CONTROLLERS = ['service:migration', 'service:operator'] as const;
 
-/** Public on the service transport: a managed tasks token is still verified, and refused, as a user token. */
-const PUBLIC_ADMITTED = everyoneBut('service:tasks-invoker');
+/** Subjects presenting no invocation credential: none at all, the push key, or a tasks token in `Authorization`. */
+const NO_INVOCATION_CREDENTIAL = ['anonymous', 'service:pubsub-invoker', 'service:tasks-invoker'] as const;
+
+/** Public on the service transport: the user token is waived, the caller's invocation credential is not. */
+const PUBLIC_ADMITTED = everyoneBut(...NO_INVOCATION_CREDENTIAL);
+
+/** Public with an optional invocation credential: a managed tasks token is still verified, and refused, as a user token. */
+const INVOCATION_OPTIONAL_ADMITTED = everyoneBut('service:tasks-invoker');
 
 /** JSON API `site` reads: public, but a token of another site is refused once the handler resolves the site. */
-const JSON_API_READERS = everyoneBut('other-tenant', 'service:tasks-invoker');
+const JSON_API_READERS = everyoneBut('other-tenant', ...NO_INVOCATION_CREDENTIAL);
 
 type JsonApiMode = 'json' | 'ajax' | 'rest';
 
@@ -392,7 +400,7 @@ function jsonApiWrites(mode: JsonApiMode, method: ProbeRequest['method'], lead: 
     return [
       probe(`${lead}${mode} site.delete`, { method, url, headers: FORM, payload: TOKEN_FIELDS }, ['s2'], {
         denyCheck: {
-          ...denials(everyoneBut('s2', 'other-tenant', 'service:tasks-invoker'), INSUFFICIENT_PERMISSIONS),
+          ...denials(everyoneBut('s2', 'other-tenant', ...NO_INVOCATION_CREDENTIAL), INSUFFICIENT_PERMISSIONS),
           'other-tenant': SITE_MISMATCH,
         },
       }),
@@ -493,8 +501,8 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
   'POST /_api/sitemonitor*': siteMonitorRun('POST', '/_api/sitemonitor/'),
   'PUT /_api/sitemonitor*': siteMonitorRun('PUT', '/_api/sitemonitor/'),
   'GET /healthz': {
-    declared: { transport: 'service', public: true },
-    probes: [probe('GET /healthz', { method: 'GET', url: '/healthz' }, PUBLIC_ADMITTED)],
+    declared: { transport: 'service', public: true, invocationOptional: true },
+    probes: [probe('GET /healthz', { method: 'GET', url: '/healthz' }, INVOCATION_OPTIONAL_ADMITTED)],
   },
   'DELETE /index.cfm/_api/sitemonitor*': siteMonitorRun('DELETE', '/index.cfm/_api/sitemonitor/'),
   'GET /index.cfm/_api/sitemonitor*': siteMonitorRun('GET', '/index.cfm/_api/sitemonitor/'),
@@ -702,6 +710,7 @@ function comparable(declared: Declared | RouteMatrixEntry): Record<string, unkno
     transport: declared.transport,
     ...(declared.requires === undefined ? {} : { requires: [...declared.requires].sort() }),
     ...(declared.public === true ? { public: true } : {}),
+    ...(declared.invocationOptional === true ? { invocationOptional: true } : {}),
     ...(declared.siteCheck === false ? { siteCheck: false } : {}),
     ...('edge' in declared && declared.edge === true ? { edge: true } : {}),
   };
@@ -804,7 +813,7 @@ describe('route declarations', () => {
     }).toEqual({ missing: [], extra: [], duplicated: [] });
   });
 
-  it('declares each route with its expected transport, roles, public flag and site check', () => {
+  it('declares each route with its expected transport, roles, public flag, optional invocation credential and site check', () => {
     const actual = Object.fromEntries(matrix.routes.map((route) => [keyOf(route), comparable(route)]));
     const expected = Object.fromEntries(Object.entries(EXPECTED).map(([key, entry]) => [key, comparable(entry.declared)]));
     expect(actual).toEqual(expected);
@@ -916,6 +925,31 @@ describe('transport separation', () => {
     for (const request of [pushWithoutKey(), withPushKey(pushWithoutKey())]) {
       expect({ url: request.url, ...(await outcomeOf(request, tasksToken)) }).toEqual({ url: request.url, status: 401, effects: QUIET });
     }
+  });
+});
+
+describe('invocation credential on public routes', () => {
+  const MISSING_CREDENTIAL = { apiversion: 'v1', method: 'invalid', error: INSUFFICIENT_PERMISSIONS.error };
+  const directCalls = Object.values(EXPECTED).flatMap((entry) =>
+    entry.declared.public === true && entry.declared.invocationOptional !== true
+      ? entry.probes.flatMap(({ title, request }) => (['no credential', 'a user token alone'] as const).map((presented) => ({ title, request, presented })))
+      : [],
+  );
+
+  it.each(directCalls)('refuses $title called directly with $presented with the legacy 401 and no handler effect', async ({ request, presented }) => {
+    const credentials: Record<string, string> =
+      presented === 'no credential'
+        ? {}
+        : { authorization: `Bearer ${await mintUserToken({ sub: 'test-direct-s2', site: SITE_A, tid: TENANT_A.tenantId, roles: ['system-user', 's2'] })}` };
+    resetEffects();
+    const res = await inject(request, credentials);
+    // A JSON API HEAD denial carries the error envelope's headers alone.
+    const headersOnly = request.method === 'HEAD' && /^(?:\/index\.cfm)?\/_api\/(?:json|ajax|rest)\/v1/i.test(request.url);
+    expect({ status: res.statusCode, body: headersOnly ? res.body : parsedBody(res), effects: effectsAfter() }).toEqual({
+      status: 401,
+      body: headersOnly ? '' : MISSING_CREDENTIAL,
+      effects: NO_EFFECTS,
+    });
   });
 });
 

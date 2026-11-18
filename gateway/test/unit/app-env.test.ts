@@ -262,6 +262,34 @@ describe('gatewayEnvSchema MURA_REQUESTTIMEOUT', () => {
   });
 });
 
+describe('gatewayEnvSchema MURA_SECURECOOKIES and MURA_COOKIEDOMAIN', () => {
+  it.each<[string, string | undefined, boolean]>([
+    ['unset', undefined, false],
+    ['blank', ' ', false],
+    ['false', 'false', false],
+    ['true', 'true', true],
+    ['yes in any case, padded', ' YES ', true],
+    ['a non-zero number', '1', true],
+    ['zero', '0', false],
+    ['a value that is no CFML boolean', 'on', false],
+    ['an expression', '${secureCookies}', false],
+    ['a template expression', '{{true}}', false],
+  ])('reads MURA_SECURECOOKIES %s (%j) as %s, as web does', (_case, value, secure) => {
+    expect(loadEnv(gatewayEnvSchema, sourceOf({ MURA_SECURECOOKIES: value })).MURA_SECURECOOKIES).toBe(secure);
+  });
+
+  it.each<[string, string | undefined, string]>([
+    ['unset', undefined, ''],
+    ['blank', '', ''],
+    ['a domain with a leading dot', '.example.test', '.example.test'],
+    ['a host name', 'example.test', 'example.test'],
+    ['an expression', '${cookieDomain}', ''],
+    ['a template expression', '{{cookieDomain}}', ''],
+  ])('reads MURA_COOKIEDOMAIN %s (%j) as %j', (_case, value, domain) => {
+    expect(loadEnv(gatewayEnvSchema, sourceOf({ MURA_COOKIEDOMAIN: value })).MURA_COOKIEDOMAIN).toBe(domain);
+  });
+});
+
 describe('route-key wiring of the reload key', () => {
   it.each([
     ['the configured key', `/?${FIXTURE_RELOAD_KEY}`, 'reload:application'],

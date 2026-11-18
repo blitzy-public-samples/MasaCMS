@@ -29,8 +29,7 @@ const matcher = createMatcher({
 async function outcomeOf({ url, body }: Sent): Promise<RoutedOutcome> {
   const method = body === undefined ? 'GET' : 'POST';
   const bytes = body === undefined ? undefined : Buffer.from(body, 'utf8');
-  const request: MatchRequest =
-    bytes === undefined ? { url, method, headers: {} } : { url, method, headers: { 'content-type': URLENCODED }, body: bytes };
+  const request: MatchRequest = { url, method, headers: bytes === undefined ? {} : { 'content-type': URLENCODED } };
   const outcome = await matcher.match(request, bodyParamsFrom(bytes === undefined ? undefined : URLENCODED, bytes, method));
   if (outcome.result === undefined) throw new TypeError(`${url} was relayed, not keyed`);
   return outcome;

@@ -264,6 +264,11 @@ function subjectHeaders(name: string, site: string = SITE_A): Promise<Record<str
   return headersFor(name, { site, sub: USER_IDS[name] });
 }
 
+/** A request of a client without credentials as the gateway forwards it: the gateway's invocation credential alone. */
+async function forwardedByGateway(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}` };
+}
+
 /** Surveys' call of the scheduled-task listing: its invocation credential beside the forwarded tenant-a user token. */
 async function surveysForwarding(roles: readonly string[] = ['system-user', 'surveys.manager']): Promise<Record<string, string>> {
   const userToken = await mintUserToken({ sub: SAMPLE_IDS.userId, site: SITE_A, roles: [...roles] });
@@ -409,6 +414,7 @@ const PATH_METHOD_CASES: Partial<Record<HttpMethod, Case[]>> = {
       name: 'answers an anonymous caller of the case-variant templates path with the authorization 401',
       method: 'GET',
       url: `${FIXTURE}/Templates?siteid=${SITE_A}`,
+      headers: forwardedByGateway,
       status: 401,
       verify: ({ body }) => expect(body).toEqual(fixtureError('communications.templates', AUTHORIZATION)),
     },
@@ -443,6 +449,7 @@ const PATH_METHOD_CASES: Partial<Record<HttpMethod, Case[]>> = {
       name: 'answers an unknown site as invalidParameters before the method check',
       method: 'PUT',
       url: `${FIXTURE}/templates?siteid=nowhere`,
+      headers: forwardedByGateway,
       status: 400,
       verify: ({ body }) => expect(body).toEqual(fixtureError('communications.templates', INVALID_PARAMETERS)),
     },
@@ -469,6 +476,7 @@ function pathCases(method: HttpMethod): Case[] {
       name: 'answers an unknown resource as notFound under its own method, after the site check',
       method,
       url: `${FIXTURE}/unknown?siteid=${SITE_A}`,
+      headers: forwardedByGateway,
       status: 404,
       verify: ({ body }) => expect(body).toEqual(fixtureError('communications.unknown', FIXTURE_NOT_FOUND)),
     },
@@ -493,6 +501,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers an anonymous caller with the authorization 401',
       method: 'GET',
       url: TENANT_A_TEMPLATES,
+      headers: forwardedByGateway,
       status: 401,
       verify: ({ body }) => expect(errorOf(body)).toEqual(AUTHORIZATION),
     },
@@ -516,6 +525,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers an unknown site as invalidParameters before the login check',
       method: 'GET',
       url: `${FIXTURE}/templates?siteid=nowhere`,
+      headers: forwardedByGateway,
       status: 400,
       verify: ({ body }) => expect(errorOf(body)).toEqual(INVALID_PARAMETERS),
     },

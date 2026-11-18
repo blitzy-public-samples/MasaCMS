@@ -9,3 +9,7 @@ type Ctx = { params: Promise<AdminRouteParams> };
 export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   return handleAdminPage(request, await ctx.params);
 }
+
+export async function POST(request: Request, ctx: Ctx): Promise<Response> {
+  return handleAdminPage(request, await ctx.params);
+}

@@ -71,10 +71,10 @@ function claims(roles: string[], s2 = false): UserClaims {
   };
 }
 
-/** Headers of a user request as the gateway forwards it: the bearer user token plus the gateway's invocation credential. */
-async function userHeaders(token: string): Promise<Record<string, string>> {
+/** Headers of a request as the gateway forwards it: the gateway's invocation credential, after the bearer user token if given. */
+async function userHeaders(token?: string): Promise<Record<string, string>> {
   return {
-    authorization: `Bearer ${token}`,
+    ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'surveys' })}`,
   };
 }
@@ -258,11 +258,8 @@ describe('fixture check order through app.inject', () => {
     url: string,
     opts: { roles?: string[]; site?: string; tid?: string; payload?: unknown } = {},
   ): Promise<{ status: number; body: { method: string; data?: Record<string, unknown>; error?: unknown } }> {
-    const headers: Record<string, string> = {};
-    if (opts.roles !== undefined) {
-      const token = await mintUserToken({ site: opts.site ?? 'tenant-a', tid: opts.tid, roles: opts.roles, sub: USER_ID });
-      Object.assign(headers, await userHeaders(token));
-    }
+    const token = opts.roles === undefined ? undefined : await mintUserToken({ site: opts.site ?? 'tenant-a', tid: opts.tid, roles: opts.roles, sub: USER_ID });
+    const headers: Record<string, string> = await userHeaders(token);
     if (opts.payload !== undefined) headers['content-type'] = 'application/json';
     const res = await app.inject({
       method: opts.payload === undefined ? 'GET' : 'POST',
@@ -353,8 +350,7 @@ describe('fixture check order through app.inject', () => {
 
   /** Injects a tenant-a JSON schedule POST for SURVEY_ID with `headers`, carrying a user token when `roles` is given. */
   async function schedule(roles: string[] | undefined, headers: Record<string, string>) {
-    const auth: Record<string, string> = {};
-    if (roles !== undefined) Object.assign(auth, await userHeaders(await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })));
+    const auth = await userHeaders(roles === undefined ? undefined : await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID }));
     return app.inject({
       method: 'POST',
       url: `${ROUTE}/${SURVEY_ID}/schedule?siteid=tenant-a`,

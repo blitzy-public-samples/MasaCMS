@@ -1,5 +1,6 @@
 // A parsed request's url and form scopes as Masa's start-up script protection leaves them (core/appcfc/scriptProtect_include.cfm:4-20).
 import { portcullisScan, type PortcullisInput, type PortcullisScope } from './portcullis.js';
+import { javaTrim } from './serializer.js';
 
 /** Parsed parts of a request that ColdFusion builds its url and form scopes from; a Fastify request is one. */
 export interface ScopeSource {
@@ -65,6 +66,31 @@ export function legacyScopeValue(value: unknown): unknown {
   return Array.isArray(value) ? value.map(partValue).join(',') : partValue(value);
 }
 
+/**
+ * A repeated form-scope name's value once ACF adds `value` to `joined`, its value so far (undefined before the first):
+ * a value whose trim is empty is skipped, one after a value still `''` replaces it, any other is appended after `,`.
+ */
+export function appendFormScopeValue(joined: string | undefined, value: string): string {
+  if (joined === undefined) return value;
+  if (javaTrim(value) === '') return joined;
+  return joined === '' ? value : `${joined},${value}`;
+}
+
+/** Values of one form-scope name joined as ACF joins them; `''` for none. */
+function formScopeJoin(values: readonly string[]): string {
+  let joined: string | undefined;
+  for (const value of values) joined = appendFormScopeValue(joined, value);
+  return joined ?? '';
+}
+
+/** The text of each parsed value or part of one name, file parts by name, undefined ones left out. */
+function partTexts(items: readonly unknown[]): string[] {
+  return items
+    .map(partValue)
+    .filter((item) => item !== undefined)
+    .map(scopeText);
+}
+
 /** `items` grouped by lower-cased name, groups in first-seen order, each group's items in order. */
 function byLowerName<T>(items: Iterable<T>, nameOf: (item: T) => string): Map<string, [T, ...T[]]> {
   const groups = new Map<string, [T, ...T[]]>();
@@ -114,16 +140,27 @@ function inSentOrder(spellings: ReadonlyArray<readonly [key: string, parts: read
  * file part passes unscanned. None unless `fields` is a plain object.
  */
 export function portcullisInputsOf(fields: unknown, target?: string): PortcullisInput[] {
+  return scopeInputsOf(fields, target, false);
+}
+
+/** Parsed form fields as ColdFusion builds the form scope, as scan inputs: {@link portcullisInputsOf}'s, joined by {@link appendFormScopeValue}. */
+export function formScopeInputsOf(fields: unknown): PortcullisInput[] {
+  return scopeInputsOf(fields, undefined, true);
+}
+
+/** Scan inputs of {@link portcullisInputsOf}, a repeated name's values joined as the form scope joins them when `form`. */
+function scopeInputsOf(fields: unknown, target: string | undefined, form: boolean): PortcullisInput[] {
   if (!isPlainObject(fields)) return [];
   let sent: Map<string, string[]> | undefined;
   return [...byLowerName(Object.entries(fields), ([key]) => key)].map(([lower, spellings]): PortcullisInput => {
     const parts = spellings.map(([key, value]): [string, unknown[]] => [key, Array.isArray(value) ? value : [value]]);
     const opaque = parts.some(([, items]) => items.some((part) => isMultipartPart(part) && part.type === 'file'));
     const [[key, value], ...others] = spellings;
-    if (others.length === 0) return [key, legacyScopeValue(value), opaque];
+    if (others.length === 0) return [key, form && Array.isArray(value) ? formScopeJoin(partTexts(value)) : legacyScopeValue(value), opaque];
     sent ??= byLowerName(target === undefined ? [] : sentQueryNames(target), (name) => name);
     const ordered = inSentOrder(parts, sent.get(lower) ?? []) ?? parts.flatMap(([, items]) => items);
-    return [key, ordered.map(partValue).filter((item) => item !== undefined).map(scopeText).join(','), opaque];
+    const texts = partTexts(ordered);
+    return [key, form ? formScopeJoin(texts) : texts.join(','), opaque];
   });
 }
 
@@ -135,8 +172,8 @@ export function legacyScopesFrom(source: ScopeSource): LegacyScopes {
   }
   // Admin start-up scans the form inside the url scan's guard, so a failed url scan leaves the form as posted.
   const form = url.failed
-    ? { entries: portcullisInputsOf(source.body).map(([key, value]): [string, unknown] => [key, value]), failed: false }
-    : portcullisScan(portcullisInputsOf(source.body));
+    ? { entries: formScopeInputsOf(source.body).map(([key, value]): [string, unknown] => [key, value]), failed: false }
+    : portcullisScan(formScopeInputsOf(source.body));
   return { url, form, json: false, jsonBody: undefined };
 }
 

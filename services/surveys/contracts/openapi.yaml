@@ -509,7 +509,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-site-check: false
-      security: []
+      security:
+        - invocationCredential: []
+        - userToken: []
+          invocationCredential: []
       responses:
         '200':
           description: The survey row; a repeated call returns it unchanged.
@@ -538,7 +541,7 @@ paths:
           $ref: '#/components/responses/FixtureBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
-          description: The platform's refusal of a presented invalid credential.
+          description: The platform's refusal of a missing invocation credential or a presented invalid credential.
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The task token is absent or does not match, or the survey is not scheduled in the site.
@@ -557,7 +560,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-site-check: false
-      security: []
+      security:
+        - invocationCredential: []
+        - userToken: []
+          invocationCredential: []
       requestBody:
         $ref: '#/components/requestBodies/FixtureLaunchCallbackCall'
       responses:
@@ -588,7 +594,7 @@ paths:
           $ref: '#/components/responses/FixtureBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
-          description: The platform's refusal of a presented invalid credential.
+          description: The platform's refusal of a missing invocation credential or a presented invalid credential.
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The task token is absent or does not match, or the survey is not scheduled in the site.
@@ -616,7 +622,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-site-check: false
-      security: []
+      security:
+        - invocationCredential: []
+        - userToken: []
+          invocationCredential: []
       responses:
         '200':
           description: The reminder row; a repeated call returns it unchanged.
@@ -646,7 +655,7 @@ paths:
           description: 'Fixture 400 `invalidParameters` for an unknown site or, after the token check, an invalid `reminder`.'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
-          description: The platform's refusal of a presented invalid credential.
+          description: The platform's refusal of a missing invocation credential or a presented invalid credential.
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The task token is absent or does not match, or the survey is not scheduled in the site.
@@ -665,7 +674,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-site-check: false
-      security: []
+      security:
+        - invocationCredential: []
+        - userToken: []
+          invocationCredential: []
       requestBody:
         $ref: '#/components/requestBodies/FixtureRemindCallbackCall'
       responses:
@@ -697,7 +709,7 @@ paths:
           description: 'Fixture 400 `invalidParameters` for an unknown site or, after the token check, an invalid `reminder`.'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
-          description: The platform's refusal of a presented invalid credential.
+          description: The platform's refusal of a missing invocation credential or a presented invalid credential.
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The task token is absent or does not match, or the survey is not scheduled in the site.
@@ -2064,7 +2076,7 @@ components:
                       code:
                         const: invalid_request
     FixtureUnauthorized:
-      description: 'Fixture 401 `authorization` without a logged-in user, or the platform''s refusal of a presented invalid credential.'
+      description: 'Fixture 401 `authorization` without a logged-in user, or the platform''s refusal of a missing invocation credential or a presented invalid credential.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

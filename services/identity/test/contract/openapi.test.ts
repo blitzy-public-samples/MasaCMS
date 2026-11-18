@@ -213,6 +213,11 @@ async function anonymousSession(sessionId: string): Promise<Headers> {
   return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` };
 }
 
+/** A request of a client without credentials as the gateway forwards it: the gateway's invocation credential alone. */
+async function forwardedByGateway(): Promise<Headers> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'identity' })}` };
+}
+
 /** The subject's credentials with the CSRF token for `context`, issued `laterMs` after the clock, in the `X-csrf_token` headers. */
 async function withCsrfHeaders(subject: string, context: string, laterMs = 0): Promise<Headers> {
   const { token, expires } = csrfFor(session(subject), context, laterMs);
@@ -349,14 +354,14 @@ function jsonApiCases(family: 'json' | 'ajax' | 'rest', shape: 'Root' | 'Segment
       : { name: `serves ${method} ${url} as s2`, method, url, as: 's2', status: 200, verify: (body) => expect(record(body).apiversion).toBe('v1') },
     { name: `refuses ${method} ${url} for a token of another site`, method, url, as: 'other-tenant', status: 403 },
   ];
-  if (rest) cases.push({ name: `refuses ${method} ${url} without credentials`, method, url, status: 401 });
-  else cases.push({ name: `serves ${method} ${url} anonymously`, method, url, status: 200 });
+  if (rest) cases.push({ name: `refuses ${method} ${url} without credentials`, method, url, headers: forwardedByGateway, status: 401 });
+  else cases.push({ name: `serves ${method} ${url} anonymously`, method, url, headers: forwardedByGateway, status: 200 });
   if (shape === 'Segment') {
-    cases.push({ name: `answers ${method} on an unregistered site with invalidParameters`, method, url: `/_api/${family}/v1/ghost/group`, status: 400 });
+    cases.push({ name: `answers ${method} on an unregistered site with invalidParameters`, method, url: `/_api/${family}/v1/ghost/group`, headers: forwardedByGateway, status: 400 });
     cases.push({ name: `answers ${method} on an entity identity does not own with the 404 envelope`, method, url: `/_api/${family}/v1/${SITE_A}/content`, as: 's2', status: 404 });
   }
   if (shape === 'Root' && !rest) {
-    cases.push({ name: `answers ${method} generateCSRFTokens without a context with server_error`, method, url: `/_api/${family}/v1/${SITE_A}?method=generateCSRFTokens`, status: 500 });
+    cases.push({ name: `answers ${method} generateCSRFTokens without a context with server_error`, method, url: `/_api/${family}/v1/${SITE_A}?method=generateCSRFTokens`, headers: forwardedByGateway, status: 500 });
   }
   return cases;
 }
@@ -482,7 +487,7 @@ const CASES: Record<string, Case[]> = {
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ sessionId: 'S-s2', user: { isLoggedIn: true, userID: ADMIN_S2.account.userid } }),
     },
-    { name: 'describes no session for an anonymous caller', method: 'GET', url: '/v1/sessions/current', status: 200, verify: (body) => expect(record(body).sessionId).toBeNull() },
+    { name: 'describes no session for an anonymous caller', method: 'GET', url: '/v1/sessions/current', headers: forwardedByGateway, status: 200, verify: (body) => expect(record(body).sessionId).toBeNull() },
     {
       name: 'refuses an expired user token with accessTokenExpired',
       method: 'GET',
@@ -514,7 +519,7 @@ const CASES: Record<string, Case[]> = {
   ],
   getAdminSessionState: [
     { name: 'reads the editor session admin state', method: 'GET', url: '/v1/sessions/current/admin-state', as: 'editor', status: 200 },
-    { name: 'refuses a caller without a relayed user token', method: 'GET', url: '/v1/sessions/current/admin-state', status: 401 },
+    { name: 'refuses a caller without a relayed user token', method: 'GET', url: '/v1/sessions/current/admin-state', headers: forwardedByGateway, status: 401 },
   ],
   saveAdminSessionState: [
     {
@@ -527,7 +532,7 @@ const CASES: Record<string, Case[]> = {
       verify: (body) => expect(record(body)).toMatchObject({ siteid: SITE_A, topID: HOME }),
     },
     { name: 'refuses an admin value of the wrong type', method: 'POST', url: '/v1/sessions/current/admin-state', as: 'editor', payload: { topID: { nested: true } }, status: 400 },
-    { name: 'refuses a caller without a relayed user token', method: 'POST', url: '/v1/sessions/current/admin-state', payload: { siteid: SITE_A }, status: 401 },
+    { name: 'refuses a caller without a relayed user token', method: 'POST', url: '/v1/sessions/current/admin-state', headers: forwardedByGateway, payload: { siteid: SITE_A }, status: 401 },
   ],
   login: [
     {
@@ -548,7 +553,7 @@ const CASES: Record<string, Case[]> = {
       status: 200,
       verify: (body) => expect(record(body).outcome).toBe('success'),
     },
-    { name: 'refuses a structured form value', method: 'POST', url: '/v1/sessions/login', payload: { username: { nested: true } }, status: 400 },
+    { name: 'refuses a structured form value', method: 'POST', url: '/v1/sessions/login', headers: forwardedByGateway, payload: { username: { nested: true } }, status: 400 },
     {
       name: 'fails an MFA challenge attempt as legacy fails it',
       method: 'POST',
@@ -559,7 +564,7 @@ const CASES: Record<string, Case[]> = {
     },
   ],
   logout: [
-    { name: 'answers an anonymous logout with the home redirect', method: 'POST', url: '/v1/sessions/logout', status: 200 },
+    { name: 'answers an anonymous logout with the home redirect', method: 'POST', url: '/v1/sessions/logout', headers: forwardedByGateway, status: 200 },
     {
       name: 'ends a signed-in session',
       method: 'POST',
@@ -580,18 +585,19 @@ const CASES: Record<string, Case[]> = {
       verify: (body) => expect(record(body).tokens).toEqual([expect.objectContaining({ context: 'cusers.update', ...{ csrf_token: csrfFor(session('editor'), 'cusers.update').token } })]),
     },
     { name: 'refuses an empty context list', method: 'POST', url: '/v1/csrf/tokens', as: 'editor', payload: { contexts: [] }, status: 400 },
-    { name: 'refuses a caller without a session', method: 'POST', url: '/v1/csrf/tokens', payload: { contexts: ['x'] }, status: 401 },
+    { name: 'refuses a caller without a session', method: 'POST', url: '/v1/csrf/tokens', headers: forwardedByGateway, payload: { contexts: ['x'] }, status: 401 },
   ],
   requestLoginMail: [
     {
       name: 'answers messagesent for a known address',
       method: 'POST',
       url: '/v1/login-mail',
+      headers: forwardedByGateway,
       payload: { email: EDITOR.contact.email ?? '', siteid: SITE_A },
       status: 200,
       verify: (body) => expect(body).toEqual({ status: 'messagesent' }),
     },
-    { name: 'refuses a request without an email', method: 'POST', url: '/v1/login-mail', payload: { siteid: SITE_A }, status: 400 },
+    { name: 'refuses a request without an email', method: 'POST', url: '/v1/login-mail', headers: forwardedByGateway, payload: { siteid: SITE_A }, status: 400 },
   ],
   listGroups: [
     {
@@ -757,7 +763,7 @@ const CASES: Record<string, Case[]> = {
   ],
   getReversePermLookUp: [
     { name: 'answers the lookup for a signed-in session', method: 'GET', url: '/v1/permissions/reverse-lookup', as: 'editor', status: 200, verify: (body) => expect(record(body)).toHaveProperty('granted') },
-    { name: 'refuses a caller without credentials', method: 'GET', url: '/v1/permissions/reverse-lookup', status: 401 },
+    { name: 'refuses a caller without credentials', method: 'GET', url: '/v1/permissions/reverse-lookup', headers: forwardedByGateway, status: 401 },
   ],
   listOAuthClients: [
     { name: 'lists the tenant-a clients for s2', method: 'GET', url: '/v1/oauth-clients', as: 's2', status: 200, verify: (body) => expect(record(body).items).toBeInstanceOf(Array) },

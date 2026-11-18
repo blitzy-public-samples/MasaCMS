@@ -22,6 +22,7 @@ import {
   tclassextendMapping,
   tcontentdisplaytitleapprovalsMapping,
   tcontentpublicsubmissionapprovalsMapping,
+  tapprovalmembershipsMapping,
   tfilesMapping,
   ttrashMapping,
   units,
@@ -356,6 +357,25 @@ describe('row round trips', () => {
     const target = targetOf(tfilesMapping, row);
 
     expect(['image', 'imagesmall', 'imagemedium'].map((name) => target[name])).toStrictEqual([row['image'], row['imageSmall'], row['imageMedium']]);
+  });
+});
+
+describe('tapprovalmemberships tenant', () => {
+  const CHAIN_ID = 'B0C1D2E3-F4A5-B6C7-D8E9F0A1B2C3D4E5';
+  /** Chain sites by `chainID`: only CHAIN_ID is stored, in `tenant-a`. */
+  const chainSites: TenantLookups = {
+    umbrellaSiteId: DEFAULT_UMBRELLA_SITE_ID,
+    parentSiteId: (parentLegacyTable, key) => (parentLegacyTable === 'tapprovalchains' && key['chainID'] === CHAIN_ID ? SITE_ID : null),
+  };
+
+  it.each<[string, string | null, string, { siteId: string; orphan: boolean }]>([
+    ['an empty siteID', '', CHAIN_ID, { siteId: SITE_ID, orphan: false }],
+    ['a NULL siteID', null, CHAIN_ID, { siteId: SITE_ID, orphan: false }],
+    ['another site\u2019s siteID', 'tenant-b', CHAIN_ID, { siteId: SITE_ID, orphan: false }],
+    ['its own siteID but no stored chain', SITE_ID, 'F0000000-0000-0000-0000000000000000', { siteId: DEFAULT_UMBRELLA_SITE_ID, orphan: true }],
+  ])('resolves the tenant of a membership with %s through its chain, an orphan to the umbrella', (_label, siteID, chainID, expected) => {
+    const row = { ...sampleRow(tapprovalmembershipsMapping).row, siteID, chainID };
+    expect(resolveTenant(tapprovalmembershipsMapping.tenant ?? { kind: 'umbrella' }, row, chainSites)).toMatchObject(expected);
   });
 });
 

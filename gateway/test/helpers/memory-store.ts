@@ -935,6 +935,49 @@ on(
   },
 );
 
+/** The `($2::timestamp IS NULL OR updated_at = $2)` guard of a pending-end clear. */
+function atVersion(row: LegacyJarRow, version: Date | null): boolean {
+  return version === null || row.updated_at.getTime() === version.getTime();
+}
+
+on(
+  'DELETE FROM legacy_jar WHERE session_id = $1 AND identity_end_pending_at IS NOT NULL AND legacy_session_id IS NULL ' +
+    "AND cookies = '{}'::jsonb AND hydrated_epoch IS NULL AND ($2::timestamp IS NULL OR updated_at = $2)",
+  'DELETE',
+  ['legacy_jar'],
+  ({ params, tables }) => {
+    const sessionId = pgText(params[0]);
+    const version = timestamptzValue(params[1]);
+    const removed = removeWhere(
+      tables.legacy_jar,
+      (row) =>
+        row.session_id === sessionId &&
+        row.identity_end_pending_at !== null &&
+        row.legacy_session_id === null &&
+        Object.keys(row.cookies).length === 0 &&
+        row.hydrated_epoch === null &&
+        atVersion(row, version),
+    );
+    return changed(removed.length);
+  },
+);
+
+on(
+  'UPDATE legacy_jar SET identity_end_pending_at = NULL, updated_at = now() ' +
+    'WHERE session_id = $1 AND identity_end_pending_at IS NOT NULL AND ($2::timestamp IS NULL OR updated_at = $2)',
+  'UPDATE',
+  ['legacy_jar'],
+  ({ params, tables, now }) => {
+    const sessionId = pgText(params[0]);
+    const version = timestamptzValue(params[1]);
+    const rows = tables.legacy_jar.filter(
+      (row) => row.session_id === sessionId && row.identity_end_pending_at !== null && atVersion(row, version),
+    );
+    for (const row of rows) Object.assign(row, { identity_end_pending_at: null, updated_at: stamp(now) });
+    return changed(rows.length);
+  },
+);
+
 on(
   "WITH kept AS (UPDATE legacy_jar SET legacy_session_id = NULL, cookies = '{}'::jsonb, hydrated_epoch = NULL, updated_at = now() " +
     'WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3) AND identity_end_pending_at IS NOT NULL ' +

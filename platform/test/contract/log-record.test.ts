@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Ajv2020, type AnySchemaObject } from 'ajv/dist/2020.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { INVOCATION_HEADER } from '../../src/auth/index.js';
 import {
   createLogger,
   REDACTED,
@@ -15,7 +16,7 @@ import {
   type Logger,
 } from '../../src/logging/index.js';
 import { baseEnvSchema, createService, loadEnv, type FastifyInstance } from '../../src/service-kit/index.js';
-import { testVerifier, writeTestSecrets } from '../../src/testing/index.js';
+import { mintServiceToken, testVerifier, writeTestSecrets } from '../../src/testing/index.js';
 import {
   activeSpanIds,
   MemorySpanExporter,
@@ -219,7 +220,12 @@ describe('createService log lines', () => {
   });
 
   it('writes one conforming request line per request and no Fastify request or reply keys', async () => {
-    const res = await app?.inject({ method: 'GET', url: '/contract/log', headers: { 'x-request-id': 'contract-req-1' } });
+    const credential = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: BASE.service })}`;
+    const res = await app?.inject({
+      method: 'GET',
+      url: '/contract/log',
+      headers: { 'x-request-id': 'contract-req-1', [INVOCATION_HEADER]: credential },
+    });
     expect(res?.statusCode).toBe(200);
     const captured = lines();
     for (const line of captured) {

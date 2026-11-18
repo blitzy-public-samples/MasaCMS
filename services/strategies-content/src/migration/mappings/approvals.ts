@@ -1,6 +1,6 @@
-/** Masa approval-chain ORM tables ↔ the `content.approval_*` units, each row's tenant taken from its own `siteID`. */
+/** Masa approval-chain ORM tables ↔ the `content.approval_*` units, each row's tenant from its own `siteID`, a membership's from its chain. */
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
-import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
+import type { Mapping, MappingColumn, TenantSource } from '@opt2/platform/migration-kit';
 import { APPROVAL_ACTION, APPROVAL_ASSIGNMENT, APPROVAL_CHAIN, APPROVAL_MEMBERSHIP, APPROVAL_REQUEST } from '../../repo/tables.js';
 import type { ContentUnitTableDefinition } from '../../repo/tables.js';
 
@@ -14,8 +14,17 @@ function columnsOf(legacyTable: string, definition: ContentUnitTableDefinition, 
   });
 }
 
-/** Whole-table mapping of `legacyTable` onto `definition`, keyed by `key`; a row without a `siteID` loads under the umbrella tenant as an orphan. */
-function approvalMapping(legacyTable: string, definition: ContentUnitTableDefinition, legacy: readonly string[], key: string): Mapping {
+/** Row tenants from the row's own `siteID`; a row without one loads under the umbrella tenant as an orphan. */
+const SITE_TENANT: TenantSource = { kind: 'site', column: 'siteID' };
+
+/** Whole-table mapping of `legacyTable` onto `definition`, keyed by `key`, with row tenants from `tenant`. */
+function approvalMapping(
+  legacyTable: string,
+  definition: ContentUnitTableDefinition,
+  legacy: readonly string[],
+  key: string,
+  tenant: TenantSource = SITE_TENANT,
+): Mapping {
   return defineMapping({
     legacyTable,
     // defineMapping needs a schema-qualified target: `definition.table` is the repository's bare name, `definition.unit` the qualified one.
@@ -23,7 +32,7 @@ function approvalMapping(legacyTable: string, definition: ContentUnitTableDefini
     unit: definition.unit,
     columns: columnsOf(legacyTable, definition, legacy),
     key: [key],
-    tenant: { kind: 'site', column: 'siteID' },
+    tenant,
   });
 }
 
@@ -35,12 +44,16 @@ export const tapprovalchainsMapping: Mapping = approvalMapping(
   'chainID',
 );
 
-/** `tapprovalmemberships` ↔ `content.approval_membership`: a chain's approving groups, keyed by `membershipID` [approvalChainMembershipBean.cfc:3-8]. */
+/**
+ * `tapprovalmemberships` ↔ `content.approval_membership`: a chain's approving groups, keyed by `membershipID`
+ * [approvalChainMembershipBean.cfc:3-8]; the tenant is the `tapprovalchains` parent's, an orphan's the umbrella.
+ */
 export const tapprovalmembershipsMapping: Mapping = approvalMapping(
   'tapprovalmemberships',
   APPROVAL_MEMBERSHIP,
   ['groupID', 'siteID', 'created', 'orderno', 'membershipID', 'chainID'],
   'membershipID',
+  { kind: 'parent', parentLegacyTable: 'tapprovalchains', columns: { chainID: 'chainID' } },
 );
 
 /** `tapprovalassignments` ↔ `content.approval_assignment`, keyed by `assignmentID` [approvalChainAssignmentBean.cfc:3-7]. */

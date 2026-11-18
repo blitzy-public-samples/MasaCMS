@@ -1,17 +1,19 @@
 /** `commentsProxy.cfc`: the data-only remote methods `get`, `flag` and `getContentStats`; `renderCommentsPage` renders CFML and stays legacy-served. */
 import { AuthDenial, assertSiteMatches, type Opt2RouteConfig } from '@opt2/platform/auth';
 import {
-  LEGACY_ERROR_PAGE_HTML,
-  LEGACY_ERROR_STATUS_TEXT,
   LEGACY_HTML_CONTENT_TYPE,
+  LegacyFaultError,
   UNREGISTERED_SITEID_HEADER,
   cfIsBoolean,
   cfNumberString,
   cfToBoolean,
+  legacyDebuggingEnabled,
+  legacyRuntimeErrorResponse,
 } from '@opt2/platform/legacy-compat';
 import { legacyScopesOf, sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { flagComment, getCommentValues, getContentStatsValues } from '../domain/comments.js';
 import { actorFromClaims, type DomainDeps } from '../domain/context.js';
+import { esapiEncode } from '../legacy/admin-markup.js';
 import { muraJsonEncode } from '../legacy/cfjson.js';
 
 /** The route context these routes read: a structural subset of `ContentRouteContext`, so this module needs nothing from the `routes/index.ts` that registers it. */
@@ -53,17 +55,9 @@ const METHODS: ReadonlyMap<string, { method: ServedMethod; idArgument: string; a
 const INVOCATION_FIELDS: ReadonlySet<string> = new Set(['method', 'returnformat', 'queryformat', 'argumentcollection']);
 
 /**
- * The ColdFusion error page legacy answers a call the component cannot run: an undefined method, an argument the method
- * does not declare, a missing argument its body reads, or an `argumentCollection` it cannot bind.
+ * Raised while binding a call the component cannot run, whose engine error the target does not name: an undefined method,
+ * an argument the method does not declare, or an `argumentCollection` it cannot bind.
  */
-const UNRUNNABLE_CALL = {
-  status: 500,
-  statusText: LEGACY_ERROR_STATUS_TEXT,
-  headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE },
-  body: LEGACY_ERROR_PAGE_HTML,
-};
-
-/** Raised while binding a call that legacy answers with {@link UNRUNNABLE_CALL}. */
 class UnrunnableCall extends Error {
   override readonly name: string = 'UnrunnableCall';
 }
@@ -115,7 +109,10 @@ function remoteFields(request: FastifyRequest): Map<string, string> {
   return fields;
 }
 
-/** The served call a request names; throws {@link UnrunnableCall} where legacy cannot run it. */
+/**
+ * The served call a request names; throws {@link UnrunnableCall} where legacy cannot run it, and the fault legacy raises
+ * reading an id argument the call leaves undefined.
+ */
 function boundCall(request: FastifyRequest): BoundCall {
   const fields = remoteFields(request);
   const spec = METHODS.get((fields.get('method') ?? '').trim().toLowerCase());
@@ -126,7 +123,7 @@ function boundCall(request: FastifyRequest): BoundCall {
     }
   }
   const id = fields.get(spec.idArgument);
-  if (id === undefined) throw new UnrunnableCall('An argument the method reads is undefined');
+  if (id === undefined) throw new LegacyFaultError(`Element ${spec.idArgument.toUpperCase()} is undefined in ARGUMENTS.`);
   return { method: spec.method, id, siteid: fields.get('siteid') };
 }
 
@@ -144,9 +141,17 @@ function sendPlain(reply: FastifyReply, body: string): FastifyReply {
   return sendLegacyResponse(reply, { status: 200, headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE }, body });
 }
 
-/** Registers `GET` and `POST` of the comments proxy's data methods, served in the verified token's tenant. */
-export function registerCommentsProxyRoutes(app: FastifyInstance, ctx: CommentsProxyRouteContext): void {
+/**
+ * Registers `GET` and `POST` of the comments proxy's data methods, served in the verified token's tenant.
+ * @param debuggingEnabled configBean `debuggingEnabled`, which selects onError's page for a call legacy cannot run.
+ */
+export function registerCommentsProxyRoutes(
+  app: FastifyInstance,
+  ctx: CommentsProxyRouteContext,
+  debuggingEnabled: boolean = legacyDebuggingEnabled(),
+): void {
   const { domain } = ctx;
+  const errorPage = { debuggingEnabled, encodeHtml: (text: string) => esapiEncode('html', text) };
 
   app.route({
     method: ['GET', 'POST'],
@@ -157,7 +162,9 @@ export function registerCommentsProxyRoutes(app: FastifyInstance, ctx: CommentsP
       try {
         call = boundCall(request);
       } catch (err) {
-        if (err instanceof UnrunnableCall) return sendLegacyResponse(reply, UNRUNNABLE_CALL);
+        if (err instanceof LegacyFaultError || err instanceof UnrunnableCall) {
+          return sendLegacyResponse(reply, legacyRuntimeErrorResponse(err instanceof LegacyFaultError ? err : undefined, errorPage));
+        }
         throw err;
       }
       const claims = request.opt2Auth.user;

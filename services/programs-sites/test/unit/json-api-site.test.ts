@@ -96,10 +96,10 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-/** Injects `call` from the fixed client host. */
-function send(method: 'GET' | 'POST', url: string, call: Call = {}) {
+/** Injects `call` from the fixed client host as the gateway forwards it, with its invocation credential. */
+async function send(method: 'GET' | 'POST', url: string, call: Call = {}) {
   const host = `${SERVER_NAME}:${SERVER_PORT}`;
-  return t.app.inject({ method, url, headers: { host, ...call.headers }, payload: call.payload });
+  return t.app.inject({ method, url, headers: { host, ...(await headersFor('service:gateway')), ...call.headers }, payload: call.payload });
 }
 
 type Reply = Awaited<ReturnType<typeof send>>;

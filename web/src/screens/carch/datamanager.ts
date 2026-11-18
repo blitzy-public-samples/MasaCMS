@@ -1,5 +1,6 @@
 // The `cArch.datamanager` page: the view's in-place response writes, then the form data manager panels (server-only).
 import {
+  LegacyFaultError,
   LegacyServiceUnavailableError,
   cfEq,
   cfIsBoolean,
@@ -48,7 +49,7 @@ const PREPARED = new WeakMap<ScreenContext, DataManagerData>();
 /** `rc[name]`, failing as CFML does when the element is undefined. */
 function rcText(rc: Rc, name: string): string {
   const value = rc[name];
-  if (value === undefined) throw new TypeError(`Element ${name.toUpperCase()} is undefined in RC.`);
+  if (value === undefined) throw new LegacyFaultError(`Element ${name.toUpperCase()} is undefined in RC.`);
   return value;
 }
 

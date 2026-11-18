@@ -411,6 +411,12 @@ describe('token-gated writes', () => {
     expect([consumed, t.db.statements]).toEqual([[], []]);
   });
 
+  it('fails as the legacy insert does on a name tchangesets.name (nvarchar(100)) cannot store, writing nothing', async () => {
+    const res = await post(SAVE_URL, { changesetID: NEW_ID, siteid: SITE, name: 'c'.repeat(255) });
+    expect(res.statusCode).toBe(500);
+    expect(ran(CHANGESET_WRITE)).toBe(false);
+  });
+
   it.each([
     ['delete', `/v1/sites/${SITE}/changesets/${CS}/delete`, 'list', ['changesetID', 'siteID'], /^INSERT INTO "content"\."trash" /],
     ['rollback', `/v1/sites/${SITE}/changesets/${CS}/rollback`, 'edit', ['changesetID', 'siteID'], CHANGESET_WRITE],

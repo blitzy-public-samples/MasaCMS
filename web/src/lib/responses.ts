@@ -4,11 +4,13 @@ import {
   LEGACY_HTML_CONTENT_TYPE,
   LEGACY_JSON_CONTENT_TYPE,
   legacyHeaders,
+  legacyRuntimeErrorResponse,
+  type LegacyFaultError,
 } from '@opt2/platform/legacy-compat';
 import { negotiatesIdentityEncoding } from './accept-encoding';
 import { isCompactDisplay } from './cfml';
 import { CORE_VERSION, legacySettings } from './env';
-import { toString as markupOf, type SafeHtml } from './html';
+import { encodeHtml, toString as markupOf, type SafeHtml } from './html';
 import { cf2Java } from './resource-bundles/rb';
 
 export { isCompactDisplay, negotiatesIdentityEncoding };
@@ -60,6 +62,8 @@ export interface LegacyResponseContext {
   locale?: string;
   /** The request's combined `Accept-Encoding` value. */
   acceptEncoding?: string | null;
+  /** The admin set-up's CORS echo of an allowed `Origin` (`AdminRequest.accessControlHeaders`). */
+  accessControl?: Readonly<Record<string, string>>;
 }
 
 /** Options of {@link htmlResponse}. */
@@ -113,10 +117,11 @@ function containerHeaders(context: LegacyResponseContext = {}): Record<string, s
     : { 'content-language': contentLanguage(locale) };
 }
 
-/** The headers legacy adds to every response. */
+/** The headers legacy adds to every response, with the admin set-up's CORS echo. */
 function baseHeaders(context?: LegacyResponseContext): Headers {
   const headers = new Headers(legacyHeaders(CORE_VERSION));
   mergeInto(headers, containerHeaders(context));
+  mergeInto(headers, context?.accessControl);
   return headers;
 }
 
@@ -201,6 +206,20 @@ export function legacyUnavailable(context?: LegacyResponseContext): Response {
   const merged = new Headers(headers);
   mergeInto(merged, containerHeaders(context));
   return new Response(body, { status, statusText, headers: merged });
+}
+
+/**
+ * Legacy `onError`'s answer to a runtime error at 500 `An Error Occurred`: the debug page of `fault` with
+ * `debuggingEnabled` on, else the error.html page.
+ */
+export function legacyError(context?: LegacyResponseContext, fault?: LegacyFaultError): Response {
+  const { status, statusText, headers: pageHeaders, body } = legacyRuntimeErrorResponse(fault, {
+    debuggingEnabled: legacySettings().debuggingEnabled,
+    encodeHtml,
+  });
+  const headers = baseHeaders(context);
+  mergeInto(headers, pageHeaders);
+  return new Response(body, { status, statusText, headers });
 }
 
 /** An empty 404 HTML response with the legacy headers. */

@@ -285,7 +285,7 @@ function fakeLegacy(options: LegacyOptions = {}) {
   };
 }
 
-/** Migration pool answering the advisory lock and the `projector_cursor` mirror upsert; `mirrorTx` numbers each mirror write's transaction. */
+/** Migration pool answering the advisory lock, the `projector_cursor` mirror upsert and reads of an empty `projector_quarantine`; `mirrorTx` numbers each mirror write's transaction. */
 function fakeDb(leader = true, failMirror: (owner: string, tenantId: string) => boolean = () => false) {
   const mirror = new Map<string, { cursor: string; horizon: string }>();
   const mirrorTx: number[] = [];
@@ -310,6 +310,8 @@ function fakeDb(leader = true, failMirror: (owner: string, tenantId: string) => 
             mirrorTx.push(id);
             return { rows: [] };
           }
+          // Reads of `projector_quarantine`, which holds no change in these suites.
+          if (text.startsWith('SELECT ') && text.includes('FROM "migration"."projector_quarantine"')) return { rows: [] };
           throw new Error(`unexpected PostgreSQL SQL: ${text}`);
         },
       };
@@ -571,8 +573,8 @@ describe('runProjectorCycle streams', () => {
     };
     const h = harness({ owners: fakeOwners({ pages, defaultHorizon: '777' }) });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
-    // The communications batch, then one batch for every other stream's empty page.
-    expect(result).toMatchObject({ leader: true, ran: true, rowsApplied: 0, skipped: 2, batches: 2, errors: [] });
+    // The communications batch, then one batch for each other owner's empty pages.
+    expect(result).toMatchObject({ leader: true, ran: true, rowsApplied: 0, skipped: 2, batches: config.dataOwners.length, errors: [] });
     expect(h.legacy.checkpoint('communications')).toMatchObject({ cursor_xid: '501', cursor_seq: '2', applied_horizon: '502', rows_applied: 0 });
     expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '777' });
     expect(h.legacy.applied(/^(INSERT|DELETE|UPDATE \[)/)).toEqual([]);
@@ -633,10 +635,12 @@ describe('runProjectorCycle streams', () => {
     expect(inserted?.sql).toMatch(/\(\[UserID\], \[SiteID\], \[Fname\], \[UserName\], \[Type\]\)/);
     expect(Object.values(inserted?.params ?? {})).toEqual(expect.arrayContaining([USER, SITE, 'Grace', 'grace', '2']));
     expect(Object.values(inserted?.params ?? {})).not.toContain('other');
-    const opened = (inserted?.tx ?? 0) - 1;
-    expect(owners.exports.filter((call) => call.keys !== undefined)).toEqual(
-      otherTusersTargets.map((target) => ({ owner: target.owner, unit: target.unit, keys: [userKey(USER)], opened })),
+    const parts = owners.exports.filter((call) => call.keys !== undefined);
+    expect(parts.map((call) => ({ owner: call.owner, unit: call.unit, keys: call.keys }))).toEqual(
+      otherTusersTargets.map((target) => ({ owner: target.owner, unit: target.unit, keys: [userKey(USER)] })),
     );
+    // Other owners' idle batches may commit meanwhile; the insert's own transaction had not begun.
+    expect(parts.every((call) => call.opened < (inserted?.tx ?? 0))).toBe(true);
     expect(owners.exports.filter((call) => call.keys === undefined).map((call) => call.unit)).toEqual(['people.person']);
   });
 
@@ -913,7 +917,7 @@ describe('runProjectorCycle streams', () => {
     h.owners.owners.changes = async (owner, params) => (owner === 'people' ? Promise.reject(new Error('people down')) : changes(owner, params));
     const result = await runProjectorCycle(h.ctx, cycleDeps());
     expect(result.errors.map((error) => [error.owner, error.tenantId, error.cursor, error.error.message])).toEqual([['people', TENANT, CURSOR_START, 'people down']]);
-    expect(result.batches).toBe(1);
+    expect(result.batches).toBe(config.dataOwners.length - 1);
     expect(h.legacy.checkpoint('people')).toBeUndefined();
     expect(h.legacy.committed.size).toBe(config.dataOwners.length - 1);
     expect(h.logger.error).toHaveBeenCalledTimes(1);
@@ -935,8 +939,8 @@ describe('runProjectorCycle streams', () => {
 
     const result = await runProjectorCycle(h.ctx, cycleDeps({ beforeFirstBatch }));
 
-    // The identity and people batches, then the idle advances of the other streams.
-    expect(result).toMatchObject({ batches: 3, rowsApplied: 2, errors: [] });
+    // The identity and people batches, then each other owner's idle advance.
+    expect(result).toMatchObject({ batches: config.dataOwners.length, rowsApplied: 2, errors: [] });
     expect(opened).toEqual([0]);
     await runProjectorCycle(h.ctx, cycleDeps({ beforeFirstBatch }));
     expect(beforeFirstBatch).toHaveBeenCalledTimes(2);
@@ -1171,6 +1175,16 @@ describe('runProjectorCycle start-up guard', () => {
 });
 
 describe('runProjectorCycle roster operations', () => {
+  /** `owners` whose people feed answers an event-loop turn later, once identity's lane has read and parked its stream. */
+  function peopleAnswersLater(owners: ReturnType<typeof fakeOwners>): ReturnType<typeof fakeOwners> {
+    const changes = owners.owners.changes.bind(owners.owners);
+    owners.owners.changes = async (owner, params) => {
+      if (owner === 'people') await new Promise((resolve) => setImmediate(resolve));
+      return changes(owner, params);
+    };
+    return owners;
+  }
+
   it('holds a roster operation until done and applies people and identity rows with both checkpoints in one transaction', async () => {
     const pages = {
       [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }),
@@ -1209,7 +1223,7 @@ describe('runProjectorCycle roster operations', () => {
       'identity|100:1': page([account('lin', {}, [105, 2])], '106', '100:1'),
       [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP }, [101, 1])], '102', CURSOR_START, { [OP]: 'rolled-back' }),
     };
-    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
+    const h = harness({ owners: peopleAnswersLater(fakeOwners({ pages })), streamPagesPerCycle: 2 });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
     expect(result).toMatchObject({ held: 1, rowsApplied: 1, errors: [] });
     expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['lin']);
@@ -1227,7 +1241,7 @@ describe('runProjectorCycle roster operations', () => {
       ),
       [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP }, [101, 1])], '102', CURSOR_START, { [OP]: 'rolled-back' }),
     };
-    const h = harness({ owners: fakeOwners({ pages }), streamPagesPerCycle: 2 });
+    const h = harness({ owners: peopleAnswersLater(fakeOwners({ pages })), streamPagesPerCycle: 2 });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
     expect(result).toMatchObject({ held: 1, rowsApplied: 2, skipped: 2, errors: [] });
     expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.params.p0)).toEqual(['grace', 'lin']);
@@ -1281,8 +1295,12 @@ describe('runProjectorCycle roster operations', () => {
     expect(updates).toHaveLength(2);
     expect(updates[0]?.tx).toBe(updates[1]?.tx);
     expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
-    // The joint batch supersedes the first read's empty page and the parked page, which commit nothing of their own.
-    expect(h.legacy.applied(/^UPDATE opt2_sync/).filter((statement) => statement.params.owner === 'identity')).toHaveLength(1);
+    // The first read's empty page commits its idle advance in identity's lane; the parked page commits nothing of its own.
+    const identityUpserts = h.legacy.applied(/^UPDATE opt2_sync/).filter((statement) => statement.params.owner === 'identity');
+    expect(identityUpserts.map((statement) => [statement.tx === updates[0]?.tx, statement.params.appliedHorizon])).toEqual([
+      [false, '101'],
+      [true, '200'],
+    ]);
   });
 
   it.each<[string, OwnersOptions['failPosition'], LegacyOptions, Partial<CheckpointRecord> | undefined]>([
@@ -1830,21 +1848,21 @@ describe('runProjectorCycle idle streams', () => {
     expect(h.owners.changes.filter((read) => read.owner === 'people')).toHaveLength(2);
   });
 
-  it('commits the newer horizons of every idle stream in one SQL Server transaction and one mirror transaction, keeping each batch record', async () => {
+  it("commits the newer horizons of each owner's idle streams in one SQL Server transaction and one mirror transaction of their own, keeping each batch record", async () => {
     const legacy = fakeLegacy();
     seedAll(legacy, '150', 'people');
     const h = harness({ legacy, owners: fakeOwners({ defaultHorizon: '200' }) });
 
-    expect(await runProjectorCycle(h.ctx, cycleDeps())).toMatchObject({ batches: 1, rowsApplied: 0, errors: [] });
+    expect(await runProjectorCycle(h.ctx, cycleDeps())).toMatchObject({ batches: config.dataOwners.length, rowsApplied: 0, errors: [] });
 
     const upserts = legacy.applied(CHECKPOINT_UPSERT);
     expect(upserts).toHaveLength(config.dataOwners.length);
-    expect(new Set(upserts.map((statement) => statement.tx)).size).toBe(1);
-    expect(legacy.begun()).toBe(1);
+    expect(new Set(upserts.map((statement) => statement.tx)).size).toBe(config.dataOwners.length);
+    expect(legacy.begun()).toBe(config.dataOwners.length);
     expect(h.db.mirrorTx).toHaveLength(config.dataOwners.length);
-    expect(new Set(h.db.mirrorTx).size).toBe(1);
+    expect(new Set(h.db.mirrorTx).size).toBe(config.dataOwners.length);
     expect(legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '50', cursor_seq: '1', applied_horizon: '200', batch_id: 'batch-identity', rows_applied: 3 });
-    // The stream without a stored checkpoint gets its first one in the same batch.
+    // The stream without a stored checkpoint gets its first one in its owner's idle batch.
     expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '200', rows_applied: 0 });
     expect(h.db.mirror.get(`people|${TENANT}`)).toEqual({ cursor: CURSOR_START, horizon: '200' });
   });
@@ -1852,7 +1870,7 @@ describe('runProjectorCycle idle streams', () => {
   it.each<[string, boolean, Partial<CheckpointRecord>]>([
     ['without a stored checkpoint', false, { cursor_xid: '0', cursor_seq: '0', applied_horizon: '100', rows_applied: 0 }],
     ['with a lower stored horizon', true, { cursor_xid: '50', cursor_seq: '1', applied_horizon: '100', batch_id: 'batch-people', rows_applied: 3 }],
-  ])('commits the held xid of a stream parked at its first row %s once, in the joint idle batch, then nothing while it stays parked', async (_label, peopleStored, stored) => {
+  ])('commits the held xid of a stream parked at its first row %s once, in the idle batch after the settle rounds, then nothing while it stays parked', async (_label, peopleStored, stored) => {
     const legacy = fakeLegacy();
     seedAll(legacy, '60', peopleStored ? undefined : 'people');
     const after = peopleStored ? '50:1' : CURSOR_START;
@@ -1860,10 +1878,12 @@ describe('runProjectorCycle idle streams', () => {
     const h = harness({ legacy, owners: fakeOwners({ pages, defaultHorizon: '200' }) });
     const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
 
-    expect(await loop.runOnce()).toMatchObject({ held: 1, batches: 1, rowsApplied: 0, errors: [] });
+    // Each other owner's lane commits its idle advance; the parked stream's waits for the settle rounds.
+    expect(await loop.runOnce()).toMatchObject({ held: 1, batches: config.dataOwners.length, rowsApplied: 0, errors: [] });
     const upserts = legacy.applied(CHECKPOINT_UPSERT);
     expect(upserts).toHaveLength(config.dataOwners.length);
-    expect(new Set(upserts.map((statement) => statement.tx)).size).toBe(1);
+    expect(upserts.at(-1)?.params.owner).toBe('people');
+    expect(new Set(upserts.map((statement) => statement.tx)).size).toBe(config.dataOwners.length);
     expect(legacy.checkpoint('people')).toMatchObject(stored);
     expect(legacy.checkpoint('identity')).toMatchObject({ applied_horizon: '200' });
     expect(h.db.mirror.get(`people|${TENANT}`)).toEqual({ cursor: after, horizon: '100' });
@@ -1877,7 +1897,7 @@ describe('runProjectorCycle idle streams', () => {
   });
 
   it.each<[string, (legacy: ReturnType<typeof fakeLegacy>, db: ReturnType<typeof fakeDb>) => Promise<CycleResult>]>([
-    ['their joint idle advance fails after its commit', (legacy, db) => runProjectorCycle(harness({ legacy, db }).ctx, cycleDeps())],
+    ['their idle advances fail after their commits', (legacy, db) => runProjectorCycle(harness({ legacy, db }).ctx, cycleDeps())],
     [
       'mirroring the checkpoints a new loop finds stored fails',
       (legacy, db) => {
@@ -1944,6 +1964,7 @@ describe('owed legacy effects', () => {
       authority: () => currentAuthority({ gateway: h.ctx.gateway, config: config.paths }),
       catalog: unitCatalog,
       tenants: () => Promise.resolve([TENANT]),
+      quarantined: () => Promise.resolve([]),
       clock: { now: () => new Date(0) },
       sleep: () => Promise.resolve(),
       defaults: { timeoutMs: 0, pollIntervalMs: 1 },
@@ -2125,7 +2146,7 @@ describe('owed legacy effects', () => {
     const result = await runProjectorCycle(h.ctx, cycleDeps());
 
     expect(result.errors.map((error) => [error.owner, error.tenantId, error.cursor, error.error.message])).toEqual([['people', TENANT, '50:1', 'bridge unavailable']]);
-    expect(result.batches).toBe(1);
+    expect(result.batches).toBe(config.dataOwners.length - 1);
     expect(h.owners.changes.some((read) => read.owner === 'people')).toBe(false);
     expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '50', pending_effects: JSON.stringify(PURGE) });
   });
@@ -2373,10 +2394,18 @@ describe('createProjectorLoop', () => {
     release();
     await stopping;
 
-    expect(await cycle).toMatchObject({ batches: 1, rowsApplied: 1, errors: [], backlog: true });
-    expect(h.owners.changes).toEqual([{ owner: 'identity', after: CURSOR_START }]);
+    const first = await cycle;
+    expect(first).toMatchObject({ rowsApplied: 1, errors: [], backlog: true });
+    // Every lane read its first page before the stop; none read a further one.
+    expect([...h.owners.changes].sort((a, b) => a.owner.localeCompare(b.owner))).toEqual(
+      [...config.dataOwners].sort().map((owner) => ({ owner, after: CURSOR_START })),
+    );
     expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '10', cursor_seq: '1' });
-    expect(await loop.runOnce()).toMatchObject({ batches: 2, rowsApplied: 1, backlog: false });
+    const second = await loop.runOnce();
+    expect(second).toMatchObject({ rowsApplied: 1, backlog: false });
+    expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '20', cursor_seq: '1' });
+    // Identity's two batches, and each other owner's idle advance in whichever cycle its lane committed it.
+    expect(first.batches + second.batches).toBe(2 + config.dataOwners.length - 1);
   });
 });
 
@@ -2433,7 +2462,7 @@ describe('createProjectorLoop tracing', () => {
     const result = await createProjectorLoop(h.ctx, { startupGuard: refuseGuard }).runOnce();
     await flushTracing();
 
-    expect(result).toMatchObject({ ran: true, rowsApplied: 0, batches: 1 });
+    expect(result).toMatchObject({ ran: true, rowsApplied: 0, batches: config.dataOwners.length });
     expect(exporter.getFinishedSpans()).toEqual([]);
     expect(received).toHaveLength(config.dataOwners.length);
     expect(new Set(received.map((traceparent) => traceparent?.split('-')[3]))).toStrictEqual(new Set(['00']));

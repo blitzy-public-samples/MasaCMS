@@ -46,7 +46,7 @@ import {
   type ExportJobRow,
 } from '../../src/repo/tables.js';
 import { exportRunTaskName } from '../../src/tasks/enqueue.js';
-import { SERVICE, TEST_AS_OF, TEST_CLOCK, buildTestApp, headersFor, identityOf, queueRun, siteChangedEnvelope, type TestApp } from '../helpers/app.js';
+import { SERVICE, TEST_AS_OF, TEST_CLOCK, buildTestApp, gatewayHeaders, headersFor, identityOf, queueRun, siteChangedEnvelope, type TestApp } from '../helpers/app.js';
 import {
   LEGACY_EXTEND_ATTRIBUTE_ROWS,
   LEGACY_EXTEND_DATA_ROWS,
@@ -331,7 +331,7 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
     });
 
     it('a tenant A exporter streams its job output through the signed download URL', async () => {
-      const res = await built().app.inject({ method: 'GET', url: await signedUrlOfA() });
+      const res = await built().app.inject({ method: 'GET', url: await signedUrlOfA(), headers: await gatewayHeaders() });
 
       expect(res.statusCode).toBe(200);
       expect(res.rawPayload.equals(OUTPUT_A)).toBe(true);
@@ -391,7 +391,7 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
       const url = await signedUrlOfA();
       const tampered = url.replace(`/${TENANT_A.tenantId}/`, `/${TENANT_B.tenantId}/`);
 
-      const res = await built().app.inject({ method: 'GET', url: tampered });
+      const res = await built().app.inject({ method: 'GET', url: tampered, headers: await gatewayHeaders() });
 
       expect(tampered).not.toBe(url);
       expect(res.statusCode).toBe(403);

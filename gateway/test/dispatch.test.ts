@@ -177,6 +177,7 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
       afterLegacyLogout: async () => undefined,
       afterLegacyLogin: async () => undefined,
       completePending: async () => 'logged-out' as const,
+      afterTargetLogin: () => undefined,
     },
     facts: NO_FACTS,
     auth: app.opt2.auth,
@@ -193,6 +194,7 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
       sessionMode: () => 'legacy-primary',
     },
     legacyOrigin: 'http://127.0.0.1:9',
+    cookieSettings: { secure: false, domain: '' },
     clock: systemClock,
   };
   await app.register(replyFrom);

@@ -55,6 +55,8 @@ export interface ApprovalActionWrite {
   requestId: string;
   groupId: string;
   chainId: string;
+  /** The request's site, which getBean copies onto the action. */
+  siteId: string;
   actionType: string;
   comments: string;
   userId: string;
@@ -183,18 +185,27 @@ export function approvalNotice(kind: string, site: SiteContentSettings): null {
   throw new UndefinedLegacyVariableError('APPROVALHISTORY');
 }
 
-/** approvalActionBean `loadBy(requestID, groupID)` then save: overwrites the group's action of the request, else inserts one. */
+/**
+ * approvalActionBean `loadBy(requestID, groupID)` then save: overwrites the group's action of the request, else inserts
+ * one, with the request's site ('' binds NULL; a stored action keeps its own site when the request has none).
+ */
 export async function writeAction(
   tx: TenantTx,
   repository: ContentRepository,
   action: ApprovalActionWrite,
   ctx?: WriteContext,
 ): Promise<ApprovalActionRow> {
-  const changes = { comments: action.comments, actiontype: action.actionType, userid: action.userId, chainid: action.chainId };
+  const changes = {
+    comments: action.comments,
+    actiontype: action.actionType,
+    userid: action.userId,
+    chainid: action.chainId,
+    ...(action.siteId === '' ? {} : { siteid: action.siteId }),
+  };
   const existing = await repository.approvals.actionFor(tx, { requestId: action.requestId, groupId: action.groupId });
   if (existing === null) {
-    // The ORM insert binds every column, so the unset site and parent are stored NULL rather than the column defaults.
-    return repository.approvals.insertAction(tx, { requestid: action.requestId, groupid: action.groupId, siteid: '', parentid: '', ...changes }, ctx);
+    // The ORM insert binds every column: the request's site, and the unset parent stored NULL rather than the column default.
+    return repository.approvals.insertAction(tx, { requestid: action.requestId, groupid: action.groupId, siteid: action.siteId, parentid: '', ...changes }, ctx);
   }
   const updated = await repository.approvals.updateAction(tx, existing.actiontid, changes, ctx);
   if (updated !== null) {
@@ -252,7 +263,15 @@ export async function cancelRequest(
   await writeAction(
     tx,
     repository,
-    { requestId: request.requestid, groupId: request.groupid, chainId: request.chainid, actionType: 'Cancelation', comments, userId: actor.userId },
+    {
+      requestId: request.requestid,
+      groupId: request.groupid,
+      chainId: request.chainid,
+      siteId: request.siteid,
+      actionType: 'Cancelation',
+      comments,
+      userId: actor.userId,
+    },
     writeContextFor(actor),
   );
   const saved = await saveRequest(tx, repository, { ...request, status: 'Canceled' }, actor, site);

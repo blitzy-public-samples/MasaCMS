@@ -4,18 +4,21 @@ export {
   alertBox,
   block,
   controlGroup,
+  detailList,
   formActions,
   gridTable,
   hiddenField,
   hiddenFields,
   pageHeader,
   postForm,
+  rowActionsMenu,
   select,
+  submitButton,
   textarea,
   textInput,
   valueRows,
 } from './markup';
-export type { AlertKind, FormButton, GridCell, HeaderLink, Label, SelectOption, ValueRow } from './markup';
+export type { AlertKind, FormButton, GridCell, HeaderLink, Label, RowAction, SelectOption, ValueRow } from './markup';
 export { bundleLabel, opt2Label, OPT2_LABEL_KEYS } from './labels';
 export type { Opt2LabelName } from './labels';
 export { amountCell, stateBadge, stateBadgeOf } from './states';

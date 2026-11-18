@@ -2,6 +2,7 @@
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import type { components as ContentSchemas } from '@/generated/clients/strategies-content';
 import { cpermMain, loadCpermMain, renderCpermMain, type CpermMainModel } from '@/screens/cperm/main';
 import { CONTENT_MODULE_ID, TOP_NODE_ID } from '@/screens/cperm/partials';
@@ -561,5 +562,33 @@ describe('cperm.main gate and data reach', () => {
         },
       ]),
     );
+  });
+});
+
+describe('cperm.main in Site Manager for an id that names no node', () => {
+  /** identity's answer to an id its 35-character `contentId` refuses. */
+  const REFUSED: FakeReply = {
+    status: 400,
+    body: { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid parameters', code: 'invalid_request' } },
+  };
+  const crumbsPath = (contentid: string): string => `/v1/sites/${SITE}/content/${contentid}/crumbs`;
+
+  it.each<[string, string, boolean, boolean]>([
+    ['a short id identity refuses', 'junk', true, true],
+    ['a well-formed id of no node', 'ABCDEF01-2345-6789-ABCDEF0123456789', false, true],
+    ['an id longer than its column', 'X'.repeat(40), true, false],
+    ['an empty id', '', true, false],
+  ])("fails as legacy's dspZoom does on its empty crumb list for %s", async (_label, contentid, refused, readsCrumbs) => {
+    const gateway = fakeGatewayClient({
+      ...routesFor(contentid, { crumbdata: [] }),
+      [CSRF_ROUTE]: { status: 200, body: { tokens: [csrfPair(contentid, 'F1')] } },
+      ...(refused ? { [routeKey('GET', 'identity', `/v1/permissions/content/${contentid}`)]: REFUSED } : {}),
+    });
+    const ctx = makeScreenContext({ req: siteAdminMain({ contentid, parentid: END, moduleid: SITE_MANAGER }), gateway });
+
+    const failure = loadCpermMain(ctx);
+    await expect(failure).rejects.toBeInstanceOf(LegacyFaultError);
+    await expect(failure).rejects.toMatchObject({ message: 'The element at position 1 cannot be found.', type: 'Expression' });
+    expect(gateway.calls.some(({ path }) => path === crumbsPath(contentid))).toBe(readsCrumbs);
   });
 });

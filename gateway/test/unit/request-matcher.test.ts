@@ -150,7 +150,7 @@ interface Sent {
 function requestOf(url: string, { method = 'GET', contentType, body }: Sent = {}): [MatchRequest, BodyParams] {
   const bytes = typeof body === 'string' ? Buffer.from(body) : body;
   const headers: Record<string, string> = contentType === undefined ? {} : { 'content-type': contentType };
-  const request: MatchRequest = bytes === undefined ? { url, method, headers } : { url, method, headers, body: bytes };
+  const request: MatchRequest = { url, method, headers };
   return [request, bodyParamsFrom(contentType, bytes, method)];
 }
 
@@ -478,17 +478,18 @@ describe('createMatcher target destinations', () => {
     });
   });
 
-  it.each<[string, string, Sent, string, string]>([
-    ['GET', LIST_URL, {}, '/admin/cusers/list?muraAction=cUsers.list&siteid=default', 'GET'],
-    ['HEAD', LIST_URL, { method: 'HEAD' }, '/admin/cusers/list?muraAction=cUsers.list&siteid=default', 'HEAD'],
+  it.each<[string, string, Sent, string, string, boolean]>([
+    ['GET', LIST_URL, {}, '/admin/cusers/list?muraAction=cUsers.list&siteid=default', 'GET', false],
+    ['HEAD', LIST_URL, { method: 'HEAD' }, '/admin/cusers/list?muraAction=cUsers.list&siteid=default', 'HEAD', false],
     [
       'POST',
       '/admin/index.cfm',
       { method: 'POST', contentType: URLENCODED, body: 'muraAction=cUsers.list&siteid=default&keywords=a+b' },
-      '/admin/cusers/list?muraAction=cUsers.list&siteid=default&keywords=a+b',
-      'GET',
+      '/admin/cusers/list',
+      'POST',
+      true,
     ],
-  ])('maps a target page action sent as %s to web as %s with no body, whatever the entry owner', async (_method, url, sent, path, method) => {
+  ])('maps a target page action sent as %s to web as %s, whatever the entry owner', async (_method, url, sent, path, method, forwardBody) => {
     const outcome = await matchOf(matcherWith(), url, sent);
     expect(outcome.entry?.owningService).toBe('people');
     expect(outcome.destination).toStrictEqual({
@@ -500,7 +501,7 @@ describe('createMatcher target destinations', () => {
       extraHeaders: { [ORIGINAL_URL_HEADER]: url },
       responseMode: 'page',
       method,
-      forwardBody: false,
+      forwardBody,
     });
     expect(outcome.failContext).toStrictEqual({ surface: 'admin', route: 'admin:cusers.list', owner: 'web' });
   });

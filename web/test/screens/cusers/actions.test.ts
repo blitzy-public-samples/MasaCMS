@@ -279,7 +279,7 @@ describe('cUsers.update{type=1}', () => {
   it('refuses a group Delete without calling identity', async () => {
     const ctx = contextFor(s2Admin('update', groupPost({ action: 'Delete', userid: GROUP_ID, csrf: EDIT_GROUP_CSRF })));
 
-    await expect(updateGroupAction.submit(ctx)).rejects.toThrow("no group write for action 'Delete'");
+    await expect(updateGroupAction.submit(ctx)).rejects.toThrow('cUsers.update: a group delete is served by legacy');
     expect(ctx.gateway.calls).toEqual([]);
   });
 });

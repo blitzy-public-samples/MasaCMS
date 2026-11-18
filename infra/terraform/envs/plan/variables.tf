@@ -137,6 +137,11 @@ variable "legacy_settings" {
   }
 
   validation {
+    condition     = alltrue([for k, v in var.legacy_settings : try(can(regex("^[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?$", v)) && tonumber(v) >= 4.9406564584124654e-324 && tonumber(v) <= 1.7976931348623157e308, false) if k == "MURA_REQUESTTIMEOUT"])
+    error_message = "legacy_settings MURA_REQUESTTIMEOUT (seconds) must be a positive CFML number: decimal text such as 1000, 1.5 or 2e2, with no whitespace."
+  }
+
+  validation {
     condition     = alltrue([for k, v in var.legacy_settings : can(regex("^(/[^\\s?#]*)?$", v)) if k == "MURA_CONTEXT"])
     error_message = "legacy_settings MURA_CONTEXT must be blank or a path that starts with / and holds no whitespace, ? or #."
   }
@@ -144,6 +149,11 @@ variable "legacy_settings" {
   validation {
     condition     = alltrue([for k, v in var.legacy_settings : can(regex("^[^\\s:/\\\\?#@]*$", v)) if k == "MURA_ADMINDOMAIN"])
     error_message = "legacy_settings MURA_ADMINDOMAIN must be blank or a comma list of host names with no whitespace, port, path or @."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : can(regex("^(\\.?[^\\s:/\\\\?#@,.][^\\s:/\\\\?#@,]*)?$", v)) if k == "MURA_COOKIEDOMAIN"])
+    error_message = "legacy_settings MURA_COOKIEDOMAIN must be blank or one host name, optionally with a leading dot, with no whitespace, port, path, comma or @."
   }
 
   validation {

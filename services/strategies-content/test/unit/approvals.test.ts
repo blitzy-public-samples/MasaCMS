@@ -380,7 +380,7 @@ describe('approvalAction', () => {
     const result = await act('approve', 'Looks good');
     expect(result).toEqual({ value: { contenthistid: DRAFT, previewurl: previewOf(DRAFT) }, errors: {}, notices: [] });
     expect(store.rows('approval_action')).toEqual([
-      expect.objectContaining({ requestid: REQUEST, groupid: APPROVERS, chainid: CHAIN, actiontype: 'Approval', comments: 'Looks good', userid: APPROVER.userId }),
+      expect.objectContaining({ requestid: REQUEST, groupid: APPROVERS, chainid: CHAIN, siteid: SITE_ID, actiontype: 'Approval', comments: 'Looks good', userid: APPROVER.userId }),
     ]);
     expect(requestRow()).toMatchObject({ groupid: EDITORS, status: 'Pending', contenthistid: DRAFT });
     expect(approveVersion).not.toHaveBeenCalled();
@@ -453,7 +453,7 @@ describe('approvalAction', () => {
     const versions = store.rows('content');
     expect(await act(action, 'Needs work')).toEqual({ value: { contenthistid: DRAFT, previewurl: previewOf(DRAFT) }, errors: {}, notices: [] });
     expect(store.rows('approval_action')).toEqual([
-      expect.objectContaining({ requestid: REQUEST, groupid: APPROVERS, actiontype: 'Rejection', comments: 'Needs work', userid: APPROVER.userId }),
+      expect.objectContaining({ requestid: REQUEST, groupid: APPROVERS, siteid: SITE_ID, actiontype: 'Rejection', comments: 'Needs work', userid: APPROVER.userId }),
     ]);
     expect(requestRow()).toMatchObject({ groupid: APPROVERS, status: 'Rejected', contenthistid: DRAFT });
     expect(approveVersion).not.toHaveBeenCalled();
@@ -473,7 +473,7 @@ describe('approvalAction', () => {
   ])('%s records the group\u2019s Cancelation and makes the request Canceled', async (_label, cancel) => {
     await cancel();
     expect(store.rows('approval_action')).toEqual([
-      expect.objectContaining({ requestid: REQUEST, groupid: APPROVERS, actiontype: 'Cancelation', comments: 'Withdrawn', userid: APPROVER.userId }),
+      expect.objectContaining({ requestid: REQUEST, groupid: APPROVERS, siteid: SITE_ID, actiontype: 'Cancelation', comments: 'Withdrawn', userid: APPROVER.userId }),
     ]);
     expect(requestRow()).toMatchObject({ status: 'Canceled', contenthistid: DRAFT });
   });
@@ -502,14 +502,14 @@ describe('approvalAction', () => {
 
 describe('writeAction', () => {
   it('inserts a group\u2019s first action keyed by actiontid with its comments and user, then overwrites that row by actiontid', async () => {
-    const write = { requestId: REQUEST, groupId: APPROVERS, chainId: CHAIN };
+    const write = { requestId: REQUEST, groupId: APPROVERS, chainId: CHAIN, siteId: SITE_ID };
     const [first, second] = await inTenantA(async (tx) => [
       await writeAction(tx, deps.repository, { ...write, actionType: 'Approval', comments: 'first', userId: APPROVER.userId }),
       await writeAction(tx, deps.repository, { ...write, groupId: APPROVERS.toLowerCase(), actionType: 'Rejection', comments: 'second', userId: SUBJECT_USER_IDS.s2 }),
     ]);
     expect(first).toMatchObject({ actiontid: expect.stringMatching(CF_UUID), actiontype: 'Approval', comments: 'first', userid: APPROVER.userId, created: TEST_CLOCK.now() });
     expect(second).toMatchObject({ actiontid: first?.actiontid, actiontype: 'Rejection', comments: 'second', userid: SUBJECT_USER_IDS.s2 });
-    expect(store.rows('approval_action')).toEqual([expect.objectContaining({ actiontid: first?.actiontid, comments: 'second', siteid: null, parentid: null })]);
+    expect(store.rows('approval_action')).toEqual([expect.objectContaining({ actiontid: first?.actiontid, comments: 'second', siteid: SITE_ID, parentid: null })]);
     const updates = db.writes().filter((statement) => /^UPDATE "content"\."approval_action"/.test(statement.sql));
     expect(updates).toHaveLength(1);
     expect(updates[0]?.sql).toMatch(/ WHERE "tenant_id" = \$\d+ AND "actiontid" = \$\d+ RETURNING \*$/);
@@ -533,9 +533,9 @@ describe('saveChain', () => {
       errors: {},
       notices: [],
     });
-    expect(membershipsOf(CHAIN).map((row) => [row.membershipid, row.groupid, row.orderno])).toEqual([
-      [IDS.approval.membershipTwo, EDITORS, 1],
-      [expect.stringMatching(CF_UUID), added, 2],
+    expect(membershipsOf(CHAIN).map((row) => [row.membershipid, row.groupid, row.orderno, row.siteid])).toEqual([
+      [IDS.approval.membershipTwo, EDITORS, 1, SITE_ID],
+      [expect.stringMatching(CF_UUID), added, 2, SITE_ID],
     ]);
     expect(store.rows('approval_chain').find((row) => row.chainid === CHAIN)).toMatchObject({ name: 'Two Step', lastupdate: TEST_CLOCK.now() });
   });
@@ -604,6 +604,14 @@ describe('deleteChain', () => {
     expect(store.rows('approval_membership')).toEqual([]);
     expect(store.rows('approval_action')).toEqual([]);
     expect(store.rows('approval_request').map((row) => row.requestid)).toEqual([other.requestid]);
+  });
+
+  it('removes the action a reject wrote, which carries the request\u2019s site and group', async () => {
+    await approvalAction(deps, APPROVER, SITE, { requestId: REQUEST, action: 'reject', comment: 'Needs work' });
+    expect(store.rows('approval_action')).toEqual([expect.objectContaining({ requestid: REQUEST, siteid: SITE_ID, groupid: APPROVERS, actiontype: 'Rejection' })]);
+    await deleteChain(deps, actorOf('s2'), CHAIN);
+    expect(store.rows('approval_action')).toEqual([]);
+    expect(store.rows('approval_request').filter((row) => row.requestid === REQUEST)).toEqual([]);
   });
 
   it('answers null for an unknown chain, deleting nothing', async () => {

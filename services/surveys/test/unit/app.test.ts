@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { LOCAL_USER_TOKEN, collectRouteMatrix } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, LOCAL_USER_TOKEN, collectRouteMatrix } from '@opt2/platform/auth';
 import { loadEnv, type BaseEnv } from '@opt2/platform/service-kit';
 import type { CreateTaskInput, TaskInfo, TaskPort } from '@opt2/platform/tasks';
 import { SYSTEM_TENANT_ID } from '@opt2/platform/tenancy';
@@ -14,6 +14,7 @@ import {
   createCapturingPublisher,
   createThrowawaySchema,
   fixedClock,
+  mintServiceToken,
   mintTasksInvokerToken,
   pgAvailable,
   testVerifier,
@@ -232,8 +233,10 @@ describe.skipIf(!available)('surveys buildApp against PostgreSQL', () => {
     const app = await build({ publisher: createCapturingPublisher(), taskPort: fakeTaskPort() });
     try {
       await app.ready();
-      const lower = await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a' });
-      const cased = await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/Surveys/SURVEYS?siteid=tenant-a' });
+      // An anonymous caller as the gateway forwards it.
+      const headers = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'surveys' })}` };
+      const lower = await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a', headers });
+      const cased = await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/Surveys/SURVEYS?siteid=tenant-a', headers });
       expect(cased.json()).toMatchObject({ method: 'surveys.surveys' });
       expect([cased.statusCode, cased.json()]).toEqual([lower.statusCode, lower.json()]);
     } finally {

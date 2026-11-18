@@ -6,12 +6,12 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { collectRouteMatrix } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import { TENANT_A, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, mintServiceToken, testVerifier } from '@opt2/platform/testing';
 import type { FinanceRepository } from '../../src/repo/repository.js';
 import { ATTACHMENT_BUCKET, attachmentObjectKey } from '../../src/repo/tables.js';
 import { registerRoutes, type FinanceDeps } from '../../src/routes/index.js';
@@ -142,7 +142,9 @@ describe('registerRoutes', () => {
 
   it('serves a local signed URL through the injected adapter, verified at the injected clock', async () => {
     const { app } = await registeredWith(localAdapter);
-    const res = await app.inject({ method: 'GET', url: await localAdapter.signedUrl(ATTACHMENT_BUCKET, KEY_A) });
+    // The signed URL is path-only; the gateway forwards it with its own invocation credential.
+    const headers = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}` };
+    const res = await app.inject({ method: 'GET', url: await localAdapter.signedUrl(ATTACHMENT_BUCKET, KEY_A), headers });
     expect(res.statusCode).toBe(200);
     expect(res.rawPayload.equals(BYTES)).toBe(true);
     expect(res.headers['content-type']).toBe('application/pdf');

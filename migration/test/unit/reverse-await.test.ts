@@ -1,7 +1,7 @@
-// Unit tests for the projection awaiter over a scripted checkpoint table, owners client, authority and driven clock.
+// Unit tests for the projection awaiter over a scripted checkpoint table, quarantine, owners client, authority and driven clock.
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
-import { REDACTED, serializeError } from '@opt2/platform/logging';
-import type { PositionResponse } from '@opt2/platform/migration-kit';
+import { REDACTED, SAFE_ERROR_TEXT, serializeError } from '@opt2/platform/logging';
+import { formatWritePosition, type PositionResponse } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { ConnectionPool } from 'mssql';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ import { GatewayCallError, type CurrentAuthority } from '../../src/cutover/index
 import { OwnerCallError, type DataOwner } from '../../src/owners/index.js';
 import { CHECKPOINT_TABLE, type LegacyEffect } from '../../src/reverse/apply-legacy.js';
 import {
+  ProjectionQuarantinedError,
   ProjectionTimeoutError,
   ProjectionUnavailableError,
   createAwaiter,
@@ -18,6 +19,7 @@ import {
   type ProjectionRead,
   type ReadBudget,
 } from '../../src/reverse/await.js';
+import type { QuarantinedPosition } from '../../src/reverse/quarantine.js';
 import { connectionLost, sqlError } from '../helpers/fake-legacy-db.js';
 
 const TENANT_A = '3f9c3a52-1c1b-5d4e-8f00-0a1b2c3d4e5f';
@@ -52,7 +54,7 @@ function authorityOf(targetUnits: string[]): CurrentAuthority {
 }
 
 /** A dependency read that can be made to never answer on its own. */
-type Stalled = 'position' | 'authority' | 'tenants' | 'live' | 'checkpoints';
+type Stalled = 'position' | 'authority' | 'tenants' | 'live' | 'checkpoints' | 'quarantine';
 
 /** A read whose failure fails the await closed. */
 type Failing = Exclude<Stalled, 'position'>;
@@ -61,6 +63,8 @@ interface HarnessOptions {
   targetUnits?: string[];
   tenants?: string[];
   checkpoints?: Checkpoint[];
+  /** Unrepaired quarantined changes; a quarantine read returns those at the positions it is given. */
+  quarantine?: QuarantinedPosition[];
   current?: Record<string, string>;
   /** Read that never answers from its `stallFrom`-th call on (default the first); a cancelled read rejects as its driver does. */
   stall?: Stalled;
@@ -84,11 +88,16 @@ const untilAborted = <T>(signal: AbortSignal | undefined): Promise<T> =>
 /** Awaiter over fakes: `sleep` advances the clock, and `onSleep` lets a test change checkpoints between polls. */
 function harness(opts: HarnessOptions = {}) {
   const checkpoints: Checkpoint[] = [...(opts.checkpoints ?? [])];
+  const quarantine: QuarantinedPosition[] = [...(opts.quarantine ?? [])];
   const log: string[] = [];
+  /** Positions of each quarantine read, as `<owner>=<xid>` lists. */
+  const quarantineReads: string[] = [];
+  /** Checkpoint reads made before each quarantine read. */
+  const checkpointsBeforeQuarantine: number[] = [];
   let now = Date.parse('2026-06-30T10:00:00.000Z');
   const sleeps: number[] = [];
   const onSleep: Array<() => void> = [];
-  const reads: Record<Stalled, number> = { position: 0, authority: 0, tenants: 0, live: 0, checkpoints: 0 };
+  const reads: Record<Stalled, number> = { position: 0, authority: 0, tenants: 0, live: 0, checkpoints: 0, quarantine: 0 };
   const stalls = (read: Stalled): boolean => {
     reads[read] += 1;
     return opts.stall === read && reads[read] >= (opts.stallFrom ?? 1);
@@ -97,7 +106,7 @@ function harness(opts: HarnessOptions = {}) {
     if (opts.fail?.read === read) throw opts.fail.error;
   };
   /** Budgets and options the dependencies were called with, and the checkpoint requests cancelled. */
-  const seen: { position?: { timeoutMs?: number }; authority?: ReadBudget; tenants?: ReadBudget; cancels: number } = { cancels: 0 };
+  const seen: { position?: { timeoutMs?: number }; authority?: ReadBudget; tenants?: ReadBudget; quarantine?: ReadBudget; cancels: number } = { cancels: 0 };
 
   const pool = {
     request() {
@@ -178,11 +187,19 @@ function harness(opts: HarnessOptions = {}) {
       failIf('tenants');
       return stalls('tenants') ? untilAborted<string[]>(budget.signal) : (opts.tenants ?? [TENANT_A]);
     },
+    quarantined: async (listed, budget) => {
+      seen.quarantine = budget;
+      quarantineReads.push(formatWritePosition(listed));
+      checkpointsBeforeQuarantine.push(reads.checkpoints);
+      failIf('quarantine');
+      if (stalls('quarantine')) return untilAborted<QuarantinedPosition[]>(budget.signal);
+      return quarantine.filter((row) => listed.get(row.owner) === row.xid);
+    },
     clock: { now: () => (opts.fakeTimers === true ? new Date() : new Date(now)) },
     sleep,
     defaults: { timeoutMs: TIMEOUT_MS, pollIntervalMs: POLL_MS },
   });
-  return { awaiter, checkpoints, log, sleeps, onSleep, position, authority, seen };
+  return { awaiter, checkpoints, quarantine, quarantineReads, checkpointsBeforeQuarantine, log, sleeps, onSleep, position, authority, seen };
 }
 
 const positions = (entries: Record<string, string>): AwaitProjectionRequest['positions'] => new Map(Object.entries(entries));
@@ -414,6 +431,7 @@ describe('createAwaiter', () => {
     { fail: 'live', error: connectionLost(), read: 'checkpoint' },
     { fail: 'tenants', error: sqlError(208, "Invalid object name 'dbo.tsettings'."), read: 'tenant set' },
     { fail: 'authority', error: new GatewayCallError('cutoverStatus', 500, { error: 'internal' }), read: 'cut-over authority' },
+    { fail: 'quarantine', error: Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }), read: 'quarantine' },
   ])('fails closed with ProjectionUnavailableError, a legacy 503, when the $fail read rejects', async ({ fail, error, read }) => {
     const h = harness({ fail: { read: fail, error } });
 
@@ -441,6 +459,83 @@ describe('createAwaiter', () => {
     await expect(h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900' }) })).rejects.toBe(refused);
   });
 
+  const QUARANTINED: QuarantinedPosition = { owner: 'programs-sites', xid: '900', tenantId: TENANT_A };
+
+  it.each([
+    { label: 'its checkpoint is still behind', horizon: '899' },
+    { label: 'its checkpoint has passed it', horizon: '1000' },
+  ])('rejects at once with ProjectionQuarantinedError, a legacy 503, when a listed position is quarantined and $label', async ({ horizon }) => {
+    const h = harness({ checkpoints: [{ owner: 'programs-sites', tenantId: TENANT_A, appliedHorizon: horizon }], quarantine: [QUARANTINED] });
+
+    const error: unknown = await h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900' }) }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ProjectionQuarantinedError);
+    expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+    const quarantined = error as ProjectionQuarantinedError;
+    expect(quarantined).toMatchObject({ name: 'ProjectionQuarantinedError', quarantined: [QUARANTINED], surface: 'auto', reason: 'projection-quarantined' });
+    expect(quarantined.message).toBe('Projection of programs-sites=900 is quarantined: legacy could not take the write');
+    expect(quarantined[SAFE_ERROR_TEXT]).toBe(quarantined.message);
+    expect(quarantined[SAFE_ERROR_TEXT]).not.toContain(TENANT_A);
+    expect(h.log).toEqual(['checkpoints:programs-sites']);
+    expect(h.quarantineReads).toEqual(['programs-sites=900']);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it('reads the quarantine after the checkpoints on every poll and rejects once the position is quarantined', async () => {
+    const h = harness({ checkpoints: [{ owner: 'programs-sites', tenantId: TENANT_A, appliedHorizon: '899' }] });
+    h.onSleep.push(() => {
+      h.checkpoints[0] = { owner: 'programs-sites', tenantId: TENANT_A, appliedHorizon: '1000' };
+      h.quarantine.push(QUARANTINED);
+    });
+
+    await expect(h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900' }) })).rejects.toBeInstanceOf(ProjectionQuarantinedError);
+    expect(h.quarantineReads).toEqual(['programs-sites=900', 'programs-sites=900']);
+    expect(h.checkpointsBeforeQuarantine).toEqual([1, 2]);
+    expect(h.sleeps).toEqual([POLL_MS]);
+  });
+
+  it.each([
+    { label: 'another xid of the owner', quarantine: [{ ...QUARANTINED, xid: '899' }] },
+    { label: 'the same xid of another owner', quarantine: [{ ...QUARANTINED, owner: 'people' }] },
+    { label: 'none', quarantine: [] },
+  ])('reports a position applied as before when the quarantine holds $label', async ({ quarantine }) => {
+    const h = harness({ checkpoints: [{ owner: 'programs-sites', tenantId: TENANT_A, appliedHorizon: '1000' }], quarantine });
+
+    await expect(h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900' }) })).resolves.toMatchObject({ waitedMs: 0 });
+  });
+
+  it("reads the quarantine only at listed positions of projected owners, never at an owner's current position", async () => {
+    const h = harness({
+      targetUnits: ['people.person', 'programs_sites.image_size'],
+      current: { people: '700' },
+      checkpoints: [
+        { owner: 'people', tenantId: TENANT_A, appliedHorizon: '701' },
+        { owner: 'programs-sites', tenantId: TENANT_A, appliedHorizon: '1000' },
+      ],
+      quarantine: [{ owner: 'people', xid: '700', tenantId: TENANT_A }],
+    });
+
+    await expect(h.awaiter.awaitProjection({ owners: ['people'] })).resolves.toMatchObject({ positions: positions({ people: '700' }) });
+    expect(h.quarantineReads).toEqual([]);
+    await expect(
+      h.awaiter.awaitProjection({ positions: positions({ 'programs-sites': '900', identity: '5', people: '600' }), owners: ['people'] }),
+    ).resolves.toMatchObject({ positions: positions({ 'programs-sites': '900', identity: '5', people: '700' }) });
+    expect(h.quarantineReads).toEqual(['people=600,programs-sites=900']);
+  });
+
+  it('rejects a listed position that an owner position read supersedes when that listed write is quarantined', async () => {
+    const h = harness({
+      targetUnits: ['people.person'],
+      current: { people: '700' },
+      checkpoints: [{ owner: 'people', tenantId: TENANT_A, appliedHorizon: '701' }],
+      quarantine: [{ owner: 'people', xid: '600', tenantId: TENANT_A }],
+    });
+
+    await expect(h.awaiter.awaitProjection({ positions: positions({ people: '600' }), owners: ['people'] })).rejects.toMatchObject({
+      quarantined: [{ owner: 'people', xid: '600', tenantId: TENANT_A }],
+    });
+  });
+
   it('returns at once for an empty request without reading authority', async () => {
     const h = harness();
 
@@ -461,6 +556,7 @@ describe('createAwaiter budget', () => {
     { stall: 'tenants', abandoned: (seen) => budgetOf(seen.tenants), expected: { timeoutMs: 600, aborted: true } },
     { stall: 'live', abandoned: (seen) => seen.cancels, expected: 0 },
     { stall: 'checkpoints', abandoned: (seen) => seen.cancels, expected: 1 },
+    { stall: 'quarantine', abandoned: (seen) => budgetOf(seen.quarantine), expected: { timeoutMs: 600, aborted: true } },
   ])('rejects with ProjectionTimeoutError at the deadline while the $stall read never answers, and abandons it', async ({ stall, owners, abandoned, expected }) => {
     vi.useFakeTimers();
     try {

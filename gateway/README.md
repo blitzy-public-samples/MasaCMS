@@ -17,6 +17,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 | `/gateway/legacy-bridge/**` | 404, answered by the gateway |
 | `/opt2/svc/<service>/…` | The web service-call relay (see [Internal API](#internal-api)) |
 
+- **Legacy request start on target responses.** Except for `static` (`/_next/**`), `opt2` and `bridge` routes, a target-served response gets the servlet container's `Content-Encoding: identity` when the client's `Accept-Encoding` negotiates identity and the response names no encoding, and, on a session-managed path (not `/_api/rest/`), Masa's request-start `MXP_TRACKINGID` and `mobileFormat` cookies (`requestStartSetCookies` in `@opt2/platform/legacy-compat`), computed from the client's own request, after every other `Set-Cookie` and in place of any of the same name, except that an `MXP_TRACKINGID` owed from legacy's session is kept. Fail-closed 503s and the relay get neither.
 - **Legacy URLs stay.** The browser URL is always the legacy one; web receives the original request target in `X-Opt2-Original-Url`, and builds links, form actions and redirects in legacy form.
 - **Absolute URLs address the gateway.** Masa builds them from the preserved `Host` and its configured port, so legacy runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (set by `harness/repro/server.json.template`), and its `Mura.init` paths and redirect `Location` headers name the gateway. `process_env` (`harness/repro/lib/processes.sh`) hands the target processes the same two values over any the caller exports, so their absolute URLs name the gateway too. The platform-proof check `unmoved-to-legacy` fails on any forwarded response that names `LEGACY_ORIGIN`'s port.
 
@@ -75,6 +76,7 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 ## Fail closed
 
 - A `target` entry whose owner refuses the connection, times out (40 s: the owner's 30 s gate wait plus the 10 s call bound), or answers 502, 503 or 504 answers the legacy-shaped 503: the JSON API envelope with `error` for JSON, AJAX, REST and OAuth, fixture, site-monitor, stub and relay routes; the legacy error page for admin routes and for `/_api/feed` and `/_api/render`, whose legacy failures are not enveloped.
+- Any other owner answer, web's included and 500 among them (legacy's `500 An Error Occurred`), passes through with its status and reason phrase.
 - Nothing is retried against legacy, reads included.
 - A `legacy-write` entry whose window cannot open answers the same 503 before legacy executes anything.
 - A fixture route's envelope `method` is the one `api.cfm` reads from the path: `<module>.<resource>[.<action>][.<tail>]` lower-cased, a CF UUID tail left out, and `invalid` outside that grammar.
@@ -126,6 +128,8 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `MURA_APPRELOADKEY` | Masa's reload parameter name for the route key; default `appreload` |
 | `MURA_SESSIONTIMEOUT` | Masa's `sessionTimeout` in minutes, the idle limit of a jar and of the legacy-primary cookies known to attach a legacy session without a describe; 180 when unset, blank, an expression or below 1 |
 | `MURA_REQUESTTIMEOUT` | Masa's `requesttimeout` in seconds, after which no legacy logout can still be running, so a session whose pending logout legacy shows it kept is unmarked; 1000 when unset or blank; any other value that is not a positive number fails start-up |
+| `MURA_SECURECOOKIES` | Masa's `secureCookies`: marks the request-start cookies `secure`; false when unset, an expression or no CFML boolean |
+| `MURA_COOKIEDOMAIN` | Masa's `cookieDomain`: the request-start cookies' `domain`, as given; none when unset, blank or an expression |
 
 - `OPT2_SERVICE_NAME` must be `gateway`, and `OPT2_DB_AUTH` and `PG_DATABASE` are required.
 - `OPT2_SERVICE_URLS` must name the ten services and `web`, plus `stub` locally; migration comes from `OPT2_MIGRATION_URL` or the map.

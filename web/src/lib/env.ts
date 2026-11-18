@@ -1,5 +1,5 @@
 // Web process environment and the Masa global settings (application.configBean) the admin shell renders (server-only).
-import { cfIsNumeric, cfToNumber, cfVal } from '@opt2/platform/legacy-compat';
+import { cfIsNumeric, cfToNumber, cfVal, debuggingEnabledOf } from '@opt2/platform/legacy-compat';
 import { baseEnvSchema, loadEnv, z, type LoadedEnv } from '@opt2/platform/service-kit';
 
 /** Masa core version: configBean `version`, printed as `application.coreversion`. */
@@ -40,6 +40,8 @@ export interface LegacySettings {
   readonly sessionTimeout: number;
   readonly renderMuraAlerts: boolean;
   readonly secureCookies: boolean;
+  /** configBean `cookieDomain`: the `domain` utility.setCookie gives its cookies; `''` sets none. */
+  readonly cookieDomain: string;
   readonly sessionHistory: number;
   readonly windowDocumentDomain: string;
   readonly defaultLocale: string;
@@ -87,6 +89,8 @@ export interface LegacySettings {
   readonly appReloadKey: string;
   /** configBean `javaEnabled`. */
   readonly javaEnabled: boolean;
+  /** configBean `debuggingEnabled` as onError tests it: a runtime error prints the debug page unless it is a CFML boolean false. */
+  readonly debuggingEnabled: boolean;
   /** configBean `fileDir` with `s3assets` applied; `''` when unset, where configBean derives a path under the web root. */
   readonly fileDir: string;
   /** configBean `assetPath`, e.g. `/sites`; the admin session's `userFilesPath` is built from it. */
@@ -177,6 +181,7 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   // Not a configBean property; the admin layout reads it with defaultValue=true.
   renderMuraAlerts: { key: 'rendermuraalerts', template: 'true', fallback: true, apply: cfBoolean },
   secureCookies: { key: 'securecookies', template: 'false', fallback: false, apply: cfBoolean },
+  cookieDomain: { key: 'cookiedomain', template: '', fallback: '', apply: asIs },
   sessionHistory: {
     key: 'sessionhistory',
     template: '0',
@@ -237,6 +242,7 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   webroot: { key: 'webroot', fallback: '', apply: cleanFilePath },
   appReloadKey: { key: 'appreloadkey', template: 'appreload', fallback: 'appreload', apply: asIs },
   javaEnabled: { key: 'javaenabled', template: 'true', fallback: true, apply: cfBoolean },
+  debuggingEnabled: { key: 'debuggingenabled', template: 'true', fallback: false, apply: debuggingEnabledOf },
 };
 
 /** The `MURA_<KEY>` variable of a settings.ini key. */

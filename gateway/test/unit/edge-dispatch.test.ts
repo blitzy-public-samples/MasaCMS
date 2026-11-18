@@ -29,7 +29,7 @@ import type { BridgeClient } from '../../src/session/bridge-client.js';
 import { createCsrfContinuity, type CsrfHandle } from '../../src/session/csrf.js';
 import type { IdentityClient, LegacyDescribe, SettleInput } from '../../src/session/identity-client.js';
 import { createInvalidation, type LegacyLogoutOutcome } from '../../src/session/invalidation.js';
-import type { JarCookies, JarRow, JarUpsert, LegacyJar } from '../../src/session/jar.js';
+import type { JarCookies, JarRow, JarUpsert, LegacyJar, LockedJar } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
 import { createSessionResolver, type SessionResolution } from '../../src/session/resolve.js';
 import { createSessionStateChecker } from '../../src/session/state-check.js';
@@ -54,6 +54,13 @@ const MINTED_CLAIMS = {
   iat: 1_700_000_000,
   exp: 4_000_000_000,
 };
+
+/** The request start's cookies a cookieless desktop client receives on a session-managed target route, in order. */
+const REQUEST_START_COOKIES = [
+  expect.stringMatching(/^MXP_TRACKINGID=[0-9A-F]{8}%2D[0-9A-F]{4}%2D[0-9A-F]{4}%2D[0-9A-F]{16}; path=\/; HttpOnly; Max-Age=946080000; Expires=/),
+  expect.stringMatching(/^mobileFormat=false; path=\/; HttpOnly; Max-Age=946080000; Expires=/),
+];
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile';
 
 /** What the fake matcher answers for a request target and the index it is matched against. */
 interface Script {
@@ -125,8 +132,15 @@ function urlScopeOf(url: string): Record<string, string> {
   return Object.fromEntries(scope);
 }
 
-/** `active: null` starts the gateway with no active version; `logger` defaults to a silent one. */
-async function harness(opts: { active?: RoutingIndex | null; facts?: Record<string, RouteFacts>; logger?: Logger } = {}): Promise<Harness> {
+/** `active: null` starts the gateway with no active version; `logger` defaults to a silent one; `cookieSettings` to Masa's defaults. */
+async function harness(
+  opts: {
+    active?: RoutingIndex | null;
+    facts?: Record<string, RouteFacts>;
+    logger?: Logger;
+    cookieSettings?: DispatcherDeps['cookieSettings'];
+  } = {},
+): Promise<Harness> {
   const facts = opts.facts ?? {};
   const calls: string[] = [];
   const frozen = new Set<string>();
@@ -290,6 +304,9 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
         calls.push(`completePending:${sessionId}`);
         return 'logged-out' as const;
       }),
+      afterTargetLogin: vi.fn((sessionId: string) => {
+        calls.push(`afterTargetLogin:${sessionId}`);
+      }),
     },
     facts: { get: (route) => facts[route], routes: () => Object.keys(facts) },
     auth: app.opt2.auth,
@@ -306,6 +323,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       sessionMode: () => 'legacy-primary',
     },
     legacyOrigin: legacy.url,
+    cookieSettings: opts.cookieSettings ?? { secure: false, domain: '' },
     clock: systemClock,
   };
 
@@ -428,7 +446,7 @@ describe('forwarding', () => {
       headers: { authorization: 'Basic dTpw', 'x-opt2-thing': '1', 'x-serverless-authorization': 'Bearer forged' },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.headers['set-cookie']).toEqual(['CFID=1;path=/;']);
+    expect(res.headers['set-cookie']).toEqual(['CFID=1;path=/;', ...REQUEST_START_COOKIES]);
     const received = h.svc.requests[0];
     expect(received?.headers.authorization).toBe('Bearer user-token-1');
     expect(received?.headers['x-serverless-authorization']).toMatch(/^Bearer (?!forged)/);
@@ -565,7 +583,28 @@ describe('forwarding', () => {
     const deletion = 'JSESSIONID=;expires=Thu, 01-Jan-1970 00:00:00 GMT;path=/;';
     h.svc.setHandler((_req, res) => sendBytes(res, 200, 'ok', { 'set-cookie': ['CFID=T9;Path=/', deletion, 'x=1', 'CFTOKEN=T2;path=/;'] }));
     const res = await h.app.inject({ method: 'POST', url: '/admin/?muraAction=clogin.login' });
-    expect(res.headers['set-cookie']).toEqual(['cfid=T9;path=/;HttpOnly;', deletion, 'x=1', 'CFTOKEN=T2;path=/;']);
+    expect(res.headers['set-cookie']).toEqual(['cfid=T9;path=/;HttpOnly;', deletion, 'x=1', 'CFTOKEN=T2;path=/;', ...REQUEST_START_COOKIES]);
+  });
+
+  it.each<[string, string, SessionResolution, string[]]>([
+    ['a login in an active session', 'admin:clogin.login', session('target-primary'), ['target', `afterTargetLogin:${SESSION_ID}`, `release:${SESSION_ID}:people`]],
+    ['a write that logs no one in', 'admin:cusers.update', session('target-primary'), ['target', `release:${SESSION_ID}:people`]],
+    ['a login without a session', 'admin:clogin.login', { kind: 'none', setCookies: [] }, ['target']],
+  ])('forgets the session tokens and state for %s only between the target answer and the response', async (_label, route, resolution, sequence) => {
+    const facts: Record<string, RouteFacts> = {
+      'admin:clogin.login': { route: 'admin:clogin.login', csrfValidation: 'validates', writeSet: [], keyScope: [], sessionEffects: ['login'] },
+      'admin:cusers.update': { route: 'admin:cusers.update', csrfValidation: 'validates', writeSet: ['tusers'], keyScope: [], sessionEffects: ['none'] },
+    };
+    const h = await harness({ active: indexOf('v0002', [], 'target'), facts });
+    h.setScript(() => ({ entry: { route, kind: 'write', state: 'target' }, destination: 'target' }));
+    vi.mocked(h.deps.resolver).resolveSession.mockResolvedValueOnce(resolution);
+    h.svc.setHandler((_req, res) => {
+      h.calls.push('target');
+      sendBytes(res, 302, '', { location: './?muraAction=cSettings.list' });
+    });
+    const res = await h.app.inject({ method: 'POST', url: `/admin/?muraAction=${route.slice('admin:'.length)}` });
+    expect(res.statusCode).toBe(302);
+    expect(h.calls.filter((call) => /^(target|afterTargetLogin:|release:)/.test(call))).toEqual(sequence);
   });
 
   it('ends both sessions when the target serves a logout', async () => {
@@ -671,12 +710,63 @@ describe('forwarding', () => {
     },
   );
 
-  it('skips session work for static entries', async () => {
-    const h = await harness();
-    h.setScript(() => ({ entry: { route: 'static:/admin/assets/**', kind: 'static' }, destination: 'legacy' }));
-    expect((await h.app.inject({ method: 'GET', url: '/admin/assets/css/admin.css' })).statusCode).toBe(200);
-    expect(h.deps.resolver.resolveLegacyBound).not.toHaveBeenCalled();
-    expect(h.deps.csrf.beforeLegacy).not.toHaveBeenCalled();
+  /** Legacy's cookies for a static request: a new session pair and its other cookies. */
+  const STATIC_SET_COOKIES = ['CFID=L1;path=/;', 'CFTOKEN=L2;path=/;', 'MXP_TRACKINGID=M1;path=/;', 'mobileFormat=false;path=/;'];
+  /** What adoption after legacy re-emits for them: target values under legacy's names and attributes. */
+  const ADOPTED_SET_COOKIES = ['CFID=T1;path=/;', 'CFTOKEN=T2;path=/;', 'MXP_TRACKINGID=M1;path=/;', 'mobileFormat=false;path=/;'];
+
+  it.each<{ label: string; mode: SessionMode; route: string; url: string; cookie?: string; adopted: boolean; expected: string[] }>([
+    {
+      label: "re-emits the session legacy creates for a cookieless target-primary client as adoption's cookies",
+      mode: 'target-primary',
+      route: 'static:/core/modules/**',
+      url: '/core/modules/v1/nope.js',
+      adopted: true,
+      expected: ADOPTED_SET_COOKIES,
+    },
+    {
+      label: "withholds legacy's session cookies from a target-primary client naming a target session",
+      mode: 'target-primary',
+      route: 'widgets:redirect',
+      url: '/tasks/widgets/',
+      cookie: 'CFID=T1; CFTOKEN=T2',
+      adopted: false,
+      expected: STATIC_SET_COOKIES.slice(2),
+    },
+    {
+      label: "passes legacy's cookies unchanged in legacy-primary",
+      mode: 'legacy-primary',
+      route: 'static:/admin/assets/**',
+      url: '/admin/assets/css/admin.css',
+      adopted: false,
+      expected: STATIC_SET_COOKIES,
+    },
+  ])('skips session work for static entries and $label', async ({ mode, route, url, cookie, adopted, expected }) => {
+    const h = await harness(mode === 'target-primary' ? { active: indexOf('v0002', [], 'target') } : {});
+    h.setScript(() => ({ entry: { route, kind: 'static' }, destination: 'legacy' }));
+    vi.mocked(h.deps.resolver.adoptAfterLegacy).mockResolvedValue(session('target-primary', {}, ADOPTED_SET_COOKIES));
+    h.legacy.setHandler((_req, res) => {
+      sendBytes(res, 200, 'static', { 'set-cookie': STATIC_SET_COOKIES });
+    });
+
+    const res = await h.app.inject({ method: 'GET', url, headers: cookie === undefined ? {} : { cookie } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['set-cookie']).toEqual(expected);
+    expect(h.legacy.requests[0]?.headers.cookie).toBe(cookie);
+    expect(vi.mocked(h.deps.resolver.adoptAfterLegacy).mock.calls.map(([, options]) => options)).toEqual(
+      adopted ? [{ mode, setCookies: STATIC_SET_COOKIES, siteId: 'default' }] : [],
+    );
+    for (const sessionWork of [
+      h.deps.resolver.resolveLegacyBound,
+      h.deps.stateCheck.check,
+      h.deps.barrier.awaitForSession,
+      h.deps.hydrator.ensureHydrated,
+      h.deps.csrf.beforeLegacy,
+      h.deps.carry.beforeLegacy,
+    ]) {
+      expect(sessionWork).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -1489,9 +1579,13 @@ describe('sessions of legacy-bound requests', () => {
 
     const SECRET = 'CSRF-SECRET-S1';
 
+    /** Epoch identity re-adopts the logged-out legacy session at. */
+    const READOPTED_EPOCH = 5;
+
     /**
-     * Identity's end refuses while `identity.down`; the jar's mark is refused with `markFails`. Legacy describes the
-     * session logged in under identity's secret while `legacy.loggedIn`, and refuses every describe while `legacy.unreadable`.
+     * Identity's end refuses while `identity.down`; its adoption re-activates the session under its id, as identity
+     * keys it by the legacy session id. The jar's mark is refused with `markFails`. Legacy describes the session logged
+     * in under identity's secret while `legacy.loggedIn`, and refuses every describe while `legacy.unreadable`.
      */
     async function logoutHarness(opts: { markFails?: boolean } = {}) {
       const h = await harness({ active: indexOf('v0002', [], 'target') });
@@ -1499,9 +1593,36 @@ describe('sessions of legacy-bound requests', () => {
       const rows = new Map<string, JarRow>([[SESSION_ID, initial]]);
       const identity = { down: true, ended: false };
       const legacy = { loggedIn: false, unreadable: false };
+      const clear = (sessionId: string, updatedAt?: Date): Promise<void> => {
+        h.calls.push(`clear:${sessionId}`);
+        const row = rows.get(sessionId);
+        if (row !== undefined && (updatedAt === undefined || row.updatedAt.getTime() === updatedAt.getTime())) {
+          const { identityEndPendingAt: _cleared, ...kept } = row;
+          rows.set(sessionId, kept);
+        }
+        return Promise.resolve();
+      };
+      // The jar statements of a locked section, over the same rows.
+      const locked = {
+        get: (sessionId: string) => Promise.resolve(rows.get(sessionId)),
+        lockNative: () => Promise.resolve(),
+        drop: (sessionId: string) => Promise.resolve(rows.delete(sessionId)),
+        clearIdentityEndPending: clear,
+        upsert: (input: JarUpsert) => {
+          h.calls.push(`upsert:${input.sessionId}:${String(input.hydratedEpoch)}`);
+          const pending = rows.get(input.sessionId)?.identityEndPendingAt;
+          const row: JarRow = { ...input, updatedAt: new Date(), ...(pending === undefined ? {} : { identityEndPendingAt: pending }) };
+          rows.set(input.sessionId, row);
+          return Promise.resolve(row);
+        },
+      } as unknown as LockedJar;
       h.deps.invalidation = createInvalidation({
         identity: {
-          adopt: () => Promise.reject(new Error('a logout adopts no session')),
+          adopt: ({ describe }) => {
+            h.calls.push(`identity.adopt:${describe.sessionId}`);
+            identity.ended = false;
+            return Promise.resolve({ sessionId: SESSION_ID, epoch: READOPTED_EPOCH, setCookie: [] });
+          },
           end: (sessionId) => {
             h.calls.push(`identity.end:${sessionId}`);
             if (identity.down) return Promise.reject(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
@@ -1526,7 +1647,7 @@ describe('sessions of legacy-bound requests', () => {
           end: () => Promise.reject(new Error('a legacy logout ends no legacy session')),
         },
         jar: {
-          withSessionLock: () => Promise.reject(new Error('a legacy logout takes no jar lock')),
+          withSessionLock: (_sessionId, fn) => fn(locked),
           get: (sessionId) => Promise.resolve(rows.get(sessionId)),
           drop: (sessionId) => Promise.resolve(rows.delete(sessionId)),
           markIdentityEndPending: (sessionId) => {
@@ -1538,15 +1659,7 @@ describe('sessions of legacy-bound requests', () => {
             if (row !== undefined) rows.set(sessionId, { ...row, identityEndPendingAt: row.identityEndPendingAt ?? new Date() });
             return Promise.resolve();
           },
-          clearIdentityEndPending: (sessionId, updatedAt) => {
-            h.calls.push(`clear:${sessionId}`);
-            const row = rows.get(sessionId);
-            if (row !== undefined && (updatedAt === undefined || row.updatedAt.getTime() === updatedAt.getTime())) {
-              const { identityEndPendingAt: _cleared, ...kept } = row;
-              rows.set(sessionId, kept);
-            }
-            return Promise.resolve();
-          },
+          clearIdentityEndPending: clear,
         },
         tokenCache: { drop: () => undefined },
         state: { forget: () => undefined },
@@ -1587,8 +1700,8 @@ describe('sessions of legacy-bound requests', () => {
       expect(rowCalls(h.calls)).toEqual(['register:page:logout:legacy:-', 'readEpoch', 'remove']);
     });
 
-    it('keeps the mark when identity cannot end the session, so no later request carries the user token', async () => {
-      const { h, rows, identity } = await logoutHarness();
+    it('keeps the mark while identity cannot end the session, then re-adopts the logged-out legacy session once it can', async () => {
+      const { h, rows, initial, identity } = await logoutHarness();
       expect((await h.app.inject({ method: 'GET', url: '/?doaction=logout' })).statusCode).toBe(503);
       expect(h.calls.filter((call) => /^(mark|legacy$|identity\.end)/.test(call))).toEqual([
         `mark:${SESSION_ID}`,
@@ -1600,18 +1713,30 @@ describe('sessions of legacy-bound requests', () => {
       expect((await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x' })).statusCode).toBe(503);
       expect(h.svc.requests).toHaveLength(0);
       expect(rows.get(SESSION_ID)?.identityEndPendingAt).toBeInstanceOf(Date);
+      expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
 
       identity.down = false;
       expect((await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x' })).statusCode).toBe(200);
+      // The pending end completes and the session goes on, logged out, under its id and the jar legacy kept.
+      expect(h.calls.filter((call) => /^(identity\.(end|adopt)|upsert|clear)/.test(call)).slice(-4)).toEqual([
+        `identity.end:${SESSION_ID}`,
+        'identity.adopt:L-1',
+        `clear:${SESSION_ID}`,
+        `upsert:${SESSION_ID}:${READOPTED_EPOCH}`,
+      ]);
+      expect(rows.get(SESSION_ID)).toEqual({ ...initial, hydratedEpoch: READOPTED_EPOCH, updatedAt: expect.any(Date) });
       expect(h.svc.requests).toHaveLength(1);
-      expect(h.svc.requests[0]?.headers.authorization).toBeUndefined();
-      expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
-      expect(rows.has(SESSION_ID)).toBe(false);
+      expect(vi.mocked(h.deps.tokenCache.get).mock.calls.map(([sessionId]) => sessionId)).toEqual([SESSION_ID]);
     });
 
     it.each<{ name: string; loggedIn: boolean; status: number; ended: boolean }>([
       { name: 'a redirect that left legacy logged in keeps both sessions and the jar', loggedIn: true, status: 302, ended: false },
-      { name: 'a logout legacy performed ends identity and drops the jar', loggedIn: false, status: 200, ended: true },
+      {
+        name: 'a logout legacy performed ends identity and re-adopts the logged-out legacy session, keeping the jar',
+        loggedIn: false,
+        status: 200,
+        ended: true,
+      },
     ])('judges the logout by describing the jar cookies legacy holds: $name', async ({ loggedIn, status, ended }) => {
       const { h, rows, initial, identity, legacy } = await logoutHarness();
       identity.down = false;
@@ -1624,16 +1749,31 @@ describe('sessions of legacy-bound requests', () => {
       const res = await h.app.inject({ method: 'GET', url: '/tenant-a/?doaction=logout', headers });
       expect([res.statusCode, res.headers.location]).toEqual([status, status === 302 ? '/tenant-a/' : undefined]);
       expect(h.legacy.requests[0]?.headers.cookie).toBe('CFID=L1');
-      expect(h.calls.filter((call) => /^(mark|legacy$|describe|clear|identity\.end)/.test(call))).toEqual([
+      expect(h.calls.filter((call) => /^(mark|legacy$|describe|clear|upsert|identity\.(end|adopt))/.test(call))).toEqual([
         `mark:${SESSION_ID}`,
         'legacy',
         'describe:L1:OPT2-browser',
-        ended ? `identity.end:${SESSION_ID}` : `clear:${SESSION_ID}`,
+        ...(ended
+          ? [
+              `identity.end:${SESSION_ID}`,
+              'describe:L1:OPT2-browser',
+              'identity.adopt:L-1',
+              `clear:${SESSION_ID}`,
+              `upsert:${SESSION_ID}:${READOPTED_EPOCH}`,
+            ]
+          : [`clear:${SESSION_ID}`]),
       ]);
-      expect(rows.get(SESSION_ID)).toEqual(ended ? undefined : initial);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(rows.get(SESSION_ID)).toEqual(
+        ended ? { ...initial, hydratedEpoch: READOPTED_EPOCH, updatedAt: expect.any(Date) } : initial,
+      );
 
+      // Either way the next requests act in the same session, and legacy receives the ColdFusion session it kept.
       expect((await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers })).statusCode).toBe(200);
-      expect(h.svc.requests[0]?.headers.authorization === undefined).toBe(ended);
+      expect(h.svc.requests[0]?.headers.authorization).toBe('Bearer user-token-1');
+      const page = await h.app.inject({ method: 'GET', url: '/admin/', headers });
+      expect(h.legacy.requests.at(-1)?.headers.cookie).toBe('CFID=L1');
+      expect(page.headers['set-cookie']).toBeUndefined();
     });
 
     it.each<{ name: string; unreadable: boolean }>([
@@ -2061,10 +2201,12 @@ describe('Set-Cookie of legacy-primary target-served responses', () => {
   const TRACKING = 'MXP_TRACKINGID=TRACK-1; path=/; HttpOnly';
   const MOBILE = 'mobileFormat=false; path=/; HttpOnly';
 
-  it.each<[string, string | undefined, string[] | undefined]>([
-    ['an established session', 'CFID=1001; CFTOKEN=T1; MXP_TRACKINGID=TRACK-0; mobileFormat=false', undefined],
-    ['a cookieless first contact', undefined, [TRACKING, MOBILE]],
-  ])('carry for %s only the describe cookies legacy itself would set', async (_label, cookie, expected) => {
+  it.each<[string, Record<string, string>, unknown[] | undefined]>([
+    ['an established session', { cookie: 'CFID=1001; CFTOKEN=T1; MXP_TRACKINGID=TRACK-0; mobileFormat=false' }, undefined],
+    ['a cookieless first contact', {}, [TRACKING, REQUEST_START_COOKIES[1]]],
+    ['a cookieless iPhone', { 'user-agent': IPHONE }, [TRACKING, expect.stringMatching(/^mobileFormat=true; path=\/; HttpOnly; Max-Age=946080000; Expires=/)]],
+    ['a client holding only MXP_TRACKINGID', { cookie: 'MXP_TRACKINGID=TRACK-0' }, [REQUEST_START_COOKIES[1]]],
+  ])('carry for %s the request start cookies legacy would set, keeping the describe MXP_TRACKINGID it owes', async (_label, headers, expected) => {
     const h = await harness();
     h.setScript(() => ({ entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' }));
     const rows = new Map<string, JarRow>();
@@ -2087,7 +2229,7 @@ describe('Set-Cookie of legacy-primary target-served responses', () => {
         forget: () => undefined,
       },
     });
-    const res = await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers: cookie === undefined ? {} : { cookie } });
+    const res = await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x', headers });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['set-cookie']).toEqual(expected);
@@ -2095,3 +2237,143 @@ describe('Set-Cookie of legacy-primary target-served responses', () => {
   });
 });
 
+describe('request start cookies and Content-Encoding of target-served responses', () => {
+  const FIND_ONE: Script = { entry: { route: 'api:content.findone', kind: 'read', state: 'target' }, destination: 'target' };
+  const FIND_ONE_URL = '/_api/json/v1/default/content/x';
+  const ADMIN_LIST: Script = { entry: { route: 'admin:cusers.list', kind: 'read', state: 'target' }, destination: 'target' };
+  const ADMIN_LIST_URL = '/admin/?muraAction=cUsers.list';
+  const RATER_URL = '/core/modules/v1/rater/ajax/saveRate.cfm';
+  const RATER: Script = {
+    entry: { route: 'cfm:/core/modules/v1/rater/ajax/saverate.cfm', kind: 'write', state: 'target' },
+    destination: 'target',
+    family: 'cfm',
+  };
+  const SECURE_DOMAIN = { secure: true, domain: '.example.test' };
+  const MASA_DEFAULTS = { secure: false, domain: '' };
+
+  it('sends a cookieless client the request start cookies after the session and target cookies', async () => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'admin:cusers.list', kind: 'read', state: 'target' }, destination: 'target' }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(session('legacy-primary', {}, ['CFID=1;path=/;', 'CFTOKEN=2;path=/;']));
+    h.svc.setHandler((_req, res) => sendBytes(res, 302, '', { 'set-cookie': ['ADMINSIDEBAR=off; path=/'] }));
+    const res = await h.app.inject({ method: 'GET', url: '/admin/?muraAction=cUsers.list', headers: { 'accept-encoding': 'identity' } });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers['set-cookie']).toEqual(['CFID=1;path=/;', 'CFTOKEN=2;path=/;', 'ADMINSIDEBAR=off; path=/', ...REQUEST_START_COOKIES]);
+    expect(res.headers['content-encoding']).toBe('identity');
+  });
+
+  // `attributes` is a pattern of what utility.setCookie writes between `path=/; ` and `HttpOnly; `.
+  it.each<[label: string, method: 'GET' | 'POST', url: string, script: Script, settings: DispatcherDeps['cookieSettings'], attributes: string]>([
+    ['an admin page under secureCookies and cookieDomain', 'GET', ADMIN_LIST_URL, ADMIN_LIST, SECURE_DOMAIN, 'domain=\\.example\\.test; secure; '],
+    ['the rater under secureCookies and cookieDomain', 'POST', RATER_URL, RATER, SECURE_DOMAIN, 'domain=\\.example\\.test; secure; '],
+    ['the rater under Masa’s defaults', 'POST', RATER_URL, RATER, MASA_DEFAULTS, ''],
+  ])('writes the request start cookies of %s as utility.setCookie does', async (_label, method, url, script, settings, attributes) => {
+    const h = await harness({ cookieSettings: settings });
+    h.setScript(() => script);
+    const res = await h.app.inject({ method, url });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['set-cookie']).toEqual([
+      expect.stringMatching(
+        new RegExp(`^MXP_TRACKINGID=[0-9A-F]{8}%2D[0-9A-F]{4}%2D[0-9A-F]{4}%2D[0-9A-F]{16}; path=/; ${attributes}HttpOnly; Max-Age=946080000; Expires=[^;]+ GMT$`),
+      ),
+      expect.stringMatching(new RegExp(`^mobileFormat=false; path=/; ${attributes}HttpOnly; Max-Age=946080000; Expires=[^;]+ GMT$`)),
+    ]);
+  });
+
+  it.each<[label: string, url: string, headers: Record<string, string>, payload: string | undefined, expected: unknown[] | undefined]>([
+    ['a client holding both cookies', FIND_ONE_URL, { cookie: 'MXP_TRACKINGID=X; mobileformat=true' }, undefined, undefined],
+    ['an iPhone', FIND_ONE_URL, { cookie: 'MXP_TRACKINGID=X', 'user-agent': IPHONE }, undefined, [expect.stringMatching(/^mobileFormat=true; path=\/; HttpOnly; /)]],
+    [
+      'a boolean url mobileFormat, over its cookie',
+      `${FIND_ONE_URL}?mobileFormat=yes`,
+      { cookie: 'MXP_TRACKINGID=X; mobileFormat=false' },
+      undefined,
+      [expect.stringMatching(/^mobileFormat=yes; path=\/; HttpOnly; /)],
+    ],
+    [
+      'a boolean form mobileFormat, over the url one',
+      `${FIND_ONE_URL}?mobileFormat=false`,
+      { cookie: 'MXP_TRACKINGID=X', 'content-type': 'application/x-www-form-urlencoded' },
+      'mobileFormat=1',
+      [expect.stringMatching(/^mobileFormat=1; path=\/; HttpOnly; /)],
+    ],
+    ['an admin preview, which skips mobileFormat', `${FIND_ONE_URL}?muraadminpreview`, {}, undefined, REQUEST_START_COOKIES.slice(0, 1)],
+  ])('sends %s only the request start cookies legacy would', async (_label, url, headers, payload, expected) => {
+    const h = await harness();
+    h.setScript(() => FIND_ONE);
+    const res = await h.app.inject({ method: payload === undefined ? 'GET' : 'POST', url, headers, ...(payload === undefined ? {} : { payload }) });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['set-cookie']).toEqual(expected);
+  });
+
+  it.each<[label: string, script: Script, url: string, cookies: unknown[] | undefined, encoding: string | undefined]>([
+    ['a JSON API route', FIND_ONE, FIND_ONE_URL, REQUEST_START_COOKIES, 'identity'],
+    [
+      'a sessionless REST route',
+      { entry: { route: 'rest:content.findone', kind: 'read', state: 'target' }, destination: 'target', family: 'rest' },
+      '/_api/rest/v1/default/content/x',
+      undefined,
+      'identity',
+    ],
+    [
+      "web's runtime files",
+      { entry: { route: 'static:/_next/**', kind: 'static', state: 'target' }, destination: 'target', family: 'static' },
+      '/_next/static/chunk.js',
+      undefined,
+      undefined,
+    ],
+    [
+      'an OPT-2 path',
+      { entry: { route: 'opt2:/opt2/finance/**', kind: 'read', state: 'target' }, destination: 'target', family: 'opt2' },
+      '/opt2/finance/v1/invoices',
+      undefined,
+      undefined,
+    ],
+    ['a legacy-served route, unchanged', { entry: { route: 'api:content.findone', kind: 'read' }, destination: 'legacy' }, FIND_ONE_URL, undefined, undefined],
+  ])('answers a cookieless client negotiating identity on %s', async (_label, script, url, cookies, encoding) => {
+    const h = await harness();
+    h.setScript(() => script);
+    const res = await h.app.inject({ method: 'GET', url, headers: { 'accept-encoding': 'identity' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['set-cookie']).toEqual(cookies);
+    expect(res.headers['content-encoding']).toBe(encoding);
+  });
+
+  it.each<[string | undefined, string | undefined]>([
+    ['identity', 'identity'],
+    ['gzip, *', 'identity'],
+    ['gzip, deflate, br', undefined],
+    ['identity;q=0', undefined],
+    [undefined, undefined],
+  ])('answers Accept-Encoding %j on a target route with Content-Encoding %j', async (acceptEncoding, encoding) => {
+    const h = await harness();
+    h.setScript(() => FIND_ONE);
+    const res = await h.app.inject({
+      method: 'GET',
+      url: FIND_ONE_URL,
+      headers: acceptEncoding === undefined ? {} : { 'accept-encoding': acceptEncoding },
+    });
+
+    expect(res.headers['content-encoding']).toBe(encoding);
+  });
+
+  it("adds Content-Encoding to identity's legacy answer, which sets no request start cookie", async () => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'rest:content.findone', kind: 'read', state: 'target' }, destination: 'target', family: 'rest' }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce({
+      kind: 'response',
+      status: 401,
+      headers: { 'WWW-Authenticate': 'Basic' },
+      body: '{}',
+    });
+    const res = await h.app.inject({ method: 'GET', url: '/_api/rest/v1/default/content/x', headers: { 'accept-encoding': 'identity' } });
+
+    expect([res.statusCode, res.headers['www-authenticate'], res.headers['content-encoding']]).toEqual([401, 'Basic', 'identity']);
+    expect(res.headers['set-cookie']).toBeUndefined();
+    expect(h.svc.requests).toHaveLength(0);
+  });
+});

@@ -2,7 +2,7 @@
 import type { components } from '@/generated/clients/surveys';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { block, controlGroup, opt2Label, opt2View, textarea, valueRows } from '../shared';
+import { block, gridTable, opt2Label, opt2View } from '../shared';
 import {
   NO_SURVEY,
   PAGE_SIZE,
@@ -22,8 +22,19 @@ import {
 
 type SurveyResponse = components['schemas']['SurveyResponse'];
 
-/** Visible lines of each read-only answers control; longer answers scroll inside it. */
-const ANSWER_ROWS = 4;
+/** No column takes the variable width: `var-width` ellipsizes its cell, which would cut long answers off. */
+const NO_VAR_WIDTH_COLUMN = -1;
+
+/**
+ * Column classes: legacy responsive hiding of the respondent site, and of its id below 1200 px where it pushes the
+ * answers off the block; answers align left as a legacy `title` column, so each starts in view.
+ */
+const COLUMN_CLASSES: ReadonlyArray<string | undefined> = [
+  undefined,
+  'hidden-xs',
+  'hidden-xs hidden-sm hidden-md',
+  'title',
+];
 
 /** The survey and one page of its responses from every responding site with their count, or why none was read. */
 export type ResponsesData =
@@ -51,32 +62,30 @@ async function loadResponses(ctx: ScreenContext): Promise<ResponsesData> {
 }
 
 /**
- * `response` as read-only rows in a block of its own, its answers whole in a labelled read-only control; a grid cell
- * would cut long answers off.
+ * One row per response with its answers whole as stored, cells on one line as in legacy lists; the responsive
+ * container scrolls a grid wider than the block. No responses: the message.
  */
-function responseBlock(ctx: ScreenContext, response: SurveyResponse): SafeHtml {
-  const respondent = valueRows([
-    ['Respondent Site', response.respondentSiteId],
-    ['Respondent', response.respondentUserId],
+function responseGrid(ctx: ScreenContext, responses: readonly SurveyResponse[]): SafeHtml {
+  const headers = ['Submitted', 'Respondent Site', 'Respondent', opt2Label(ctx, 'Answers')];
+  const rows = responses.map((response) => [
+    dateTimeText(response.created),
+    response.respondentSiteId,
+    response.respondentUserId,
+    response.answers,
   ]);
-  const answers = controlGroup(
-    opt2Label(ctx, 'Answers'),
-    textarea('answers', response.answers, ANSWER_ROWS, { readonly: true, id: `answers-${response.responseId}` }),
-  );
-  const submitted = valueRows([['Submitted', dateTimeText(response.created)]]);
-  return block(html`${respondent}${answers}${submitted}`);
+  const table = gridTable(headers, rows, 'This survey has no responses.', {
+    varWidthColumn: NO_VAR_WIDTH_COLUMN,
+    columnClasses: COLUMN_CLASSES,
+  });
+  return responses.length === 0 ? table : html`<div class="table-responsive">${table}</div>`;
 }
 
-/** Each response, answers as stored, then the pager; without a survey, the bare header and the reason. */
+/** The responses grid, then the pager; without a survey, the bare header and the reason. */
 function renderResponses(ctx: ScreenContext, data: ResponsesData): SafeHtml {
   if ('unread' in data) return html`${unreadHeader(ctx, 'responses')}${data.unread}`;
   const { survey } = data;
-  const entries =
-    data.responses.length === 0
-      ? html`<div class="help-block-empty">This survey has no responses.</div>`
-      : html`${data.responses.map((response) => responseBlock(ctx, response))}`;
   const paging = pager(ctx, 'responses', { surveyid: survey.surveyId }, data.pageIndex, data.total);
-  return html`${surveyHeader(ctx, survey, 'responses')}${block(html`${entries}${paging}`)}`;
+  return html`${surveyHeader(ctx, survey, 'responses')}${block(html`${responseGrid(ctx, data.responses)}${paging}`)}`;
 }
 
 /** `/opt2/admin/surveys/responses?surveyid=…`: single- and multi-site responses of the survey. */

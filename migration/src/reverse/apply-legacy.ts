@@ -447,6 +447,11 @@ export interface ApplyLegacyOptions {
   siteColumn?: string;
   /** A keyed insert whose tenant no longer holds its key while legacy holds the key under another site: it writes nothing. */
   supersededInsert?: boolean;
+  /**
+   * A keyed update of a key whose earlier change legacy refused: it writes its whole after-image rather than its changed
+   * columns, and inserts it when legacy holds no row, so legacy holds the key as the target does.
+   */
+  replayAfterImage?: boolean;
 }
 
 /** Legacy rows the change inserted, updated, deleted or found already current. */
@@ -578,7 +583,8 @@ async function updateKeyed(scope: RequestScope, change: LegacyChange, opts: Appl
   const catalog = opts.tableCatalog;
   const after = imageOf(change, 'after');
   const locator = change.before ?? after;
-  const changed = change.changedColumns === undefined ? undefined : new Set(change.changedColumns.map((name) => name.toLowerCase()));
+  const replay = opts.replayAfterImage === true;
+  const changed = change.changedColumns === undefined || replay ? undefined : new Set(change.changedColumns.map((name) => name.toLowerCase()));
   const keyNames = new Set(key.map((column) => column.name));
   const identity = new Set(catalog.identityColumns);
   const owned = ownedBy(opts);
@@ -589,14 +595,17 @@ async function updateKeyed(scope: RequestScope, change: LegacyChange, opts: Appl
       !identity.has(column.name) &&
       !(keyNames.has(column.name) && sameValue(valueOf(locator, column.name), value)),
   );
-  if (set.length === 0) return { rows: 0 };
+  if (set.length === 0 && !replay) return { rows: 0 };
   const site = siteColumnOf(opts);
-  const rows = await updateRow(scope, catalog, set, keyWhere(change, site === undefined ? key : [...key, site], locator));
+  const where = keyWhere(change, site === undefined ? key : [...key, site], locator);
+  // A replayed update with no column to set still needs its row to exist.
+  const rows = set.length > 0 ? await updateRow(scope, catalog, set, where) : await countRows(scope, catalog, where);
   if (rows > 0) return { rows };
   // The key moved to another site, and the stream of that site's tenant projects the row.
   if (site !== undefined && (await countRows(scope, catalog, keyWhere(change, key, locator))) > 0) return { rows: 0 };
-  // A split row is reassembled from every owner's part, so a missing one is inserted rather than treated as divergence.
-  if (!opts.split) throw new ProjectionConflictError(change);
+  // A split row is reassembled from every owner's part, and a replayed key's row may be missing because legacy refused its
+  // insert, so either is inserted rather than treated as divergence.
+  if (!opts.split && !replay) throw new ProjectionConflictError(change);
   return { rows: await insertRow(scope, catalog, await insertImage(change, opts, after)) };
 }
 

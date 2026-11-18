@@ -42,6 +42,7 @@ import {
   TEST_CLOCK,
   buildTestApp,
   createFakeTaskPort,
+  gatewayHeaders,
   headersFor,
   identityOf,
   queueRun,
@@ -121,6 +122,8 @@ interface Declared {
   transport: Transport;
   requires?: readonly string[];
   public?: true;
+  /** The invocation credential may be absent. */
+  invocationOptional?: true;
   /** `false` where the handler checks the site itself. */
   siteCheck?: false;
 }
@@ -303,7 +306,7 @@ const createBody = (): Record<string, unknown> => ({ definitionId: definitionA.d
 function expectations(): Readonly<Record<string, Expectation>> {
   return {
     'GET /healthz': {
-      declared: { transport: 'service', public: true },
+      declared: { transport: 'service', public: true, invocationOptional: true },
       request: fixed({ method: 'GET', url: '/healthz' }),
       // A tasks-invoker token in Authorization is verified, and refused, as a user token.
       allow: everyoneBut('service:tasks-invoker'),
@@ -371,9 +374,9 @@ function expectations(): Readonly<Record<string, Expectation>> {
     'GET /opt2/files/reporting-exports/:tenantId/:objectName': {
       declared: { transport: 'service', public: true },
       request: () => ({ method: 'GET', url: signedA }),
-      // The signature is the credential; a tasks-invoker token in Authorization is refused as a user token.
-      allow: everyoneBut('service:tasks-invoker'),
-      deny401: ['service:tasks-invoker'],
+      // The signature is the credential, admitted only beside an invocation credential.
+      allow: everyoneBut(...NO_INVOCATION),
+      deny401: NO_INVOCATION,
     },
     [`GET ${V1_EXPORTS}`]: exporterRoute(EXPORTER_ROUTE, fixed({ method: 'GET', url: `${V1_EXPORTS}?${ON_SITE_A}` })),
     [`POST ${V1_EXPORTS}`]: exporterRoute(EXPORTER_ROUTE, (who) => ({
@@ -429,6 +432,7 @@ function comparable(declared: Declared | RouteMatrixEntry): Record<string, unkno
     transport: declared.transport,
     ...(declared.requires === undefined ? {} : { requires: [...declared.requires].sort() }),
     ...(declared.public === true ? { public: true } : {}),
+    ...(declared.invocationOptional === true ? { invocationOptional: true } : {}),
     ...(declared.siteCheck === false ? { siteCheck: false } : {}),
   };
 }
@@ -466,7 +470,7 @@ describe('route declarations', () => {
     }).toEqual({ missing: [], extra: [], duplicated: [] });
   });
 
-  it('declares each route with its expected transport, roles, public flag and site check', () => {
+  it('declares each route with its expected transport, roles, public flag, optional invocation credential and site check', () => {
     const actual = Object.fromEntries(matrix.routes.map((route) => [keyOf(route), comparable(route)]));
     const expected = Object.fromEntries(Object.entries(expectations()).map(([key, entry]) => [key, comparable(entry.declared)]));
     expect(actual).toEqual(expected);
@@ -545,7 +549,7 @@ describe('transport separation', () => {
     }
   });
 
-  it('refuses an exporter user token presented without an invocation credential on /v1 and fixture routes', async () => {
+  it('refuses an exporter user token presented without an invocation credential on /v1, fixture and signed file routes', async () => {
     const credentials = await headersFor(subject(EXPORTER), SITE_A);
     const userOnly = Object.fromEntries(Object.entries(credentials).filter(([name]) => name !== INVOCATION_HEADER));
     const probes: ProbeRequest[] = [
@@ -555,6 +559,7 @@ describe('transport separation', () => {
       { method: 'GET', url: `${V1_DEFINITIONS}?${ON_SITE_A}` },
       { method: 'GET', url: `${FIXTURE_EXPORTS}/${doneA.job_id}/download?${ON_SITE_A}` },
       { method: 'POST', url: `${FIXTURE_EXPORTS}?${ON_SITE_A}`, headers: csrfFor(subject(EXPORTER)), payload: createBody() },
+      { method: 'GET', url: signedA },
     ];
     for (const request of probes) {
       const at = `${request.method} ${request.url}`;
@@ -693,14 +698,14 @@ describe('tenant isolation', () => {
 
   it("refuses a signed export URL re-pointed at another tenant's object", async () => {
     const forged = signedA.replace(TENANT_A.tenantId, TENANT_B.tenantId).replace(doneA.job_id, doneB.job_id);
-    const res = await inject({ method: 'GET', url: forged }, {});
+    const res = await inject({ method: 'GET', url: forged }, await gatewayHeaders());
     expect(res.statusCode).toBe(403);
   });
 });
 
 describe('signed export URLs', () => {
-  /** Subjects whose credentials the file route verifies; a tasks-invoker token is refused first as a user token. */
-  const verified = (): RoleSubject[] => everyoneBut('service:tasks-invoker').map(subject);
+  /** Subjects whose credentials the file route verifies; one without an invocation credential is refused first. */
+  const verified = (): RoleSubject[] => everyoneBut(...NO_INVOCATION).map(subject);
 
   /** `signedA` with its query edited by `edit`. */
   const edited = (edit: (params: URLSearchParams) => void): string => {
@@ -711,7 +716,7 @@ describe('signed export URLs', () => {
 
   const flip = (hex: string): string => `${hex.startsWith('0') ? '1' : '0'}${hex.slice(1)}`;
 
-  it('serves the stored export bytes to a valid signature whoever presents it', async () => {
+  it('serves the stored export bytes to a valid signature whoever presents it beside an invocation credential', async () => {
     const bytes = await t.storage.get(EXPORT_BUCKET, doneA.object_key ?? '');
     const mismatches: string[] = [];
     for (const who of verified()) {

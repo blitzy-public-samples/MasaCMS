@@ -154,7 +154,7 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
     chainId = (await inA((tx) => repo.approvals.insertChain(tx, { siteid: SITE_ID, name: 'Two step', description: '' }))).chainid;
     emptyChainId = (await inA((tx) => repo.approvals.insertChain(tx, { siteid: SITE_ID, name: 'No groups', description: '' }))).chainid;
     // Listed second first so the chain order (orderno), not insertion order, decides the first group.
-    await inA((tx) => repo.approvals.replaceChainMemberships(tx, chainId, [group2, group1]));
+    await inA((tx) => repo.approvals.replaceChainMemberships(tx, chainId, SITE_ID, [group2, group1]));
   });
 
   afterAll(async () => {
@@ -242,16 +242,16 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
     it('overwrites the action of the same request and group, and adds one for another group', async () => {
       const actions = await rolledBack(async (tx) => {
         const requestId = cfId('R', 20);
-        const first = await writeAction(tx, repo, { requestId, groupId: group2, chainId, actionType: 'Approval', comments: 'ok', userId: ACTOR.userId });
-        const again = await writeAction(tx, repo, { requestId: requestId.toLowerCase(), groupId: group2, chainId, actionType: 'Rejection', comments: 'no', userId: cfId('U', 2) });
-        const other = await writeAction(tx, repo, { requestId, groupId: group1, chainId, actionType: 'Approval', comments: '', userId: ACTOR.userId });
+        const first = await writeAction(tx, repo, { requestId, groupId: group2, chainId, siteId: SITE_ID, actionType: 'Approval', comments: 'ok', userId: ACTOR.userId });
+        const again = await writeAction(tx, repo, { requestId: requestId.toLowerCase(), groupId: group2, chainId, siteId: '', actionType: 'Rejection', comments: 'no', userId: cfId('U', 2) });
+        const other = await writeAction(tx, repo, { requestId, groupId: group1, chainId, siteId: '', actionType: 'Approval', comments: '', userId: ACTOR.userId });
         return { first, again, other, stored: await repo.approvals.actionsForRequest(tx, { requestId }) };
       });
-      expect(actions.first).toMatchObject({ requestid: cfId('R', 20), groupid: group2, chainid: chainId, actiontype: 'Approval', comments: 'ok', created: NOW, siteid: null, parentid: null });
+      expect(actions.first).toMatchObject({ requestid: cfId('R', 20), groupid: group2, chainid: chainId, actiontype: 'Approval', comments: 'ok', created: NOW, siteid: SITE_ID, parentid: null });
       expect(actions.first.actiontid).toMatch(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/);
-      expect(actions.again).toMatchObject({ actiontid: actions.first.actiontid, actiontype: 'Rejection', comments: 'no', userid: cfId('U', 2), created: NOW });
+      expect(actions.again).toMatchObject({ actiontid: actions.first.actiontid, actiontype: 'Rejection', comments: 'no', userid: cfId('U', 2), created: NOW, siteid: SITE_ID });
       expect(actions.other.actiontid).not.toBe(actions.first.actiontid);
-      expect(actions.other.comments).toBeNull();
+      expect(actions.other).toMatchObject({ comments: null, siteid: null });
       expect(actions.stored.map((row) => [row.groupid, row.actiontype])).toEqual(
         expect.arrayContaining([
           [group2, 'Rejection'],
@@ -261,10 +261,10 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
       expect(actions.stored).toHaveLength(2);
     });
 
-    it('keeps the loaded creation time of an overwritten action', async () => {
+    it('keeps the loaded creation time of an overwritten action, giving one stored without a site the request\u2019s', async () => {
       const kept = await rolledBack(async (tx) => {
-        await repo.approvals.insertAction(tx, { requestid: cfId('R', 21), groupid: group1, actiontype: 'Approval', created: EARLIER, siteid: SITE_ID });
-        return writeAction(tx, repo, { requestId: cfId('R', 21), groupId: group1, chainId, actionType: 'Cancelation', comments: 'c', userId: ACTOR.userId });
+        await repo.approvals.insertAction(tx, { requestid: cfId('R', 21), groupid: group1, actiontype: 'Approval', created: EARLIER });
+        return writeAction(tx, repo, { requestId: cfId('R', 21), groupId: group1, chainId, siteId: SITE_ID, actionType: 'Cancelation', comments: 'c', userId: ACTOR.userId });
       });
       expect(kept).toMatchObject({ actiontype: 'Cancelation', created: EARLIER, siteid: SITE_ID });
     });
@@ -283,7 +283,7 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
       };
       const reinserted = await rolledBack(async (tx) => {
         const original = await repo.approvals.insertAction(tx, { requestid: cfId('R', 22), groupid: group1, actiontype: 'Approval', created: EARLIER, siteid: SITE_ID });
-        const saved = await writeAction(tx, vanishing, { requestId: cfId('R', 22), groupId: group1, chainId, actionType: 'Rejection', comments: 'gone', userId: ACTOR.userId });
+        const saved = await writeAction(tx, vanishing, { requestId: cfId('R', 22), groupId: group1, chainId, siteId: SITE_ID, actionType: 'Rejection', comments: 'gone', userId: ACTOR.userId });
         return { original, saved, stored: await repo.approvals.actionsForRequest(tx, { requestId: cfId('R', 22) }) };
       });
       expect(reinserted.saved).toMatchObject({ actiontid: reinserted.original.actiontid, actiontype: 'Rejection', comments: 'gone', created: EARLIER, siteid: SITE_ID });
@@ -357,7 +357,7 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
       });
       expect(canceled.result).toMatchObject({ requestid: cfId('R', 40), status: 'Canceled', groupid: group1, created: EARLIER });
       expect(canceled.actions).toHaveLength(1);
-      expect(canceled.actions[0]).toMatchObject({ actiontype: 'Cancelation', comments: 'withdrawn', groupid: group1, chainid: chainId, userid: ACTOR.userId, created: NOW });
+      expect(canceled.actions[0]).toMatchObject({ actiontype: 'Cancelation', comments: 'withdrawn', groupid: group1, chainid: chainId, siteid: SITE_ID, userid: ACTOR.userId, created: NOW });
     });
 
     it.each(['Approved', 'Rejected', 'Canceled'])('leaves a %s request and its actions unchanged', async (status) => {

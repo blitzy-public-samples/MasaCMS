@@ -48,7 +48,10 @@ interface Answer {
   body: unknown;
 }
 
-/** One request against an operation; `as` names the ROLE_SET subject presenting credentials, `push` delivers through `pushTo`. */
+/**
+ * One request against an operation; `as` names the ROLE_SET subject presenting credentials, absent meaning a caller
+ * without a user token as the gateway forwards it, and `push` delivers through `pushTo`.
+ */
 interface Case {
   name: string;
   method: HttpMethod;
@@ -306,7 +309,7 @@ async function sendCase(ctx: TestApp, c: Case): Promise<Answer> {
       ? await ctx.app.inject({
           method: c.method,
           url: c.url,
-          headers: { ...(c.as === undefined ? {} : await headersFor(c.as, { site: c.site })), ...c.headers },
+          headers: { ...(await headersFor(c.as ?? 'service:gateway', { site: c.site })), ...c.headers },
           ...(c.payload === undefined ? {} : { payload: c.payload }),
         })
       : await pushTo(ctx.app, SITE_CHANGED_SUBSCRIPTION, c.push());
@@ -1148,6 +1151,8 @@ const CASES: Record<string, Case[]> = {
       name: 'answers the liveness probe anonymously',
       method: 'GET',
       url: '/healthz',
+      // A probe carries no invocation credential.
+      as: 'anonymous',
       status: 200,
       verify: ({ body }) => expect(body).toEqual({ status: 'ok' }),
     },

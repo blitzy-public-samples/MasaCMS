@@ -37,7 +37,7 @@ import {
   type ParsedRenderRequest,
   type RenderQuery,
 } from '../../src/routes/render.js';
-import { SERVICE, testEnv, userHeaders } from '../helpers/app.js';
+import { SERVICE, serviceHeaders, testEnv, userHeaders } from '../helpers/app.js';
 
 type ContractOperation = Record<string, unknown>;
 
@@ -245,7 +245,7 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
     ['a dotted size', `/_api/render/file/?fileid=${PDF}&size=a.b`, false],
     ['an unknown file', `/tasks/render/file/?fileid=${UNKNOWN}`, true],
   ])('answers %s with the legacy 404', async (_name, url, credentials) => {
-    const res = await call(url, credentials ? await tenantA() : {});
+    const res = await call(url, credentials ? await tenantA() : await serviceHeaders('gateway'));
     expect([res.statusCode, res.statusMessage, res.headers['content-type'], res.body]).toEqual([404, 'Content Not Found', HTML, '']);
   });
 
@@ -255,7 +255,7 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
   });
 
   it('answers a request without fileid with legacy empty page', async () => {
-    const res = await call('/_api/render/file/');
+    const res = await call('/_api/render/file/', await serviceHeaders('gateway'));
     expect([res.statusCode, res.headers['content-type'], res.body]).toEqual([200, HTML, '']);
   });
 
@@ -276,7 +276,7 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
   });
 
   it('refuses a valid file request without a user token', async () => {
-    expect((await call(`/_api/render/file/?fileid=${PDF}`)).statusCode).toBe(401);
+    expect((await call(`/_api/render/file/?fileid=${PDF}`, await serviceHeaders('gateway'))).statusCode).toBe(401);
   });
 
   it('fails closed for a custom-size image rendition that was never stored', async () => {

@@ -120,6 +120,8 @@ interface Declared {
   transport: Transport;
   requires?: readonly string[];
   public?: true;
+  /** The route admits a caller without an invocation credential. */
+  invocationOptional?: true;
   /** `false` where the handler checks the site itself. */
   siteCheck?: false;
 }
@@ -160,8 +162,8 @@ function fixtureManagerRoute(request: ProbeRequest): Expectation {
 
 /** A fixture ACF task callback: only a task token admits, and no subject carries one. */
 function fixtureCallback(request: ProbeRequest): Expectation {
-  // A tasks-invoker token in Authorization is verified, and refused, as a user token before the handler runs.
-  return { declared: FIXTURE_ROUTE, request, allow: [], deny401: ['service:tasks-invoker'] };
+  // A caller without an invocation credential is refused before the handler, public as the route is.
+  return { declared: FIXTURE_ROUTE, request, allow: [], deny401: NO_INVOCATION };
 }
 
 /** A `/v1/surveys` route for surveys.manager alone. */
@@ -264,7 +266,7 @@ function withPushKey(request: ProbeRequest, key: string = TEST_PUSH_KEY): ProbeR
 /** Every registered route, keyed `<METHOD> <fastify url>`, with its declaration, tenant-a probe and admitted subjects. */
 const EXPECTED: Readonly<Record<string, Expectation>> = {
   'GET /healthz': {
-    declared: { transport: 'service', public: true },
+    declared: { transport: 'service', public: true, invocationOptional: true },
     request: { method: 'GET', url: '/healthz' },
     // A tasks-invoker token in Authorization is verified, and refused, as a user token.
     allow: everyoneBut('service:tasks-invoker'),
@@ -498,6 +500,7 @@ function comparable(declared: Declared | RouteMatrixEntry): Record<string, unkno
     transport: declared.transport,
     ...(declared.requires === undefined ? {} : { requires: [...declared.requires].sort() }),
     ...(declared.public === true ? { public: true } : {}),
+    ...(declared.invocationOptional === true ? { invocationOptional: true } : {}),
     ...(declared.siteCheck === false ? { siteCheck: false } : {}),
     ...('edge' in declared && declared.edge === true ? { edge: true } : {}),
   };
@@ -569,7 +572,7 @@ describe('route declarations', () => {
     }).toEqual({ missing: [], extra: [], duplicated: [] });
   });
 
-  it('declares each route with its expected transport, roles, public flag and site check', () => {
+  it('declares each route with its expected transport, roles, public flag, optional invocation credential and site check', () => {
     const actual = Object.fromEntries(matrix.routes.map((route) => [keyOf(route), comparable(route)]));
     const expected = Object.fromEntries(Object.entries(EXPECTED).map(([key, entry]) => [key, comparable(entry.declared)]));
     expect(actual).toEqual(expected);
@@ -663,6 +666,17 @@ describe('transport separation', () => {
     for (const [request, credentials] of probes) {
       const { status, effects } = await outcomeOf(request, credentials);
       expect({ url: request.url, status, effects }).toEqual({ url: request.url, status: 401, effects: NO_EFFECTS });
+    }
+  });
+
+  it('refuses each public route without invocationOptional to a direct call without an invocation credential, before its handler', async () => {
+    const refused = matrix.routes.filter((route) => route.public === true && route.invocationOptional !== true);
+    expect(refused).toHaveLength(12);
+    for (const route of refused) {
+      const entry = EXPECTED[keyOf(route)];
+      if (entry === undefined) throw new TypeError(`EXPECTED has no ${keyOf(route)}`);
+      const { status, effects } = await outcomeOf(entry.request, {});
+      expect({ route: keyOf(route), status, effects }).toEqual({ route: keyOf(route), status: 401, effects: NO_EFFECTS });
     }
   });
 

@@ -9,6 +9,7 @@ import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, typ
 import { CONTENT_CONFIG_DEFAULTS, type Actor, type DomainDeps } from '../../src/domain/context.js';
 import { withVariationTargetingFeed } from '../../src/domain/variations.js';
 import { contentApiSerializer, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
+import { LegacyStorageError } from '../../src/repo/legacy-limits.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import { variationTargetingHandler as handler } from '../../src/routes/jsonapi/variation-targeting.js';
@@ -822,7 +823,9 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
 
   it('save with saveErrors=true writes the invalid bean, which the char(35) column refuses, writing nothing', async () => {
     const before = await writeCounts();
-    await expect(run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: X36, saveErrors: 'true' } })).rejects.toMatchObject({ code: '22001' });
+    const error = await run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: X36, saveErrors: 'true' } }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(LegacyStorageError);
+    expect(error).toMatchObject({ table: 'variation_targeting', column: 'contentid', limit: 35 });
     expect(await writeCounts()).toEqual(before);
   });
 });

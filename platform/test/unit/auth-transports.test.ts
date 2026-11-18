@@ -1399,6 +1399,16 @@ describe('createServiceTransport', () => {
     ).resolves.toEqual({ user: userClaims(), userToken: token });
   });
 
+  it.each([
+    { label: 'a credential minted for another callee', header: () => localServiceBearer('gateway', 'finance'), denial: INVALID_CREDENTIAL },
+    { label: "a managed invoker's service token", header: () => localServiceBearer('tasks-invoker'), denial: WRONG_SCHEME },
+  ])('still verifies $label presented on a route where the invocation credential is optional', async ({ header, denial }) => {
+    const headers = { [INVOCATION_HEADER]: await header() };
+    expect(await denialOf(() => peopleService().authenticate({ path: PEOPLE_PATH, headers }, { optional: true }))).toEqual(
+      denial,
+    );
+  });
+
   it('refuses a non-bearer Authorization as the wrong scheme', async () => {
     const headers = { authorization: BASIC_HEADER, [INVOCATION_HEADER]: await localServiceBearer('gateway') };
     expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(WRONG_SCHEME);

@@ -30,6 +30,7 @@ import { BridgeError, Opt2SyncUnavailableError, countStartupRows, opt2SyncReady,
 import type { DataOwner, LegacyTableTarget, Unit } from '../owners/index.js';
 
 import {
+  ProjectionConflictError,
   applyLegacyChange,
   cancellableQuery,
   clearPendingEffects,
@@ -46,6 +47,7 @@ import {
   type RequestScope,
 } from './apply-legacy.js';
 import { bindAttachmentContent } from './attachments.js';
+import { guardOwners, type UnavailableOwners } from './availability.js';
 import { FILE_OBJECT_UNIT, executeFileOps, isFileObjectChange, planFileOps } from './files.js';
 import {
   HeldSpanChangedError,
@@ -63,6 +65,15 @@ import {
   type RowDisposition,
   type StreamScan,
 } from './operations.js';
+import {
+  markRepaired,
+  quarantineKeyOf,
+  recordQuarantine,
+  unrepairedChanges,
+  type QuarantineEntry,
+  type QuarantineKey,
+  type QuarantinedChange,
+} from './quarantine.js';
 
 /** Advisory lock key (`'opt2revp'`) electing the one projecting instance; bound as `$1::bigint` text. */
 export const PROJECTOR_LOCK_KEY = 0x6f70743272657670n;
@@ -116,6 +127,8 @@ export interface CycleResult {
   skipped: number;
   /** Rows parked at multi-participant operations. */
   held: number;
+  /** Changes legacy cannot take, recorded in `migration.projector_quarantine` and left out of batches that committed without them. */
+  quarantined: number;
   files: { put: number; deleted: number };
   errors: StreamError[];
   /** True when a stream neither failed nor parked ended without a complete page, or a running stream's read-ahead stopped short of its bound. */
@@ -138,6 +151,8 @@ export interface StreamMemory {
   fenceFailures: Map<string, FailureState>;
   /** Scans running past their streams' checkpoints, by stream; a cycle resumes each from where an earlier one left it. */
   scans: Map<string, SavedScan>;
+  /** Owners found unavailable, each with the error that found it; cycles do not call them until the loop's probe forgets them. */
+  unavailable?: UnavailableOwners;
 }
 
 /** A stream scan kept across cycles, with the active version its rows were classified under. */
@@ -155,7 +170,10 @@ export interface CycleDeps {
   onTenants?(tenants: readonly string[]): void;
   /** Stops the cycle at its next turn, read-ahead page, span re-read page or settle round; a batch in progress completes. */
   signal?: AbortSignal;
-  /** The loop's memory of its streams; without it, no stored checkpoint is mirrored again, every failure is logged and scans last one cycle. */
+  /**
+   * The loop's memory of its streams; without it, no stored checkpoint is mirrored again, every failure is logged, and scans
+   * and unavailable owners last one cycle.
+   */
   memory?: StreamMemory;
 }
 
@@ -172,7 +190,7 @@ export interface ProjectorLoop {
    * `idlePollMs` after an active cycle or while a demand is held, else after an idle delay doubling up to `idleMaxPollMs`.
    */
   start(): void;
-  /** Cancels the schedule, stops the cycle in flight at its next turn, and waits for it. */
+  /** Cancels the schedule and the probes of unavailable owners, stops the cycle in flight at its next turn, and waits for it. */
   stop(): Promise<void>;
   /** Runs one cycle now, or joins the one in flight. */
   runOnce(): Promise<CycleResult>;
@@ -200,7 +218,7 @@ interface Stream {
   checkpoint: string;
   /** Applied horizon of the committed SQL Server checkpoint; undefined while none is stored. */
   storedHorizon: string | undefined;
-  /** Horizon past the stored one of a page that consumed no row, committed with the cycle's other idle advances unless a batch supersedes it. */
+  /** Horizon past the stored one of a page that consumed no row, committed with its lane's other idle advances unless a batch supersedes it. */
   idleHorizon: string | undefined;
   /** Horizon of the first page read this cycle; no turn reads after a checkpoint at or past it. */
   frontier: string | undefined;
@@ -231,6 +249,34 @@ const UNREAD = {
   failed: false,
 } as const satisfies Omit<Stream, 'owner' | 'tenantId' | 'checkpoint' | 'storedHorizon' | 'pendingEffects'>;
 
+/** Read state a running stream takes again to be read afresh from its checkpoint while other lanes still take their first pass. */
+const REREAD = { turns: 0, frontier: undefined, complete: false, aheadBehind: false } as const satisfies Partial<Stream>;
+
+/** Lanes of a turn phase still taking their first pass, and a promise resolving once none is. */
+interface FirstPasses {
+  pending(): number;
+  readonly done: Promise<void>;
+  /** Counts one lane's first pass ended. */
+  finish(): void;
+}
+
+function firstPasses(lanes: number): FirstPasses {
+  let pending = lanes;
+  let resolve = (): void => undefined;
+  const done = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  if (pending === 0) resolve();
+  return {
+    pending: () => pending,
+    done,
+    finish() {
+      pending -= 1;
+      if (pending === 0) resolve();
+    },
+  };
+}
+
 /** A stream's rows of one batch and the checkpoint the batch commits for it. */
 interface BatchPart {
   stream: Stream;
@@ -254,6 +300,55 @@ class HookFailure extends Error {
 
   constructor(readonly original: unknown) {
     super('A projector hook failed', { cause: original });
+  }
+}
+
+/** The legacy row a change writes, as quarantine records name it. */
+function quarantineKeyOfChange(change: LegacyChange): QuarantineKey {
+  return { owner: change.owner, tenantId: change.tenantId, legacyTable: change.legacyTable, legacyKey: change.key };
+}
+
+/** SQL Server errors of a value or row legacy cannot store: truncation, NULL, conversion, overflow and range, duplicate key, constraint. */
+const DATA_ERROR_NUMBERS: ReadonlySet<number> = new Set([2628, 8152, 515, 241, 242, 245, 8114, 8115, 220, 232, 2627, 2601, 547]);
+
+/** SQL Server error number of a driver error, read from the error or the server error it wraps. */
+function sqlErrorNumber(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const shape = error as { number?: unknown; originalError?: { info?: { number?: unknown } } };
+  const number = shape.number ?? shape.originalError?.info?.number;
+  return typeof number === 'number' ? number : undefined;
+}
+
+/** A change legacy cannot take: it found no legacy row, or SQL Server refused its data. */
+class UnprojectableChangeError extends Error {
+  override readonly name = 'UnprojectableChangeError';
+  /** `<xid>:<seq>` of the change's changelog row. */
+  readonly cursor: string;
+  /** Why, without the values a SQL Server message quotes. */
+  readonly reason: string;
+
+  constructor(
+    readonly change: LegacyChange,
+    cause: Error,
+  ) {
+    const number = sqlErrorNumber(cause);
+    const reason = number === undefined ? cause.message : `SQL Server error ${String(number)}`;
+    super(`The ${change.op} of ${change.legacyTable} cannot be written into legacy: ${reason}`, { cause });
+    this.cursor = `${change.xid}:${change.seq}`;
+    this.reason = reason;
+  }
+}
+
+/** Runs `apply` for `change`, raising UnprojectableChangeError for a failure legacy's data causes and rethrowing any other. */
+async function applyProjectable(change: LegacyChange, apply: () => Promise<unknown>): Promise<void> {
+  try {
+    await apply();
+  } catch (error) {
+    const number = sqlErrorNumber(error);
+    if (error instanceof ProjectionConflictError || (error instanceof Error && number !== undefined && DATA_ERROR_NUMBERS.has(number))) {
+      throw new UnprojectableChangeError(change, error);
+    }
+    throw error;
   }
 }
 
@@ -566,8 +661,12 @@ class ProjectorCycle {
   readonly #progressed = new Set<Stream>();
   /** Streams standing for checkpoints this cycle does not read, by stream. */
   readonly #standIns = new Map<string, Stream>();
-  /** True once the cycle's first batch has called `beforeFirstBatch`. */
-  #batched = false;
+  /** The `beforeFirstBatch` call the cycle's first batch makes, which every batch awaits. */
+  #firstBatch: Promise<void> | undefined;
+  /** Settles once the latest batch commit has finished; each commit waits for the one before it. */
+  #committing: Promise<void> = Promise.resolve();
+  /** True once a lane failed: the other lanes stop as a stopped cycle does. */
+  #halted = false;
 
   constructor(
     ctx: ProjectorContext,
@@ -576,7 +675,8 @@ class ProjectorCycle {
     tenantSites: ReadonlyMap<string, string>,
     result: CycleResult,
   ) {
-    this.#ctx = ctx;
+    // Every owner call of the cycle, the parts, files and watermarks of its batches included, skips owners found unavailable.
+    this.#ctx = { ...ctx, owners: guardOwners(ctx.owners, deps.memory?.unavailable ?? new Map<string, Error>()) };
     this.#deps = deps;
     this.#authority = authority;
     this.#tenantSites = tenantSites;
@@ -589,7 +689,8 @@ class ProjectorCycle {
 
   /**
    * Runs effects earlier batches owe and mirrors checkpoints the mirror lacks, then gives every stream page turns from its
-   * checkpoint up to its frontier or turn budget, settles parked operations until nothing progresses, and commits the idle advances.
+   * checkpoint up to its frontier or turn budget in one lane per owner, settles parked operations until nothing progresses,
+   * and commits the idle advances still deferred.
    */
   async run(): Promise<void> {
     const projected = new Set([...this.#authority.targetUnits].map((unit) => this.#ctx.catalog.ownerOf(unit)));
@@ -613,7 +714,7 @@ class ProjectorCycle {
     try {
       await this.#recoverEffects(checkpoints);
       await this.#catchUpMirror(checkpoints);
-      await this.#runTurns([...this.#streams.values()]);
+      await this.#runTurns([...this.#streams.values()], true);
       await this.#settleOperations();
       await this.#advanceIdle();
       const behind = (stream: Stream): boolean => stream.aheadBehind || (stream.parkedAt === undefined && !stream.complete);
@@ -692,7 +793,7 @@ class ProjectorCycle {
   }
 
   #stopped(): boolean {
-    return this.#deps.signal?.aborted === true;
+    return this.#halted || this.#deps.signal?.aborted === true;
   }
 
   /** True when the stream's last turn read a complete page, or its checkpoint has passed every row below its frontier. */
@@ -707,8 +808,29 @@ class ProjectorCycle {
     return !stream.failed && stream.parkedAt === undefined && budgetLeft && !this.#caughtUp(stream);
   }
 
-  /** Gives each due stream one page per round, in order, until none is due or the cycle is stopped. */
-  async #runTurns(streams: readonly Stream[]): Promise<void> {
+  /**
+   * Runs each owner's streams as its own lane, lanes concurrently, and waits for every lane; a lane's failure stops the
+   * others and the first one, a hook's before any other, is rethrown. With `polling`, each lane runs as `#poll` does.
+   */
+  async #runTurns(streams: readonly Stream[], polling = false): Promise<void> {
+    const lanes = [...new Set(streams.map((stream) => stream.owner))].map((owner) => streams.filter((stream) => stream.owner === owner));
+    const passes = firstPasses(lanes.length);
+    const outcomes = await Promise.allSettled(
+      lanes.map(async (lane) => {
+        try {
+          await (polling ? this.#poll(lane, passes) : this.#rounds(lane));
+        } catch (error) {
+          this.#halted = true;
+          throw error;
+        }
+      }),
+    );
+    const failures = outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason as unknown] : []));
+    if (failures.length > 0) throw failures.find((error) => error instanceof HookFailure) ?? failures[0];
+  }
+
+  /** Gives each due stream of one lane one page per round, in order, until none is due or the cycle is stopped. */
+  async #rounds(streams: readonly Stream[]): Promise<void> {
     for (let due = streams.filter((stream) => this.#due(stream)); due.length > 0; due = due.filter((stream) => this.#due(stream))) {
       for (const stream of due) {
         if (this.#stopped()) return;
@@ -718,8 +840,56 @@ class ProjectorCycle {
   }
 
   /**
+   * One owner's lane of the cycle's turns: its rounds, then the idle advances of its streams not parked committed at once;
+   * while another lane still takes its first pass, its running streams are read afresh every `idlePollMs` and given rounds
+   * and idle commits again. A parked stream's advance waits for the cycle's settle rounds, which may supersede it.
+   */
+  async #poll(streams: readonly Stream[], passes: FirstPasses): Promise<void> {
+    const running = (): Stream[] => streams.filter((stream) => !stream.failed && stream.parkedAt === undefined);
+    try {
+      await this.#rounds(streams);
+      await this.#advanceIdle(running());
+    } finally {
+      passes.finish();
+    }
+    while (passes.pending() > 0 && !this.#stopped() && running().length > 0) {
+      await this.#pause(passes.done);
+      if (passes.pending() === 0 || this.#stopped()) return;
+      const rearmed = running();
+      for (const stream of rearmed) Object.assign(stream, REREAD);
+      await this.#rounds(rearmed);
+      await this.#advanceIdle(running());
+    }
+  }
+
+  /**
+   * Waits out the current event-loop turn, so lanes ending within it arm no timer, then `idlePollMs`; cut short once `done`
+   * settles or the cycle's signal aborts, and leaves no timer or listener behind.
+   */
+  async #pause(done: Promise<void>): Promise<void> {
+    const { signal } = this.#deps;
+    let immediate: ReturnType<typeof setImmediate> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let wake = (): void => undefined;
+    const paused = new Promise<void>((resolve) => {
+      wake = resolve;
+      immediate = setImmediate(() => {
+        timer = setTimeout(resolve, this.#ctx.config.projection.idlePollMs);
+      });
+    });
+    signal?.addEventListener('abort', wake, { once: true });
+    try {
+      await Promise.race([done, paused]);
+    } finally {
+      clearImmediate(immediate);
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', wake);
+    }
+  }
+
+  /**
    * Projects one page after the stream's checkpoint, up to its first held row, and parks the stream at that operation;
-   * a page that consumes no row only defers its horizon to the cycle's idle advances.
+   * a page that consumes no row only defers its horizon to the idle advances.
    */
   async #turn(stream: Stream): Promise<void> {
     stream.turns += 1;
@@ -751,10 +921,10 @@ class ProjectorCycle {
     if (stream.idleHorizon === undefined || compareXid(horizon, stream.idleHorizon) > 0) stream.idleHorizon = horizon;
   }
 
-  /** Commits the deferred idle advances of every stream still running in one batch, unless the cycle was stopped. */
-  async #advanceIdle(): Promise<void> {
+  /** Commits the deferred idle advances of the streams still running, of every stream by default, in one batch, unless the cycle was stopped. */
+  async #advanceIdle(streams: readonly Stream[] = [...this.#streams.values()]): Promise<void> {
     if (this.#stopped()) return;
-    const idle = [...this.#streams.values()].filter((stream) => !stream.failed && stream.idleHorizon !== undefined);
+    const idle = streams.filter((stream) => !stream.failed && stream.idleHorizon !== undefined);
     if (idle.length === 0) return;
     // Filtered on a deferred horizon just above.
     const parts = idle.map((stream): BatchPart => ({ stream, rows: [], endCursor: stream.checkpoint, appliedHorizon: stream.idleHorizon as string }));
@@ -1052,10 +1222,8 @@ class ProjectorCycle {
       this.#tenantSites,
     );
 
-    if (!this.#batched) {
-      this.#batched = true;
-      await callHook(() => hooks?.beforeFirstBatch?.());
-    }
+    this.#firstBatch ??= callHook(() => hooks?.beforeFirstBatch?.());
+    await this.#firstBatch;
     if (fileOps.length > 0) {
       const files = await executeFileOps({ ...this.#ctx, signal: this.#deps.signal }, fileOps);
       this.#result.files.put += files.put;
@@ -1071,19 +1239,28 @@ class ProjectorCycle {
     const others = new OtherParts(this.#ctx);
     await others.preload(changes);
     const superseded = await supersededInserts(this.#ctx, pool, changes, catalogs);
+    // Keyless rows are matched by their whole image, so a later change never stands for an omitted one and none is repaired.
+    const keyed = changes.filter((change) => catalogs.get(change.physicalTable.qualified.toLowerCase())?.hasPrimaryKey === true);
+    const earlier = await this.#unrepaired(keyed);
     const batchId = randomUUID();
+    /** Changes recorded in `migration.projector_quarantine`, which every later write of the batch leaves out. */
+    const quarantined = new Set<LegacyChange>();
+    const replays = this.#replays(keyed, earlier, quarantined);
     const write = async (tx: Transaction): Promise<CheckpointRow[]> => {
       // Per call: the start-up guard may roll a first attempt back and write the batch again.
       const written = new Map<string, readonly string[]>();
       for (const change of changes) {
+        if (quarantined.has(change)) continue;
         const { operationId, owner } = change;
+        const apply = (): Promise<unknown> =>
+          applyLegacyChange(tx, change, { ...this.#applyOptions(change, catalogs, others, superseded), replayAfterImage: replays(change) });
         if (operationId === undefined) {
-          await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others, superseded));
+          await applyProjectable(change, apply);
           continue;
         }
         const before = written.get(operationId) ?? [];
         await callHook(() => hooks?.beforeOperationChange?.({ batchId, operationId, owner, written: before }));
-        await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others, superseded));
+        await applyProjectable(change, apply);
         if (!before.includes(owner)) written.set(operationId, [...before, owner]);
       }
       const stored: CheckpointRow[] = [];
@@ -1097,7 +1274,7 @@ class ProjectorCycle {
             cursorSeq: seq.toString(),
             appliedHorizon: part.appliedHorizon,
             batchId,
-            rowsApplied: part.changes.length,
+            rowsApplied: part.changes.filter((change) => !quarantined.has(change)).length,
             pendingEffects: mergeEffects([part.stream.pendingEffects, effects]),
           }),
         );
@@ -1107,7 +1284,7 @@ class ProjectorCycle {
 
     const summary = summarise(changes);
     const effects = this.#effectsOf(decoded, summary);
-    const { stored, guardError } = await this.#commit(write, summary.touchesTcontent);
+    const { stored, guardError } = await this.#commitQuarantining(write, summary.touchesTcontent, changes, quarantined, batchId);
     for (const [index, part] of decoded.entries()) {
       part.stream.checkpoint = part.endCursor;
       this.#deps.tracker.rebase(part.stream.owner, part.stream.tenantId, part.endCursor);
@@ -1116,13 +1293,15 @@ class ProjectorCycle {
       part.stream.pendingEffects = stored[index]?.pendingEffects ?? [];
     }
     this.#result.batches += 1;
-    this.#result.rowsApplied += changes.length;
+    this.#result.rowsApplied += changes.length - quarantined.size;
+    this.#result.quarantined += quarantined.size;
     this.#result.skipped += decoded.reduce((sum, part) => sum + part.targetOnly, 0);
 
     for (const part of decoded) {
       await callHook(() => hooks?.afterLegacyCommit?.({ owner: part.stream.owner, tenantId: part.stream.tenantId, batchId }));
     }
     await this.#mirror(stored);
+    await this.#markRepaired(keyed, earlier, quarantined);
     await this.#afterCommit(decoded, stored);
     if (guardError !== undefined) throw guardError;
   }
@@ -1199,13 +1378,34 @@ class ProjectorCycle {
   }
 
   /**
+   * Commits the batch as `#commitAlone` does, once the cycle's earlier commits have finished, so lanes never hold two SQL
+   * Server batch transactions, or the start-up guard sequence, at once.
+   */
+  async #commit(
+    write: (tx: Transaction) => Promise<CheckpointRow[]>,
+    touchesTcontent: boolean,
+  ): Promise<{ stored: CheckpointRow[]; guardError?: unknown }> {
+    const ahead = this.#committing;
+    let release = (): void => undefined;
+    this.#committing = new Promise((resolve) => {
+      release = resolve;
+    });
+    await ahead;
+    try {
+      return await this.#commitAlone(write, touchesTcontent);
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Commits the batch, through the start-up guard when rows would match Masa's start-up predicate. The guarded batch is
    * rolled back first and re-applied by the guard's commit, so no projector lock is held while the freeze drains legacy
    * requests. The guard returns once that commit is made under the freeze, and its reload window, which awaits this
    * projector's later batches, runs on without it. A guard failure after its commit is returned, so the post-commit
    * steps still run.
    */
-  async #commit(
+  async #commitAlone(
     write: (tx: Transaction) => Promise<CheckpointRow[]>,
     touchesTcontent: boolean,
   ): Promise<{ stored: CheckpointRow[]; guardError?: unknown }> {
@@ -1233,6 +1433,88 @@ class ProjectorCycle {
     }
     if (committed.stored === undefined) throw new Error('The start-up guard returned without committing the batch');
     return { stored: committed.stored };
+  }
+
+  /**
+   * Commits the batch as `#commit` does; each change legacy cannot take, with every other change of the batch of its
+   * operation, is quarantined into `quarantined` and the batch written again without them. A quarantined change failing
+   * again, or any other failure, rejects with nothing committed.
+   */
+  async #commitQuarantining(
+    write: (tx: Transaction) => Promise<CheckpointRow[]>,
+    touchesTcontent: boolean,
+    changes: readonly LegacyChange[],
+    quarantined: Set<LegacyChange>,
+    batchId: string,
+  ): Promise<{ stored: CheckpointRow[]; guardError?: unknown }> {
+    for (;;) {
+      try {
+        return await this.#commit(write, touchesTcontent);
+      } catch (error) {
+        if (!(error instanceof UnprojectableChangeError) || quarantined.has(error.change)) throw error;
+        const { operationId } = error.change;
+        // Legacy takes an operation's changes in one transaction or none.
+        const companions =
+          operationId === undefined ? [] : changes.filter((change) => change !== error.change && change.operationId === operationId && !quarantined.has(change));
+        await this.#quarantine(error, companions, batchId);
+        for (const change of [error.change, ...companions]) quarantined.add(change);
+      }
+    }
+  }
+
+  /** Records the refused change and its operation's companions in `migration.projector_quarantine` before their batch commits without them, then logs each. */
+  async #quarantine(error: UnprojectableChangeError, companions: readonly LegacyChange[], batchId: string): Promise<void> {
+    const entry = (change: LegacyChange, reason: string): QuarantineEntry => ({ ...quarantineKeyOfChange(change), xid: change.xid, seq: change.seq, op: change.op, reason });
+    const companionReason = `Operation ${String(error.change.operationId)} has a change legacy cannot take at cursor ${error.cursor}: ${error.reason}`;
+    const entries = [entry(error.change, error.reason), ...companions.map((change) => entry(change, companionReason))];
+    await this.#ctx.db.withMetadata((tx) => recordQuarantine(tx, entries, batchId, this.#ctx.clock.now()));
+    for (const change of [error.change, ...companions]) {
+      this.#ctx.logger.error(
+        { tenantId: change.tenantId, error: serializeError(error.cause) },
+        `Reverse projection of ${change.owner} for tenant ${change.tenantId} quarantined the ${change.op} of ${change.legacyTable} at cursor ${change.xid}:${change.seq}`,
+      );
+    }
+  }
+
+  /** The unrepaired quarantined changes of the keys of `keyed`, read before the batch transaction opens; none without keyed changes. */
+  async #unrepaired(keyed: readonly LegacyChange[]): Promise<QuarantinedChange[]> {
+    if (keyed.length === 0) return [];
+    const keys = new Map(keyed.map((change) => [quarantineKeyOf(quarantineKeyOfChange(change)), quarantineKeyOfChange(change)]));
+    return this.#ctx.db.withMetadata((tx) => unrepairedChanges(tx, [...keys.values()]));
+  }
+
+  /**
+   * Whether a change of `keyed` replays its key: an unrepaired quarantined change of the key precedes it, recorded before
+   * the batch (`earlier`) or in it (`quarantined`); a row's changes are in commit order by seq.
+   */
+  #replays(keyed: readonly LegacyChange[], earlier: readonly QuarantinedChange[], quarantined: ReadonlySet<LegacyChange>): (change: LegacyChange) => boolean {
+    const isKeyed = new Set(keyed);
+    const precedes = (key: QuarantineKey, seq: string, change: LegacyChange): boolean =>
+      quarantineKeyOf(key) === quarantineKeyOf(quarantineKeyOfChange(change)) && BigInt(seq) < BigInt(change.seq);
+    return (change) =>
+      isKeyed.has(change) &&
+      (earlier.some((record) => precedes(record, record.seq, change)) ||
+        [...quarantined].some((other) => precedes(quarantineKeyOfChange(other), other.seq, change)));
+  }
+
+  /**
+   * After the batch committed, marks the quarantined changes of each key it wrote again repaired by the key's last written
+   * change, which leaves legacy holding the key as the target does, and logs them; a crash before leaves them unrepaired.
+   */
+  async #markRepaired(keyed: readonly LegacyChange[], earlier: readonly QuarantinedChange[], quarantined: ReadonlySet<LegacyChange>): Promise<void> {
+    const held = new Set([...earlier.map(quarantineKeyOf), ...[...quarantined].map((change) => quarantineKeyOf(quarantineKeyOfChange(change)))]);
+    const repairs = new Map<string, QuarantinedChange>();
+    for (const change of keyed) {
+      const key = quarantineKeyOf(quarantineKeyOfChange(change));
+      if (quarantined.has(change) || !held.has(key)) continue;
+      const kept = repairs.get(key);
+      if (kept === undefined || BigInt(change.seq) > BigInt(kept.seq)) repairs.set(key, { ...quarantineKeyOfChange(change), xid: change.xid, seq: change.seq });
+    }
+    if (repairs.size === 0) return;
+    const repaired = await this.#ctx.db.withMetadata((tx) => markRepaired(tx, [...repairs.values()], this.#ctx.clock.now()));
+    if (repaired.length === 0) return;
+    const cursors = repaired.map((row) => `${row.owner} for tenant ${row.tenantId} at cursor ${row.xid}:${row.seq} by ${row.repairedXid}:${row.repairedSeq}`);
+    this.#ctx.logger.info(`Reverse projection repaired ${String(repaired.length)} quarantined change(s) of ${cursors.join(', ')}`);
   }
 
   /** Copies committed checkpoints into `migration.projector_cursor`, the reporting mirror, in one transaction of its own. */
@@ -1351,20 +1633,21 @@ class ProjectorCycle {
   }
 }
 
-/** True when the cycle moved rows: applied, passed over, parked or written to the file store. */
+/** True when the cycle moved rows: applied, passed over, parked, quarantined or written to the file store. */
 function isActive(result: CycleResult): boolean {
-  return result.rowsApplied > 0 || result.skipped > 0 || result.held > 0 || result.files.put > 0 || result.files.deleted > 0;
+  return result.rowsApplied > 0 || result.skipped > 0 || result.held > 0 || result.quarantined > 0 || result.files.put > 0 || result.files.deleted > 0;
 }
 
 function emptyResult(): CycleResult {
-  return { leader: false, ran: false, batches: 0, rowsApplied: 0, skipped: 0, held: 0, files: { put: 0, deleted: 0 }, errors: [], backlog: false };
+  return { leader: false, ran: false, batches: 0, rowsApplied: 0, skipped: 0, held: 0, quarantined: 0, files: { put: 0, deleted: 0 }, errors: [], backlog: false };
 }
 
 /**
  * One projector cycle under the `migration`-schema advisory lock, held for the cycle: nothing runs unless some unit is
  * `target`-authoritative; then every (owner, tenant) stream resumes from its SQL Server checkpoint, in turns of one page,
- * up to the horizon of its first read and at most `projection.streamPagesPerCycle` turns, and the horizons its pages
- * advance without consuming a row commit together in one last batch.
+ * up to the horizon of its first read and at most `projection.streamPagesPerCycle` turns, each owner's streams in a lane
+ * beside the other owners', and the horizons a lane's pages advance without consuming a row commit together once its
+ * turns end.
  * Stream failures are returned in `errors`; a hook's throw rejects the cycle; an aborted `signal` ends it early.
  * @throws Opt2SyncUnavailableError when `opt2_sync.projector_checkpoint` is missing while a unit is `target`-authoritative.
  */
@@ -1393,11 +1676,17 @@ export async function runProjectorCycle(ctx: ProjectorContext, deps: CycleDeps):
 
 /**
  * Creates the projector loop; its operation tracker and stream memory live as long as the loop, so a new loop starts with
- * none parked and mirrors every stored checkpoint once.
+ * none parked and mirrors every stored checkpoint once. After each cycle settles, it probes the owners its cycles skip as
+ * unavailable, and forgets each that answers.
  */
 export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoopOptions): ProjectorLoop {
   const tracker = new OperationTracker();
-  const memory: StreamMemory = { mirrored: new Map(), failures: new Map(), fenceFailures: new Map(), scans: new Map() };
+  const unavailable: UnavailableOwners = new Map();
+  const memory: StreamMemory = { mirrored: new Map(), failures: new Map(), fenceFailures: new Map(), scans: new Map(), unavailable };
+  /** Owners whose position probe is in flight. */
+  const probing = new Set<string>();
+  /** True from `stop` until the next `start`: no probe starts, and a late probe answer is ignored. */
+  let stopped = false;
   let tenants: readonly string[] | null = null;
   let inflight: Promise<CycleResult> | undefined;
   let stopCycle: AbortController | undefined;
@@ -1417,6 +1706,8 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
     if (inflight === undefined) {
       const stop = new AbortController();
       stopCycle = stop;
+      // Owners the cycle starts with remembered unavailable, and their errors; only these are probed once it settles.
+      const skipped = new Map(unavailable);
       // A cycle's polling is untraced; each batch carrying rows records its own linked root span.
       const cycle = withUnsampledTrace(() =>
         runProjectorCycle(ctx, {
@@ -1432,6 +1723,7 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
       );
       inflight = cycle.finally(() => {
         inflight = undefined;
+        probe(skipped);
       });
     }
     return inflight;
@@ -1489,14 +1781,40 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
     schedule(0);
   };
 
+  /**
+   * Reads, outside any cycle, the position of each owner the settled cycle started and ended with remembered unavailable
+   * under the same error, so an owner the cycle called again is not probed at once; an owner that answers is forgotten and
+   * the loop woken.
+   */
+  const probe = (skipped: ReadonlyMap<string, Error>): void => {
+    for (const [owner, error] of skipped) {
+      if (stopped || probing.has(owner) || unavailable.get(owner) !== error) continue;
+      probing.add(owner);
+      // Only owner calls of cycles are remembered, each to a data owner.
+      void withUnsampledTrace(async () => ctx.owners.position(owner as DataOwner)).then(
+        () => {
+          probing.delete(owner);
+          if (stopped || !unavailable.delete(owner)) return;
+          ctx.logger.info(`Owner ${owner} answers again; reverse projection resumes calling it`);
+          wake();
+        },
+        () => {
+          probing.delete(owner);
+        },
+      );
+    }
+  };
+
   return {
     start() {
       if (running) return;
       running = true;
+      stopped = false;
       schedule(idlePollMs);
     },
     async stop() {
       running = false;
+      stopped = true;
       wakeOnSettle = false;
       if (timer !== undefined) {
         clearTimeout(timer);

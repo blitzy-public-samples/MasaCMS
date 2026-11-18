@@ -129,7 +129,8 @@ async function harness({ onSettled, beforeSend }: HarnessOptions = {}): Promise<
     });
     done();
   });
-  app.get('/*', { config: { opt2: { public: true } } }, (request, reply) =>
+  // Declared as the gateway's edge catch-all, which browsers reach without an invocation credential.
+  app.get('/*', { config: { opt2: { public: true, edge: true } } }, (request, reply) =>
     forwardToLegacy(request, reply, {
       legacyOrigin: 'http://legacy.invalid',
       headers: request.headers,

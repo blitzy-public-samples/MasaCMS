@@ -5,7 +5,14 @@ import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import type { InventoryFacts, SessionEffect } from '../cutover/types.js';
 import type { BridgeCallOptions, BridgeClient } from './bridge-client.js';
 import type { AdoptedSession, IdentityClient } from './identity-client.js';
-import { isDeletedJarCookie, type JarCookies, type JarRow, type LegacyJar } from './jar.js';
+import {
+  absorbLegacySetCookies,
+  isDeletedJarCookie,
+  keptSession,
+  type JarCookies,
+  type JarRow,
+  type LegacyJar,
+} from './jar.js';
 import type { SessionMode } from './mode.js';
 import type { SessionStateChecker } from './state-check.js';
 import { DEFAULT_SITE_ID, type TokenCache } from './token-cache.js';
@@ -51,20 +58,24 @@ export interface InvalidationLogger {
   warn(obj: object, msg: string): void;
 }
 
-/** Session follow-up of logouts and legacy logins; a legacy logout's identity end is marked owed before legacy runs. */
+/** Session follow-up of logouts and logins; a legacy logout's identity end is marked owed before legacy runs. */
 export interface Invalidation {
-  /** After identity ended the session: ends its legacy session (no database write), forgets jar, tokens and state. */
+  /**
+   * After identity ended the session: ends its legacy session (no database write), forgets jar, tokens and state; a
+   * target-primary session a legacy logout re-adopted since keeps both and only has its tokens and state forgotten.
+   */
   afterTargetLogout(sessionId: string, browser?: BrowserFacts): Promise<void>;
   /** Before legacy logs the session out: forgets its tokens and state and durably marks its identity end pending. */
   beforeLegacyLogout(sessionId: string, mode: SessionMode): Promise<void>;
   /**
-   * After legacy served a logout: ends the session if legacy logged it out, clears the mark if kept and not re-marked
-   * since, else keeps it marked.
+   * After legacy served a logout: ends the session if legacy logged it out (re-adopting the logged-out ColdFusion
+   * session legacy kept in target-primary mode), clears the mark if kept and not re-marked since, else keeps it marked.
    */
   afterLegacyLogout(sessionId: string, legacy: LegacyLogoutFacts): Promise<void>;
   /**
    * Judges a marked session's pending end: ends it if legacy logged it out; a kept session's mark is cleared once no
-   * logout can still be running and none re-marked it since. Returns the outcome.
+   * logout can still be running and none re-marked it since. Returns the outcome; `kept` also when the ended session was
+   * re-adopted under its id, which then goes on logged out.
    */
   completePending(sessionId: string, legacy: LegacyHeldSession): Promise<LegacyLogoutOutcome>;
   /** After a legacy login or re-login: adopts the legacy session into identity; undefined without legacy cookies. */
@@ -73,6 +84,8 @@ export interface Invalidation {
     mode: SessionMode,
     legacy?: LegacyLoginFacts,
   ): Promise<AdoptedSession | undefined>;
+  /** After a target login or re-login: forgets the session's tokens and state, so its next request reads the new epoch. */
+  afterTargetLogin(sessionId: string): void;
 }
 
 /** Dependencies of {@link createInvalidation}. */
@@ -194,26 +207,95 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
     return clock.now().getTime() - row.updatedAt.getTime() >= requestTimeoutMs;
   }
 
-  /** Forgets tokens and state, ends the identity session as a legacy logout, then drops its jar and any mark. */
-  async function endInIdentity(sessionId: string): Promise<void> {
+  /**
+   * The epoch identity re-adopted the session at from the logged-out ColdFusion session its jar still attaches;
+   * undefined when legacy holds no such session under the jar's id or identity adopts it as another session.
+   */
+  async function readoptedEpoch(sessionId: string, row: JarRow, browser: BrowserFacts): Promise<number | undefined> {
+    const cookies = liveCookies(row.cookies);
+    if (Object.keys(cookies).length === 0) return undefined;
+    try {
+      const described = await bridge.describe(cookies, { userAgent: browser.userAgent });
+      const { body } = described;
+      const attached =
+        keptSession(cookies, absorbLegacySetCookies(described.setCookies).sessionCookies) &&
+        (!row.legacySessionId || body.sessionId === row.legacySessionId);
+      // A login legacy still holds is not brought back into a session identity ended.
+      if (!attached || body.isLoggedIn) return undefined;
+      const adopted = await identity.adopt({ describe: body, siteId: body.siteId || DEFAULT_SITE_ID });
+      return adopted.sessionId === sessionId ? adopted.epoch : undefined;
+    } catch (error) {
+      logger?.warn({ error: serializeError(error) }, 'legacy session not re-adopted after logout; its jar is dropped');
+      return undefined;
+    }
+  }
+
+  /**
+   * Forgets tokens and state and ends the identity session as a legacy logout. In target-primary mode the logged-out
+   * ColdFusion session legacy kept is re-adopted under the same id, so the browser's cookies keep naming it, and the
+   * mark is cleared at `version`, the jar's `updatedAt` read before judging; any other jar is dropped with its mark.
+   * Returns whether the session was re-adopted.
+   */
+  async function endInIdentity(
+    sessionId: string,
+    mode: SessionMode | undefined,
+    browser: BrowserFacts,
+    version: Date | undefined,
+  ): Promise<boolean> {
     forget(sessionId);
-    await identity.end(sessionId, 'legacy-logout');
-    // Dropped in both modes: legacy_session_id is unique, so a kept row would block re-adopting this legacy session.
-    await jar.drop(sessionId);
+    if (mode !== 'target-primary') {
+      await identity.end(sessionId, 'legacy-logout');
+      // legacy_session_id is unique, so a kept row would block re-adopting this legacy session.
+      await jar.drop(sessionId);
+      return false;
+    }
+    const readopted = await jar.withSessionLock(sessionId, async (locked) => {
+      let row = await locked.get(sessionId);
+      if (row?.legacySessionId) {
+        await locked.lockNative(row.legacySessionId);
+        // A rebind holding that lock may have moved the legacy session to another jar and removed this one.
+        row = await locked.get(sessionId);
+      }
+      // Ended under the lock, so a target logout that reads it ended waits here and then finds it re-adopted.
+      await identity.end(sessionId, 'legacy-logout');
+      const epoch = row === undefined ? undefined : await readoptedEpoch(sessionId, row, browser);
+      if (row === undefined || epoch === undefined) {
+        await locked.drop(sessionId);
+        return false;
+      }
+      // A later logout's mark stamps updatedAt, so it stands.
+      if (row.identityEndPendingAt !== undefined && version !== undefined) {
+        await locked.clearIdentityEndPending(sessionId, version);
+      }
+      // Legacy already holds the adopted state, so it is recorded as hydrated rather than hydrated over.
+      await locked.upsert({
+        sessionId,
+        legacySessionId: row.legacySessionId,
+        cookies: row.cookies,
+        mode: 'target-primary',
+        hydratedEpoch: epoch,
+      });
+      return true;
+    });
+    // A request may have read the ended state meanwhile.
+    forget(sessionId);
+    return readopted;
   }
 
   return {
     async afterTargetLogout(sessionId, browser = {}) {
       forget(sessionId);
       // Under the jar lock: a running hydration finishes first, and one starting later finds the session ended.
-      await jar.withSessionLock(sessionId, async (locked) => {
+      const readopted = await jar.withSessionLock(sessionId, async (locked) => {
         let row = await locked.get(sessionId);
         if (row?.legacySessionId) {
           await locked.lockNative(row.legacySessionId);
           // A rebind holding that lock may have moved the legacy session to another jar and removed this one.
           row = await locked.get(sessionId);
         }
-        if (row === undefined) return;
+        if (row === undefined) return false;
+        // Since the caller read it ended, a legacy logout may have re-adopted a target-primary session under this lock.
+        if (row.mode === 'target-primary' && (await identity.snapshot(sessionId)) !== undefined) return true;
         const cookies = liveCookies(row.cookies);
         if (Object.keys(cookies).length > 0) {
           const call = { userAgent: browser.userAgent };
@@ -224,7 +306,10 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
           await bridge.end(cookies, { ...call, legacySessionId });
         }
         await locked.drop(sessionId);
+        return false;
       });
+      // Its ended state may have been read again while the re-adoption ran.
+      if (readopted) forget(sessionId);
     },
 
     async beforeLegacyLogout(sessionId, mode) {
@@ -237,7 +322,7 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
       // Read before judging, so a mark stamped by a later logout survives this one's clear.
       const row = await jar.get(sessionId);
       const outcome = await logoutOutcome(sessionId, legacy);
-      if (outcome === 'logged-out') await endInIdentity(sessionId);
+      if (outcome === 'logged-out') await endInIdentity(sessionId, legacy.mode, legacy, row?.updatedAt);
       // A reader may have cleared the mark meanwhile; the session's next request judges the logout again.
       else if (outcome === 'unknown') await jar.markIdentityEndPending(sessionId, legacy.mode);
       // A legacy answer that skipped the logout, such as Masa's site-domain redirect, leaves both sessions logged in.
@@ -249,9 +334,12 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
       // A target-primary jar holds the legacy session's cookies, whose names carry identity's values in the browser.
       const held = row?.mode === 'target-primary' ? { ...legacy, cookies: row.cookies } : legacy;
       const outcome = await logoutOutcome(sessionId, held);
-      if (outcome === 'logged-out') await endInIdentity(sessionId);
+      if (outcome === 'logged-out') {
+        // A re-adopted session goes on under its id, so legacy keeps receiving the ColdFusion session it kept.
+        return (await endInIdentity(sessionId, row?.mode, legacy, row?.updatedAt)) ? 'kept' : outcome;
+      }
       // A logout still running may apply later; its own after-step then ends the session.
-      else if (outcome === 'kept' && row?.identityEndPendingAt !== undefined && outlivedLogouts(row)) {
+      if (outcome === 'kept' && row?.identityEndPendingAt !== undefined && outlivedLogouts(row)) {
         await jar.clearIdentityEndPending(sessionId, row.updatedAt);
       }
       return outcome;
@@ -298,6 +386,10 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
       if (adopted === undefined) return undefined;
       for (const id of new Set([sessionId, adopted.sessionId])) forget(id);
       return adopted;
+    },
+
+    afterTargetLogin(sessionId) {
+      forget(sessionId);
     },
   };
 }

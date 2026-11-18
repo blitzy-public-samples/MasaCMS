@@ -2,7 +2,7 @@
 // and unit gates behind the platform migration handlers, reached through the real owners client.
 import type { AddressInfo } from 'node:net';
 
-import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import {
   UNIT_GATE_TABLE,
   awaitReadable,
@@ -41,6 +41,7 @@ import {
   TENANT_B,
   TENANT_UMBRELLA,
   createThrowawaySchema,
+  mintServiceToken,
   pgAvailable,
   seedRegistry,
   testInvocationMinter,
@@ -63,7 +64,7 @@ export const PG_SKIP_REASON = 'PostgreSQL unavailable (PG_* env)';
 /** Holder id of every gate {@link PgOwner.setGate} closes; a `/gate` call naming it can reopen the gate by compare-and-set. */
 export const PG_OWNER_GATE_HOLDER = 'pg-owner';
 
-/** Path of the owner's public test rows route: GET reads a table behind its unit gate, POST writes one row. */
+/** Path of the owner's public test rows route: GET reads a table behind its unit gate, POST writes one row; both need an invocation credential. */
 export const PG_OWNER_ROWS_PATH = '/test/v1/rows';
 
 /** A rows-route call: a read (`GET`, the default) or a write of one row (`POST`). */
@@ -77,16 +78,17 @@ export interface PgOwnerRowsResponse<T> {
 }
 
 /**
- * Calls the rows route at `url` with connection, headers and body bounded by the service-call timeout; rejects with the
- * signal's `TimeoutError` once it expires.
+ * Calls `owner`'s rows route at `url` with the gateway's invocation credential, connection, headers and body bounded by
+ * the service-call timeout; rejects with the signal's `TimeoutError` once it expires.
  */
-export async function fetchPgOwnerRows<T = unknown>(url: string, request: PgOwnerRowsRequest = {}): Promise<PgOwnerRowsResponse<T>> {
+export async function fetchPgOwnerRows<T = unknown>(owner: DataOwner, url: string, request: PgOwnerRowsRequest = {}): Promise<PgOwnerRowsResponse<T>> {
+  const invocation = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: owner })}` };
   const signal = AbortSignal.timeout(SERVICE_CALL_TIMEOUT_MS);
   const response = await fetch(
     url,
     request.method === 'POST'
-      ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.json), signal }
-      : { method: 'GET', signal },
+      ? { method: 'POST', headers: { ...invocation, 'content-type': 'application/json' }, body: JSON.stringify(request.json), signal }
+      : { method: 'GET', headers: invocation, signal },
   );
   const raw = Buffer.from(await response.arrayBuffer());
   const body = decodeServiceBody(raw, response.headers.get('content-type') ?? undefined, `PostgreSQL owner ${url}`) as T;

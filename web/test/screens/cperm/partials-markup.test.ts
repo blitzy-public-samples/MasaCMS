@@ -1,6 +1,7 @@
 // cperm.cfc before(), controller secure(), the cperm views' Back and empty-group markup and dspZoom, against legacy.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { secure, type GateDecision } from '@/lib/access-gate';
 import { legacySettings } from '@/lib/env';
 import { isSafeHtml, toString } from '@/lib/html';
@@ -355,7 +356,8 @@ describe('renderZoom', () => {
     ]);
   });
 
-  it('throws on an empty crumb list', () => {
-    expect(() => renderZoom([])).toThrow(RangeError);
+  it("fails on an empty crumb list as legacy's dspZoom does", () => {
+    expect(() => renderZoom([])).toThrow(LegacyFaultError);
+    expect(() => renderZoom([])).toThrow('The element at position 1 cannot be found.');
   });
 });

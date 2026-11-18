@@ -6,11 +6,11 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { recordedRoutes } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, recordedRoutes } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, signLocalUrl, type LocalStorageAdapter } from '@opt2/platform/storage';
-import { TENANT_A, TENANT_B, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { ATTACHMENT_BUCKET, attachmentObjectKey } from '../../src/repo/tables.js';
 import { registerAttachmentFileRoute } from '../../src/routes/files.js';
 
@@ -42,6 +42,11 @@ afterEach(async () => {
 afterAll(async () => {
   await rm(stateDir, { recursive: true, force: true });
 });
+
+/** A signed URL is path-only; the gateway forwards it with its own invocation credential. */
+async function forwarded(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}` };
+}
 
 /** A finance service app carrying only the attachment file route, verifying at `NOW`. */
 async function fileRouteApp(port: LocalStorageAdapter = storage): Promise<FastifyInstance> {
@@ -79,7 +84,7 @@ describe('finance attachment file route', () => {
 
   it('streams the stored bytes under the stored content type and length', async () => {
     const app = await fileRouteApp();
-    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, KEY_A) });
+    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, KEY_A), headers: await forwarded() });
     expect(res.statusCode).toBe(200);
     expect(res.rawPayload.equals(BYTES)).toBe(true);
     expect(res.headers['content-type']).toBe('application/pdf');
@@ -92,7 +97,7 @@ describe('finance attachment file route', () => {
     const key = attachmentObjectKey(TENANT_A.tenantId, 'ABCDEF01-2345-6789-ABCDEF0123456780', 'empty.txt');
     await storage.put(ATTACHMENT_BUCKET, key, Buffer.alloc(0), { contentType: 'text/plain' });
     const app = await fileRouteApp();
-    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, key) });
+    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, key), headers: await forwarded() });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/plain');
     expect(res.headers['content-length']).toBe('0');
@@ -105,9 +110,10 @@ describe('finance attachment file route', () => {
     await app.listen({ port: 0, host: '127.0.0.1' });
     const { port } = app.server.address() as AddressInfo;
     const url = await storage.signedUrl(ATTACHMENT_BUCKET, KEY_A, { disposition });
+    const headers = await forwarded();
     const { rawHeaders, body } = await new Promise<{ rawHeaders: string[]; body: Buffer }>((resolve, reject) => {
       http
-        .get(`http://127.0.0.1:${port}${url}`, (res) => {
+        .get(`http://127.0.0.1:${port}${url}`, { headers }, (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (chunk: Buffer) => chunks.push(chunk));
           res.on('end', () => resolve({ rawHeaders: res.rawHeaders, body: Buffer.concat(chunks) }));
@@ -140,9 +146,20 @@ describe('finance attachment file route', () => {
     ],
   ])('answers the legacy 403 to a URL %s', async (_case, urlFor) => {
     const app = await fileRouteApp();
-    const res = await app.inject({ method: 'GET', url: await urlFor() });
+    const res = await app.inject({ method: 'GET', url: await urlFor(), headers: await forwarded() });
     expect(res.statusCode).toBe(403);
     expect(res.headers['content-type']).toMatch(/^application\/json/);
+    expect(res.json()).toEqual(FORBIDDEN);
+  });
+
+  it.each<[string, () => Promise<Record<string, string>>]>([
+    ['no credential', async () => ({})],
+    ['a user token alone', async () => ({ authorization: `Bearer ${await mintUserToken({ sub: ATTACHMENT_ID, site: TENANT_A.siteId, roles: [] })}` })],
+  ])('answers the legacy 401 to a valid URL called directly with %s', async (_case, presented) => {
+    const app = await fileRouteApp();
+    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, KEY_A), headers: await presented() });
+    expect(res.statusCode).toBe(401);
+    // The legacy 401 carries the denial envelope of the 403.
     expect(res.json()).toEqual(FORBIDDEN);
   });
 
@@ -152,7 +169,7 @@ describe('finance attachment file route', () => {
     const url = await storage.signedUrl(ATTACHMENT_BUCKET, key);
     await storage.delete(ATTACHMENT_BUCKET, key);
     const app = await fileRouteApp();
-    const res = await app.inject({ method: 'GET', url });
+    const res = await app.inject({ method: 'GET', url, headers: await forwarded() });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
   });
@@ -169,7 +186,7 @@ describe('finance attachment file route', () => {
   it('answers the legacy 500 when the object cannot be read', async () => {
     const failing: LocalStorageAdapter = { ...storage, open: () => Promise.reject(new Error('disk failure')) };
     const app = await fileRouteApp(failing);
-    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, KEY_A) });
+    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(ATTACHMENT_BUCKET, KEY_A), headers: await forwarded() });
     expect(res.statusCode).toBe(500);
     expect(res.json()).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
   });

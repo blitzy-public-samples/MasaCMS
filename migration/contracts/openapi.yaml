@@ -175,7 +175,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: '`timeoutMs` elapsed before every position was applied.'
+          description: '`timeoutMs` elapsed before every position was applied, or a listed position''s write is quarantined.'
   /internal/v1/authority:
     get:
       operationId: unitAuthority

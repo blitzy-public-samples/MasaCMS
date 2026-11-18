@@ -138,6 +138,8 @@ describe('getFileDownloadUrl', () => {
 });
 
 describe('getLocalContentFile over the local disk adapter', () => {
+  // A signed URL is path-only; the gateway forwards it with its own invocation credential.
+  const forwarded = (): Promise<Record<string, string>> => contentHeaders('anonymous');
   let stateDir: string;
   let local: LocalStorageAdapter;
   let app: FastifyInstance;
@@ -169,7 +171,7 @@ describe('getLocalContentFile over the local disk adapter', () => {
   });
 
   it.each(Object.keys(FILE_BYTES))('serves %s from a signLocalUrl URL with the stored bytes and content type', async (key) => {
-    const res = await app.inject({ method: 'GET', url: signed(key) });
+    const res = await app.inject({ method: 'GET', url: signed(key), headers: await forwarded() });
     const object = seeded(key);
     expect({ status: res.statusCode, type: res.headers['content-type'], bytes: res.rawPayload }).toEqual({
       status: 200,
@@ -196,7 +198,7 @@ describe('getLocalContentFile over the local disk adapter', () => {
     ['a validly signed URL of another bucket', 404, signed(PDF_KEY, NOW_S + SIGNED_URL_TTL_S, 'finance-attachments'), ok(PDF_KEY, NOW_S + SIGNED_URL_TTL_S, 'finance-attachments')],
     ['a validly signed key outside the stored set', 404, signed(MISSING_KEY), ok(MISSING_KEY, NOW_S + SIGNED_URL_TTL_S)],
   ])('answers %s with %i, as verifySignedUrl decides', async (_label, status, url, verification) => {
-    const res = await app.inject({ method: 'GET', url });
+    const res = await app.inject({ method: 'GET', url, headers: await forwarded() });
     expect({
       status: res.statusCode,
       verified: verifySignedUrl(url, TEST_CLOCK.now(), HMAC_KEY),

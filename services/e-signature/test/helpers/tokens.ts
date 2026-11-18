@@ -56,6 +56,11 @@ export function userHeaders({ sub, site = TENANT_A.siteId, roles }: UserHeadersO
   return authHeadersFor({ name: 'e-signature-test-user', kind: 'user', roles }, { site, audience: AUDIENCE, sub });
 }
 
+/** The gateway's invocation credential alone, with no user token: a client without a session, as the gateway forwards it. */
+export async function gatewayHeaders(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: AUDIENCE })}` };
+}
+
 /** The migration service's invocation credential alone, with no user token. */
 export async function migrationHeaders(): Promise<Record<string, string>> {
   const token = await mintServiceToken({ caller: 'migration', audience: AUDIENCE, roles: [Roles.platformMigration] });

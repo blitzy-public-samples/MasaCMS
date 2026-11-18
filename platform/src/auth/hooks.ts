@@ -23,6 +23,8 @@ export interface Opt2RouteConfig {
   siteCheck?: boolean;
   /** Gateway client-facing proxy route: public on the `service` transport, its legacy credentials left unparsed. */
   edge?: true;
+  /** The invocation credential may be absent, and a presented one is still verified; for health probes and the token key set. */
+  invocationOptional?: true;
   /** Renders this route's denials in place of the instance renderer, e.g. in a legacy fixture's own error envelope. */
   renderDenial?: DenialRenderer;
 }
@@ -108,6 +110,12 @@ export function validateRouteConfig(
   if (config.edge === true && !(isPublic && transport === 'service')) {
     throw undeclared('an edge route must be public on the service transport');
   }
+  if (config.invocationOptional === true && !(isPublic && transport === 'service')) {
+    throw undeclared('an invocationOptional route must be public on the service transport');
+  }
+  if (config.invocationOptional === true && config.edge === true) {
+    throw undeclared('an edge route cannot be invocationOptional');
+  }
   return { ...config, transport };
 }
 
@@ -149,7 +157,7 @@ export function registerAuth(app: FastifyInstance, opts: RegisterAuthOptions): v
       }
       const transport = config.transport ?? 'service';
       const { user, userToken, service } = await opts.transports[transport].authenticate(requestToAuthRequest(request), {
-        optional: config.public === true,
+        optional: config.invocationOptional === true,
       });
       // A user token travels only beside the caller's invocation credential, public routes included.
       if (user !== undefined && service === undefined) {

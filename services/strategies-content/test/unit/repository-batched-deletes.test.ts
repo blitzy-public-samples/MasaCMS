@@ -243,7 +243,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository batched deletes', () =>
 
   it('deleteRequest and deleteChain lock the actions of all their requests once and delete them request by request', async () => {
     const chain = await inA((tx) => repo.approvals.insertChain(tx, { siteid: SITE, name: 'Batched', description: '' }));
-    await inA((tx) => repo.approvals.replaceChainMemberships(tx, chain.chainid, [cfId('G', 501), cfId('G', 502)]));
+    await inA((tx) => repo.approvals.replaceChainMemberships(tx, chain.chainid, SITE, [cfId('G', 501), cfId('G', 502)]));
     const requestIds = [1, 2, 3, 4].map((n) => cfId('R', 500 + n));
     const actionIds = requestIds.map((_, i) => [1, 2].map((k) => cfId('A', (510 - i) * 10 + k)));
     await inA(async (tx) => {

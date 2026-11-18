@@ -229,7 +229,12 @@ describe('csrfTokenFrom', () => {
     ['an empty header over a form token', '', FORM, 'csrf_token=F&csrf_token_expires=FE', { 'x-csrf_token': '' }, { expires: 'FE' }],
   ])('reads %s', async (_label, query, contentType, payload, headers, expected) => {
     const app = await build();
-    const res = await app.inject({ method: 'POST', url: `/tokens${query}`, headers: { ...contentType, ...headers }, payload });
+    const res = await app.inject({
+      method: 'POST',
+      url: `/tokens${query}`,
+      headers: { [INVOCATION_HEADER]: SERVICE_CREDENTIAL, ...contentType, ...headers },
+      payload,
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toStrictEqual(expected);
   });
@@ -240,7 +245,7 @@ describe('csrfTokenFrom', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/tokens',
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { [INVOCATION_HEADER]: SERVICE_CREDENTIAL, 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload: multipart(boundary, { csrf_token: 'M', csrf_token_expires: 'ME' }),
     });
     expect(res.json()).toStrictEqual({ token: 'M', expires: 'ME' });

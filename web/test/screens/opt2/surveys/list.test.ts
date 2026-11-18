@@ -1,5 +1,6 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 // The surveys list inside the shell over the surveys fixtures: DOM snapshot, service calls, paging, denials, errors.
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { SURVEY_IDS, multiSiteSurvey, surveys } from '../../../fixtures/opt2/surveys';
@@ -30,11 +31,15 @@ const LIST_ROUTE = routeKey('GET', 'surveys', '/v1/surveys');
 const screenHref = (screen: string, surveyId: string): string =>
   `/opt2/admin/surveys/${screen}?siteid=${SITE}&surveyid=${surveyId}`;
 
+/** The row-actions toggle, then the row's menu links to its schedule, targets and responses screens. */
 const rowLinks = (surveyId: string) => [
+  { href: 'javascript:;', text: '' },
   { href: screenHref('schedule', surveyId), text: 'Schedule' },
   { href: screenHref('targets', surveyId), text: 'Targets' },
   { href: screenHref('responses', surveyId), text: 'Responses' },
 ];
+
+const ROW_ICONS = ['mi-calendar', 'mi-bullseye', 'mi-list-alt'];
 
 /** A list answer of `total` surveys holding the fixture rows. */
 const listOf = (total: number): FakeRoute => ({ status: 200, body: { data: surveys, total } });
@@ -60,23 +65,23 @@ describe('surveys list', () => {
       links: [...rowLinks(SURVEY_IDS.singleSiteSurvey), ...rowLinks(SURVEY_IDS.multiSiteSurvey)],
       tables: [
         {
-          headers: ['Title', 'Status', 'Launch', 'Reminders', 'Created', ''],
+          headers: ['', 'Title', 'Status', 'Launch', 'Reminders', 'Created'],
           rows: [
             [
+              'ScheduleTargetsResponses',
               'Program 1 onboarding check-in',
               'Draft',
               'Not scheduled',
               '0',
               '2026-06-29 09:00:00',
-              'ScheduleTargetsResponses',
             ],
             [
+              'ScheduleTargetsResponses',
               'Cross-program timesheet experience',
               'Scheduled',
               '2026-07-01 09:00:00',
               '2',
               '2026-06-29 10:00:00',
-              'ScheduleTargetsResponses',
             ],
           ],
         },
@@ -126,7 +131,41 @@ describe('surveys list', () => {
     const html = await bodyHtml('surveys', managerRequest(), gateway);
 
     expect(html).not.toContain('<img');
-    expect(fragmentModel(html).tables[0]?.rows[0]?.[0]).toBe(title);
+    expect(fragmentModel(html).tables[0]?.rows[0]?.[1]).toBe(title);
+  });
+
+  it('opens each row on a legacy ⋮ actions menu in a first, unlabelled actions column', async () => {
+    const html = await bodyHtml('surveys', managerRequest(), surveysGateway());
+    const $ = cheerio.load(html, null, false);
+    const headers = $('table.mura-table-grid > thead > tr > th');
+    const rows = $('table.mura-table-grid > tbody > tr').toArray();
+
+    expect(headers.first().attr('class')).toBe('actions');
+    expect(headers.first().html()).toBe('');
+    expect(headers.eq(1).attr('class')).toBe('var-width');
+    expect($('table .btn-group, table .btn')).toHaveLength(0);
+    expect(rows.map((row) => $(row).children('td').first().attr('class'))).toEqual(['actions', 'actions']);
+    const menus = rows.map((row) => {
+      const cell = $(row).children('td.actions');
+      const toggle = cell.children('a.show-actions');
+      return {
+        toggle: [toggle.attr('href'), toggle.attr('onclick'), toggle.children('i').attr('class')],
+        menuClass: cell.children('div').attr('class'),
+        items: cell
+          .find('div.actions-menu > ul.actions-list > li > a')
+          .toArray()
+          .map((link) => ({ href: $(link).attr('href'), icon: $(link).children('i').attr('class'), text: $(link).text() })),
+      };
+    });
+    expect(menus).toEqual(
+      [SURVEY_IDS.singleSiteSurvey, SURVEY_IDS.multiSiteSurvey].map((surveyId) => ({
+        toggle: ['javascript:;', 'showTableControls(this);', 'mi-ellipsis-v'],
+        menuClass: 'actions-menu hide',
+        items: rowLinks(surveyId)
+          .slice(1)
+          .map((link, index) => ({ ...link, icon: ROW_ICONS[index] })),
+      })),
+    );
   });
 
   it.each([

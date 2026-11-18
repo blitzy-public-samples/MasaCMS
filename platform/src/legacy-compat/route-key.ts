@@ -1179,6 +1179,11 @@ export function routeKeyForRequest(req: RouteKeyRequest, opts: RouteKeyOptions =
   return { ...reload, afterReload: result };
 }
 
+/** Whether legacy manages a session for a request on `path` (query excluded): its path_info does not start with `/_api/rest/` (applicationSettings.cfm:179). */
+export function isLegacySessionManaged(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): boolean {
+  return !startsNoCase(normalisePath(path, opts.context ?? '').pathInfo, SESSIONLESS_PATH_INFO);
+}
+
 /** The api.cfm path legacy dispatches a fixture request on, each item as api.cfm reads it; undefined outside the fixture front controller. */
 export function fixtureDispatchPath(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): string | undefined {
   const items = fixtureItems(path, opts.context ?? '');

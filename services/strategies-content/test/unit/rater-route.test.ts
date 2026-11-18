@@ -1,13 +1,13 @@
-/** `rater/ajax/saveRate.cfm` over a throwaway content schema: form binding, the saved rating and stats, the answer, tenancy, gates and the error page. */
+/** `rater/ajax/saveRate.cfm` over a throwaway content schema: form binding, the saved rating and stats, the answer, tenancy, gates and onError's pages. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML, javaTrim } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, LegacyFaultError, javaTrim, legacyDebugPageHtml } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, qualified } from '@opt2/platform/migration-kit';
 import { createService, loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -56,6 +56,8 @@ const ORACLE_TRUNCATED =
 let handle: ThrowawaySchema;
 let stateDir: string;
 let app: FastifyInstance;
+/** The service with configBean `debuggingEnabled` false. */
+let quietApp: FastifyInstance;
 let repository: ContentRepository;
 let current = NOW;
 const clock: Clock = { now: () => current };
@@ -131,14 +133,21 @@ async function seedRating(contentId: string, userId: string, rate: number): Prom
   );
 }
 
-/** Expects the ColdFusion error page. */
-function expectErrorPage(res: InjectResponse): void {
+/** Expects onError's page at 500 `An Error Occurred`: `body`, the debugging-off error.html unless given. */
+function expectErrorPage(res: InjectResponse, body: string = LEGACY_ERROR_PAGE_HTML): void {
   expect({ status: res.statusCode, message: res.statusMessage, type: res.headers['content-type'], body: res.body }).toEqual({
     status: 500,
     message: 'An Error Occurred',
     type: 'text/html;charset=UTF-8',
-    body: LEGACY_ERROR_PAGE_HTML,
+    body,
   });
+}
+
+/** Expects onError's debugging-on page for the undefined form field `name`, as the template reads it. */
+function expectUndefinedFieldPage(res: InjectResponse, name: string): void {
+  const message = `Element ${name} is undefined in FORM.`;
+  expectErrorPage(res, legacyDebugPageHtml(new LegacyFaultError(message), (text) => text));
+  expect(res.body).toContain(`<h1>500 Error</h1><h2>${message}<br /></h2><h3>Type:Expression<br /></h3></div>`);
 }
 
 describe.skipIf(!(await pgAvailable()))('rater save route', () => {
@@ -162,29 +171,39 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     const deps: DomainDeps = { db, repository, clock, config: CONTENT_CONFIG_DEFAULTS };
     stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-rater-'));
     await writeTestSecrets(stateDir);
-    app = await createService({
-      name: SERVICE,
-      version: '1.0.0',
-      env: loadEnv(undefined, {
-        PORT: '8114',
-        OPT2_SERVICE_NAME: SERVICE,
-        OPT2_ENV: 'local',
-        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
-        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
-        OPT2_TOKEN_AUDIENCE: 'opt2-local',
-        OPT2_STATE_DIR: stateDir,
-        TZ: 'UTC',
-      }),
-      clock,
-      verifierOverride: testVerifier(SERVICE),
-      pool: db,
-      logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
-    });
-    registerRaterRoutes(app, { domain: deps });
-    await app.ready();
+    /** The service with the rater routes, under the given configBean `debuggingEnabled` or the settings template's. */
+    const start = async (debuggingEnabled?: boolean): Promise<FastifyInstance> => {
+      const service = await createService({
+        name: SERVICE,
+        version: '1.0.0',
+        env: loadEnv(undefined, {
+          PORT: '8114',
+          OPT2_SERVICE_NAME: SERVICE,
+          OPT2_ENV: 'local',
+          OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+          OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+          OPT2_TOKEN_AUDIENCE: 'opt2-local',
+          OPT2_STATE_DIR: stateDir,
+          TZ: 'UTC',
+        }),
+        clock,
+        verifierOverride: testVerifier(SERVICE),
+        pool: db,
+        logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+      });
+      registerRaterRoutes(service, { domain: deps }, debuggingEnabled);
+      await service.ready();
+      return service;
+    };
+    // Unset, MURA_DEBUGGINGENABLED takes the settings template's `debuggingenabled=true`.
+    vi.stubEnv('MURA_DEBUGGINGENABLED', undefined);
+    app = await start();
+    vi.unstubAllEnvs();
+    quietApp = await start(false);
   });
 
   afterAll(async () => {
+    await quietApp?.opt2.shutdown();
     await app?.opt2.shutdown();
     await handle?.drop();
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
@@ -293,28 +312,46 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     expect(await votes(item)).toMatchObject({ rating: 3, totalvotes: 2, upvotes: 2, downvotes: 0 });
   });
 
-  it('answers a GET with the ColdFusion error page and writes nothing, as its url fields fill no form scope', async () => {
+  it("answers a GET with legacy's debug page of the undefined form.contentID and writes nothing, as its url fields fill no form scope", async () => {
     const before = await writeCount();
     const res = await app.inject({ method: 'GET', url: `${RATER_SAVE_PATH}?${rateForm(cfId('C', 18), U1, '4')}`, headers: await visitorHeaders() });
     assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: RATER_SAVE_PATH, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
-    expectErrorPage(res);
+    expectUndefinedFieldPage(res, 'CONTENTID');
     expect(await writeCount()).toBe(before);
   });
 
-  it('answers the ColdFusion error page with nothing written when contentID, siteID, userID or rate is missing from the form', async () => {
+  it("answers legacy's debug page of the first of contentID, siteID, userID and rate missing from the form, with nothing written", async () => {
     const item = cfId('C', 7);
     const complete = { contentID: item, siteID: SITE, userID: U1, rate: '4' };
     const before = await writeCount();
     for (const missing of Object.keys(complete)) {
       const fields = Object.entries(complete).filter(([name]) => name !== missing);
-      expectErrorPage(await save(new URLSearchParams(fields).toString()));
+      expectUndefinedFieldPage(await save(new URLSearchParams(fields).toString()), missing.toUpperCase());
       // Own oracle: the template reads the form scope only, so the field in the query string still leaves it undefined.
-      expectErrorPage(await save(new URLSearchParams(fields).toString(), { query: `?${new URLSearchParams([[missing, complete[missing as keyof typeof complete]]]).toString()}` }));
+      expectUndefinedFieldPage(
+        await save(new URLSearchParams(fields).toString(), { query: `?${new URLSearchParams([[missing, complete[missing as keyof typeof complete]]]).toString()}` }),
+        missing.toUpperCase(),
+      );
     }
+    // The template passes the fields in order, so the first undefined one fails the call.
+    expectUndefinedFieldPage(await save(new URLSearchParams({ siteID: SITE, rate: '4' }).toString()), 'CONTENTID');
+    expectUndefinedFieldPage(await save(new URLSearchParams({ contentID: item, siteID: SITE }).toString()), 'USERID');
     // A JSON body fills no form scope.
-    expectErrorPage(await save(JSON.stringify(complete), { contentType: 'application/json' }));
+    expectUndefinedFieldPage(await save(JSON.stringify(complete), { contentType: 'application/json' }), 'CONTENTID');
     expect(await writeCount()).toBe(before);
     expect(await ratings(item)).toEqual([]);
+  });
+
+  it('answers the error page for a missing form field when debugging is off, with nothing written', async () => {
+    const before = await writeCount();
+    const res = await quietApp.inject({
+      method: 'POST',
+      url: RATER_SAVE_PATH,
+      headers: { ...FORM, ...(await visitorHeaders()) },
+      payload: new URLSearchParams({ siteID: SITE, userID: U1, rate: '4' }).toString(),
+    });
+    expectErrorPage(res);
+    expect(await writeCount()).toBe(before);
   });
 
   it('answers the ColdFusion error page with nothing written for a non-numeric rate', async () => {
@@ -381,10 +418,17 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     expect(await writeCount()).toBe(before);
   });
 
-  it('answers 401 when no user token accompanies the call', async () => {
+  it.each([
+    {
+      label: 'no user token accompanies the call',
+      form: rateForm(cfId('C', 12), U1, '4'),
+      headers: async () => ({ [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}` }),
+    },
+    // A form the handler answers with its 500 page, so a 401 shows the refusal came before the handler.
+    { label: 'the call carries no invocation credential', form: rateForm(cfId('C', 12), '', '4', TENANT_B.siteId), headers: async () => ({}) },
+  ])('answers 401 when $label and writes nothing', async ({ form, headers }) => {
     const before = await writeCount();
-    const headers = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}` };
-    const res = await save(rateForm(cfId('C', 12), U1, '4'), { headers });
+    const res = await save(form, { headers: await headers() });
     expect(res.statusCode).toBe(401);
     expect(await writeCount()).toBe(before);
   });

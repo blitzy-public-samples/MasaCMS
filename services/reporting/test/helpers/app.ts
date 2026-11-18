@@ -702,3 +702,8 @@ export async function headersFor(subject: RoleSubject | string, site: string | H
   ]);
   return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };
 }
+
+/** The gateway's invocation credential alone, as it forwards a request without a user token, such as a signed download. */
+export async function gatewayHeaders(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}` };
+}

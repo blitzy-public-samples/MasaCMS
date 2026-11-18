@@ -1,5 +1,5 @@
 // The carried `cUsers.update` saves: the posted form relayed to its owner, then the controller's routing (server-only).
-import { cfEq } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, UNSET_USER_BEAN_FAULT, cfEq } from '@opt2/platform/legacy-compat';
 import type { components as IdentityComponents } from '@/generated/clients/identity';
 import type { components as PeopleComponents } from '@/generated/clients/people';
 import { multipartRelay, okBody, type GatewayRequest, type ServicePath } from '@/lib/gateway-client';
@@ -78,7 +78,9 @@ function actionOf(rc: CusersRc): string {
 // no group delete, so a delete never reaches this action.
 /**
  * identity's create or update of the group `rc.userid` for the posted `action`, as the controller's `switch` matches.
- * @throws Error For any other action, which writes nothing and fails on the unset `rc.userBean` in legacy.
+ * @throws LegacyFaultError For an action other than Add, Update or Delete, which writes nothing and fails on the unset
+ * `rc.userBean` in legacy.
+ * @throws Error For a delete, which legacy serves.
  */
 function groupWrite(rc: CusersRc): OwnerWrite {
   const action = actionOf(rc);
@@ -100,7 +102,8 @@ function groupWrite(rc: CusersRc): OwnerWrite {
       actionUrlFields: GROUP_ACTION_URL_FIELDS,
     };
   }
-  throw new Error(`cUsers.update: no group write for action '${action}'; legacy fails on the unset user bean`);
+  if (cfEq(action, 'Delete')) throw new Error('cUsers.update: a group delete is served by legacy');
+  throw LegacyFaultError.fromTrace(UNSET_USER_BEAN_FAULT);
 }
 
 /** The posted fields as received: a multipart body with the action URL's fields, else every rc field URL-encoded. */
@@ -119,7 +122,9 @@ function relayedRequest({ req, body }: ScreenContext, { method, path, actionUrlF
  * The owner's 2xx write result; the owner applies the controller's super-user stripping and validates the CSRF token
  * under `rc.userid`.
  * @throws GatewayUnavailableError When the owner is unavailable or answers 502, 503 or 504.
- * @throws GatewayDenialError When the owner answers 401 or 403; any other non-2xx answer throws `Error`.
+ * @throws GatewayDenialError When the owner answers 401 or 403.
+ * @throws LegacyFaultError When the owner's 500 names the fault legacy raises, such as the unset user bean of a refused
+ * token; any other non-2xx answer throws `Error`.
  */
 async function ownerResult<T>(ctx: ScreenContext, write: OwnerWrite): Promise<T> {
   const response = await ctx.gateway.call<T>(write.service, relayedRequest(ctx, write));

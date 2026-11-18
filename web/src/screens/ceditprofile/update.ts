@@ -76,7 +76,7 @@ export const updateProfileAction: PageScreen<EditProfileView> = Object.freeze({
   circuit: 'ceditprofile',
   action: 'update',
   owner: 'people',
-  // Inventoried as a page: the gateway folds the posted form into a page request, so the save is the controller step.
+  // Inventoried as a page, so the save of the posted form is the controller step.
   mode: 'page',
   gate: ceditprofileGate,
   redirect: updateProfileStep,

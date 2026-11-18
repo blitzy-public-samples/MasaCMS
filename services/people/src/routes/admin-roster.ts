@@ -2,8 +2,10 @@
 // protocol, and `cUsers.updateAddress` [legacy: admin/core/controllers/cusers.cfc:290-375].
 import type { Opt2RouteConfig, UserClaims } from '@opt2/platform/auth';
 import {
+  LegacyApiError,
   LegacyServiceUnavailableError,
   PHOTO_CONDITION,
+  UNSET_USER_BEAN_FAULT,
   cfDateTimeFormat,
   cfEq,
   cfIsNumeric,
@@ -193,9 +195,9 @@ async function admitAddressSave(request: FastifyRequest, reply: FastifyReply): P
   return undefined;
 }
 
-/** A refused token skips the save, and legacy then fails reading the unset `rc.userBean` (cusers.cfc:343). */
+/** A refused token skips the save, and legacy then fails reading the unset `rc.userBean` (cusers.cfc:343): the 500 `server_error` naming that fault. */
 function failOnUnsetUserBean(): never {
-  throw new Error(`${UPDATE_ACTION} refused its CSRF token; legacy fails on the unset rc.userBean`);
+  throw new LegacyApiError('server_error', { stacktrace: UNSET_USER_BEAN_FAULT });
 }
 
 /** A refused token only skips the address write; the handler still redirects. */

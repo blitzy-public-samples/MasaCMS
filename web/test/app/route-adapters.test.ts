@@ -86,28 +86,30 @@ describe.each([
     route: adminPage,
     handler: pageHandler,
     params: PAGE_PARAMS,
-    get: (request: Request) => adminPage.GET(request, routeParams(PAGE_PARAMS)),
+    methods: ['GET', 'POST'] as const,
+    call: (method: 'GET' | 'POST', request: Request) => adminPage[method](request, routeParams(PAGE_PARAMS)),
   },
   {
     path: '/opt2/admin/timesheets/sheets',
     route: opt2Page,
     handler: opt2PageHandler,
     params: OPT2_PARAMS,
-    get: (request: Request) => opt2Page.GET(request, routeParams(OPT2_PARAMS)),
+    methods: ['GET'] as const,
+    call: (_method: 'GET' | 'POST', request: Request) => opt2Page.GET(request, routeParams(OPT2_PARAMS)),
   },
-])('$path page route', ({ path, route, handler, params, get }) => {
-  it('renders dynamically on the Node.js runtime and serves GET only', () => {
+])('$path page route', ({ path, route, handler, params, methods, call }) => {
+  it(`renders dynamically on the Node.js runtime and serves ${methods.join(' and ')} only`, () => {
     expect(route.dynamic).toBe('force-dynamic');
     expect(route.runtime).toBe('nodejs');
-    expect(Object.keys(route).filter((name) => /^[A-Z]+$/.test(name))).toEqual(['GET']);
+    expect(Object.keys(route).filter((name) => /^[A-Z]+$/.test(name))).toEqual([...methods]);
   });
 
-  it('GET returns the handler response for the request and awaited params', async () => {
-    const request = new Request(`${WEB_TEST_ORIGIN}${path}`);
+  it.each(methods)('%s returns the handler response for the request and awaited params', async (method) => {
+    const request = new Request(`${WEB_TEST_ORIGIN}${path}`, { method });
     const response = new Response('legacy document', { status: 200 });
     handler.mockResolvedValueOnce(response);
 
-    await expect(get(request)).resolves.toBe(response);
+    await expect(call(method, request)).resolves.toBe(response);
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0]?.[0]).toBe(request);
     expect(handler.mock.calls[0]?.[1]).toBe(params);

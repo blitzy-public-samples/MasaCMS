@@ -90,8 +90,7 @@ function renderSaved(ctx: ScreenContext): SaveView {
   return view;
 }
 
-// Inventoried as a page, as save.cfm is its view: the gateway folds the posted form into a page request, and the
-// controller step writes before the view renders.
+// Inventoried as a page, as save.cfm is its view: the controller step writes the posted form before the view renders.
 const saveDefinition: PageScreen<undefined> = Object.freeze({
   ...CWEBSERVICE,
   action: 'save',

@@ -311,7 +311,7 @@ paths:
         - 'api:variationtargeting.save'
         - 'api:variationtargeting.validate'
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -352,7 +352,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -395,7 +395,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -438,7 +438,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -484,7 +484,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -524,7 +524,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -566,7 +566,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -608,7 +608,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid, /index.cfm/_api/json/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -654,7 +654,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -694,7 +694,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -736,7 +736,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -778,7 +778,7 @@ paths:
       x-opt2-fastify-path: [/_api/json/v1/:siteid/*, /index.cfm/_api/json/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -821,7 +821,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -862,7 +862,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -905,7 +905,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -948,7 +948,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -994,7 +994,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1034,7 +1034,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1076,7 +1076,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1118,7 +1118,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid, /index.cfm/_api/ajax/v1/:siteid]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1164,7 +1164,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1204,7 +1204,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1246,7 +1246,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1288,7 +1288,7 @@ paths:
       x-opt2-fastify-path: [/_api/ajax/v1/:siteid/*, /index.cfm/_api/ajax/v1/:siteid/*]
       x-opt2-route-keys: *jsonApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1462,7 +1462,7 @@ paths:
         - 'rest:variationtargeting.validate'
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -1502,7 +1502,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -1544,7 +1544,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -1586,7 +1586,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/LegacyMethod'
@@ -1631,7 +1631,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1670,7 +1670,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1711,7 +1711,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1752,7 +1752,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1797,7 +1797,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1836,7 +1836,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1877,7 +1877,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1918,7 +1918,7 @@ paths:
       x-opt2-route-keys: *restApiKeys
       x-opt2-entity-access-ref: '#/x-opt2-entity-access'
       x-opt2-sessionless: true
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/LegacyMethod'
         - $ref: '#/components/parameters/EntityName'
@@ -1957,7 +1957,7 @@ paths:
       x-opt2-public: true
       x-opt2-route-keys: &feedKeys
         - 'feed:v1'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/FeedId'
         - $ref: '#/components/parameters/SiteIdQuery'
@@ -1990,7 +1990,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *feedKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/FeedId'
         - $ref: '#/components/parameters/SiteIdQuery'
@@ -2021,7 +2021,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *feedKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/FeedId'
         - $ref: '#/components/parameters/SiteIdQuery'
@@ -2054,7 +2054,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *feedKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/FeedId'
         - $ref: '#/components/parameters/SiteIdQuery'
@@ -2090,7 +2090,7 @@ paths:
         - 'render:file'
         - 'render:small'
         - 'render:medium'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/FileIdQuery'
         - $ref: '#/components/parameters/RenderMethod'
@@ -2119,7 +2119,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *renderKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/FileIdQuery'
         - $ref: '#/components/parameters/RenderMethod'
@@ -2147,7 +2147,7 @@ paths:
       x-opt2-public: true
       x-opt2-route-keys: &variationKeys
         - 'variation:js'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/VariationSiteId'
       responses:
@@ -2171,7 +2171,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *variationKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/VariationSiteId'
       responses:
@@ -2196,7 +2196,7 @@ paths:
         - 'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag'
         - 'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get'
         - 'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=getcontentstats'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/ProxyMethod'
         - $ref: '#/components/parameters/ProxyCommentId'
@@ -2232,7 +2232,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *commentsProxyKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/ProxyMethodQuery'
         - $ref: '#/components/parameters/ProxyCommentId'
@@ -2272,8 +2272,11 @@ paths:
       x-opt2-public: true
       x-opt2-route-keys: &raterSaveRateKeys
         - 'cfm:/core/modules/v1/rater/ajax/saverate.cfm'
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: No verified invocation credential, or an unverifiable user token, is presented.
         '500':
           $ref: '#/components/responses/ErrorPage'
           description: The template reads the `contentID`, `siteID`, `userID` and `rate` form fields, which a GET does not post.
@@ -2286,7 +2289,7 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-route-keys: *raterSaveRateKeys
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         $ref: '#/components/requestBodies/RateForm'
       responses:
@@ -7027,7 +7030,7 @@ paths:
       x-opt2-public: true
       x-opt2-legacy-actions: [cnav.searchsitedata]
       x-opt2-response-mode: json
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/RawParams'
@@ -7057,7 +7060,7 @@ paths:
       x-opt2-public: true
       x-opt2-legacy-actions: [cnav.searchsitedata]
       x-opt2-response-mode: json
-      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
       requestBody:
@@ -7905,11 +7908,11 @@ paths:
     get:
       operationId: getLocalContentFile
       summary: Serves a content file of the local storage adapter through its signed URL.
-      description: The signature is the credential; the cloud adapter issues no such URLs, so it answers 404.
+      description: The signature authorises the object and the caller, the gateway when it forwards the URL, presents its invocation credential; the cloud adapter issues no such URLs, so it answers 404.
       tags: [files]
       x-opt2-transport: service
       x-opt2-public: true
-      security: []
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - name: expires
           in: query
@@ -7944,6 +7947,9 @@ paths:
               schema:
                 type: string
                 format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: No verified invocation credential, or an unverifiable user token, is presented.
         '403':
           $ref: '#/components/responses/Forbidden'
           description: The signature is malformed, wrong or expired.

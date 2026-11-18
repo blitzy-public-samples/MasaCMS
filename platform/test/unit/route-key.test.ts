@@ -16,6 +16,7 @@ import {
   type VariantDeclaration,
   entityRemoteFunctionsFromKeys,
   fixtureDispatchPath,
+  isLegacySessionManaged,
   matchRouteKey,
   normaliseRouteKey,
   routeKeyForEntryPoint,
@@ -1668,5 +1669,22 @@ describe('entityRemoteFunctionsFromKeys', () => {
     const entityRemoteFunctions = entityRemoteFunctionsFromKeys(['rest:comment.~flag', 'api:comment.~markasspam']);
     expect(keyOf('POST', url)).toBe(unregistered);
     expect(keyOf('POST', url, {}, { entityRemoteFunctions })).toBe(key);
+  });
+});
+
+describe('isLegacySessionManaged', () => {
+  it.each<[string, RouteKeyOptions, boolean]>([
+    ['/_api/rest/v1/default/content/', {}, false],
+    ['/_API/Rest/v1/default/', {}, false],
+    ['/index.cfm/_api/rest/v1/default/', {}, false],
+    ['/%5Fapi/rest/v1/default/', {}, false],
+    ['/ctx/_api/rest/v1/default/', { context: '/ctx' }, false],
+    ['/_api/rest', {}, true],
+    ['/_api/json/v1/default/content/', {}, true],
+    ['/admin/', {}, true],
+    ['/core/modules/v1/rater/ajax/saveRate.cfm', {}, true],
+    ['/ctx/_api/rest/v1/default/', {}, true],
+  ])('reads %s with %j as session-managed: %s', (path, opts, expected) => {
+    expect(isLegacySessionManaged(path, opts)).toBe(expected);
   });
 });

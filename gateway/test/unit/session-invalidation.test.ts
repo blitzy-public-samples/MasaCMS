@@ -96,6 +96,8 @@ interface Harness {
   describe: LegacyDescribe;
   /** Answers of the next `op=describe` calls, in order. */
   describes: LegacyDescribe[];
+  /** `Set-Cookie` values ColdFusion sends with every `op=describe`. */
+  describeSetCookies: string[];
   /** Refuses every `op=describe` once set. */
   describeError?: Error;
   /** Identity's snapshot of the session; undefined reads as ended. */
@@ -112,6 +114,7 @@ function harness(row?: JarRow): Harness {
     rows: new Map(row === undefined ? [] : [[row.sessionId, row]]),
     describe: described(),
     describes: [],
+    describeSetCookies: [],
     snapshot: snapshotOf(described().csrfSecretKey),
     adopted: { sessionId: SESSION_ID, epoch: 6, setCookie: [] },
     options: undefined as unknown as InvalidationOptions,
@@ -120,9 +123,23 @@ function harness(row?: JarRow): Harness {
     h.calls.push([op, ...args]);
   };
   const store = (input: JarUpsert): JarRow => {
-    const next: JarRow = { ...input, updatedAt: NOW };
+    // As the jar's upsert does, a stored row's pending-end mark stays.
+    const pending = h.rows.get(input.sessionId)?.identityEndPendingAt;
+    const next: JarRow = { ...input, updatedAt: NOW, ...(pending === undefined ? {} : { identityEndPendingAt: pending }) };
     h.rows.set(input.sessionId, next);
     return next;
+  };
+  const clearMark = (sessionId: string, updatedAt?: Date): Promise<void> => {
+    const row = h.rows.get(sessionId);
+    // As the jar does, a row changed since the version read keeps its mark.
+    const current = updatedAt === undefined || row?.updatedAt.getTime() === updatedAt.getTime();
+    if (row?.identityEndPendingAt !== undefined && current) {
+      const { identityEndPendingAt: _cleared, ...kept } = row;
+      const empty = kept.legacySessionId === null && Object.keys(kept.cookies).length === 0 && kept.hydratedEpoch === null;
+      if (empty) h.rows.delete(sessionId);
+      else h.rows.set(sessionId, kept);
+    }
+    return Promise.resolve();
   };
   /** The jar statements a locked section runs, logged as `locked.*`. */
   const locked: LockedJar = {
@@ -161,6 +178,10 @@ function harness(row?: JarRow): Harness {
       }
       return Promise.resolve(store(input));
     },
+    clearIdentityEndPending(sessionId, updatedAt) {
+      record('locked.clearIdentityEndPending', sessionId, updatedAt);
+      return clearMark(sessionId, updatedAt);
+    },
   };
   h.options = {
     identity: {
@@ -181,7 +202,7 @@ function harness(row?: JarRow): Harness {
       describe(cookies, call) {
         record('bridge.describe', cookies, call);
         if (h.describeError !== undefined) return Promise.reject(h.describeError);
-        return Promise.resolve({ body: h.describes.shift() ?? h.describe, setCookies: [] });
+        return Promise.resolve({ body: h.describes.shift() ?? h.describe, setCookies: h.describeSetCookies });
       },
       end(cookies, call) {
         record('bridge.end', cookies, call);
@@ -217,16 +238,7 @@ function harness(row?: JarRow): Harness {
       },
       clearIdentityEndPending(sessionId, updatedAt) {
         record('jar.clearIdentityEndPending', sessionId, updatedAt);
-        const row = h.rows.get(sessionId);
-        // As the jar does, a row changed since the version read keeps its mark.
-        const current = updatedAt === undefined || row?.updatedAt.getTime() === updatedAt.getTime();
-        if (row?.identityEndPendingAt !== undefined && current) {
-          const { identityEndPendingAt: _cleared, ...kept } = row;
-          const empty = kept.legacySessionId === null && Object.keys(kept.cookies).length === 0 && kept.hydratedEpoch === null;
-          if (empty) h.rows.delete(sessionId);
-          else h.rows.set(sessionId, kept);
-        }
-        return Promise.resolve();
+        return clearMark(sessionId, updatedAt);
       },
     },
     tokenCache: {
@@ -341,14 +353,24 @@ describe('afterTargetLogout', () => {
     ['locked.lockNative', LEGACY_SESSION_ID],
     ['locked.get', SESSION_ID],
   ];
+  /** Identity's answer for the session the logout ended. */
+  const ENDED_CHECK: Call = ['identity.snapshot', SESSION_ID];
+
+  /** A harness whose identity session has ended, as every caller sees before a target logout's follow-up. */
+  function ended(row?: JarRow): Harness {
+    const h = harness(row);
+    h.snapshot = undefined;
+    return h;
+  }
 
   it('drops tokens and state, then ends the attached legacy session and drops the jar under its lock', async () => {
-    const h = harness(jarRow());
+    const h = ended(jarRow());
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID, { userAgent: USER_AGENT });
     expect(h.calls).toEqual([
       ...FORGET_SESSION,
       LOCK,
       ...LOCKED_READ,
+      ENDED_CHECK,
       ['locked.lockNative', LEGACY_SESSION_ID],
       ['bridge.end', JAR_LIVE, { userAgent: USER_AGENT, legacySessionId: LEGACY_SESSION_ID }],
       ['locked.drop', SESSION_ID],
@@ -358,13 +380,14 @@ describe('afterTargetLogout', () => {
   });
 
   it('learns the legacy session id from describe when the jar never recorded it', async () => {
-    const h = harness(jarRow({ legacySessionId: null }));
+    const h = ended(jarRow({ legacySessionId: null }));
     h.describe = described({ sessionId: NEW_LEGACY_SESSION_ID });
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
     expect(h.calls).toEqual([
       ...FORGET_SESSION,
       LOCK,
       ['locked.get', SESSION_ID],
+      ENDED_CHECK,
       ['bridge.describe', JAR_LIVE, { userAgent: undefined }],
       ['locked.lockNative', NEW_LEGACY_SESSION_ID],
       ['bridge.end', JAR_LIVE, { userAgent: undefined, legacySessionId: NEW_LEGACY_SESSION_ID }],
@@ -374,13 +397,39 @@ describe('afterTargetLogout', () => {
   });
 
   it('drops a jar holding only deleted cookies without calling the bridge', async () => {
-    const h = harness(jarRow({ cookies: DELETED }));
+    const h = ended(jarRow({ cookies: DELETED }));
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
-    expect(h.calls).toEqual([...FORGET_SESSION, LOCK, ...LOCKED_READ, ['locked.drop', SESSION_ID], COMMIT]);
+    expect(h.calls).toEqual([...FORGET_SESSION, LOCK, ...LOCKED_READ, ENDED_CHECK, ['locked.drop', SESSION_ID], COMMIT]);
+  });
+
+  it.each<[string, SessionMode, Call[]]>([
+    [
+      'keeps the jar and its legacy session and forgets tokens and state again for a target-primary session a legacy logout re-adopted',
+      'target-primary',
+      [...FORGET_SESSION, LOCK, ...LOCKED_READ, ENDED_CHECK, COMMIT, ...FORGET_SESSION],
+    ],
+    [
+      'ends the legacy session of a legacy-primary jar without asking identity',
+      'legacy-primary',
+      [
+        ...FORGET_SESSION,
+        LOCK,
+        ...LOCKED_READ,
+        ['locked.lockNative', LEGACY_SESSION_ID],
+        ['bridge.end', JAR_LIVE, { userAgent: undefined, legacySessionId: LEGACY_SESSION_ID }],
+        ['locked.drop', SESSION_ID],
+        COMMIT,
+      ],
+    ],
+  ])('while identity reports the session active again, %s', async (_label, mode, calls) => {
+    const h = harness(jarRow({ mode }));
+    await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
+    expect(h.calls).toEqual(calls);
+    expect(h.rows.get(SESSION_ID)).toEqual(mode === 'target-primary' ? jarRow({ mode }) : undefined);
   });
 
   it('leaves the legacy session to the jar a rebind moved it to while the logout waited for its lock', async () => {
-    const h = harness(jarRow());
+    const h = ended(jarRow());
     const moved = jarRow({ sessionId: NEW_SESSION_ID, mode: 'legacy-primary' });
     h.onNative = () => {
       h.rows.delete(SESSION_ID);
@@ -392,13 +441,13 @@ describe('afterTargetLogout', () => {
   });
 
   it('only forgets tokens and state when the session has no jar', async () => {
-    const h = harness();
+    const h = ended();
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
     expect(h.calls).toEqual([...FORGET_SESSION, LOCK, ['locked.get', SESSION_ID], COMMIT]);
   });
 
   it('propagates a failed legacy end out of the locked section without dropping the jar', async () => {
-    const h = harness(jarRow());
+    const h = ended(jarRow());
     const refusal = new Error('legacy-bridge unavailable');
     h.options.bridge.end = () => Promise.reject(refusal);
     await expect(createInvalidation(h.options).afterTargetLogout(SESSION_ID)).rejects.toBe(refusal);
@@ -428,8 +477,44 @@ describe('beforeLegacyLogout', () => {
   });
 });
 
+describe('afterTargetLogin', () => {
+  it('only forgets tokens and state, touching neither the jar, the bridge nor identity', () => {
+    const h = harness(jarRow());
+    createInvalidation(h.options).afterTargetLogin(SESSION_ID);
+    expect(h.calls).toEqual(FORGET_SESSION);
+    expect(h.rows.get(SESSION_ID)).toEqual(jarRow());
+  });
+});
+
 const marked = (overrides: Partial<JarRow> = {}): JarRow => ({ ...jarRow(overrides), identityEndPendingAt: NOW });
 const ENDED: Call[] = [...FORGET_SESSION, ['identity.end', SESSION_ID, 'legacy-logout'], ['jar.drop', SESSION_ID]];
+/** A target-primary session's identity end, under its jar's and its legacy session's locks. */
+const ENDED_LOCKED: Call[] = [
+  ...FORGET_SESSION,
+  ['jar.lock', SESSION_ID],
+  ['locked.get', SESSION_ID],
+  ['locked.lockNative', LEGACY_SESSION_ID],
+  ['locked.get', SESSION_ID],
+  ['identity.end', SESSION_ID, 'legacy-logout'],
+];
+/** The re-adoption's describe of the jar's live legacy cookies. */
+const READOPT_DESCRIBE: Call = ['bridge.describe', JAR_LIVE, { userAgent: USER_AGENT }];
+/** The logged-out legacy session as legacy describes it after the logout. */
+const LOGGED_OUT = described({ isLoggedIn: false });
+/** The re-adoption of {@link LOGGED_OUT} into identity, at its `session.siteid`. */
+const READOPT_ADOPT: Call = ['identity.adopt', { describe: LOGGED_OUT, siteId: 'tenant-a' }];
+/** The jar kept for the re-adopted session: mark cleared at the version read, hydrated at the adopted epoch. */
+const READOPTED: Call[] = [
+  ['locked.clearIdentityEndPending', SESSION_ID, NOW],
+  [
+    'locked.upsert',
+    { sessionId: SESSION_ID, legacySessionId: LEGACY_SESSION_ID, cookies: jarRow().cookies, mode: 'target-primary', hydratedEpoch: 6 },
+  ],
+  ['jar.commit', SESSION_ID],
+  ...FORGET_SESSION,
+];
+/** The jar dropped with its mark when no re-adoption is possible. */
+const DROPPED_LOCKED: Call[] = [['locked.drop', SESSION_ID], ['jar.commit', SESSION_ID], ...FORGET_SESSION];
 /** Legacy's default request timeout, 1000 s. */
 const REQUEST_TIMEOUT_MS = 1_000_000;
 /** A later logout's mark: it keeps the first mark's time and stamps only `updatedAt`. */
@@ -486,17 +571,93 @@ describe('afterLegacyLogout judged by the login legacy holds', () => {
     expect(h.rows.get(SESSION_ID)).toEqual(jarRow());
   });
 
-  it.each<[string, Partial<LegacyDescribe>, SessionSnapshot | undefined]>([
-    ['legacy logged the session out', { isLoggedIn: false }, snapshotOf('CSRF-SECRET-0001')],
-    ['legacy logged in again under a fresh CSRF secret', { csrfSecretKey: 'CSRF-SECRET-0002' }, snapshotOf('CSRF-SECRET-0001')],
-    ['identity reports the session ended', {}, undefined],
-  ])('ends the identity session and drops the jar when %s', async (_label, legacy, snapshot) => {
+  it('ends the identity session, then re-adopts the logged-out legacy session under its id and keeps the jar unmarked', async () => {
     const h = harness(marked());
-    h.describe = described(legacy);
-    h.snapshot = snapshot;
+    h.describe = LOGGED_OUT;
     await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls).toEqual([...EVIDENCE, ...ENDED_LOCKED, READOPT_DESCRIBE, READOPT_ADOPT, ...READOPTED]);
+    expect(h.rows.get(SESSION_ID)).toEqual(jarRow({ hydratedEpoch: 6 }));
+  });
+
+  /** Fails the re-adoption's describe, the second of the after-step. */
+  const failSecondDescribe = (h: Harness): void => {
+    h.describe = LOGGED_OUT;
+    const describeLegacy = h.options.bridge.describe;
+    let described = 0;
+    h.options.bridge.describe = (cookies, call) =>
+      (described += 1) === 1 ? describeLegacy(cookies, call) : Promise.reject(new TypeError('fetch failed'));
+  };
+
+  it.each<{ name: string; row?: JarRow; arrange: (h: Harness) => void; readopt: Call[]; warned?: boolean }>([
+    {
+      name: 'legacy logged in again under a fresh CSRF secret',
+      arrange: (h) => (h.describe = described({ csrfSecretKey: 'CSRF-SECRET-0002' })),
+      readopt: [READOPT_DESCRIBE],
+    },
+    { name: 'identity reports the session ended while legacy keeps its login', arrange: (h) => (h.snapshot = undefined), readopt: [READOPT_DESCRIBE] },
+    {
+      name: 'ColdFusion replaced the legacy session of the jar',
+      arrange: (h) => {
+        h.describe = LOGGED_OUT;
+        h.describeSetCookies = ['CFID=9009;path=/;HttpOnly'];
+      },
+      readopt: [READOPT_DESCRIBE],
+    },
+    {
+      name: 'the cookies of the jar attach another legacy session',
+      arrange: (h) => (h.describe = described({ isLoggedIn: false, sessionId: NEW_LEGACY_SESSION_ID })),
+      readopt: [READOPT_DESCRIBE],
+    },
+    {
+      name: 'identity adopts the legacy session as another session',
+      arrange: (h) => {
+        h.describe = LOGGED_OUT;
+        h.adopted = { sessionId: NEW_SESSION_ID, epoch: 6, setCookie: [] };
+      },
+      readopt: [READOPT_DESCRIBE, READOPT_ADOPT],
+    },
+    { name: 'the jar holds no live legacy cookies', row: marked({ cookies: DELETED }), arrange: (h) => (h.describe = LOGGED_OUT), readopt: [] },
+    { name: 'legacy cannot be described again', arrange: failSecondDescribe, readopt: [], warned: true },
+    {
+      name: 'identity cannot adopt the legacy session',
+      arrange: (h) => {
+        h.describe = LOGGED_OUT;
+        h.options.identity.adopt = () => Promise.reject(new TypeError('fetch failed'));
+      },
+      readopt: [READOPT_DESCRIBE],
+      warned: true,
+    },
+  ])('ends the identity session and drops the jar when $name', async ({ row, arrange, readopt, warned }) => {
+    const h = harness(row ?? marked());
+    arrange(h);
+    const warnings: Array<[object, string]> = [];
+    h.options.logger = { warn: (obj, msg) => warnings.push([obj, msg]) };
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD);
+    expect(h.calls).toEqual([...EVIDENCE, ...ENDED_LOCKED, ...readopt, ...DROPPED_LOCKED]);
+    expect(h.rows.size).toBe(0);
+    expect(warnings).toEqual(
+      warned === true
+        ? [[{ error: expect.objectContaining({ type: 'TypeError' }) }, 'legacy session not re-adopted after logout; its jar is dropped']]
+        : [],
+    );
+  });
+
+  it('re-adopts nothing in legacy-primary mode, where the browser holds the legacy cookies themselves', async () => {
+    const h = harness(marked({ mode: 'legacy-primary' }));
+    h.describe = LOGGED_OUT;
+    await createInvalidation(h.options).afterLegacyLogout(SESSION_ID, { ...HELD, mode: 'legacy-primary' });
     expect(h.calls).toEqual([...EVIDENCE, ...ENDED]);
     expect(h.rows.size).toBe(0);
+  });
+
+  it('rejects out of the jar lock and keeps the marked jar when identity cannot end a target-primary session', async () => {
+    const h = harness(marked());
+    h.describe = LOGGED_OUT;
+    const refusal = new Error('identity unavailable');
+    h.options.identity.end = () => Promise.reject(refusal);
+    await expect(createInvalidation(h.options).afterLegacyLogout(SESSION_ID, HELD)).rejects.toBe(refusal);
+    expect(h.calls).toEqual([...EVIDENCE, ...ENDED_LOCKED.slice(0, -1), ['jar.rollback', SESSION_ID]]);
+    expect(h.rows.get(SESSION_ID)).toEqual(marked());
   });
 
   it.each<[string, (options: InvalidationOptions, refusal: Error) => void]>([
@@ -551,11 +712,28 @@ describe('completePending judged by the login legacy holds', () => {
     initial?: Partial<JarRow>;
     elapsedMs: number;
     timeoutMs?: number;
+    adopted?: AdoptedSession;
     outcome: LegacyLogoutOutcome;
     after: Call[];
     row: JarRow | undefined;
   }>([
-    { name: 'ends the session legacy logged out', legacy: { isLoggedIn: false }, elapsedMs: 0, outcome: 'logged-out', after: ENDED, row: undefined },
+    {
+      name: 'ends a session legacy logged out and re-adopts it under its id, so it goes on as kept',
+      legacy: { isLoggedIn: false },
+      elapsedMs: 0,
+      outcome: 'kept',
+      after: [...ENDED_LOCKED, READOPT_DESCRIBE, READOPT_ADOPT, ...READOPTED],
+      row: jarRow({ hydratedEpoch: 6 }),
+    },
+    {
+      name: 'ends a session legacy logged out and drops its jar when identity adopts the legacy session as another',
+      legacy: { isLoggedIn: false },
+      elapsedMs: 0,
+      adopted: { sessionId: NEW_SESSION_ID, epoch: 6, setCookie: [] },
+      outcome: 'logged-out',
+      after: [...ENDED_LOCKED, READOPT_DESCRIBE, READOPT_ADOPT, ...DROPPED_LOCKED],
+      row: undefined,
+    },
     {
       name: 'keeps a session legacy kept logged in, with its fresh mark',
       legacy: {},
@@ -598,10 +776,11 @@ describe('completePending judged by the login legacy holds', () => {
       after: [],
       row: marked(),
     },
-  ])('$name', async ({ legacy, initial, elapsedMs, timeoutMs, outcome, after, row }) => {
+  ])('$name', async ({ legacy, initial, elapsedMs, timeoutMs, adopted, outcome, after, row }) => {
     const h = harness(marked(initial));
     if (legacy instanceof Error) h.describeError = legacy;
     else h.describe = described(legacy);
+    if (adopted !== undefined) h.adopted = adopted;
     h.options.clock = { now: () => new Date(NOW.getTime() + elapsedMs) };
     if (timeoutMs !== undefined) h.options.requestTimeoutMs = timeoutMs;
     await expect(createInvalidation(h.options).completePending(SESSION_ID, HELD)).resolves.toBe(outcome);

@@ -479,7 +479,7 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
       }),
     });
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: fixedClock(NOW) });
-    app.get('/manifest', { config: { opt2: { public: true } } }, () => manifest());
+    app.get('/manifest', { config: { opt2: { public: true, invocationOptional: true } } }, () => manifest());
     try {
       if (deleted) await db.withMetadata((tx) => tx.query(`UPDATE ${handle.schema}.tenant_registry SET deleted = true WHERE tenant_id = $1`, [TENANT_A.tenantId]));
       await app.ready();

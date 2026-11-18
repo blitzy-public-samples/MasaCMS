@@ -940,12 +940,12 @@ paths:
     get:
       operationId: getLocalAttachmentObject
       summary: Serves an attachment object of the local storage adapter through its signed URL.
-      description: The signature is the credential, checked with `verifySignedUrl` of `@opt2/platform/storage`; only the local adapter issues these URLs.
+      description: The signature authorises the object, checked with `verifySignedUrl` of `@opt2/platform/storage`; only the local adapter issues these URLs. The caller, the gateway when it forwards one, presents its invocation credential.
       tags:
         - internal
       x-opt2-transport: service
       x-opt2-public: true
-      security: []
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
         - name: expires
           in: query
@@ -980,6 +980,9 @@ paths:
               schema:
                 type: string
                 format: binary
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: No invocation credential, or an invalid one, is presented.
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The signature is malformed, wrong or expired.

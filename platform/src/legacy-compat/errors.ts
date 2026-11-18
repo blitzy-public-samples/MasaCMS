@@ -59,6 +59,12 @@ export function reportedMethod(method: string | undefined, ctx: ApiNameContext =
   return name.toLowerCase() === CATCH_VARIABLE || isDefinedApiName(name, ctx) ? name : 'invalid';
 }
 
+/** An exception's `Message` and `Type`, as the debugging branch of `catch (Any e)` reports it in `stacktrace` (jsonApiUtility.cfc:1396-1397). */
+export interface LegacyFaultTrace {
+  readonly Message: string;
+  readonly Type: string;
+}
+
 /** Options of a legacy JSON API error response. */
 export interface LegacyErrorResponseOptions {
   /** `params.method` at the throw point; undefined when legacy never set it. */
@@ -74,16 +80,19 @@ export interface LegacyErrorResponseOptions {
   wwwAuthenticate?: string;
   /** The API utility's serializer, whose key hints the echoed params are written with; the API hints alone by default. */
   serializer?: LegacyJsonSerializer;
+  /** The fault `catch (Any e)` reports with debugging on, as `error.stacktrace`; other catch blocks report none. */
+  stacktrace?: LegacyFaultTrace;
 }
 
 /** Error envelope response for an exception of `type`, as the matching catch block serializes it. */
 export function legacyErrorResponse(type: string, a: LegacyErrorResponseOptions = {}): SerializedLegacyResponse {
   const { status, code, message } = errorSpec(type);
+  const stacktrace = code === 'server_error' ? a.stacktrace : undefined;
   const envelope = buildEnvelope({
     method: reportedMethod(a.method, a.methodCtx),
     params: paramsWithoutMethod(a.params ?? {}),
     // Key order follows the ACF wire bytes ({"message":…,"code":…}), so body and ETag match legacy exactly.
-    error: { message, code },
+    error: stacktrace === undefined ? { message, code } : { message, code, stacktrace: { Message: stacktrace.Message, Type: stacktrace.Type } },
   });
   // The catch blocks' unordered struct literal iterates apiversion, method, error, params on ACF.
   const response = serializeResponse(envelope, {
@@ -106,6 +115,7 @@ export interface LegacyApiErrorOptions {
   methodCtx?: ApiNameContext;
   wwwAuthenticate?: string;
   data?: unknown;
+  stacktrace?: LegacyFaultTrace;
 }
 
 /** A legacy JSON API exception; the service-kit error handler answers it with `legacyErrorResponse`. */
@@ -116,6 +126,7 @@ export class LegacyApiError extends Error {
   readonly methodCtx: ApiNameContext | undefined;
   readonly wwwAuthenticate: string | undefined;
   readonly data: unknown;
+  readonly stacktrace: LegacyFaultTrace | undefined;
 
   constructor(
     readonly type: LegacyApiErrorType | string,
@@ -127,6 +138,7 @@ export class LegacyApiError extends Error {
     this.methodCtx = opts.methodCtx;
     this.wwwAuthenticate = opts.wwwAuthenticate;
     this.data = opts.data;
+    this.stacktrace = opts.stacktrace;
   }
 }
 

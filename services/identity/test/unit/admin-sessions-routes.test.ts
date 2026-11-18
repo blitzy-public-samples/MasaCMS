@@ -344,7 +344,7 @@ describe('without a session', () => {
   });
 
   it('logs out by deleting the remember-me cookies and redirecting to home.redirect', async () => {
-    const res = await send('POST', '/v1/sessions/logout', await headersFor(null, { caller: null }));
+    const res = await send('POST', '/v1/sessions/logout', await headersFor(null));
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ redirect: { action: 'home.redirect', params: {} } });

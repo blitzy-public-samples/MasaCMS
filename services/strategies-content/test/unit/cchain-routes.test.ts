@@ -164,6 +164,12 @@ function writes(): string[] {
   return t.db.statements.map((statement) => statement.sql).filter((sql) => /^(INSERT|UPDATE|DELETE)/i.test(sql) && !/changelog|unit_gate/i.test(sql));
 }
 
+/** The columns an INSERT statement binds, by name. */
+function insertedColumns(params: readonly unknown[], sql: string): Json {
+  const columns = (/\(([^)]*)\) VALUES/.exec(sql)?.[1] ?? '').split(',').map((column) => column.trim().replace(/"/g, ''));
+  return Object.fromEntries(columns.map((column, i) => [column, params[i] ?? null]));
+}
+
 beforeAll(async () => {
   t = await buildContentApp({
     declare: (app) => {
@@ -198,8 +204,8 @@ beforeEach(() => {
   routeErrors.length = 0;
   csrfValid = true;
   // PostgreSQL returns every column of an inserted row, the defaulted ones as NULL.
-  t.db.respond(/^INSERT INTO "content"\."approval_membership"/i, (p) => [
-    { tenant_id: p[0], membershipid: p[1], chainid: p[2], groupid: p[3], orderno: p[4], created: p[5], siteid: null },
+  t.db.respond(/^INSERT INTO "content"\."approval_membership"/i, (p, sql) => [
+    { membershipid: null, chainid: null, groupid: null, orderno: null, created: null, siteid: null, ...insertedColumns(p, sql) },
   ]);
   t.db.respond(/^INSERT INTO "content"\."approval_chain" /i, (p, sql) => {
     const columns = (/\(([^)]*)\) VALUES/.exec(sql)?.[1] ?? '').split(',').map((column) => column.trim().replace(/"/g, ''));
@@ -424,7 +430,11 @@ describe('cchain.save', () => {
     const res = await call('POST', CHAINS_URL, await adminHeaders(), `chainID=${CHAIN}&siteid=${SITE_A}&name=New&description=D&groupID=${GROUP_1}&groupID=${GROUP_2}&${TOKEN}`);
     expect(res.json()).toEqual({ saved: true, errors: {}, redirect: LIST_REDIRECT });
     expect(consumed).toEqual([expect.objectContaining({ token: 'tok', expires: 'exp', context: CHAIN })]);
-    expect(writes().filter((sql) => /^INSERT INTO "content"\."approval_membership"/i.test(sql))).toHaveLength(2);
+    const memberships = t.db.statements.filter((statement) => /^INSERT INTO "content"\."approval_membership"/i.test(statement.sql));
+    expect(memberships.map(({ params, sql }) => insertedColumns(params, sql)).map((row) => [row.groupid, row.orderno, row.siteid])).toEqual([
+      [GROUP_1, 1, SITE_A],
+      [GROUP_2, 2, SITE_A],
+    ]);
     expect(writes().filter((sql) => /^INSERT INTO "content"\."approval_chain" /i.test(sql))).toHaveLength(1);
   });
 

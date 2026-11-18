@@ -92,9 +92,11 @@ describe.skipIf(!available)('surveys fixture routes', () => {
     return handle.app.withTenant(tenantIdForSite('tenant-a'), (tx) => tx.query(sql.replaceAll('$schema', handle.schema), params));
   }
 
+  /** Injects `call` as the gateway forwards it, with a user token when `roles` is given. */
   async function inject({ method, url, roles, site = 'tenant-a', body, headers = {} }: Call) {
-    const auth: Record<string, string> =
-      roles === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ site, roles, sub: roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID })}`, ...(await gatewayInvocation()) };
+    const user: Record<string, string> =
+      roles === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ site, roles, sub: roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID })}` };
+    const auth = { ...user, ...(await gatewayInvocation()) };
     return app.inject({
       method,
       url,
@@ -242,13 +244,18 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys' + (call.url.includes('/responses') ? '.responses' : ''), error });
     });
 
-    it('answers 401 to a manager token without the gateway invocation credential, creating nothing', async () => {
+    it.each<[string, boolean]>([
+      ['a manager token', true],
+      ['a call with no credential at all', false],
+    ])('answers 401 to %s without the gateway invocation credential, creating nothing', async (_case, withUserToken) => {
       const title = 'created without invocation credential';
-      const token = await mintUserToken({ site: 'tenant-a', roles: [Roles.surveysManager], sub: MANAGER_ID });
+      const user: Record<string, string> = withUserToken
+        ? { authorization: `Bearer ${await mintUserToken({ site: 'tenant-a', roles: [Roles.surveysManager], sub: MANAGER_ID })}` }
+        : {};
       const res = await app.inject({
         method: 'POST',
         url: `${FIXTURE_BASE}${SITE_A}`,
-        headers: { authorization: `Bearer ${token}`, ...CSRF_HEADERS, ...JSON_HEADERS },
+        headers: { ...user, ...CSRF_HEADERS, ...JSON_HEADERS },
         payload: JSON.stringify({ title }),
       });
       expect(res.statusCode).toBe(401);

@@ -49,19 +49,20 @@ const STATE_TEXT: Readonly<Record<ExportJob['state'], string>> = {
   failed: 'Failed',
 };
 
-/** The read-only rows the list renders for `job`: every field it has, as stored, in the reporting column order. */
-const valuesOf = (job: ExportJob): Array<[string, string]> =>
-  (
-    [
-      ['Job', job.job_id],
-      ['Format', job.format],
-      ['State', STATE_TEXT[job.state]],
-      ['Created', job.created],
-      ['Started', job.started_at],
-      ['Finished', job.finished_at],
-      ['Error', job.error],
-    ] as Array<[string, string]>
-  ).filter(([, value]) => value !== '');
+/** The job grid's headers: the reporting columns, then the Download column. */
+const JOB_HEADERS = ['Job', 'Format', 'State', 'Created', 'Started', 'Finished', 'Error', 'Download'];
+
+/** The grid cells of `job` in the reporting column order, its state as badge text, then Download. */
+const valuesOf = (job: ExportJob): string[] => [
+  job.job_id,
+  job.format,
+  STATE_TEXT[job.state],
+  job.created,
+  job.started_at,
+  job.finished_at,
+  job.error,
+  job.state === 'done' ? 'Download' : '',
+];
 
 const DONE_JOBS = exportJobs.filter((job) => job.state === 'done');
 
@@ -107,7 +108,7 @@ function listModel(jobs: readonly ExportJob[]): DomModel {
   return {
     title: '',
     headings: ['Export Jobs'],
-    labels: ['Definition', 'Format', 'As Of', ...jobs.flatMap((job) => valuesOf(job).map(([label]) => label))],
+    labels: ['Definition', 'Format', 'As Of'],
     controls: [
       DEFINITION_CONTROL,
       FORMAT_CONTROL,
@@ -121,7 +122,7 @@ function listModel(jobs: readonly ExportJob[]): DomModel {
       ...done.map(() => ({ text: 'Download', type: 'submit', hasOnclick: false })),
     ],
     links: [],
-    tables: [],
+    tables: jobs.length === 0 ? [] : [{ headers: JOB_HEADERS, rows: jobs.map(valuesOf) }],
     alerts: [],
   };
 }
@@ -283,7 +284,7 @@ describe('reporting/exports', () => {
       expect($('.label').toArray().map((badge) => $(badge).attr('class'))).toEqual(
         ['success', 'success', 'important', 'success', 'info', 'info'].map((tone) => `label label-${tone}`),
       );
-      const downloads = $('.block-content .block-content > form').toArray().map((el) => ({
+      const downloads = $('table.mura-table-grid > tbody > tr > td:last-child > form').toArray().map((el) => ({
         action: $(el).attr('action'),
         method: $(el).attr('method'),
         fields: $(el).find('input').toArray().map((input) => [$(input).attr('name'), $(input).attr('value')]),
@@ -308,8 +309,31 @@ describe('reporting/exports', () => {
         'csrf_token_expires',
       ]);
       expect(body.startsWith('<div class="mura-header"><h1>Export Jobs</h1></div>')).toBe(true);
-      expect($('.block-content > .block-constrain > .block-bordered > .block-content').length).toBe(exportJobs.length);
-      expect($('style, link, script, table, [style]').length).toBe(0);
+      expect($('.mura-actions')).toHaveLength(0);
+      expect($('form[name="form1"] > .form-actions > button.btn.mura-primary').text()).toBe('Queue Export');
+      expect($('style, link, script, [style]').length).toBe(0);
+    });
+
+    it('lists the jobs as one grid after the queue form, its secondary columns hidden on narrow screens', async () => {
+      const body = await renderedBody({ ...LISTED, total: 120 });
+      const $ = cheerio.load(body, null, false);
+      const columns = [
+        'var-width',
+        undefined,
+        undefined,
+        'hidden-xs',
+        'hidden-xs hidden-sm hidden-md',
+        'hidden-xs hidden-sm',
+        'hidden-xs',
+        undefined,
+      ];
+
+      expect($('.block-content .block')).toHaveLength(0);
+      expect($('form[name="form1"] + table.mura-table-grid + ul.pagination')).toHaveLength(1);
+      for (const [index, expected] of columns.entries()) {
+        const cells = $(`table.mura-table-grid tr > :nth-child(${index + 1})`).toArray();
+        expect(cells.map((cell) => $(cell).attr('class'))).toEqual(Array(exportJobs.length + 1).fill(expected));
+      }
     });
 
     it('shows the empty-list message when the tenant has no jobs', async () => {
@@ -365,20 +389,22 @@ describe('reporting/exports', () => {
       const $ = cheerio.load(body, null, false);
 
       expect($('img').length).toBe(0);
-      expect(jobValues(body)[0]?.at(-1)).toEqual(['Error', '<img src=x onerror=alert(1)>']);
+      expect(jobValues(body)[0]?.[6]).toBe('<img src=x onerror=alert(1)>');
     });
   });
 
   describe('labels', () => {
     const fr = rbFor('fr');
     const download = (body: string): string =>
-      cheerio.load(body, null, false)('.block-content .block-content > form button').first().text();
+      cheerio.load(body, null, false)('table.mura-table-grid td > form button').first().text();
+    const header = (body: string, column: number): string | undefined => fragmentModel(body).tables[0]?.headers[column];
 
     it.each<{ slot: string; name: Opt2LabelName; read: (body: string) => string | undefined }>([
       { slot: 'queue form format', name: 'Format', read: (body) => fragmentModel(body).labels[1] },
-      { slot: 'job format', name: 'Format', read: (body) => jobValues(body)[0]?.[1]?.[0] },
-      { slot: 'job state', name: 'State', read: (body) => jobValues(body)[0]?.[2]?.[0] },
-      { slot: 'job created', name: 'Created', read: (body) => jobValues(body)[0]?.[3]?.[0] },
+      { slot: 'job format header', name: 'Format', read: (body) => header(body, 1) },
+      { slot: 'job state header', name: 'State', read: (body) => header(body, 2) },
+      { slot: 'job created header', name: 'Created', read: (body) => header(body, 3) },
+      { slot: 'Download header', name: 'Download', read: (body) => header(body, 7) },
       { slot: 'Download button', name: 'Download', read: download },
       { slot: 'Next link', name: 'Next', read: (body) => fragmentModel(body).links[0]?.text },
     ])('renders the $slot label from the fr bundle', async ({ name, read }) => {

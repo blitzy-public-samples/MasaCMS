@@ -363,6 +363,7 @@ describe.skipIf(!live)('hydration and logout across instances over one PostgreSQ
       ...jar,
       get: async (sessionId) => {
         const row = await jar.get(sessionId);
+        identity.state.ended = true;
         await invalidation.afterTargetLogout(sessionId);
         return row;
       },

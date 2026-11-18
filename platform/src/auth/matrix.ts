@@ -13,6 +13,7 @@ export interface RouteMatrixEntry {
   requires?: string[];
   public?: true;
   edge?: true;
+  invocationOptional?: true;
   siteCheck: boolean;
 }
 
@@ -53,6 +54,7 @@ function toEntry({ method, url, config }: RecordedRoute): RouteMatrixEntry {
     transport: config.transport ?? 'service',
     ...(config.requires === undefined ? { public: true as const } : { requires: [...config.requires] }),
     ...(config.edge === true ? { edge: true as const } : {}),
+    ...(config.invocationOptional === true ? { invocationOptional: true as const } : {}),
     siteCheck: config.siteCheck !== false,
   };
 }

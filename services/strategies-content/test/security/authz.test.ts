@@ -24,7 +24,14 @@ import {
   type RouteMatrixEntry,
   type Transport,
 } from '@opt2/platform/auth';
-import { LEGACY_ERROR_MAP, LEGACY_ERROR_PAGE_HTML, WWW_AUTHENTICATE } from '@opt2/platform/legacy-compat';
+import {
+  LEGACY_ERROR_MAP,
+  LEGACY_ERROR_PAGE_HTML,
+  LegacyFaultError,
+  WWW_AUTHENTICATE,
+  legacyDebuggingEnabled,
+  legacyRuntimeErrorResponse,
+} from '@opt2/platform/legacy-compat';
 import {
   IDENTITY_SERVICE,
   createService,
@@ -65,6 +72,7 @@ import {
   SITE_CHANGED_TOPIC,
 } from '../../src/events/consumers.js';
 import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
+import { esapiEncode } from '../../src/legacy/admin-markup.js';
 import type * as RouteRegistry from '../../src/routes/index.js';
 import { CIRCUIT_ROUTE_REQUIRES, FEED_MANAGER_FLAG_SOURCE, adminDenial, type GatedContentAdminCircuit } from '../../src/routes/v1/access.js';
 import { contentQueues } from '../../src/tasks/port.js';
@@ -447,8 +455,8 @@ interface Family {
   siteScoped: boolean;
   /** WWW-Authenticate of the handler's own refusal when `allow` fails, as legacy's REST credential block sends it. */
   challenge?: string;
-  /** Every url field is a call argument, so the push key's `key` field alone makes the call unrunnable before any credential is read. */
-  strictArguments?: true;
+  /** The route admits a caller without an invocation credential. */
+  invocationOptional?: true;
 }
 
 const ADMIN: readonly Role[] = [Roles.s2, Roles.siteAdmin];
@@ -470,7 +478,7 @@ const PUSH_URLS = [
 const JOB_URLS = ['/internal/v1/jobs/feed-auto-import', '/internal/v1/jobs/publish-scheduled-changesets'];
 
 const FAMILIES: readonly Family[] = [
-  { family: 'health', match: [at('GET', '/healthz')], transport: 'service', declared: PUBLIC_CHECKED, allow: always, siteScoped: false },
+  { family: 'health', match: [at('GET', '/healthz')], transport: 'service', declared: PUBLIC_CHECKED, allow: always, siteScoped: false, invocationOptional: true },
   {
     family: 'JSON API',
     match: ['/_api/json/v1', '/_api/ajax/v1', '/index.cfm/_api/json/v1', '/index.cfm/_api/ajax/v1'].flatMap((lead) =>
@@ -520,7 +528,6 @@ const FAMILIES: readonly Family[] = [
     transport: 'service',
     declared: PUBLIC_LENIENT,
     allow: userTokenOnly,
-    strictArguments: true,
     siteScoped: true,
   },
   {
@@ -762,11 +769,11 @@ function verifiedRoles(subject: Subject): Role[] {
 function expectedOutcome(family: Family, subject: Subject, feedManager = true): Outcome {
   if (family.transport === 'pubsub-push') return subject.presents === 'push-key' ? ALLOWED : AUTH_401;
   if (family.transport === 'cloud-tasks') return subject.presents === 'tasks' ? ALLOWED : AUTH_401;
-  // The service transport verifies a bearer in Authorization as a user token, public routes included.
+  // A tasks token is no invocation credential; where that credential may be absent, it fails verification as a user token.
   if (subject.presents === 'tasks') return AUTH_401;
   const declared = family.declared;
-  if (subject.presents === 'push-key' && 'requires' in declared) return AUTH_401;
-  if (subject.presents === 'push-key' && family.strictArguments === true) return ALLOWED;
+  // The push key is no invocation credential either, which only an invocationOptional route lets be absent.
+  if (subject.presents === 'push-key' && family.invocationOptional !== true) return AUTH_401;
   const roles = verifiedRoles(subject);
   if ('requires' in declared && !hasAnyRole(roles, declared.requires)) {
     return !subject.signedIn && declared.requires.some((role) => !isServiceRole(role)) ? AUTH_401 : AUTH_403;
@@ -1231,8 +1238,17 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
     status: 500,
     matches: (result) => 'key' in result.query && answered(LEGACY_ERROR_PAGE_HTML)(result),
   },
-  // A GET posts no form fields, so the rater's save answers the error page before any credential is read.
-  { routes: [`GET ${RATER_URL}`], status: 500, matches: answered(LEGACY_ERROR_PAGE_HTML) },
+  // A GET posts no form fields, so the rater's save answers onError's page for the missing contentID before any credential is read.
+  {
+    routes: [`GET ${RATER_URL}`],
+    status: 500,
+    matches: answered(
+      legacyRuntimeErrorResponse(new LegacyFaultError('Element CONTENTID is undefined in FORM.'), {
+        debuggingEnabled: legacyDebuggingEnabled(),
+        encodeHtml: (text) => esapiEncode('html', text),
+      }).body,
+    ),
+  },
   // A tenant-b caller's render of tenant-a's file finds no row in its own tenant: legacy's empty 404.
   {
     routes: ['GET /_api/render/:size', 'GET /tasks/render/:size'],
@@ -1333,17 +1349,23 @@ describe('strategies-content authorisation matrix', () => {
       expect(stale).toEqual([]);
     });
 
-    it("declares each route's transport, roles, public flag and site check as its family does", () => {
-      const declared = (entry: Pick<RouteMatrixEntry, 'transport' | 'requires' | 'public' | 'siteCheck'>) => ({
+    it("declares each route's transport, roles, public flag, optional invocation credential and site check as its family does", () => {
+      const declared = (entry: Pick<RouteMatrixEntry, 'transport' | 'requires' | 'public' | 'invocationOptional' | 'siteCheck'>) => ({
         transport: entry.transport,
         ...(entry.requires === undefined ? {} : { requires: [...entry.requires] }),
         ...(entry.public === true ? { public: true } : {}),
+        ...(entry.invocationOptional === true ? { invocationOptional: true } : {}),
         siteCheck: entry.siteCheck,
       });
       const drift = MATRIX.flatMap((entry) => {
         const [family] = familiesOf(entry);
         if (family === undefined) return [];
-        const expected = declared({ transport: family.transport, siteCheck: family.declared.siteCheck, ...('requires' in family.declared ? { requires: [...family.declared.requires] } : { public: true as const }) });
+        const expected = declared({
+          transport: family.transport,
+          siteCheck: family.declared.siteCheck,
+          ...('requires' in family.declared ? { requires: [...family.declared.requires] } : { public: true as const }),
+          ...(family.invocationOptional === true ? { invocationOptional: true as const } : {}),
+        });
         return JSON.stringify(declared(entry)) === JSON.stringify(expected) ? [] : [`${routeKey(entry)}: ${JSON.stringify(declared(entry))} ≠ ${JSON.stringify(expected)}`];
       });
       expect(drift).toEqual([]);
@@ -1641,12 +1663,12 @@ describe('transport separation', () => {
     expect(denialProblems(result, routeKey(entry))).toEqual([]);
   });
 
-  it.each(serviceRoutes.map((entry) => ({ entry, key: routeKey(entry), declared: entry.public === true ? 'answered as anonymous' : 'denied (401 auth)' })))(
+  it.each(serviceRoutes.map((entry) => ({ entry, key: routeKey(entry), declared: entry.invocationOptional === true ? 'answered as anonymous' : 'denied (401 auth)' })))(
     '$key × the push key → $declared',
     async ({ entry }) => {
       const probe = await probeFor(entry, familyOf(entry));
       const pushed = await send(probe, { headers: {}, query: pushQuery() });
-      if (entry.public !== true) {
+      if (entry.invocationOptional !== true) {
         expect(outcomeOf(pushed), describeResult(pushed)).toEqual(AUTH_401);
         expect(denialProblems(pushed, routeKey(entry))).toEqual([]);
         return;

@@ -8,13 +8,14 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { LegacyApiError, isCfUuid } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { StorageObjectNotFoundError, createLocalStorageAdapter, type LocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
 import { tenantDbFromPool, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { createThrowawaySchema, fixedClock, pgAvailable, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
+import { createThrowawaySchema, fixedClock, mintServiceToken, pgAvailable, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   AttachmentColumnTooLongError,
   fixtureFileHeaders,
@@ -131,11 +132,12 @@ describe.skipIf(!available)('finance attachment domain against PostgreSQL', () =
     return inTenant((tx) => uploadAttachment(tx, uploadDeps, file, ACTOR_A));
   }
 
-  /** Status, raw header bytes as hex by lower-cased name, and body of a GET over a real socket. */
-  function fetchRaw(url: string): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
+  /** Status, raw header bytes as hex by lower-cased name, and body of a GET over a real socket, sent with the gateway's invocation credential. */
+  async function fetchRaw(url: string): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
+    const invocation = await mintServiceToken({ caller: 'gateway', audience: 'finance' });
     return new Promise((resolve, reject) => {
       http
-        .get(url, (res) => {
+        .get(url, { headers: { [INVOCATION_HEADER]: `Bearer ${invocation}` } }, (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (chunk: Buffer) => chunks.push(chunk));
           res.on('end', () => {

@@ -36,7 +36,7 @@ import {
 } from '../../src/service-kit/context.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { baseEnvSchema, loadEnv } from '../../src/service-kit/env.js';
-import { testVerifier } from '../../src/testing/index.js';
+import { mintServiceToken, testVerifier } from '../../src/testing/index.js';
 import {
   activeSpanIds,
   flushTracing,
@@ -683,7 +683,8 @@ describe('createService client across one hop', () => {
     ['the inbound X-Request-Id', { 'X-Request-Id': 'r-hop-1' }, 'r-hop-1'],
     ['the id the caller generated', {}, undefined],
   ])('carries %s to the callee', async (_label, headers, inbound) => {
-    const res = await app.inject({ method: 'GET', url: '/hop', headers });
+    const credential = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'people' })}`;
+    const res = await app.inject({ method: 'GET', url: '/hop', headers: { ...headers, [INVOCATION_HEADER]: credential } });
     expect(res.statusCode).toBe(200);
     const { requestId } = res.json<{ requestId: string }>();
     expect(requestId).toEqual(inbound ?? expect.stringMatching(UUID));

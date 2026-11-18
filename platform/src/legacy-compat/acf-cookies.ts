@@ -17,7 +17,8 @@ export function cookieScopeNeverCookie(name: string, value: string, secure: bool
   return `${name}=${value}; ${neverLifetime(now, true)}; Path=/; ${secure ? 'Secure; ' : ''}HttpOnly; SameSite=Lax`;
 }
 
-/** `<cfcookie expires="never" httponly="false">` as ACF writes it; `value` is already URL-encoded. */
-export function cfcookieNeverCookie(name: string, value: string, secure: boolean, now: Date): string {
-  return `${name}=${value}; path=/; ${secure ? 'secure; ' : ''}${neverLifetime(now, false)}`;
+/** `<cfcookie expires="never" httponly=httpOnly domain=domain>` as ACF writes it, a blank domain left out; `value` is already URL-encoded. */
+export function cfcookieNeverCookie(name: string, value: string, secure: boolean, now: Date, httpOnly = false, domain = ''): string {
+  const attributes = `${domain === '' ? '' : `domain=${domain}; `}${secure ? 'secure; ' : ''}${httpOnly ? 'HttpOnly; ' : ''}`;
+  return `${name}=${value}; path=/; ${attributes}${neverLifetime(now, false)}`;
 }

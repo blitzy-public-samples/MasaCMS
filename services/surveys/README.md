@@ -75,7 +75,7 @@ Every route declares `config.opt2.requires` or `config.opt2.public`; anything el
 
 ### Fixture routes
 
-Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answers in the Masa envelope with the method name shown. Transport is `service`. The routes are public on the platform because, as in the fixture, the handler checks the site first, then login, the role group and, on writes, the CSRF token for context `id`, which identity consumes once (`POST /internal/v1/csrf/consume`, called as `service:surveys`). The gateway routes them `legacy` in `v0001` and `target` from `v0002` (groups `grp:surveys.survey`, `grp:surveys.survey_target`, `grp:surveys.survey_response`).
+Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answers in the Masa envelope with the method name shown. Transport is `service`. The routes are public on the platform because, as in the fixture, the handler checks the site first, then login, the role group and, on writes, the CSRF token for context `id`, which identity consumes once (`POST /internal/v1/csrf/consume`, called as `service:surveys`). Public as they are, they still need the caller's invocation credential, which the gateway attaches to every request it forwards, the task callbacks included; a direct call without it gets 401. The gateway routes them `legacy` in `v0001` and `target` from `v0002` (groups `grp:surveys.survey`, `grp:surveys.survey_target`, `grp:surveys.survey_response`).
 
 | Method | Path | Method name | Checked in the handler | Does |
 |---|---|---|---|---|
@@ -119,7 +119,7 @@ Used by the OPT-2 screens at `/opt2/admin/surveys/*`, which `web/` renders. Tran
 | `POST` | `/internal/v1/outbox/sweep` | `cloud-tasks` (queue `surveys-outbox-sweep`, every 60 s) | `service:tasks-invoker` | Creates the next sweep task, then publishes every unpublished outbox row |
 | `POST` | `/internal/v1/events/surveys.programs-sites.site.changed.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Applies `programs-sites.site.changed.v1` to `surveys.tenant_registry` |
 | `POST` | `/internal/v1/task-queues/{queue}/pause`, `/resume`, `/ensure` | `service` | `platform.migration`, `platform.operator` | Controls `surveys-outbox-sweep`, the one queue this service creates tasks on |
-| `GET` | `/healthz` | `service` | public | Liveness probe |
+| `GET` | `/healthz` | `service` | public, invocation credential optional | Liveness probe |
 
 ## Events
 

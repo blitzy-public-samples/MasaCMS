@@ -7,13 +7,16 @@ import {
   alertBox,
   block,
   controlGroup,
+  detailList,
   formActions,
   gridTable,
   hiddenField,
   hiddenFields,
   pageHeader,
   postForm,
+  rowActionsMenu,
   select,
+  submitButton,
   textarea,
   textInput,
   valueRows,
@@ -25,7 +28,7 @@ type Case = [string, SafeHtml, string];
 
 const CSRF = raw('<input type="hidden" name="csrf_token" value="t">');
 const CSRF_MARKUP = '<input type="hidden" name="csrf_token" value="t">';
-const SUBMIT = '<div class="mura-actions"><div class="form-actions"><button class="btn mura-primary" type="submit">Save</button>';
+const SUBMIT = '<div class="form-actions"><button class="btn mura-primary" type="submit">Save</button>';
 
 const ROWS: GridCell[][] = [
   ['A&B', 3],
@@ -75,6 +78,7 @@ describe('markup', () => {
         '<tbody><tr><td class="var-width">x</td></tr></tbody></table>',
     ],
     ['the gridTable empty message', (label) => gridTable(['N'], [], label), (l) => `<div class="help-block-empty">${l}</div>`],
+    ['the detailList empty message', (label) => detailList([], label), (l) => `<div class="help-block-empty">${l}</div>`],
     [
       'a controlGroup label',
       (label) => controlGroup(label, raw('<input>')),
@@ -93,14 +97,19 @@ describe('markup', () => {
     [
       'a formActions button',
       (label) => formActions([{ label }]),
-      (l) => `<div class="mura-actions"><div class="form-actions"><button class="btn" type="submit">${l}</button></div></div>`,
+      (l) => `<div class="form-actions"><button class="btn" type="submit">${l}</button></div>`,
+    ],
+    [
+      'a submitButton label',
+      (label) => submitButton({ label }),
+      (l) => `<button class="btn" type="submit">${l}</button>`,
     ],
     [
       'the postForm submit label',
       (label) => postForm('a', raw(''), label),
       (l) =>
-        '<form novalidate="novalidate" action="a" method="post" name="form1"><div class="mura-actions"><div class="form-actions">' +
-        `<button class="btn mura-primary" type="submit">${l}</button></div></div></form>`,
+        '<form novalidate="novalidate" action="a" method="post" name="form1"><div class="form-actions">' +
+        `<button class="btn mura-primary" type="submit">${l}</button></div></form>`,
     ],
     [
       'the actionButton label',
@@ -143,6 +152,55 @@ describe('markup', () => {
       ['column 0 variable-width by default', gridTable(['Name', 'Count'], ROWS, 'none'), grid(0)],
       ['column 1 variable-width', gridTable(['Name', 'Count'], ROWS, 'none', { varWidthColumn: 1 }), grid(1)],
       ['no column variable-width out of range', gridTable(['Name', 'Count'], ROWS, 'none', { varWidthColumn: 5 }), grid(5)],
+    ])('renders %s', (_, markup, expected) => {
+      expect(toString(markup)).toBe(expected);
+    });
+
+    it.each<[string, { varWidthColumn?: number; columnClasses?: ReadonlyArray<string | undefined> }, readonly string[]]>([
+      ['no column classes', { columnClasses: [] }, [' class="var-width"', '']],
+      ['a class on a fixed-width column', { columnClasses: [undefined, 'hidden-xs'] }, [' class="var-width"', ' class="hidden-xs"']],
+      ['classes after var-width', { columnClasses: ['hidden-xs hidden-sm'] }, [' class="var-width hidden-xs hidden-sm"', '']],
+      ['an empty class as none', { varWidthColumn: 1, columnClasses: ['', ''] }, ['', ' class="var-width"']],
+      ['an encoded class value', { varWidthColumn: 5, columnClasses: ['a"b'] }, [' class="a&quot;b"', '']],
+      ['classes past the last column ignored', { columnClasses: [undefined, undefined, 'hidden-xs'] }, [' class="var-width"', '']],
+    ])('applies %s to the header and every cell of each column', (_, opts, attrs) => {
+      const head = ['Name', 'Count'].map((header, c) => `<th${attrs[c]}>${header}</th>`).join('');
+      const body = CELLS.map((row) => `<tr>${row.map((cell, c) => `<td${attrs[c]}>${cell}</td>`).join('')}</tr>`).join('');
+
+      expect(toString(gridTable(['Name', 'Count'], ROWS, 'none', opts))).toBe(
+        `<table class="mura-table-grid"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
+      );
+    });
+  });
+
+  describe('rowActionsMenu', () => {
+    const TOGGLE =
+      '<a class="show-actions" href="javascript:;" onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>';
+
+    it.each<Case>([
+      [
+        'the toggle and a hidden menu of icon links, labels and hrefs encoded',
+        rowActionsMenu([
+          { label: 'Edit', href: 'e?id=1', icon: 'mi-pencil' },
+          { label: raw('<b>A</b>'), href: 'a', icon: 'mi-calendar' },
+          { label: 'A<B', href: 'b', icon: 'x"y' },
+        ]),
+        `${TOGGLE}<div class="actions-menu hide"><ul class="actions-list">` +
+          '<li><a href="e&#x3f;id&#x3d;1"><i class="mi-pencil"></i>Edit</a></li>' +
+          '<li><a href="a"><i class="mi-calendar"></i><b>A</b></a></li>' +
+          '<li><a href="b"><i class="x&quot;y"></i>A&lt;B</a></li></ul></div>',
+      ],
+      ['the toggle and an empty menu for no actions', rowActionsMenu([]), `${TOGGLE}<div class="actions-menu hide"><ul class="actions-list"></ul></div>`],
+    ])('renders %s', (_, markup, expected) => {
+      expect(toString(markup)).toBe(expected);
+    });
+  });
+
+  describe('detailList', () => {
+    it.each<Case>([
+      ['the empty message for no items', detailList([], 'None <yet>'), '<div class="help-block-empty">None &lt;yet&gt;</div>'],
+      ['one item without a rule', detailList([raw('<p>a</p>')], 'none'), '<p>a</p>'],
+      ['a rule between items', detailList([raw('<p>a</p>'), raw('<p>b</p>'), raw('<p>c</p>')], 'none'), '<p>a</p><hr><p>b</p><hr><p>c</p>'],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
     });
@@ -320,11 +378,29 @@ describe('markup', () => {
           CSRF,
         ),
         `${SUBMIT}<button class="btn" type="submit" name="action" value="reject">Reject</button>` +
-          `<button class="btn" type="submit">Back</button>${CSRF_MARKUP}</div></div>`,
+          `<button class="btn" type="submit">Back</button>${CSRF_MARKUP}</div>`,
       ],
-      ['an empty bar for no buttons', formActions([]), '<div class="mura-actions"><div class="form-actions"></div></div>'],
+      ['an empty row for no buttons', formActions([]), '<div class="form-actions"></div>'],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
+    });
+
+    it.each<[string, SafeHtml]>([
+      ['formActions', formActions([{ label: 'Save', primary: true }], CSRF)],
+      ['postForm', postForm('save', raw('<p>f</p>'), 'Save', { hidden: CSRF })],
+    ])('keeps the %s buttons in the page flow, outside any fixed .mura-actions bar', (_, markup) => {
+      const $ = cheerio.load(toString(markup), null, false);
+
+      expect($('.mura-actions')).toHaveLength(0);
+      expect($('.form-actions > button.btn.mura-primary').text()).toBe('Save');
+    });
+  });
+
+  describe('submitButton', () => {
+    it('renders a primary named submit posting to its own action', () => {
+      expect(toString(submitButton({ label: 'A&B', primary: true, name: 'n', value: 'v', formAction: 'go?x=1' }))).toBe(
+        '<button class="btn mura-primary" type="submit" name="n" value="v" formaction="go&#x3f;x&#x3d;1">A&amp;B</button>',
+      );
     });
   });
 
@@ -333,18 +409,18 @@ describe('markup', () => {
       [
         'a form1 POST with one primary submit',
         postForm('a/b?x=1', raw('<p>f</p>'), 'Save'),
-        `<form novalidate="novalidate" action="a&#x2f;b&#x3f;x&#x3d;1" method="post" name="form1"><p>f</p>${SUBMIT}</div></div></form>`,
+        `<form novalidate="novalidate" action="a&#x2f;b&#x3f;x&#x3d;1" method="post" name="form1"><p>f</p>${SUBMIT}</div></form>`,
       ],
       [
         'a multipart form carrying hidden fields',
         postForm('save', raw('<p>f</p>'), 'Save', { multipart: true, hidden: CSRF }),
         '<form novalidate="novalidate" action="save" method="post" enctype="multipart/form-data" name="form1"><p>f</p>' +
-          `${SUBMIT}${CSRF_MARKUP}</div></div></form>`,
+          `${SUBMIT}${CSRF_MARKUP}</div></form>`,
       ],
       [
         'no enctype when multipart is false',
         postForm('save', raw(''), 'Save', { multipart: false }),
-        `<form novalidate="novalidate" action="save" method="post" name="form1">${SUBMIT}</div></div></form>`,
+        `<form novalidate="novalidate" action="save" method="post" name="form1">${SUBMIT}</div></form>`,
       ],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);

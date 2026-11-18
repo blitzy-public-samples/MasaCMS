@@ -140,7 +140,7 @@ A caller holding only `m:008` on the group routes also needs `m:000` on the site
 |---|---|---|---|
 | `POST /internal/v1/tokens` | service | `service:gateway` | Mints the site-scoped user token of a session |
 | `POST /internal/v1/authenticate` | service | `service:gateway` | Sessionless REST credential exchange for `/_api/rest/v1`: applies `Basic`, `Bearer` or `access_token` and OAuth client credentials by legacy rules in a new request session, or returns legacy's exact answer. It reads no session cookie; browser cookies are resolved by [`gateway/src/session/resolve.ts`](../../gateway/src/session/resolve.ts) and legacy sessions adopted through `POST /internal/v1/sessions:adopt` |
-| `GET /.well-known/jwks.json` | service | public | The local signer's public key (`OPT2_JWKS_URL`) |
+| `GET /.well-known/jwks.json` | service | public, invocation credential optional | The local signer's public key (`OPT2_JWKS_URL`) |
 | `POST /internal/v1/sessions:adopt` | service | `service:gateway` | Creates or updates the identity session of a legacy session from the bridge's `op=describe` |
 | `GET /internal/v1/sessions/{sid}/state`, `/admin-site`, `/admin-state`, `/snapshot` | service | `service:gateway` | Active flag and epoch; the selected admin site; the stored admin session values for `op=carry`; the login snapshot, CSRF secret and used tokens for `op=hydrate` |
 | `POST /internal/v1/sessions/{sid}:end` | service | `service:gateway` | Ends a session and bumps its epoch |
@@ -153,7 +153,7 @@ A caller holding only `m:008` on the group routes also needs `m:000` on the site
 | `POST /internal/v1/events/identity.programs-sites.site.changed.v1`, `POST /internal/v1/events/identity.people.person.changed.v1` | Pub/Sub push | `service:pubsub-invoker` | Event deliveries ([Events](#events)) |
 | `POST /internal/v1/outbox/sweep` | Cloud Tasks | `service:tasks-invoker` | The `identity-outbox-sweep` chain: creates the next task, then publishes unpublished outbox rows |
 | `POST /internal/v1/task-queues/{queue}/pause`, `resume`, `ensure` | service | `platform.migration`, `platform.operator` | Queue control for the queues identity creates tasks on |
-| `GET /healthz` | service | public | Liveness |
+| `GET /healthz` | service | public, invocation credential optional | Liveness |
 
 ## Not built here
 

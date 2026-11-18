@@ -33,7 +33,7 @@ import {
   siteRow,
   type FixtureTableName,
 } from './helpers/fixtures.js';
-import { PG_AVAILABLE, PG_OWNER_ROWS_PATH, PG_SKIP_REASON, startPgOwner, type HeldTransaction, type PgOwner } from './helpers/pg-owner.js';
+import { PG_AVAILABLE, PG_OWNER_ROWS_PATH, PG_SKIP_REASON, fetchPgOwnerRows, startPgOwner, type HeldTransaction, type PgOwner } from './helpers/pg-owner.js';
 
 const SYNC_SQL = readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
 
@@ -83,9 +83,9 @@ async function targetEncodings(owner: PgOwner, unit: string): Promise<string[]> 
 
 /** Target rows of `table` for tenant-a, read back through the owner. */
 async function storedRows(owner: PgOwner, table: string): Promise<RepositoryRow[]> {
-  const response = await fetch(`${owner.url}${PG_OWNER_ROWS_PATH}/${table}?tenantId=${TENANT_A.tenantId}`);
+  const response = await fetchPgOwnerRows<{ rows: RepositoryRow[] }>(owner.owner, `${owner.url}${PG_OWNER_ROWS_PATH}/${table}?tenantId=${TENANT_A.tenantId}`);
   expect(response.status).toBe(200);
-  return ((await response.json()) as { rows: RepositoryRow[] }).rows;
+  return response.body.rows;
 }
 
 /** `(xid, seq)` of the table's target changelog rows in seq order. */

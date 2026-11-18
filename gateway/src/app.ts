@@ -1,7 +1,7 @@
 // Composition root of the gateway: service-kit plus the cut-over, session, admin and dispatcher modules; never listens.
 import { randomUUID } from 'node:crypto';
 import replyFrom from '@fastify/reply-from';
-import { LEGACY_REQUEST_HEAD_LIMIT_BYTES } from '@opt2/platform/legacy-compat';
+import { LEGACY_REQUEST_HEAD_LIMIT_BYTES, cfIsBoolean, cfToBoolean } from '@opt2/platform/legacy-compat';
 import {
   LEGACY_POST_LIMIT_BYTES,
   baseEnvSchema,
@@ -70,10 +70,16 @@ function isSettingExpression(value: string): boolean {
   return (value.startsWith('${') && value.endsWith('}')) || (value.startsWith('{{') && value.endsWith('}}'));
 }
 
+/** A Masa setting's value, unset when it is an expression. */
+function literalSetting(value: unknown): unknown {
+  return typeof value === 'string' && !isSettingExpression(value) ? value : undefined;
+}
+
 /**
  * Base variables plus LEGACY_ORIGIN, OPT2_CUTOVER_DIR, OPT2_BRIDGE_HMAC_KEY, Masa's reload key, `appreload` when blank
- * or unset, Masa's session timeout in minutes, read as identity reads it: unset or an expression as unset, and Masa's
- * request timeout in seconds, 1000 when blank or unset.
+ * or unset, Masa's session timeout in minutes, read as identity reads it: unset or an expression as unset, Masa's
+ * request timeout in seconds, 1000 when blank or unset, and Masa's `secureCookies` and `cookieDomain`, read as web
+ * reads them: a CFML boolean, else false, and the domain, `''` when unset or an expression.
  */
 const gatewayVariables = baseEnvSchema.extend({
   LEGACY_ORIGIN: envUrl(),
@@ -97,6 +103,10 @@ const gatewayVariables = baseEnvSchema.extend({
     )
     .optional()
     .transform((value) => (value === undefined || value.trim() === '' ? DEFAULT_REQUEST_TIMEOUT_SECONDS : Number(value))),
+  MURA_SECURECOOKIES: z
+    .preprocess(literalSetting, z.string().optional())
+    .transform((value) => value !== undefined && cfIsBoolean(value.trim()) && cfToBoolean(value.trim())),
+  MURA_COOKIEDOMAIN: z.preprocess(literalSetting, z.string().optional()).transform((value) => value ?? ''),
 });
 
 /** Gateway variables requiring its own name, its database and each callee's URL: the required services, the stub locally, and migration. */
@@ -280,6 +290,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     auth,
     relay,
     legacyOrigin,
+    cookieSettings: { secure: env.MURA_SECURECOOKIES, domain: env.MURA_COOKIEDOMAIN },
     clock,
   };
   // The edge's one parser keeps every body a raw Buffer, so legacy and services receive the request bytes unchanged.

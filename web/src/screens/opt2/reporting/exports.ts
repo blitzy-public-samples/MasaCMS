@@ -8,6 +8,7 @@ import {
   actionButton,
   block,
   controlGroup,
+  gridTable,
   opt2ActionUrl,
   opt2Gate,
   opt2Label,
@@ -18,12 +19,11 @@ import {
   select,
   stateBadgeOf,
   textInput,
-  valueRows,
+  type GridCell,
   type Label,
   type Opt2Back,
   type SelectOption,
   type StateDisplay,
-  type ValueRow,
 } from '../shared';
 
 /** An export job as reporting lists it. */
@@ -125,32 +125,56 @@ export async function loadExports(ctx: ScreenContext): Promise<ExportsData> {
   return { jobs: data, total, page, definitions };
 }
 
-/** The labelled values of `job`, without the start, finish and error a job does not have yet. */
-function jobValues(ctx: ScreenContext, job: ExportJob): ValueRow[] {
-  const values: ValueRow[] = [
-    ['Job', job.job_id],
-    [opt2Label(ctx, 'Format'), job.format],
-    [opt2Label(ctx, 'State'), stateBadgeOf(ctx, EXPORT_STATES, job.state)],
-    [opt2Label(ctx, 'Created'), job.created],
-    ['Started', job.started_at],
-    ['Finished', job.finished_at],
-    ['Error', job.error],
+/**
+ * Classes of the job grid's columns: the timestamps and error hide on narrow screens, as legacy lists do; the start
+ * also below 1200 px, where eight nowrap columns overflow the content beside the sidebar.
+ */
+const JOB_COLUMN_CLASSES: ReadonlyArray<string | undefined> = [
+  undefined,
+  undefined,
+  undefined,
+  'hidden-xs',
+  'hidden-xs hidden-sm hidden-md',
+  'hidden-xs hidden-sm',
+  'hidden-xs',
+  undefined,
+];
+
+/** The job grid's headers in the reporting column order, then the Download column's. */
+function jobHeaders(ctx: ScreenContext): Label[] {
+  return [
+    'Job',
+    opt2Label(ctx, 'Format'),
+    opt2Label(ctx, 'State'),
+    opt2Label(ctx, 'Created'),
+    'Started',
+    'Finished',
+    'Error',
+    opt2Label(ctx, 'Download'),
   ];
-  return values.filter(([, value]) => value !== '');
 }
 
-/** `job` as read-only rows in a block of its own, then its Download form when done; a grid row would overflow. */
-function jobBlock(ctx: ScreenContext, job: ExportJob, downloadUrl: string): SafeHtml {
+/** The grid row of `job`: values as stored, the state as its badge, then its Download form when done. */
+function jobRow(ctx: ScreenContext, job: ExportJob, downloadUrl: string): GridCell[] {
   // Not an inline signed link: signed URLs expire after 900 s, so each click has the download action fetch a fresh one.
   const download =
     job.state === 'done' ? actionButton(opt2Label(ctx, 'Download'), downloadUrl, { jobId: job.job_id }) : null;
-  return block(html`${valueRows(jobValues(ctx, job))}${download}`);
+  return [
+    job.job_id,
+    job.format,
+    stateBadgeOf(ctx, EXPORT_STATES, job.state),
+    job.created,
+    job.started_at,
+    job.finished_at,
+    job.error,
+    download,
+  ];
 }
 
-/** Every job in the order reporting lists them, or the empty-list message. */
-function jobBlocks(ctx: ScreenContext, jobs: readonly ExportJob[], downloadUrl: string): SafeHtml {
-  if (jobs.length === 0) return html`<div class="help-block-empty">${EMPTY_MESSAGE}</div>`;
-  return html`${jobs.map((job) => jobBlock(ctx, job, downloadUrl))}`;
+/** Every job in the order reporting lists them, one grid row each, or the empty-list message. */
+function jobGrid(ctx: ScreenContext, jobs: readonly ExportJob[], downloadUrl: string): SafeHtml {
+  const rows = jobs.map((job) => jobRow(ctx, job, downloadUrl));
+  return gridTable(jobHeaders(ctx), rows, EMPTY_MESSAGE, { columnClasses: JOB_COLUMN_CLASSES });
 }
 
 /** Previous and Next links around `data.page`; nothing when every job fits on it. */
@@ -176,7 +200,7 @@ function queueForm(ctx: ScreenContext, posted: QueuePosted, definitions: readonl
 /** The export job list body: header, any alert, the queue form, then the jobs with their state and downloads. */
 export function exportsBody(ctx: ScreenContext, data: ExportsData, opts: ExportsBodyOptions = {}): SafeHtml {
   const downloadUrl = actionUrl(ctx, 'download');
-  const jobs = jobBlocks(ctx, data.jobs, downloadUrl);
+  const jobs = jobGrid(ctx, data.jobs, downloadUrl);
   return html`${pageHeader('Export Jobs')}${opts.alert}${block(
     html`${queueForm(ctx, opts.posted ?? EMPTY_POSTED, data.definitions)}${jobs}${pagination(ctx, data)}`,
   )}`;

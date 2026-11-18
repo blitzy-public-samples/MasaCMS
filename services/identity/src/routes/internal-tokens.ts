@@ -21,7 +21,8 @@ export type TokenRouteDeps = {
 // A minted token carries every role of its session, so only the gateway, which holds the client's session, may mint one.
 const GATEWAY_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('gateway')]) });
 
-const PUBLIC_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true });
+// Every verifier's key-set client fetches it without an invocation credential.
+const JWKS_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true, invocationOptional: true });
 
 /** Legacy's `siteid` fallback [legacy: core/mura/content/contentServer.cfc:610-622]. */
 const DEFAULT_SITE_ID = 'default';
@@ -130,5 +131,5 @@ export async function registerTokenRoutes(app: FastifyInstance, deps: TokenRoute
     },
   );
 
-  app.get<{ Reply: Jwks }>('/.well-known/jwks.json', { config: { opt2: PUBLIC_AUTH } }, async () => tokens.jwks());
+  app.get<{ Reply: Jwks }>('/.well-known/jwks.json', { config: { opt2: JWKS_AUTH } }, async () => tokens.jwks());
 }

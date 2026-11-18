@@ -20,7 +20,12 @@ export type SelectOption = { value: string; label: Label };
 /** A submit button; `formAction` sends the form to that URL instead of the form's own action. */
 export type FormButton = { label: Label; primary?: boolean; name?: string; value?: string; formAction?: string };
 
+/** A row action: a link with its legacy `mi-*` icon class. */
+export type RowAction = { label: Label; href: string; icon: string };
+
 const VAR_WIDTH = html` class="var-width"`;
+
+const SHOW_ACTIONS = html`<a class="show-actions" href="javascript:;" onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>`;
 
 const ALERT_CLASS: Readonly<Record<AlertKind, SafeHtml>> = {
   error: html` class="alert alert-error"`,
@@ -50,21 +55,38 @@ export function block(content: SafeHtml): SafeHtml {
 /**
  * Grid table of `rows` under `headers`, or the empty-list message when there are no rows.
  * @param opts.varWidthColumn zero-based column whose header and cells take the variable width; default 0.
+ * @param opts.columnClasses classes of each column's header and cells by column index, after `var-width`, such as
+ *   legacy `hidden-xs`; `undefined` or `''` adds none.
  */
 export function gridTable(
   headers: readonly Label[],
   rows: ReadonlyArray<readonly GridCell[]>,
   emptyMessage: Label,
-  opts: { varWidthColumn?: number } = {},
+  opts: { varWidthColumn?: number; columnClasses?: ReadonlyArray<string | undefined> } = {},
 ): SafeHtml {
   if (rows.length === 0) return html`<div class="help-block-empty">${emptyMessage}</div>`;
   const varWidthColumn = opts.varWidthColumn ?? 0;
-  const widthOf = (column: number): SafeHtml | null => (column === varWidthColumn ? VAR_WIDTH : null);
-  const head = headers.map((header, column) => html`<th${widthOf(column)}>${header}</th>`);
+  const classOf = (column: number): SafeHtml | null => {
+    const extra = opts.columnClasses?.[column] || undefined;
+    if (column !== varWidthColumn) return extra === undefined ? null : html` class="${extra}"`;
+    return extra === undefined ? VAR_WIDTH : html` class="var-width ${extra}"`;
+  };
+  const head = headers.map((header, column) => html`<th${classOf(column)}>${header}</th>`);
   const body = rows.map(
-    (row) => html`<tr>${row.map((cell, column) => html`<td${widthOf(column)}>${cell}</td>`)}</tr>`,
+    (row) => html`<tr>${row.map((cell, column) => html`<td${classOf(column)}>${cell}</td>`)}</tr>`,
   );
   return html`<table class="mura-table-grid"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+/**
+ * Legacy ⋮ row-actions cell content: the toggle legacy `showTableControls` opens and the hidden menu of `actions`.
+ * Its grid column takes class `actions`, which that script looks for.
+ */
+export function rowActionsMenu(actions: readonly RowAction[]): SafeHtml {
+  const items = actions.map(
+    (action) => html`<li><a${attr('href', action.href)}><i class="${action.icon}"></i>${action.label}</a></li>`,
+  );
+  return html`${SHOW_ACTIONS}<div class="actions-menu hide"><ul class="actions-list">${items}</ul></div>`;
 }
 
 /** Alert box of the given kind. */
@@ -90,6 +112,11 @@ export function controlGroup(label: Label, control: SafeHtml, controlId?: string
 /** Read-only label and value rows, as legacy edit views show stored values, each value on a line of its own. */
 export function valueRows(rows: readonly ValueRow[]): SafeHtml {
   return html`${rows.map(([label, value]) => controlGroup(label, html`<div>${value}</div>`))}`;
+}
+
+/** `items` in order with a rule between each, or the empty-list message when there are none. */
+export function detailList(items: readonly SafeHtml[], emptyMessage: Label): SafeHtml {
+  return items.length === 0 ? html`<div class="help-block-empty">${emptyMessage}</div>` : join(items, html`<hr>`);
 }
 
 /** Single-line input with id `opts.id`, default `name`; a `file` input carries no value. */
@@ -146,16 +173,20 @@ export function hiddenFields(values: Readonly<Record<string, string>>): SafeHtml
   return join(Object.entries(values).map(([name, value]) => hiddenField(name, value)));
 }
 
-/** Form action bar of submit buttons followed by `hidden` fields. */
+/** One submit button: `btn`, or `btn mura-primary` when `button.primary`. */
+export function submitButton(button: FormButton): SafeHtml {
+  return html`<button${button.primary === true ? PRIMARY_BUTTON : BUTTON} type="submit"${attr('name', button.name)}${attr(
+    'value',
+    button.value,
+  )}${attr('formaction', button.formAction)}>${button.label}</button>`;
+}
+
+/**
+ * In-flow form action row of submit buttons followed by `hidden` fields; not a `.mura-actions` bar, which legacy
+ * styles pin over the bottom of the page.
+ */
 export function formActions(buttons: readonly FormButton[], hidden?: SafeHtml): SafeHtml {
-  const items = buttons.map(
-    (button) =>
-      html`<button${button.primary === true ? PRIMARY_BUTTON : BUTTON} type="submit"${attr('name', button.name)}${attr(
-        'value',
-        button.value,
-      )}${attr('formaction', button.formAction)}>${button.label}</button>`,
-  );
-  return html`<div class="mura-actions"><div class="form-actions">${items}${hidden}</div></div>`;
+  return html`<div class="form-actions">${buttons.map(submitButton)}${hidden}</div>`;
 }
 
 /** POST form of `fields` with one primary submit button; `opts.hidden` carries CSRF fields and ids. */

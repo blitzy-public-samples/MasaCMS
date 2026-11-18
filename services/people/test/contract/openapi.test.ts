@@ -279,6 +279,8 @@ async function asTasksInvoker(): Promise<Headers> {
 
 const MIGRATION = asService('migration', ['platform.migration']);
 const OPERATOR = asService('operator', ['platform.operator']);
+/** An anonymous visitor's request as the gateway forwards it: the gateway's invocation credential alone. */
+const VISITOR = asService('gateway');
 
 function send(method: HttpMethod, url: string, credentials?: () => Promise<Headers>, body?: string | Record<string, unknown>): () => Promise<Request> {
   return async () => ({
@@ -417,7 +419,7 @@ const GROUP_FAVORITE = 'AB5C0E11-0B6A-4D2C-9F0E1D2C3B4A5968';
 const FAVORITE_SAVE = `userID=${SYSTEM_USER}&siteid=${SITE_A}&favoriteName=Home&favoriteLocation=${HOME_CONTENT}&favoriteType=Page`;
 const FAVORITE_RSS_DELETE = `userID=${SYSTEM_USER}&siteID=${SITE_A}`;
 const FAVORITE_SAVED = /^\{"lid":"([0-9A-F]{32})","favoriteid":"([0-9A-F-]{35})","link":"<a href=\\"\\" onClick=\\"return deleteFavorite\(\\'\2\\', \\'favorite\1\\'\);\\" title=\\"remove from favorites\\" class=\\"remove\\"><\/a> <a href=\\'\/\\'>Home<\/a>"\}$/;
-const INVALID_CREDENTIAL = (): Promise<Headers> => Promise.resolve({ authorization: 'Bearer not-a-token' });
+const INVALID_CREDENTIAL = async (): Promise<Headers> => ({ ...(await VISITOR()), authorization: 'Bearer not-a-token' });
 
 /** Answers strategies-content's content-link lookup with `href` for each listed id, or with HTTP `status` and no body. */
 function contentLinks(answer: { href: string } | { status: number }): (ctx: TestApp) => void {
@@ -462,7 +464,7 @@ function favoriteCases(): Record<string, Case[]> {
     cases[`favoritesSave${verbName(verb)}`] = [
       {
         name: `${verb} saves the person's favorite in the site tenant and answers ${answers('its id and link')}`,
-        inject: send(verb, `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`),
+        inject: send(verb, `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`, VISITOR),
         setup: contentLinks({ href: '/' }),
         status: 200,
         verify: (answer, ctx) => {
@@ -476,7 +478,7 @@ function favoriteCases(): Record<string, Case[]> {
     cases[`favoritesDelete${verbName(verb)}`] = [
       {
         name: `${verb} deletes the stored favorite and answers ${answers('the removal notice')}`,
-        inject: send(verb, `${FAVORITES}/deleteFavorite.cfm?favoriteID=${SEEDED_FAVORITE.toLowerCase()}`),
+        inject: send(verb, `${FAVORITES}/deleteFavorite.cfm?favoriteID=${SEEDED_FAVORITE.toLowerCase()}`, VISITOR),
         status: 200,
         verify: (answer, ctx) => {
           answered(answer, () => {
@@ -489,7 +491,7 @@ function favoriteCases(): Record<string, Case[]> {
     cases[`favoritesDeleteRss${verbName(verb)}`] = [
       {
         name: `${verb} deletes the person's RSS favorites of the site and answers ${answers('no text')}`,
-        inject: send(verb, `${FAVORITES}/deleteRSSFavorite.cfm?${FAVORITE_RSS_DELETE}`),
+        inject: send(verb, `${FAVORITES}/deleteRSSFavorite.cfm?${FAVORITE_RSS_DELETE}`, VISITOR),
         status: 200,
         verify: (answer) => {
           answered(answer, () => {
@@ -502,7 +504,7 @@ function favoriteCases(): Record<string, Case[]> {
   cases.favoritesSaveGet?.push(
     {
       name: 'answers the error page for a missing favoriteType, saving nothing',
-      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace('&favoriteType=Page', '')}`),
+      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace('&favoriteType=Page', '')}`, VISITOR),
       status: 500,
       verify: (answer, ctx) => {
         errorPage(answer);
@@ -511,14 +513,14 @@ function favoriteCases(): Record<string, Case[]> {
     },
     {
       name: 'answers the legacy 503 when strategies-content gives no content link, saving nothing',
-      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`),
+      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`, VISITOR),
       setup: contentLinks({ status: 503 }),
       status: 503,
       verify: unavailablePage,
     },
     {
       name: "answers the legacy 503 for a group's userID, whose favorites are identity's, saving nothing",
-      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace(SYSTEM_USER, String(UMBRELLA_MEMBERS?.group_id))}`),
+      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace(SYSTEM_USER, String(UMBRELLA_MEMBERS?.group_id))}`, VISITOR),
       setup: contentLinks({ href: '/' }),
       status: 503,
       verify: unavailablePage,
@@ -527,7 +529,7 @@ function favoriteCases(): Record<string, Case[]> {
   );
   cases.favoritesSaveHead?.push({
     name: "answers the error page's status and headers with no body for a missing favoriteType, saving nothing",
-    inject: send('HEAD', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace('&favoriteType=Page', '')}`),
+    inject: send('HEAD', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace('&favoriteType=Page', '')}`, VISITOR),
     status: 500,
     verify: ({ res, body }, ctx) => {
       expect([res.statusMessage, res.headers['content-type'], body]).toEqual(['An Error Occurred', 'text/html;charset=UTF-8', undefined]);
@@ -535,10 +537,10 @@ function favoriteCases(): Record<string, Case[]> {
     },
   });
   cases.favoritesDeleteGet?.push(
-    { name: 'answers the error page without a favoriteID url field', inject: send('GET', `${FAVORITES}/deleteFavorite.cfm`), status: 500, verify: errorPage },
+    { name: 'answers the error page without a favoriteID url field', inject: send('GET', `${FAVORITES}/deleteFavorite.cfm`, VISITOR), status: 500, verify: errorPage },
     {
       name: 'answers the removal notice for an id no favorite holds, deleting nothing',
-      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${HOME_CONTENT}`),
+      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${HOME_CONTENT}`, VISITOR),
       status: 200,
       verify: ({ body }, ctx) => {
         expect(body).toBe('Your favorite has been removed.');
@@ -547,7 +549,7 @@ function favoriteCases(): Record<string, Case[]> {
     },
     {
       name: "answers the legacy 503 for the id of a group's favorite, which identity's lookupGroupFavorites finds, deleting nothing",
-      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${GROUP_FAVORITE}`),
+      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${GROUP_FAVORITE}`, VISITOR),
       setup: (ctx) => {
         ctx.identity.seedGroupFavorites(GROUP_FAVORITE);
       },
@@ -566,10 +568,10 @@ function favoriteCases(): Record<string, Case[]> {
     },
   );
   cases.favoritesDeleteRssGet?.push(
-    { name: 'answers the error page without a siteID url field', inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?userID=${SYSTEM_USER}`), status: 500, verify: errorPage },
+    { name: 'answers the error page without a siteID url field', inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?userID=${SYSTEM_USER}`, VISITOR), status: 500, verify: errorPage },
     {
       name: 'answers the legacy 503 for a site the registry does not hold, deleting nothing',
-      inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?userID=${SYSTEM_USER}&siteID=nosuchsite`),
+      inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?userID=${SYSTEM_USER}&siteID=nosuchsite`, VISITOR),
       status: 503,
       verify: unavailablePage,
     },
@@ -710,7 +712,7 @@ const CASES: Record<string, Case[]> = {
     },
     {
       name: 'refuses an anonymous REST user read with 401 and its challenge',
-      inject: send('GET', jsonApi('rest', `/${SITE_A}/user/${SYSTEM_USER}`)),
+      inject: send('GET', jsonApi('rest', `/${SITE_A}/user/${SYSTEM_USER}`), VISITOR),
       status: 401,
       verify: (answer) => {
         NO_PERMISSION(answer);
@@ -799,7 +801,7 @@ const CASES: Record<string, Case[]> = {
   ),
   restSegmentPost: jsonApiOperation('restSegmentPost', {
     name: 'refuses an anonymous REST save with the legacy 401',
-    inject: send('POST', jsonApi('rest', `/${SITE_A}/user`), undefined, 'fname=Anon'),
+    inject: send('POST', jsonApi('rest', `/${SITE_A}/user`), VISITOR, 'fname=Anon'),
     status: 401,
     verify: NO_PERMISSION,
   }),

@@ -314,15 +314,17 @@ describe('clogin.login', () => {
     expect(loginCalls(ctx.gateway.calls)).toHaveLength(1);
   });
 
+  const { username: _username, ...postedWithoutUsername } = POSTED;
+
   it.each([
-    ['posted with the page-mode query', '/admin/index.cfm', SENT],
-    ['carried in the browser URL', '/admin/index.cfm?username=admin', { ...SENT, username: undefined }],
-  ])('takes the credentials from the form scope when they are %s', async (_case, target, sent) => {
+    ['posted in the page request body', '/admin/index.cfm', POSTED, SENT],
+    ['carried in the browser URL', '/admin/index.cfm?username=admin', postedWithoutUsername, { ...SENT, username: undefined }],
+  ])('takes the credentials from the form scope when they are %s', async (_case, target, form, sent) => {
     const gateway = identityGateway(loginSuccessDefault);
     const req = await buildTestAdminRequest({
       circuit: 'clogin',
       action: 'login',
-      query: POSTED,
+      form,
       headers: { [ORIGINAL_URL_HEADER]: target },
       gateway,
       mode: 'page',

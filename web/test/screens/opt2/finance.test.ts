@@ -51,7 +51,11 @@ const CLAIMED_IN_RC: Readonly<Record<string, string>> = Object.freeze({
   s2: '1',
 });
 
-/** Exact legacy admin classes; `pagination` is the legacy admin pager's (admin/core/views/cusers/inc/dsp_nextn.cfm). */
+/**
+ * Exact legacy admin classes; `pagination` is the legacy admin pager's (admin/core/views/cusers/inc/dsp_nextn.cfm),
+ * `mi-filter`, `hidden-xs` and `hidden-sm` are admin/core/views/cusers/listusers.cfm's and inc/dsp_users_list.cfm's,
+ * `hidden-md` the same admin.css utility one breakpoint up.
+ */
 const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'mura-header',
   'nav-module-specific',
@@ -65,6 +69,10 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'mura-actions',
   'form-actions',
   'pagination',
+  'mi-filter',
+  'hidden-xs',
+  'hidden-sm',
+  'hidden-md',
   // State badges, styled by admin.css `.mura .label-success`, `-info`, `-inverse` and `-important`.
   'label',
   'label-success',
@@ -189,7 +197,7 @@ describe('finance screens', () => {
     );
 
     expect($('#mura-content button').toArray().map((button) => $(button).text())).toEqual(row.labels);
-    expect($('#mura-content .btn-group form').toArray().map((form) => $(form).attr('action'))).toEqual(
+    expect($('#mura-content .btn-group > button').toArray().map((button) => $(button).attr('formaction'))).toEqual(
       row.actions.map((name) => opt2ActionUrl('finance', name, { siteid: SITE, id: row.record_id })),
     );
   });
@@ -211,7 +219,7 @@ function labelsOf(model: DomModel) {
 }
 
 describe('finance screens in the session locale', () => {
-  const { versions, attachments } = financeRecordDetail;
+  const { attachments } = financeRecordDetail;
 
   it.each([
     {
@@ -238,21 +246,13 @@ describe('finance screens in the session locale', () => {
         headings: [financeRecordDetail.title, fr('Version History'), 'Attachments', 'Upload Attachment', 'Edit Record'],
         labels: [
           ...[fr('Title'), 'Amount', 'Period', fr('State'), fr('Version'), fr('Created'), fr('Last Update')],
-          ...versions.flatMap(() => [
-            fr('Version'),
-            fr('Action'),
-            fr('State'),
-            fr('Title'),
-            'Amount',
-            'Period',
-            'Actor',
-            fr('Created'),
-          ]),
           ...attachments.flatMap(() => ['File Name', fr('Content Type'), 'Size (bytes)', 'SHA-256', fr('Created')]),
           ...[fr('File'), fr('Title'), 'Amount', 'Period'],
         ],
         buttons: [fr('Submit'), 'Resubmit', fr('Approve'), fr('Reject'), ...DOWNLOAD_BUTTONS, 'Upload', fr('Save')],
-        headers: [],
+        headers: [
+          [fr('Version'), fr('Action'), fr('State'), fr('Title'), 'Amount', 'Period', 'Actor', fr('Created')],
+        ],
         options: [],
         links: ['Finance Records'],
       }),

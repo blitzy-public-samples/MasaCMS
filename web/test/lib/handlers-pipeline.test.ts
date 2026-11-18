@@ -6,10 +6,10 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { REDACTED, SEVERITY_BY_LEVEL, validateLogRecord } from '@opt2/platform/logging';
 import type { ScreenGate } from '@/lib/access-gate';
-import { GatewayUnavailableError, setServiceClientForTests, type StreamedResponse } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError, setServiceClientForTests, type StreamedResponse } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
 import { adminRbFor, rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { createWebLogger, logRequest, setWebLoggerForTests, type RequestLogFields } from '@/lib/telemetry';
@@ -24,6 +24,7 @@ import { installRequestScope, type RequestScope } from '@/server/shared';
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
+import { browserMultipart } from '../helpers/requests';
 import { fakeServiceClient, routeKey, type FakeServiceClient, type RecordedRequest } from '../helpers/fake-gateway';
 import { SUBJECTS, gatewayInvocation, serviceInvocation, userTokenFor } from '../helpers/tokens';
 
@@ -63,6 +64,7 @@ vi.mock('@/screens/registry', async () => {
       mode: 'page',
       gate: secured,
       load: async (ctx: ScreenContext) => {
+        await probe.inspect?.(ctx);
         await ctx.csrf.prefetch(['listcontext']);
         return 3;
       },
@@ -340,6 +342,37 @@ describe('page mode', () => {
     expect(await response.text()).toMatch(/^<!DOCTYPE[\s\S]*TOKEN-listcontext/);
   });
 
+  it('reads a url-encoded page POST body as the form scope, with no file parts', async () => {
+    let seen: ScreenContext | undefined;
+    probe.inspect = async (ctx) => {
+      seen = ctx;
+    };
+
+    const request = await postRequest('/admin/cusers/list?muraAction=cusers.list', 'keywords=a+b&siteid=default', FORM);
+    const response = await handleAdminPage(request, LIST);
+
+    expect(response.status).toBe(200);
+    expect(seen?.req.rc).toMatchObject({ muraAction: 'core:cusers.list', keywords: 'a b', siteid: 'default' });
+    expect({ ...seen?.req.formScope }).toEqual({ keywords: 'a b', siteid: 'default' });
+    expect(seen?.body?.contentType).toBe(FORM);
+    expect(probe.uploads).toEqual([]);
+  });
+
+  it('hands the file parts of a multipart page POST to findScreen', async () => {
+    const { body, contentType } = browserMultipart([
+      { name: 'newfile', value: '' },
+      { name: 'newfile', filename: '' },
+      { name: 'photo', value: 'x', filename: 'p.png', type: 'image/png' },
+    ]);
+    const request = await postRequest('/admin/cusers/list?muraAction=cusers.list', body, contentType);
+
+    expect((await handleAdminPage(request, LIST)).status).toBe(200);
+    expect(probe.uploads).toEqual([
+      { field: 'newfile', filename: '' },
+      { field: 'photo', filename: 'p.png' },
+    ]);
+  });
+
   it.each([
     ['an unknown key', { circuit: 'cnope', action: 'zzz' }],
     ['a screen of another mode', UPDATE],
@@ -430,10 +463,16 @@ describe('page mode', () => {
     ]);
   });
 
-  it('logs an unexpected error once and rethrows it', async () => {
+  it("logs an unexpected error once and answers legacy's 500 error page, persisting nothing", async () => {
     probe.renderError = new RangeError('render failed');
 
-    await expect(handleAdminPage(await getRequest('/admin/cusers/list'), LIST)).rejects.toBe(probe.renderError);
+    const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
+
+    expect(response.status).toBe(500);
+    expect(response.statusText).toBe(LEGACY_ERROR_STATUS_TEXT);
+    expect(response.headers.get('content-type')).toBe(LEGACY_HTML_CONTENT_TYPE);
+    expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(savedStates()).toHaveLength(0);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
   });
 
@@ -596,10 +635,10 @@ describe('redirect mode', () => {
     expect(await response.text()).toContain('<p id="error">invalid</p>');
   });
 
-  it.each<{ outcome: string; failure?: Error; status?: number }>([
+  it.each<{ outcome: string; failure?: Error; status: number }>([
     { outcome: 'its answer', status: 200 },
     { outcome: 'a mapped failure', failure: new GatewayUnavailableError('people', 503), status: 503 },
-    { outcome: 'a rethrown failure', failure: new RangeError('screen failed') },
+    { outcome: 'an unmapped failure', failure: new RangeError('screen failed'), status: 500 },
   ])('stages the multipart body for the screen and removes it after $outcome', async ({ failure, status }) => {
     const form = new FormData();
     form.append('title', 'Report');
@@ -623,9 +662,7 @@ describe('redirect mode', () => {
     vi.stubEnv('TMPDIR', tmp);
     try {
       const request = await postRequest('/admin-actions/cusers/update', bytes, contentType);
-      const answered = handleAdminAction(request, UPDATE);
-      if (status === undefined) await expect(answered).rejects.toBe(failure);
-      else expect((await answered).status).toBe(status);
+      expect((await handleAdminAction(request, UPDATE)).status).toBe(status);
       expect(await readdir(tmp)).toEqual([]);
     } finally {
       vi.unstubAllEnvs();
@@ -639,7 +676,7 @@ describe('redirect mode', () => {
     expect(probe.body?.body.size).toBe(bytes.length);
     expect(probe.body?.form.get('title')).toBe('Report');
     expect(probe.body?.form.get('newfile')).toMatchObject({ name: 'report.pdf', type: 'application/pdf', size: 0 });
-    expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: status ?? 500, error: failure })]);
+    expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: status, error: failure })]);
   });
 
   it('gives a bodiless request an empty form scope and no body', async () => {
@@ -960,5 +997,79 @@ describe('synthetic modules', () => {
     expect(loggedLines()).toEqual([
       expect.objectContaining({ route: 'opt2:timesheets.day-action', httpMethod: 'POST' }),
     ]);
+  });
+});
+
+describe('CORS origin echo', () => {
+  const ORIGIN = 'http://localhost:8080';
+  const ECHOED = { origin: ORIGIN, credentials: 'true' };
+  const NONE = { origin: null, credentials: null };
+  const echoOf = (response: Response): { origin: string | null; credentials: string | null } => ({
+    origin: response.headers.get('access-control-allow-origin'),
+    credentials: response.headers.get('access-control-allow-credentials'),
+  });
+  const fromOrigin = async (path: string, user: 'admin' | 'anonymous' = 'admin', origin = ORIGIN): Promise<Request> =>
+    new Request(`http://web${path}`, { headers: await forwarded(user, { origin }) });
+  const postFromOrigin = async (path: string, body: string): Promise<Request> =>
+    new Request(`http://web${path}`, { method: 'POST', headers: await forwarded('admin', { origin: ORIGIN, 'content-type': FORM }), body });
+  const LIST_PATH = '/admin/cusers/list?muraAction=cusers.list';
+  const UPDATE_PATH = '/admin-actions/cusers/update?muraAction=cusers.update';
+
+  it.each<[string, () => Promise<Response>, number, typeof ECHOED | typeof NONE]>([
+    ['a page', async () => handleAdminPage(await fromOrigin(LIST_PATH), LIST), 200, ECHOED],
+    ["a screen gate's secure() redirect", async () => handleAdminPage(await fromOrigin(LIST_PATH, 'anonymous'), LIST), 302, ECHOED],
+    [
+      'a JSON view',
+      async () => handleAdminRaw(await fromOrigin('/admin-raw/carch/loadsitemanager'), { circuit: 'carch', action: 'loadsitemanager' }),
+      200,
+      ECHOED,
+    ],
+    [
+      'a download',
+      async () => handleAdminRaw(await fromOrigin('/admin-raw/cusers/download'), { circuit: 'cusers', action: 'download' }),
+      200,
+      ECHOED,
+    ],
+    ['a not-found answer', async () => handleAdminRaw(await fromOrigin('/admin-raw/cusers/list'), LIST), 404, ECHOED],
+    [
+      'a post action redirect',
+      async () => {
+        probe.submit = { kind: 'location', location: './?muraAction=cUsers.list' };
+        return handleAdminAction(await postFromOrigin(UPDATE_PATH, 'siteid=default'), UPDATE);
+      },
+      302,
+      ECHOED,
+    ],
+    [
+      "a screen's service denial",
+      async () => {
+        probe.inspect = () => Promise.reject(new GatewayDenialError('people', 'updateUser', 403));
+        return handleAdminAction(await postFromOrigin(UPDATE_PATH, 'siteid=default'), UPDATE);
+      },
+      302,
+      ECHOED,
+    ],
+    ['a page for an unlisted Origin', async () => handleAdminPage(await fromOrigin(LIST_PATH, 'admin', 'http://evil.example'), LIST), 200, NONE],
+  ])('answers %s with the echo legacy sends', async (_case, send, status, echo) => {
+    const response = await send();
+
+    expect(response.status).toBe(status);
+    expect(echoOf(response)).toEqual(echo);
+  });
+
+  it("leaves the echo off the set-up's no-site redirect, which legacy sends before it", async () => {
+    fake.setRoute(routeKey('GET', 'identity', '/v1/sessions/current/sites'), { status: 200, body: { sites: [] } });
+
+    const response = await handleAdminPage(await fromOrigin(LIST_PATH), LIST);
+
+    expect([response.status, response.headers.get('location')]).toEqual([302, '/admin/?muraAction=cMessage.noaccess']);
+    expect(echoOf(response)).toEqual(NONE);
+  });
+
+  it('reads no registry domains for a logged-in request without an Origin', async () => {
+    const response = await handleAdminPage(await getRequest(LIST_PATH), LIST);
+
+    expect(echoOf(response)).toEqual(NONE);
+    expect(fake.requests.filter(({ path }) => path === '/v1/href-domains')).toEqual([]);
   });
 });

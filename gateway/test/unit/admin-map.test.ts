@@ -21,7 +21,22 @@ import { cutoverTable, entry } from '../helpers/versions.js';
 const URLENCODED = 'application/x-www-form-urlencoded';
 const BOUNDARY = 'opt2-admin-map';
 const MULTIPART = `multipart/form-data; boundary=${BOUNDARY}`;
-const NO_FORM: Readonly<Record<string, string>> = Object.freeze({});
+/** Credential values that must never reach a web request target. */
+const SENTINEL = Object.freeze({
+  password: 'SENTINEL-PASSWORD-7f3a',
+  authcode: 'SENTINEL-AUTHCODE-91c2',
+  token: 'SENTINEL-CSRF-TOKEN-5d0e',
+  expires: 'SENTINEL-CSRF-EXPIRES-27b8',
+});
+/** The admin login form's fields, posted with the sentinel credentials. */
+const LOGIN_FIELDS: ReadonlyArray<readonly [string, string]> = Object.freeze([
+  ['muraAction', 'cLogin.login'],
+  ['username', 'admin'],
+  ['password', SENTINEL.password],
+  ['authcode', SENTINEL.authcode],
+  ['csrf_token', SENTINEL.token],
+  ['csrf_token_expires', SENTINEL.expires],
+]);
 
 type ModeFacts = Pick<RouteFacts, 'responseMode' | 'contentType'>;
 
@@ -39,15 +54,18 @@ function factsOf(routes: Record<string, ModeFacts>): InventoryFacts {
 interface Sent {
   method?: string;
   headers?: Record<string, string | string[]>;
-  body?: unknown;
+  body?: Buffer;
 }
 
-function requestOf(url: string, { method = 'GET', headers = {}, body }: Sent = {}): AdminRequestLike {
-  return body === undefined ? { url, method, headers } : { url, method, headers, body };
+/** A request as the dispatcher receives it: the mapping's facts plus the headers the route key reads. */
+type SentRequest = AdminRequestLike & { readonly headers: Readonly<Record<string, string | string[]>> };
+
+function requestOf(url: string, { method = 'GET', headers = {} }: Sent = {}): SentRequest {
+  return { url, method, headers };
 }
 
 /** Route key of `request` under the shared precedence, with the body's form fields. */
-function keyOf(request: AdminRequestLike, form: Readonly<Record<string, string>>, variants: readonly VariantDeclaration[] = []): RouteKeyResult {
+function keyOf(request: SentRequest, form: Readonly<Record<string, string>>, variants: readonly VariantDeclaration[] = []): RouteKeyResult {
   const queryAt = request.url.indexOf('?');
   const query: Record<string, string> = {};
   for (const [name, value] of new URLSearchParams(queryAt === -1 ? '' : request.url.slice(queryAt + 1))) query[name] = value;
@@ -72,15 +90,9 @@ function route(
 ): { result: RouteKeyResult; target: AdminWebTarget } {
   const request = requestOf(url, sent);
   const contentType = sent.headers?.['content-type'];
-  const body = Buffer.isBuffer(sent.body) ? sent.body : undefined;
-  const { form } = bodyParamsFrom(Array.isArray(contentType) ? contentType[0] : contentType, body, request.method);
+  const { form } = bodyParamsFrom(Array.isArray(contentType) ? contentType[0] : contentType, sent.body, request.method);
   const result = keyOf(request, form, variants);
-  return { result, target: mapAdminToWeb({ result, request, modes, form }) };
-}
-
-/** Maps `request` with a key read from its query alone; for bodies whose bytes the test controls exactly. */
-function mapQueryKeyed(modes: ResponseModes, request: AdminRequestLike, form: Readonly<Record<string, string>> = NO_FORM): AdminWebTarget {
-  return mapAdminToWeb({ result: keyOf(request, NO_FORM), request, modes, form });
+  return { result, target: mapAdminToWeb({ result, request, modes }) };
 }
 
 function multipartBody(parts: Array<{ name: string; value: string; filename?: string }>): Buffer {
@@ -94,6 +106,13 @@ function multipartBody(parts: Array<{ name: string; value: string; filename?: st
   ]);
   return Buffer.from([...lines, `--${BOUNDARY}--`, ''].join('\r\n'));
 }
+
+/** The login form posted url-encoded, and as multipart with a file part. */
+const LOGIN_URLENCODED = Buffer.from(new URLSearchParams(LOGIN_FIELDS.map(([name, value]): [string, string] => [name, value])).toString());
+const LOGIN_MULTIPART = multipartBody([
+  ...LOGIN_FIELDS.map(([name, value]) => ({ name, value })),
+  { name: 'attachment', value: 'FILE-BYTES', filename: 'p.png' },
+]);
 
 const paths = resolveGatewayPaths({});
 let facts: InventoryFacts;
@@ -213,7 +232,8 @@ function expectedTarget(
   url: string,
   contentType: string | undefined,
 ): AdminWebTarget {
-  const target: AdminWebTarget = { path, method, forwardBody: responseMode !== 'page', headers: { [ORIGINAL_URL_HEADER]: url }, responseMode };
+  const forwardBody = responseMode !== 'page' || method === 'POST';
+  const target: AdminWebTarget = { path, method, forwardBody, headers: { [ORIGINAL_URL_HEADER]: url }, responseMode };
   return contentType === undefined ? target : { ...target, contentType };
 }
 
@@ -233,15 +253,11 @@ describe('mapAdminToWeb by response mode', () => {
     expect(target).toStrictEqual(expectedTarget(mode, webPath, 'GET', url, contentType));
   });
 
-  it.each(BY_MODE)('maps a %s url-encoded POST of %s to %s', (mode, action, webPath, contentType) => {
+  it.each(BY_MODE)('maps a %s url-encoded POST of %s to %s as a POST with its body and the query alone', (mode, action, webPath, contentType) => {
     const url = `/admin/?muraAction=${action}`;
     const body = 'siteid=default&note=a+b%26c';
     const { target } = route(committed, url, { method: 'POST', headers: { 'content-type': URLENCODED }, body: Buffer.from(body) });
-    const expected =
-      mode === 'page'
-        ? expectedTarget(mode, `${webPath}?muraAction=${action}&${body}`, 'GET', url, contentType)
-        : expectedTarget(mode, `${webPath}?muraAction=${action}`, 'POST', url, contentType);
-    expect(target).toStrictEqual(expected);
+    expect(target).toStrictEqual(expectedTarget(mode, `${webPath}?muraAction=${action}`, 'POST', url, contentType));
   });
 
   it.each(BY_MODE.filter(([mode]) => mode !== 'page'))('keeps the method of a %s request as sent (%s)', (_mode, action) => {
@@ -362,92 +378,56 @@ describe('mapAdminToWeb of the committed form-builder, Import Form and object-pa
 
 describe('mapAdminToWeb page-mode POST', () => {
   const listUrl = '/admin/?muraAction=cusers.list';
-  const urlencoded = (body: unknown, method = 'POST'): AdminRequestLike =>
-    requestOf(listUrl, { method, headers: { 'content-type': URLENCODED }, body });
+  const listPath = '/admin/cusers/list?muraAction=cusers.list';
+
+  it.each<[string, Sent['headers'], Buffer]>([
+    ['url-encoded', { 'content-type': URLENCODED }, Buffer.from('siteid=default&note=a+b%26c')],
+    [
+      'multipart',
+      { 'content-type': MULTIPART },
+      multipartBody([
+        { name: 'siteid', value: 'default' },
+        { name: 'newFile', value: 'BYTES', filename: 'p.png' },
+      ]),
+    ],
+    ['JSON', { 'content-type': 'application/json' }, Buffer.from('{"siteid":"default"}')],
+    ['text/plain', { 'content-type': 'text/plain' }, Buffer.from('siteid=default')],
+    ['content-type-less', {}, Buffer.from('siteid=default')],
+  ])('keeps a %s POST to a page as a POST with its body and the original query alone', (_label, headers, body) => {
+    const { target } = route(committed, listUrl, { method: 'POST', headers, body });
+    expect(target).toStrictEqual(expectedTarget('page', listPath, 'POST', listUrl, 'text/html'));
+  });
 
   it.each([
-    ['/admin/index.cfm/cusers/list', 'siteid=default', '/admin/cusers/list?siteid=default'],
-    ['/admin/?', 'muraAction=cusers.list&siteid=default', '/admin/cusers/list?muraAction=cusers.list&siteid=default'],
-    [listUrl, '', '/admin/cusers/list?muraAction=cusers.list'],
-  ])('appends to %s the url-encoded body %j with "&" only between non-empty parts', (url, body, path) => {
+    ['/admin/index.cfm/cusers/list', 'siteid=default', '/admin/cusers/list'],
+    ['/admin/?', 'muraAction=cusers.list&siteid=default', '/admin/cusers/list?'],
+    ['/admin/?muraAction=cusers.list&q=a%20b+c', 'siteid=default', '/admin/cusers/list?muraAction=cusers.list&q=a%20b+c'],
+  ])('sends a page POST to %s with body %j to web path %s', (url, body, path) => {
     const { target } = route(committed, url, { method: 'POST', headers: { 'content-type': URLENCODED }, body: Buffer.from(body) });
-    expect(target).toMatchObject({ path, method: 'GET', forwardBody: false });
+    expect(target).toMatchObject({ path, method: 'POST', forwardBody: true });
   });
 
-  it.each<[number[], string]>([
-    [[0x00], '%00'],
-    [[0x09], '%09'],
-    [[0x0a], '%0A'],
-    [[0x20], '%20'],
-    [[0x21], '!'],
-    [[0x23], '%23'],
-    [[0x25, 0x32, 0x46], '%2F'],
-    [[0x25], '%'],
-    [[0x2b], '+'],
-    [[0x3d, 0x26], '=&'],
-    [[0x7e], '~'],
-    [[0x7f], '%7F'],
-    [[0x80], '%80'],
-    [[0xc3, 0xa9], '%C3%A9'],
-    [[0xff], '%FF'],
-  ])('carries body bytes %j as %s in the query', (bytes, text) => {
-    const target = mapQueryKeyed(committed, urlencoded(Buffer.concat([Buffer.from('q='), Buffer.from(bytes)])));
-    expect(target.path).toBe(`/admin/cusers/list?muraAction=cusers.list&q=${text}`);
+  it.each<[string, Sent['headers'], Buffer]>([
+    ['url-encoded', { 'content-type': URLENCODED }, LOGIN_URLENCODED],
+    ['multipart', { 'content-type': MULTIPART }, LOGIN_MULTIPART],
+  ])('keeps the password, authcode and CSRF pair of a %s login out of the web path', (_label, headers, body) => {
+    const { result, target } = route(committed, '/admin/index.cfm', { method: 'POST', headers, body });
+    expect(result.key).toBe('admin:clogin.login');
+    expect(target).toMatchObject({ path: '/admin/clogin/login', method: 'POST', forwardBody: true, responseMode: 'page' });
+    for (const value of Object.values(SENTINEL)) expect(target.path).not.toContain(value);
   });
 
-  it('appends multipart text fields URL-encoded in body order and drops file parts', () => {
-    const body = multipartBody([
-      { name: 'siteid', value: 'default' },
-      { name: 'note', value: 'a b&c=é' },
-      { name: 'newFile', value: 'BYTES', filename: 'p.png' },
-      { name: 'siteid', value: 'other' },
-    ]);
-    const { target } = route(committed, listUrl, { method: 'POST', headers: { 'content-type': MULTIPART }, body });
-    expect(target).toMatchObject({
-      path: '/admin/cusers/list?muraAction=cusers.list&siteid=default%2Cother&note=a%20b%26c%3D%C3%A9',
-      method: 'GET',
-      forwardBody: false,
-    });
-  });
-
-  it('reads multipart fields from the form argument, not the body', () => {
-    const request = requestOf(listUrl, { method: 'POST', headers: { 'content-type': MULTIPART }, body: Buffer.from('ignored') });
-    expect(mapQueryKeyed(committed, request, { 'a&b': '1 2', c: '' }).path).toBe('/admin/cusers/list?muraAction=cusers.list&a%26b=1%202&c=');
-    expect(mapQueryKeyed(committed, request).path).toBe('/admin/cusers/list?muraAction=cusers.list');
-  });
-
-  it.each<[string, Sent['headers'], string]>([
-    ['a JSON body', { 'content-type': 'application/json' }, '{"siteid":"default"}'],
-    ['a text/plain body', { 'content-type': 'text/plain' }, 'siteid=default'],
-    ['a body without a content type', {}, 'siteid=default'],
-  ])('appends no fields for %s', (_label, headers, body) => {
-    const { target } = route(committed, listUrl, { method: 'POST', headers, body: Buffer.from(body) });
-    expect(target).toMatchObject({ path: '/admin/cusers/list?muraAction=cusers.list', method: 'GET', forwardBody: false });
-  });
-
-  it.each<[string, Record<string, string | string[]>]>([
-    ['a capitalised header with parameters', { 'Content-Type': 'Application/X-WWW-Form-Urlencoded; charset=UTF-8' }],
-    ['a header list', { 'content-type': [URLENCODED, 'text/plain'] }],
-    ['a comma-joined header', { 'content-type': `${URLENCODED}, text/plain` }],
-  ])('reads the url-encoded media type from %s', (_label, headers) => {
-    const request = requestOf(listUrl, { method: 'POST', headers, body: Buffer.from('siteid=default') });
-    expect(mapQueryKeyed(committed, request).path).toBe('/admin/cusers/list?muraAction=cusers.list&siteid=default');
-  });
-
-  it.each([undefined, 'siteid=default', new Uint8Array([0x61])])('appends nothing for a url-encoded POST whose body %j is not a Buffer', (body) => {
-    expect(mapQueryKeyed(committed, urlencoded(body)).path).toBe('/admin/cusers/list?muraAction=cusers.list');
-  });
-
-  it.each<[string, Record<string, string>, string, string]>([
-    ['POST', { 'x-http-method-override': 'PUT' }, 'GET', '/admin/cusers/list?muraAction=cusers.list&siteid=default'],
-    ['post', {}, 'GET', '/admin/cusers/list?muraAction=cusers.list&siteid=default'],
-    ['PUT', {}, 'GET', '/admin/cusers/list?muraAction=cusers.list'],
-    ['DELETE', {}, 'GET', '/admin/cusers/list?muraAction=cusers.list'],
-    ['GET', { 'x-http-method-override': 'POST' }, 'GET', '/admin/cusers/list?muraAction=cusers.list'],
-    ['HEAD', {}, 'HEAD', '/admin/cusers/list?muraAction=cusers.list'],
-  ])('maps a %s request line with %j as %s %s', (method, extra, sentMethod, path) => {
-    const request = requestOf(listUrl, { method, headers: { 'content-type': URLENCODED, ...extra }, body: Buffer.from('siteid=default') });
-    expect(mapQueryKeyed(committed, request)).toMatchObject({ path, method: sentMethod, forwardBody: false });
+  it.each<[string, Record<string, string>, string, boolean]>([
+    ['POST', {}, 'POST', true],
+    ['post', {}, 'POST', true],
+    ['POST', { 'x-http-method-override': 'PUT' }, 'POST', true],
+    ['PUT', {}, 'GET', false],
+    ['DELETE', {}, 'GET', false],
+    ['GET', { 'x-http-method-override': 'POST' }, 'GET', false],
+    ['HEAD', {}, 'HEAD', false],
+  ])('maps a page request line %s with %j to web as %s, forwarding its body: %s', (method, extra, sentMethod, forwardBody) => {
+    const sent: Sent = { method, headers: { 'content-type': URLENCODED, ...extra }, body: Buffer.from('siteid=default') };
+    expect(route(committed, listUrl, sent).target).toMatchObject({ path: listPath, method: sentMethod, forwardBody });
   });
 });
 
@@ -502,5 +482,27 @@ describe('admin request through the gateway to web', () => {
     const echoes = gateway.web.echoes();
     expect(echoes).toHaveLength(1);
     expect(echoes[0]).toMatchObject({ method: 'GET', url: '/admin/cperm/main?muraAction=cPerm.main&siteid=tenant-a', originalUrl: PERM_URL });
+  });
+
+  it.each<[string, string, Buffer]>([
+    ['url-encoded', URLENCODED, LOGIN_URLENCODED],
+    ['multipart', MULTIPART, LOGIN_MULTIPART],
+  ])('forwards a %s page POST to web as a POST with its body bytes and content type, never its fields in the url', async (_label, contentType, payload) => {
+    const url = '/admin/index.cfm?compactDisplay=false';
+    gateway = await buildTestGateway({
+      version: cutoverTable({
+        tableVersion: 'v9001',
+        entries: [entry({ route: 'admin:clogin.login', owningService: 'identity', state: 'target', kind: 'read' })],
+      }),
+    });
+    const res = await gateway.app.inject({ method: 'POST', url, headers: { 'content-type': contentType }, payload });
+    expect(res.statusCode).toBe(200);
+    const echoes = gateway.web.echoes();
+    expect(echoes).toHaveLength(1);
+    const [echo] = echoes;
+    expect(echo).toMatchObject({ method: 'POST', url: '/admin/clogin/login?compactDisplay=false', originalUrl: url, contentType });
+    expect(Buffer.from(echo?.bodyBase64 ?? '', 'base64').equals(payload)).toBe(true);
+    for (const [name] of LOGIN_FIELDS) expect(echo?.query).not.toHaveProperty(name);
+    for (const value of Object.values(SENTINEL)) expect(echo?.url).not.toContain(value);
   });
 });

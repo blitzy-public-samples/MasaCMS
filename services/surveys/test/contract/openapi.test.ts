@@ -49,6 +49,8 @@ interface Declaration {
   transport: unknown;
   requires: string[];
   public: boolean;
+  /** The contract's `security` admits a request without credentials. */
+  invocationOptional: boolean;
   siteCheck: boolean;
 }
 
@@ -168,8 +170,15 @@ function routeDeclaration(route: RouteMatrixEntry): Declaration {
     transport: route.transport,
     requires: [...(route.requires ?? [])].sort(),
     public: route.public === true,
+    invocationOptional: route.invocationOptional === true,
     siteCheck: route.siteCheck,
   };
+}
+
+/** Whether the operation's own `security` lists no requirement or an empty alternative. */
+function admitsNoCredential(op: OperationObject): boolean {
+  const security = op['security'] as Record<string, unknown>[] | undefined;
+  return security !== undefined && (security.length === 0 || security.some((alternative) => Object.keys(alternative).length === 0));
 }
 
 function operationDeclaration(op: OperationObject): Declaration {
@@ -177,6 +186,7 @@ function operationDeclaration(op: OperationObject): Declaration {
     transport: op['x-opt2-transport'],
     requires: [...((op['x-opt2-requires'] as string[] | undefined) ?? [])].sort(),
     public: op['x-opt2-public'] === true,
+    invocationOptional: admitsNoCredential(op),
     siteCheck: op['x-opt2-site-check'] !== false,
   };
 }
@@ -196,6 +206,11 @@ function declarationMismatches(routes: readonly RouteMatrixEntry[], operations: 
 /** Headers presenting the ROLE_SET subject `name` for `site`, with its USER_IDS entry as the Masa UserID. */
 function subjectHeaders(name: string, site: string = SITE_A): Promise<Record<string, string>> {
   return headersFor(name, { site, sub: USER_IDS[name] });
+}
+
+/** A request without credentials as the gateway forwards it: the gateway's invocation credential alone. */
+function forwardedByGateway(): Promise<Record<string, string>> {
+  return subjectHeaders('service:gateway');
 }
 
 /** Headers of the surveys manager, plus the CSRF fields every fixture write checks. */
@@ -326,9 +341,9 @@ function storedStatus(ctx: TestApp, seeded: Seeded): unknown {
   return ctx.db.rows('survey').find((row) => row.survey_id === seeded.surveyId)?.status;
 }
 
-/** Launches the seeded scheduled survey through the anonymous fixture launch callback. */
+/** Launches the seeded scheduled survey through the anonymous fixture launch callback, as the gateway forwards it. */
 async function launchThroughCallback(ctx: TestApp, seeded: Seeded): Promise<void> {
-  const res = await ctx.app.inject({ method: 'GET', url: fixtureUrl('/launch', CALLBACK_QUERY)(seeded) });
+  const res = await ctx.app.inject({ method: 'GET', url: fixtureUrl('/launch', CALLBACK_QUERY)(seeded), headers: await forwardedByGateway() });
   expect(res.statusCode, res.body).toBe(200);
 }
 
@@ -360,6 +375,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers an anonymous caller with the fixture authorization 401',
       method: 'GET',
       url: `${FIXTURE}?siteid=${SITE_A}`,
+      headers: forwardedByGateway,
       status: 401,
       verify: ({ body }) => expect(record(body).error).toEqual(FIXTURE_FORBIDDEN),
     },
@@ -382,6 +398,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers an unknown site as invalidParameters before the login check',
       method: 'GET',
       url: `${FIXTURE}?siteid=nowhere`,
+      headers: forwardedByGateway,
       status: 400,
       verify: ({ body }) => expect(record(body).error).toEqual(INVALID_PARAMETERS),
     },
@@ -631,6 +648,7 @@ const CASES: Record<string, Case[]> = {
       name: 'launches the scheduled survey for a task run presenting its task token',
       method: 'GET',
       url: fixtureUrl('/launch', CALLBACK_QUERY),
+      headers: forwardedByGateway,
       seed: 'scheduled',
       status: 200,
       verify: ({ body }, ctx, seeded) => {
@@ -642,10 +660,22 @@ const CASES: Record<string, Case[]> = {
       name: 'refuses a task run without the task token as forbidden and leaves the survey scheduled',
       method: 'GET',
       url: fixtureUrl('/launch'),
+      headers: forwardedByGateway,
       seed: 'scheduled',
       status: 403,
       verify: ({ body }, ctx, seeded) => {
         expect(record(body).error).toEqual(FIXTURE_FORBIDDEN);
+        expect(storedStatus(ctx, seeded)).toBe('SCHEDULED');
+      },
+    },
+    {
+      name: 'refuses a task run bypassing the gateway, its task token valid, before the handler and leaves the survey scheduled',
+      method: 'GET',
+      url: fixtureUrl('/launch', CALLBACK_QUERY),
+      seed: 'scheduled',
+      status: 401,
+      verify: ({ body }, ctx, seeded) => {
+        expect(record(body)).toMatchObject({ method: 'invalid', error: FIXTURE_FORBIDDEN });
         expect(storedStatus(ctx, seeded)).toBe('SCHEDULED');
       },
     },
@@ -655,6 +685,7 @@ const CASES: Record<string, Case[]> = {
       name: 'launches the scheduled survey for a POST task run presenting its task token',
       method: 'POST',
       url: fixtureUrl('/launch', CALLBACK_QUERY),
+      headers: forwardedByGateway,
       payload: {},
       seed: 'scheduled',
       status: 200,
@@ -669,6 +700,7 @@ const CASES: Record<string, Case[]> = {
       name: 'stamps the first reminder for a task run presenting its task token',
       method: 'GET',
       url: fixtureUrl('/remind', `${CALLBACK_QUERY}&reminder=1`),
+      headers: forwardedByGateway,
       seed: 'scheduled',
       status: 200,
       verify: ({ body }, _ctx, { surveyId }) => {
@@ -681,6 +713,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers a reminder ordinal the survey lacks as notFound',
       method: 'GET',
       url: fixtureUrl('/remind', `${CALLBACK_QUERY}&reminder=2`),
+      headers: forwardedByGateway,
       seed: 'scheduled',
       status: 404,
       verify: ({ body }) => expect(record(body).error).toEqual(FIXTURE_NOT_FOUND),
@@ -689,6 +722,7 @@ const CASES: Record<string, Case[]> = {
       name: 'answers a reminder ordinal below 1 as invalidParameters',
       method: 'GET',
       url: fixtureUrl('/remind', `${CALLBACK_QUERY}&reminder=0`),
+      headers: forwardedByGateway,
       seed: 'scheduled',
       status: 400,
       verify: ({ body }) => expect(record(body).error).toEqual(INVALID_PARAMETERS),
@@ -699,6 +733,7 @@ const CASES: Record<string, Case[]> = {
       name: 'stamps the reminder the POST body names for a task run presenting its task token',
       method: 'POST',
       url: fixtureUrl('/remind', CALLBACK_QUERY),
+      headers: forwardedByGateway,
       payload: { reminder: 1 },
       seed: 'scheduled',
       status: 200,
@@ -1259,7 +1294,12 @@ const CASES: Record<string, Case[]> = {
 };
 
 /** Route families of surveys and the declaration every route of the family carries. */
-const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; declaration: Omit<Declaration, 'siteCheck'> }> = [
+const FAMILIES: ReadonlyArray<{
+  family: string;
+  prefix: string;
+  count: number;
+  declaration: Omit<Declaration, 'siteCheck' | 'invocationOptional'> & { invocationOptional?: true };
+}> = [
   { family: 'fixture', prefix: FIXTURE, count: 12, declaration: { transport: 'service', requires: [], public: true } },
   { family: '/v1/surveys', prefix: '/v1/surveys', count: 7, declaration: { transport: 'service', requires: [MANAGER], public: false } },
   {
@@ -1298,7 +1338,7 @@ const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; d
     count: 1,
     declaration: { transport: 'pubsub-push', requires: ['service:pubsub-invoker'], public: false },
   },
-  { family: 'health', prefix: '/healthz', count: 1, declaration: { transport: 'service', requires: [], public: true } },
+  { family: 'health', prefix: '/healthz', count: 1, declaration: { transport: 'service', requires: [], public: true, invocationOptional: true } },
 ];
 
 describe('contract document', () => {
@@ -1335,7 +1375,7 @@ describe('route declarations', () => {
     expect(unregistered, 'declared in contracts/openapi.yaml but unregistered').toEqual([]);
   });
 
-  it("declares each route with its operation's roles, public flag, transport and site check", () => {
+  it("declares each route with its operation's roles, public flag, optional invocation credential, transport and site check", () => {
     expect(declarationMismatches(routes, contractOperations(DOC))).toEqual([]);
   });
 
@@ -1343,7 +1383,11 @@ describe('route declarations', () => {
     const family = routes.filter((route) => route.url.startsWith(prefix));
     expect(family).toHaveLength(count);
     for (const route of family) {
-      expect(routeDeclaration(route), routeKey(route)).toMatchObject({ ...declaration, requires: [...declaration.requires].sort() });
+      expect(routeDeclaration(route), routeKey(route)).toMatchObject({
+        ...declaration,
+        invocationOptional: declaration.invocationOptional === true,
+        requires: [...declaration.requires].sort(),
+      });
     }
   });
 
@@ -1371,6 +1415,13 @@ describe('route declarations', () => {
       'x-opt2-requires': ['s2'],
     };
     expect(declarationMismatches(routes, contractOperations(relabelled))).toEqual([expect.stringMatching(/^GET \/v1\/surveys: /)]);
+
+    const credentialFree = structuredClone(DOC);
+    const launch = credentialFree.paths[`${FIXTURE}/{id}/launch`] as Record<string, OperationObject>;
+    launch.get = { ...(launch.get as OperationObject), security: [] };
+    expect(declarationMismatches(routes, contractOperations(credentialFree))).toEqual([
+      expect.stringMatching(/^GET \/legacy-fixtures\/cfml\/api\.cfm\/surveys\/surveys\/\{id\}\/launch: /),
+    ]);
   });
 });
 

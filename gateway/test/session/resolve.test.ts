@@ -179,6 +179,7 @@ function setup(fakes: Fakes = {}) {
       }
       return Promise.resolve(store(input));
     },
+    clearIdentityEndPending: () => Promise.reject(new Error('resolution never clears a pending identity end')),
   });
   const locked = statements('locked');
   /** Sections queued per lock key, so a section starts only after the previous one on its key settled. */

@@ -4,8 +4,9 @@ import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AuthDenial } from '../../src/auth/index.js';
+import { AuthDenial, INVOCATION_HEADER } from '../../src/auth/index.js';
 import {
   INVALID_ACCESS_TOKEN_HEADER_SEQUENCE,
   LEGACY_ERROR_MAP,
@@ -38,7 +39,7 @@ import {
   type FastifyInstance,
   type FastifyRequest,
 } from '../../src/service-kit/index.js';
-import { fixedClock, testVerifier, writeTestSecrets, type InjectResponse } from '../../src/testing/index.js';
+import { fixedClock, mintServiceToken, testVerifier, writeTestSecrets, type InjectResponse } from '../../src/testing/index.js';
 
 const API_ROUTE = '/_api/json/v1/:siteid';
 const API = '/_api/json/v1/default';
@@ -212,6 +213,12 @@ function server(): FastifyInstance {
   return app;
 }
 
+/** Injects a request as the gateway forwards it, beside the gateway's invocation credential. */
+async function inject(opts: InjectOptions): Promise<InjectResponse> {
+  const credential = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'contract' })}`;
+  return server().inject({ ...opts, headers: { ...opts.headers, [INVOCATION_HEADER]: credential } });
+}
+
 beforeAll(async () => {
   stateDir = await mkdtemp(join(tmpdir(), 'opt2-legacy-wire-'));
   await writeTestSecrets(stateDir);
@@ -244,7 +251,7 @@ afterAll(async () => {
 
 describe('JSON API success envelope', () => {
   it('answers {apiversion, method, data} without params by default', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/content?fields=title` });
+    const res = await inject({ method: 'GET', url: `${API}/content?fields=title` });
     expect(res.statusCode).toBe(200);
     expect(Object.keys(res.json()).sort()).toEqual(['apiversion', 'data', 'method']);
     expect(res.json()).toEqual({
@@ -255,7 +262,7 @@ describe('JSON API success envelope', () => {
   });
 
   it('sends the legacy JSON content type, an ETag of the exact body and the legacy headers', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/content` });
+    const res = await inject({ method: 'GET', url: `${API}/content` });
     expectJsonWire(res);
     expect(LEGACY_JSON_CONTENT_TYPE).toBe(res.headers['content-type']);
     expect(legacyHeaders()).toEqual({
@@ -265,19 +272,19 @@ describe('JSON API success envelope', () => {
   });
 
   it('echoes the request params when suppressAPIParams is off', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/content-params?fields=title` });
+    const res = await inject({ method: 'GET', url: `${API}/content-params?fields=title` });
     expect(res.json()).toMatchObject({ apiversion: 'v1', method: 'findMany', params: { fields: 'title' } });
     expectJsonWire(res);
   });
 
   it.each(['false', 'no', '0'])('flattens data into the top level when useDataNamespace is %s', async (value) => {
-    const res = await server().inject({ method: 'GET', url: `${API}/content?useDataNamespace=${value}` });
+    const res = await inject({ method: 'GET', url: `${API}/content?useDataNamespace=${value}` });
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'findMany', items: CONTENT_ITEMS, entityname: 'content' });
     expectJsonWire(res);
   });
 
   it.each(['true', 'yes', 'maybe'])('keeps the data namespace when useDataNamespace is %s', async (value) => {
-    const res = await server().inject({ method: 'GET', url: `${API}/content?useDataNamespace=${value}` });
+    const res = await inject({ method: 'GET', url: `${API}/content?useDataNamespace=${value}` });
     expect(res.json()).toEqual({
       apiversion: 'v1',
       method: 'findMany',
@@ -286,7 +293,7 @@ describe('JSON API success envelope', () => {
   });
 
   it('answers 404 with the data envelope when request.mura404 is set', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/missing` });
+    const res = await inject({ method: 'GET', url: `${API}/missing` });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({
       apiversion: 'v1',
@@ -297,14 +304,14 @@ describe('JSON API success envelope', () => {
   });
 
   it('answers 403 with the data envelope when a save returns errors', async () => {
-    const res = await server().inject({ method: 'POST', url: `${API}/save`, payload: { title: '' } });
+    const res = await inject({ method: 'POST', url: `${API}/save`, payload: { title: '' } });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'save', data: { errors: { title: 'Required' } } });
     expectJsonWire(res);
   });
 
   it('answers 200 when a save returns an empty errors struct', async () => {
-    const res = await server().inject({ method: 'POST', url: `${API}/save`, payload: { title: 'Home' } });
+    const res = await inject({ method: 'POST', url: `${API}/save`, payload: { title: 'Home' } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'save', data: { title: 'Home', errors: {} } });
   });
@@ -313,21 +320,21 @@ describe('JSON API success envelope', () => {
 describe('JSON API error envelopes', () => {
   it.each(ERROR_TABLE)('answers %s with %i %s "%s"', async (type, status, code, message) => {
     expect(LEGACY_ERROR_MAP[type]).toEqual({ status, code, message });
-    const res = await server().inject({ method: 'GET', url: `${API}/error/${type}?method=findOne` });
+    const res = await inject({ method: 'GET', url: `${API}/error/${type}?method=findOne` });
     expect(res.statusCode).toBe(status);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'findOne', error: { code, message } });
     expectJsonWire(res);
   });
 
   it('answers an exception type no catch block names with the 500 server_error envelope', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/error/invalid_token?method=findOne` });
+    const res = await inject({ method: 'GET', url: `${API}/error/invalid_token?method=findOne` });
     expect(res.statusCode).toBe(500);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'findOne', error: errorBody('server_error') });
     expectJsonWire(res);
   });
 
   it('answers an unexpected exception with the 500 server_error envelope', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/boom` });
+    const res = await inject({ method: 'GET', url: `${API}/boom` });
     expect(res.statusCode).toBe(500);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: errorBody('server_error') });
     expectJsonWire(res);
@@ -338,7 +345,7 @@ describe('JSON API error envelopes', () => {
     ['?method=findOne', 'findOne'],
     ['', 'invalid'],
   ])('reports the method of %j as %s', async (query, reported) => {
-    const res = await server().inject({ method: 'GET', url: `${API}/error/badRequest${query}` });
+    const res = await inject({ method: 'GET', url: `${API}/error/badRequest${query}` });
     expect(res.json()).toEqual({ apiversion: 'v1', method: reported, error: errorBody('badRequest') });
   });
 });
@@ -352,7 +359,7 @@ describe('WWW-Authenticate challenges', () => {
   });
 
   it.each(AUTH_CASES)('answers $name with 401 $type and WWW-Authenticate: $header', async ({ name, type, header }) => {
-    const res = await server().inject({ method: 'GET', url: `${API}/auth/${name}` });
+    const res = await inject({ method: 'GET', url: `${API}/auth/${name}` });
     expect(res.statusCode).toBe(401);
     expect(res.headers['www-authenticate']).toBe(header);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: errorBody(type) });
@@ -360,7 +367,7 @@ describe('WWW-Authenticate challenges', () => {
   });
 
   it('answers a request lacking the required role with the 401 authorization envelope and no challenge', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/protected?method=findOne` });
+    const res = await inject({ method: 'GET', url: `${API}/protected?method=findOne` });
     expect(res.statusCode).toBe(401);
     expect(res.headers['www-authenticate']).toBeUndefined();
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'findOne', error: errorBody('authorization') });
@@ -370,7 +377,7 @@ describe('WWW-Authenticate challenges', () => {
 
 describe('legacy 503 shapes', () => {
   it('answers the server_error envelope with status 503 on API routes', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/unavailable?method=findOne` });
+    const res = await inject({ method: 'GET', url: `${API}/unavailable?method=findOne` });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ apiversion: 'v1', method: 'findOne', error: errorBody('server_error') });
     expect(res.body).toBe(apiUnavailableResponse({ method: 'findOne' }).body);
@@ -378,7 +385,7 @@ describe('legacy 503 shapes', () => {
   });
 
   it('answers the legacy 503 error page on admin routes', async () => {
-    const res = await server().inject({ method: 'GET', url: '/admin/unavailable' });
+    const res = await inject({ method: 'GET', url: '/admin/unavailable' });
     expect(res.statusCode).toBe(503);
     expect(res.statusMessage).toBe('An Error Occurred');
     expect(LEGACY_ERROR_STATUS_TEXT).toBe(res.statusMessage);
@@ -399,14 +406,14 @@ describe('CORS origin echo', () => {
     ['https://badexample.org', false],
     ['https://evil.test', false],
   ])('answers Origin %s with echo=%s', async (origin, echoed) => {
-    const res = await server().inject({ method: 'GET', url: `${API}/cors`, headers: { origin } });
+    const res = await inject({ method: 'GET', url: `${API}/cors`, headers: { origin } });
     expect(res.headers['access-control-allow-origin']).toBe(echoed ? origin : undefined);
     expect(res.headers['access-control-allow-credentials']).toBe(echoed ? 'true' : undefined);
     expectJsonWire(res);
   });
 
   it('sends no CORS headers without an Origin', async () => {
-    const res = await server().inject({ method: 'GET', url: `${API}/cors` });
+    const res = await inject({ method: 'GET', url: `${API}/cors` });
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
     expect(res.headers['access-control-allow-credentials']).toBeUndefined();
   });
@@ -414,7 +421,7 @@ describe('CORS origin echo', () => {
 
 describe('legacy session cookies', () => {
   it.each(COOKIE_CASES)('sets the setSessionCookies values on $path', async ({ path, expected }) => {
-    const res = await server().inject({ method: 'GET', url: path });
+    const res = await inject({ method: 'GET', url: path });
     const cookies = [res.headers['set-cookie']].flat();
     expect(cookies).toEqual(expected);
     expect(cookies.map((cookie) => String(cookie).split('=')[0])).toEqual([...LEGACY_SESSION_COOKIE_NAMES]);

@@ -113,9 +113,9 @@ describe('variation routes', () => {
 
   it.each<[string, 'off' | 'on', string, Headers]>([
     ['the setting off', 'off', `${VARIATION_PATH}?siteid=${SITE_A}`, visitorOf(SITE_A)],
-    ['the setting off, whatever site the url names and with no credential', 'off', `${VARIATION_PATH}?siteid=${TENANT_B.siteId}`, anonymous],
+    ['the setting off, whatever site the url names and with no user token', 'off', `${VARIATION_PATH}?siteid=${TENANT_B.siteId}`, gatewayOnly],
     ['the setting off, on a longer path', 'off', `${VARIATION_PATH}/js?siteid=${SITE_A}`, visitorOf(SITE_A)],
-    ['no url siteid', 'on', VARIATION_PATH, anonymous],
+    ['no url siteid', 'on', VARIATION_PATH, gatewayOnly],
     ['no url siteid, on the trailing-slash path', 'on', `${VARIATION_PATH}/`, visitorOf(SITE_A)],
   ])('answers the empty unmatched page with %s', async (_label, setting, url, headers) => {
     const res = await call(setting, url, headers);

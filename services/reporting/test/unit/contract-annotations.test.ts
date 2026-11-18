@@ -35,6 +35,10 @@ const SYNTHETIC_HEADER = '# SYNTHETIC: reporting - no Masa equivalent; legacy or
 const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/reporting/';
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
 const SAMPLE_ID = '0A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9';
+/** Operations whose invocation credential may be absent: the platform's liveness probe. */
+const INVOCATION_OPTIONAL: readonly string[] = ['healthz'];
+/** Security of a public service operation: the caller's invocation credential, with or without a user token. */
+const PUBLIC_SERVICE_SECURITY = [{ invocationCredential: [] }, { userToken: [], invocationCredential: [] }];
 /** The X-HTTP-Method-Override of each fixture operation the contract serves as another method's. */
 const METHOD_OVERRIDES: Readonly<Record<string, string>> = Object.freeze({
   fixtureGetExportByPost: 'GET',
@@ -108,9 +112,10 @@ describe('reporting contract', () => {
 });
 
 describe('reporting operations', () => {
-  it.each(named(operations))('%s declares security, empty only when public', (_name, { op }) => {
+  it.each(named(operations))('%s declares security, empty only when its invocation credential is optional', (_name, { op }) => {
     expect(Array.isArray(op.security)).toBe(true);
-    if (isPublic(op)) expect(op.security).toEqual([]);
+    if (INVOCATION_OPTIONAL.includes(String(op.operationId))) expect(op.security).toEqual([]);
+    else if (isPublic(op)) expect(op.security).toEqual(PUBLIC_SERVICE_SECURITY);
     else expect(op.security).not.toEqual([]);
   });
 

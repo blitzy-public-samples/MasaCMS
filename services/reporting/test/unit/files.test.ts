@@ -6,15 +6,16 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
-import { recordedRoutes } from '@opt2/platform/auth';
+import { Roles, recordedRoutes } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, signLocalUrl, type LocalStorageAdapter } from '@opt2/platform/storage';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { EXPORT_BUCKET, exportAttemptKey, exportObjectKey } from '../../src/repo/tables.js';
 import { registerExportFileRoute } from '../../src/routes/files.js';
+import { gatewayHeaders } from '../helpers/app.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 const NOW = Date.parse('2026-06-30T12:00:00Z');
@@ -38,6 +39,7 @@ const FORBIDDEN = {
 let stateDir: string;
 let storage: LocalStorageAdapter;
 const apps: FastifyInstance[] = [];
+const logLines: Array<Record<string, unknown>> = [];
 
 beforeAll(async () => {
   stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-reporting-files-'));
@@ -71,7 +73,12 @@ async function fileRouteApp(port: LocalStorageAdapter = storage): Promise<Fastif
       TZ: 'UTC',
     }),
     verifierOverride: testVerifier('reporting'),
-    logger: createLogger({ service: 'reporting', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    logger: createLogger({
+      service: 'reporting',
+      version: '1.0.0',
+      env: 'local',
+      destination: { write: (line: string) => void logLines.push(JSON.parse(line) as Record<string, unknown>) },
+    }),
   });
   apps.push(app);
   registerExportFileRoute(app, { storage: port, clock: fixedClock(NOW) });
@@ -112,7 +119,7 @@ describe('reporting export file route', () => {
     expect(key.split('/')[1]).toMatch(OBJECT_NAME);
     const app = await fileRouteApp();
     const url = await storage.signedUrl(EXPORT_BUCKET, key, { expiresS: 900 });
-    const res = await app.inject({ method: 'GET', url });
+    const res = await app.inject({ method: 'GET', url, headers: await gatewayHeaders() });
     expect(res.statusCode).toBe(200);
     expect(res.rawPayload.equals(BYTES)).toBe(true);
     expect(res.headers['content-type']).toBe('text/csv;charset=utf-8');
@@ -130,7 +137,7 @@ describe('reporting export file route', () => {
     const key = exportObjectKey(TENANT_A.tenantId, 'ABCDEF01-2345-6789-ABCDEF0123456780', 'pdf');
     await storage.put(EXPORT_BUCKET, key, Buffer.alloc(0), { contentType: 'application/pdf' });
     const app = await fileRouteApp();
-    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(EXPORT_BUCKET, key) });
+    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(EXPORT_BUCKET, key), headers: await gatewayHeaders() });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('application/pdf');
     expect(res.headers['content-length']).toBe('0');
@@ -143,9 +150,10 @@ describe('reporting export file route', () => {
     await app.listen({ port: 0, host: '127.0.0.1' });
     const { port } = app.server.address() as AddressInfo;
     const url = await storage.signedUrl(EXPORT_BUCKET, KEY_A, { disposition });
+    const headers = await gatewayHeaders();
     const { rawHeaders, body } = await new Promise<{ rawHeaders: string[]; body: Buffer }>((resolve, reject) => {
       http
-        .get(`http://127.0.0.1:${port}${url}`, (res) => {
+        .get(`http://127.0.0.1:${port}${url}`, { headers }, (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (chunk: Buffer) => chunks.push(chunk));
           res.on('end', () => resolve({ rawHeaders: res.rawHeaders, body: Buffer.concat(chunks) }));
@@ -183,11 +191,33 @@ describe('reporting export file route', () => {
   ])('answers the legacy 403 to a URL %s', async (_case, urlFor) => {
     const app = await fileRouteApp();
     const url = await urlFor();
-    const res = await app.inject({ method: 'GET', url });
+    const res = await app.inject({ method: 'GET', url, headers: await gatewayHeaders() });
     expect(res.statusCode).toBe(403);
     expect(res.headers['content-type']).toMatch(/^application\/json/);
     expect(res.json()).toEqual(FORBIDDEN);
     assertContract(url, res);
+  });
+
+  it.each<[string, () => Promise<Record<string, string>>]>([
+    ['no credential', () => Promise.resolve({})],
+    [
+      'a user token alone',
+      async () => ({ authorization: `Bearer ${await mintUserToken({ sub: 'files-test-exporter', site: TENANT_A.siteId, roles: [Roles.systemUser, Roles.reportingExporter] })}` }),
+    ],
+  ])('refuses a valid URL sent with %s with the legacy 401, before opening the object', async (_case, credentials) => {
+    const open = vi.fn(storage.open);
+    const app = await fileRouteApp({ ...storage, open });
+    const url = await storage.signedUrl(EXPORT_BUCKET, KEY_A);
+    const before = logLines.length;
+    const res = await app.inject({ method: 'GET', url, headers: await credentials() });
+    expect(res.statusCode).toBe(401);
+    // Legacy answers 401 and 403 with the same authorization envelope.
+    expect(res.json()).toEqual(FORBIDDEN);
+    assertContract(url, res);
+    expect(logLines.slice(before).filter(({ severity }) => severity === 'WARNING').map(({ message }) => message)).toEqual([
+      'request denied: missing-credential',
+    ]);
+    expect(open).not.toHaveBeenCalled();
   });
 
   it('serves no finance-attachments URL', async () => {
@@ -202,7 +232,7 @@ describe('reporting export file route', () => {
     const url = await storage.signedUrl(EXPORT_BUCKET, key);
     await storage.delete(EXPORT_BUCKET, key);
     const app = await fileRouteApp();
-    const res = await app.inject({ method: 'GET', url });
+    const res = await app.inject({ method: 'GET', url, headers: await gatewayHeaders() });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
     assertContract(url, res);
@@ -220,7 +250,7 @@ describe('reporting export file route', () => {
   it('answers the legacy 500 when the object cannot be read', async () => {
     const failing: LocalStorageAdapter = { ...storage, open: () => Promise.reject(new Error('disk failure')) };
     const app = await fileRouteApp(failing);
-    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(EXPORT_BUCKET, KEY_A) });
+    const res = await app.inject({ method: 'GET', url: await storage.signedUrl(EXPORT_BUCKET, KEY_A), headers: await gatewayHeaders() });
     expect(res.statusCode).toBe(500);
     expect(res.json()).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
   });
