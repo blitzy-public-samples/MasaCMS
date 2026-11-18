@@ -59,7 +59,7 @@ export class UnpublishedEventsError extends Error {
   }
 }
 
-/** Records committed outbox events whose in-request publish was incomplete, withholding the active request's answer; a no-op outside a request. */
+/** Records the ids of committed outbox events whose in-request publish was incomplete, for service-kit's incomplete-flush policy; a no-op outside a request. */
 export function recordUnpublishedEvents(eventIds: readonly string[]): void {
   const store = requestContext.getStore();
   if (store !== undefined && eventIds.length > 0) (store.unpublishedEvents ??= []).push(...eventIds);

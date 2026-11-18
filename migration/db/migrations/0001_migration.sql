@@ -93,7 +93,7 @@ CREATE TABLE migration.file_manifest (
   site_id text COLLATE "C" NOT NULL,
   path text COLLATE "C" NOT NULL,
   file_id char(35) NOT NULL,
-  variant text NOT NULL, -- '' | _source | _small | _medium
+  variant text NOT NULL, -- '' for the original, otherwise the stored rendition suffix
   ext text NOT NULL,
   size bigint NOT NULL,
   sha256 char(64) NOT NULL,

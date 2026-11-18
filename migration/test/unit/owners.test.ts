@@ -57,7 +57,6 @@ import {
   type OwnershipUnitDoc,
 } from '../helpers/fixtures.js';
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Unit catalog
 
 const COMMITTED_OWNERSHIP = fileURLToPath(new URL('../../../opt2/table-ownership.json', import.meta.url));
@@ -347,7 +346,6 @@ describe('loadUnitCatalog over the committed ownership file', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Owners client
 
 

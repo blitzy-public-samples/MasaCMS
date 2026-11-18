@@ -208,7 +208,6 @@ export interface FakeLegacyDb extends LegacyDb {
   clearLogs(): void;
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Types and values
 
 type Collation = 'ci' | 'cs' | 'bin';
@@ -953,7 +952,6 @@ function dataLength(value: TV): TV {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Storage
 
 interface ColumnDef {
@@ -1230,7 +1228,6 @@ function undoTx(tx: TxState): void {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Syntax
 
 type CmpOp = '=' | '<>' | '<' | '>' | '<=' | '>=';
@@ -2223,7 +2220,6 @@ class Parser {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Evaluation
 
 interface OutColumn {
@@ -2771,7 +2767,6 @@ function evalBool(ctx: Exec, e: Expr, scope: Scope): boolean | null {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Catalog views
 
 function col(name: string, type: SqlType, nullable = false): OutColumn {
@@ -3039,7 +3034,6 @@ function systemSource(ctx: Exec, db: Database, schema: string, name: string, ali
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Statements
 
 interface SelectResult {
@@ -3615,7 +3609,6 @@ function execStatements(ctx: Exec, statements: readonly Stmt[]): void {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Server
 
 type Fault =
@@ -4125,7 +4118,6 @@ class FakeServer {
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Driver surfaces
 
 interface PoolConfig {
@@ -4664,7 +4656,6 @@ class FakePool extends EventEmitter {
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Port
 
 function columnType(def: LegacyColumnDef): SqlType {

@@ -59,7 +59,6 @@ const QUEUE_CONTROL_ROUTE = /^\/internal\/v1\/task-queues\/(?<queue>[^/]+)\/(?<o
 
 const JSON_HEADERS: Readonly<Record<string, string>> = Object.freeze({ 'content-type': 'application/json' });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Routed service client
 
 /** Answers one call a suite routes to a callee. */
@@ -145,7 +144,6 @@ export function createRoutedServiceClient(
   return router;
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // The `migration` schema
 
 /** Skip reason of the suites whose context needs the `migration` schema on PostgreSQL. */
@@ -209,7 +207,6 @@ function absentMigrationDb(): TenantDb {
   return Object.freeze({ schema: MIGRATION_SCHEMA, withTenant: refuse, withMetadata: refuse, end: () => Promise.resolve() });
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Test context
 
 /** Doubles and settings of {@link buildTestContext}; every one defaults to a fresh in-process double. */

@@ -23,7 +23,6 @@ import type { NativeTasksFile } from '../../src/scheduler/import.js';
 import { TEST_SOURCE_SHA, createTestDirs } from './env.js';
 import type { FakeLegacyDb, LegacyColumnDef, LegacyColumnType, LegacyTableOptions, Row } from './fake-legacy-db.js';
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Shared values
 
 /** Freezes `value` and everything reachable from it (Buffers excepted, which cannot be frozen), keeping its type. */
@@ -75,7 +74,6 @@ export type FixtureSiteId = (typeof FIXTURE_SITES)[number];
 /** Masa's Site Manager module id, the `ModuleID` of every site content node. */
 const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Legacy table definitions
 
 /** One table of the fake legacy database, defined as the live SQL Server catalog holds it. */
@@ -304,7 +302,6 @@ export function defineFixtureTables(
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Legacy file store
 
 /** One original of the fake file store and the renditions Masa's fileDAO wrote for it. */
@@ -393,7 +390,6 @@ export const FILE_LISTINGS: Readonly<Record<FixtureSiteId, FileListing>> = deepF
   ) as Record<FixtureSiteId, FileListing>,
 );
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Seed rows
 
 function text(value: unknown, fallback: string): string {
@@ -650,7 +646,6 @@ export function seedFakeLegacy(db: FakeLegacyDb, opts: SeedFakeLegacyOptions = {
   return Object.fromEntries(TABLE_NAMES.map((name) => [name, db.rows(TABLES[name].qualified)])) as SeededRows;
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Units and table ownership
 
 /** Unit ids the suites use, as `opt2/table-ownership.json` names them. */
@@ -954,7 +949,6 @@ export async function fixtureCatalog(): Promise<UnitCatalog> {
 /** The unit catalog of {@link FIXTURE_OWNERSHIP}, loaded once when this module is imported; catalogs are immutable. */
 export const FIXTURE_CATALOG: UnitCatalog = await fixtureCatalog();
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Cut-over groups and versions
 
 /** Group ids of {@link fixtureGroups}, each `grp:<smallest unit id>`. */
@@ -1236,7 +1230,6 @@ export async function writeCutoverDir(opts: WriteCutoverDirOptions = {}): Promis
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Scheduler capture
 
 /** Webroot of the fixture ColdFusion server, which names Masa's ACF monitor task. */
@@ -1326,7 +1319,6 @@ export const BOX_CFCONFIG_EXPORT_SAMPLE = deepFreeze({
   ),
 });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Order inventory
 
 function relation(kind: OrderRelation['kind'], child: string, parent: string, source: OrderRelation['source']): OrderRelation {
@@ -1400,7 +1392,6 @@ export async function writeInventoryFile(dir: string): Promise<string> {
   return file;
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Target tables and mappings
 
 const TENANT_ID: CanonicalColumn = { name: 'tenant_id', type: 's' };

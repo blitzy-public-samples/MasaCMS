@@ -98,7 +98,6 @@ function repointed(task: NativeTask): NativeTask {
   return { ...task, url: `${origin.protocol}//${origin.hostname}${url.pathname}${url.search}`, port: origin.port, paused: false };
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Catalog with the surveys schedule unit, whose export supplies the schedule version a survey task adoption carries
 
 type Catalog = typeof FIXTURE_CATALOG;
@@ -140,7 +139,6 @@ const SCHEDULE_COLUMNS: NonNullable<Parameters<OwnerDoubleState['seedRows']>[3]>
   { name: 'schedule_version', type: 'i' },
 ];
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Harness: one throwaway schema for the file, a fresh context and scheduler state per test
 
 const schema = await withMigrationSchema();
@@ -233,7 +231,6 @@ function bridgeTasks(h: Harness): NativeTask[] {
   return [...h.bridge.tasks.values()].sort((a, b) => (a.task < b.task ? -1 : a.task > b.task ? 1 : 0));
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Capture parsing
 
 describe('native task capture parsing', () => {
@@ -298,7 +295,6 @@ describe('native task capture parsing', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Import into migration.scheduler_state
 
 describe.skipIf(schema === null)(pgTitle('scheduler capture import'), () => {
@@ -352,7 +348,6 @@ describe.skipIf(schema === null)(pgTitle('scheduler capture import'), () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Site-monitor hand-off order
 
 describe.skipIf(schema === null)(pgTitle('site-monitor hand-off order'), () => {
@@ -434,7 +429,6 @@ describe.skipIf(schema === null)(pgTitle('site-monitor hand-off order'), () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Survey tasks, restoration and suspension
 
 const ADOPTED = [

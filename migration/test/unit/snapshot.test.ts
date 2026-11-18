@@ -287,7 +287,6 @@ describe('restoreLiveSql', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Snapshots over the migration schema
 
 const schema = await withMigrationSchema();

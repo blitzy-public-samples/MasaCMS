@@ -78,7 +78,7 @@ function registerFlush(tx: TenantTx, runtime: OutboxRuntime, ids: readonly strin
 }
 
 /**
- * Writes one outbox row in `tx` and, unless it is held, schedules its publish after COMMIT; an incomplete publish withholds the request's answer.
+ * Writes one outbox row in `tx` and, unless it is held, schedules its publish after COMMIT; an incomplete publish prevents a success answer and leaves service-kit to apply the route's incomplete-flush policy.
  * `runtime` defaults to the one registered for `tx.schema`, resolved after the transaction check.
  * Returns the stored envelope, or null when `origin` suppresses a `process` event.
  * Throws OutboxTransactionError without a tenant transaction and OutboxPayloadError when the payload or envelope fails its contract or the envelope exceeds the publish size limit.
