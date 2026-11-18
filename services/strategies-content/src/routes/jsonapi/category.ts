@@ -8,7 +8,6 @@ import {
   cfIsBoolean,
   cfListToArray,
   cfNumberString,
-  cfParseDateTimeText,
   cfToBoolean,
   cfUuid,
   isCfUuid,
@@ -139,10 +138,6 @@ const ASSIGNMENT_DEFAULTS: Readonly<Struct> = Object.freeze({
   path: '',
   saveerrors: false,
 });
-
-/** Instance values that hold a date, which categoryBean.init sets to `now()`. */
-const DATE_VALUES: ReadonlySet<string> = new Set(['datecreated', 'lastupdate']);
-const TS_TEXT = /^\{ts '[^']*'\}$/;
 
 /** A simple value as CFML renders it in string context; '' for null or undefined. */
 function cfText(value: unknown): string {
@@ -282,12 +277,6 @@ function categoryRowView(row: Readonly<Struct>, ctx: ContentRouteContext, call: 
   return categoryView(rowValues(selectedRow(row, call, CATEGORY_COLUMNS), ctx, isBlankFeedRow(row)), call);
 }
 
-/** An instance value as the serializer's isDate reads it: init's `now()` text as a date. */
-function legacyValue(key: string, value: unknown): unknown {
-  if (typeof value === 'string' && DATE_VALUES.has(key.toLowerCase()) && TS_TEXT.test(value)) return cfParseDateTimeText(value);
-  return value;
-}
-
 /** A category bean as the serializers read it, with categoryBean.getEditUrl (categoryBean.cfc:254-258). */
 function categoryView(values: Readonly<Struct>, call: JsonApiCall): ApiEntityView {
   const value = (name: string): string => cfText(getNoCase(values, name));
@@ -295,7 +284,7 @@ function categoryView(values: Readonly<Struct>, call: JsonApiCall): ApiEntityVie
     entityName: CATEGORY.name,
     configName: CATEGORY.name,
     primaryKey: CATEGORY_BEAN_PK,
-    allValues: Object.fromEntries(Object.entries(values).map(([key, item]) => [key, legacyValue(key, item)])),
+    allValues: { ...values },
     hasMany: CATEGORY.hasMany,
     hasOne: CATEGORY.hasOne,
     editUrl: adminUrl({

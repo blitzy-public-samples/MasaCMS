@@ -321,6 +321,19 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
       expect((await readFeed(fx.deps, ADMIN, { siteId: SITE_ID, name: 'Added Here' })).isNew).toBe(0);
     });
 
+    it('stores, finds by its posted name and lists a collection with the text legacy stores through code page 1252', async () => {
+      const posted = 'QA cp üé – ✓ 日本 😀 end';
+      const stored = 'QA cp üé – ? ?? ?? end';
+      const response = await update({ feedID: '', action: 'add', name: posted, description: posted, type: 'Local', csrf_token: 'good', csrf_token_expires: '1' });
+      expect([response.statusCode, response.headers.location]).toEqual([302, LIST_LOCATION]);
+      const feed = await readFeed(fx.deps, ADMIN, { siteId: SITE_ID, name: posted });
+      expect(feed.isNew).toBe(0);
+      expect(await feedRow(feed.text('feedid'))).toMatchObject({ name: stored, description: stored });
+      const listed = await get(`/v1/sites/${SITE_ID}/feeds`);
+      const { rc } = listed.json() as { rc: { rsLocal: Array<Record<string, unknown>> } };
+      expect(rc.rsLocal.find((row) => row.feedid === feed.text('feedid'))).toMatchObject({ name: stored });
+    });
+
     it('refuses a save that fails validation, which wrote nothing, as its form needs site values', async () => {
       const feedId = await newFeed('Valid');
       const response = await update({ feedID: feedId, action: 'update', name: 'Not Saved', lang: '', csrf_token: 'good', csrf_token_expires: '1' });

@@ -1,6 +1,6 @@
 /** In-memory data layer of the identity suites: a recording `TenantDb` over a fake pg pool, and an `IdentityRepository` held in memory. */
 // Ids, trimming and timestamps come from the platform helpers the real repository uses, never from local copies.
-import { cfUuid, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfUuid, javaTrim, sqlServerDatetime, windows1252Text } from '@opt2/platform/legacy-compat';
 import {
   GATE_PHASES,
   GATE_STATES,
@@ -1378,6 +1378,17 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     return tx.tenantId;
   }
 
+  /** `row` with its text columns as the real repository stores and matches a target-origin write of a unit table. */
+  function legacyRow(def: TableDefinition, row: Readonly<RepositoryRow>, ctx: WriteContext): RepositoryRow {
+    if (def.unit === undefined || (ctx.origin ?? 'target') !== 'target' || isMigrationAuthority(ctx.authority)) return { ...row };
+    const stored: RepositoryRow = { ...row };
+    for (const { name, type } of def.columns) {
+      const value = stored[name];
+      if (type === 's' && name !== 'tenant_id' && typeof value === 'string') stored[name] = windows1252Text(value);
+    }
+    return stored;
+  }
+
   /** Takes the write gate of `def`'s unit in `tx`, unless a migration authority passes it. */
   async function writeGate(tx: TenantTx, def: TableDefinition, ctx: WriteContext): Promise<void> {
     if (def.unit !== undefined && !isMigrationAuthority(ctx.authority)) await acquireWriteGates(tx, [def.unit]);
@@ -1396,7 +1407,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     const def = definition(table);
     checkColumns(def, tenantId, row);
     await writeGate(tx, def, ctx);
-    return insertNow(def, tenantId, writable(row)) as R;
+    return insertNow(def, tenantId, writable(legacyRow(def, row, ctx))) as R;
   }
 
   /** `update` whose patch `patchOf` computes from the row as stored when the write runs; null when absent or refused. */
@@ -1412,7 +1423,12 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     checkColumns(def, tenantId, key);
     checkKey(def, key);
     await writeGate(tx, def, ctx);
-    return patchNow(def, tenantId, key, patchOf) ?? null;
+    return (
+      patchNow(def, tenantId, legacyRow(def, key, ctx), (current) => {
+        const patch = patchOf(current);
+        return patch === null ? null : legacyRow(def, patch, ctx);
+      }) ?? null
+    );
   }
 
   async function update<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, patch: RepositoryRow, ctx: WriteContext = {}): Promise<R | null> {
@@ -1428,7 +1444,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     const def = definition(table);
     checkColumns(def, tenantId, row);
     checkKey(def, row);
-    const values = writable(row);
+    const values = writable(legacyRow(def, row, ctx));
     await writeGate(tx, def, ctx);
     const current = tenantRows(def.table, tenantId).get(keyOf(def, values));
     if (current === undefined) return insertNow(def, tenantId, values) as R;
@@ -1443,7 +1459,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     checkColumns(def, tenantId, key);
     checkKey(def, key);
     await writeGate(tx, def, ctx);
-    return (removeNow(def, tenantId, key) ?? null) as R | null;
+    return (removeNow(def, tenantId, legacyRow(def, key, ctx)) ?? null) as R | null;
   }
 
   async function findByKey<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow): Promise<R | null> {
@@ -1470,7 +1486,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
 
   async function findAccountsByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow[]> {
     const tenantId = await gated(tx, [USER_ACCOUNT.unit]);
-    const wanted = charKey(javaTrim(username));
+    const wanted = charKey(windows1252Text(javaTrim(username)));
     const rows = scan(
       USER_ACCOUNT.table,
       tenantId,
@@ -1564,7 +1580,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     const tenantId = await gated(tx, filterUnits([USER_ACCOUNT.unit], query.filter));
     const closed = closedUserKeys(tenantId);
     const matched = scopedAccounts(tenantId, query.siteId, (row) => row.opt2_state === 'active' && passesFilter(row, tenantId, query.filter)).filter(
-      (row): row is UserAccountRow & { username: string } => row.username !== null && cIlike(row.username, query.pattern),
+      (row): row is UserAccountRow & { username: string } => row.username !== null && cIlike(row.username, windows1252Text(query.pattern)),
     );
     return sorted(matched, byUserid)
       .slice(0, query.limit)
@@ -1595,7 +1611,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
 
   async function isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean> {
     const tenantId = await gated(tx, [USER_ACCOUNT.unit]);
-    const wanted = charKey(javaTrim(username));
+    const wanted = charKey(windows1252Text(javaTrim(username)));
     const except = charKey(javaTrim(exceptUserId));
     return scan(USER_ACCOUNT.table, tenantId, (row) => row.type === 2 && ci(row.username) === wanted && charKey(row.userid) !== except).length > 0;
   }
@@ -1649,7 +1665,8 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
   }
 
   function writeCredential(tx: TenantTx, userId: string, values: CredentialValues, ctx: WriteContext = {}): Promise<CredentialRow> {
-    return upsert<CredentialRow>(tx, CREDENTIAL.table, { userid: userId, password: daoNull(values.password), passwordcreated: values.passwordcreated }, ctx);
+    const passwordcreated = values.passwordcreated === null ? null : sqlServerDatetime(values.passwordcreated);
+    return upsert<CredentialRow>(tx, CREDENTIAL.table, { userid: userId, password: daoNull(values.password), passwordcreated }, ctx);
   }
 
   function touchLastLogin(tx: TenantTx, userId: string, at: Date, ctx: WriteContext = {}): Promise<LoginStateRow> {
@@ -1678,7 +1695,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       GROUP_ACCOUNT.table,
       tenantId,
       (row) =>
-        row.type === 1 && ci(row.groupname) === charKey(groupName) && ciEq(row.siteid, opts.siteId) && (visibility === null || row.ispublic === visibility),
+        row.type === 1 && ci(row.groupname) === charKey(windows1252Text(groupName)) && ciEq(row.siteid, opts.siteId) && (visibility === null || row.ispublic === visibility),
     );
     const first = sorted(found, byUserid)[0];
     return first === undefined ? null : copyRow(first);
@@ -1695,7 +1712,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     const found = scan(
       GROUP_ACCOUNT.table,
       tenantId,
-      (row) => ci(row[column]) === charKey(value) && siteIds.includes(row.siteid ?? '') && (column !== 'groupname' || row.type === 1),
+      (row) => ci(row[column]) === charKey(windows1252Text(value)) && siteIds.includes(row.siteid ?? '') && (column !== 'groupname' || row.type === 1),
     );
     return sorted(found, byUserid).map(copyRow);
   }
@@ -1703,7 +1720,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
   async function countAccountsByColumn(tx: TenantTx, column: 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<number> {
     if (siteIds.length === 0) return 0;
     const tenantId = await gated(tx, [USER_ACCOUNT.unit]);
-    return scan(USER_ACCOUNT.table, tenantId, (row) => ci(row[column]) === charKey(value) && siteIds.includes(row.siteid ?? '')).length;
+    return scan(USER_ACCOUNT.table, tenantId, (row) => ci(row[column]) === charKey(windows1252Text(value)) && siteIds.includes(row.siteid ?? '')).length;
   }
 
   /** Type=1 groups of `poolSiteId` with that visibility, by lowered name (NULL first) then userid. */
@@ -1849,7 +1866,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
   async function insertGroup(tx: TenantTx, input: GroupInput, actor: AuditActor | null, ctx: WriteContext = {}): Promise<GroupAccountRow> {
     const userid = input.userid === undefined || input.userid === '' ? cfUuid() : input.userid;
     const audit = lastUpdateInfo(actor, { userid, fname: input.fname, lname: input.lname }, await actorContact(tx, actor));
-    const now = clock.now();
+    const now = sqlServerDatetime(clock.now());
     const row: Omit<GroupAccountRow, 'tenant_id' | 'row_version'> & { row_version: number } = {
       userid,
       groupname: daoNull(input.groupname),
@@ -1905,7 +1922,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     const current = find(GROUP_ACCOUNT, tenantId, { userid: groupId });
     if (current === undefined) return null;
     const audit = lastUpdateInfo(actor, { userid: current.userid, fname: input.fname, lname: input.lname }, await actorContact(tx, actor));
-    const now = clock.now();
+    const now = sqlServerDatetime(clock.now());
     const password = input.password ?? '';
     const patch: RepositoryRow = {
       remoteid: daoNull(input.remoteid),
@@ -2418,7 +2435,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
   async function readStrike(tx: TenantTx, username: string): Promise<UserStrikeRow | null> {
     const tenantId = await gated(tx, [USER_STRIKE.unit]);
     const first = sorted(
-      scan(USER_STRIKE.table, tenantId, (row) => ci(row.username) === charKey(username)),
+      scan(USER_STRIKE.table, tenantId, (row) => ci(row.username) === charKey(windows1252Text(username))),
       by((row) => charKey(row.username)),
     )[0];
     return first === undefined ? null : copyRow(first);

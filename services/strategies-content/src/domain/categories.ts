@@ -15,6 +15,7 @@ import {
   cfToNumber,
   cfUuid,
   javaTrim,
+  sqlServerDatetime,
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
@@ -58,7 +59,7 @@ export type CfSimpleValue = string | number;
 export interface CategoryBean {
   categoryid: string;
   siteid: string;
-  /** A date, '' when unset, or the `{ts …}` text init assigns (`"#now()#"`). */
+  /** A date (init's `now()`), '' when unset, or text parseDateArg could not parse. */
   datecreated: Date | string;
   lastupdate: Date | string;
   lastupdateby: string;
@@ -194,17 +195,12 @@ function cfText(key: string, value: unknown): string {
   throw new TypeError(`Category value '${key}' is not a simple value`);
 }
 
-/** `value` without its milliseconds, as a date round-tripped through its `{ts}` text. */
-function wholeSeconds(value: Date): Date {
-  return new Date(Math.floor(value.getTime() / 1000) * 1000);
-}
-
 const T_DATE_TIME = /\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d/;
 const SPACE_DATE_TIME = /\d\d\d\d-\d\d-\d\d\s\d\d:\d\d:\d\d/;
 
 /** bean.parseDateArg (bean.cfc:278-301): a date, '' for no date, or the text itself when parsing throws. */
 function parseDateArg(key: string, value: unknown): Date | string {
-  if (value instanceof Date) return wholeSeconds(value);
+  if (value instanceof Date) return value;
   let arg = cfText(key, value);
   if (T_DATE_TIME.test(arg)) arg = arg.replace('T', ' ');
   if (!SPACE_DATE_TIME.test(arg) && cfLsIsDate(arg)) {
@@ -260,7 +256,7 @@ function auditName(actor: Actor): string {
 
 /** getBean('category'): bean.cfc init, then categoryBean init. */
 export function newCategoryBean(clock: Clock): CategoryBean {
-  const now = tsText(clock.now());
+  const now = clock.now();
   return {
     categoryid: '',
     siteid: '',
@@ -463,10 +459,10 @@ export function categoryStruct(bean: CategoryBean, extra: Iterable<readonly [str
   ]);
 }
 
-/** The DAO's `isDate(x) ? cf_sql_timestamp : null` of dateCreated and lastUpdate. */
+/** The DAO's `isDate(x) ? cf_sql_timestamp : null` of dateCreated and lastUpdate, as the datetime column stores it. */
 function auditDateColumn(value: Date | string): Date | null {
-  if (value instanceof Date) return value;
-  return value !== '' && cfIsDateText(value) ? cfTimestampParam(value) : null;
+  if (value instanceof Date) return sqlServerDatetime(value);
+  return value !== '' && cfIsDateText(value) ? sqlServerDatetime(cfTimestampParam(value)) : null;
 }
 
 /** The DAO's `iif(isNumeric(x), x, 0)` of an integer flag. */
@@ -703,7 +699,7 @@ async function createInScope(op: CategoryOp, data: Data): Promise<CategoryBean> 
   bean.errors = validateCategory(bean);
   if (Object.keys(bean.errors).length > 0) return bean;
 
-  bean.lastupdate = wholeSeconds(op.clock.now());
+  bean.lastupdate = op.clock.now();
   bean.lastupdateby = auditName(op.actor);
   if (!(has(data, 'categoryid') && cfText('categoryid', data.get('categoryid')) !== '')) {
     bean.categoryid = cfUuid();
@@ -751,7 +747,7 @@ async function updateInScope(op: CategoryOp, data: Data): Promise<CategoryBean> 
       );
     }
   }
-  bean.lastupdate = wholeSeconds(op.clock.now());
+  bean.lastupdate = op.clock.now();
   bean.lastupdateby = auditName(op.actor);
   if (found !== null) {
     await op.repository.categories.updateCategory(found.tx, bean.categoryid, updateColumns(bean), op.write);

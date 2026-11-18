@@ -10,7 +10,6 @@ import {
   cfIsBoolean,
   cfListToArray,
   cfNumberString,
-  cfParseDateTimeText,
   cfToBoolean,
   cfUuid,
   isCfUuid,
@@ -111,10 +110,6 @@ const TYPE_MODULES: ReadonlyMap<string, string> = new Map([
 ]);
 const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
 
-/** Instance values that hold a date, which feedBean.init sets to `now()`. */
-const DATE_VALUES: ReadonlySet<string> = new Set(['datecreated', 'lastupdate']);
-const TS_TEXT = /^\{ts '[^']*'\}$/;
-
 /** A simple value as CFML renders it in string context; '' for null or undefined. */
 function cfText(value: unknown): string {
   if (value === undefined || value === null) return '';
@@ -191,10 +186,9 @@ function rowBean(ctx: RouteContext, row: Readonly<Struct>, columns: ReadonlySet<
   return bean;
 }
 
-/** An instance value as legacy holds it: init's `now()` as a date, the params query as a query. */
-function legacyValue(key: string, value: unknown): unknown {
+/** An instance value as legacy holds it: the params query as a query. */
+function legacyValue(value: unknown): unknown {
   if (value instanceof FeedParamsQuery) return legacyQuery([...value.columns], value.rows.map((row) => ({ ...row })));
-  if (typeof value === 'string' && DATE_VALUES.has(key.toLowerCase()) && TS_TEXT.test(value)) return cfParseDateTimeText(value);
   return value;
 }
 
@@ -217,7 +211,7 @@ function feedView(call: JsonApiCall, bean: FeedBean, configName: string): ApiEnt
     entityName: 'content',
     configName,
     primaryKey: BEAN_PK,
-    allValues: Object.fromEntries(bean.entries().map(([key, value]) => [key, legacyValue(key, value)])),
+    allValues: Object.fromEntries(bean.entries().map(([key, value]) => [key, legacyValue(value)])),
     values: getterValues(bean),
     hasMany: FEED.hasMany,
     hasOne: FEED.hasOne,

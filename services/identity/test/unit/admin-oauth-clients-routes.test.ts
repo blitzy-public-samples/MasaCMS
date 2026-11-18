@@ -437,6 +437,17 @@ describe.skipIf(!available)('cwebservice screens against PostgreSQL', () => {
     expect((await storedClient(clientId))?.name).toBe('Feed reader');
   });
 
+  it('store and answer a client name and description with the text legacy stores through code page 1252', async () => {
+    const clientId = cfUuid();
+    const headers = await headersFor([Roles.s2], await newSession());
+    const form = new URLSearchParams({ siteid: SITE, clientid: clientId, name: 'Reader ✓ 😀', granttype: 'client_credentials', description: 'Line 1 – ünï 🚀', ...csrfFields(clientId) });
+
+    const saved = await send('PUT', clientUrl(clientId), headers, form);
+
+    expect(saved.json()).toMatchObject({ written: true, errors: {}, client: { name: 'Reader ? ??', description: 'Line 1 – ünï ??' } });
+    expect(await storedClient(clientId)).toMatchObject({ name: 'Reader ? ??', description: 'Line 1 – ünï ??' });
+  });
+
   it('update a stored client from a JSON body with the token in headers, reading redirectURL in any case', async () => {
     const stored = await seedClient(SITE, { name: 'Before' });
     const { [CSRF_FIELD_TOKEN]: token = '', [CSRF_FIELD_EXPIRES]: expires = '' } = csrfFields(stored.clientid, 1);

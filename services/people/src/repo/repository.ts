@@ -9,7 +9,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfUuid, sqlServerDatetime } from '@opt2/platform/legacy-compat';
 import {
   ADDRESS,
   EXTEND_ATTRIBUTE,
@@ -1004,7 +1004,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   }
 
   async function insertPerson(tx: TenantTx, input: PersonInput, ctx: WriteContext = {}): Promise<PersonRow> {
-    const now = clock.now();
+    // userDAO.create binds now() into datetime columns, which keep it at 1/300 s.
+    const now = sqlServerDatetime(clock.now());
     const values: Readonly<Record<string, unknown>> = input;
     const row: RepositoryRow = {};
     for (const column of PERSON_INSERT_COLUMNS) {
@@ -1026,7 +1027,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   async function updatePerson(tx: TenantTx, userId: string, input: PersonUpdate, ctx: WriteContext = {}): Promise<PersonRow | null> {
     // Locked first, so concurrent saves never publish the same row_version.
     const current = (await readUnits<Pick<PersonRow, 'userid' | 'row_version'>>(tx, PERSON.unit, lockPersonSql, [tx.tenantId, userId]))[0];
-    const now = clock.now();
+    const now = sqlServerDatetime(clock.now());
     const values: Readonly<Record<string, unknown>> = input;
     const patch: RepositoryRow = {};
     for (const column of PERSON_UPDATE_COLUMNS) {

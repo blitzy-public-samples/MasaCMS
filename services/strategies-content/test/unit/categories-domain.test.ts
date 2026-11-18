@@ -53,6 +53,8 @@ import { CONTENT_UNITS, type CategoryAssignRow, type CategoryRow, type TrashRow 
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 456);
 const NOW_S = new Date(2026, 5, 30, 10, 0, 0, 0);
+/** NOW as the legacy datetime column stores it, at 1/300 s. */
+const NOW_STORED = new Date(2026, 5, 30, 10, 0, 0, 457);
 const TS_NOW = "{ts '2026-06-30 10:00:00'}";
 const clock = fixedClock(NOW);
 const POOL = TENANT_UMBRELLA.siteId;
@@ -86,13 +88,13 @@ const B = actor({ tid: TENANT_B.tenantId, site: TENANT_B.siteId });
 const named = (patch: Partial<CategoryBean>): CategoryBean => ({ ...newCategoryBean(clock), name: 'Topic', ...patch });
 
 describe('categoryBean rules', () => {
-  it('getBean("category") holds the categoryBean init values with now() as {ts} text', () => {
+  it('getBean("category") holds the categoryBean init values with now() as a date', () => {
     const bean = newCategoryBean(clock);
     expect(bean).toEqual({
       categoryid: '',
       siteid: '',
-      datecreated: TS_NOW,
-      lastupdate: TS_NOW,
+      datecreated: NOW,
+      lastupdate: NOW,
       lastupdateby: '',
       name: '',
       isinterestgroup: 1,
@@ -165,7 +167,7 @@ describe('categoryBean rules', () => {
     expect(wddxStructGet(struct, 'categoryid')).toBe(cfId('K', 1));
     expect(wddxStructGet(struct, 'isactive')).toEqual(new WddxNumber('1.0'));
     expect(wddxStructGet(struct, 'isnew')).toEqual(new WddxNumber('1.0'));
-    expect(wddxStructGet(struct, 'datecreated')).toBe(TS_NOW);
+    expect(wddxStructGet(struct, 'datecreated')).toEqual(new WddxDate(NOW));
     expect(wddxStructGet(struct, 'remotepubdate')).toEqual(new WddxDate(NOW_S));
     expect(wddxStructGet(struct, 'addobjects')).toEqual([]);
     expect((wddxStructGet(struct, 'errors') as WddxStruct).entries).toEqual([['name', 'bad']]);
@@ -252,7 +254,7 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
   });
 
   describe('createCategory', () => {
-    it('creates under a parent with a CF UUID, the root-first path, the clock second and the parent filename', async () => {
+    it('creates under a parent with a CF UUID, the root-first path, the clock time and the parent filename', async () => {
       const root = await create(A, { siteid: POOL, name: 'Parent Topic' });
       const child = await create(A, { siteid: POOL, name: 'Child Topic', parentid: root.categoryid });
       expect(isCfUuid(root.categoryid)).toBe(true);
@@ -262,7 +264,7 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
         path: `${root.categoryid},${child.categoryid}`,
         urltitle: 'child-topic',
         filename: 'parent-topic/child-topic',
-        lastupdate: NOW_S,
+        lastupdate: NOW,
         lastupdateby: 'Admin User',
         isnew: '0',
       });
@@ -271,8 +273,8 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
         categoryid: child.categoryid,
         siteid: POOL,
         parentid: root.categoryid,
-        datecreated: NOW_S,
-        lastupdate: NOW_S,
+        datecreated: NOW_STORED,
+        lastupdate: NOW_STORED,
         lastupdateby: 'Admin User',
         name: 'Child Topic',
         notes: null,
@@ -383,8 +385,8 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
       expect((await stored(UMBRELLA, mc))?.path).toBe(`${ma},${mb},${mc}`);
 
       const moved = await updateCategory(deps, A, { categoryid: mb, siteid: POOL, name: 'Move B', parentid: md });
-      expect(moved).toMatchObject({ parentid: md, path: `${md},${mb}`, filename: 'move-d/move-b', lastupdate: NOW_S, errors: {} });
-      expect(await stored(UMBRELLA, mb)).toMatchObject({ parentid: md, path: `${md},${mb}`, filename: 'move-d/move-b', lastupdate: NOW_S, lastupdateby: 'Admin User' });
+      expect(moved).toMatchObject({ parentid: md, path: `${md},${mb}`, filename: 'move-d/move-b', lastupdate: NOW, errors: {} });
+      expect(await stored(UMBRELLA, mb)).toMatchObject({ parentid: md, path: `${md},${mb}`, filename: 'move-d/move-b', lastupdate: NOW_STORED, lastupdateby: 'Admin User' });
       expect(await stored(UMBRELLA, mc)).toMatchObject({ parentid: mb, path: `${md},${mb},${mc}`, filename: 'move-d/move-b/move-c' });
       expect(await stored(UMBRELLA, ma)).toMatchObject({ path: ma, filename: 'move-a' });
     });
@@ -412,7 +414,7 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
         name: 'Notes A',
         notes: 'Updated notes',
         remotepubdate: new Date(2026, 1, 3),
-        datecreated: NOW_S,
+        datecreated: NOW_STORED,
         filename: 'notes-a',
       });
       expect((await stored(UMBRELLA, nb))?.filename).toBe('notes-a/notes-b');
@@ -428,7 +430,7 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
       );
       const child = await create(A, { siteid: POOL, name: 'Bare Child', parentid: bare });
       expect(child).toMatchObject({ path: `${bare},${child.categoryid}`, filename: 'bare-parent/bare-child' });
-      expect(await stored(UMBRELLA, bare)).toMatchObject({ filename: 'bare-parent', urltitle: 'bare-parent', lastupdate: NOW_S, lastupdateby: 'Admin User' });
+      expect(await stored(UMBRELLA, bare)).toMatchObject({ filename: 'bare-parent', urltitle: 'bare-parent', lastupdate: NOW_STORED, lastupdateby: 'Admin User' });
     });
 
     it('returns the validation errors and writes nothing', async () => {

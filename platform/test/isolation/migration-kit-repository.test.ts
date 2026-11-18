@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
+import { LegacyServiceUnavailableError, windows1252Text } from '../../src/legacy-compat/index.js';
 import { encodeKey, encodeRow, legacyRowHash, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
 import { migrationKitSql, type GatePhase, type GateState } from '../../src/migration-kit/ddl.js';
 import {
@@ -22,6 +22,7 @@ import {
   type Repository,
   type RepositoryRow,
   type TableDefinition,
+  type WriteContext,
 } from '../../src/migration-kit/repository.js';
 import { localTimestamp } from '../../src/outbox/ddl.js';
 import { fixedClock, newRequestContext, runWithRequestContext, type RequestContextStore } from '../../src/service-kit/index.js';
@@ -1063,5 +1064,77 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     await setGate(ITEM_UNIT, 'closed', 'executing');
     expect(ungated.units()).toEqual([]);
     expect(await withGatedTenant(handle.app, tenant, (tx) => ungated.findByKey(tx, 'item', { item_id: 'n1' }), { budgetMs: 150 })).toEqual(stored);
+  });
+
+  describe('with legacyText', () => {
+    const legacy = (tables: TableDefinition[] = [ITEM, TAG]): Repository =>
+      createRepository({ owner: OWNER, schema: handle.schema, tables, clock: CLOCK, legacyText: windows1252Text });
+
+    it('stores the text of target-origin keyed writes as legacy does, matches their keys the same way and logs the stored images', async () => {
+      const tenant = freshTenant();
+      const store = legacy();
+      const rows = await handle.app.withTenant(tenant, async (tx) => ({
+        inserted: await store.insert(tx, 'item', { item_id: 'k😀', name: 'Cat ü 😀', qty: 1 }),
+        updated: await store.update(tx, 'item', { item_id: 'k😀' }, { name: 'QA cp üé – ✓ 日本 😀 end' }),
+        upserted: await store.upsert(tx, 'item', { item_id: 'u1', name: '✓ one' }),
+        resaved: await store.upsert(tx, 'item', { item_id: 'u1', name: '✗ one' }),
+        absent: await store.insertAbsent(tx, 'item', [{ item_id: 'a1', name: 'Ā two' }], ['item_id']),
+        deleted: await store.delete(tx, 'item', { item_id: 'k😀' }),
+      }));
+      expect(rows.inserted).toEqual({ tenant_id: tenant, item_id: 'k??', name: 'Cat ü ??', qty: 1 });
+      expect(rows.updated).toEqual({ ...rows.inserted, name: 'QA cp üé – ? ?? ?? end' });
+      expect(rows.upserted).toEqual({ tenant_id: tenant, item_id: 'u1', name: '? one', qty: null });
+      expect(rows.resaved).toEqual(rows.upserted);
+      expect(rows.absent).toEqual([{ tenant_id: tenant, item_id: 'a1', name: '? two', qty: null }]);
+      expect(rows.deleted).toEqual(rows.updated);
+      expect((await changelog(tenant)).map((change) => [change.op, change.after])).toEqual([
+        ['insert', keyedImage(rows.inserted)],
+        ['update', keyedImage(rows.updated as RepositoryRow)],
+        ['insert', keyedImage(rows.upserted)],
+        ['insert', keyedImage(rows.absent[0] as RepositoryRow)],
+        ['delete', null],
+      ]);
+    });
+
+    it('hashes, deletes and replaces target-origin keyless rows by their stored text', async () => {
+      const tenant = freshTenant();
+      const store = legacy();
+      const posted = { label: 'Tag 😀', weight: 1 };
+      const stored = { label: 'Tag ??', weight: 1 };
+      const result = await handle.app.withTenant(tenant, async (tx) => {
+        const first = await store.insert(tx, 'tag_member', posted);
+        await store.insert(tx, 'tag_member', stored);
+        await store.insert(tx, 'tag_member', posted);
+        return {
+          first,
+          removed: await store.deleteOne(tx, 'tag_member', posted),
+          replaced: await store.replaceOne(tx, 'tag_member', posted, { label: '✓', weight: 2 }),
+        };
+      });
+      expect(result.first).toEqual({ tenant_id: tenant, ...stored, legacy_row_hash: legacyRowHash(TAG_DATA, stored), occurrence: 1 });
+      expect(result.removed).toMatchObject({ ...stored, occurrence: 3 });
+      expect(result.replaced).toMatchObject({ label: '?', weight: 2, legacy_row_hash: legacyRowHash(TAG_DATA, { label: '?', weight: 2 }), occurrence: 1 });
+      expect((await tagRows(tenant)).sort()).toEqual([
+        ['?', 2, 1],
+        ['Tag ??', 1, 1],
+      ]);
+      expect((await changelog(tenant)).map((change) => change.key)).toEqual(Array.from({ length: 5 }, () => encodeRow(TAG_DATA, stored)));
+    });
+
+    it.each<[string, WriteContext, () => Repository]>([
+      ['a backfill under a migration authority', { origin: 'backfill', authority: createMigrationAuthority() }, () => legacy()],
+      ['a target-origin write under a migration authority', { authority: createMigrationAuthority() }, () => legacy()],
+      ['a legacy-window import', { origin: 'legacy-window' }, () => legacy()],
+      ['a table without a unit', {}, () => legacy([{ ...ITEM, unit: undefined }])],
+      ['a repository without legacyText', {}, () => repo],
+    ])('stores the exact text of %s', async (_label, ctx, repositoryOf) => {
+      const tenant = freshTenant();
+      const store = repositoryOf();
+      const row = await handle.app.withTenant(tenant, async (tx) => {
+        await store.insert(tx, 'item', { item_id: 'x😀', name: 'Cat ü 😀', qty: 1 }, ctx);
+        return store.update(tx, 'item', { item_id: 'x😀' }, { name: '✓ 日本 😀' }, ctx);
+      });
+      expect(row).toEqual({ tenant_id: tenant, item_id: 'x😀', name: '✓ 日本 😀', qty: 1 });
+    });
   });
 });

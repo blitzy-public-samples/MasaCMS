@@ -448,6 +448,18 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect(await gated(SITE, (tx) => repo.membershipGroupIds(tx, groupId))).toEqual([]);
   });
 
+  it('stores and reads a group name and description with the text legacy stores through code page 1252', async () => {
+    const groupId = nextId('B');
+    const created = await send('POST', '/v1/groups', await admin(), {
+      userid: groupId, groupname: 'Squad 😀', description: 'Line 1 – ünï 🚀', isPublic: '0', ...csrfFields(groupId),
+    });
+
+    expect(created.json()).toMatchObject({ written: true, errors: {} });
+    expect(await gated(SITE, (tx) => repo.findGroup(tx, groupId))).toMatchObject({ groupname: 'Squad ??', description: 'Line 1 – ünï ??' });
+    expect(await gated(SITE, (tx) => repo.findGroupByName(tx, 'Squad 😀', { siteId: SITE }))).toMatchObject({ userid: groupId });
+    expect((await send('GET', `/v1/groups/${groupId}`, await admin())).json()).toMatchObject({ isNew: false, group: { GroupName: 'Squad ??' } });
+  });
+
   it('keeps the login and visibility fields of an S2 group a non-superuser saves', async () => {
     const res = await send('PUT', `/v1/groups/${ids.supers}`, await editor(), {
       groupname: 'Supers', email: 'changed@example.com', isPublic: '1', s2: '0', ...csrfFields(ids.supers),

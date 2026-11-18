@@ -365,7 +365,8 @@ describe.skipIf(!(await pgAvailable()))('JSON API feed handler', () => {
 
     beforeAll(async () => {
       await fx.inTenant(async (tx) => {
-        for (const values of CORPUS) await fx.repo.feeds.insertFeed(tx, values as FeedInput);
+        // Backfilled as stored, so the corpus keeps text a target-origin write would store through code page 1252.
+        for (const values of CORPUS) await fx.repo.feeds.insertFeed(tx, values as FeedInput, {}, { origin: 'backfill' });
       }, TENANT_B.tenantId);
     });
 

@@ -18,6 +18,7 @@ import {
   isCfUuid,
   isValidVariableName,
   javaTrim,
+  sqlServerDatetime,
 } from '@opt2/platform/legacy-compat';
 // The role names identity mints, read as permissions.ts reads them.
 import { Roles } from '@opt2/platform/auth';
@@ -109,17 +110,12 @@ function isJson(value: unknown): value is string {
   }
 }
 
-/** `value` without its milliseconds, as a date round-tripped through its `{ts}` text. */
-function wholeSeconds(value: Date): Date {
-  return new Date(Math.floor(value.getTime() / 1000) * 1000);
-}
-
 const T_DATE_TIME = /\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d/;
 const SPACE_DATE_TIME = /\d\d\d\d-\d\d-\d\d\s\d\d:\d\d:\d\d/;
 
 /** bean.parseDateArg (bean.cfc:278-301) over its `String` argument: a date, '' for no date, or the text when parsing throws. */
 function parseDateArg(value: unknown): Date | string {
-  if (value instanceof Date) return wholeSeconds(value);
+  if (value instanceof Date) return value;
   let arg = cfText(value);
   if (T_DATE_TIME.test(arg)) arg = arg.replace('T', ' ');
   if (!SPACE_DATE_TIME.test(arg) && cfLsIsDate(arg)) {
@@ -258,7 +254,7 @@ export class FeedBean {
   /** getBean('feed'): beanFeed.init then feedBean.init (feedBean.cfc:137-200); dot-notation keys are upper-cased as ACF stores them. */
   static init(clock: Clock): FeedBean {
     const bean = new FeedBean();
-    const now = tsText(clock.now());
+    const now = clock.now();
     const assignments: Array<[string, unknown]> = [
       ['ISNEW', 1], ['ERRORS', {}], ['FROMMURACACHE', false], ['INSTANCEID', cfUuid()], ['ADDOBJECTS', []], ['REMOVEOBJECTS', []],
       ['SITEID', ''], ['CONTENTPOOLID', ''], ['ENTITYNAME', ''], ['FIELDS', ''], ['DISTINCT', false], ['TABLE', ''], ['KEYFIELD', ''],
@@ -727,11 +723,11 @@ function numericLiteral(bean: FeedBean, key: string): number {
   return Math.trunc(cfToNumber(value));
 }
 
-/** feedDAO's `isDate(x) ? cf_sql_timestamp : null` of dateCreated and lastUpdate. */
+/** feedDAO's `isDate(x) ? cf_sql_timestamp : null` of dateCreated and lastUpdate, as the datetime column stores it. */
 function auditDateColumn(value: unknown): Date | null {
-  if (value instanceof Date) return value;
+  if (value instanceof Date) return sqlServerDatetime(value);
   const text = cfText(value);
-  return text !== '' && cfIsDateText(text) ? cfTimestampParam(text) : null;
+  return text !== '' && cfIsDateText(text) ? sqlServerDatetime(cfTimestampParam(text)) : null;
 }
 
 /** The tcontentfeeds columns feedDAO.update binds (feedDAO.cfc:267-311); the repository stores '' as NULL. */

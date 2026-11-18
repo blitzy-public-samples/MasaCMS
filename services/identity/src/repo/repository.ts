@@ -9,7 +9,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { cfUuid } from '@opt2/platform/legacy-compat';
+import { cfUuid, sqlServerDatetime, windows1252Text } from '@opt2/platform/legacy-compat';
 import { compileGroupFeed, type GroupFeedPage, type GroupFeedQuery } from './group-feed.js';
 import {
   ACCOUNT_OPERATION,
@@ -867,7 +867,7 @@ async function insertIfAbsent<R>(tx: TenantTx, savepoint: string, insert: () => 
 /** Builds the identity repository over the platform repository of `OWNED_TABLES`. */
 export function createIdentityRepository({ clock = systemClock, schema = SCHEMA, pageSize = READ_PAGE_SIZE }: IdentityRepositoryOptions = {}): IdentityRepository {
   if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new RangeError(`pageSize must be a positive integer, not ${pageSize}`);
-  const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
+  const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock, legacyText: windows1252Text });
   const name = (table: { table: string }): string => qualified(schema, table.table);
   const userAccount = name(USER_ACCOUNT);
   const credential = name(CREDENTIAL);
@@ -1212,7 +1212,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   async function findAccountsByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow[]> {
-    return readUnits<UserAccountRow>(tx, USER_ACCOUNT.unit, activeAccountsSql, [tx.tenantId, cfTrim(username), poolSiteId ?? null]);
+    return readUnits<UserAccountRow>(tx, USER_ACCOUNT.unit, activeAccountsSql, [tx.tenantId, windows1252Text(cfTrim(username)), poolSiteId ?? null]);
   }
 
   async function findAccountByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow | null> {
@@ -1256,7 +1256,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     tx: TenantTx,
     query: { siteId: string; pattern: string; filter?: AccountFilter; limit: number },
   ): Promise<UsernameCandidateRow[]> {
-    const params = [tx.tenantId, query.siteId, query.pattern, query.limit, ...accountFilterParams(query.filter)];
+    const params = [tx.tenantId, query.siteId, windows1252Text(query.pattern), query.limit, ...accountFilterParams(query.filter)];
     return readUnits<UsernameCandidateRow>(tx, filterUnits([USER_ACCOUNT.unit], query.filter), usernameCandidatesSql, params);
   }
 
@@ -1267,7 +1267,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   async function isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean> {
-    const holders = await readUnits(tx, USER_ACCOUNT.unit, usernameHolderSql, [tx.tenantId, cfTrim(username), cfTrim(exceptUserId)]);
+    const holders = await readUnits(tx, USER_ACCOUNT.unit, usernameHolderSql, [tx.tenantId, windows1252Text(cfTrim(username)), cfTrim(exceptUserId)]);
     return holders.length > 0;
   }
 
@@ -1320,7 +1320,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   function writeCredential(tx: TenantTx, userId: string, values: CredentialValues, ctx: WriteContext = {}): Promise<CredentialRow> {
-    const row: Omit<CredentialRow, 'tenant_id'> = { userid: userId, password: daoNull(values.password), passwordcreated: values.passwordcreated };
+    const passwordcreated = values.passwordcreated === null ? null : sqlServerDatetime(values.passwordcreated);
+    const row: Omit<CredentialRow, 'tenant_id'> = { userid: userId, password: daoNull(values.password), passwordcreated };
     return base.upsert<CredentialRow>(tx, CREDENTIAL.table, row, ctx);
   }
 
@@ -1344,7 +1345,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
 
   async function findGroupByName(tx: TenantTx, groupName: string, opts: { siteId: string; isPublic?: boolean }): Promise<GroupAccountRow | null> {
     const visibility = opts.isPublic === undefined ? null : opts.isPublic ? 1 : 0;
-    const found = await readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, groupByNameSql, [tx.tenantId, groupName, opts.siteId, visibility]);
+    const found = await readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, groupByNameSql, [tx.tenantId, windows1252Text(groupName), opts.siteId, visibility]);
     return found[0] ?? null;
   }
 
@@ -1355,12 +1356,12 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     siteIds: readonly string[],
   ): Promise<GroupAccountRow[]> {
     if (siteIds.length === 0) return [];
-    return readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, groupsByColumnSql(column), [tx.tenantId, value, [...siteIds]]);
+    return readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, groupsByColumnSql(column), [tx.tenantId, windows1252Text(value), [...siteIds]]);
   }
 
   async function countAccountsByColumn(tx: TenantTx, column: 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<number> {
     if (siteIds.length === 0) return 0;
-    const rows = await readUnits<{ n: number }>(tx, USER_ACCOUNT.unit, accountsByColumnSql(column), [tx.tenantId, value, [...siteIds]]);
+    const rows = await readUnits<{ n: number }>(tx, USER_ACCOUNT.unit, accountsByColumnSql(column), [tx.tenantId, windows1252Text(value), [...siteIds]]);
     return rows[0]?.n ?? 0;
   }
 
@@ -1411,7 +1412,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   async function insertGroup(tx: TenantTx, input: GroupInput, actor: AuditActor | null, ctx: WriteContext = {}): Promise<GroupAccountRow> {
     const userid = input.userid === undefined || input.userid === '' ? cfUuid() : input.userid;
     const audit = lastUpdateInfo(actor, { userid, fname: input.fname, lname: input.lname }, await actorContact(tx, actor));
-    const now = clock.now();
+    // userDAO.create binds now() into datetime columns, which keep it at 1/300 s.
+    const now = sqlServerDatetime(clock.now());
     const row: Omit<GroupAccountRow, 'tenant_id' | 'row_version'> & { row_version: number } = {
       userid,
       groupname: daoNull(input.groupname),
@@ -1469,7 +1471,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       return null;
     }
     const audit = lastUpdateInfo(actor, { userid: current.userid, fname: input.fname, lname: input.lname }, await actorContact(tx, actor));
-    const now = clock.now();
+    const now = sqlServerDatetime(clock.now());
     const password = input.password ?? '';
     const patch: RepositoryRow = {
       remoteid: daoNull(input.remoteid),
@@ -1945,7 +1947,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   async function readStrike(tx: TenantTx, username: string): Promise<UserStrikeRow | null> {
-    return (await readUnits<UserStrikeRow>(tx, USER_STRIKE.unit, strikeSql, [tx.tenantId, username]))[0] ?? null;
+    return (await readUnits<UserStrikeRow>(tx, USER_STRIKE.unit, strikeSql, [tx.tenantId, windows1252Text(username)]))[0] ?? null;
   }
 
   async function ensureStrike(tx: TenantTx, username: string, at: Date, ctx: WriteContext = {}): Promise<UserStrikeRow> {
@@ -1959,7 +1961,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
 
   /** The strike row of `username` locked for update; null when absent. */
   async function lockStrike(tx: TenantTx, username: string): Promise<UserStrikeRow | null> {
-    return (await readUnits<UserStrikeRow>(tx, USER_STRIKE.unit, lockStrikeSql, [tx.tenantId, username]))[0] ?? null;
+    return (await readUnits<UserStrikeRow>(tx, USER_STRIKE.unit, lockStrikeSql, [tx.tenantId, windows1252Text(username)]))[0] ?? null;
   }
 
   async function setStrike(tx: TenantTx, username: string, values: StrikeValues, ctx: WriteContext = {}): Promise<UserStrikeRow | null> {

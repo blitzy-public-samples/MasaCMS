@@ -6,6 +6,7 @@
  * SQL Server semantics are reproduced where results depend on them: text equality, LIKE and grouping are
  * case-insensitive (SQL_Latin1_General_CP1_CI_AS), text sorts through lower(), and NULLs sort lowest.
  */
+import { windows1252Text } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -149,27 +150,27 @@ function cfList(value: string | null | undefined): string[] {
   return (value ?? '').split(',').filter((item) => item.length > 0);
 }
 
-/** SQL Server `expr = value`: case-insensitive, trailing spaces ignored. */
+/** SQL Server `expr = value` for a varchar parameter: case-insensitive, trailing spaces ignored. */
 function ciEq(p: SqlParams, expr: string, value: unknown): string {
-  return `lower(rtrim(${expr})) = lower(rtrim(${p.add(value)}::text))`;
+  return `lower(rtrim(${expr})) = lower(rtrim(${p.add(typeof value === 'string' ? windows1252Text(value) : value)}::text))`;
 }
 
-/** SQL Server `expr LIKE pattern`: case-insensitive and without an escape character. */
+/** SQL Server `expr LIKE pattern` for a varchar parameter: case-insensitive and without an escape character. */
 function ciLike(p: SqlParams, expr: string, pattern: string): string {
-  return `upper(${expr}) LIKE upper(${p.add(pattern)}::text) ESCAPE ''`;
+  return `upper(${expr}) LIKE upper(${p.add(windows1252Text(pattern))}::text) ESCAPE ''`;
 }
 
-/** SQL Server `expr IN (values)` under its case-insensitive collation. */
+/** SQL Server `expr IN (values)` for varchar parameters under its case-insensitive collation. */
 function ciIn(p: SqlParams, expr: string, values: readonly string[]): string {
-  return `lower(rtrim(${expr})) IN (SELECT lower(rtrim(v)) FROM unnest(${p.add(values)}::text[]) AS v)`;
+  return `lower(rtrim(${expr})) IN (SELECT lower(rtrim(v)) FROM unnest(${p.add(values.map(windows1252Text))}::text[]) AS v)`;
 }
 
 /** `ciEq` (a value) or `ciIn` (a list) behind a leakproof `lookup_ci` prefilter, a superset its indexes seek under forced RLS. */
 function ciLookup(p: SqlParams, schema: string, expr: string, value: string | readonly string[]): string {
   const key = `((${expr}::bpchar) COLLATE ${qualified(schema, 'lookup_ci')})`;
   return typeof value === 'string'
-    ? `(${key} = ${p.add(value)}::text::bpchar AND ${ciEq(p, expr, value)})`
-    : `(${key} = ANY(${p.add(value)}::text[]::bpchar[]) AND ${ciIn(p, expr, value)})`;
+    ? `(${key} = ${p.add(windows1252Text(value))}::text::bpchar AND ${ciEq(p, expr, value)})`
+    : `(${key} = ANY(${p.add(value.map(windows1252Text))}::text[]::bpchar[]) AND ${ciIn(p, expr, value)})`;
 }
 
 /** The forms a stored single-case CF id may take for a caller-supplied id. */

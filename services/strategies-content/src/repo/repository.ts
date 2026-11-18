@@ -11,7 +11,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { LEGACY_ADMIN_SENTINEL_ID, LegacyServiceUnavailableError, cfEq, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ADMIN_SENTINEL_ID, LegacyServiceUnavailableError, cfEq, cfUuid, isCfUuid, windows1252Text } from '@opt2/platform/legacy-compat';
 import * as contentQueries from './content-queries.js';
 import { ContentQueryError, SqlParams, firstById, type SortDirection } from './content-queries.js';
 import { sqlFeedSource, type BeanFeedSource, type FeedColumn, type FeedRunner, type FeedTableSpec } from './bean-feed-sql.js';
@@ -180,19 +180,19 @@ function idEq(p: SqlParams, expr: string, id: string): string {
   return idIn(p, expr, [id]);
 }
 
-/** SQL Server `expr = value`: case-insensitive, trailing spaces ignored. */
+/** SQL Server `expr = value` for a varchar parameter: case-insensitive, trailing spaces ignored. */
 function ciEq(p: SqlParams, expr: string, value: string): string {
-  return `lower(rtrim(${expr})) = lower(rtrim(${p.add(value)}::text))`;
+  return `lower(rtrim(${expr})) = lower(rtrim(${p.add(windows1252Text(value))}::text))`;
 }
 
-/** SQL Server `expr IN (values)` under its case-insensitive collation. */
+/** SQL Server `expr IN (values)` for varchar parameters under its case-insensitive collation. */
 function ciIn(p: SqlParams, expr: string, values: readonly string[]): string {
-  return `lower(rtrim(${expr})) IN (SELECT lower(rtrim(v)) FROM unnest(${p.add(values)}::text[]) AS v)`;
+  return `lower(rtrim(${expr})) IN (SELECT lower(rtrim(v)) FROM unnest(${p.add(values.map(windows1252Text))}::text[]) AS v)`;
 }
 
-/** SQL Server `expr LIKE pattern`: case-insensitive and without an escape character. */
+/** SQL Server `expr LIKE pattern` for a varchar parameter: case-insensitive and without an escape character. */
 function ciLike(p: SqlParams, expr: string, pattern: string): string {
-  return `upper(${expr}) LIKE upper(${p.add(pattern)}::text) ESCAPE ''`;
+  return `upper(${expr}) LIKE upper(${p.add(windows1252Text(pattern))}::text) ESCAPE ''`;
 }
 
 /** One ORDER BY key with SQL Server's NULL placement: lowest, so first ascending and last descending. */
@@ -999,7 +999,7 @@ function storableIds(ids: readonly string[]): string[] {
 
 /** Builds the content repository: the platform repository of `OWNED_TABLES` and one helper namespace per content area. */
 export function createContentRepository({ clock = systemClock, schema = SCHEMA }: ContentRepositoryOptions = {}) {
-  const platform: Repository = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
+  const platform: Repository = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock, legacyText: windows1252Text });
   const name = (def: TableDef): string => qualified(schema, def.table);
   /** An id column as SQL Server's CI_AS `=` compares it; leakproof, unlike lower(), so its expression index applies under forced RLS. */
   const ciIdExpr = (column: string, collation: 'legacy_ci' | 'legacy_char_ci'): string =>

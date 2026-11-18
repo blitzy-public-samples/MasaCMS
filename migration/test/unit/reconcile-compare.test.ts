@@ -15,6 +15,7 @@ import {
   type CanonicalColumn,
   type ChecksumEntry,
 } from '@opt2/platform/migration-kit';
+import { windows1252Text } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DiffOrderError, type RowSource } from '../../src/diff/index.js';
@@ -148,6 +149,22 @@ describe('compareRows on keyed tables', () => {
     expect(result.legacySha256).toBe(sha(joined([C001, was, C003])));
     expect(result.targetSha256).toBe(sha(joined([C001, now, C003])));
     expect(isZeroDifference(result)).toBe(false);
+  });
+
+  it('reconciles a name a target write stored through code page 1252 to the legacy value and reports the unconverted text', async () => {
+    const posted = 'QA cp üé – ✓ 日本 😀 end';
+    // What the legacy oracle stores for `posted`.
+    const legacy = keyedRow(category('C002', { Name: 'QA cp üé – ? ?? ?? end' }));
+    const converted = keyedRow(category('C002', { Name: windows1252Text(posted) }));
+    const unconverted = keyedRow(category('C002', { Name: posted }));
+
+    const equal = await compareRows({ keyed: true, columns: COLUMNS, legacy: [C001, legacy, C003], target: [C001, converted, C003] });
+    const differing = await compareRows({ keyed: true, columns: COLUMNS, legacy: [C001, legacy, C003], target: [C001, unconverted, C003] });
+
+    expect(isZeroDifference(equal)).toBe(true);
+    expect(equal.targetSha256).toBe(equal.legacySha256);
+    expect(differing.differences).toEqual([{ kind: 'changed', key: legacy.key, column: 'Name', legacy: 'QA cp üé – ? ?? ?? end', target: posted }]);
+    expect(isZeroDifference(differing)).toBe(false);
   });
 
   it('lists every changed column of a row in catalog order', async () => {

@@ -812,11 +812,11 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect((wire(await run(ctx, 'findOne', { id: ids.first, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data).toEqual(storedFirst());
   });
 
-  it('save of an unpaired surrogate stores U+FFFD, as node-postgres encodes it', async () => {
+  it('save of an unpaired surrogate stores ?, as legacy stores text outside code page 1252', async () => {
     const result = await run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: HOME_ID, initjs: '\uD800x' } });
     expect(result.status).toBe(200);
     const id = String((wire(result, 'save') as { data: Row }).data['targetingid']);
-    expect((wire(await run(ctx, 'findOne', { id, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data['initjs']).toBe('\uFFFDx');
+    expect((wire(await run(ctx, 'findOne', { id, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data['initjs']).toBe('?x');
     expect(await run(ctx, 'delete', { id, actor: CONTENT_EDITOR })).toEqual({ data: '' });
   });
 

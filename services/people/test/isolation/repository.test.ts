@@ -222,6 +222,22 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.updatePerson(tx, cfUuid(), update))).toBeNull();
     });
 
+    it.each([
+      ['rounds .875 up', 875, 877],
+      ['rounds .412 up', 412, 413],
+      ['rounds .001 down', 1, 0],
+      ['carries .999 into the next second', 999, 1000],
+    ])('stamps created and lastupdate at datetime precision: %s', async (_label, clockMs, storedMs) => {
+      const at = (base: Date, ms: number): Date => new Date(base.getTime() + ms);
+      repo = createPeopleRepository({ clock: fixedClock(at(NOW, clockMs)), schema: handle.schema });
+      const stored = await addPerson();
+      expect([stored.created, stored.lastupdate]).toEqual([at(NOW, storedMs), at(NOW, storedMs)]);
+      repo = createPeopleRepository({ clock: fixedClock(at(LATER, clockMs)), schema: handle.schema });
+      const { userid: _userid, ...update } = personInput();
+      expect(await inTenant((tx) => repo.updatePerson(tx, stored.userid, update))).toMatchObject({ created: at(NOW, storedMs), lastupdate: at(LATER, storedMs) });
+      expect(await inTenant((tx) => repo.findPerson(tx, stored.userid))).toMatchObject({ created: at(NOW, storedMs), lastupdate: at(LATER, storedMs) });
+    });
+
     it.each<[string, Partial<PersonInput>, string, 'width' | 'range']>([
       ['fname of 51 characters', { fname: 'x'.repeat(51) }, 'fname', 'width'],
       ['keepprivate -1', { keepprivate: -1 }, 'keepprivate', 'range'],

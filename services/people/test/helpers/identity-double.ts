@@ -7,6 +7,7 @@ import {
   cfDateTimeFormat,
   javaTrim,
   legacyErrorResponse,
+  sqlServerDatetime,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
 import { formatWritePosition, WRITE_POSITION_HEADER_LC } from '@opt2/platform/migration-kit';
@@ -721,7 +722,7 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
     operation.xid = xid;
     if (request !== undefined) operation.commitRequest = request;
     const key = charKey(operation.userId);
-    const passwordCreated = operation.writesCredential ? localTimestamp(clock.now()) : operation.pending.passwordCreated;
+    const passwordCreated = operation.writesCredential ? localTimestamp(sqlServerDatetime(clock.now())) : operation.pending.passwordCreated;
     accounts.set(key, { ...operation.pending, passwordCreated });
     if (operation.pendingGroupIds !== null) memberships.set(key, [...operation.pendingGroupIds]);
     advance(operation, 'committed');

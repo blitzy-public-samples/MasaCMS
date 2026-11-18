@@ -6,7 +6,7 @@
  * SQL Server semantics are reproduced where results depend on them: text equality and LIKE are case-insensitive,
  * text sorts through lower(), and NULLs sort lowest.
  */
-import { LegacyServiceUnavailableError, cfIsBoolean, cfIsNumeric, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfIsBoolean, cfIsNumeric, cfToBoolean, cfToNumber, windows1252Text } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -341,9 +341,9 @@ function idIn(p: SqlParams, expr: string, ids: readonly string[]): string {
   return `${expr} = ANY(${p.add(idForms(ids))}::bpchar[])`;
 }
 
-/** SQL Server `expr = value` for text: case-insensitive, trailing spaces ignored. */
+/** SQL Server `expr = value` for a varchar parameter: case-insensitive, trailing spaces ignored. */
 function ciEq(p: SqlParams, expr: string, value: string): string {
-  return `lower(rtrim(${expr})) = lower(rtrim(${p.add(value)}::text))`;
+  return `lower(rtrim(${expr})) = lower(rtrim(${p.add(windows1252Text(value))}::text))`;
 }
 
 /** One ORDER BY key with SQL Server's NULL placement: lowest, so first ascending and last descending. */

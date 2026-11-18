@@ -288,4 +288,15 @@ describe.skipIf(!(await pgAvailable()))('ccategory admin routes', () => {
   ] as const)('refuses %s', async (_label, roles, site) => {
     expect((await send('GET', LIST, { roles, site })).statusCode).toBe(403);
   });
+
+  it('stores and shows an added category name with the text legacy stores through code page 1252', async () => {
+    const res = await send('POST', LIST, { form: { action: 'add', categoryID: '', name: 'Cat ü 😀', isActive: '1', isInterestGroup: '1', ...CSRF } });
+    expect(res.json()).toMatchObject({ saved: true, errors: {} });
+    const rows = await withTenant(handle.app, TENANT_A.tenantId, async (tx) =>
+      (await tx.query<CategoryRow>(`SELECT * FROM ${handle.schema}.category WHERE name = $1`, ['Cat ü ??'])).rows,
+    );
+    expect(rows).toHaveLength(1);
+    const edit = await send('GET', `${LIST}/${rows[0]?.categoryid ?? ''}`);
+    expect(edit.json<{ rc: { categoryBean: Record<string, unknown> } }>().rc.categoryBean).toMatchObject({ categoryid: rows[0]?.categoryid, name: 'Cat ü ??' });
+  });
 });

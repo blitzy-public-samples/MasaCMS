@@ -266,6 +266,28 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await gated((tx) => repo.updateGroup(tx, id(99, 'G'), groupInput(), null))).toBeNull();
   });
 
+  it.each([
+    ['rounds .875 up', 875, 877],
+    ['rounds .412 up', 412, 413],
+    ['rounds .001 down', 1, 0],
+    ['carries .999 into the next second', 999, 1000],
+  ])('stamps group created, lastupdate and passwordcreated and a credential passwordcreated at datetime precision: %s', async (_label, clockMs, storedMs) => {
+    const at = (hours: number, ms: number): Date => new Date(NOW.getTime() + hours * 3_600_000 + ms);
+    const stamped = (hours: number): IdentityRepository => createIdentityRepository({ clock: fixedClock(at(hours, clockMs)), schema: handle.schema });
+    const created = await gated((tx) => stamped(0).insertGroup(tx, groupInput({ userid: id(1, 'G'), password: 'stored-hash' }), null));
+    expect([created.created, created.lastupdate, created.passwordcreated]).toEqual([at(0, storedMs), at(0, storedMs), at(0, storedMs)]);
+
+    await gated((tx) => stamped(1).updateGroup(tx, created.userid, groupInput({ password: 'new-hash' }), null));
+    const updated = await inTenant((tx) => repo.findGroup(tx, created.userid));
+    expect([updated?.created, updated?.lastupdate, updated?.passwordcreated]).toEqual([at(0, storedMs), at(1, storedMs), at(1, storedMs)]);
+
+    await gated(async (tx) => {
+      await repo.insertAccount(tx, account(id(1), 'stamped'));
+      await repo.writeCredential(tx, id(1), { password: 'hash', passwordcreated: at(2, clockMs) });
+    });
+    expect((await inTenant((tx) => repo.readCredential(tx, id(1))))?.passwordcreated).toEqual(at(2, storedMs));
+  });
+
   const extendValues = { siteid: 'site-a', attributevalue: 'x', remoteid: '', datetimevalue: null, numericvalue: null, stringvalue: 'v'.repeat(256) };
 
   it.each<[string, (tx: TenantTx, groupId: string) => Promise<unknown>, string, string]>([
@@ -927,12 +949,14 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     beforeAll(async () => {
       await setGates('open');
       await withGatedTenant(handle.app, FEED_TENANT, async (tx) => {
+        // Backfilled as stored, so the corpus keeps text a target-origin write would store through code page 1252.
+        const backfill = { origin: 'backfill' } as const;
         for (const [n, name] of NAMES.entries()) {
           const userid = id(n + 1, 'F');
-          await repo.insertGroup(tx, groupInput({ userid, groupname: name ?? '' }), null);
+          await repo.insertGroup(tx, groupInput({ userid, groupname: name ?? '' }), null, backfill);
           const perm = [0, 1, 2, null][n % 4] ?? null;
           const lastlogin = n % 3 === 0 ? new Date(2025 + (n % 2), n % 12, 1 + (n % 27), n % 24, 0, 0, n) : null;
-          await repo.update(tx, GROUP_ACCOUNT.table, { userid }, { groupname: name, perm, lastlogin, email: n % 5 === 0 ? null : `g${n % 7}@example.test` });
+          await repo.update(tx, GROUP_ACCOUNT.table, { userid }, { groupname: name, perm, lastlogin, email: n % 5 === 0 ? null : `g${n % 7}@example.test` }, backfill);
         }
         // A blank char(35) id, which pg returns as 35 spaces.
         await repo.insertGroup(tx, groupInput({ userid: id(PADDED, 'F'), groupname: 'Padded' }), null);

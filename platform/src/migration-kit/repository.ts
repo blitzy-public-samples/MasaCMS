@@ -41,6 +41,8 @@ export interface RepositoryOptions {
   schema: string;
   tables: readonly TableDefinition[];
   clock?: Clock;
+  /** How the text columns of a table with a unit store, and match, the strings of a target-origin write; unset, as given. */
+  legacyText?: (text: string) => string;
 }
 
 /** Raised for an undeclared, platform or malformed table, a transaction mismatch, a tenant mismatch, or a missing or unknown column. */
@@ -121,6 +123,8 @@ interface PreparedTable {
   /** Columns other than `tenant_id` and, for keyless tables, `legacy_row_hash` and `occurrence`. */
   readonly data: CanonicalColumn[];
   readonly dataNames: string[];
+  /** Names of the `s` columns of `data`. */
+  readonly textNames: string[];
   /** `<schema>.<table>`, the advisory-lock prefix of keyless rows. */
   readonly lockPrefix: string;
 }
@@ -170,7 +174,15 @@ function prepareTable(schema: string, def: TableDefinition): PreparedTable {
   });
   const managed = key === null ? KEYLESS_MANAGED : TENANT_ONLY;
   const data = Object.freeze(columns.filter((column) => !managed.has(column.name))) as CanonicalColumn[];
-  return { definition, name, columnNames, data, dataNames: data.map((column) => column.name), lockPrefix: `${schema}.${def.table}` };
+  return {
+    definition,
+    name,
+    columnNames,
+    data,
+    dataNames: data.map((column) => column.name),
+    textNames: data.filter((column) => column.type === 's').map((column) => column.name),
+    lockPrefix: `${schema}.${def.table}`,
+  };
 }
 
 /** Throws unless every column of `row` is declared and its `tenant_id`, when set, is the transaction tenant. */
@@ -382,7 +394,7 @@ async function insertOccurrence(tx: TenantTx, t: PreparedTable, row: RepositoryR
 }
 
 /** Builds the repository of `schema`; throws RepositoryError for a platform, duplicate or malformed table definition. */
-export function createRepository({ owner, schema, tables, clock = systemClock }: RepositoryOptions): Repository {
+export function createRepository({ owner, schema, tables, clock = systemClock, legacyText }: RepositoryOptions): Repository {
   const changelogInto =
     `INSERT INTO ${qualified(schema, CHANGELOG_TABLE)}` +
     ' (tenant_id, "table", op, key, before, after, columns, origin, actor_user_id, actor_service, at, request_id, operation_id)';
@@ -422,6 +434,19 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
       );
     }
     return t;
+  }
+
+  /** `row` with its text-column strings through `legacyText` for a target-origin write of a table with a unit; `row` itself otherwise. */
+  function legacyRow(t: PreparedTable, row: RepositoryRow, ctx: WriteContext): RepositoryRow {
+    if (legacyText === undefined || t.definition.unit === undefined || (ctx.origin ?? 'target') !== 'target' || isMigrationAuthority(ctx.authority)) {
+      return row;
+    }
+    const stored: RepositoryRow = { ...row };
+    for (const column of t.textNames) {
+      const value = stored[column];
+      if (typeof value === 'string') stored[column] = legacyText(value);
+    }
+    return stored;
   }
 
   async function gate(tx: TenantTx, t: PreparedTable, ctx: WriteContext): Promise<void> {
@@ -516,15 +541,16 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
   async function insert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
     const t = open(tx, table, 'any');
     checkRow(t, tx, row);
+    const values = legacyRow(t, row, ctx);
     let stored: RepositoryRow;
     if (t.definition.key === null) {
-      const hash = legacyRowHash(t.data, row);
+      const hash = legacyRowHash(t.data, values);
       await gate(tx, t, ctx);
       await lockHashes(tx, t, [hash]);
-      stored = await insertOccurrence(tx, t, row, hash);
+      stored = await insertOccurrence(tx, t, values, hash);
     } else {
       await gate(tx, t, ctx);
-      stored = (await insertRow(tx, t, { [TENANT_COLUMN]: tx.tenantId, ...writableValues(row) }, false)) as RepositoryRow;
+      stored = (await insertRow(tx, t, { [TENANT_COLUMN]: tx.tenantId, ...writableValues(values) }, false)) as RepositoryRow;
     }
     await logChange(tx, t, insertChange(t, stored), ctx);
     return stored as R;
@@ -546,7 +572,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
       return [];
     }
     await gate(tx, t, ctx);
-    const writable = rows.map((row) => writableValues(row));
+    const writable = rows.map((row) => writableValues(legacyRow(t, row, ctx)));
     const present = new Set(writable.flatMap((row) => Object.keys(row)));
     const columns = t.dataNames.filter((column) => present.has(column));
     const size = rowsPerStatement(columns.length);
@@ -571,11 +597,11 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     const t = open(tx, table, 'keyed');
     checkRow(t, tx, key);
     checkRow(t, tx, patch);
-    const values = writableValues(patch);
+    const values = writableValues(legacyRow(t, patch, ctx));
     if (Object.keys(values).length === 0) {
       throw new RepositoryError('update patch sets no column', table);
     }
-    const keyVals = keyValues(t, tx, key);
+    const keyVals = keyValues(t, tx, legacyRow(t, key, ctx));
     await gate(tx, t, ctx);
     const before = await selectRow(tx, t, keyVals, true);
     if (before === undefined) {
@@ -587,8 +613,9 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
   async function upsert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
     const t = open(tx, table, 'keyed');
     checkRow(t, tx, row);
-    const keyVals = keyValues(t, tx, row);
-    const values = writableValues(row);
+    const written = legacyRow(t, row, ctx);
+    const keyVals = keyValues(t, tx, written);
+    const values = writableValues(written);
     await gate(tx, t, ctx);
     let before = await selectRow(tx, t, keyVals, true);
     if (before === undefined) {
@@ -609,7 +636,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
   async function remove<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, ctx: WriteContext = {}): Promise<R | null> {
     const t = open(tx, table, 'keyed');
     checkRow(t, tx, key);
-    const keyVals = keyValues(t, tx, key);
+    const keyVals = keyValues(t, tx, legacyRow(t, key, ctx));
     await gate(tx, t, ctx);
     const { rows } = await tx.query(`DELETE FROM ${t.name} WHERE ${keyWhere(t, 1)} RETURNING *`, keyVals);
     const removed = rows[0];
@@ -628,7 +655,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
   ): Promise<R | null> {
     const t = open(tx, table, 'keyless');
     checkRow(t, tx, contentRow);
-    const hash = legacyRowHash(t.data, contentRow);
+    const hash = legacyRowHash(t.data, legacyRow(t, contentRow, ctx));
     await gate(tx, t, ctx);
     await lockHashes(tx, t, [hash]);
     const removed = await removeOccurrence(tx, t, hash);
@@ -649,8 +676,9 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     const t = open(tx, table, 'keyless');
     checkRow(t, tx, beforeContentRow);
     checkRow(t, tx, afterContentRow);
-    const beforeHash = legacyRowHash(t.data, beforeContentRow);
-    const afterHash = legacyRowHash(t.data, afterContentRow);
+    const afterRow = legacyRow(t, afterContentRow, ctx);
+    const beforeHash = legacyRowHash(t.data, legacyRow(t, beforeContentRow, ctx));
+    const afterHash = legacyRowHash(t.data, afterRow);
     await gate(tx, t, ctx);
     await lockHashes(tx, t, [beforeHash, afterHash]);
     if (beforeHash === afterHash) {
@@ -670,7 +698,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     if (removed === undefined) {
       return null;
     }
-    const stored = await insertOccurrence(tx, t, afterContentRow, afterHash);
+    const stored = await insertOccurrence(tx, t, afterRow, afterHash);
     await logChange(tx, t, updateChange(t, removed, stored), ctx);
     return stored as R;
   }

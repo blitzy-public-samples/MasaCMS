@@ -1,7 +1,8 @@
-/** Collections through `domain/feeds` over a throwaway `content` schema: the feed bean, cfeed gate and update action, CRUD and local feed content. */
+/** Collections through `domain/feeds` over a throwaway `content` schema: the feed bean, cfeed gate and update action, CRUD, local feed content and the feed and category audit stamps. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, fixedClock, pgAvailable } from '@opt2/platform/testing';
 import type { TenantDb } from '@opt2/platform/tenancy';
+import { createCategory, updateCategory } from '../../src/domain/categories.js';
 import { saveContent, type ContentSaveSite } from '../../src/domain/content.js';
 import type { Actor } from '../../src/domain/context.js';
 import {
@@ -27,6 +28,7 @@ import {
   updateFeedAction,
   validateFeed,
   withFeedRcDefaults,
+  type FeedDeps,
 } from '../../src/domain/feeds.js';
 import { setRestriction } from '../../src/domain/permissions.js';
 import type { FeedContentRow } from '../../src/repo/feed-queries.js';
@@ -180,7 +182,7 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
         siteid: SITE_ID,
         contentpoolid: SITE_ID,
         lastupdateby: 'Admin User',
-        lastupdate: new Date(2026, 5, 30, 10, 15, 42),
+        lastupdate: NOW,
       });
       expect(await fx.rows('feed_item', 'feedid = $1', [feedId])).toHaveLength(1);
     });
@@ -570,6 +572,31 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
       expect(updated.map((bean) => [bean.errors, bean.text('contentpoolid')])).toEqual(Array(6).fill([{}, contentPool]));
       expect(metadataTxs).toBe(0);
       expect(await feedRow(created.text('feedid'))).toMatchObject({ contentpoolid: contentPool });
+    });
+  });
+
+  describe('audit timestamps', () => {
+    const at = (second: number, ms: number): Date => new Date(2026, 5, 30, 10, 15, second, ms);
+    const clockAt = (time: Date): FeedDeps => ({ ...fx.deps, clock: fixedClock(time) });
+
+    it.each<[string, string, (deps: FeedDeps) => Promise<string>, (deps: FeedDeps, id: string) => Promise<unknown>]>([
+      [
+        'feed',
+        'feedid',
+        async (deps) => (await createFeed(deps, ADMIN, { siteid: SITE_ID, name: 'Stamped', type: 'Local' })).text('feedid'),
+        (deps, id) => updateFeed(deps, ADMIN, { feedid: id, name: 'Stamped again' }),
+      ],
+      [
+        'category',
+        'categoryid',
+        async (deps) => (await createCategory(deps, ADMIN, { siteid: SITE_ID, name: 'Stamped' })).categoryid,
+        (deps, id) => updateCategory(deps, ADMIN, { categoryid: id, siteid: SITE_ID, name: 'Stamped again' }),
+      ],
+    ])('a %s create and update store dateCreated and lastUpdate as the datetime column keeps them, at 1/300 s', async (table, key, create, update) => {
+      const id = await create(clockAt(at(22, 412)));
+      expect(await fx.rows(table, `${key} = $1`, [id])).toMatchObject([{ datecreated: at(22, 413), lastupdate: at(22, 413) }]);
+      await update(clockAt(at(22, 999)), id);
+      expect(await fx.rows(table, `${key} = $1`, [id])).toMatchObject([{ name: 'Stamped again', datecreated: at(22, 413), lastupdate: at(23, 0) }]);
     });
   });
 });
