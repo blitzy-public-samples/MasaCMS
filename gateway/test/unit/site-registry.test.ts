@@ -1,21 +1,46 @@
-// Tests createSiteRegistry: the first load, case-insensitive lookups, the refresh loop and its failure handling.
+// Tests createSiteRegistry: the first load, case-insensitive lookups, request-host binding, the refresh loop and its failure handling.
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import { MemorySpanExporter, SpanKind, activeSpanIds, flushTracing, shutdownTracing, startSpan, startTracing } from '@opt2/platform/tracing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { REFRESH_INTERVAL_MS } from '../../src/cutover/state.js';
-import { createSiteRegistry, type SiteRegistry } from '../../src/dispatcher/site-registry.js';
+import { createSiteRegistry, type HostBinding, type SiteRegistry } from '../../src/dispatcher/site-registry.js';
+import type { SiteListing } from '../../src/session/bridge-client.js';
 
 interface Logged {
   obj: object;
   msg: string;
 }
 
-/** A registry over `list`, with its logged errors. */
+/** A registry over the site ids `list` answers, with no domain bindings, and its logged errors. */
 function registryOf(list: () => Promise<string[]>): { registry: SiteRegistry; errors: Logged[] } {
   const errors: Logged[] = [];
-  const registry = createSiteRegistry({ list, logger: { error: (obj, msg) => errors.push({ obj, msg }) } });
+  const registry = createSiteRegistry({
+    list: async () => ({ sites: await list(), bindings: [], adminDomain: '' }),
+    logger: { error: (obj, msg) => errors.push({ obj, msg }) },
+  });
   return { registry, errors };
 }
+
+/** Three sites in bind order, two with aliases, and an admin domain. */
+const BOUND: SiteListing = {
+  sites: ['default', 'tenant-a', 'tenant-b'],
+  bindings: [
+    { siteId: 'default', domain: 'localhost', aliases: [] },
+    { siteId: 'tenant-a', domain: 'tenant-a.localhost', aliases: ['A.Example', '10'] },
+    { siteId: 'tenant-b', domain: 'tenant-b.localhost', aliases: ['b.example'] },
+  ],
+  adminDomain: 'admin.example',
+};
+
+/** A later site whose domain an earlier site's domain contains. */
+const NESTED: SiteListing = {
+  sites: ['tenant-a', 'tenant-b'],
+  bindings: [
+    { siteId: 'tenant-a', domain: 'tenant-a.localhost', aliases: [] },
+    { siteId: 'tenant-b', domain: 'a.localhost', aliases: [] },
+  ],
+  adminDomain: '',
+};
 
 /** A list whose answers are resolved by hand, in call order. */
 function deferredList(): { list: () => Promise<string[]>; answer(index: number, ids: string[]): void; calls: () => number } {
@@ -63,6 +88,30 @@ describe('createSiteRegistry', () => {
     const { registry } = track(registryOf(() => Promise.resolve(['default'])));
 
     expect(registry.siteExists('default')).toBe(false);
+    expect(registry.bindToDomain('localhost')).toBeUndefined();
+  });
+
+  it.each<[string, SiteListing, string, HostBinding | undefined]>([
+    ['an exact domain', BOUND, 'tenant-b.localhost', { siteId: 'tenant-b', match: 'complete' }],
+    ['an alias', BOUND, 'b.example', { siteId: 'tenant-b', match: 'complete' }],
+    ['a domain in another case, by CFML ==', BOUND, 'TENANT-B.LocalHost', { siteId: 'tenant-b', match: 'complete' }],
+    ['an alias in another case', BOUND, 'a.example', { siteId: 'tenant-a', match: 'complete' }],
+    ['a numeric host equal as a number to an alias', BOUND, '10.0', { siteId: 'tenant-a', match: 'complete' }],
+    ['an exact domain of a later site over a partial match of an earlier one', NESTED, 'a.localhost', { siteId: 'tenant-b', match: 'complete' }],
+    ['a partial match, for the first site containing the host', BOUND, 'tenant', { siteId: 'tenant-a', match: 'partial' }],
+    ['a partial match in another case, which find does not make, for the first site', BOUND, 'TENANT', { siteId: 'default', match: 'first' }],
+    ['the host without its port', BOUND, 'tenant-b.localhost:8100', { siteId: 'tenant-b', match: 'complete' }],
+    ['the admin domain in any case, as --none--', BOUND, 'Admin.Example:443', undefined],
+    ['an unbound host, for the first site', BOUND, 'other.test', { siteId: 'default', match: 'first' }],
+    ['an empty host, which matches no domain, for the first site', BOUND, '', { siteId: 'default', match: 'first' }],
+    ['an empty host on an empty admin domain, as --none--', { ...BOUND, adminDomain: '' }, '', undefined],
+    ['any host of an empty registry', { sites: [], bindings: [], adminDomain: '' }, 'tenant-b.localhost', undefined],
+  ])('binds %s, with the rule contentServer.bindToDomain(isAdmin=true) binds it by', async (_case, listing, host, bound) => {
+    const registry = createSiteRegistry({ list: () => Promise.resolve(listing), logger: { error: () => undefined } });
+
+    await registry.refresh();
+
+    expect(registry.bindToDomain(host)).toEqual(bound);
   });
 
   it('rejects start when the first load fails, and a later start loads', async () => {

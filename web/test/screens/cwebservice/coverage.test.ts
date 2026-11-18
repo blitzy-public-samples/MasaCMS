@@ -426,14 +426,14 @@ describe('cwebservice.edit page', () => {
     expect(ctx.gateway.calls.filter(({ path }) => path === clientPath(STORED))).toEqual([]);
   });
 
-  it('answers an identity 403 with cMessage.noaccess', async () => {
+  it('answers an identity 403 with the logged-in secure() redirect', async () => {
     const ctx = contextFor(adminOn('edit', { clientid: STORED }), {
       [routeKey('GET', 'identity', clientPath(STORED))]: { status: 403, body: {} },
     });
 
     await expect(renderScreenPage(pageOf('edit'), ctx)).resolves.toEqual({
       kind: 'redirect',
-      location: '/admin/?muraAction=cMessage.noaccess',
+      location: './',
     });
   });
 });

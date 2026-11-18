@@ -80,8 +80,8 @@ function boxCalls(): string[][] {
     .map((line) => JSON.parse(line) as string[]);
 }
 
-/** Runs <script> in bash after common.sh with REPO set to the fake checkout and the stub box first on PATH. */
-function run(script: string, entries: Entry[]): Result {
+/** Runs <script> in bash after common.sh with REPO set to the fake checkout, the stub box first on PATH, and `extra`. */
+function run(script: string, entries: Entry[], extra: Record<string, string> = {}): Result {
   writeFileSync(registryFile(), JSON.stringify(entries));
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -93,8 +93,10 @@ function run(script: string, entries: Entry[]): Result {
     BOX_STUB_LOG: path.join(root, 'box.log'),
     BOX_STUB_REGISTRY: registryFile(),
   };
-  delete env.OPT2_COMMON_SH_LOADED;
-  delete env.OPT2_CF_SERVER_HOME;
+  for (const name of ['OPT2_COMMON_SH_LOADED', 'OPT2_CF_SERVER_HOME', 'OPT2_CF_SERVER_NAME', 'OPT2_PORTS_FILE', 'OPT2_LOCK_DIR']) {
+    delete env[name];
+  }
+  Object.assign(env, extra);
   const result = spawnSync('bash', ['-c', PRELUDE, '_', REPRO_DIR, checkout, script], { env, encoding: 'utf8' });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -160,5 +162,49 @@ describe('stop guards', () => {
     expect(stopped.includes('name=opt2-legacy')).toBe(stops);
     expect(boxCalls().some((call) => call.includes('forget'))).toBe(false);
     expect(registry().find((entry) => entry.name === 'opt2-legacy')?.status).toBe(stops ? 'stopped' : 'running');
+  });
+
+  it.each(Object.keys(sites))(
+    "%s with OPT2_CF_SERVER_NAME stops that server, never another checkout's opt2-legacy in the same server home",
+    (site) => {
+      const entry = (name: string, id: string, webroot: string, status: string): Entry => ({
+        id,
+        name,
+        webroot: `${webroot}/`,
+        serverHomeDirectory: SERVER_HOME,
+        status,
+        port: Number(LEGACY_PORT),
+      });
+      const entries = [
+        entry('opt2-legacy-c25', 'A25E9D3F972728E2FB5220BE96A00259', checkout, 'running'),
+        entry('opt2-legacy', '1DE9D3F972728E2FB5220BE96A002597', other, 'running'),
+        entry('masacms-orig', '7EF39727592DDA95BB10DF9B0829ACC1', checkout, 'stopped'),
+      ];
+      const script = [`CAPTURE_FILE=${JSON.stringify(captureFile())}`, ...(sites[site] ?? [])].join('\n');
+      const result = run(script, entries, { OPT2_CF_SERVER_NAME: 'opt2-legacy-c25' });
+      expect(result.status, result.stderr).toBe(0);
+      const stopped = boxCalls()
+        .filter((call) => call[0] === 'server' && call[1] === 'stop')
+        .map((call) => call.find((arg) => arg.startsWith('name=')));
+      expect(stopped).toEqual(['name=opt2-legacy-c25']);
+      expect(boxCalls().some((call) => call.includes('name=opt2-legacy'))).toBe(false);
+      expect(registry().map((e) => [e.name, e.status])).toEqual([
+        ['opt2-legacy-c25', 'stopped'],
+        ['opt2-legacy', 'running'],
+        ['masacms-orig', 'stopped'],
+      ]);
+    },
+  );
+});
+
+describe('OPT2_CF_SERVER_NAME', () => {
+  it.each(['-c25', '.c25', 'opt2 legacy', 'opt2/legacy', 'c25;true', 'name=c25'])('rejects %j before any box call', (value) => {
+    const result = run('echo sourced', [], { OPT2_CF_SERVER_NAME: value });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe(
+      `opt2: OPT2_CF_SERVER_NAME must be a letter or digit, then letters, digits, '.', '_' or '-'; got '${value}'\n`,
+    );
+    expect(boxCalls()).toEqual([]);
   });
 });

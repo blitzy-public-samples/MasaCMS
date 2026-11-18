@@ -40,7 +40,7 @@ import {
 } from '@opt2/platform/testing';
 import { USER_CLOSED_WAIT_MS } from '../../src/domain/account-operations.js';
 import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
-import { USER_ACCOUNT } from '../../src/repo/tables.js';
+import { PERMISSION, USER_ACCOUNT } from '../../src/repo/tables.js';
 import { SWEEP_QUEUE, buildTestApp, type TestApp } from '../helpers/app.js';
 import type { MemoryIdentityRepo, RecordingDb } from '../helpers/memory-repo.js';
 import { ADMIN_S2, ALL_ACTORS, EDITOR, MEMBER_B, SITE_ADMIN_A, sessionRow } from '../helpers/rows.js';
@@ -503,7 +503,14 @@ const CASES: Record<string, Case[]> = {
       verify: (body) => expect((record(body).sites as Array<{ siteID: string }>).map((site) => site.siteID)).toContain(SITE_A),
     },
     { name: 'refuses a caller without credentials', method: 'GET', url: '/v1/sessions/current/sites', status: 401 },
-    { name: 'refuses a public-pool member', method: 'GET', url: '/v1/sessions/current/sites', as: 'member', status: 403 },
+    {
+      name: 'lists no site for a public-pool member',
+      method: 'GET',
+      url: '/v1/sessions/current/sites',
+      as: 'member',
+      status: 200,
+      verify: (body) => expect(record(body).sites).toEqual([]),
+    },
   ],
   getAdminSessionState: [
     { name: 'reads the editor session admin state', method: 'GET', url: '/v1/sessions/current/admin-state', as: 'editor', status: 200 },
@@ -729,6 +736,24 @@ const CASES: Record<string, Case[]> = {
       verify: (body) => expect(record(body)).toMatchObject({ written: true, redirect: { action: 'cUsers.list' } }),
     },
     { name: 'refuses a group id that is no CF UUID', method: 'PUT', url: `/v1/permissions/modules/${USERS_MODULE}`, as: 's2', payload: { groupid: ['x'] }, status: 400 },
+  ],
+  updateModulePermissionsWithoutNode: [
+    // The memory repository stores '' unpadded, unlike char(35), so a granting save is covered by the PostgreSQL suites.
+    {
+      name: 'clears the grants under the empty content id with a token for the posted moduleid',
+      method: 'PUT',
+      url: '/v1/permissions/modules',
+      as: 's2',
+      headers: async () => FORM,
+      payload: `groupid=&moduleid=${USERS_MODULE}&${csrfFields(session('s2').csrfSecret, USERS_MODULE)}`,
+      status: 200,
+      verify: (body, _res, harness) => {
+        expect(record(body)).toEqual({ written: true, redirect: { action: 'cUsers.list', params: { siteid: SITE_A } } });
+        expect(harness.repo?.rows(PERMISSION.table, TENANT_A.tenantId).filter((row) => row.contentid.trimEnd() === '')).toEqual([]);
+      },
+    },
+    { name: 'refuses a group id that is no CF UUID', method: 'PUT', url: '/v1/permissions/modules', as: 's2', payload: { groupid: ['x'] }, status: 400 },
+    { name: 'refuses an editor', method: 'PUT', url: '/v1/permissions/modules', as: 'editor', payload: { moduleid: USERS_MODULE }, status: 403 },
   ],
   getReversePermLookUp: [
     { name: 'answers the lookup for a signed-in session', method: 'GET', url: '/v1/permissions/reverse-lookup', as: 'editor', status: 200, verify: (body) => expect(record(body)).toHaveProperty('granted') },

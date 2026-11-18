@@ -155,6 +155,9 @@ export const STARTUP_SITE_CONDITION: VariantCondition = Object.freeze<VariantCon
 /** Gateway-set header naming, comma-separated and in any case, the REST credential params its exchange consumed. */
 export const REST_CONSUMED_PARAMS_HEADER = 'X-Opt2-Consumed-Params';
 
+/** Gateway-set header marking a remote CFC proxy call whose `siteid` names no registered site, its user token minted for the request host's site. */
+export const UNREGISTERED_SITEID_HEADER = 'X-Opt2-Unregistered-Siteid';
+
 /** Each synthetic service's own `/v1/` resource prefixes (its contracts/openapi.yaml), keyed in the `opt2` family. */
 export const SYNTHETIC_V1_PREFIXES = Object.freeze({
   communications: Object.freeze(['/v1/messages', '/v1/templates']),

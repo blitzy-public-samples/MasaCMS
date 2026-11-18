@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -255,6 +256,58 @@ describe('process_env OPT2_REPORTS_DIR', () => {
   ])('hands migration and operator_env none when %s, so migration keeps its default', (_label, value) => {
     expect(runEnv('process_env', 'migration', { OPT2_REPORTS_DIR: value })).not.toHaveProperty('OPT2_REPORTS_DIR');
     expect(runEnv('operator_env', '', { OPT2_REPORTS_DIR: value })).not.toHaveProperty('OPT2_REPORTS_DIR');
+  });
+});
+
+describe('process_env of a second stack', () => {
+  const KEYS = ['OPT2_PORTS_FILE', 'OPT2_CF_SERVER_NAME', 'OPT2_LOCK_DIR'] as const;
+
+  /** A port file with every port of the committed one moved up by 10000, written under the test root. */
+  function movedPortsFile(): string {
+    const file = path.join(root, 'moved-ports.env');
+    const text = readFileSync(repoPath('harness', 'repro', 'ports.env'), 'utf8');
+    writeFileSync(file, text.replace(/^(OPT2_\w+)=(\d+)$/gm, (_line, key: string, port: string) => `${key}=${Number(port) + 10000}`));
+    return file;
+  }
+
+  const values = (): Record<(typeof KEYS)[number], string> => ({
+    OPT2_PORTS_FILE: movedPortsFile(),
+    OPT2_CF_SERVER_NAME: 'opt2-legacy-c25',
+    OPT2_LOCK_DIR: path.join(root, 'c25-lock'),
+  });
+
+  it.each(KEYS)("hands migration and operator_env the caller's %s, and no other process", (key) => {
+    const extra = { [key]: values()[key] };
+    expect(runEnv('process_env', 'migration', extra)[key]).toBe(extra[key]);
+    expect(runEnv('operator_env', '', extra)[key]).toBe(extra[key]);
+    for (const name of PACKAGE_NAMES.filter((other) => other !== 'migration')) {
+      expect(runEnv('process_env', name, extra), name).not.toHaveProperty(key);
+    }
+  });
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])('hands migration and operator_env none of them when %s', (_label, value) => {
+    const extra = Object.fromEntries(KEYS.map((key) => [key, value]));
+    for (const env of [runEnv('process_env', 'migration', extra), runEnv('operator_env', '', extra)]) {
+      for (const key of KEYS) expect(env, key).not.toHaveProperty(key);
+    }
+  });
+
+  it('derives every port and loopback address of a process from OPT2_PORTS_FILE', () => {
+    const moved = (name: PackageName): number => portFor(name) + 10000;
+    expect(runEnv('process_env', 'communications', { OPT2_PORTS_FILE: movedPortsFile() })).toMatchObject({
+      PORT: String(moved('communications')),
+      OPT2_JWKS_URL: `http://127.0.0.1:${moved('identity')}/.well-known/jwks.json`,
+      OPT2_GATEWAY_URL: `http://127.0.0.1:${moved('gateway')}`,
+      OPT2_MIGRATION_URL: `http://127.0.0.1:${moved('migration')}`,
+      MURA_PORT: String(moved('gateway')),
+      PUBSUB_EMULATOR_HOST: 'localhost:18085',
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:14319',
+      SMTP_PORT: '11025',
+      MAILPIT_API_URL: 'http://127.0.0.1:18025',
+    });
   });
 });
 

@@ -2,6 +2,7 @@
 import { randomInt } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import { BRIDGE_ASSERTION_HEADER, MemoryNonceStore, verifyBridgeAssertion } from '@opt2/platform/legacy-compat';
+import type { SiteListing } from '../../src/session/bridge-client.js';
 import type { LegacyDescribe, LegacyUsedToken } from '../../src/session/identity-client.js';
 import { sendBytes, sendJson, startHttpDouble, type RecordedRequest } from './http-double.js';
 
@@ -10,6 +11,15 @@ export const BRIDGE_DIR = '/gateway/legacy-bridge/cfml';
 
 /** Site ids the bridge's `site.cfm?op=list` reports. */
 export const LEGACY_SITES: readonly string[] = Object.freeze(['default', 'tenant-a', 'tenant-b']);
+
+/** The `site.cfm?op=list` answer: {@link LEGACY_SITES}, bound to `localhost` and `<siteid>.localhost` in that order. */
+export function legacySiteListing(): SiteListing {
+  return {
+    sites: [...LEGACY_SITES],
+    bindings: LEGACY_SITES.map((siteId) => ({ siteId, domain: siteId === 'default' ? 'localhost' : `${siteId}.localhost`, aliases: [] })),
+    adminDomain: '',
+  };
+}
 
 /** JSON content type as legacy's JSON API sends it. */
 export const LEGACY_JSON = 'application/json;charset=utf-8';
@@ -151,7 +161,7 @@ export async function startLegacyDouble(bridgeKey: string): Promise<LegacyDouble
   const double = await startHttpDouble((req, res) => {
     if (req.path === SITE_PAGE) {
       if (verified(req, 'site', res) === undefined) return;
-      if (req.query.op === 'list' && req.method === 'GET') sendJson(res, 200, { sites: [...LEGACY_SITES] });
+      if (req.query.op === 'list' && req.method === 'GET') sendJson(res, 200, legacySiteListing());
       else sendJson(res, 404, { error: 'notFound', message: 'unknown op' });
       return;
     }

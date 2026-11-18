@@ -43,11 +43,14 @@ A variable without a default is required by the commands under "Needed by"; the 
 | `OPT2_PG_START_CMD` | `up.sh` | `pg_ctlcluster 16 main start` | Starts PostgreSQL when it is not answering |
 | `OPT2_PG_STOP_CMD` | `down.sh` | `pg_ctlcluster 16 main stop` | Stops the PostgreSQL `up.sh` started |
 | `OPT2_LEGACY_START_TIMEOUT_S` | `up.sh`, `test-all.sh`, `down.sh` | `900` | Seconds to wait for a legacy start |
-| `MAILPIT_API_URL` | `up.sh` | `http://127.0.0.1:8025` | Mailpit API for `legacy-fixtures/load-fixtures.sh` |
+| `MAILPIT_API_URL` | `up.sh`, `test-all.sh` | the port file's Mailpit API, `http://127.0.0.1:8025` | Mailpit API for `legacy-fixtures/load-fixtures.sh`, the service-version probe and the golden and e2e mail checks |
 | `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR` | all | see [State outside the checkout](#state-outside-the-checkout) | Run state and the pristine baseline |
 | `OPT2_REPORTS_DIR` | `up.sh`, `test-all.sh` | `opt2/reports` | Reports directory; a relative value resolves against the checkout. Also passed to the migration service and the `opt2-*` CLIs |
+| `OPT2_PORTS_FILE` | all | `repro/ports.env` | Absolute path of the port file the scripts and `src/repro/ports.ts` read; see [Ports](#ports) |
+| `OPT2_CF_SERVER_NAME` | all | `opt2-legacy` | CommandBox server name of this stack's legacy: a letter or digit, then letters, digits, `.`, `_` or `-` |
+| `OPT2_LOCK_DIR` | all | `$HOME/.opt2` | Absolute directory of the run lock; another directory needs an `OPT2_CF_SERVER_NAME` other than `opt2-legacy`. See [One stack at a time](#one-stack-at-a-time) |
 
-`clean-checkout-proof.sh` passes its environment to the other three except `OPT2_REPORTS_DIR`, so the clone writes its reports inside the clone. It reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes, except that `MURA_APPRELOADKEY` reaches only gateway, web, identity, people, programs-sites, strategies-content and migration, `MURA_S3ASSETS`, which can embed S3 credentials, reaches only web, and every process gets `MURA_PORT` and `MURA_PROXYPORT` set to the gateway port, as legacy's `server.json` does. Web alone gets `MURA_WEBROOT`, set to this checkout, which Masa always takes as its webroot (`expandPath('/muraWRM')`) whatever `MURA_WEBROOT` says. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from `repro/ports.env` and the generated secrets; see [platform configuration](../platform/README.md#configuration).
+`clean-checkout-proof.sh` passes its environment to the other three except `OPT2_REPORTS_DIR`, so the clone writes its reports inside the clone. It reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes, except that `MURA_APPRELOADKEY` reaches only gateway, web, identity, people, programs-sites, strategies-content and migration, `MURA_S3ASSETS`, which can embed S3 credentials, reaches only web, and every process gets `MURA_PORT` and `MURA_PROXYPORT` set to the gateway port, as legacy's `server.json` does. For legacy this is a deliberate deviation from the pristine install, recorded in `opt2/reports/environment.md`: while the stack is up, a request sent to legacy directly on `${PORT}` gets absolute URLs that name the gateway port. Web alone gets `MURA_WEBROOT`, set to this checkout, which Masa always takes as its webroot (`expandPath('/muraWRM')`) whatever `MURA_WEBROOT` says. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from the port file ([Ports](#ports)) and the generated secrets; see [platform configuration](../platform/README.md#configuration).
 
 ### `up.sh`
 
@@ -59,7 +62,7 @@ The `MURA_*` and `TZ` entries of the captured legacy server's `server.json` `env
 |---|---|---|
 | 1 | Pin and local versions | Before any lock, state write or installation, confirms the pin with git and node alone: the pinned commit exists, its subject matches and no file tracked at it is changed or gone. Then asserts Node 22.23.4 and npm 11.21.0; builds `platform` and installs the harness; runs the full pin check (`check:pin -- --confirm`); records local tool versions (`baseline:environment -- --phase local`) |
 | 2 | Secrets | `repro:secrets` writes the local token-signing key pair, the storage, bridge and push keys and the database role passwords to `${OPT2_STATE_DIR}/secrets/` |
-| 3 | Build | `npm ci && npm run build` in `gateway`, `web`, `migration`, `harness`, `legacy-fixtures/seed` and every `services/*`; installs Playwright Chromium; checks `repro/ports.env` |
+| 3 | Build | `npm ci && npm run build` in `gateway`, `web`, `migration`, `harness`, `legacy-fixtures/seed` and every `services/*`; installs Playwright Chromium; checks the port file (`repro/ports.env` or `OPT2_PORTS_FILE`) |
 | 4 | Target tooling | Starts PostgreSQL 16, the Pub/Sub emulator and the OpenTelemetry Collector (`repro/otelcol-config.yaml`), each only if not running. A running collector is reused only when it is this checkout's, with the same `OPT2_STATE_DIR`; any other listener on its port stops `up.sh` |
 | 5 | Quiesce and pristine baseline | Starts SQL Server if needed. If ColdFusion runs, captures its scheduled tasks and original `ping` once, then stops it. Takes the pristine baseline on the first run and restores from it on later runs. Then `load-fixtures.sh --check-only` writes `fixtures.json`. With fixtures unavailable, it builds the cut-over versions for that case in `${OPT2_STATE_DIR}/cutover` (`cutover:versions -- --fixtures unavailable`, then `cutover:validate`, with `v0001` byte-identical to the committed one) and exports `OPT2_CUTOVER_DIR` to every later process and CLI. Otherwise it removes that directory, and every process reads the committed `gateway/cutover` |
 | 6 | Databases | `opt2-db bootstrap --target local` (schemas, roles, migrations); `opt2-migrate init-legacy` (schema `opt2_sync`); `opt2-migrate scheduler import` of the captured tasks |
@@ -95,13 +98,14 @@ Needs the stack `up.sh` recorded. It exports the `cutoverDir` of `up.json` as `O
 
 ### One stack at a time
 
-Every command takes the lock `$HOME/.opt2/run.lock`, which records the holder pid and checkout path, and refuses to run while another checkout holds it. The lock sits under `$HOME`, not the state directory, so a clean clone sees it too.
+Every command takes the lock `${OPT2_LOCK_DIR:-$HOME/.opt2}/run.lock`, which records the holder pid and checkout path, and refuses to run while another checkout holds it. The lock sits outside the state directory, so a clean clone sees it too.
 
-- **One command at a time.** Each command also holds the per-command flock `$HOME/.opt2/run.lock.flock` while it runs. `up.sh` records its stack in `run.lock` only once its port check has passed, so a refused rerun leaves a live stack's record alone.
-- **Waiting.** By default a command refuses at once. `OPT2_LOCK_WAIT=<seconds>` waits up to that long instead. `up.sh` and `clean-checkout-proof.sh` claim the stack, so they queue first come, first served in `$HOME/.opt2/run.queue/`. The first waiter takes the flock only once no other checkout's stack holds `run.lock`, so it never blocks that stack's own `test-all.sh` or `down.sh`. A claimant with `OPT2_LOCK_WAIT=0` refuses while others are queued. `test-all.sh` and `down.sh`, and the checkout whose live stack holds `run.lock`, wait only for the running command.
+- **One command at a time.** Each command also holds the per-command flock `run.lock.flock`, beside `run.lock`, while it runs. `up.sh` records its stack in `run.lock` only once its port check has passed, so a refused rerun leaves a live stack's record alone.
+- **Waiting.** By default a command refuses at once. `OPT2_LOCK_WAIT=<seconds>` waits up to that long instead. `up.sh` and `clean-checkout-proof.sh` claim the stack, so they queue first come, first served in `run.queue/`, beside `run.lock`. The first waiter takes the flock only once no other checkout's stack holds `run.lock`, so it never blocks that stack's own `test-all.sh` or `down.sh`. A claimant with `OPT2_LOCK_WAIT=0` refuses while others are queued. `test-all.sh` and `down.sh`, and the checkout whose live stack holds `run.lock`, wait only for the running command.
 - **Recovery.** `down.sh` marks `run.lock` as in teardown before it stops anything. If it fails or is interrupted, the mark stays, and every other checkout treats the stack as held until a rerun of that checkout's `down.sh` completes. Until then, that checkout's `up.sh`, `test-all.sh` and `clean-checkout-proof.sh` refuse too.
 - **Nothing to tear down.** `down.sh` in a checkout with no `run.lock` of its own, no `up.json` and no `tooling.json` reports nothing running and exits 0 without taking the lock.
 - **Commands started by another OPT-2 command.** These run under its flock. The parent exports the flock's token in `OPT2_LOCK_FLOCK_HELD`, and a child honours it only while that parent still holds the flock. `clean-checkout-proof.sh` holds it from its first `down.sh` to the clone's `down.sh`, so no other command gets in between. Any other value of `OPT2_LOCK_FLOCK_HELD` is ignored with a note.
+- **A second stack on one host.** The defaults give one stack per host. A second stack moves all of these together: `OPT2_PORTS_FILE` (every port, the tooling ports included), `OPT2_CF_SERVER_NAME`, `OPT2_LOCK_DIR`, `PORT`, `OPT2_LEGACY_SERVER_NAME`, `MURA_DATABASE`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR`, `GOOGLE_CLOUD_PROJECT`, `MAILPIT_API_URL` and, for the legacy fixtures, `SMTP_PORT`. `up.sh`, `test-all.sh`, `down.sh` and `clean-checkout-proof.sh` must all get the same values.
 
 ### State outside the checkout
 
@@ -114,7 +118,7 @@ Every command takes the lock `$HOME/.opt2/run.lock`, which records the holder pi
 
 ### Ports
 
-Fixed in `repro/ports.env`. `up.sh` stops if a target port equals `${PORT}` or is already in use.
+Fixed in `repro/ports.env`, unless `OPT2_PORTS_FILE` names another file in its format. That file sets every `OPT2_PORT_*` port; an `OPT2_TOOL_PORT_*` port it omits keeps the default below. `up.sh` stops if a target port equals `${PORT}` or is already in use.
 
 | Process | Port |
 |---|---|

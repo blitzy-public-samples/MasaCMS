@@ -37,7 +37,8 @@ type Payload = URLSearchParams | Record<string, unknown>;
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
-const CONTRACT_PATHS = ['/v1/permissions/content/{contentId}', '/v1/permissions/modules/{moduleId}', '/v1/permissions/reverse-lookup'];
+const CONTRACT_PATHS = ['/v1/permissions/content/{contentId}', '/v1/permissions/modules', '/v1/permissions/modules/{moduleId}', '/v1/permissions/reverse-lookup'];
+const NODELESS_MODULE_URL = '/v1/permissions/modules';
 const LOOKUP_URL = '/v1/permissions/reverse-lookup';
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 123);
 const CLOCK = fixedClock(NOW);
@@ -229,10 +230,11 @@ const DECLARED_ROUTES: [Method, string, Payload | undefined][] = [
   ['GET', contentUrl(NODE), undefined],
   ['GET', moduleUrl(USERS_MODULE), undefined],
   ['PUT', moduleUrl(USERS_MODULE), new URLSearchParams({ moduleid: USERS_MODULE })],
+  ['PUT', NODELESS_MODULE_URL, new URLSearchParams({ moduleid: USERS_MODULE })],
 ];
 
 describe('route declarations', () => {
-  it('match the four contract operations, the reverse lookup public, with no route for cperm.update', () => {
+  it('match the five contract operations, the reverse lookup public, with no route for cperm.update', () => {
     const declared = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/v1/permissions'));
     const expected = CONTRACT_PATHS.flatMap((template) =>
       Object.entries(OPENAPI.paths[template] ?? {})
@@ -245,8 +247,8 @@ describe('route declarations', () => {
         })),
     );
     expect(Object.keys(OPENAPI.paths).filter((template) => template.startsWith('/v1/permissions'))).toEqual(CONTRACT_PATHS);
-    expect(expected).toHaveLength(4);
-    expect(declared).toHaveLength(4);
+    expect(expected).toHaveLength(5);
+    expect(declared).toHaveLength(5);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry): unknown => expect.objectContaining(entry))));
     expect(declared.find((route) => route.url === LOOKUP_URL)).toMatchObject({ method: 'GET', public: true, siteCheck: true });
   });
@@ -337,6 +339,20 @@ describe('updatemodule redirects', () => {
     const res = await send('PUT', moduleUrl('00000000000000000000000000000000005'), await headersFor([Roles.s2]), new URLSearchParams({ groupid: UNKNOWN_GROUP }));
 
     expect(res.json()).toEqual({ written: false, redirect: { action: 'cEmail.list', params: { siteid: SITE } } });
+  });
+
+  it.each<[fields: Record<string, string>, action: string, extra: Record<string, string>]>([
+    [{ moduleid: USERS_MODULE }, 'cUsers.list', {}],
+    [{ moduleid: SITE_MANAGER_MODULE }, 'cArch.list', { topid: HOME_CONTENT, moduleid: SITE_MANAGER_MODULE }],
+    [{ moduleid: PLUGIN_MODULE }, 'cPlugins.list', {}],
+    [{}, 'cPlugins.list', {}],
+  ])('redirect a save without a node id posting %j to %s, writing nothing without a CSRF token', async (fields, action, extra) => {
+    const res = await send('PUT', NODELESS_MODULE_URL, await headersFor([Roles.s2]), new URLSearchParams({ groupid: UNKNOWN_GROUP, ...fields }));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ written: false, redirect: { action, params: { siteid: SITE, ...extra } } });
+    expect(res.headers['x-opt2-write-position']).toBeUndefined();
+    expect(events.published).toEqual([]);
   });
 });
 
@@ -521,6 +537,37 @@ describe.skipIf(!available)('cperm screens against PostgreSQL', () => {
     expect(postedContext.json()).toEqual({ written: true, redirect });
     expect((await moduleGrants(pathModule))[0]).toEqual({ authors: true, Editors: false });
     expect((await moduleGrants(SITE_MANAGER_MODULE))[0]).toEqual({ authors: false, Editors: false });
+  });
+
+  it("write a save without a node id as module rows under contentid '', replacing that id's rows of every type, only under a token for the posted moduleid", async () => {
+    const headers = await headersFor([Roles.s2], await newSession());
+    const redirect = { action: 'cUsers.list', params: { siteid: SITE } };
+    const form = (context: string) => new URLSearchParams({ groupid: `${groups.editors},${groups.umbrellaAdmin}`, moduleid: USERS_MODULE, ...csrfFields(context) });
+    /** The site's rows under contentid '' as [contentid, groupid, type], sorted; char(35) reads back blank-padded. */
+    const stored = async () =>
+      (await gated(SITE, (tx) => repo.permissionsFor(tx, { contentId: '', siteId: SITE })))
+        .map((row) => [row.contentid.trimEnd(), row.groupid, row.type])
+        .sort((a, b) => a.join().localeCompare(b.join()));
+    const sortedRows = (rows: string[][]) => [...rows].sort((a, b) => a.join().localeCompare(b.join()));
+    await gated(SITE, (tx) =>
+      repo.replaceNodePermissions(tx, { contentId: '', siteId: SITE, grants: [{ groupId: groups.authors, type: 'Editor' }, { groupId: groups.members, type: 'module' }] }),
+    );
+    const earlier = sortedRows([['', groups.authors, 'Editor'], ['', groups.members, 'module']]);
+    expect(await stored()).toEqual(earlier);
+
+    const nodeContext = await send('PUT', NODELESS_MODULE_URL, headers, form(''));
+    expect(nodeContext.json()).toEqual({ written: false, redirect });
+    expect(await stored()).toEqual(earlier);
+    expect(events.published).toEqual([]);
+
+    const saved = await send('PUT', NODELESS_MODULE_URL, headers, form(USERS_MODULE));
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toEqual({ written: true, redirect });
+    expect(saved.headers['x-opt2-write-position']).toMatch(/^identity=/);
+    expect(await stored()).toEqual(sortedRows([['', groups.editors, 'module'], ['', groups.umbrellaAdmin, 'module']]));
+    expect(events.published).toHaveLength(4);
+    expect(events.published).toEqual(expect.arrayContaining([groups.authors, groups.members, groups.editors, groups.umbrellaAdmin].map((groupId) => ({ groupId, siteId: SITE }))));
+    expect(await grantedNames(USERS_MODULE)).toEqual([]);
   });
 
   /** Headers of an s2 user in a new session carrying a CSRF token for `moduleId`. */

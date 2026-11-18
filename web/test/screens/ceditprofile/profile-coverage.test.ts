@@ -414,7 +414,7 @@ describe('cEditProfile.edit load', () => {
     const page = await renderScreenPage(editProfileScreen, ctx);
     expect(page).toEqual({
       kind: 'redirect',
-      location: status === 401 ? '/admin/?muraAction=clogin.logout' : '/admin/?muraAction=cMessage.noaccess',
+      location: status === 401 ? '/admin/?muraAction=clogin.logout' : './',
     });
   });
 

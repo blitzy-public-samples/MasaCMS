@@ -280,6 +280,28 @@ describe('legacy_unregister', () => {
   });
 });
 
+describe('OPT2_CF_SERVER_NAME', () => {
+  it.each<{ label: string; env: Record<string, string>; name: string }>([
+    { label: 'unset', env: {}, name: 'opt2-legacy' },
+    { label: 'opt2-legacy-c25', env: { OPT2_CF_SERVER_NAME: 'opt2-legacy-c25' }, name: 'opt2-legacy-c25' },
+  ])('names the server of every CommandBox call when $label', ({ env, name }) => {
+    registerInfo(infoJson(`${REPO}/`, sandbox.serverHome, name));
+    const target = runCommon('cfconfig_target', ['to'], env);
+    expect(target.stderr).toBe('');
+    expect(target.stdout).toBe(`${name}\n`);
+    const unregister = runCommon('legacy_unregister', [SERVER_ID], {
+      ...env,
+      STUB_EXECUTE_OUTPUT: 'removed',
+      STUB_EXECUTE_CLEARS: '1',
+    });
+    expect(unregister.status, unregister.stderr).toBe(0);
+    expect(unregister.stdout).toBe('removed\n');
+    const info = ['server', 'info', `name=${name}`, '--json'];
+    expect(boxCalls().filter((call) => call[0] !== 'execute')).toEqual([info, info]);
+    expect(boxCalls().find((call) => call[0] === 'execute')?.slice(2)).toEqual([`id=${SERVER_ID}`, `name=${name}`]);
+  });
+});
+
 describe('capture_server', () => {
   const ADOBE = 'adobe@2023.0.26+331018';
   const JVM_ARGS = '--add-opens=java.base/java.lang=ALL-UNNAMED';

@@ -242,7 +242,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   const modes = createResponseModes(facts);
-  // Site existence comes only from legacy's own registry; with background loops off, route keys keep their every-site default.
+  // Site existence and host binding come only from legacy's own registry; with background loops off, route keys keep their
+  // every-site default and a remote CFC proxy call's token site is its siteid.
   const siteList = createSiteListClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock });
   const sites =
     options.startBackground === false ? undefined : createSiteRegistry({ list: () => siteList.listSites(), logger: app.log });
@@ -269,6 +270,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     resolver,
     tokenCache,
     identity,
+    sites,
     stateCheck,
     hydrator,
     carry,

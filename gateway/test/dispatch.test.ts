@@ -1,6 +1,7 @@
-// Token site of OPT-2, fixture and template requests through the real matcher and edge dispatcher, against stand-in services.
+// Token site of OPT-2, fixture, template and remote CFC proxy requests through the real matcher and edge dispatcher, against stand-in services.
 import { Buffer } from 'node:buffer';
 import replyFrom from '@fastify/reply-from';
+import { UNREGISTERED_SITEID_HEADER } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import {
   IDENTITY_SERVICE,
@@ -18,6 +19,8 @@ import { buildRoutingIndex } from '../src/cutover/loader.js';
 import type { CutoverEntry, EntryKind, InventoryFacts, OwningService, RoutingIndex } from '../src/cutover/types.js';
 import { registerEdgeRoute, type DispatcherDeps } from '../src/dispatcher/dispatch.js';
 import { createMatcher } from '../src/dispatcher/match.js';
+import { createSiteRegistry, type SiteRegistry } from '../src/dispatcher/site-registry.js';
+import type { SiteListing } from '../src/session/bridge-client.js';
 import type { SessionSnapshot } from '../src/session/identity-client.js';
 import type { SessionResolution } from '../src/session/resolve.js';
 import type { SessionToken } from '../src/session/token-cache.js';
@@ -67,6 +70,7 @@ const INDEX: RoutingIndex = buildRoutingIndex(
       entry('cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm', 'people', 'write'),
       entry('cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm', 'people', 'write'),
       entry('cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm', 'people', 'write'),
+      entry('cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag', 'strategies-content', 'write'),
     ],
   },
   { sourceSha: SHA, variants: [] },
@@ -93,8 +97,8 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
 });
 
-/** The edge dispatcher over the real matcher, with an active session whose token cache answers `tok:<site>`. */
-async function harness(): Promise<Harness> {
+/** The edge dispatcher over the real matcher, with an active session whose token cache answers `tok:<site>`, and `sites` when given. */
+async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
   const web = await startHttpDouble((_req, res) => sendBytes(res, 200, 'web-body', { 'content-type': 'text/html' }));
   const stub = await startHttpDouble((_req, res) => sendBytes(res, 200, 'stub-body', { 'content-type': 'text/plain' }));
   const people = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
@@ -160,6 +164,7 @@ async function harness(): Promise<Harness> {
       get: vi.fn(async (_sessionId: string, siteId: string | undefined) => ({ token: `tok:${siteId ?? ''}`, claims: TOKEN_CLAIMS })),
     },
     identity: { adminSite: vi.fn(async () => ''), snapshot: vi.fn(async () => undefined) },
+    sites,
     stateCheck: {
       check: async () => ({ state: 'active' as const, epoch: EPOCH, userId: 'U', siteId: 'default', epochChanged: false }),
     },
@@ -381,5 +386,73 @@ describe('template user token site', () => {
     const [target, other] = served === 'content' ? [h.content, h.people] : [h.people, h.content];
     expect(target.requests.map((r) => r.headers.authorization)).toEqual([`Bearer tok:${site}`]);
     expect(other.requests).toHaveLength(0);
+  });
+});
+
+/** Legacy's sites on `<siteid>.localhost`, `default` on `localhost`, with `tenant-a` first in bind order and an admin domain. */
+const CFC_SITES: SiteListing = {
+  sites: ['default', 'tenant-a', 'tenant-b'],
+  bindings: [
+    { siteId: 'tenant-a', domain: 'tenant-a.localhost', aliases: [] },
+    { siteId: 'default', domain: 'localhost', aliases: [] },
+    { siteId: 'tenant-b', domain: 'tenant-b.localhost', aliases: [] },
+  ],
+  adminDomain: 'admin.localhost',
+};
+
+/** The site registry over {@link CFC_SITES}, loaded once without its refresh loop. */
+async function loadedRegistry(): Promise<SiteRegistry> {
+  const registry = createSiteRegistry({ list: () => Promise.resolve(CFC_SITES), logger: { error: () => undefined } });
+  await registry.refresh();
+  return registry;
+}
+
+describe('remote CFC proxy user token site', () => {
+  const FLAG = '/core/modules/v1/comments/ajax/commentsProxy.cfc?method=flag&commentID=C';
+  const UNDEFINED = `${FLAG}&siteid=undefined`;
+  const TENANT_B_HOST = { host: 'tenant-b.localhost' };
+  // `b.localhost` is no site's domain but tenant-b's contains it; legacy's absent-siteid default redirects it and the admin domain.
+  const PARTIAL_HOST = { host: 'b.localhost' };
+  const ADMIN_HOST = { host: 'admin.localhost' };
+  it.each<[string, string, Record<string, string>, boolean, string, boolean]>([
+    ['siteid=undefined, as comments.js sends it, for the Host site', UNDEFINED, TENANT_B_HOST, true, 'tenant-b', true],
+    ['a registered siteid, over the Host site', `${FLAG}&siteid=tenant-a`, TENANT_B_HOST, true, 'tenant-a', false],
+    ['a registered siteid in another case, for the site as sent', `${FLAG}&siteid=Tenant-A`, TENANT_B_HOST, true, 'Tenant-A', false],
+    [
+      'a registered siteid with a client-sent mark, which the gateway strips',
+      `${FLAG}&siteid=tenant-a`,
+      { ...TENANT_B_HOST, [UNREGISTERED_SITEID_HEADER]: 'true' },
+      true,
+      'tenant-a',
+      false,
+    ],
+    ['no siteid, for the Host site without its port', FLAG, { host: 'tenant-b.localhost:8100' }, true, 'tenant-b', false],
+    ['an empty siteid, for the Host site', `${FLAG}&siteid=`, { host: 'tenant-a.localhost' }, true, 'tenant-a', false],
+    [
+      'siteid=undefined, for the X-Forwarded-Host site over the Host one',
+      UNDEFINED,
+      { ...TENANT_B_HOST, 'x-forwarded-host': 'tenant-a.localhost' },
+      true,
+      'tenant-a',
+      true,
+    ],
+    ['siteid=undefined on the default site host', UNDEFINED, { host: 'localhost:8100' }, true, 'default', true],
+    ['siteid=undefined on an unbound host, for the first site in bind order', UNDEFINED, { host: 'other.test' }, true, 'tenant-a', true],
+    ['no siteid on an unbound host, for the first site in bind order', FLAG, { host: 'other.test' }, true, 'tenant-a', false],
+    ['siteid=undefined on a host a site domain contains, for that site', UNDEFINED, PARTIAL_HOST, true, 'tenant-b', true],
+    ['an empty siteid on a host a site domain contains, for that site', `${FLAG}&siteid=`, PARTIAL_HOST, true, 'tenant-b', false],
+    ['no siteid on a host a site domain contains, for default', FLAG, PARTIAL_HOST, true, 'default', false],
+    ['siteid=undefined on the admin domain, for default', UNDEFINED, ADMIN_HOST, true, 'default', true],
+    ['no siteid on the admin domain, for default', FLAG, ADMIN_HOST, true, 'default', false],
+    ['siteid=undefined without a registry, for the siteid as sent', UNDEFINED, TENANT_B_HOST, false, 'undefined', false],
+    ['no siteid without a registry, for default', FLAG, TENANT_B_HOST, false, 'default', false],
+  ])('mints the token of %s, marking only a siteid naming no registered site', async (_label, url, headers, withRegistry, site, marked) => {
+    const h = await harness(withRegistry ? await loadedRegistry() : undefined);
+    const res = await h.app.inject({ method: 'GET', url, headers });
+    expect(res.statusCode).toBe(200);
+    expect(h.deps.tokenCache.get).toHaveBeenCalledExactlyOnceWith(SESSION_ID, site, EPOCH);
+    expect(h.deps.identity.adminSite).not.toHaveBeenCalled();
+    expect(h.content.requests.map((r) => r.headers.authorization)).toEqual([`Bearer tok:${site}`]);
+    expect(h.content.requests.map((r) => r.headers[UNREGISTERED_SITEID_HEADER.toLowerCase()])).toEqual([marked ? 'true' : undefined]);
   });
 });

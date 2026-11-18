@@ -102,9 +102,10 @@ describe('ccommentsDefault definition', () => {
     expect(await ccommentsDefault.load!(ctx)).toEqual({ siteid: 'default', canManage: true, canPurge: true });
   });
 
-  it('answers a service denial with the no-access redirect', async () => {
+  it('answers a service denial with the logged-in secure() redirect', async () => {
     const ctx = contextFor(adminS2Request(MANAGER), { status: 403 });
-    expect(await renderScreenPage(ccommentsDefault, ctx)).toEqual(deniedGate(403));
+    expect(await renderScreenPage(ccommentsDefault, ctx)).toEqual(deniedGate(403, ctx.req));
+    expect(await renderScreenPage(ccommentsDefault, ctx)).toEqual({ kind: 'redirect', location: './' });
   });
 });
 

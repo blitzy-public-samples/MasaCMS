@@ -23,6 +23,7 @@ import {
   type LegacyDescribe,
   type LegacyDescribeUser,
   type LegacyUsedToken,
+  type SiteListing,
 } from '../../src/session/bridge-client.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from '../helpers/env.js';
 import {
@@ -760,12 +761,17 @@ describe('createSiteListClient', () => {
       ...overrides,
     });
 
+  const BINDINGS = [
+    { siteId: 'default', domain: 'localhost', aliases: [] },
+    { siteId: 'tenant-a', domain: 'tenant-a.localhost', aliases: ['a.example'] },
+  ];
+
   it('sends a signed GET to site.cfm?op=list without cookies, as the bridge bot', async () => {
     double.setHandler((_req, res) => {
-      sendJson(res, 200, { sites: ['default', 'tenant-a'], serverTime: SERVER_TIME });
+      sendJson(res, 200, { sites: ['default', 'tenant-a'], bindings: BINDINGS, adminDomain: '', serverTime: SERVER_TIME });
     });
 
-    await expect(sites().listSites()).resolves.toEqual(['default', 'tenant-a']);
+    await expect(sites().listSites()).resolves.toEqual({ sites: ['default', 'tenant-a'], bindings: BINDINGS, adminDomain: '' });
 
     expect(double.requests).toHaveLength(1);
     const [req] = double.requests;
@@ -783,13 +789,21 @@ describe('createSiteListClient', () => {
     expect(verifyBridgeAssertion(assertion, VECTOR_KEY, new MemoryNonceStore(), NOW)).toMatchObject({ ok: true });
   });
 
-  it.each<[string, unknown[], string[]]>([
-    ['keeps string ids', ['default', 'Tenant-A'], ['default', 'Tenant-A']],
-    ['coerces numeric ids to strings', ['default', 42, 7.5], ['default', '42', '7.5']],
-    ['answers an empty registry', [], []],
+  it.each<[string, Record<string, unknown>, SiteListing]>([
+    [
+      'keeps string ids, domains and aliases',
+      { sites: ['default', 'Tenant-A'], bindings: [{ siteId: 'Tenant-A', domain: 'A.localhost', aliases: ['a.example', 'b'] }], adminDomain: 'admin.example' },
+      { sites: ['default', 'Tenant-A'], bindings: [{ siteId: 'Tenant-A', domain: 'A.localhost', aliases: ['a.example', 'b'] }], adminDomain: 'admin.example' },
+    ],
+    [
+      'coerces numeric ids, domains, aliases and admin domain to strings',
+      { sites: ['default', 42, 7.5], bindings: [{ siteId: 42, domain: 10, aliases: [7, 'x'] }], adminDomain: 12 },
+      { sites: ['default', '42', '7.5'], bindings: [{ siteId: '42', domain: '10', aliases: ['7', 'x'] }], adminDomain: '12' },
+    ],
+    ['answers an empty registry', { sites: [], bindings: [], adminDomain: '' }, { sites: [], bindings: [], adminDomain: '' }],
   ])('%s', async (_case, answered, expected) => {
     double.setHandler((_req, res) => {
-      sendJson(res, 200, { sites: answered, serverTime: SERVER_TIME });
+      sendJson(res, 200, { ...answered, serverTime: SERVER_TIME });
     });
 
     await expect(sites().listSites()).resolves.toEqual(expected);
@@ -816,13 +830,22 @@ describe('createSiteListClient', () => {
     });
   });
 
+  const LISTED = '"bindings":[{"siteId":"default","domain":"localhost","aliases":[]}],"adminDomain":""';
   it.each([
-    ['no sites key', '{"serverTime":"2026-06-30T12:00:00.000"}'],
-    ['a string for sites', '{"sites":"default"}'],
+    ['no sites key', `{"serverTime":"2026-06-30T12:00:00.000",${LISTED}}`],
+    ['a string for sites', `{"sites":"default",${LISTED}}`],
     ['a JSON array body', '["default"]'],
     ['a JSON null body', 'null'],
-    ['an object entry', '{"sites":["default",{"siteid":"tenant-a"}]}'],
-    ['a null entry', '{"sites":[null]}'],
+    ['an object entry', `{"sites":["default",{"siteid":"tenant-a"}],${LISTED}}`],
+    ['a null entry', `{"sites":[null],${LISTED}}`],
+    ['no bindings key', '{"sites":["default"],"adminDomain":""}'],
+    ['an object for bindings', '{"sites":["default"],"bindings":{"siteId":"default"},"adminDomain":""}'],
+    ['a binding that is not an object', '{"sites":["default"],"bindings":["default"],"adminDomain":""}'],
+    ['a binding without a domain', '{"sites":["default"],"bindings":[{"siteId":"default","aliases":[]}],"adminDomain":""}'],
+    ['a binding with a string for aliases', '{"sites":["default"],"bindings":[{"siteId":"default","domain":"localhost","aliases":"a"}],"adminDomain":""}'],
+    ['a binding with a null alias', '{"sites":["default"],"bindings":[{"siteId":"default","domain":"localhost","aliases":[null]}],"adminDomain":""}'],
+    ['no adminDomain key', '{"sites":["default"],"bindings":[]}'],
+    ['a boolean adminDomain', '{"sites":["default"],"bindings":[],"adminDomain":false}'],
   ])('fails closed on a 2xx with %s', async (_case, body) => {
     double.setHandler((_req, res) => {
       sendBytes(res, 200, body, { 'content-type': 'application/json; charset=utf-8' });
@@ -830,7 +853,7 @@ describe('createSiteListClient', () => {
 
     const failure = await failureOf(sites().listSites());
 
-    expect(failure.cause).toMatchObject({ message: 'legacy bridge site.list answered no list of site ids' });
+    expect(failure.cause).toMatchObject({ message: 'legacy bridge site.list answered no list of sites and bindings' });
   });
 
   it('fails closed on a 2xx that is not JSON', async () => {
@@ -845,9 +868,10 @@ describe('createSiteListClient', () => {
 
   it('passes fetch manual redirects and the call timeout', async () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout');
-    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ sites: ['default'] })));
+    const listing = { sites: ['default'], bindings: [], adminDomain: '' };
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(Response.json(listing)));
 
-    await expect(sites({ fetch: fetchMock }).listSites()).resolves.toEqual(['default']);
+    await expect(sites({ fetch: fetchMock }).listSites()).resolves.toEqual(listing);
 
     const [target, init] = fetchMock.mock.calls[0] ?? [];
     expect(target).toBe(`${double.url}${SITE_PAGE}?op=list`);

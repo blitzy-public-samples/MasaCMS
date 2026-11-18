@@ -21,7 +21,15 @@ const REPRO_DIR = repoPath('harness/repro');
 const DOWN_SH = repoPath('harness/repro/down.sh');
 // $1 repro directory, $2 fake checkout, $3 script; the script also sees PRELUDE as $CHILD_PRELUDE for child commands.
 const PRELUDE = 'set -euo pipefail; source "$1/lib/common.sh"; REPO=$2; source "$1/lib/lock.sh"; eval "$3"';
-const LOCK_VARIABLES = ['OPT2_LOCK_FLOCK_HELD', 'OPT2_LOCK_WAIT', 'OPT2_COMMON_SH_LOADED', 'OPT2_PRISTINE_DIR'];
+const LOCK_VARIABLES = [
+  'OPT2_LOCK_FLOCK_HELD',
+  'OPT2_LOCK_WAIT',
+  'OPT2_LOCK_DIR',
+  'OPT2_COMMON_SH_LOADED',
+  'OPT2_PRISTINE_DIR',
+  'OPT2_PORTS_FILE',
+  'OPT2_CF_SERVER_NAME',
+];
 const TICKET = /^\d{20}-\d+-\d+$/;
 const IGNORED_NOTE = 'opt2: ignoring OPT2_LOCK_FLOCK_HELD: no parent OPT-2 command holds the per-command flock';
 
@@ -226,6 +234,70 @@ describe('lock_acquire refusal', () => {
     const result = await run('/x/a', 'lock_acquire up', { OPT2_LOCK_WAIT: wait });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`OPT2_LOCK_WAIT must be a whole number of seconds (at most 9 digits), got '${wait}'`);
+  });
+});
+
+describe('OPT2_LOCK_DIR', () => {
+  /** The overrides of a second stack: its own lock directory and CommandBox server name. */
+  const secondStack = (): Record<string, string> => ({
+    OPT2_LOCK_DIR: path.join(home, 'c25'),
+    OPT2_CF_SERVER_NAME: 'opt2-legacy-c25',
+  });
+
+  it.each([
+    { label: 'unset', extra: (): Record<string, string> => ({}), dir: (): string => lockDir() },
+    { label: 'empty', extra: (): Record<string, string> => ({ OPT2_LOCK_DIR: '' }), dir: (): string => lockDir() },
+    {
+      label: 'the default directory, with a trailing slash',
+      extra: (): Record<string, string> => ({ OPT2_LOCK_DIR: `${lockDir()}/` }),
+      dir: (): string => `${lockDir()}/`,
+    },
+    { label: 'a directory of its own', extra: secondStack, dir: (): string => path.join(home, 'c25') },
+  ])('places run.lock, its flock and its queue in the directory it names when $label', async ({ extra, dir }) => {
+    const result = await run('/x/a', 'printf "%s\\n" "$OPT2_LOCK_FILE" "$OPT2_LOCK_FLOCK" "$OPT2_LOCK_QUEUE"', extra());
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe(`${['run.lock', 'run.lock.flock', 'run.queue'].map((name) => `${dir()}/${name}`).join('\n')}\n`);
+  });
+
+  it.each([
+    { value: '.opt2', message: "OPT2_LOCK_DIR must be an absolute path, got '.opt2'" },
+    { value: 'opt2/c25', message: "OPT2_LOCK_DIR must be an absolute path, got 'opt2/c25'" },
+    { value: '~/.opt2', message: "OPT2_LOCK_DIR must be an absolute path, got '~/.opt2'" },
+    {
+      value: '/srv/opt2/c25',
+      message: 'OPT2_LOCK_DIR (/srv/opt2/c25) gives this stack its own run lock, so it needs its own OPT2_CF_SERVER_NAME too',
+    },
+  ])('rejects OPT2_LOCK_DIR=$value without OPT2_CF_SERVER_NAME', async ({ value, message }) => {
+    const result = await run('/x/a', 'echo sourced', { OPT2_LOCK_DIR: value });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe(`opt2: ${message}\n`);
+  });
+
+  it("lets a second stack's up take its own run lock while another checkout's live stack holds the default one", async () => {
+    liveStack('/x/a');
+    expect((await run('/x/a', 'lock_acquire up; lock_claim_stack')).status).toBe(0);
+
+    const refused = await run('/x/b', 'lock_acquire up; lock_claim_stack');
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain(`the live OPT-2 stack of /x/a (command up, pid `);
+    expect(refused.stderr).toContain(`holds ${lockFile()};`);
+    const held = readFileSync(lockFile(), 'utf8');
+    const flock = readFileSync(flockFile(), 'utf8');
+
+    const own = path.join(home, 'c25');
+    const claimed = await run('/x/b', 'lock_acquire up; lock_claim_stack; echo "pid $$"', secondStack());
+    expect(claimed.status, claimed.stderr).toBe(0);
+    const pid = Number(/^pid (\d+)$/m.exec(claimed.stdout)?.[1]);
+    const record = JSON.parse(readFileSync(path.join(own, 'run.lock'), 'utf8')) as Record<string, unknown>;
+    expect(record).toMatchObject({ checkout: '/x/b', stateDir: stateDir('/x/b'), pid, command: 'up' });
+    expect(statSync(own).mode & 0o777).toBe(0o700);
+    expect(existsSync(path.join(own, 'run.lock.flock'))).toBe(true);
+    expect(await run('/x/b', 'lock_acquire down; lock_assert_mine', secondStack())).toMatchObject({ status: 0 });
+
+    expect(readFileSync(lockFile(), 'utf8')).toBe(held);
+    expect(readFileSync(flockFile(), 'utf8')).toBe(flock);
+    expect(tickets()).toEqual([]);
   });
 });
 

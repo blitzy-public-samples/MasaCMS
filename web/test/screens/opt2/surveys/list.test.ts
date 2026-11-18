@@ -166,7 +166,7 @@ describe('surveys list', () => {
   ])('answers the service $status with the access gate redirect', async ({ status, location }) => {
     const gateway = surveysGateway({ [LIST_ROUTE]: { status } });
 
-    const page = await renderScreenPage(surveysScreen('surveys'), contextFor(adminS2Request(), gateway));
+    const page = await renderScreenPage(surveysScreen('surveys'), contextFor(adminS2Request({ mode: 'opt2' }), gateway));
 
     expect(page).toEqual({ kind: 'redirect', location });
   });

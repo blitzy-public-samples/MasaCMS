@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, UNREGISTERED_SITEID_HEADER } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, qualified } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -253,6 +253,19 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     expect(await flagCount(COMMENT)).toBe((before ?? 0) + 1);
   });
 
+  // The gateway mints these calls' token for the request host's site and marks them.
+  it.each<[string, 'GET' | 'POST', string, string | undefined]>([
+    ['siteid=undefined in the url, as comments.js sends it', 'GET', `?method=flag&commentID=${COMMENT}&siteid=undefined`, undefined],
+    ['a form siteid naming no registered site', 'POST', '', `method=flag&commentID=${COMMENT}&siteid=nosuchsite`],
+  ])('flags in the token tenant a comment whose call binds %s, marked by the gateway as naming no registered site', async (_label, method, query, form) => {
+    const before = await flagCount(COMMENT);
+    const headers = { ...(await visitorHeaders()), [UNREGISTERED_SITEID_HEADER]: 'true' };
+    const res = await call(method, query, form === undefined ? { headers } : { headers, payload: form });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('');
+    expect(await flagCount(COMMENT)).toBe((before ?? 0) + 1);
+  });
+
   it('answers getContentStats of an item without stats with the stats defaults, defaulting siteid to the token site', async () => {
     const res = await call('GET', `?method=getContentStats&contentID=${NO_STATS}`);
     expect(res.statusCode).toBe(200);
@@ -318,6 +331,7 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     ['a url siteid of another site', `?method=flag&commentID=${COMMENT}&siteid=${TENANT_B.siteId}`, undefined],
     ['a form siteid of another site', '', `method=flag&commentID=${COMMENT}&siteid=${TENANT_B.siteId}`],
     ['a url siteid of another site over the token site in the form', `?siteid=${TENANT_B.siteId}`, `method=flag&commentID=${COMMENT}&siteid=${SITE}`],
+    ['a siteid naming no registered site the gateway did not mark', `?method=flag&commentID=${COMMENT}&siteid=nosuchsite`, undefined],
   ])('refuses %s with 403 and no write', async (_label, query, form) => {
     const before = await flagCount(COMMENT);
     const res = await call('POST', query, form === undefined ? {} : { payload: form });

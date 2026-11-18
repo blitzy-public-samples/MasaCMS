@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +15,7 @@ import {
   main,
   parsePortsEnv,
   portFor,
+  portsEnvPath,
   portVariable,
   serviceUrls,
   type PackageName,
@@ -262,6 +263,115 @@ describe('loadPorts', () => {
     expect(err).toBeInstanceOf(PortsError);
     expect((err as Error).message.startsWith(`${missing}: ENOENT: no such file or directory`)).toBe(true);
     expect((err as Error).cause).toMatchObject({ code: 'ENOENT', path: missing });
+  });
+});
+
+describe('portsEnvPath', () => {
+  it.each<[string, EnvLike, string]>([
+    ['unset', {}, repoPath('harness', 'repro', 'ports.env')],
+    ['empty', { OPT2_PORTS_FILE: '' }, repoPath('harness', 'repro', 'ports.env')],
+    ['an absolute path', { OPT2_PORTS_FILE: '/srv/opt2/c25/ports.env' }, '/srv/opt2/c25/ports.env'],
+  ])('resolves OPT2_PORTS_FILE %s', (_label, env, expected) => {
+    expect(portsEnvPath(env)).toBe(expected);
+  });
+
+  it.each(['ports.env', 'repro/ports.env', './ports.env', '../c25/ports.env', '~/ports.env'])(
+    'rejects the relative OPT2_PORTS_FILE %j',
+    (value) => {
+      const err = thrown(() => portsEnvPath({ OPT2_PORTS_FILE: value }));
+      expect(err).toBeInstanceOf(PortsError);
+      expect(err).toMatchObject({ message: `OPT2_PORTS_FILE must be an absolute path, got '${value}'` });
+    },
+  );
+});
+
+describe('the port file of a second stack (OPT2_PORTS_FILE)', () => {
+  const OFFSET = 10000;
+  const COMMON_SH = repoPath('harness', 'repro', 'lib', 'common.sh');
+  const MOVED = Object.fromEntries(PACKAGE_NAMES.map((name) => [name, EXPECTED[name] + OFFSET])) as Record<PackageName, number>;
+  const MOVED_TOOLS = Object.fromEntries(Object.entries(TOOL_PORTS).map(([variable, port]) => [variable, port + OFFSET]));
+  const movedText = (tools: Record<string, number>): string =>
+    portsText(
+      Object.fromEntries(PACKAGE_NAMES.map((name) => [VARIABLES[name], String(MOVED[name])])),
+      Object.entries(tools).map(([variable, port]) => `${variable}=${port}`),
+    );
+
+  /** Sources common.sh in a bash with only PATH, a fresh HOME and `env`, printing `<name>=<value>` per name. */
+  function sourceCommon(env: Record<string, string>, names: string[]): SpawnSyncReturns<string> {
+    const script = 'source "$0"; for v in "$@"; do printf "%s=%s\\n" "$v" "${!v}"; done';
+    return spawnSync('bash', ['-c', script, COMMON_SH, ...names], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', HOME: tempDir(), ...env },
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
+  }
+
+  it('is the file every reader of ports.ts uses once set in the environment', () => {
+    const file = tempPortsFile(movedText(MOVED_TOOLS));
+    vi.stubEnv('OPT2_PORTS_FILE', file);
+    expect(portsEnvPath()).toBe(file);
+    expect(loadPorts()).toEqual(MOVED);
+    expect(portFor('stub')).toBe(EXPECTED.stub + OFFSET);
+    expect(localUrl('gateway')).toBe(`http://127.0.0.1:${MOVED.gateway}`);
+    expect(serviceUrls()).toEqual(Object.fromEntries(PACKAGE_NAMES.map((name) => [name, `http://127.0.0.1:${MOVED[name]}`])));
+    expect(main(['--check', '--legacy-port', String(EXPECTED.gateway)], {})).toEqual({
+      summary: { ports: MOVED, legacyPort: EXPECTED.gateway },
+    });
+    const err = thrown(() => assertNoLegacyCollision(MOVED.gateway));
+    expect(err).toMatchObject({ message: `legacy PORT ${MOVED.gateway} collides with OPT2_PORT_GATEWAY in ${file}` });
+  });
+
+  it('fails a reader with a PortsError, and the CLI with its summary line, on a relative OPT2_PORTS_FILE', async () => {
+    vi.stubEnv('OPT2_PORTS_FILE', 'repro/ports.env');
+    const message = "OPT2_PORTS_FILE must be an absolute path, got 'repro/ports.env'";
+    expect(thrown(() => serviceUrls())).toMatchObject({ name: 'PortsError', message });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const chunks: string[] = [];
+    const code = await runCli((args) => main(args, {}), {
+      argv: ['--service-urls'],
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit: () => undefined,
+      command: COMMAND,
+    });
+    expect(code).toBe(1);
+    expect(chunks.map((chunk) => JSON.parse(chunk) as unknown)).toEqual([
+      { command: COMMAND, ok: false, code: 1, error: { type: 'PortsError', message } },
+    ]);
+  });
+
+  it.each<[string, () => Record<string, string>, Record<PackageName, number>, Record<string, number>]>([
+    ['unset: the committed ports.env', () => ({}), EXPECTED, TOOL_PORTS],
+    ['a file moving every port', () => ({ OPT2_PORTS_FILE: tempPortsFile(movedText(MOVED_TOOLS)) }), MOVED, MOVED_TOOLS],
+    ['a file without tooling ports, which keep their defaults', () => ({ OPT2_PORTS_FILE: tempPortsFile(movedText({})) }), MOVED, TOOL_PORTS],
+  ])('gives bash through common.sh the ports of %s', (_label, env, ports, tools) => {
+    const vars = env();
+    const file = vars.OPT2_PORTS_FILE ?? realpathSync(repoPath('harness', 'repro', 'ports.env'));
+    const names = [...PACKAGE_NAMES.map((name) => VARIABLES[name]), ...Object.keys(TOOL_PORTS)];
+    const run = sourceCommon(vars, [...names, 'PORTS_FILE', 'OPT2_GATEWAY_ORIGIN_LOCAL', 'MAILPIT_API_LOCAL']);
+    expect(run.stderr).toBe('');
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(
+      [
+        ...PACKAGE_NAMES.map((name) => `${VARIABLES[name]}=${ports[name]}`),
+        ...Object.keys(TOOL_PORTS).map((variable) => `${variable}=${tools[variable]}`),
+        `PORTS_FILE=${file}`,
+        `OPT2_GATEWAY_ORIGIN_LOCAL=http://127.0.0.1:${ports.gateway}`,
+        `MAILPIT_API_LOCAL=http://127.0.0.1:${tools.OPT2_TOOL_PORT_MAILPIT_HTTP}`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it.each<[string, () => string, (value: string) => string]>([
+    ['a relative path', () => 'repro/ports.env', (v) => `OPT2_PORTS_FILE must be an absolute path, got '${v}'`],
+    ['a missing file', () => path.join(tempDir(), 'absent.env'), (v) => `missing ${v}`],
+  ])('stops common.sh on %s', (_label, value, message) => {
+    const file = value();
+    const run = sourceCommon({ OPT2_PORTS_FILE: file }, ['OPT2_PORT_GATEWAY']);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).toBe(`opt2: ${message(file)}\n`);
   });
 });
 

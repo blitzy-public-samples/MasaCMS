@@ -1,16 +1,21 @@
 # shellcheck shell=bash
-# Run lock of the reproducibility commands: one OPT-2 stack per host and one OPT-2 command at a time.
+# Run lock of the reproducibility commands: one OPT-2 stack per lock directory and one OPT-2 command at a time.
 
 if [[ -z ${OPT2_COMMON_SH_LOADED:-} ]] || ! declare -F die >/dev/null; then
   printf 'opt2: %s must be sourced after harness/repro/lib/common.sh\n' "${BASH_SOURCE[0]}" >&2
   return 1
 fi
 
-# Under $HOME rather than OPT2_STATE_DIR: a clean clone runs with a fresh state directory but must see the same lock.
-OPT2_LOCK_DIR="${HOME:?HOME is not set}/.opt2"
-OPT2_LOCK_FILE="$OPT2_LOCK_DIR/run.lock"
-OPT2_LOCK_FLOCK="$OPT2_LOCK_DIR/run.lock.flock"
-OPT2_LOCK_QUEUE="$OPT2_LOCK_DIR/run.queue"
+# OPT2_LOCK_DIR, else $HOME/.opt2, never OPT2_STATE_DIR: a clean clone runs with a fresh state directory but must see
+# the same lock.
+LOCK_DIR="${OPT2_LOCK_DIR:-${HOME:?HOME is not set}/.opt2}"
+[[ $LOCK_DIR == /* ]] || die "OPT2_LOCK_DIR must be an absolute path, got '$LOCK_DIR'"
+# A moved lock no longer keeps opt2-legacy to one stack, so a stack with its own lock needs its own server name.
+[[ ${LOCK_DIR%/} == "${HOME:-}/.opt2" || ${LEGACY_SERVER_NAME,,} != opt2-legacy ]] ||
+  die "OPT2_LOCK_DIR ($LOCK_DIR) gives this stack its own run lock, so it needs its own OPT2_CF_SERVER_NAME too"
+OPT2_LOCK_FILE="$LOCK_DIR/run.lock"
+OPT2_LOCK_FLOCK="$LOCK_DIR/run.lock.flock"
+OPT2_LOCK_QUEUE="$LOCK_DIR/run.queue"
 
 # _opt2_lock_read <strict|lenient> <file> <key…>: prints each key's string or number value of the JSON object in
 # <file>, one per line (empty when absent); a dotted key reads a nested object, and an array prints `, `-joined.
@@ -394,7 +399,7 @@ lock_acquire() {
   [[ $wait =~ ^[0-9]{1,9}$ ]] || die "OPT2_LOCK_WAIT must be a whole number of seconds (at most 9 digits), got '$wait'"
   wait=$((10#$wait))
   require_cmd flock setpriv node
-  mkdir -m 0700 -- "$OPT2_LOCK_DIR" 2>/dev/null || [[ -d $OPT2_LOCK_DIR ]] || die "cannot create $OPT2_LOCK_DIR"
+  mkdir -m 0700 -- "$LOCK_DIR" 2>/dev/null || [[ -d $LOCK_DIR ]] || die "cannot create $LOCK_DIR"
   if ! _opt2_lock_flock_inherited; then
     _opt2_lock_classify
     if [[ $OPT2_LOCK_STATE == mine-recovery && $command != down ]]; then die "$OPT2_LOCK_REASON"; fi

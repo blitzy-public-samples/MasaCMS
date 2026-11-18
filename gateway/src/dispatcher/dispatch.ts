@@ -8,7 +8,13 @@ import {
   type AuthSetup,
   type Opt2RouteConfig,
 } from '@opt2/platform/auth';
-import { REST_CONSUMED_PARAMS_HEADER, isLegacySessionCookie, parseCookieHeader, parseSetCookie } from '@opt2/platform/legacy-compat';
+import {
+  REST_CONSUMED_PARAMS_HEADER,
+  UNREGISTERED_SITEID_HEADER,
+  isLegacySessionCookie,
+  parseCookieHeader,
+  parseSetCookie,
+} from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import {
   recordLogScope,
@@ -56,6 +62,7 @@ import {
   type LegacyUpstream,
 } from './forward-legacy.js';
 import { forwardToTarget } from './forward-target.js';
+import { forwardedHost } from './headers.js';
 import {
   RELAY_ALIAS_PREFIX,
   WRITE_KINDS,
@@ -68,6 +75,7 @@ import {
   type UnavailableReason,
 } from './match.js';
 import { SAFE_METHODS, isRelayCaller, relayHandler, type RelayDeps } from './relay.js';
+import type { SiteRegistry } from './site-registry.js';
 import type { WindowCompleteInput, WriteWindowClient } from './write-window.js';
 
 /** Methods of the edge operations (`edgeDelete|Get|Head|Options|Patch|Post|Put`). */
@@ -98,6 +106,8 @@ export interface DispatcherDeps {
   tokenCache: Pick<TokenCache, 'get'>;
   /** Identity's record of a session's selected admin site and login snapshot, read for site-less web and fixture requests. */
   identity: Pick<IdentityClient, 'adminSite' | 'snapshot'>;
+  /** Legacy's site registry, which decides a remote CFC proxy call's user-token site ({@link cfcTokenSite}); absent, the `siteid` alone decides. */
+  sites?: Pick<SiteRegistry, 'siteExists' | 'bindToDomain'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
   /** Installs the session values target routes keep in the legacy session of a legacy-bound admin request. */
@@ -286,14 +296,41 @@ function setCookiesOf(resolution: LegacyBoundResolution | undefined): string[] {
   return resolution === undefined || resolution.kind === 'response' ? [] : resolution.setCookies;
 }
 
-/** The destination's extra headers plus, when REST credential handling consumed params, the header naming them for the callee's route key. */
+/**
+ * The destination's extra headers plus, when REST credential handling consumed params, the header naming them for the callee's
+ * route key, and {@link UNREGISTERED_SITEID_HEADER} when the user token stands in for a `siteid` naming no registered site.
+ */
 function targetExtraHeaders(
   destination: TargetDestination,
   resolution: SessionResolution | undefined,
+  unregisteredSiteId: boolean,
 ): Readonly<Record<string, string>> | undefined {
   const consumed = resolution === undefined || resolution.kind === 'response' ? [] : (resolution.consumedParams ?? []);
-  if (consumed.length === 0) return destination.extraHeaders;
-  return { ...destination.extraHeaders, [REST_CONSUMED_PARAMS_HEADER]: consumed.join(',') };
+  if (consumed.length === 0 && !unregisteredSiteId) return destination.extraHeaders;
+  return {
+    ...destination.extraHeaders,
+    ...(consumed.length === 0 ? {} : { [REST_CONSUMED_PARAMS_HEADER]: consumed.join(',') }),
+    ...(unregisteredSiteId ? { [UNREGISTERED_SITEID_HEADER]: 'true' } : {}),
+  };
+}
+
+/** A request's user-token site, and whether it stands in for a present, non-empty `siteid` naming no registered site. */
+interface TokenSite {
+  siteId: string;
+  unregisteredSiteId: boolean;
+}
+
+/**
+ * A remote CFC proxy call's user-token site: a registered `siteid`; else the request host's site, which an absent `siteid` takes
+ * only where legacy's default binds it without redirecting; else `default`.
+ */
+function cfcTokenSite(request: FastifyRequest, siteId: string | undefined, sites: NonNullable<DispatcherDeps['sites']>): TokenSite {
+  if (siteId !== undefined && sites.siteExists(siteId)) return { siteId, unregisteredSiteId: false };
+  const bound = sites.bindToDomain(forwardedHost(request));
+  // Only an absent siteid takes the bindToDomain() default (commentsProxy.cfc:88-112), whose isAdmin=false redirects a
+  // partial match and the admin domain before the method runs (contentServer.cfc:196-217).
+  const hostSite = siteId === undefined && bound?.match === 'partial' ? undefined : bound?.siteId;
+  return { siteId: hostSite ?? DEFAULT_SITE_ID, unregisteredSiteId: siteId !== undefined && siteId !== '' };
 }
 
 /** The browser's `Cookie` header with its legacy session cookies swapped in place for the jar's live ones; other cookies unchanged. */
@@ -493,15 +530,26 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     return typeof siteId === 'string' ? siteId : '';
   };
 
-  /** A request's user-token site: its `siteid`, else the session's selected site for web or user's site for a fixture, else `default`. */
-  const tokenSiteOf = async (result: RoutedOutcome['result'], destination: TargetDestination, sessionId: string): Promise<string> => {
-    if (result.siteId !== undefined && result.siteId !== '') return result.siteId;
+  /**
+   * A request's user-token site: its `siteid`, else the session's selected site for web or user's site for a fixture, else
+   * `default`. With the site registry, a remote CFC proxy call's is its {@link cfcTokenSite}.
+   */
+  const tokenSiteOf = async (
+    request: FastifyRequest,
+    result: RoutedOutcome['result'],
+    destination: TargetDestination,
+    sessionId: string,
+  ): Promise<TokenSite> => {
+    // comments.js sends `siteid=undefined` (its `data-siteidid` typo), which names no site, and legacy then loads the comment
+    // by id alone; the request host's site is the one whose tenant the target can serve it in.
+    if (result.family === 'cfc' && deps.sites !== undefined) return cfcTokenSite(request, result.siteId, deps.sites);
+    if (result.siteId !== undefined && result.siteId !== '') return { siteId: result.siteId, unregisteredSiteId: false };
     let selected = '';
     // Web's admin set-up, which also serves the OPT-2 screens, fills a missing rc.siteid from session.siteid (admin/Application.cfc:384-412).
     if (result.family === 'admin' || destination.isWeb) selected = await deps.identity.adminSite(sessionId);
     // The fixture's resolveSite falls back to the session user's siteID (legacy-fixtures/cfml/lib/auth.cfc:27-31).
     else if (result.family === 'fixture') selected = await userSiteOf(sessionId);
-    return selected === '' ? DEFAULT_SITE_ID : selected;
+    return { siteId: selected === '' ? DEFAULT_SITE_ID : selected, unregisteredSiteId: false };
   };
 
   /**
@@ -530,6 +578,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     let resolution: SessionResolution | undefined;
     let sessionId: string | undefined;
     let userToken: string | undefined;
+    let unregisteredSiteId = false;
     let jar: JarCookies = {};
     // A static entry is a file, so no session is resolved for it.
     if (entry?.kind !== 'static') {
@@ -546,7 +595,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
           jar = resolution.legacyCookies;
-          const minted = await deps.tokenCache.get(sessionId, await tokenSiteOf(result, destination, sessionId), check.epoch);
+          const tokenSite = await tokenSiteOf(request, result, destination, sessionId);
+          unregisteredSiteId = tokenSite.unregisteredSiteId;
+          const minted = await deps.tokenCache.get(sessionId, tokenSite.siteId, check.epoch);
           userToken = minted.token;
           recordLogScope(request, { tenantId: minted.claims.tid, userId: minted.claims.sub });
         } else {
@@ -564,7 +615,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       path: destination.path,
       headers: stripInboundAuthHeaders(request.headers, { afterExchange: true }),
       userToken,
-      extraHeaders: targetExtraHeaders(destination, resolution),
+      extraHeaders: targetExtraHeaders(destination, resolution, unregisteredSiteId),
       method: destination.method,
       forwardBody: destination.forwardBody,
       sessionId,

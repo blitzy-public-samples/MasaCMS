@@ -76,8 +76,10 @@ _opt2_assert_outside_repo OPT2_PRISTINE_DIR
 
 # Process output lives here rather than under a `logs` directory, which the root .gitignore ignores at any depth.
 PROCESS_OUTPUT_DIR="$OPT2_STATE_DIR/process-output"
-# CommandBox server name of the one OPT-2 legacy stack the run lock allows.
-LEGACY_SERVER_NAME=opt2-legacy
+# CommandBox server name of this checkout's OPT-2 legacy stack: OPT2_CF_SERVER_NAME, else opt2-legacy.
+LEGACY_SERVER_NAME="${OPT2_CF_SERVER_NAME:-opt2-legacy}"
+[[ $LEGACY_SERVER_NAME =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+  die "OPT2_CF_SERVER_NAME must be a letter or digit, then letters, digits, '.', '_' or '-'; got '$LEGACY_SERVER_NAME'"
 # Untracked environment paths clean-checkout-proof.sh copies into a fresh clone; gitignored or setup-provided.
 # shellcheck disable=SC2034 # used by clean-checkout-proof.sh
 OPT2_ENV_ARTEFACTS=(core/vendor/testbox core/vendor/docbox themes/default config/settings.ini.cfm)
@@ -94,15 +96,18 @@ ensure_state_dirs() {
 
 # --- Ports -----------------------------------------------------------------------------------------------------
 
-[[ -f $REPRO_DIR/ports.env ]] || die "missing $REPRO_DIR/ports.env"
+# The port file: OPT2_PORTS_FILE, an absolute path in the ports.env format, else the committed ports.env.
+PORTS_FILE="${OPT2_PORTS_FILE:-$REPRO_DIR/ports.env}"
+[[ $PORTS_FILE == /* ]] || die "OPT2_PORTS_FILE must be an absolute path, got '$PORTS_FILE'"
+[[ -f $PORTS_FILE ]] || die "missing $PORTS_FILE"
 # allexport exports every OPT2_PORT_* and OPT2_TOOL_PORT_* key; the caller's allexport state is kept.
 if [[ $- == *a* ]]; then
   # shellcheck source=SCRIPTDIR/../ports.env
-  source "$REPRO_DIR/ports.env"
+  source "$PORTS_FILE"
 else
   set -a
   # shellcheck source=SCRIPTDIR/../ports.env
-  source "$REPRO_DIR/ports.env"
+  source "$PORTS_FILE"
   set +a
 fi
 : "${OPT2_TOOL_PORT_PUBSUB_EMULATOR:=8085}" "${OPT2_TOOL_PORT_OTLP_HTTP:=4319}" \
@@ -120,8 +125,8 @@ legacy_origin() {
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
 {
-  OPT2_GATEWAY_ORIGIN_LOCAL="http://127.0.0.1:${OPT2_PORT_GATEWAY:?OPT2_PORT_GATEWAY is missing from ports.env}"
-  OPT2_MIGRATION_ORIGIN_LOCAL="http://127.0.0.1:${OPT2_PORT_MIGRATION:?OPT2_PORT_MIGRATION is missing from ports.env}"
+  OPT2_GATEWAY_ORIGIN_LOCAL="http://127.0.0.1:${OPT2_PORT_GATEWAY:?OPT2_PORT_GATEWAY is missing from $PORTS_FILE}"
+  OPT2_MIGRATION_ORIGIN_LOCAL="http://127.0.0.1:${OPT2_PORT_MIGRATION:?OPT2_PORT_MIGRATION is missing from $PORTS_FILE}"
   MAILPIT_API_LOCAL="http://127.0.0.1:${OPT2_TOOL_PORT_MAILPIT_HTTP}"
 }
 

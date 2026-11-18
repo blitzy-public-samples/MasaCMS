@@ -120,10 +120,27 @@ export interface BridgeClientOptions {
   fetch?: typeof fetch;
 }
 
+/** One `getList(sortBy="orderno")` row as `contentServer.bindToDomain` reads it: its site's domain and alias lines. */
+export interface SiteBinding {
+  siteId: string;
+  domain: string;
+  aliases: string[];
+}
+
+/** `op=list` answer: the registered site ids and what `contentServer.bindToDomain` binds a request host with. */
+export interface SiteListing {
+  /** The site ids `settingsManager.siteExists` accepts. */
+  sites: string[];
+  /** In bind order. */
+  bindings: SiteBinding[];
+  /** `configBean.getAdminDomain()`. */
+  adminDomain: string;
+}
+
 /** The gateway's read of the legacy site registry through `site.cfm`. */
 export interface SiteListClient {
-  /** `op=list`: the site ids `settingsManager.siteExists` accepts. */
-  listSites(): Promise<string[]>;
+  /** `op=list`: the registered site ids and their domain bindings. */
+  listSites(): Promise<SiteListing>;
 }
 
 type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'end';
@@ -259,19 +276,49 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
   };
 }
 
-/** Creates the signed `site.cfm?op=list` client; a body without a `sites` array of ids fails closed. */
+/** A JSON text serializeJSON may have written as a number, as text; undefined for any other value. */
+function wireText(value: unknown): string | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+}
+
+/** An array of {@link wireText} values as text; undefined for anything else. */
+function wireTexts(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const texts = value.map(wireText);
+  return texts.every((text): text is string => text !== undefined) ? texts : undefined;
+}
+
+/** One `bindings` entry; undefined unless it holds a site id, a domain and an alias array. */
+function siteBindingOf(value: unknown): SiteBinding | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { siteId, domain, aliases } = value as Record<string, unknown>;
+  const [id, host, names] = [wireText(siteId), wireText(domain), wireTexts(aliases)];
+  return id === undefined || host === undefined || names === undefined ? undefined : { siteId: id, domain: host, aliases: names };
+}
+
+/** An `op=list` body; undefined unless `sites`, `bindings` and `adminDomain` all have their shape. */
+function siteListingOf(body: unknown): SiteListing | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const { sites, bindings, adminDomain } = body as Record<string, unknown>;
+  const [ids, admin] = [wireTexts(sites), wireText(adminDomain)];
+  if (ids === undefined || admin === undefined || !Array.isArray(bindings)) return undefined;
+  const bound = bindings.map(siteBindingOf);
+  if (!bound.every((binding): binding is SiteBinding => binding !== undefined)) return undefined;
+  return { sites: ids, bindings: bound, adminDomain: admin };
+}
+
+/** Creates the signed `site.cfm?op=list` client; a body without the site ids, bindings and admin domain fails closed. */
 export function createSiteListClient(opts: BridgeClientOptions): SiteListClient {
   const send = bridgeSender<'list'>(opts, 'site');
 
   return {
     async listSites() {
-      const { body } = await send<{ sites?: unknown } | null>('list', { method: 'GET' }, {}, { userAgent: BOT_USER_AGENT });
-      const sites = body?.sites;
-      // serializeJSON may write a numeric-looking site id as a JSON number.
-      if (!Array.isArray(sites) || !sites.every((id) => typeof id === 'string' || typeof id === 'number')) {
-        throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.list answered no list of site ids'));
+      const { body } = await send<unknown>('list', { method: 'GET' }, {}, { userAgent: BOT_USER_AGENT });
+      const listing = siteListingOf(body);
+      if (listing === undefined) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.list answered no list of sites and bindings'));
       }
-      return sites.map(String);
+      return listing;
     },
   };
 }

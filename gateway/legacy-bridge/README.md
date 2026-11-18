@@ -233,11 +233,12 @@ Caller: the migration reverse projector, after a batch touching `tsettings`, poo
 
 ### `site.cfm?op=list`
 
-Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createSiteListClient`), which keeps the route key's site registry (`gateway/src/dispatcher/site-registry.ts`). Assertion op `site.list`, `siteId` `""`.
+Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createSiteListClient`), which keeps the site registry (`gateway/src/dispatcher/site-registry.ts`) for route keys and for the user-token site of remote CFC proxy calls. Assertion op `site.list`, `siteId` `""`.
 
 - GET, no parameters, no body.
-- Reads the keys of `settingsManager.getSites()`, the struct `settingsManager.siteExists` checks (`core/mura/settings/settingsManager.cfc:568-577`). Nothing is rebuilt or written.
-- Response: `{sites:[<siteid>], serverTime}`, in no defined order. ColdFusion may serialise a numeric-looking id as a JSON number, so callers read each entry as a string.
+- Reads the keys of `settingsManager.getSites()`, the struct `settingsManager.siteExists` checks (`core/mura/settings/settingsManager.cfc:568-577`).
+- Reads what `contentServer.bindToDomain` binds a request host with (`core/mura/content/contentServer.cfc:170-220`): each row of `settingsManager.getList(sortBy="orderno")` in row order, with its site's `getDomain()` and its `domainAlias` lines split by `chr(13)&chr(10)` as `settingsBean.isValidDomain` splits them (`core/mura/settings/settingsBean.cfc:1189-1221`), and `configBean.getAdminDomain()`. A site whose settings fail to load keeps its place with an empty domain and no aliases, since `bindToDomain` skips it. Nothing is rebuilt or written.
+- Response: `{sites:[<siteid>], bindings:[{siteId, domain, aliases:[<alias>]}], adminDomain, serverTime}`; `sites` is in no defined order, `bindings` in bind order. ColdFusion may serialise a numeric-looking id, domain or alias as a JSON number, so callers read each one as a string.
 
 ### `files.cfm?op=…`
 

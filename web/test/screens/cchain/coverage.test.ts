@@ -45,7 +45,6 @@ const NEW_CHAIN = 'C1000000-0000-0000-00000000000000FF';
 const LEGAL = '6A000000-0000-0000-0000000000000001';
 const BOARD = '6A000000-0000-0000-0000000000000002';
 const EDITORS = '6A000000-0000-0000-0000000000000003';
-const NOACCESS = '/admin/?muraAction=cMessage.noaccess';
 const LOGOUT = '/admin/?muraAction=clogin.logout';
 const URL_TOKENS = `&${CSRF_FIELD_TOKEN}=${FIXED_CSRF.token}&${CSRF_FIELD_EXPIRES}=${FIXED_CSRF.expires}`;
 
@@ -412,7 +411,7 @@ describe('cchain.update page', () => {
 
   it.each<[401 | 403, string]>([
     [401, LOGOUT],
-    [403, NOACCESS],
+    [403, './'],
   ])('answers a strategies-content %i with the access gate redirect', async (status, location) => {
     const ctx = contextFor(adminOn('update', { chainID: CHAIN }), {
       [routeKey('GET', 'strategies-content', chainPath(CHAIN))]: { status, body: {} },

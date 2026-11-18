@@ -457,12 +457,12 @@ describe('cpermModule page', () => {
     expect(gateway.calls).toEqual([]);
   });
 
-  it('answers an identity denial with the no-access redirect', async () => {
+  it('answers an identity denial with the logged-in secure() redirect', async () => {
     const gateway = fakeGatewayClient({ ...siteMembersRoutes(), [grantsRoute(USERS_MODULE)]: { status: 403 } });
     const ctx = makeScreenContext({ req: moduleRequest(USERS_MODULE), gateway });
     expect(await renderScreenPage(cpermModule, ctx)).toEqual({
       kind: 'redirect',
-      location: '/admin/?muraAction=cMessage.noaccess',
+      location: './',
     });
   });
 });

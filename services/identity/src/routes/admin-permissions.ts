@@ -1,5 +1,5 @@
 /**
- * Admin permission routes: `getContentPermissions`, `getModulePermissions` and `updateModulePermissions` of the `cperm` screens
+ * Admin permission routes: `getContentPermissions`, `getModulePermissions`, `updateModulePermissions` and `updateModulePermissionsWithoutNode` of the `cperm` screens
  * [legacy: admin/core/controllers/cperm.cfc:78-160], and `getReversePermLookUp` of the cUsers gate.
  */
 import { AuthDenial, Roles, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
@@ -184,22 +184,31 @@ export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: 
     },
   );
 
+  /** `updatemodule` writing node `moduleId`, the action URL's contentid. */
+  async function saveModuleGrants(request: FastifyRequest, moduleId: string): Promise<Schemas['ModulePermissionsResult']> {
+    const user = userOf(request.opt2Auth);
+    // The form's hidden `moduleid` is rc.moduleid, the CSRF context and redirect key; the node id stands in when it is absent.
+    const posted = rcValue(request, 'moduleid');
+    const rcModuleId = typeof posted === 'string' ? posted : moduleId;
+    const written = await validateCsrfForRoute(csrfDeps, request, rcModuleId);
+    if (written) {
+      await updateModulePermissions(permissions, { siteId: user.site, moduleId, groupIds: rcGroupIds(request) });
+    }
+    return { written, redirect: moduleRedirect(rcModuleId, rcSiteId(request, user)) };
+  }
+
   // [legacy: admin/core/controllers/cperm.cfc:119-160, core/mura/permission.cfc:643-669]
   app.put<{ Params: ModuleParams; Reply: Schemas['ModulePermissionsResult'] }>(
     '/v1/permissions/modules/:moduleId',
     { schema: { params: MODULE_PARAMS, body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
-    async (request) => {
-      const user = userOf(request.opt2Auth);
-      const { moduleId } = request.params;
-      // The form's hidden `moduleid` is rc.moduleid, the CSRF context and redirect key; the path is the URL's contentid, the node written.
-      const posted = rcValue(request, 'moduleid');
-      const rcModuleId = typeof posted === 'string' ? posted : moduleId;
-      const written = await validateCsrfForRoute(csrfDeps, request, rcModuleId);
-      if (written) {
-        await updateModulePermissions(permissions, { siteId: user.site, moduleId, groupIds: rcGroupIds(request) });
-      }
-      return { written, redirect: moduleRedirect(rcModuleId, rcSiteId(request, user)) };
-    },
+    (request) => saveModuleGrants(request, request.params.moduleId),
+  );
+
+  // A form action without `contentid` leaves rc.contentid '' [legacy: admin/core/controllers/cperm.cfc:84], and legacy writes under it.
+  app.put<{ Reply: Schemas['ModulePermissionsResult'] }>(
+    '/v1/permissions/modules',
+    { schema: { body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
+    (request) => saveModuleGrants(request, ''),
   );
 
   // [legacy: admin/core/controllers/cusers.cfc:106, core/mura/user/userManager.cfc:1050-1086]

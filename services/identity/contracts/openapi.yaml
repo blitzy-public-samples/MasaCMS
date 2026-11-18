@@ -1814,12 +1814,10 @@ paths:
   /v1/sessions/current/sites:
     get:
       operationId: listCurrentSessionSites
-      summary: Lists the sites the session may administer, for the site selector.
+      summary: Lists the sites the session may administer, for the site selector and the admin access gate.
       tags: [sessions]
       x-opt2-transport: service
-      x-opt2-requires:
-        - system-user
-        - s2
+      x-opt2-public: true
       security: [{userToken: [], invocationCredential: []}]
       responses:
         '200':
@@ -2325,6 +2323,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ContentPermissions'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/permissions/modules:
+    put:
+      operationId: updateModulePermissionsWithoutNode
+      summary: Replaces the grants stored under the empty content id, as `cperm.updatemodule` does when its URL carries no `contentid`.
+      description: The CSRF context and redirect follow the posted `moduleid`, `''` when absent. A missing or invalid CSRF token writes nothing; the redirect is the same either way, as in legacy.
+      tags: [permissions]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ModulePermissionsUpdate'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModulePermissionsUpdate'
+      responses:
+        '200':
+          description: Whether the grants were replaced, and the redirect legacy answers with.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModulePermissionsResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -5842,7 +5882,7 @@ components:
           type: string
         moduleid:
           type: string
-          description: The form's module id, which selects the CSRF context and the redirect; the path id when absent.
+          description: The form's module id, which selects the CSRF context and the redirect; the path id, `''` without one, when absent.
         csrf_token:
           type: string
         csrf_token_expires:

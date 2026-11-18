@@ -2,7 +2,7 @@
  * Admin session routes: the current session, its administrable sites and stored admin values, `clogin.login`, `clogin.logout`,
  * CSRF token issue and the forgot-password mail [legacy: admin/core/controllers/clogin.cfc:82-118, core/mura/login/loginManager.cfc].
  */
-import { AuthDenial, Roles, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
+import { AuthDenial, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
   accessControlOriginDomains,
   adminUrl,
@@ -55,9 +55,6 @@ const PUBLIC: Opt2RouteConfig = Object.freeze({ transport: 'service', public: tr
 // The saved `siteid` is the session's selected site (`session.siteid`), not a site the request acts on, so it is not
 // held to the token's site; the next token the gateway mints for that site carries only the roles it grants.
 const ADMIN_STATE_SAVE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true, siteCheck: false });
-
-// The site selector is read for private-pool users and S2 users only [legacy: admin/Application.cfc:432-440].
-const SITES_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([Roles.systemUser, Roles.s2]) });
 
 const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
 const DEFAULT_SITE_ID = 'default';
@@ -453,8 +450,9 @@ export async function registerAdminSessionRoutes(app: FastifyInstance, deps: Adm
     currentSession(sessions, request.opt2Auth.user),
   );
 
-  // session.siteArray: the sites whose Site Manager the session may use [legacy: admin/Application.cfc:432-440].
-  app.get<{ Reply: Schemas['SessionSites'] }>('/v1/sessions/current/sites', { config: { opt2: SITES_AUTH } }, async (request) => {
+  // session.siteArray: the sites whose Site Manager the session may use, computed for any logged-in user whatever the
+  // token's site grants [legacy: admin/Application.cfc:432-440].
+  app.get<{ Reply: Schemas['SessionSites'] }>('/v1/sessions/current/sites', { config: { opt2: PUBLIC } }, async (request) => {
     const user = userOf(request.opt2Auth);
     const snapshot = signedInSnapshot(await locateSession(sessions, user.sid));
     if (snapshot === undefined) return { sites: [] };

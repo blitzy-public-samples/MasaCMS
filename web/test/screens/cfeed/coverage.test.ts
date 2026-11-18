@@ -25,7 +25,6 @@ const LOCAL = 'F1000000-0000-0000-0000000000000001';
 const ARCHIVE = 'F1000000-0000-0000-0000000000000002';
 const REMOTE = 'F1000000-0000-0000-0000000000000003';
 const ENDPOINT = 'http://localhost:8080/_api/feed/v1/default';
-const NOACCESS = '/admin/?muraAction=cMessage.noaccess';
 const URL_TOKENS = `&${CSRF_FIELD_TOKEN}=${FIXED_CSRF.token}&${CSRF_FIELD_EXPIRES}=${FIXED_CSRF.expires}`;
 const LONG_LINK = `https://example.com/${'feeds/'.repeat(12)}wire.xml`;
 
@@ -341,12 +340,12 @@ describe('cFeed.list', () => {
       expect(ctx.gateway.calls.filter(({ path }) => path === LIST_PATH)).toEqual([]);
     });
 
-    it('answers a strategies-content 403 with cMessage.noaccess', async () => {
+    it('answers a strategies-content 403 with the logged-in secure() redirect', async () => {
       const ctx = contextFor(adminOn('list'), {
         [routeKey('GET', 'strategies-content', LIST_PATH)]: { status: 403, body: {} },
       });
 
-      await expect(renderScreenPage(cfeedListScreen, ctx)).resolves.toEqual({ kind: 'redirect', location: NOACCESS });
+      await expect(renderScreenPage(cfeedListScreen, ctx)).resolves.toEqual({ kind: 'redirect', location: './' });
     });
   });
 });
@@ -593,12 +592,12 @@ describe('cfeedEditScreen', () => {
     ).toBe(true);
   });
 
-  it('answers a strategies-content 403 with cMessage.noaccess', async () => {
+  it('answers a strategies-content 403 with the logged-in secure() redirect', async () => {
     const ctx = contextFor(adminOn('edit', { feedID: LOCAL, type: 'Local' }), {
       [routeKey('GET', 'strategies-content', editPath(LOCAL))]: { status: 403, body: {} },
     });
 
-    await expect(renderScreenPage(cfeedEditScreen, ctx)).resolves.toEqual({ kind: 'redirect', location: NOACCESS });
+    await expect(renderScreenPage(cfeedEditScreen, ctx)).resolves.toEqual({ kind: 'redirect', location: './' });
   });
 
   it('secures the editor without collections access before reading the collection', async () => {

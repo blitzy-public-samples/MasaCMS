@@ -35,6 +35,9 @@ Environment, passed on to the clone's commands:
   OPT2_STATE_DIR        this checkout's state, which step 1's down.sh stops (default $HOME/.opt2/state); the clone
                         gets <clone>.state instead
   OPT2_PRISTINE_DIR     pristine legacy baseline, shared with the clone (default $HOME/.opt2/pristine)
+  OPT2_PORTS_FILE OPT2_CF_SERVER_NAME OPT2_LOCK_DIR
+                        the port file, opt2-legacy's server name and the run lock directory, as for up.sh; this
+                        script and every command of the proof use the same ones
   OPT2_REPORTS_DIR      ignored: the clone writes its reports into itself
 
 Example, with the environment up.sh runs under:

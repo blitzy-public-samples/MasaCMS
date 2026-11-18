@@ -7,6 +7,7 @@ import {
   cfLsDateOf,
   cfLsIsDate,
   cfToBoolean,
+  cfUuid,
 } from '@opt2/platform/legacy-compat';
 // `application.coreversion`, which web keeps with its legacy settings rather than restating it here.
 import { CORE_VERSION } from '@/lib/env';
@@ -158,14 +159,18 @@ async function prepare(ctx: ScreenContext): Promise<Prepared> {
   const sessionFilterBy = newSearch ? rcText(rc, 'filterBy') : '';
   const sessionDataKeywords = newSearch ? rcText(rc, 'keywords') : '';
 
+  // An empty contentid loads a new bean; the strategies-content path needs a value, so a fresh CF UUID stands in.
+  const standIn = rcText(rc, 'contentid') === '' ? cfUuid() : undefined;
+  const serviceRc = (): Rc => (standIn === undefined ? ctx.req.rc : assignContext(ctx.req.rc, { contentid: standIn }));
+
   const action = rcText(rc, 'action');
   if (selectsInViewWrite(rc, action)) {
-    const written = settled(await carchWrite(ctx, 'datamanager'), 'write');
+    const written = settled(await carchWrite(ctx, 'datamanager', { rc: serviceRc() }), 'write');
     if (written.kind !== 'ok') return written;
     if (cfEq(action, 'setDisplay')) ctx.req = withRc(ctx.req, { action: '' });
   }
 
-  const page = settled(await carchPageData(ctx, 'datamanager'), 'read');
+  const page = settled(await carchPageData(ctx, 'datamanager', serviceRc()), 'read');
   if (page.kind !== 'ok') return page;
   const model = page.data;
   const bean = structOf(model.rc, 'contentBean');
@@ -190,7 +195,7 @@ async function prepare(ctx: ScreenContext): Promise<Prepared> {
   if (rows.length === 0 || remove === undefined || !cfIsBoolean(remove) || !cfToBoolean(remove)) {
     return { kind: 'ready', data: { ...base, results: { kind: 'rows', rows } } };
   }
-  const deleted = settled(await carchWrite(ctx, 'datamanager'), 'bulk delete');
+  const deleted = settled(await carchWrite(ctx, 'datamanager', { rc: serviceRc() }), 'bulk delete');
   if (deleted.kind !== 'ok') return deleted;
   return { kind: 'ready', data: { ...base, results: { kind: 'deleted', count: rows.length } } };
 }

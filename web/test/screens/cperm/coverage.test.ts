@@ -42,7 +42,6 @@ const CHAINS = [
   { chainID: 'CC000000-0000-0000-0000000000000001', name: 'Legal & Review' },
   { chainID: 'CC000000-0000-0000-0000000000000002', name: 'Board' },
 ];
-const NOACCESS = '/admin/?muraAction=cMessage.noaccess';
 
 const permissionsPath = (contentid: string): ServicePath => `/v1/permissions/content/${contentid}`;
 const crumbsPath = (contentid: string): ServicePath => `/v1/sites/${SITE}/content/${contentid}/crumbs`;
@@ -479,10 +478,10 @@ describe('cperm.main page', () => {
     expect(ctx.gateway.calls.filter(({ path }) => path === permissionsPath(ROOT))).toEqual([]);
   });
 
-  it('answers an identity 403 with cMessage.noaccess', async () => {
+  it('answers an identity 403 with the logged-in secure() redirect', async () => {
     const ctx = contextFor(mainRequest({ contentid: ROOT }), { permissions: { status: 403, body: {} } });
 
-    await expect(renderScreenPage(cpermMain, ctx)).resolves.toEqual({ kind: 'redirect', location: NOACCESS });
+    await expect(renderScreenPage(cpermMain, ctx)).resolves.toEqual({ kind: 'redirect', location: './' });
   });
 });
 

@@ -39,6 +39,8 @@ Environment (* = secret):
                                      PostgreSQL holding the OPT-2 schemas and roles, as for up.sh
   OPT2_PG_STOP_CMD                   stops a PostgreSQL up.sh started (default pg_ctlcluster 16 main stop)
   OPT2_LOCK_WAIT                     seconds to wait for a running OPT-2 command to finish (default 0: refuse at once)
+  OPT2_PORTS_FILE OPT2_CF_SERVER_NAME OPT2_LOCK_DIR
+                                     the port file, opt2-legacy's server name and the run lock directory up.sh used
   OPT2_MSSQL_TRUST_SERVER_CERT and OPT2_LEGACY_START_TIMEOUT_S apply as for up.sh; harness/README.md describes each.
 
 Example, in the environment up.sh ran with:

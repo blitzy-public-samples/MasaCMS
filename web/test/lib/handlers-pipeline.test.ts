@@ -392,15 +392,41 @@ describe('page mode', () => {
     expect(loggedLines().map(({ statusCode }) => statusCode)).toEqual([503]);
   });
 
-  it('answers a service denial with the access gate redirect', async () => {
-    fake.setRoute(CURRENT_SESSION, { status: 401, body: {} });
+  const REFERER = 'http://localhost/admin/?muraAction=cArch.list&siteid=default';
 
-    const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
+  it.each<[string, 401 | 403, () => Promise<Response>, string]>([
+    [
+      'clogin.logout for a 401',
+      401,
+      async () => handleAdminPage(await getRequest('/admin/cusers/list'), LIST),
+      '/admin/?muraAction=clogin.logout',
+    ],
+    [
+      "secure() back to the Referer for an admin page's 403",
+      403,
+      async () =>
+        handleAdminPage(
+          new Request('http://web/admin/cusers/list', { headers: await forwarded('admin', { referer: REFERER }) }),
+          LIST,
+        ),
+      REFERER,
+    ],
+    [
+      "cMessage.noaccess for a synthetic screen's 403",
+      403,
+      async () =>
+        handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), { module: 'timesheets', screen: 'sheets' }),
+      '/admin/?muraAction=cMessage.noaccess',
+    ],
+  ])('answers a service denial with the access gate redirect: %s', async (_case, status, send, location) => {
+    fake.setRoute(CURRENT_SESSION, { status, body: {} });
+
+    const response = await send();
 
     expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/admin/?muraAction=clogin.logout');
+    expect(response.headers.get('location')).toBe(location);
     expect(loggedLines().map(({ statusCode, denial, error }) => [statusCode, denial, error])).toEqual([
-      [302, 'identity answered 401', undefined],
+      [302, `identity answered ${status}`, undefined],
     ]);
   });
 

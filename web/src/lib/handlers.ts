@@ -185,13 +185,14 @@ function uploadsOf(form: FormData | URLSearchParams): UploadPart[] {
 /** The answer for an error the pipeline maps, with the fixed reason of an expected refusal; others are rethrown. */
 function answerFailure<T>(
   error: unknown,
+  input: Pick<PipelineRequest, 'mode' | 'headers'>,
   answers: Answers<T>,
   context: LegacyResponseContext,
 ): { answer: T; denial?: string } {
   if (error instanceof LegacyServiceUnavailableError) return { answer: answers.unavailable(context) };
   if (error instanceof WebAuthError) return { answer: answers.refused(error.status), denial: error.reason };
   if (error instanceof GatewayDenialError) {
-    const denied = deniedGate(error.status);
+    const denied = deniedGate(error.status, { mode: input.mode, headers: input.headers });
     if (denied.kind === 'redirect') {
       return {
         answer: answers.redirect(denied.location, [], context),
@@ -279,7 +280,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
     } catch (error) {
       if (outcome !== undefined) answers.abandon(outcome.answer);
       // An unmapped error is rethrown here and recorded as the failure by the span's handler.
-      const mapped = answerFailure(error, answers, context);
+      const mapped = answerFailure(error, input, answers, context);
       if (mapped.denial === undefined) failure = error;
       else denial = mapped.denial;
       return mapped.answer;

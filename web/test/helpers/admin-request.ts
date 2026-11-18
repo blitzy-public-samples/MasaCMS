@@ -482,10 +482,10 @@ export function noSitesRequest(
   return makeAdminRequest({ ...partial, session: { ...partial.session, siteArray: [] } }, subject);
 }
 
-/** The tenant-a subject holding synthetic-module `role`, with `session.siteid` on its site. */
+/** The tenant-a subject holding synthetic-module `role`, with `session.siteid` on its site, in the `/opt2` routes' mode. */
 export function opt2RoleRequest(role: Role, partial: AdminRequestPartial = {}): AdminRequest {
   const subject = syntheticSubject(role);
-  return makeAdminRequest({ ...partial, session: { siteid: subject.site, ...partial.session } }, subject);
+  return makeAdminRequest({ mode: 'opt2', ...partial, session: { siteid: subject.site, ...partial.session } }, subject);
 }
 
 /** Inputs of {@link buildTestAdminRequest}. */

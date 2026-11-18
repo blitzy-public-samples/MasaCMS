@@ -4,6 +4,7 @@ import {
   LEGACY_ERROR_PAGE_HTML,
   LEGACY_ERROR_STATUS_TEXT,
   LEGACY_HTML_CONTENT_TYPE,
+  UNREGISTERED_SITEID_HEADER,
   cfIsBoolean,
   cfNumberString,
   cfToBoolean,
@@ -161,9 +162,10 @@ export function registerCommentsProxyRoutes(app: FastifyInstance, ctx: CommentsP
       }
       const claims = request.opt2Auth.user;
       if (claims === undefined) throw AuthDenial.unauthenticated('missing-credential');
-      // Legacy defaults `siteid` to bindToDomain(), the site of the request host, which the gateway's token is minted for.
+      // The gateway mints the token for the request host's site when `siteid` is absent or names no registered site, and marks
+      // the latter call, which therefore skips the site check.
       const siteId = call.siteid ?? claims.site;
-      assertSiteMatches(siteId, claims);
+      if (request.headers[UNREGISTERED_SITEID_HEADER.toLowerCase()] === undefined) assertSiteMatches(siteId, claims);
       switch (call.method) {
         case 'get': {
           // No commenter photo: the user photo is people's data, out of this service's reach, and legacy's join finds a user

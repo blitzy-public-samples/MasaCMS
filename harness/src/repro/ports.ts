@@ -33,6 +33,14 @@ export class PortsError extends Error {
   override name = 'PortsError';
 }
 
+/** Port file the shell scripts source: `OPT2_PORTS_FILE`, an absolute path, else {@link PORTS_ENV_PATH}. */
+export function portsEnvPath(env: EnvLike = process.env): string {
+  const override = env.OPT2_PORTS_FILE;
+  if (override === undefined || override === '') return PORTS_ENV_PATH;
+  if (!path.isAbsolute(override)) throw new PortsError(`OPT2_PORTS_FILE must be an absolute path, got '${override}'`);
+  return override;
+}
+
 const PORT_PREFIX = 'OPT2_PORT_';
 const ASSIGNMENT = /^(?:export\s+)?([^=\s]+)=(.*)$/;
 const KEY = /^[A-Z0-9_]+$/;
@@ -89,8 +97,8 @@ export function parsePortsEnv(text: string): Record<PackageName, number> {
 
 const loaded = new Map<string, Record<PackageName, number>>();
 
-/** Parsed ports of `file`, read once per resolved path. */
-export function loadPorts(file: string = PORTS_ENV_PATH): Record<PackageName, number> {
+/** Parsed ports of `file`, default {@link portsEnvPath}, read once per resolved path. */
+export function loadPorts(file: string = portsEnvPath()): Record<PackageName, number> {
   const key = path.resolve(file);
   let ports = loaded.get(key);
   if (ports === undefined) {
@@ -124,7 +132,7 @@ export function assertNoLegacyCollision(legacyPort: number): void {
   const ports = loadPorts();
   const clash = PACKAGE_NAMES.find((name) => ports[name] === legacyPort);
   if (clash !== undefined) {
-    throw new PortsError(`legacy PORT ${legacyPort} collides with ${portVariable(clash)} in ${PORTS_ENV_PATH}`);
+    throw new PortsError(`legacy PORT ${legacyPort} collides with ${portVariable(clash)} in ${portsEnvPath()}`);
   }
 }
 

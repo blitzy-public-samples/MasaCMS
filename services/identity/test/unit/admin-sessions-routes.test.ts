@@ -365,8 +365,6 @@ describe('without a session', () => {
     ['admin state without an invocation credential', 'GET', '/v1/sessions/current/admin-state', undefined, () => headersFor([Roles.systemUser], { caller: null }), 401],
     ['an admin state save without a user token', 'POST', '/v1/sessions/current/admin-state', { siteid: DEFAULT }, () => headersFor(null), 401],
     ['CSRF tokens without a user token', 'POST', '/v1/csrf/tokens', { contexts: ['login'] }, () => headersFor(null), 401],
-    ['sites for a member', 'GET', '/v1/sessions/current/sites', undefined, () => headersFor([Roles.member], { sub: 'test-member' }), 403],
-    ['sites for the anonymous principal', 'GET', '/v1/sessions/current/sites', undefined, () => headersFor([]), 401],
     ['sites without a user token', 'GET', '/v1/sessions/current/sites', undefined, () => headersFor(null), 401],
     ['CSRF tokens for no context', 'POST', '/v1/csrf/tokens', { contexts: [] }, () => headersFor([Roles.systemUser]), 400],
     ['a login mail without an address', 'POST', '/v1/login-mail', { siteid: '' }, () => headersFor(null), 400],
@@ -583,6 +581,20 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     });
     expect(editor.json()).toEqual({ sites: [{ siteID: SITE_A, site: `Site ${SITE_A}` }] });
     expect(anonymous.json()).toEqual({ sites: [] });
+  });
+
+  it.each<[string, 'editor' | 'none', readonly string[], string[]]>([
+    ['a role-less token of a signed-in editor for a site it cannot use', 'editor', [], [SITE_A]],
+    ['a member token of a signed-in editor', 'editor', [Roles.member], [SITE_A]],
+    ['the anonymous principal of an unknown session', 'none', [], []],
+  ])('lists the session-wide sites, whatever the token grants, for %s', async (_label, signedIn, roles, siteIds) => {
+    const sid = signedIn === 'editor' ? (await loginAs('editor')).sid : `S-${nextId('5')}`;
+    const sub = signedIn === 'editor' ? users.editor : '';
+
+    const res = await send('GET', '/v1/sessions/current/sites', await headersFor(roles, { sid, sub, site: DEFAULT }));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ sites: siteIds.map((siteID) => ({ siteID, site: `Site ${siteID}` })) });
   });
 
   it('lists no site for a private user without the Site Manager grant', async () => {

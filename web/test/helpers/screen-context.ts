@@ -151,7 +151,7 @@ export async function renderScreenPage(
     return { kind: 'document', html: serializeAdminDocument(doc), doc };
   } catch (error) {
     if (!(error instanceof GatewayDenialError)) throw error;
-    const denied = deniedGate(error.status);
+    const denied = deniedGate(error.status, ctx.req);
     if (denied.kind === 'redirect') return { kind: 'redirect', location: denied.location };
     throw error;
   }

@@ -40,9 +40,14 @@ Environment (* = secret):
     OPT2_LEGACY_SERVER_NAME            original CommandBox server (default the one serving this checkout or PORT)
     OPT2_LOCK_WAIT                     seconds to queue, first come, first served, behind other claimants of the
                                        stack (default 0: refuse at once)
+    OPT2_PORTS_FILE                    absolute path of a file in the ports.env format, used instead of
+                                       harness/repro/ports.env
+    OPT2_CF_SERVER_NAME                CommandBox server name of this stack's legacy (default opt2-legacy)
+    OPT2_LOCK_DIR                      absolute directory of the run lock (default $HOME/.opt2); another one needs
+                                       its own OPT2_CF_SERVER_NAME
   OPT2_CF_*, OPT2_MSSQL_*, OPT2_SQLSERVR_CMD, OPT2_PG_START_CMD, OPT2_LEGACY_START_TIMEOUT_S and MAILPIT_API_URL
-  override further defaults; harness/README.md describes every variable. up.sh derives each target process's
-  variables from harness/repro/ports.env.
+  override further defaults; harness/README.md describes every variable, and the ones a second stack on this host
+  must move. up.sh derives each target process's variables from the port file.
 
 Example, with the required variables exported:
   OPT2_STATE_DIR=/srv/opt2/state harness/repro/up.sh
@@ -129,7 +134,7 @@ trap on_exit EXIT
 check_target_ports() {
   local var
   while IFS= read -r var; do
-    [[ ${!var} != "$LEGACY_PORT" ]] || die "$var=${!var} in $REPRO_DIR/ports.env collides with legacy's PORT"
+    [[ ${!var} != "$LEGACY_PORT" ]] || die "$var=${!var} in $PORTS_FILE collides with legacy's PORT"
     if ! (assert_port_free "${!var}") 2>/dev/null; then
       die "port ${!var} ($var) is already in use: stop what listens on it (harness/repro/down.sh for an OPT-2 stack)"
     fi
@@ -356,7 +361,7 @@ require_cmd git node npm box sqlcmd pg_isready psql curl tar sha256sum gcloud ot
 check_target_ports
 # Recorded only now, so a refused rerun leaves a live stack's record alone.
 lock_claim_stack
-# Every process, tool and harness command shares these with the emulator; the service URL map is always ports.env's.
+# Every process, tool and harness command shares these with the emulator; the service URL map is always the port file's.
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-opt2-local}"
 export PUBSUB_EMULATOR_HOST="localhost:$OPT2_TOOL_PORT_PUBSUB_EMULATOR"
 unset OPT2_SERVICE_URLS
@@ -395,7 +400,7 @@ build_package legacy-fixtures/seed
 for name in "${SERVICES[@]}"; do build_package "services/$name"; done
 "$REPO/harness/node_modules/.bin/playwright" install chromium >&2 || die "playwright install chromium failed"
 "$REPO/harness/node_modules/.bin/tsx" "$REPO/harness/src/repro/ports.ts" --check --legacy-port "$LEGACY_PORT" >&2 ||
-  die "$REPRO_DIR/ports.env failed its check (message above)"
+  die "$PORTS_FILE failed its check (message above)"
 OPT2_SERVICE_URLS="$(service_urls_json)" || die "cannot build the OPT2_SERVICE_URLS map"
 export OPT2_SERVICE_URLS
 
@@ -457,7 +462,8 @@ launch gateway
 
 step 10 "service versions"
 status=0
-harness_run baseline:environment -- --phase services >&2 || status=$?
+MAILPIT_API_URL="${MAILPIT_API_URL:-$MAILPIT_API_LOCAL}" harness_run baseline:environment -- --phase services >&2 ||
+  status=$?
 case $status in
   0) ;;
   4)

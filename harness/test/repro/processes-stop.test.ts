@@ -130,7 +130,7 @@ async function runBash(args: string[], env: NodeJS.ProcessEnv = {}): Promise<Run
     OPT2_PRISTINE_DIR: pristineDir,
     ...env,
   };
-  delete childEnv.OPT2_LOCK_FLOCK_HELD;
+  for (const name of ['OPT2_LOCK_FLOCK_HELD', 'OPT2_LOCK_DIR', 'OPT2_PORTS_FILE', 'OPT2_CF_SERVER_NAME']) delete childEnv[name];
   const child = spawn('bash', args, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';

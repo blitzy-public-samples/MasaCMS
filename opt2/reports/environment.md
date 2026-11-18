@@ -9,6 +9,8 @@ Generated at: pending-run
 
 The tech spec's "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run's legacy oracle is the existing Masa 7.6.1 install on Adobe ColdFusion 2023 with SQL Server 2022, reused and never reinstalled. A MySQL fallback, if used, is a baseline deviation and stops the migration stages, because SQL Server is the only supported source.
 
+Deliberate deviation from the pristine install: `opt2-legacy` runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (`OPT2_PORT_GATEWAY`, set by `harness/repro/server.json.template`), so the absolute URLs Masa builds address the gateway. While the OPT-2 stack is up, a request sent to legacy directly on `${PORT}` therefore gets absolute URLs, in bodies and redirect `Location` headers, that name the gateway port instead of the request's port; status codes and header names are unchanged. `harness/repro/down.sh` restarts the captured original server from its own server definition, without these two values, so the pristine URLs return after teardown.
+
 ## Local phase (`--phase local`)
 
 | Component | Probe | Pinned / expected | Recorded |

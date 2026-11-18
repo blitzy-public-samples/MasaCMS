@@ -916,23 +916,39 @@ describe('buildAdminRequest', () => {
     });
 
     const SESSION_READS = ['identity /v1/sessions/current', 'identity /v1/sessions/current/admin-state'];
+    const SIGNED_IN_READS = [
+      'identity /v1/sessions/current',
+      'identity /v1/sessions/current/sites',
+      'identity /v1/sessions/current/admin-state',
+    ];
 
-    it.each<[string, WebTestSubjectKey, Partial<MintUserTokenInput>, string[], boolean]>([
-      ['anonymous', 'anonymous', {}, ['programs-sites /v1/href-domains'], false],
+    it.each<[string, WebTestSubjectKey, Partial<MintUserTokenInput>, string[], boolean, string[]]>([
+      ['anonymous', 'anonymous', {}, ['programs-sites /v1/href-domains'], false, []],
       [
         'an anonymous-session token',
         'member',
         { sub: '' },
         [...SESSION_READS, 'programs-sites /v1/href-domains'],
         false,
+        [],
       ],
-      ['a member', 'member', {}, SESSION_READS, true],
-    ])('loads no site list for %s', async (_label, subject, claims, calls, isLoggedIn) => {
-      const { request, gateway } = await build({ subject, claims, target: '/admin/' });
+      ['a member', 'member', {}, SIGNED_IN_READS, true, []],
+      [
+        'an editor whose token grants no role on its site',
+        'qaEditor',
+        { site: 'tenant-a', roles: [] },
+        SIGNED_IN_READS,
+        true,
+        ['default'],
+      ],
+    ])('reads the site list only logged in, for %s', async (_label, subject, claims, calls, isLoggedIn, siteIds) => {
+      const sites = siteIds.map((siteID) => ({ siteID, site: SITE_NAMES[siteID] }));
+      const routes = { [SESSION_SITES]: { status: 200, body: { sites } } };
+      const { request, gateway } = await build({ subject, claims, target: '/admin/', routes });
 
       expect(callsOf(gateway)).toEqual(calls);
-      expect(request.session.siteArray).toEqual([]);
-      expect(request.adminSites).toEqual([]);
+      expect(request.session.siteArray).toEqual(siteIds);
+      expect(request.adminSites).toEqual(sites);
       expect(request.isLoggedIn).toBe(isLoggedIn);
       expect(request.isPrivateUser).toBe(false);
       expect(request.modulePerm(CONTENT_MODULE)).toBe(false);

@@ -19,6 +19,7 @@ import { REPO_ROOT, repoPath } from '../../src/lib/paths.js';
 import { portFor } from '../../src/repro/ports.js';
 
 interface RenderedServer {
+  name?: unknown;
   env?: Record<string, unknown>;
   jvm?: { args?: unknown };
   web?: { http?: { port?: unknown } };
@@ -79,9 +80,13 @@ function checkoutWithGatewayPort(root: string, gatewayPort: string): string {
 
 /**
  * Runs render_server_json from this checkout, or from a copy with another gateway port, over a minimal capture;
- * `tmpDir` is the legacy temp directory, `<root>/state/legacy-tmp` by default.
+ * `tmpDir` is the legacy temp directory, `<root>/state/legacy-tmp` by default, and `extra` adds to the environment.
  */
-function render(gatewayPort?: string, tmpDir?: string): { result: SpawnSyncReturns<string>; serverJson: string; tmp: string } {
+function render(
+  gatewayPort?: string,
+  tmpDir?: string,
+  extra: Record<string, string> = {},
+): { result: SpawnSyncReturns<string>; serverJson: string; tmp: string } {
   const root = tempRoot('opt2-server-json-test-');
   const tmp = tmpDir ?? path.join(root, 'state', 'legacy-tmp');
   const repo = gatewayPort === undefined ? REPO_ROOT : checkoutWithGatewayPort(root, gatewayPort);
@@ -97,7 +102,7 @@ function render(gatewayPort?: string, tmpDir?: string): { result: SpawnSyncRetur
   const serverJson = path.join(root, 'server.json');
   const result = spawnSync('bash', ['-c', RENDER_SCRIPT, 'render', repo, RENDERER], {
     encoding: 'utf8',
-    env: { ...shellEnv(root), CAPTURE_FILE: capture, SERVER_JSON: serverJson, LEGACY_TMP_DIR: tmp },
+    env: { ...shellEnv(root), CAPTURE_FILE: capture, SERVER_JSON: serverJson, LEGACY_TMP_DIR: tmp, ...extra },
     timeout: 20_000,
   });
   return { result, serverJson, tmp };
@@ -141,6 +146,31 @@ describe('server.json.template rendered by legacy-start.sh render_server_json', 
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/^opt2: gateway port 'gateway' from .*\/ports\.env is not a port number\n$/);
     expect(existsSync(serverJson)).toBe(false);
+  });
+
+  it.each<[string, Record<string, string>, string]>([
+    ['unset', {}, 'opt2-legacy'],
+    ['opt2-legacy-c25', { OPT2_CF_SERVER_NAME: 'opt2-legacy-c25' }, 'opt2-legacy-c25'],
+  ])('names the server after OPT2_CF_SERVER_NAME when it is %s', (_label, extra, expected) => {
+    const { result, serverJson } = render(undefined, undefined, extra);
+    expect(result.status, result.stderr).toBe(0);
+    expect((JSON.parse(readFileSync(serverJson, 'utf8')) as RenderedServer).name).toBe(expected);
+  });
+
+  it('takes the gateway port from OPT2_PORTS_FILE, and names that file when it holds no port number', () => {
+    const file = path.join(tempRoot('opt2-ports-file-test-'), 'c25-ports.env');
+    const ports = readFileSync(repoPath('harness/repro/ports.env'), 'utf8');
+    writeFileSync(file, ports.replace(/^OPT2_PORT_GATEWAY=.*$/m, 'OPT2_PORT_GATEWAY=20100'));
+    const moved = render(undefined, undefined, { OPT2_PORTS_FILE: file });
+    expect(moved.result.status, moved.result.stderr).toBe(0);
+    const doc = JSON.parse(readFileSync(moved.serverJson, 'utf8')) as RenderedServer;
+    expect(doc.env).toEqual({ MURA_PORT: '20100', MURA_PROXYPORT: '20100' });
+
+    writeFileSync(file, ports.replace(/^OPT2_PORT_GATEWAY=.*$/m, 'OPT2_PORT_GATEWAY=gateway'));
+    const broken = render(undefined, undefined, { OPT2_PORTS_FILE: file });
+    expect(broken.result.status).toBe(1);
+    expect(broken.result.stderr).toBe(`opt2: gateway port 'gateway' from ${file} is not a port number\n`);
+    expect(existsSync(broken.serverJson)).toBe(false);
   });
 
   it('ends the JVM arguments with java.io.tmpdir set to the legacy temp directory', () => {

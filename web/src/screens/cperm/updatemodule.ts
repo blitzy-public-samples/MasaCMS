@@ -63,12 +63,14 @@ async function submitUpdateModule({ req, gateway }: ScreenContext): Promise<Subm
   const rc = cpermDefaults(req.rc);
   // Values as received: the checked `groupid`s arrive comma-joined, and an empty list clears the module's grants.
   const form = FORM_FIELDS.flatMap((name) => Object.entries(relayField(req, name, rc)));
-  const response = await gateway.identity.call('put', '/v1/permissions/modules/{moduleId}', {
-    params: { moduleId: rc.contentid ?? '' },
-    form,
-  });
+  const moduleId = rc.contentid ?? '';
+  // An action URL without `contentid` writes the grants under the empty id, which no path segment can carry.
+  const withoutNode = moduleId === '';
+  const response = withoutNode
+    ? await gateway.identity.call('put', '/v1/permissions/modules', { form })
+    : await gateway.identity.call('put', '/v1/permissions/modules/{moduleId}', { params: { moduleId }, form });
   // A rejected token is a 2xx that wrote nothing; legacy redirects the same way, so only the status is read.
-  okBody(response, gateway.identity.service, 'updateModulePermissions');
+  okBody(response, gateway.identity.service, withoutNode ? 'updateModulePermissionsWithoutNode' : 'updateModulePermissions');
   return moduleRedirect(rc);
 }
 

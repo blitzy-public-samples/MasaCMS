@@ -1,11 +1,7 @@
 // cUsers.editUser against cusers.cfc editUser() and cusers/edituser.cfm: the form as the legacy server prints it for a
 // new and a stored user, then the access, policy, retained-input, address, subtype, password and photo branches.
 import { readFileSync } from 'node:fs';
-import {
-  ADMIN_LOGIN_REDIRECT_ACTION,
-  ADMIN_NOACCESS_ACTION,
-  LegacyServiceUnavailableError,
-} from '@opt2/platform/legacy-compat';
+import { ADMIN_LOGIN_REDIRECT_ACTION, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/people';
 import { resetLegacySettingsForTests } from '@/lib/env';
@@ -180,15 +176,15 @@ describe('cUsers.editUser access', () => {
   });
 
   it.each<[401 | 403, string]>([
-    [401, ADMIN_LOGIN_REDIRECT_ACTION],
-    [403, ADMIN_NOACCESS_ACTION],
-  ])("answers people's %i with the access gate's redirect", async (status, action) => {
+    [401, `/admin/?muraAction=${ADMIN_LOGIN_REDIRECT_ACTION}`],
+    [403, './'],
+  ])("answers people's %i with the access gate's redirect", async (status, location) => {
     const ctx = contextFor(editUserRequest({ userid: EDITOR_ID }), { status, body: { error: { code: 'denied', message: 'No' } } });
 
     const loaded = editUserScreen.load!(ctx);
     await expect(loaded).rejects.toBeInstanceOf(GatewayDenialError);
     await expect(loaded).rejects.toMatchObject({ service: 'people', operation: 'getUserEdit', status });
-    await expect(renderScreenPage(editUserScreen, ctx)).resolves.toEqual({ kind: 'redirect', location: `/admin/?muraAction=${action}` });
+    await expect(renderScreenPage(editUserScreen, ctx)).resolves.toEqual({ kind: 'redirect', location });
   });
 
   it('reports people as unavailable when the gateway answers 503', async () => {

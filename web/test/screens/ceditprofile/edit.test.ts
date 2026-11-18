@@ -416,7 +416,7 @@ describe('cEditProfile.edit interest groups as registered', () => {
 
   it.each<[401 | 403, string]>([
     [401, '/admin/?muraAction=clogin.logout'],
-    [403, '/admin/?muraAction=cMessage.noaccess'],
+    [403, './'],
   ])("answers strategies-content's %i with the access gate's redirect", async (status, location) => {
     const reply: FakeReply = { status, body: { error: 'denied' } };
     const ctx = contextFor(systemUserRequest(), profileData, reply);

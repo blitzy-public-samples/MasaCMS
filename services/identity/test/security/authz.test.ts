@@ -235,7 +235,6 @@ const QUEUE_CONTROL = ['platform.migration', 'platform.operator'] as const;
 const CUSERS_ROLES = ['s2', 'site-admin', 'm:008'] as const;
 const CPERM_ROLES = ['s2', 'site-admin'] as const;
 const CWEBSERVICE_ROLES = ['s2'] as const;
-const SESSION_SITES_ROLES = ['system-user', 's2'] as const;
 /** The CSRF-hook callers `consumeCsrfToken` declares, in contract order. */
 const CONSUME_CALLERS = [
   'service:people',
@@ -470,6 +469,7 @@ const EXPECTED: Readonly<Record<string, Row>> = {
     headers: FORM,
     payload: `groupid=${GROUP_ID}`,
   }),
+  'PUT /v1/permissions/modules': cperm({ method: 'PUT', url: `/v1/permissions/modules?${SITE_QUERY}`, headers: FORM, payload: `groupid=${GROUP_ID}&moduleid=${USERS_MODULE_ID}` }),
   'GET /v1/permissions/reverse-lookup': service('public', { method: 'GET', url: `/v1/permissions/reverse-lookup?${SITE_QUERY}`, siteid: SITE_A }, { actsForUser: true }),
 
   'GET /v1/oauth-clients': cwebservice({ method: 'GET', url: `/v1/oauth-clients?${SITE_QUERY}` }),
@@ -482,7 +482,7 @@ const EXPECTED: Readonly<Record<string, Row>> = {
   'DELETE /v1/oauth-clients/:clientId': cwebservice({ method: 'DELETE', url: `/v1/oauth-clients/${CLIENT_ID}?${SITE_QUERY}` }),
 
   'GET /v1/sessions/current': service('public', { method: 'GET', url: `/v1/sessions/current?${SITE_QUERY}`, siteid: SITE_A }),
-  'GET /v1/sessions/current/sites': service(SESSION_SITES_ROLES, { method: 'GET', url: `/v1/sessions/current/sites?${SITE_QUERY}`, siteid: SITE_A }),
+  'GET /v1/sessions/current/sites': service('public', { method: 'GET', url: `/v1/sessions/current/sites?${SITE_QUERY}`, siteid: SITE_A }, { actsForUser: true }),
   'GET /v1/sessions/current/admin-state': service(
     'public',
     { method: 'GET', url: `/v1/sessions/current/admin-state?${SITE_QUERY}`, siteid: SITE_A },

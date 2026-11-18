@@ -45,10 +45,11 @@ const updated = (written: boolean): FakeReply => ({
   body: { written, redirect: { action: 'cUsers.list', params: { siteid: SITE } } } satisfies ModulePermissionsResult,
 });
 
-/** The S2 admin's post of `fields` to the form action `./?muraAction=cPerm.updatemodule&contentid=<contentid>`. */
-function updateRequest(contentid: string, fields: ReadonlyArray<readonly [string, string]> = POSTED): AdminRequest {
+/** The S2 admin's post of `fields` to `./?muraAction=cPerm.updatemodule&contentid=<contentid>`, or without it when undefined. */
+function updateRequest(contentid: string | undefined, fields: ReadonlyArray<readonly [string, string]> = POSTED): AdminRequest {
   const form = Object.fromEntries(Object.entries(mergeFw1Context([], {}, fields)));
-  return adminS2Request({ circuit: 'cperm', item: 'updatemodule', mode: 'redirect', rc: { contentid, ...form } });
+  const rc = contentid === undefined ? form : { contentid, ...form };
+  return adminS2Request({ circuit: 'cperm', item: 'updatemodule', mode: 'redirect', rc });
 }
 
 /** `cpermUpdateModule.submit` for `req` over `gateway`. */
@@ -178,6 +179,35 @@ describe('cpermUpdateModule', () => {
       ['csrf_token', CSRF_CPERM_MODULE.csrf_token],
       ['csrf_token_expires', CSRF_CPERM_MODULE.csrf_token_expires],
     ]);
+  });
+
+  it.each<[string, string | undefined]>([
+    ['empty', ''],
+    ['absent', undefined],
+  ])('relays a post whose action URL contentid is %s to the module save without a node id', async (_case, contentid) => {
+    const gateway = fakeGatewayClient({ [routeKey('PUT', 'identity', '/v1/permissions/modules')]: updated(true) });
+    const result = await submit(updateRequest(contentid), gateway);
+    expect(result).toStrictEqual({ kind: 'redirect', action: 'cUsers.list', append: 'siteid', path: './' });
+    expect(gateway.calls.map(({ service, method, path, query }) => [service, method, path, query])).toEqual([
+      ['identity', 'PUT', '/v1/permissions/modules', undefined],
+    ]);
+    expect(Object.entries(gateway.calls[0]?.form ?? {})).toEqual([
+      ['groupid', GROUP_LIST],
+      ['contentid', ''],
+      ['siteid', SITE],
+      ['topid', ''],
+      ['moduleid', USERS_MODULE],
+      ['router', REFERER],
+      ['csrf_token', CSRF_CPERM_MODULE.csrf_token],
+      ['csrf_token_expires', CSRF_CPERM_MODULE.csrf_token_expires],
+    ]);
+  });
+
+  it.each<401 | 403>([401, 403])('raises identity HTTP %i on the save without a node id as a denial', async (status) => {
+    const gateway = fakeGatewayClient({ [routeKey('PUT', 'identity', '/v1/permissions/modules')]: { status } });
+    const error = await submit(updateRequest(''), gateway).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GatewayDenialError);
+    expect(error).toMatchObject({ service: 'identity', operation: 'updateModulePermissionsWithoutNode', status });
   });
 
   it('writes the action URL contentid and redirects by the form moduleid', async () => {

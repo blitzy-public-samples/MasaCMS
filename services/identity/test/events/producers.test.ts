@@ -552,6 +552,16 @@ describe.skipIf(!PG_READY)('identity event producers against PostgreSQL', () => 
         },
       },
       {
+        name: 'PUT /v1/permissions/modules',
+        topic: PERMISSION_CHANGED_TOPIC,
+        async send() {
+          const [groupId, moduleId] = [cfUuid(), cfUuid()];
+          const form = { groupid: groupId, moduleid: moduleId, ...csrfFields(moduleId) };
+          const res = await app.inject({ method: 'PUT', url: '/v1/permissions/modules', headers: { ...(await adminHeaders()), ...FORM }, payload: new URLSearchParams(form).toString() });
+          return { status: res.statusCode, body: res.json(), aggregateId: groupId };
+        },
+      },
+      {
         // Without a site id the forgot-password form mails from the global settings, which identity holds.
         name: 'POST /v1/login-mail',
         topic: LOGIN_MAIL_REQUESTED_TOPIC,

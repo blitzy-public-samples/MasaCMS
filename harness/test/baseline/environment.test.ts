@@ -1100,6 +1100,27 @@ describe('renderEnvironmentMarkdown and recordedSections', () => {
     expect(recordedSections(COMMITTED_REPORT_TEXT)).toEqual({});
   });
 
+  it.each([
+    ['pending-run', async (): Promise<EnvironmentRecord> => empty],
+    [
+      'recorded',
+      async (): Promise<EnvironmentRecord> => {
+        const { local } = await probeLocal(rig({ at: LOCAL_AT }).deps);
+        const { services, settings } = await probeServices(rig().deps);
+        return { local, services, settings };
+      },
+    ],
+  ])('records the gateway-port absolute URLs after the oracle note of a %s report', async (status, record) => {
+    const lines = renderEnvironmentMarkdown(await record());
+
+    expect(lines[0]).toBe(`Status: ${status}`);
+    expect(section(lines, '## Oracle').slice(3)).toEqual([
+      '',
+      "Deliberate deviation from the pristine install: `opt2-legacy` runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (`OPT2_PORT_GATEWAY`, set by `harness/repro/server.json.template`), so the absolute URLs Masa builds address the gateway. While the OPT-2 stack is up, a request sent to legacy directly on `${PORT}` therefore gets absolute URLs, in bodies and redirect `Location` headers, that name the gateway port instead of the request's port; status codes and header names are unchanged. `harness/repro/down.sh` restarts the captured original server from its own server definition, without these two values, so the pristine URLs return after teardown.",
+      '',
+    ]);
+  });
+
   it('round-trips recorded sections verbatim, from LF or CRLF text', async () => {
     const { local } = await probeLocal(rig({ at: LOCAL_AT }).deps);
     const { services, settings } = await probeServices(rig().deps);

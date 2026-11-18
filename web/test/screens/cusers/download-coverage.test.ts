@@ -2,7 +2,6 @@
 // setDownloadData(): the owner each preserved `rc.records` names, the relayed CSV, denials, and the raw handler's answer.
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
-import { ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
 import { handleAdminRaw } from '@/lib/handlers';
@@ -320,14 +319,14 @@ describe('cUsers.download through the raw handler', () => {
     ]);
   });
 
-  it("answers people's refusal with the access gate's no-access redirect and no CSV", async () => {
+  it("answers people's refusal with the logged-in secure() redirect and no CSV", async () => {
     serve({ [USERS_ROUTE]: { status: 403, body: { error: { code: 'forbidden', message: 'Denied' } } } });
     const request = await adminRequest('/admin-raw/cusers/download', { user: 'admin', query: { siteid: 'default' } });
 
     const response = await handleAdminRaw(request, { circuit: 'cusers', action: 'download' });
 
     expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toContain(`?muraAction=${ADMIN_NOACCESS_ACTION}`);
+    expect(response.headers.get('location')).toBe('./');
     expect(response.headers.get('content-disposition')).toBeNull();
     expect(await response.text()).toBe('');
     expect(peopleRequests()).toHaveLength(1);

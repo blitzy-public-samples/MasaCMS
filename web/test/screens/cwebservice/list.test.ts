@@ -330,10 +330,14 @@ describe('cwebservice.list page', () => {
     await expect(renderScreenPage(listPage(), ctx)).rejects.toBeInstanceOf(GatewayUnavailableError);
   });
 
-  it.each([401, 403] as const)('answers an identity %i with the access gate', async (status) => {
+  it.each<[401 | 403, string]>([
+    [401, '/admin/?muraAction=clogin.logout'],
+    [403, './'],
+  ])('answers an identity %i with the access gate redirect to %s', async (status, location) => {
     const routes = { [routeKey('GET', 'identity', LIST_PATH)]: { status, body: {} } };
     const ctx = makeScreenContext({ req: listRequest(), gateway: fakeGatewayClient(routes) });
 
-    await expect(renderScreenPage(listPage(), ctx)).resolves.toEqual(deniedGate(status));
+    await expect(renderScreenPage(listPage(), ctx)).resolves.toEqual(deniedGate(status, ctx.req));
+    await expect(renderScreenPage(listPage(), ctx)).resolves.toEqual({ kind: 'redirect', location });
   });
 });

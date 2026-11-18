@@ -11,6 +11,7 @@ usage: legacy-start.sh [--fresh | --tasks-file <cfconfig.json> | --original]
   --tasks-file <file>        start with the scheduled tasks of a CFConfig export, all paused (checkpoint.sh)
   --original                 start the captured original server without the OPT-2 variables (down.sh)
 
+opt2-legacy is OPT2_CF_SERVER_NAME when set; OPT2_PORTS_FILE and OPT2_LOCK_DIR apply as for up.sh.
 Prints one JSON summary line on stdout; progress goes to stderr. Exit: 0 started, 1 failure, 2 usage.
 EOF
 }
@@ -145,7 +146,7 @@ render_server_json() {
   [[ -n $jvm ]] || die "no JVM arguments: $CAPTURE_FILE has no jvmArgs and OPT2_CF_JVM_ARGS is unset (setup §3 add-opens)"
   [[ $LEGACY_PORT =~ ^[1-9][0-9]*$ ]] || die "legacy port '$LEGACY_PORT' is not a port number"
   [[ ${OPT2_PORT_GATEWAY:-} =~ ^[1-9][0-9]*$ ]] ||
-    die "gateway port '${OPT2_PORT_GATEWAY:-}' from $REPRO_DIR/ports.env is not a port number"
+    die "gateway port '${OPT2_PORT_GATEWAY:-}' from $PORTS_FILE is not a port number"
   # CommandBox splits jvm.args on whitespace and unwraps quotes, so the path must hold neither.
   [[ $LEGACY_TMP_DIR != *[[:space:]\"\'\\]* ]] ||
     die "$LEGACY_TMP_DIR holds whitespace, a quote or a backslash, which server.json jvm.args cannot carry"

@@ -410,7 +410,7 @@ describe('cChangesets.edit load', () => {
     await expect(loadChangesetEdit(ctx)).rejects.toMatchObject({ service: 'strategies-content', operation: 'getChangeset', status });
     await expect(renderScreenPage(registered('edit'), ctx)).resolves.toEqual({
       kind: 'redirect',
-      location: status === 401 ? '/admin/?muraAction=clogin.logout' : '/admin/?muraAction=cMessage.noaccess',
+      location: status === 401 ? '/admin/?muraAction=clogin.logout' : './',
     });
   });
 
@@ -981,7 +981,7 @@ describe('cChangesets.list', () => {
     await expect(loadChangesetList(ctx)).rejects.toBeInstanceOf(GatewayDenialError);
     await expect(renderScreenPage(registered('list'), ctx)).resolves.toEqual({
       kind: 'redirect',
-      location: status === 401 ? '/admin/?muraAction=clogin.logout' : '/admin/?muraAction=cMessage.noaccess',
+      location: status === 401 ? '/admin/?muraAction=clogin.logout' : './',
     });
   });
 

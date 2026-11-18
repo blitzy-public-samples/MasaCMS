@@ -31,6 +31,9 @@ Environment:
   OPT2_PRISTINE_DIR     pristine legacy baseline (default $HOME/.opt2/pristine)
   OPT2_REPORTS_DIR      report directory, relative to the checkout when relative (default opt2/reports)
   OPT2_LOCK_WAIT        seconds to wait for a running OPT-2 command to finish (default 0: refuse at once)
+  OPT2_PORTS_FILE OPT2_CF_SERVER_NAME OPT2_LOCK_DIR
+                        the port file, opt2-legacy's server name and the run lock directory up.sh used
+  MAILPIT_API_URL       Mailpit API of the mail checks (default the port file's Mailpit API port)
 The stack's own settings (PORT, database and service addresses) come from up.json.
 
 Example, with the environment up.sh ran under:
@@ -84,7 +87,8 @@ STACK_ENV_KEYS=(TZ GOOGLE_CLOUD_PROJECT PUBSUB_EMULATOR_HOST OPT2_SERVICE_URLS O
   PG_DATABASE)
 # Stack addresses withheld from package unit suites, which run against PostgreSQL, Pub/Sub and the committed cut-over
 # versions only, as in CI.
-PACKAGE_TEST_UNSET=(OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL LEGACY_ORIGIN OPT2_LEGACY_PORT OPT2_CUTOVER_DIR)
+PACKAGE_TEST_UNSET=(OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL LEGACY_ORIGIN OPT2_LEGACY_PORT OPT2_CUTOVER_DIR
+  OPT2_PORTS_FILE OPT2_CF_SERVER_NAME OPT2_LOCK_DIR MAILPIT_API_URL)
 
 STAGE_N=""
 STAGE_OUT=""
@@ -674,6 +678,8 @@ require_stack
 adopt_captured_server_env
 load_stack_env
 load_cutover_dir
+# The golden and e2e mail checks read the Mailpit this script empties.
+export MAILPIT_API_URL="${MAILPIT_API_URL:-$MAILPIT_API_LOCAL}"
 export MURA_ADMIN_USERNAME="${MURA_ADMIN_USERNAME:-admin}"
 require_env PG_USER PG_PASSWORD MURA_ADMIN_PASSWORD MASA_TEST_EDITOR_PASSWORD
 require_cmd node npm curl box psql pg_dump pg_restore

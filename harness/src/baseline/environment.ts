@@ -848,6 +848,8 @@ const PENDING = 'pending-run';
 const GENERATED_BY = 'harness/src/baseline/environment.ts (--phase local, then --phase services)';
 const ORACLE_NOTE =
   'The tech spec\'s "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run\'s legacy oracle is the existing Masa 7.6.1 install on Adobe ColdFusion 2023 with SQL Server 2022, reused and never reinstalled. A MySQL fallback, if used, is a baseline deviation and stops the migration stages, because SQL Server is the only supported source.';
+const ABSOLUTE_URL_DEVIATION_NOTE =
+  'Deliberate deviation from the pristine install: `opt2-legacy` runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (`OPT2_PORT_GATEWAY`, set by `harness/repro/server.json.template`), so the absolute URLs Masa builds address the gateway. While the OPT-2 stack is up, a request sent to legacy directly on `${PORT}` therefore gets absolute URLs, in bodies and redirect `Location` headers, that name the gateway port instead of the request\'s port; status codes and header names are unchanged. `harness/repro/down.sh` restarts the captured original server from its own server definition, without these two values, so the pristine URLs return after teardown.';
 const HEADINGS = {
   local: '## Local phase (`--phase local`)',
   services: '## Services phase (`--phase services`)',
@@ -1122,6 +1124,8 @@ export function renderEnvironmentMarkdown(record: EnvironmentRecord, preserved: 
     '## Oracle',
     '',
     ORACLE_NOTE,
+    '',
+    ABSOLUTE_URL_DEVIATION_NOTE,
     '',
     ...local,
     '',

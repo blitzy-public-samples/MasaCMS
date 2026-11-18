@@ -301,7 +301,8 @@ describe('route-key wiring of the legacy site registry', () => {
     ['a registered site keeps its key', '/_api/json/v1/default/content', ['api:content.findall', 'default']],
     ['a registered site matches without case', '/_api/json/v1/Tenant-A/content', ['api:content.findall', 'Tenant-A']],
   ])('%s', async (_case, url, expected) => {
-    const registry = createSiteRegistry({ list: () => Promise.resolve(['default', 'tenant-a']), logger: { error: () => undefined } });
+    const listing = { sites: ['default', 'tenant-a'], bindings: [], adminDomain: '' };
+    const registry = createSiteRegistry({ list: () => Promise.resolve(listing), logger: { error: () => undefined } });
     await registry.start();
     try {
       const matcher = matcherFor(loadEnv(gatewayEnvSchema, sourceOf()), registry.siteExists);

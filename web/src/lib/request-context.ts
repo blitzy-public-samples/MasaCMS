@@ -663,16 +663,16 @@ interface IdentitySession {
   readonly adminState: StoredAdminState;
 }
 
-// Every admin session value lives in identity's session; without a user token there is no session to read.
+// Every admin session value lives in identity's session; without a user token there is no session to read. The site
+// list is session-wide, read for any logged-in user whatever the token grants [legacy: admin/Application.cfc:432-440].
 async function loadIdentitySession(
   gateway: GatewayClient,
   auth: WebAuth,
   isLoggedIn: boolean,
-  roles: readonly string[],
 ): Promise<IdentitySession> {
   const [current, sites, adminState] = await Promise.all([
     auth.userToken === undefined ? undefined : gateway.identity.currentSession(),
-    isLoggedIn && hasAnyRole(roles, [Roles.systemUser, Roles.s2]) ? gateway.identity.sessionSites() : undefined,
+    isLoggedIn ? gateway.identity.sessionSites() : undefined,
     auth.userToken === undefined ? undefined : gateway.identity.adminSessionState(),
   ]);
   return {
@@ -990,7 +990,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   const isS2 = user?.s2 === true || roles.includes(Roles.s2);
   const isSiteAdmin = roles.includes(Roles.siteAdmin);
 
-  const identityLoad = loadIdentitySession(gateway, auth, isLoggedIn, roles);
+  const identityLoad = loadIdentitySession(gateway, auth, isLoggedIn);
   const scopes = requestScopes(input);
   const postedUrl = withFuseaction(cfScope(scopes.url));
   const posted = withFuseaction(cfScope(scopes.form));

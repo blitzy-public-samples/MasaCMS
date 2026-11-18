@@ -22,6 +22,11 @@ function fieldValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value.join(', ') : value;
 }
 
+/** The `X-Forwarded-Host` a forward carries, which legacy's `getRequestHost()` reads first: the inbound one, else `Host`. */
+export function forwardedHost(request: FastifyRequest): string {
+  return fieldValue(request.headers['x-forwarded-host']) || (request.headers.host ?? request.host);
+}
+
 /** `X-Forwarded-*` for a forward: the client address appended to the inbound chain, inbound proto and host preferred. */
 export function forwardedHeaders(request: FastifyRequest): Record<ForwardedHeaderName, string> {
   const client = request.socket.remoteAddress ?? request.ip;
@@ -29,7 +34,7 @@ export function forwardedHeaders(request: FastifyRequest): Record<ForwardedHeade
   return {
     'x-forwarded-for': chain ? `${chain}, ${client}` : client,
     'x-forwarded-proto': fieldValue(request.headers['x-forwarded-proto']) || request.protocol,
-    'x-forwarded-host': fieldValue(request.headers['x-forwarded-host']) || (request.headers.host ?? request.host),
+    'x-forwarded-host': forwardedHost(request),
   };
 }
 

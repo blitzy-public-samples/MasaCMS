@@ -115,7 +115,7 @@ The service implements these routes in full, so a later version can move them on
 | Method and path | Requires | Does |
 |---|---|---|
 | `GET /v1/sessions/current` | public | The session's user struct and login-time roles, or the anonymous struct |
-| `GET /v1/sessions/current/sites` | `system-user`, `s2` | Sites the session may administer, for the site selector |
+| `GET /v1/sessions/current/sites` | public | Sites the session may administer, for the site selector and the access gate; `[]` for a session without a signed-in user |
 | `GET`, `POST /v1/sessions/current/admin-state` | public | Read and store admin session-scope values |
 | `POST /v1/sessions/login` | public | `clogin.login` under CSRF context `login`, or an MFA challenge attempt |
 | `POST /v1/sessions/logout` | public | Ends the session and its legacy session, then redirects to `home.redirect` |
@@ -128,6 +128,7 @@ The service implements these routes in full, so a later version can move them on
 | `GET /v1/users/{userId}/memberships` | `s2`, `site-admin`, `m:008` | The Group Memberships tab of Edit User |
 | `GET /v1/permissions/content/{contentId}` | `s2`, `site-admin` | Each group's verdict on a content node |
 | `GET`, `PUT /v1/permissions/modules/{moduleId}` | `s2`, `site-admin` | A module's group grants; replace them under the module id as CSRF context |
+| `PUT /v1/permissions/modules` | `s2`, `site-admin` | Replace the grants stored under the empty content id, for a module form whose URL carried no `contentid` |
 | `GET /v1/permissions/reverse-lookup` | public | `getReversePermLookUp` of the token's site for the session user |
 | `GET /v1/oauth-clients`, `GET`, `PUT`, `DELETE /v1/oauth-clients/{clientId}` | `s2` | List, read (defaulted new client for an unknown id), create or update, delete with its tokens |
 

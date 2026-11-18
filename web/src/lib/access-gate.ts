@@ -24,6 +24,9 @@ const ALLOW: GateDecision = Object.freeze({ kind: 'allow' });
 
 const redirectTo = (location: string): GateDecision => ({ kind: 'redirect', location });
 
+/** utility `backUp()`, controller `secure()` for a logged-in user: back to the referrer, else `./`. */
+const backUp = (headers: Headers): GateDecision => redirectTo(headers.get('referer') || './');
+
 /** Circuits, lower-cased, that a logged-in user who administers no site may still reach. */
 const SITELESS_CIRCUITS: ReadonlySet<string> = new Set(['clogin', 'cmessage', 'ceditprofile']);
 
@@ -57,9 +60,13 @@ export function applicationGate(req: AdminRequest): GateDecision {
   return ALLOW;
 }
 
-/** Handlers answer a GatewayDenialError with this: clogin.logout for its 401, cMessage.noaccess for its 403. */
-export function deniedGate(status: 401 | 403): GateDecision {
-  return redirectTo(adminActionPath(status === 401 ? ADMIN_LOGIN_REDIRECT_ACTION : ADMIN_NOACCESS_ACTION));
+/**
+ * Handlers answer a GatewayDenialError with this: clogin.logout for its 401; for its 403 the circuit's `secure()` on
+ * carried routes, cMessage.noaccess on synthetic-module screens.
+ */
+export function deniedGate(status: 401 | 403, req: Pick<AdminRequest, 'mode' | 'headers'>): GateDecision {
+  if (status === 401) return redirectTo(adminActionPath(ADMIN_LOGIN_REDIRECT_ACTION));
+  return req.mode === 'opt2' ? redirectTo(adminActionPath(ADMIN_NOACCESS_ACTION)) : backUp(req.headers);
 }
 
 /**
@@ -69,7 +76,7 @@ export function deniedGate(status: 401 | 403): GateDecision {
  * @throws TypeError For an anonymous request carrying no registry domains, since the browser's Host is never trusted.
  */
 export function secure(req: AdminRequest, { hrefDomains = req.hrefDomains }: GateOptions = {}): GateDecision {
-  if (req.isLoggedIn) return redirectTo(req.headers.get('referer') || './');
+  if (req.isLoggedIn) return backUp(req.headers);
   if (hrefDomains === undefined) throw new TypeError('secure() needs the registry domains of an anonymous request');
   const host = { useProtocol: true, domain: req.serverName, https: req.https, httpHost: req.httpHost };
   const opt2 = req.mode === 'opt2';

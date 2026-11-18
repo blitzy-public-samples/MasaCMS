@@ -43,7 +43,7 @@ process_port() {
   local name=${1:?process_port needs a process name} var
   var="OPT2_PORT_${name^^}"
   var=${var//-/_}
-  [[ -n ${!var:-} ]] || die "$var is not set: unknown process '$name' or missing from $REPRO_DIR/ports.env"
+  [[ -n ${!var:-} ]] || die "$var is not set: unknown process '$name' or missing from $PORTS_FILE"
   printf '%s\n' "${!var}"
 }
 
@@ -131,7 +131,7 @@ _opt2_masa_settings_env() {
 
 # Prints the environment of target process <name>, one KEY=value per line, for `env -i`.
 process_env() {
-  local name=${1:?process_env needs a process name} port schema tz password origin bridge_key reports
+  local name=${1:?process_env needs a process name} port schema tz password origin bridge_key reports key
   port="$(process_port "$name")" || exit 1
   schema="$(process_schema "$name")" || exit 1
   service_urls_json >/dev/null
@@ -145,7 +145,7 @@ process_env() {
   _opt2_env_line PUBSUB_EMULATOR_HOST "localhost:${OPT2_TOOL_PORT_PUBSUB_EMULATOR}"
   _opt2_env_line GOOGLE_CLOUD_PROJECT "${GOOGLE_CLOUD_PROJECT:-opt2-local}"
   _opt2_env_line OTEL_EXPORTER_OTLP_ENDPOINT "http://127.0.0.1:${OPT2_TOOL_PORT_OTLP_HTTP}"
-  _opt2_env_line OPT2_JWKS_URL "http://127.0.0.1:${OPT2_PORT_IDENTITY:?OPT2_PORT_IDENTITY is missing from ports.env}/.well-known/jwks.json"
+  _opt2_env_line OPT2_JWKS_URL "http://127.0.0.1:${OPT2_PORT_IDENTITY:?OPT2_PORT_IDENTITY is missing from $PORTS_FILE}/.well-known/jwks.json"
   _opt2_env_line OPT2_TOKEN_ISSUER opt2-local-identity
   _opt2_env_line OPT2_TOKEN_AUDIENCE opt2-local
   _opt2_env_line OPT2_GATEWAY_URL "$OPT2_GATEWAY_ORIGIN_LOCAL"
@@ -205,6 +205,10 @@ process_env() {
       fi
       # A command line that migration runs through /bin/sh.
       _opt2_env_line OPT2_LEGACY_RESTART_CMD "$(_opt2_sh_quote "$REPO/harness/repro/lib/legacy-start.sh")"
+      # The caller's port file, server name and lock directory, so that restart addresses this stack.
+      for key in OPT2_PORTS_FILE OPT2_CF_SERVER_NAME OPT2_LOCK_DIR; do
+        if [[ -n ${!key:-} ]]; then _opt2_env_line "$key" "${!key}"; fi
+      done
       ;;
     communications)
       _opt2_env_line SMTP_HOST 127.0.0.1
