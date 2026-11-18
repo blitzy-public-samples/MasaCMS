@@ -20,7 +20,9 @@ export async function submitVerifyCopy(ctx: ScreenContext): Promise<SubmitResult
     json: { entries },
     headers: csrfHeadersFrom(rc),
   });
-  if (response.ok) return { kind: 'render', view: opt2View(ESIGNATURE, await body({ copy: response.body })) };
+  if (response.ok) {
+    return { kind: 'render', view: opt2View(ESIGNATURE, await body({ copy: response.body }), VERIFY_SCREEN) };
+  }
   // The verdict is the screen, so only a refusal takes the shared submit answer: an alert, a denial or a failure.
   return submitToService(
     ctx,

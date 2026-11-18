@@ -84,7 +84,7 @@ export function auditBody(ctx: ScreenContext, data: AuditData): SafeHtml {
 
 /** `/opt2/admin/e-signature/audit`: a request's hash-chained audit trail. */
 export function renderAudit(ctx: ScreenContext, data: AuditData): ShellView {
-  return opt2View(ESIGNATURE, auditBody(ctx, data));
+  return opt2View(ESIGNATURE, auditBody(ctx, data), AUDIT_SCREEN);
 }
 
 /** The audit chain screen, behind the deny-by-default gate of the contract's roles. */

@@ -4,6 +4,7 @@ import type { ShellView } from '@/shell/document';
 import type { ScreenContext } from '../../registry';
 import {
   actionButton,
+  amountCell,
   block,
   canUse,
   controlGroup,
@@ -19,6 +20,7 @@ import {
   PREPARER,
   TRANSITIONS,
   financeActionUrl,
+  financeStateBadge,
   noRecord,
   readResult,
   recordsUrl,
@@ -66,9 +68,9 @@ export async function loadRecord(ctx: ScreenContext, id: string): Promise<Record
 function summaryRows(ctx: ScreenContext, record: FinanceRecordDetail): SafeHtml {
   return valueRows([
     [opt2Label(ctx, 'Title'), record.title],
-    ['Amount', record.amount],
+    ['Amount', amountCell(record.amount)],
     ['Period', record.period],
-    [opt2Label(ctx, 'State'), record.state],
+    [opt2Label(ctx, 'State'), financeStateBadge(ctx, record.state)],
     [opt2Label(ctx, 'Version'), record.version],
     [opt2Label(ctx, 'Created'), record.created],
     [opt2Label(ctx, 'Last Update'), record.lastupdate],
@@ -79,9 +81,9 @@ function versionRows(ctx: ScreenContext, version: Version): SafeHtml {
   return valueRows([
     [opt2Label(ctx, 'Version'), version.version],
     [opt2Label(ctx, 'Action'), version.action],
-    [opt2Label(ctx, 'State'), version.state],
+    [opt2Label(ctx, 'State'), financeStateBadge(ctx, version.state)],
     [opt2Label(ctx, 'Title'), version.title],
-    ['Amount', version.amount],
+    ['Amount', amountCell(version.amount)],
     ['Period', version.period],
     ['Actor', version.actor_user_id],
     [opt2Label(ctx, 'Created'), version.created],
@@ -174,5 +176,5 @@ export function renderRecord(ctx: ScreenContext, data: RecordData, rerender: Rec
 
 /** The record detail inside the shell, with Finance marked in the OPT-2 nav group. */
 export function renderRecordView(ctx: ScreenContext, data: RecordData): ShellView {
-  return opt2View(FINANCE_MODULE, renderRecord(ctx, data));
+  return opt2View(FINANCE_MODULE, renderRecord(ctx, data), 'record');
 }

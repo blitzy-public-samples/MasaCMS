@@ -86,5 +86,5 @@ export const responsesScreen: Opt2ScreenDefinition<ResponsesData> = {
   roles: SURVEYS_ROLES,
   service: 'surveys',
   load: loadResponses,
-  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderResponses(ctx, data)),
+  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderResponses(ctx, data), 'responses'),
 };

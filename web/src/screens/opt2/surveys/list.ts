@@ -13,6 +13,7 @@ import {
   pager,
   screenLabel,
   siteIdOf,
+  surveyStatusBadge,
   surveysUrl,
   type Survey,
 } from './common';
@@ -46,9 +47,9 @@ function rowLinks(ctx: ScreenContext, survey: Survey): SafeHtml {
 function renderList(ctx: ScreenContext, data: SurveyListData): SafeHtml {
   const rows = data.surveys.map((survey) => [
     survey.title,
-    survey.status,
-    dateTimeText(survey.schedule?.launchAt ?? null),
-    survey.schedule?.reminders.length,
+    surveyStatusBadge(ctx, survey.status),
+    survey.schedule === null ? 'Not scheduled' : dateTimeText(survey.schedule.launchAt),
+    survey.schedule?.reminders.length ?? 0,
     dateTimeText(survey.created),
     rowLinks(ctx, survey),
   ]);
@@ -67,5 +68,5 @@ export const surveysListScreen: Opt2ScreenDefinition<SurveyListData> = {
   roles: SURVEYS_ROLES,
   service: 'surveys',
   load: loadList,
-  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderList(ctx, data)),
+  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderList(ctx, data), 'surveys'),
 };

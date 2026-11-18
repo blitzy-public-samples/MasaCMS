@@ -22,12 +22,12 @@ import {
   SERVICE,
   actionUrl,
   buttonLink,
+  messageStateBadge,
   moduleHeader,
   pager,
   postedFields,
   requestedPage,
   screenUrl,
-  stateLabel,
   type ListPage,
   type Message,
   type MessageTemplate,
@@ -86,7 +86,7 @@ export function sendsBody(ctx: ScreenContext, data: SendsData, form: SendForm, a
     message.to_address,
     message.subject,
     message.template_id === '' ? '' : (templateNames.get(message.template_id) ?? message.template_id),
-    stateLabel(ctx, message.state),
+    messageStateBadge(ctx, message.state),
     message.created,
     message.sent_at,
     buttonLink('Delivery Status', screenUrl(ctx, 'delivery-status', { messageId: message.message_id })),
@@ -120,7 +120,7 @@ export const sendsScreen: Opt2ScreenDefinition<SendsData> = Object.freeze({
   service: SERVICE,
   gate: SENDER_GATE,
   load: loadSends,
-  render: (ctx: ScreenContext, data: SendsData) => opt2View(MODULE, sendsBody(ctx, data, requestedForm(ctx))),
+  render: (ctx: ScreenContext, data: SendsData) => opt2View(MODULE, sendsBody(ctx, data, requestedForm(ctx)), SCREEN),
 });
 
 /** Sends the posted message (`sendMessage`), then returns to Sends; a rejection re-renders the posted form. */

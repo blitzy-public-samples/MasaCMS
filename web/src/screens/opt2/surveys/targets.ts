@@ -108,7 +108,7 @@ export const targetsScreen: Opt2ScreenDefinition<TargetsData> = {
   roles: SURVEYS_ROLES,
   service: 'surveys',
   load: (ctx) => loadTargets(ctx, surveyIdOf(ctx)),
-  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderTargets(ctx, data, '')),
+  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderTargets(ctx, data, ''), 'targets'),
 };
 
 /** `/opt2/admin-actions/surveys/bulk-target`: adds the posted targets the survey lacks (`bulkTargetSurvey`). */

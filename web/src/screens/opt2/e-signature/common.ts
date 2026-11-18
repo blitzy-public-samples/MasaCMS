@@ -10,12 +10,16 @@ import {
   opt2ActionUrl,
   opt2Label,
   opt2ScreenUrl,
+  stateBadgeOf,
   type HeaderLink,
   type Label,
   type Opt2Params,
+  type StateDisplay,
 } from '../shared';
 
 export type ESignatureSchemas = components['schemas'];
+
+export type RequestState = ESignatureSchemas['RequestState'];
 
 /** The module slug, which is also the owning service's name. */
 export const ESIGNATURE = 'e-signature';
@@ -68,6 +72,17 @@ export function screenUrl(ctx: ScreenContext, screen: string, params: Opt2Params
 /** URL of the e-signature post action `action` on the session site. */
 export function actionUrl(ctx: ScreenContext, action: string, params: Opt2Params = {}): string {
   return opt2ActionUrl(ESIGNATURE, action, siteParams(ctx, params));
+}
+
+/** Label and badge tone of each request state. */
+const REQUEST_STATES: Readonly<Record<RequestState, StateDisplay>> = Object.freeze({
+  PENDING: { label: (ctx) => opt2Label(ctx, 'Pending'), tone: 'info' },
+  SIGNED: { label: () => 'Signed', tone: 'success' },
+});
+
+/** Badge of request state `state` in the session locale of `ctx`. */
+export function requestStateBadge(ctx: ScreenContext, state: RequestState): SafeHtml {
+  return stateBadgeOf(ctx, REQUEST_STATES, state);
 }
 
 /** Link to `href` with `text`, encoded unless it is a bundle label. */

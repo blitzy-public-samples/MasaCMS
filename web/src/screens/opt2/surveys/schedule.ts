@@ -11,9 +11,11 @@ import {
   opt2Label,
   opt2View,
   postForm,
+  stateBadgeOf,
   submitToService,
   textInput,
   type Opt2Write,
+  type StateDisplay,
 } from '../shared';
 import {
   NO_SURVEY,
@@ -24,6 +26,7 @@ import {
   siteIdOf,
   surveyHeader,
   surveyIdOf,
+  surveyStatusBadge,
   unreadHeader,
   type Survey,
   type Unread,
@@ -31,6 +34,15 @@ import {
 
 type ScheduledTaskView = components['schemas']['ScheduledTaskView'];
 type ScheduleRequest = components['schemas']['ScheduleRequest'];
+
+/** Label and badge tone of each task status communications reports. */
+const TASK_STATUSES: Readonly<Record<ScheduledTaskView['status'], StateDisplay>> = Object.freeze({
+  scheduled: { label: () => 'Scheduled', tone: 'info' },
+  done: { label: () => 'Done', tone: 'success' },
+  failed: { label: () => 'Failed', tone: 'important' },
+  cancelled: { label: () => 'Cancelled', tone: 'inverse' },
+  superseded: { label: () => 'Superseded', tone: 'inverse' },
+});
 
 /** The survey with its schedule and the tasks communications holds for it, or the alert shown in their place. */
 export type ScheduleData = { readonly survey: Survey; readonly tasks: readonly ScheduledTaskView[] } | Unread;
@@ -125,11 +137,16 @@ function renderSchedule(
   const status = opt2Label(ctx, 'Status');
   const taskGrid = gridTable(
     ['Task', 'Kind', 'Scheduled For', status],
-    tasks.map((task) => [task.taskName, task.kind, dateTimeText(task.scheduleTime), task.status]),
+    tasks.map((task) => [
+      task.taskName,
+      task.kind,
+      dateTimeText(task.scheduleTime),
+      stateBadgeOf(ctx, TASK_STATUSES, task.status),
+    ]),
     'No launch or reminder tasks are scheduled.',
   );
   return html`${surveyHeader(ctx, survey, 'schedule')}${alert}${block(
-    html`<p>${status}: ${survey.status}</p>${form}<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`,
+    html`<p>${status}: ${surveyStatusBadge(ctx, survey.status)}</p>${form}<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`,
   )}`;
 }
 
@@ -151,7 +168,7 @@ export const scheduleScreen: Opt2ScreenDefinition<ScheduleData> = {
   roles: SURVEYS_ROLES,
   service: 'surveys',
   load: (ctx) => loadSchedule(ctx, surveyIdOf(ctx)),
-  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderSchedule(ctx, data)),
+  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderSchedule(ctx, data), 'schedule'),
 };
 
 /** `/opt2/admin-actions/surveys/schedule`: replaces the survey's schedule (`scheduleSurvey`), then shows it. */

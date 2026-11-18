@@ -16,16 +16,20 @@ import {
   pageHeader,
   postForm,
   select,
+  stateBadgeOf,
   textInput,
   valueRows,
   type Label,
   type Opt2Back,
   type SelectOption,
+  type StateDisplay,
   type ValueRow,
 } from '../shared';
 
 /** An export job as reporting lists it. */
 export type ExportJob = components['schemas']['ExportJob'];
+
+export type ExportState = components['schemas']['ExportState'];
 
 /** One page of the tenant's export jobs. */
 export interface ExportsData {
@@ -86,6 +90,14 @@ const FORMAT_OPTIONS: readonly SelectOption[] = [
 
 const EMPTY_POSTED: QueuePosted = Object.freeze({ definitionId: '', format: '', asOf: '' });
 
+/** Label and badge tone of each job state. */
+const EXPORT_STATES: Readonly<Record<ExportState, StateDisplay>> = Object.freeze({
+  queued: { label: (ctx) => opt2Label(ctx, 'Queued'), tone: 'info' },
+  running: { label: () => 'Running', tone: 'info' },
+  done: { label: () => 'Done', tone: 'success' },
+  failed: { label: () => 'Failed', tone: 'important' },
+});
+
 /** `rc.page` as a page number; anything but a positive integer is the first page. */
 function pageOf(value: string | undefined): number {
   return value !== undefined && /^[1-9][0-9]{0,8}$/.test(value) ? Number(value) : 1;
@@ -110,7 +122,7 @@ function jobValues(ctx: ScreenContext, job: ExportJob): ValueRow[] {
   const values: ValueRow[] = [
     ['Job', job.job_id],
     [opt2Label(ctx, 'Format'), job.format],
-    [opt2Label(ctx, 'State'), job.state],
+    [opt2Label(ctx, 'State'), stateBadgeOf(ctx, EXPORT_STATES, job.state)],
     [opt2Label(ctx, 'Created'), job.created],
     ['Started', job.started_at],
     ['Finished', job.finished_at],
@@ -169,5 +181,5 @@ export const exportsScreen: Opt2ScreenDefinition<ExportsData> = Object.freeze({
   service: 'reporting',
   gate: opt2Gate(EXPORTER_ROLES),
   load: loadExports,
-  render: (ctx: ScreenContext, data: ExportsData) => opt2View('reporting', exportsBody(ctx, data)),
+  render: (ctx: ScreenContext, data: ExportsData) => opt2View('reporting', exportsBody(ctx, data), EXPORTS_SCREEN),
 });

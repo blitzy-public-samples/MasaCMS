@@ -61,6 +61,12 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'form-actions',
   // The list's Previous/Next, as admin/core/views/cusers/inc/dsp_nextn.cfm pages a list.
   'pagination',
+  // State badges, styled by admin.css `.mura .label-success`, `-info`, `-inverse` and `-important`.
+  'label',
+  'label-success',
+  'label-info',
+  'label-inverse',
+  'label-important',
 ]);
 const LEGACY_CLASS_FAMILIES: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];
 
@@ -195,6 +201,17 @@ describe('reporting screens', () => {
     });
   });
 
+  describe('document title', () => {
+    it('titles the export job list "Masa CMS - Export Jobs" in the full layout', async () => {
+      const page = await renderScreenPage(exportsScreen, ctxFor(exporter('exports')));
+      if (page.kind !== 'document') throw new Error(`The list redirected to ${page.location}`);
+
+      expect(page.doc.title).toBe('Masa CMS - Export Jobs');
+      expect(String(page.doc.head)).toContain('<title>Masa CMS - Export Jobs</title>');
+      expect(cheerio.load(page.html)('title').text()).toBe('Masa CMS - Export Jobs');
+    });
+  });
+
   describe('request values', () => {
     const ROLE_LIKE_RC = { roles: Roles.reportingExporter, role: Roles.reportingExporter, s2: 'true' };
 
@@ -223,9 +240,10 @@ describe('reporting screens', () => {
 
       const alert = alertBox(refused.message);
       const options = refused.posted === undefined ? { alert } : { alert, posted: refused.posted };
-      const expected = opt2View('reporting', exportsBody(ctx, LISTED, options));
+      const expected = opt2View('reporting', exportsBody(ctx, LISTED, options), 'exports');
       // SafeHtml keeps its markup in a private field, which toEqual cannot see.
       expect(view.opt2Module).toBe(expected.opt2Module);
+      expect(view.moduleTitle).toBe('Export Jobs');
       expect(String(view.body)).toBe(String(expected.body));
       expect(fragmentModel(String(view.body)).alerts).toEqual([
         { text: refused.message, className: 'alert alert-error' },

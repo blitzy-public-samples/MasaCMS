@@ -4,7 +4,15 @@ import type { components } from '@/generated/clients/timesheets';
 import { okBody, type GatewayResponse } from '@/lib/gateway-client';
 import type { SafeHtml } from '@/lib/html';
 import type { Rc, ScreenContext } from '../../registry';
-import { alertBox, errorMessage, opt2Label, type Opt2Params } from '../shared';
+import {
+  alertBox,
+  errorMessage,
+  opt2Label,
+  stateBadge,
+  stateBadgeOf,
+  type Opt2Params,
+  type StateDisplay,
+} from '../shared';
 
 export type TimesheetsSchemas = components['schemas'];
 
@@ -15,6 +23,9 @@ export type Read<T> =
 
 /** Day lifecycle action as the timesheets contract names it. */
 export type DayAction = TimesheetsSchemas['DayAction'];
+
+export type SheetStatus = TimesheetsSchemas['SheetStatus'];
+export type DayState = TimesheetsSchemas['DayState'];
 
 /** The module slug, which is also the owning service's name. */
 export const TIMESHEETS = 'timesheets';
@@ -62,4 +73,38 @@ export function datePart(value: string): string {
 /** The bundle's `Yes` or `No` in the session locale of `ctx`, for a flag column. */
 export function yesNo(ctx: ScreenContext, flag: boolean): SafeHtml {
   return opt2Label(ctx, flag ? 'Yes' : 'No');
+}
+
+/** Label and badge tone of each sheet status. */
+const SHEET_STATUSES: Readonly<Record<SheetStatus, StateDisplay>> = Object.freeze({
+  DRAFT: { label: (ctx) => opt2Label(ctx, 'Draft'), tone: 'inverse' },
+  SUBMITTED: { label: () => 'Submitted', tone: 'info' },
+  PARTIALLY_APPROVED: { label: () => 'Partially Approved', tone: 'info' },
+  APPROVED: { label: (ctx) => opt2Label(ctx, 'Approved'), tone: 'success' },
+  RETURNED: { label: () => 'Returned', tone: 'important' },
+});
+
+/** Label and badge tone of each day state. */
+const DAY_STATES: Readonly<Record<DayState, StateDisplay>> = Object.freeze({
+  DRAFT: { label: (ctx) => opt2Label(ctx, 'Draft'), tone: 'inverse' },
+  SUBMITTED: { label: () => 'Submitted', tone: 'info' },
+  RESUBMITTED: { label: () => 'Resubmitted', tone: 'info' },
+  PRIMARY_APPROVED: { label: () => 'Primary Approved', tone: 'info' },
+  APPROVED: { label: (ctx) => opt2Label(ctx, 'Approved'), tone: 'success' },
+  RETURNED: { label: () => 'Returned', tone: 'important' },
+});
+
+/** Badge of sheet status `status` in the session locale of `ctx`. */
+export function sheetStatusBadge(ctx: ScreenContext, status: SheetStatus): SafeHtml {
+  return stateBadgeOf(ctx, SHEET_STATUSES, status);
+}
+
+/** Badge of day state `state` in the session locale of `ctx`. */
+export function dayStateBadge(ctx: ScreenContext, state: DayState): SafeHtml {
+  return stateBadgeOf(ctx, DAY_STATES, state);
+}
+
+/** The overdue flag: the bundle's `Yes` as an important badge, or its plain `No`. */
+export function overdueCell(ctx: ScreenContext, overdue: boolean): SafeHtml {
+  return overdue ? stateBadge(opt2Label(ctx, 'Yes'), 'important') : opt2Label(ctx, 'No');
 }

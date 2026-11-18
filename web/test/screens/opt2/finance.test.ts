@@ -9,7 +9,6 @@ import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { financeActions, financeScreens } from '@/screens/opt2/finance';
-import { FINANCE_STATES } from '@/screens/opt2/finance/service';
 import {
   noAccessUrl,
   opt2ActionUrl,
@@ -66,6 +65,14 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'mura-actions',
   'form-actions',
   'pagination',
+  // State badges, styled by admin.css `.mura .label-success`, `-info`, `-inverse` and `-important`.
+  'label',
+  'label-success',
+  'label-info',
+  'label-inverse',
+  'label-important',
+  // Negative amounts.
+  'text-danger',
 ]);
 
 const LEGACY_CLASS_PATTERNS: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];
@@ -219,7 +226,7 @@ describe('finance screens in the session locale', () => {
           [fr('Title'), 'Period', 'Amount', fr('State'), fr('Version'), fr('Last Update')],
           ['Period', fr('State'), 'Record Count', 'Total Amount', 'Computed At'],
         ],
-        options: [fr('All'), ...FINANCE_STATES],
+        options: [fr('All'), 'In Progress', 'Submitted', 'Resubmitted', fr('Approved'), fr('Rejected')],
         links: [...financeRecords.map(({ title }) => title), 'Previous', fr('Next')],
       }),
     },

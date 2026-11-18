@@ -89,7 +89,7 @@ export function verifyBody(ctx: ScreenContext, data: VerifyData, opts: VerifyBod
 
 /** `/opt2/admin/e-signature/verify`: the service's verification of the stored chain and of a supplied copy. */
 export function renderVerify(ctx: ScreenContext, data: VerifyData): ShellView {
-  return opt2View(ESIGNATURE, verifyBody(ctx, data));
+  return opt2View(ESIGNATURE, verifyBody(ctx, data), VERIFY_SCREEN);
 }
 
 // The copy form needs no role check of its own: verifySuppliedChain and getAuditChain require the gate's roles.

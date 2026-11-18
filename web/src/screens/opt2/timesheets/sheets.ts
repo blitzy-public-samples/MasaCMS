@@ -20,8 +20,9 @@ import {
   asOfOf,
   carriedParams,
   datePart,
+  overdueCell,
   readOf,
-  yesNo,
+  sheetStatusBadge,
   type TimesheetsSchemas,
 } from './common';
 
@@ -68,8 +69,8 @@ function sheetRow(ctx: ScreenContext, sheet: Timesheet, params: Opt2Params): Gri
     html`<a${attr('href', href)}>${datePart(sheet.periodStart)} - ${datePart(sheet.periodEnd)}</a>`,
     sheet.personId,
     datePart(sheet.dueDate),
-    sheet.status,
-    yesNo(ctx, sheet.overdue),
+    sheetStatusBadge(ctx, sheet.status),
+    overdueCell(ctx, sheet.overdue),
   ];
 }
 
@@ -100,5 +101,5 @@ export function sheetsBody(ctx: ScreenContext, data: SheetsData, alert?: SafeHtm
 
 /** The sheet list inside the shell. */
 export function renderSheets(ctx: ScreenContext, data: SheetsData): ShellView {
-  return opt2View(TIMESHEETS, sheetsBody(ctx, data));
+  return opt2View(TIMESHEETS, sheetsBody(ctx, data), SHEETS_SCREEN);
 }

@@ -31,13 +31,21 @@ import { useTestEnv } from '../../../helpers/env';
 import { fakeGatewayClient, type FakeGatewayClient } from '../../../helpers/fake-gateway';
 import { CSRF_PAIR, CSRF_PATH, LIST_PATH, LIST_ROUTE, contextFor, jobValues, shellAndCsrfRoutes } from './support';
 
+/** Display text of each job state. */
+const STATE_TEXT: Readonly<Record<ExportJob['state'], string>> = {
+  queued: 'Queued',
+  running: 'Running',
+  done: 'Done',
+  failed: 'Failed',
+};
+
 /** The read-only rows the list renders for `job`: every field it has, as stored, in the reporting column order. */
 const valuesOf = (job: ExportJob): Array<[string, string]> =>
   (
     [
       ['Job', job.job_id],
       ['Format', job.format],
-      ['State', job.state],
+      ['State', STATE_TEXT[job.state]],
       ['Created', job.created],
       ['Started', job.started_at],
       ['Finished', job.finished_at],
@@ -232,6 +240,9 @@ describe('reporting/exports', () => {
         REPORTING_IDS.jobDonePdf,
       ]);
       const $ = cheerio.load(body, null, false);
+      expect($('.label').toArray().map((badge) => $(badge).attr('class'))).toEqual(
+        ['success', 'success', 'important', 'success', 'info', 'info'].map((tone) => `label label-${tone}`),
+      );
       const downloads = $('.block-content .block-content > form').toArray().map((el) => ({
         action: $(el).attr('action'),
         method: $(el).attr('method'),

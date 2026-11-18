@@ -93,7 +93,7 @@ export const templatesScreen: Opt2ScreenDefinition<TemplatesData> = Object.freez
   service: SERVICE,
   gate: SENDER_GATE,
   load: loadTemplates,
-  render: (ctx: ScreenContext, data: TemplatesData) => opt2View(MODULE, templatesBody(ctx, data)),
+  render: (ctx: ScreenContext, data: TemplatesData) => opt2View(MODULE, templatesBody(ctx, data), SCREEN),
 });
 
 /** Stores the posted template (`createTemplate`), then returns to Templates; a rejection re-renders the posted form. */

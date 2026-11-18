@@ -74,6 +74,11 @@ describe('communications delivery-status screen', () => {
       ['Queued', '', '', '2026-06-29T09:00:00'],
       ['Failed', 'smtp-error', '', '2026-06-30T08:10:01'],
     ]);
+    expect(toString(body).match(/<span class="label label-[a-z]+">[A-Za-z]+<\/span>/g)).toEqual([
+      '<span class="label label-important">Failed</span>',
+      '<span class="label label-info">Queued</span>',
+      '<span class="label label-important">Failed</span>',
+    ]);
     expect(toString(body)).toContain('Welcome to &lt;Tenant A&gt;, Casey');
   });
 

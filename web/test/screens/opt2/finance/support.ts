@@ -7,6 +7,7 @@ import { resetLegacySettingsForTests } from '@/lib/env';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { financeActions, financeScreens } from '@/screens/opt2/finance';
+import type { FinanceState } from '@/screens/opt2/finance/service';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, SubmitResult } from '@/screens/registry';
 import { FINANCE_IDS, financeAnswers } from '../../../fixtures/opt2/finance';
 import { opt2RoleRequest, type AdminRequestPartial } from '../../../helpers/admin-request';
@@ -32,6 +33,15 @@ export const APPROVER: Role = Roles.financeApprover;
 export const RECORD_ID = FINANCE_IDS.recordResubmitted;
 
 export const RECORD_ROUTE = routeKey('GET', 'finance', `/v1/finance/records/${RECORD_ID}`);
+
+/** Display text of each lifecycle state, in its cells, value rows and filter options. */
+export const STATE_TEXT: Readonly<Record<FinanceState, string>> = Object.freeze({
+  'IN-PROGRESS': 'In Progress',
+  SUBMITTED: 'Submitted',
+  'RE-SUBMITTED': 'Resubmitted',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+});
 export const LIST_ROUTE = routeKey('GET', 'finance', '/v1/finance/records');
 
 /** The CSRF pair identity issues in these suites, as a form posts it. */

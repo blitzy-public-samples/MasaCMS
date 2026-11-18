@@ -16,12 +16,16 @@ import {
 } from '../shared';
 import {
   DAY_ACTION,
+  SHEET_SCREEN,
   SHEETS_SCREEN,
   TIMESHEETS,
   asOfOf,
   carriedParams,
+  dayStateBadge,
   datePart,
+  overdueCell,
   readOf,
+  sheetStatusBadge,
   yesNo,
   type DayAction,
   type TimesheetsSchemas,
@@ -106,7 +110,15 @@ export function sheetBody(ctx: ScreenContext, data: SheetData, alert?: SafeHtml)
   const period = `${datePart(sheet.periodStart)} - ${datePart(sheet.periodEnd)}`;
   const summary = gridTable(
     summaryHeadersOf(ctx),
-    [[sheet.personId, period, datePart(sheet.dueDate), sheet.status, yesNo(ctx, sheet.overdue)]],
+    [
+      [
+        sheet.personId,
+        period,
+        datePart(sheet.dueDate),
+        sheetStatusBadge(ctx, sheet.status),
+        overdueCell(ctx, sheet.overdue),
+      ],
+    ],
     '',
   );
   const days = gridTable(
@@ -114,7 +126,7 @@ export function sheetBody(ctx: ScreenContext, data: SheetData, alert?: SafeHtml)
     sheet.days.map((day) => [
       datePart(day.workDate),
       day.hours,
-      day.state,
+      dayStateBadge(ctx, day.state),
       yesNo(ctx, day.blackout),
       dayActions(ctx, sheet, day, actionUrl),
     ]),
@@ -125,5 +137,5 @@ export function sheetBody(ctx: ScreenContext, data: SheetData, alert?: SafeHtml)
 
 /** The sheet detail inside the shell. */
 export function renderSheet(ctx: ScreenContext, data: SheetData): ShellView {
-  return opt2View(TIMESHEETS, sheetBody(ctx, data));
+  return opt2View(TIMESHEETS, sheetBody(ctx, data), SHEET_SCREEN);
 }

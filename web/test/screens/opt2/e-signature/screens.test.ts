@@ -440,12 +440,13 @@ describe('e-signature roles', () => {
       .map((el) => [$(el).children('label').text(), $(el).children('div').text()]);
     expect(rows).toEqual([
       ['Document', signedRequestDetail.document_name],
-      ['State', 'SIGNED'],
+      ['State', 'Signed'],
       ['Signer', signedRequestDetail.signer_user_id],
       ['Created', signedRequestDetail.created],
       ['Created By', signedRequestDetail.createdbyid],
       ['Document SHA-256', signedRequestDetail.document_sha256],
     ]);
+    expect($('div.mura-control-group .label').attr('class')).toBe('label label-success');
     expect($('div.mura-control-group label[for]')).toHaveLength(0);
   });
 

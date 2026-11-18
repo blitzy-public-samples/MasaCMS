@@ -4,6 +4,7 @@ import { attr, html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import {
+  amountCell,
   block,
   controlGroup,
   formActions,
@@ -21,9 +22,11 @@ import {
 import {
   FINANCE_MODULE,
   FINANCE_SERVICE,
+  FINANCE_STATE_DISPLAYS,
   FINANCE_STATES,
   READERS,
   READER_GATE,
+  financeStateBadge,
   readResult,
   recordsUrl,
   recordUrl,
@@ -54,11 +57,11 @@ function rollupHeaders(ctx: ScreenContext): Label[] {
   return ['Period', opt2Label(ctx, 'State'), 'Record Count', 'Total Amount', 'Computed At'];
 }
 
-/** The state filter's options: All, then each lifecycle state as its contract value. */
+/** The state filter's options: All, then each lifecycle state, valued as the contract names it. */
 function stateOptions(ctx: ScreenContext): SelectOption[] {
   return [
     { value: '', label: opt2Label(ctx, 'All') },
-    ...FINANCE_STATES.map((state) => ({ value: state, label: state })),
+    ...FINANCE_STATES.map((state) => ({ value: state, label: FINANCE_STATE_DISPLAYS[state].label(ctx) })),
   ];
 }
 
@@ -137,15 +140,21 @@ function recordRow(ctx: ScreenContext, record: FinanceRecord): GridCell[] {
   return [
     html`<a${attr('href', recordUrl(ctx, record.record_id))}>${record.title}</a>`,
     record.period,
-    record.amount,
-    record.state,
+    amountCell(record.amount),
+    financeStateBadge(ctx, record.state),
     record.version,
     record.lastupdate,
   ];
 }
 
-function rollupRow(rollup: FinanceRollup): GridCell[] {
-  return [rollup.period, rollup.state, rollup.record_count, rollup.total_amount, rollup.computed_at];
+function rollupRow(ctx: ScreenContext, rollup: FinanceRollup): GridCell[] {
+  return [
+    rollup.period,
+    financeStateBadge(ctx, rollup.state),
+    rollup.record_count,
+    amountCell(rollup.total_amount),
+    rollup.computed_at,
+  ];
 }
 
 /**
@@ -162,7 +171,11 @@ function renderRecords(ctx: ScreenContext, data: RecordsData): SafeHtml {
       )}${pager(ctx, data, result.body.total)}`
     : result.alert;
   const totals = rollups.ok
-    ? gridTable(rollupHeaders(ctx), rollups.body.data.map(rollupRow), 'There are currently no rollup totals.')
+    ? gridTable(
+        rollupHeaders(ctx),
+        rollups.body.data.map((rollup) => rollupRow(ctx, rollup)),
+        'There are currently no rollup totals.',
+      )
     : rollups.alert;
   return html`${pageHeader('Finance Records')}${block(
     html`${filterForm(ctx, data)}${records}<h2>Rollup Totals</h2>${totals}`,
@@ -171,7 +184,7 @@ function renderRecords(ctx: ScreenContext, data: RecordsData): SafeHtml {
 
 /** The record list inside the shell, with Finance marked in the OPT-2 nav group. */
 function renderRecordsView(ctx: ScreenContext, data: RecordsData): ShellView {
-  return opt2View(FINANCE_MODULE, renderRecords(ctx, data));
+  return opt2View(FINANCE_MODULE, renderRecords(ctx, data), 'records');
 }
 
 /** The record list screen, the OPT-2 nav's Finance entry. */

@@ -4,7 +4,17 @@ import type { components } from '@/generated/clients/communications';
 import type { WebServiceName } from '@/lib/gateway-client';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { Opt2Module, ScreenContext } from '../../registry';
-import { opt2ActionUrl, opt2Gate, opt2Label, opt2ScreenUrl, pageHeader, type Label, type Opt2Params } from '../shared';
+import {
+  opt2ActionUrl,
+  opt2Gate,
+  opt2Label,
+  opt2ScreenUrl,
+  pageHeader,
+  stateBadgeOf,
+  type Label,
+  type Opt2Params,
+  type StateDisplay,
+} from '../shared';
 
 type Schemas = components['schemas'];
 
@@ -28,17 +38,17 @@ export const SENDER_GATE = opt2Gate(SENDER_ROLES);
 /** CSRF context of the template and message collections, as the fixture validates their writes. */
 export const CSRF_CONTEXT = '';
 
-/** Label of each delivery state; delivered and failed have no admin-bundle key. */
-const STATE_LABELS: Readonly<Record<MessageState, (ctx: ScreenContext) => Label>> = Object.freeze({
-  queued: (ctx) => opt2Label(ctx, 'Queued'),
-  sent: (ctx) => opt2Label(ctx, 'Sent'),
-  delivered: () => 'Delivered',
-  failed: () => 'Failed',
+/** Label and badge tone of each delivery state; delivered and failed have no admin-bundle key. */
+const MESSAGE_STATES: Readonly<Record<MessageState, StateDisplay>> = Object.freeze({
+  queued: { label: (ctx) => opt2Label(ctx, 'Queued'), tone: 'info' },
+  sent: { label: (ctx) => opt2Label(ctx, 'Sent'), tone: 'info' },
+  delivered: { label: () => 'Delivered', tone: 'success' },
+  failed: { label: () => 'Failed', tone: 'important' },
 });
 
-/** Label of a delivery state in the session locale of `ctx`. */
-export function stateLabel(ctx: ScreenContext, state: MessageState): Label {
-  return STATE_LABELS[state](ctx);
+/** Badge of a delivery state in the session locale of `ctx`. */
+export function messageStateBadge(ctx: ScreenContext, state: MessageState): SafeHtml {
+  return stateBadgeOf(ctx, MESSAGE_STATES, state);
 }
 
 /** URL of a communications screen on the session site. */

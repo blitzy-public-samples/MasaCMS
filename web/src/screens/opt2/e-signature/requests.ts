@@ -34,6 +34,7 @@ import {
   pageIndexOf,
   pagination,
   readOf,
+  requestStateBadge,
   screenUrl,
   type ESignatureSchemas,
   type Read,
@@ -113,7 +114,7 @@ function requestRow(ctx: ScreenContext, request: SignatureRequest): GridCell[] {
   // Values stay as the contract returns them, dates included, as on every OPT-2 screen.
   return [
     link(screenUrl(ctx, REQUEST_SCREEN, params), request.document_name),
-    request.state,
+    requestStateBadge(ctx, request.state),
     request.signer_user_id,
     request.created,
     html`${link(screenUrl(ctx, AUDIT_SCREEN, params), 'Audit Chain')} ${link(screenUrl(ctx, VERIFY_SCREEN, params), 'Verify')}`,
@@ -165,7 +166,7 @@ export function requestsBody(ctx: ScreenContext, data: RequestsData, opts: Reque
 
 /** `/opt2/admin/e-signature/requests`: the OPT-2 nav entry; the request list for signers, the lookup for auditors. */
 export function renderRequests(ctx: ScreenContext, data: RequestsData): ShellView {
-  return opt2View(ESIGNATURE, requestsBody(ctx, data));
+  return opt2View(ESIGNATURE, requestsBody(ctx, data), REQUESTS_SCREEN);
 }
 
 /**
@@ -179,7 +180,7 @@ export async function renderRequestsView(
   alert?: SafeHtml,
   values?: CreateRequestValues,
 ): Promise<ShellView> {
-  return opt2View(ESIGNATURE, requestsBody(ctx, await loadRequests(ctx), { alert, values }));
+  return opt2View(ESIGNATURE, requestsBody(ctx, await loadRequests(ctx), { alert, values }), REQUESTS_SCREEN);
 }
 
 /**

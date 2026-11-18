@@ -24,6 +24,7 @@ import {
   readOf,
   requestIdOf,
   requestLinks,
+  requestStateBadge,
   type ESignatureSchemas,
   type Read,
 } from './common';
@@ -75,7 +76,7 @@ export async function loadRequest(ctx: ScreenContext): Promise<RequestData> {
 function summaryRows(ctx: ScreenContext, detail: SignatureRequestDetail): SafeHtml {
   return valueRows([
     ['Document', detail.document_name],
-    [opt2Label(ctx, 'State'), detail.state],
+    [opt2Label(ctx, 'State'), requestStateBadge(ctx, detail.state)],
     ['Signer', detail.signer_user_id],
     [opt2Label(ctx, 'Created'), detail.created],
     [opt2Label(ctx, 'Created By'), detail.createdbyid],
@@ -110,5 +111,5 @@ export function requestBody(ctx: ScreenContext, data: RequestData, opts: Request
 
 /** `/opt2/admin/e-signature/request`: the signing request with typed name. */
 export function renderRequest(ctx: ScreenContext, data: RequestData): ShellView {
-  return opt2View(ESIGNATURE, requestBody(ctx, data));
+  return opt2View(ESIGNATURE, requestBody(ctx, data), REQUEST_SCREEN);
 }

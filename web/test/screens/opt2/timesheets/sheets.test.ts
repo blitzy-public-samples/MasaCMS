@@ -83,11 +83,11 @@ describe('timesheets sheet list', () => {
         {
           headers: ['Period', 'Person', 'Due Date', 'Status', 'Overdue'],
           rows: [
-            ['2026-06-08 - 2026-06-14', TIMESHEET_IDS.employee, '2026-06-19', 'APPROVED', 'No'],
-            ['2026-06-15 - 2026-06-21', TIMESHEET_IDS.employee, '2026-06-26', 'DRAFT', 'Yes'],
-            ['2026-06-22 - 2026-06-28', TIMESHEET_IDS.employee, '2026-07-03', 'RETURNED', 'No'],
-            ['2026-06-22 - 2026-06-28', TIMESHEET_IDS.secondEmployee, '2026-07-03', 'SUBMITTED', 'No'],
-            ['2026-06-22 - 2026-06-28', TIMESHEET_IDS.thirdEmployee, '2026-07-03', 'PARTIALLY_APPROVED', 'No'],
+            ['2026-06-08 - 2026-06-14', TIMESHEET_IDS.employee, '2026-06-19', 'Approved', 'No'],
+            ['2026-06-15 - 2026-06-21', TIMESHEET_IDS.employee, '2026-06-26', 'Draft', 'Yes'],
+            ['2026-06-22 - 2026-06-28', TIMESHEET_IDS.employee, '2026-07-03', 'Returned', 'No'],
+            ['2026-06-22 - 2026-06-28', TIMESHEET_IDS.secondEmployee, '2026-07-03', 'Submitted', 'No'],
+            ['2026-06-22 - 2026-06-28', TIMESHEET_IDS.thirdEmployee, '2026-07-03', 'Partially Approved', 'No'],
           ],
         },
       ],
@@ -111,6 +111,10 @@ describe('timesheets sheet list', () => {
     if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
     expect(page.html).toContain('<div class="mura-header"><h1>Timesheets</h1></div>');
     expect(page.html).toContain('<table class="mura-table-grid">');
+    expect(page.html).toContain('<td><span class="label label-important">Returned</span></td><td>No</td>');
+    expect(page.html).toContain(
+      '<td><span class="label label-inverse">Draft</span></td><td><span class="label label-important">Yes</span></td>',
+    );
     expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/timesheets\/sheets\?siteid=tenant-a">/);
   });
 

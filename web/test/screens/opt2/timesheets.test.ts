@@ -45,6 +45,12 @@ const LEGACY_CLASS_NAMES: ReadonlySet<string> = new Set([
   'form-actions',
   'pagination',
   'active',
+  // State badges, styled by admin.css `.mura .label-success`, `-info`, `-inverse` and `-important`.
+  'label',
+  'label-success',
+  'label-info',
+  'label-inverse',
+  'label-important',
 ]);
 const LEGACY_CLASS_PATTERNS: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];
 

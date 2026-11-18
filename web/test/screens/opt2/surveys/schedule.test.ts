@@ -19,6 +19,7 @@ import { FIXED_CSRF, renderScreenPage } from '../../../helpers/screen-context';
 import {
   NOACCESS,
   SITE,
+  bodyHtml,
   bodyModel,
   contextFor,
   csrfContexts,
@@ -40,6 +41,14 @@ const SCHEDULE_ROUTE = routeKey('POST', 'surveys', SCHEDULE_PATH);
 const SURVEY_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}` as const);
 const TASKS_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}/tasks` as const);
 const CSRF_POSTED = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
+/** Display text of each task status. */
+const TASK_STATUS_TEXT: Readonly<Record<(typeof surveyTasks)[number]['status'], string>> = {
+  scheduled: 'Scheduled',
+  done: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+  superseded: 'Superseded',
+};
 const NOT_FOUND_ENVELOPE = {
   apiversion: 'v1',
   method: 'surveys.get',
@@ -127,7 +136,7 @@ describe('surveys schedule screen', () => {
             task.taskName,
             task.kind,
             task.scheduleTime.slice(0, 19).replace('T', ' '),
-            task.status,
+            TASK_STATUS_TEXT[task.status],
           ]),
         },
       ],
@@ -138,6 +147,9 @@ describe('surveys schedule screen', () => {
       { method: 'GET', path: `/v1/surveys/${MULTI}/tasks`, query: { siteid: SITE } },
     ]);
     expect(csrfContexts(gateway)).toEqual([MULTI]);
+    const html = await bodyHtml('schedule', managerRequest({ surveyid: MULTI }), surveysGateway());
+    expect(html).toContain('<p>Status: <span class="label label-info">Scheduled</span></p>');
+    expect(html).toContain('<td><span class="label label-info">Scheduled</span></td>');
   });
 
   it('posts form1 to the schedule action of the survey with the CSRF pair of its id', async () => {

@@ -69,13 +69,13 @@ const formControls = (dayId: string, action: string): DomControl[] => [
 /** Days of the returned sheet as rendered rows, with `actions` as each day's action cell text. */
 const dayRows = (actions: Readonly<Record<string, string>>): string[][] =>
   [
-    ['2026-06-22', '8.0000', 'DRAFT', 'No', TIMESHEET_IDS.dayDraft],
-    ['2026-06-23', '8.0000', 'SUBMITTED', 'No', TIMESHEET_IDS.daySubmitted],
-    ['2026-06-24', '7.5000', 'RESUBMITTED', 'No', TIMESHEET_IDS.dayResubmitted],
-    ['2026-06-25', '8.0000', 'PRIMARY_APPROVED', 'No', TIMESHEET_IDS.dayPrimaryApproved],
-    ['2026-06-26', '6.0000', 'APPROVED', 'No', TIMESHEET_IDS.dayApproved],
-    ['2026-06-27', '4.0000', 'RETURNED', 'No', TIMESHEET_IDS.dayReturned],
-    ['2026-06-28', '0.0000', 'DRAFT', 'Yes', TIMESHEET_IDS.dayBlackout],
+    ['2026-06-22', '8.0000', 'Draft', 'No', TIMESHEET_IDS.dayDraft],
+    ['2026-06-23', '8.0000', 'Submitted', 'No', TIMESHEET_IDS.daySubmitted],
+    ['2026-06-24', '7.5000', 'Resubmitted', 'No', TIMESHEET_IDS.dayResubmitted],
+    ['2026-06-25', '8.0000', 'Primary Approved', 'No', TIMESHEET_IDS.dayPrimaryApproved],
+    ['2026-06-26', '6.0000', 'Approved', 'No', TIMESHEET_IDS.dayApproved],
+    ['2026-06-27', '4.0000', 'Returned', 'No', TIMESHEET_IDS.dayReturned],
+    ['2026-06-28', '0.0000', 'Draft', 'Yes', TIMESHEET_IDS.dayBlackout],
   ].map(([date = '', hours = '', state = '', blackout = '', dayId = '']) => [
     date,
     hours,
@@ -127,7 +127,7 @@ function expectedModel(forms: ReadonlyArray<readonly [string, string, string]>):
     tables: [
       {
         headers: ['Person', 'Period', 'Due Date', 'Status', 'Overdue'],
-        rows: [[TIMESHEET_IDS.employee, '2026-06-22 - 2026-06-28', '2026-07-03', 'RETURNED', 'No']],
+        rows: [[TIMESHEET_IDS.employee, '2026-06-22 - 2026-06-28', '2026-07-03', 'Returned', 'No']],
       },
       { headers: ['Work Date', 'Hours', 'State', 'Blackout', 'Actions'], rows: dayRows(actions) },
     ],
@@ -154,6 +154,12 @@ describe('timesheets sheet detail', () => {
 
     expect(fragmentModel(markup)).toEqual(expectedModel(forms));
     const $ = cheerio.load(markup, null, false);
+    // The sheet status, then each day state, as legacy admin label badges.
+    expect($('td > .label').toArray().map((badge) => $(badge).attr('class'))).toEqual(
+      ['important', 'inverse', 'info', 'info', 'info', 'success', 'important', 'inverse'].map(
+        (tone) => `label label-${tone}`,
+      ),
+    );
     expect($('form').toArray().map((form) => [$(form).attr('method'), $(form).attr('action')])).toEqual(
       forms.map(() => ['post', ACTION_URL]),
     );

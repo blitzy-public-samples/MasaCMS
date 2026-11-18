@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import { RECORDS_PAGE_SIZE, recordsScreen } from '@/screens/opt2/finance/records';
+import type { FinanceState } from '@/screens/opt2/finance/service';
 import { financeRecords, financeRollups } from '../../../fixtures/opt2/finance';
 import { anonymousRequest } from '../../../helpers/admin-request';
 import { routeKey } from '../../../helpers/fake-gateway';
@@ -18,6 +19,7 @@ import {
   NOACCESS,
   PREPARER,
   SITE,
+  STATE_TEXT,
   financeError,
   financeGateway,
   financeRequest,
@@ -34,7 +36,7 @@ type DomTable = DomModel['tables'][number];
 const ROLLUPS_ROUTE = routeKey('GET', 'finance', '/v1/finance/rollups');
 const HEADERS = ['Title', 'Period', 'Amount', 'State', 'Version', 'Last Update'];
 const ROLLUP_HEADERS = ['Period', 'State', 'Record Count', 'Total Amount', 'Computed At'];
-const STATES = ['IN-PROGRESS', 'SUBMITTED', 'RE-SUBMITTED', 'APPROVED', 'REJECTED'];
+const STATES: readonly FinanceState[] = ['IN-PROGRESS', 'SUBMITTED', 'RE-SUBMITTED', 'APPROVED', 'REJECTED'];
 const recordHref = (id: string): string => `/opt2/admin/finance/record?siteid=${SITE}&id=${id}`;
 const listHref = (query: string): string => `/opt2/admin/finance/records?siteid=${SITE}&${query}`;
 
@@ -43,7 +45,7 @@ const ROLLUP_TABLE: DomTable = {
   headers: ROLLUP_HEADERS,
   rows: financeRollups.map((rollup) => [
     rollup.period,
-    rollup.state,
+    STATE_TEXT[rollup.state],
     String(rollup.record_count),
     rollup.total_amount,
     rollup.computed_at,
@@ -52,7 +54,7 @@ const ROLLUP_TABLE: DomTable = {
 
 /** The state filter's controls with `selected` chosen, and the hidden `asOf` when given. */
 function filterControls(selected: string, asOf?: string): DomControl[] {
-  const options = [{ value: '', label: 'All' }, ...STATES.map((state) => ({ value: state, label: state }))];
+  const options = [{ value: '', label: 'All' }, ...STATES.map((state) => ({ value: state, label: STATE_TEXT[state] }))];
   const hidden = (name: string, value: string): DomControl => ({
     tag: 'input',
     name,
@@ -93,7 +95,7 @@ function listModel(records: readonly FinanceRecordRow[], selected = '', pager: D
           record.title,
           record.period,
           record.amount,
-          record.state,
+          STATE_TEXT[record.state],
           String(record.version),
           record.lastupdate,
         ]),
@@ -184,6 +186,54 @@ describe('finance records screen', () => {
     expect($('table.mura-table-grid').map((_, table) => $(table).find('tbody tr').length).get()).toEqual([
       financeRecords.length,
       financeRollups.length,
+    ]);
+  });
+
+  it('marks negative amounts text-danger and each state with its badge, in the list and the rollups', async () => {
+    const [first, second, ...rest] = financeRecords;
+    const [rollup, ...otherRollups] = financeRollups;
+    if (first === undefined || second === undefined || rollup === undefined) throw new TypeError('fixtures missing');
+    const records = [{ ...first, amount: '-1234.5600' }, { ...second, amount: '0.0000' }, ...rest];
+    const gateway = financeGateway({
+      [LIST_ROUTE]: { status: 200, body: { data: records, total: records.length } },
+      [ROLLUPS_ROUTE]: { status: 200, body: { data: [{ ...rollup, total_amount: '-0.0001' }, ...otherRollups] } },
+    });
+    const { view } = await renderList({}, gateway);
+    const $ = cheerio.load(toString(view.body), null, false);
+    const cells = (table: number, column: number): string[] =>
+      $('table')
+        .eq(table)
+        .find('tbody tr')
+        .map((_, row) => $(row).children().eq(column).html())
+        .get();
+
+    expect(cells(0, 2)).toEqual([
+      '<span class="text-danger">-1234.5600</span>',
+      '0.0000',
+      '4200.0000',
+      '315.7500',
+      '12000.0000',
+    ]);
+    expect(cells(0, 3)).toEqual([
+      '<span class="label label-inverse">In Progress</span>',
+      '<span class="label label-info">Submitted</span>',
+      '<span class="label label-info">Resubmitted</span>',
+      '<span class="label label-success">Approved</span>',
+      '<span class="label label-important">Rejected</span>',
+    ]);
+    expect(cells(1, 1)).toEqual([
+      '<span class="label label-success">Approved</span>',
+      '<span class="label label-inverse">In Progress</span>',
+      '<span class="label label-info">Resubmitted</span>',
+      '<span class="label label-important">Rejected</span>',
+      '<span class="label label-info">Submitted</span>',
+    ]);
+    expect(cells(1, 3)).toEqual([
+      '<span class="text-danger">-0.0001</span>',
+      '1250.0000',
+      '4200.0000',
+      '12000.0000',
+      '980.5000',
     ]);
   });
 

@@ -77,5 +77,5 @@ export async function submitToService(
   if (res.status === 401) throw new GatewayDenialError(write.service, `${write.service} write`, 401);
   if (!ALERT_STATUSES.has(res.status)) throw new Error(`${write.service} write failed with ${res.status}`);
   const body = await rerender(alertBox(errorMessage(res)));
-  return { kind: 'render', view: opt2View(back.module, body) };
+  return { kind: 'render', view: opt2View(back.module, body, back.screen) };
 }

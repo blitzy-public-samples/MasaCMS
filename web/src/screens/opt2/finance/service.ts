@@ -11,8 +11,10 @@ import {
   opt2Gate,
   opt2Label,
   opt2ScreenUrl,
+  stateBadgeOf,
   type Label,
   type Opt2Params,
+  type StateDisplay,
 } from '../shared';
 
 type Schemas = components['schemas'];
@@ -47,6 +49,20 @@ export const FINANCE_STATES: readonly FinanceState[] = Object.freeze([
   'APPROVED',
   'REJECTED',
 ]);
+
+/** Label and badge tone of each lifecycle state. */
+export const FINANCE_STATE_DISPLAYS: Readonly<Record<FinanceState, StateDisplay>> = Object.freeze({
+  'IN-PROGRESS': { label: () => 'In Progress', tone: 'inverse' },
+  SUBMITTED: { label: () => 'Submitted', tone: 'info' },
+  'RE-SUBMITTED': { label: () => 'Resubmitted', tone: 'info' },
+  APPROVED: { label: (ctx) => opt2Label(ctx, 'Approved'), tone: 'success' },
+  REJECTED: { label: (ctx) => opt2Label(ctx, 'Rejected'), tone: 'important' },
+});
+
+/** Badge of lifecycle state `state` in the session locale of `ctx`. */
+export function financeStateBadge(ctx: ScreenContext, state: FinanceState): SafeHtml {
+  return stateBadgeOf(ctx, FINANCE_STATE_DISPLAYS, state);
+}
 
 /** A lifecycle action without fields, the role whose holders see its button, and its button label in `ctx`'s locale. */
 export interface Transition {

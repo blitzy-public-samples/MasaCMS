@@ -267,14 +267,14 @@ exports[`e-signature screen markup > requests renders the request list 1`] = `
       "rows": [
         [
           "tenant-a-supplier-agreement.pdf",
-          "SIGNED",
+          "Signed",
           "E51600F0-0000-0000-0000000000000001",
           "2026-06-28T10:00:00",
           "Audit Chain Verify",
         ],
         [
           "tenant-a-data-processing-addendum.pdf",
-          "PENDING",
+          "Pending",
           "E51600F0-0000-0000-0000000000000001",
           "2026-06-29T14:30:00",
           "Audit Chain Verify",

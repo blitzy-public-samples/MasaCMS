@@ -62,10 +62,17 @@ describe('surveys list', () => {
         {
           headers: ['Title', 'Status', 'Launch', 'Reminders', 'Created', ''],
           rows: [
-            ['Program 1 onboarding check-in', 'DRAFT', '', '', '2026-06-29 09:00:00', 'ScheduleTargetsResponses'],
+            [
+              'Program 1 onboarding check-in',
+              'Draft',
+              'Not scheduled',
+              '0',
+              '2026-06-29 09:00:00',
+              'ScheduleTargetsResponses',
+            ],
             [
               'Cross-program timesheet experience',
-              'SCHEDULED',
+              'Scheduled',
               '2026-07-01 09:00:00',
               '2',
               '2026-06-29 10:00:00',
@@ -94,6 +101,10 @@ describe('surveys list', () => {
     if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
     expect(page.html).toContain('<div class="mura-header"><h1>Surveys</h1></div>');
     expect(page.html).toContain('<table class="mura-table-grid">');
+    expect(page.html).toContain(
+      '<td><span class="label label-inverse">Draft</span></td><td>Not scheduled</td><td>0</td>',
+    );
+    expect(page.html).toContain('<td><span class="label label-info">Scheduled</span></td>');
     expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/surveys\/surveys\?siteid=tenant-a">/);
   });
 

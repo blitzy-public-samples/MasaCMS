@@ -10,12 +10,16 @@ import {
   opt2Label,
   opt2ScreenUrl,
   pageHeader,
+  stateBadgeOf,
   type HeaderLink,
   type Label,
   type Opt2Params,
+  type StateDisplay,
 } from '../shared';
 
 export type Survey = components['schemas']['Survey'];
+
+export type SurveyStatus = components['schemas']['SurveyStatus'];
 
 /** Why a survey screen shows no survey: the alert under its bare header. */
 export type Unread = { readonly unread: SafeHtml };
@@ -44,6 +48,19 @@ const SCREEN_LABELS: Readonly<Record<SurveyScreen, (ctx: ScreenContext) => Label
 /** Label of survey screen `screen` in the session locale of `ctx`. */
 export function screenLabel(ctx: ScreenContext, screen: SurveyScreen): Label {
   return SCREEN_LABELS[screen](ctx);
+}
+
+/** Label and badge tone of each survey status. */
+const SURVEY_STATUSES: Readonly<Record<SurveyStatus, StateDisplay>> = Object.freeze({
+  DRAFT: { label: (ctx) => opt2Label(ctx, 'Draft'), tone: 'inverse' },
+  SCHEDULED: { label: () => 'Scheduled', tone: 'info' },
+  LAUNCHED: { label: () => 'Launched', tone: 'success' },
+  CLOSED: { label: () => 'Closed', tone: 'inverse' },
+});
+
+/** Badge of survey status `status` in the session locale of `ctx`. */
+export function surveyStatusBadge(ctx: ScreenContext, status: SurveyStatus): SafeHtml {
+  return stateBadgeOf(ctx, SURVEY_STATUSES, status);
 }
 
 // A survey id the service cannot parse (400) or does not hold for the site (404) is shown, not raised as a 500.

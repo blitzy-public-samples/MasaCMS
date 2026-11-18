@@ -22,6 +22,7 @@ import {
   RECORD_ID,
   RECORD_ROUTE,
   SITE,
+  STATE_TEXT,
   financeAction,
   financeError,
   financeGateway,
@@ -101,7 +102,7 @@ function recordValues(record = financeRecordDetail): string[][] {
       record.title,
       record.amount,
       record.period,
-      record.state,
+      STATE_TEXT[record.state],
       String(record.version),
       record.created,
       record.lastupdate ?? '',
@@ -110,7 +111,7 @@ function recordValues(record = financeRecordDetail): string[][] {
       pairs(VERSION_LABELS, [
         String(version.version),
         version.action,
-        version.state,
+        STATE_TEXT[version.state],
         version.title,
         version.amount,
         version.period,
@@ -172,6 +173,10 @@ describe('finance record screen', () => {
     const $ = cheerio.load(body, null, false);
 
     expect(shownValues(body)).toEqual(recordValues());
+    // The record's state, then each version's, as legacy admin label badges.
+    expect($('.label').toArray().map((badge) => $(badge).attr('class'))).toEqual(
+      ['info', 'inverse', 'inverse', 'info', 'important', 'important', 'info'].map((tone) => `label label-${tone}`),
+    );
     expect($('table')).toHaveLength(0);
     expect($('hr')).toHaveLength(financeRecordVersions.length - 1 + financeAttachments.length - 1);
   });
