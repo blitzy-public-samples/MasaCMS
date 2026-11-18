@@ -1,5 +1,5 @@
 // carch inline writes against admin/core/controllers/carch.cfc saveQuickEdit, saveCopyInfo, unlockFile, unlockNode,
-// copy and updateObjectParams with admin/core/views/carch/updateobjectparams.cfm.
+// and the withheld copy and updateObjectParams.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runGate, secure } from '@/lib/access-gate';
 import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
@@ -37,37 +37,25 @@ const ENTRY_FIELDS = { contentid: CONTENT_ID, contenthistid: HIST_ID, ...CSRF_FI
 const SERVICE_ERROR = { apiversion: 'v1', method: 'carch', error: { message: 'Denied', code: 'denied' } };
 
 /** The legacy controller method of each inline write. */
-const LEGACY_ACTIONS = ['saveQuickEdit', 'saveCopyInfo', 'unlockFile', 'unlockNode', 'updateObjectParams'] as const;
-const RELAYED_ACTIONS = LEGACY_ACTIONS.filter((action) => action !== 'updateObjectParams');
-// Their content saves write the decision-list table tcontenteventreminders, so both stay withheld on legacy.
-const WITHHELD_ACTIONS = ['saveQuickEdit', 'updateObjectParams'] as const;
+const LEGACY_ACTIONS = ['saveQuickEdit', 'saveCopyInfo', 'unlockFile', 'unlockNode'] as const;
+// Its content save writes the decision-list table tcontenteventreminders, so it stays withheld on legacy.
+const WITHHELD_ACTIONS = ['saveQuickEdit'] as const;
 const CARRIED_ACTIONS = LEGACY_ACTIONS.filter((action) => !(WITHHELD_ACTIONS as readonly string[]).includes(action));
 
-// The contract names no `/v1/sites/<site>/carch/<action>` path: the aborting writes are raw relays and
-// updateObjectParams posts to its version's object-params write.
+// The contract names no `/v1/sites/<site>/carch/<action>` path: the aborting writes are raw relays.
 const rawPath = (action: string): ServicePath => `/v1/raw/carch/${action.toLowerCase()}`;
-const OBJECT_PARAMS_PATH: ServicePath = `/v1/sites/${SITE}/content/versions/${HIST_ID}/object-params`;
-const writePath = (action: string): ServicePath =>
-  action === 'updateObjectParams' ? OBJECT_PARAMS_PATH : rawPath(action);
 
 /** ACF's answer to a write that ends in `abort`, and its bytes as web relays them. */
 const ABORT_REPLY: FakeReply = { status: 200, headers: { 'Content-Type': HTML_TYPE } };
 const ABORT_ANSWER: RawBody = { status: 200, contentType: HTML_TYPE, body: Buffer.alloc(0) };
-const ABORTED: RawBody = { status: 200, contentType: HTML_TYPE, body: '' };
-
-/** strategies-content's `AdminWriteResult` for an object-params save, `data` included when given. */
-const written = (data?: Readonly<Record<string, unknown>>): FakeReply => ({
-  status: 200,
-  body: { saved: true, errors: {}, redirect: null, ...(data === undefined ? {} : { data }) },
-});
 
 interface WriteCase {
   readonly fields: Readonly<Record<string, string>>;
   readonly path: ServicePath;
-  /** Sent beside the form by a raw relay; the object-params write sends none. */
-  readonly query?: Readonly<Record<string, string>>;
-  /** The request's forwarded host and scheme, which a raw relay passes on; the object-params write sends none. */
-  readonly headers?: Readonly<Record<string, string>>;
+  /** Sent beside the form by a raw relay. */
+  readonly query: Readonly<Record<string, string>>;
+  /** The request's forwarded host and scheme, which a raw relay passes on. */
+  readonly headers: Readonly<Record<string, string>>;
   readonly reply: FakeReply;
   readonly answer: RawBody;
 }
@@ -109,25 +97,6 @@ const WRITES = [
   ],
   ['unlockFile', 'a file lock', relayedPost('unlockfile', { contentid: CONTENT_ID })],
   ['unlockNode', 'a node lock', relayedPost('unlocknode', { contentid: CONTENT_ID })],
-  [
-    'updateObjectParams',
-    'a feed object',
-    {
-      fields: {
-        contenthistid: HIST_ID,
-        regionid: '2',
-        object: 'feed',
-        objectid: CONTENT_IDS.news,
-        name: 'Latest News',
-        params: '{"displaylist":"Title,Date"}',
-        approved: '0',
-        ...CSRF_FIELDS,
-      },
-      path: OBJECT_PARAMS_PATH,
-      reply: written({ contentID: CONTENT_ID, contentHistID: HIST_ID }),
-      answer: { status: 200, contentType: HTML_TYPE, body: `{contentid:'${CONTENT_ID}',contenthistid:'${HIST_ID}'} ` },
-    },
-  ],
 ] as const satisfies ReadonlyArray<readonly [string, string, WriteCase]>;
 
 let restore: () => void;
@@ -201,8 +170,11 @@ describe('carch inline write registration', () => {
     expect(findScreen('core:cArch', action, { siteid: SITE, approved: '0' })).toBeUndefined();
   });
 
-  it('leaves an approved carch.updateObjectParams to legacy', () => {
-    expect(findScreen('cArch', 'updateObjectParams', { siteid: SITE, approved: 'true' })).toBeUndefined();
+  // Its content save writes the decision-list table tcontenteventreminders, so no definition is built for it.
+  it.each(['0', 'true'])('leaves carch.updateObjectParams with approved=%s to legacy', (approved) => {
+    expect(inlineWriteScreens.some((def) => def.action === 'updateobjectparams')).toBe(false);
+    expect(carchScreens.some((def) => def.action === 'updateobjectparams')).toBe(false);
+    expect(findScreen('cArch', 'updateObjectParams', { siteid: SITE, contenthistid: HIST_ID, approved })).toBeUndefined();
   });
 
   it('answers an anonymous request with the controller secure() redirect and lets the site admin through', async () => {
@@ -231,16 +203,16 @@ describe('carch inline writes', () => {
           service: SERVICE,
           method: 'POST',
           path,
-          ...(query === undefined ? {} : { query }),
+          query,
           form: { ...ctx.req.rc },
-          ...(headers === undefined ? {} : { headers }),
+          headers,
         },
       ]);
       expect(ctx.gateway.calls[0]?.form).toMatchObject(fields);
     },
   );
 
-  it.each(RELAYED_ACTIONS)('relays a bodiless carch.%s over GET with the rc as url fields', async (action) => {
+  it.each(LEGACY_ACTIONS)('relays a bodiless carch.%s over GET with the rc as url fields', async (action) => {
     const fields = { contentid: CONTENT_ID, ...CSRF_FIELDS };
     const routes = { [routeKey('GET', SERVICE, rawPath(action))]: ABORT_REPLY };
     const ctx = contextOf(action, fields, { routes, post: false });
@@ -252,13 +224,13 @@ describe('carch inline writes', () => {
   });
 
   it.each(LEGACY_ACTIONS)('answers a denied carch.%s with a 302 to the controller secure() target', async (action) => {
-    const routes = { [routeKey('POST', SERVICE, writePath(action))]: { status: 403, body: SERVICE_ERROR } };
+    const routes = { [routeKey('POST', SERVICE, rawPath(action))]: { status: 403, body: SERVICE_ERROR } };
     const ctx = contextOf(action, ENTRY_FIELDS, { routes, headers: new Headers({ referer: REFERER }) });
     await expect(answerOf(definition(action), ctx)).resolves.toEqual(carchRawRedirect(REFERER));
   });
 
   it.each(LEGACY_ACTIONS)('fails closed on carch.%s when strategies-content is unavailable', async (action) => {
-    const routes = { [routeKey('POST', SERVICE, writePath(action))]: { status: 503, body: SERVICE_ERROR } };
+    const routes = { [routeKey('POST', SERVICE, rawPath(action))]: { status: 503, body: SERVICE_ERROR } };
     await expect(answerOf(definition(action), contextOf(action, ENTRY_FIELDS, { routes }))).rejects.toBeInstanceOf(
       GatewayUnavailableError,
     );
@@ -266,33 +238,5 @@ describe('carch inline writes', () => {
     refused.gateway.failWith();
     await expect(answerOf(definition(action), refused)).rejects.toBeInstanceOf(GatewayUnavailableError);
     expect(refused.gateway.calls).toHaveLength(1);
-  });
-});
-
-describe('carch.updateObjectParams', () => {
-  const FIELDS = { contenthistid: HIST_ID, params: '{}', approved: '0', ...CSRF_FIELDS };
-  const posted = (reply: FakeReply, fields: Readonly<Record<string, string>> = FIELDS) =>
-    contextOf('updateObjectParams', fields, { routes: { [routeKey('POST', SERVICE, OBJECT_PARAMS_PATH)]: reply } });
-  const run = (ctx: ScreenContext): Promise<RawBody> => answerOf(definition('updateObjectParams'), ctx);
-
-  it.each<[string, FakeReply]>([
-    ['an unknown version', { status: 404, body: SERVICE_ERROR }],
-    ['a result without version data', written()],
-    ['a result without contenthistid', written({ contentid: CONTENT_ID })],
-    ['a non-string contentid', written({ contentid: 7, contenthistid: HIST_ID })],
-  ])('aborts with an empty body on %s', async (_label, reply) => {
-    await expect(run(posted(reply))).resolves.toEqual(ABORTED);
-  });
-
-  it('aborts on an empty contenthistid without calling strategies-content', async () => {
-    const ctx = posted(written(), { ...FIELDS, contenthistid: '' });
-    await expect(run(ctx)).resolves.toEqual(ABORTED);
-    expect(ctx.gateway.calls).toEqual([]);
-  });
-
-  it('fails on any other rejection, which legacy answers with a ColdFusion error', async () => {
-    await expect(run(posted({ status: 400, body: SERVICE_ERROR }))).rejects.toEqual(
-      new Error('strategies-content rejected carch.updateobjectparams with HTTP 400'),
-    );
   });
 });

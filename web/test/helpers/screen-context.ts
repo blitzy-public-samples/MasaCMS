@@ -3,7 +3,7 @@ import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, type CsrfTokens } from '@opt2/pla
 import { businessClock } from '@opt2/platform/testing';
 import { deniedGate, runGate } from '@/lib/access-gate';
 import { createCsrfRenderer, type CsrfRenderer } from '@/lib/csrf';
-import { GatewayDenialError } from '@/lib/gateway-client';
+import { GatewayDenialError, LEGACY_VERSION_MENU_PATH } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import {
@@ -21,6 +21,7 @@ import {
   type AdminDocument,
   type ShellHooks,
 } from '@/shell/document';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { domModel, normaliseIds, type DomModel } from './dom-model';
 import {
   fakeGatewayClient,
@@ -66,7 +67,7 @@ function issueFixedTokens(request: RecordedRequest): FakeReply {
 
 /**
  * Replies to every call `loadShellData` and `createCsrfRenderer` make: identity's tokens, `default` as the user's only
- * site and no header prompts for `siteId`; `overrides` replace any of them.
+ * site, no header prompts for `siteId` and the oracle's Version menu facts; `overrides` replace any of them.
  */
 export function shellRoutes(overrides: FakeRouteTable = {}, siteId: string = SHELL_SITE): FakeRouteTable {
   return {
@@ -76,6 +77,7 @@ export function shellRoutes(overrides: FakeRouteTable = {}, siteId: string = SHE
       status: 200,
       body: NO_PROMPTS,
     },
+    [routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH)]: { status: 200, body: LEGACY_VERSION_MENU },
     ...overrides,
   };
 }

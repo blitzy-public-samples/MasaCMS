@@ -669,6 +669,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       extraHeaders: targetExtraHeaders(destination, resolution, unregisteredSiteId),
       method: destination.method,
       forwardBody: destination.forwardBody,
+      rawTarget: destination.rawTarget,
       sessionId,
       // A safe method writes nothing, unless X-HTTP-Method-Override makes the request one that does.
       declaresWrite:

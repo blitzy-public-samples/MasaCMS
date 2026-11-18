@@ -5,11 +5,10 @@ import { PassThrough, Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
-import { GatewayUnavailableError, type MultipartBody, type ServicePath } from '@/lib/gateway-client';
+import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import {
   carchPageData,
   carchWrite,
-  rawSubmitResult,
   relayCarchRaw,
   toSubmitResult,
   type CarchCallContext,
@@ -21,7 +20,6 @@ import type { RawBody, ScreenContext, SubmitResult } from '@/screens/registry';
 import { CARCH_PATHS, CONTENT_IDS, FORM_RESPONSE_IDS, carchListData } from '../../fixtures/strategies-content/carch';
 import { DOWNLOADDATA_FILENAME, downloaddataRelay, loaddiffRelay } from '../../fixtures/strategies-content/raw';
 import {
-  writeResultRaw,
   writeResultReRender,
   writeResultRedirectAppend,
   writeResultRedirectPreserve,
@@ -47,7 +45,6 @@ const HTML = 'text/html;charset=UTF-8';
 const JSON_TYPE = 'application/json;charset=utf-8';
 const EFFECTS_HEADER = 'x-opt2-session-effects';
 const REFERER = `http://localhost/admin/?muraAction=cArch.list&siteid=${SITE}`;
-const CSRF_HEADERS = { 'X-csrf_token': FIXED_CSRF.token, 'X-csrf_token_expires': FIXED_CSRF.expires };
 // Legacy `cflocation` headers beneath a relayed `Location`.
 const REDIRECT_HEADERS = { 'cache-control': 'no-cache', pragma: 'no-cache', 'content-type': HTML };
 const WRITTEN: CarchWriteResult = { saved: true, errors: {}, redirect: null };
@@ -56,9 +53,6 @@ const UNAVAILABLE = legacyError('Service Unavailable', 'server_error');
 const DIFF_BYTES = readFileSync(new URL('../../fixtures/strategies-content/loaddiff.html', import.meta.url));
 const CSV_BYTES = readFileSync(new URL('../../fixtures/strategies-content/downloaddata.csv', import.meta.url));
 const DELETE_RESPONSES: ServicePath = `/v1/sites/${SITE}/forms/${CONTENT_IDS.contactForm}/responses/delete`;
-// carch.update add: fw.redirect(action="cArch.list",append="topid,siteid,startrow,moduleid",path="./").
-const ADD_LOCATION =
-  `./?muraAction=cArch.list&topid=${CONTENT_IDS.news}&siteid=${SITE}&startrow=1&moduleid=${SITE_MANAGER}`;
 
 type AdminRequest = ScreenContext['req'];
 type Ctx = ReturnType<typeof makeScreenContext>;
@@ -134,22 +128,6 @@ describe('write outcomes', () => {
     expect(render.mock.calls).toHaveLength(1);
     expect(render.mock.calls[0]?.[0]).toBe(writeResultReRender);
     expect(seen).toEqual([['title', "The 'Title' field is required"]]);
-  });
-
-  it('emits the ajax save bytes as received', async () => {
-    const body = String(writeResultRaw.body);
-    const reply: FakeReply = {
-      status: writeResultRaw.status ?? 200,
-      headers: { 'content-type': writeResultRaw.contentType },
-      body,
-    };
-    const rc = { contentid: CONTENT_IDS.aboutUs, ajaxrequest: 'true', action: 'add', title: 'About Us' };
-    const ctx = carchContext({ [svc('POST', rawPath('update'))]: reply }, tenantRequest('update', { rc }));
-    const raw = await relayCarchRaw(ctx, 'update', 'POST');
-    expect(rawSubmitResult(raw)).toEqual({
-      kind: 'raw',
-      response: { status: 200, contentType: writeResultRaw.contentType, body: Buffer.from(body, 'utf8') },
-    });
   });
 });
 
@@ -254,57 +232,6 @@ describe('relayCarchRaw', () => {
     expect(raw).toEqual({ ...expected, body: expect.any(bodyType) });
     expect(raw.body instanceof Readable ? await buffer(raw.body) : raw.body).toEqual(expected.body);
   });
-
-  it('posts a non-image upload part unchanged', async () => {
-    // `%PDF-1.4`, then the binary comment line PDF writers emit.
-    const pdf = Uint8Array.from([
-      0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a,
-    ]);
-    const fields: Array<[string, string]> = [
-      ['siteid', SITE],
-      ['action', 'add'],
-      ['type', 'File'],
-      ['parentid', CONTENT_IDS.news],
-    ];
-    const form = new FormData();
-    for (const [name, value] of fields) form.append(name, value);
-    form.append('newfile', new File([pdf], 'program-brochure.pdf', { type: 'application/pdf' }));
-    const encoded = new Response(form);
-    const bytes = new Uint8Array(await encoded.arrayBuffer());
-    const multipart: MultipartBody = { contentType: encoded.headers.get('content-type') ?? '', body: bytes };
-    const { route, received } = recording({ status: 302, headers: { Location: ADD_LOCATION } });
-    const req = tenantRequest('update', { headers: new Headers(CSRF_HEADERS) });
-    const ctx = carchContext({ [svc('POST', rawPath('update'))]: route }, req);
-
-    await relayCarchRaw(ctx, 'update', 'POST', { multipart });
-
-    expect(received.map((request) => request.bytes)).toEqual([Buffer.from(bytes)]);
-    const parsed = await new Request('http://fake-gateway.invalid/', {
-      method: 'POST',
-      headers: { 'content-type': multipart.contentType },
-      body: new Uint8Array(received[0]?.bytes ?? []),
-    }).formData();
-    const part = parsed.get('newfile');
-    if (!(part instanceof File)) throw new TypeError('newfile was not relayed as a file part');
-    expect([part.name, part.type, Buffer.from(await part.arrayBuffer())]).toEqual([
-      'program-brochure.pdf',
-      'application/pdf',
-      Buffer.from(pdf),
-    ]);
-    expect(ctx.gateway.calls).toEqual([
-      {
-        service: 'strategies-content',
-        method: 'POST',
-        path: rawPath('update'),
-        query: { siteid: SITE },
-        headers: {
-          'x-csrf_token': FIXED_CSRF.token,
-          'x-csrf_token_expires': FIXED_CSRF.expires,
-          'content-type': multipart.contentType,
-        },
-      },
-    ]);
-  });
 });
 
 type Run = (ctx: CarchCallContext) => Promise<unknown>;
@@ -376,34 +303,25 @@ describe('relayed session effects', () => {
     expect(ctx.req.sessionWrites).toEqual({ openSectionList: CONTENT_IDS.news });
   });
 
-  // carch.update: an add opens the parent's section; every saved version drops `session.mura.editBean`.
-  it.each<[string, Readonly<Record<string, unknown>>, string, Readonly<Record<string, unknown>>]>([
-    [
-      'an add under News',
-      { openSectionList: CONTENT_IDS.news, mura: { editBean: null, multifileupload: true } },
-      ADD_LOCATION,
-      { openSectionList: CONTENT_IDS.news, muraValues: { editBean: undefined, multifileupload: true } },
-    ],
-    [
-      'an edit of About Us',
-      { mura: { editBean: null } },
-      `./?muraAction=cArch.list&topid=${ROOT_ID}&siteid=${SITE}&startrow=1&moduleid=${SITE_MANAGER}`,
-      { muraValues: { editBean: undefined } },
-    ],
-  ])('applies the session values of %s and keeps its legacy redirect', async (_name, effects, location, writes) => {
+  it('drops the edit bean the service reports deleted, keeping the other session values', async () => {
     const editBean = { contentid: CONTENT_IDS.aboutUs, title: 'About Us' };
-    const req = tenantRequest('update', { session: { muraValues: { editBean } } });
-    const reply = { status: 302, headers: { Location: location, [EFFECTS_HEADER]: JSON.stringify(effects) } };
-    const ctx = carchContext({ [svc('POST', rawPath('update'))]: reply }, req);
+    const req = tenantRequest('loadextendedattributes', { session: { muraValues: { editBean } } });
+    const reply = {
+      status: 200,
+      headers: { 'content-type': JSON_TYPE, [EFFECTS_HEADER]: JSON.stringify({ mura: { editBean: null } }) },
+      body: '{}',
+    };
+    const ctx = carchContext({ [svc('GET', rawPath('loadextendedattributes'))]: reply }, req);
 
-    const raw = await relayCarchRaw(ctx, 'update', 'POST');
-
-    expect(raw.headers).toEqual({ ...REDIRECT_HEADERS, location });
-    expect(rawSubmitResult(raw)).toEqual({ kind: 'location', location });
-    expect(req.sessionWrites).toStrictEqual(writes);
-    expect(req.session.muraValues).toStrictEqual(writes['muraValues']);
+    await expect(relayCarchRaw(ctx, 'loadextendedattributes', 'GET')).resolves.toEqual({
+      status: 200,
+      contentType: JSON_TYPE,
+      body: Buffer.from('{}'),
+    });
+    expect(req.sessionWrites).toStrictEqual({ muraValues: { editBean: undefined } });
+    expect(req.session.muraValues).toStrictEqual({ editBean: undefined });
     expect(req.session.mura).toMatchObject({ editBean: undefined });
-    expect(req.session.openSectionList).toBe(writes['openSectionList'] ?? '');
+    expect(req.session.openSectionList).toBe('');
   });
 
   it.each<[string, string, new (message?: string) => Error]>([

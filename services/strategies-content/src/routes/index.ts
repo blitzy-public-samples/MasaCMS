@@ -92,7 +92,7 @@ async function sessionFullName(client: ServiceClient): Promise<string> {
 }
 
 // The circuit gates and the JSON API resolve the actor before a handler knows whether it writes, and GET raw actions
-// (carch.update, cfeed.update, savequickedit) write LastUpdateBy; Actor.fullName is read synchronously inside those
+// (cfeed.update, savequickedit) write LastUpdateBy; Actor.fullName is read synchronously inside those
 // writes, so the name is fetched with the actor of every signed-in request, once.
 /** The actor of the request's verified claims, with its session's audit name for a signed-in user. */
 async function resolveActor(client: ServiceClient, claims: UserClaims | undefined): Promise<Actor> {

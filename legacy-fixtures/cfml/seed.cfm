@@ -35,6 +35,8 @@
 	};
 	// Envelope params carry only these three values, never the body, so no credential can be echoed.
 	variables.call = {"part" = "", "offset" = 0, "limit" = ""};
+	// The file types the seed generator writes (legacy-fixtures/seed/src/masa.ts buildFiles).
+	variables.seedFileExtensions = "png,pdf";
 
 	/** Returns row[key], or fallback when the key is absent or JSON null. */
 	any function rowValue(required struct row, required string key, any fallback = "") {
@@ -399,8 +401,32 @@
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
 	}
 
+	/** Raises invalidParameters naming the row's dataset offset unless its fileID is a CF UUID and its filename a bare seed file name whose stored copy stays in its file pool's cache directory. */
+	void function requireFileRows(required array rows) {
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			local.row = arguments.rows[local.i];
+			local.at = "Row at offset #variables.call.offset + local.i - 1#";
+			local.fileID = rowValue(local.row, "fileID", {});
+			local.filename = rowValue(local.row, "filename", {});
+			if (!isInstanceOf(local.fileID, "java.lang.String") || !isValid("uuid", local.fileID)) {
+				variables.envelope.raise("invalidParameters", "#local.at# has an invalid fileID");
+			}
+			if (!isInstanceOf(local.filename, "java.lang.String") || reFind("[/\\[:cntrl:]]", local.filename) || !find(".", local.filename)
+				|| !listFindNoCase(variables.seedFileExtensions, listLast(local.filename, "."))) {
+				variables.envelope.raise("invalidParameters", "#local.at# has an invalid filename");
+			}
+			// fileDAO.create writes <fileDir>/<filePoolID>/cache/file/<fileID>.<lowercased extension>.
+			local.store = createObject("java", "java.io.File").init(application.configBean.getFileDir() & "/" & application.settingsManager.getSite(local.row.siteID).getFilePoolID() & "/cache/file").getCanonicalPath();
+			local.target = createObject("java", "java.io.File").init(local.store & "/" & local.fileID & "." & lCase(listLast(local.filename, "."))).getCanonicalFile();
+			if (compare(local.target.getParent(), local.store)) {
+				variables.envelope.raise("invalidParameters", "#local.at# has a destination outside its file store");
+			}
+		}
+	}
+
 	/** Stores each absent file under its dataset id through Masa's upload path, which writes the _source, _small and _medium image renditions. */
 	struct function seedFiles(required array rows) {
+		requireFileRows(arguments.rows);
 		local.inserted = 0;
 		local.fileManager = application.serviceFactory.getBean("fileManager");
 		for (local.row in arguments.rows) {
@@ -634,6 +660,10 @@
 			variables.envelope.raise("badRequest", "Fixture parts are disabled; the synthetic services are seeded directly");
 		}
 
+		// Another media type, such as a text/plain form, can be posted cross-site without a CORS preflight.
+		if (compareNoCase(trim(listFirst(cgi.content_type, ";", true)), "application/json")) {
+			variables.envelope.raise("invalidParameters", "The body must be application/json");
+		}
 		local.raw = getHTTPRequestData().content;
 		if (isBinary(local.raw)) {
 			local.raw = charsetEncode(local.raw, "utf-8");
@@ -757,13 +787,18 @@
 	variables.result = {};
 	try {
 		// cgi.remote_addr is the socket peer; request.remoteAddr follows a configurable header and could be spoofed.
-		if (!variables.auth.currentUser().isSuperUser() || !listFind(variables.loopback, cgi.remote_addr)) {
+		if (!variables.auth.currentUser().isLoggedIn() || !variables.auth.currentUser().isSuperUser() || !listFind(variables.loopback, cgi.remote_addr)) {
 			variables.envelope.raise("authorization");
 		}
 		if (cgi.request_method != "POST") {
 			variables.envelope.raise("invalidMethodCall");
 		}
-		variables.result = seed();
+		// No params: the opt2-seed token pair is taken from the X-csrf_token headers only, never from url or form.
+		variables.auth.forRoute({"httpMethod" = "POST", "id" = "opt2-seed", "params" = {}}, getHTTPRequestData(false).headers).requireCsrf();
+		// Output Masa writes while seeding is captured and dropped: past 1 MB the page writer commits the response before the envelope sets its status.
+		savecontent variable="variables.seedOutput" {
+			variables.result = seed();
+		}
 	} catch (opt2fixture e) {
 		variables.failure = {"type" = listLast(e.type, "."), "message" = e.message};
 	} catch (any e) {

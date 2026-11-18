@@ -5,9 +5,8 @@ import { parse } from 'yaml';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
 import { IDENTITY_SERVICE, type CsrfConsumeRequest } from '@opt2/platform/service-kit';
 import { TENANT_A, type InjectResponse } from '@opt2/platform/testing';
-import { SESSION_EFFECTS_HEADER } from '../../src/routes/v1/access.js';
 import { buildTestApp, createRecordingDb, type RecordingDb, type TestApp } from '../helpers/app.js';
-import { IDS, contentPath, contentRow, contentSeed } from '../helpers/seed.js';
+import { IDS, contentSeed } from '../helpers/seed.js';
 import { SUBJECT_USER_IDS, contentHeaders, subjectSessionId } from '../helpers/tokens.js';
 
 type Row = Record<string, unknown>;
@@ -24,8 +23,6 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 };
 
 const SITE = TENANT_A.siteId;
-const SITE_TREE = '00000000000000000000000000000000000';
-const ARCHIVED_HIST = 'A2000000-0000-0000-0000000000000099';
 const TOKEN_VALUE = 'T0KEN';
 const EXPIRES_VALUE = '260630235959000';
 const TOKEN = { [CSRF_FIELD_TOKEN]: TOKEN_VALUE, [CSRF_FIELD_EXPIRES]: EXPIRES_VALUE };
@@ -228,8 +225,6 @@ interface Outcome {
 
 let t: TestApp;
 let db: RecordingDb;
-/** The admin session values identity answers for the caller, as web stores a response's session effects. */
-let adminState: Row = {};
 
 /** The request URL of a contract path: `{siteid}` as tenant-a, other segments from `params`, raw entries with `?siteid=`. */
 function urlOf(path: string, params: Readonly<Record<string, string>> = {}): string {
@@ -237,21 +232,11 @@ function urlOf(path: string, params: Readonly<Record<string, string>> = {}): str
   return path.startsWith('/v1/raw/') ? `${filled}?siteid=${SITE}` : filled;
 }
 
-/** Posts `form` with the token pair as the tenant-a S2: URL-encoded, or multipart with a `files` part `notes.txt` when `file`. */
-async function send(url: string, form: Form, file = false): Promise<InjectResponse> {
+/** Posts `form` URL-encoded with the token pair as the tenant-a S2. */
+async function send(url: string, form: Form): Promise<InjectResponse> {
   const headers = await contentHeaders('s2', { site: SITE });
-  const fields: Form = { ...form, ...TOKEN };
-  if (!file) {
-    return t.app.inject({ method: 'POST', url, headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams(fields).toString() });
-  }
-  const boundary = '----opt2-csrf-test';
-  const part = (disposition: string, body: string): Buffer => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; ${disposition}\r\n\r\n${body}\r\n`);
-  const payload = Buffer.concat([
-    ...Object.entries(fields).map(([name, value]) => part(`name="${name}"`, value)),
-    part('name="files"; filename="notes.txt"\r\nContent-Type: text/plain', 'notes'),
-    Buffer.from(`--${boundary}--\r\n`),
-  ]);
-  return t.app.inject({ method: 'POST', url, headers: { ...headers, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload });
+  const payload = new URLSearchParams({ ...form, ...TOKEN }).toString();
+  return t.app.inject({ method: 'POST', url, headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, payload });
 }
 
 /** The answer as an {@link Outcome}. */
@@ -293,13 +278,6 @@ const lockOf = (contentid: string, locktype: 'file' | 'node'): Row => ({
 });
 
 const EMPTY: Outcome = { status: 200, body: '' };
-const HIST_REDIRECT: Outcome = {
-  status: 302,
-  location: `/admin/index.cfm?muraAction=cArch.hist&contentid=${C.pageTwo}&siteid=${SITE}&startrow=1&moduleid=${SITE_TREE}&parentid=&type=Page&compactDisplay=`,
-  body: '',
-};
-const UPDATE_PATH = '/v1/raw/carch/update';
-const UPLOAD_FORM: Form = { siteid: SITE, parentid: C.section, action: 'multifileupload', subtype: 'Default', approved: '0', murakeepediting: 'true', extraParams: JSON.stringify({ body: 'notes.txt' }) };
 const CHAIN_LIST = redirectTo('cchain', 'list', [['siteid', SITE]]);
 const changesetRedirect = (action: string, changesetId: string, keywords = false) =>
   redirectTo('cChangesets', action, [['changesetID', changesetId], ['siteID', SITE], ...(keywords ? ([['keywords', '']] as Array<[string, string]>) : [])]);
@@ -320,7 +298,6 @@ interface ValidatingCase {
   writes: RegExp;
   /** Rows the branch needs beyond the seed. */
   rows?: Readonly<Record<string, readonly Row[]>>;
-  file?: boolean;
   accepted: Outcome;
   refused: Outcome;
 }
@@ -335,63 +312,6 @@ const VALIDATING: readonly ValidatingCase[] = [
     writes: writeOf('INSERT INTO', 'content'),
     accepted: EMPTY,
     refused: EMPTY,
-  },
-  {
-    action: 'carch.update{action=deleteall}',
-    path: UPDATE_PATH,
-    form: { contentid: C.pageTwo, topid: C.root, action: 'deleteall' },
-    declared: 'rc.contentid & "deleteall"',
-    context: `${C.pageTwo}deleteall`,
-    writes: writeOf('DELETE FROM', 'content'),
-    accepted: { status: 302, location: `./?muraAction=cArch.list&topid=${C.root}&siteid=${SITE}&startrow=1&moduleid=${SITE_TREE}`, body: '' },
-    // Skipping deleteAll leaves rc.contentBean unset, which legacy then dereferences.
-    refused: { status: 500, body: expect.anything() },
-  },
-  {
-    action: 'carch.update{action=deletehistall}',
-    path: UPDATE_PATH,
-    form: { contentid: C.pageTwo, action: 'deletehistall', murakeepediting: 'true' },
-    declared: 'rc.contentid & "deletehistall"',
-    context: `${C.pageTwo}deletehistall`,
-    writes: writeOf('DELETE FROM', 'content'),
-    rows: {
-      content: [
-        contentRow({ contentid: C.pageTwo, contenthistid: ARCHIVED_HIST, parentid: C.section, title: 'Page Two', active: 0, approved: 1, path: contentPath(C.root, C.section, C.pageTwo) }),
-      ],
-    },
-    accepted: HIST_REDIRECT,
-    refused: HIST_REDIRECT,
-  },
-  {
-    action: 'carch.update{action=delete}',
-    path: UPDATE_PATH,
-    form: { contentid: C.pageTwo, contenthistid: H.pageTwoDraft, action: 'delete', murakeepediting: 'true' },
-    declared: 'rc.contenthistid & "delete"',
-    context: `${H.pageTwoDraft}delete`,
-    writes: writeOf('DELETE FROM', 'content'),
-    accepted: HIST_REDIRECT,
-    refused: HIST_REDIRECT,
-  },
-  {
-    action: 'carch.update{action=add}',
-    path: UPDATE_PATH,
-    form: { contentid: C.pageTwo, contenthistid: H.pageTwoActive, parentid: C.section, type: 'Page', title: 'Page Two', menutitle: 'Page Two', action: 'add', approved: '0', ajaxrequest: 'true' },
-    declared: 'rc.contentBean.getContentHistID() & "add"',
-    context: `${H.pageTwoActive}add`,
-    writes: writeOf('INSERT INTO', 'content'),
-    accepted: { status: 200, body: expect.stringMatching(/^\{success:true,location:/) },
-    refused: { status: 200, body: expect.stringContaining('errors:{"csrf":"Your request contained invalid tokens"}') },
-  },
-  {
-    action: 'carch.update{action=multifileupload}',
-    path: UPDATE_PATH,
-    form: UPLOAD_FORM,
-    file: true,
-    declared: 'rc.parentid & "multifileupload"',
-    context: `${C.section}multifileupload`,
-    writes: writeOf('INSERT INTO', 'content'),
-    accepted: { status: 200, body: expect.stringMatching(/^\{"files":\[\{"filename":"notes\.txt"/) },
-    refused: { status: 200, body: 'success ' },
   },
   {
     action: 'carch.lockFile',
@@ -577,13 +497,7 @@ beforeAll(async () => {
     env: { LOG_LEVEL: 'error' },
     clientHandlers: {
       [IDENTITY_SERVICE]: {
-        'GET /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: adminState }),
-        // update.cfm's ajax answer to a refused add prints a fresh token for the same context.
-        'POST /v1/csrf/tokens': (req) => ({
-          status: 200,
-          headers: {},
-          body: { tokens: (req.json as { contexts: string[] }).contexts.map((context) => ({ context, csrf_token: `ISSUED-${context}`, csrf_token_expires: EXPIRES_VALUE })) },
-        }),
+        'GET /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: {} }),
       },
     },
   });
@@ -597,7 +511,6 @@ beforeEach(() => {
   db.reset();
   t.client.clear();
   t.client.csrfValid = true;
-  adminState = {};
 });
 
 describe('contract', () => {
@@ -616,7 +529,7 @@ describe('contract', () => {
 describe('validating actions', () => {
   it.each(VALIDATING)('$action has identity consume the submitted pair once for its legacy context, then writes', async (row) => {
     seedTables(db, row.rows);
-    const res = await send(urlOf(row.path, row.params), row.form, row.file);
+    const res = await send(urlOf(row.path, row.params), row.form);
     expect(view(res)).toEqual(row.accepted);
     expect(t.client.csrfConsumes).toEqual([consumeOf(row.context)]);
     expect(written(row.writes)).toBe(true);
@@ -625,27 +538,10 @@ describe('validating actions', () => {
   it.each(VALIDATING)('$action writes nothing when identity refuses the token, and answers as legacy continues', async (row) => {
     t.client.csrfValid = false;
     seedTables(db, row.rows);
-    const res = await send(urlOf(row.path, row.params), row.form, row.file);
+    const res = await send(urlOf(row.path, row.params), row.form);
     expect(view(res)).toEqual(row.refused);
     expect(t.client.csrfConsumes).toEqual([consumeOf(row.context)]);
     expect(db.writes()).toEqual([]);
-  });
-
-  it('carch.update{action=multifileupload} uploads on a refused token once a valid one set session.mura.multifileupload, as legacy ORs the stored flag', async () => {
-    seedTables(db);
-    const url = urlOf(UPDATE_PATH);
-    const first = await send(url, UPLOAD_FORM);
-    expect(view(first)).toEqual(EMPTY);
-    const effects = JSON.parse(String(first.headers[SESSION_EFFECTS_HEADER])) as { mura: Row };
-    expect(effects).toEqual({ mura: { multifileupload: true } });
-    // Web stores the effect in identity's session, which the next request reads.
-    adminState = { mura: effects.mura };
-    t.client.csrfValid = false;
-    t.client.clear();
-    const second = await send(url, UPLOAD_FORM, true);
-    expect(view(second)).toEqual({ status: 200, body: expect.stringMatching(/^\{"files":\[\{"filename":"notes\.txt"/) });
-    expect(t.client.csrfConsumes).toEqual([consumeOf(`${C.section}multifileupload`)]);
-    expect(written(writeOf('INSERT INTO', 'content'))).toBe(true);
   });
 });
 
@@ -665,6 +561,30 @@ describe('reproduced bypasses', () => {
     // publish writes the decision-list table tcontenteventreminders, so it stays on legacy with legacy's missing check.
     expect(OPENAPI['x-opt2-excluded'].map(({ key }) => key)).toContain('admin:cchangesets.publish');
     const res = await send(`/v1/sites/${SITE}/changesets/${IDS.changesets.scheduledDue}/publish`, { changesetID: IDS.changesets.scheduledDue });
+    expect(res.statusCode).toBe(404);
+    expect([t.client.csrfConsumes, db.statements]).toEqual([[], []]);
+  });
+
+  it.each([
+    { key: 'admin:carch.update', method: 'GET', url: urlOf('/v1/raw/carch/update'), form: { contentid: C.pageTwo, topid: C.root, action: 'deleteall' } },
+    {
+      key: 'admin:carch.update',
+      method: 'POST',
+      url: urlOf('/v1/raw/carch/update'),
+      form: { contentid: C.pageTwo, contenthistid: H.pageTwoActive, parentid: C.section, type: 'Page', title: 'Page Two', action: 'add', approved: '0' },
+    },
+    {
+      key: 'admin:carch.updateobjectparams',
+      method: 'POST',
+      url: `/v1/sites/${SITE}/content/versions/${H.pageOneActive}/object-params`,
+      form: { contenthistid: H.pageOneActive, approved: '1', regionid: '2', object: 'text', objectid: 'obj1', name: 'Box', params: '{"a":1}' },
+    },
+  ] as const)('$key is withheld: no target $method route serves it and nothing is consumed or read', async ({ key, method, url, form }) => {
+    expect(OPENAPI['x-opt2-excluded'].map((entry) => entry.key)).toContain(key);
+    const res =
+      method === 'POST'
+        ? await send(url, form)
+        : await t.app.inject({ method, url: `${url}&${new URLSearchParams({ ...form, ...TOKEN }).toString()}`, headers: await contentHeaders('s2', { site: SITE }) });
     expect(res.statusCode).toBe(404);
     expect([t.client.csrfConsumes, db.statements]).toEqual([[], []]);
   });

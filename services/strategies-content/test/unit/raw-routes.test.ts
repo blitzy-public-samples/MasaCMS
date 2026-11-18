@@ -139,11 +139,6 @@ const CASES: Readonly<Record<string, RawCase>> = {
   'carch/statusmodal': { params: { contenthistid: h.pageOneActive } },
   'carch/unlockfile': { params: { contentid: c.fileNode }, empty: true, csrf: `${c.fileNode}unlockfile` },
   'carch/unlocknode': { params: { contentid: c.pageOne }, empty: true, csrf: `${c.pageOne}unlocknode` },
-  'carch/update': {
-    params: { contentid: c.pageOne, contenthistid: h.pageOneDraft, parentid: c.section, action: 'delete', murakeepediting: 'true' },
-    status: 302,
-    csrf: `${h.pageOneDraft}delete`,
-  },
   'cchangesets/loadtagarray': { params: {} },
   'ccomments/ajax': { params: {}, empty: true },
   'ccomments/loadcomments': { params: {} },
@@ -296,7 +291,7 @@ describe('registration', () => {
   });
 
   it('mirrors every contract raw operation in RAW_OPERATIONS, in contract order, with its operationId and declared access', () => {
-    expect(CONTRACT).toHaveLength(98);
+    expect(CONTRACT).toHaveLength(96);
     const expected = CONTRACT.map(({ method, path, op }) => ({
       method,
       url: path,

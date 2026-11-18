@@ -1,5 +1,4 @@
 import type { components } from '@/generated/clients/strategies-content';
-import type { RawBody } from '@/screens/registry';
 import { CONTENT_HIST_IDS, CONTENT_IDS, carchEditExistingPage } from './carch';
 
 type AdminWriteResult = components['schemas']['AdminWriteResult'];
@@ -28,13 +27,6 @@ export const writeResultRedirectPreserve: AdminWriteResult = {
   saved: true,
   errors: {},
   redirect: { circuit: 'cComments', action: 'default', params: [] },
-};
-
-// The ajax save is text/html, not AdminWriteResult; ACF's bytes: esapiEncode('javascript') URL, one trailing space.
-export const writeResultRaw: RawBody = {
-  status: 200,
-  contentType: 'text/html;charset=UTF-8',
-  body: "{success:true,location:\n\t'\\x2Ftenant\\x2Da\\x2Fabout\\x2Dus\\x2F'\n} ",
 };
 
 const aboutUsBean = carchEditExistingPage.rc['contentBean'] as Struct;

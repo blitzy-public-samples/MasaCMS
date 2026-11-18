@@ -1,4 +1,4 @@
-// Web's only data path: service calls relayed by the gateway under GATEWAY_SERVICE_PREFIX (server-only).
+// Web's only data path: gateway calls, relayed under GATEWAY_SERVICE_PREFIX or the gateway's own (server-only).
 import { Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { InvocationMinter } from '@opt2/platform/auth';
@@ -16,6 +16,7 @@ import { activeSpanIds, withExtractedContext } from '@opt2/platform/tracing';
 import type { paths as CommunicationsPaths } from '@/generated/clients/communications';
 import type { paths as ESignaturePaths } from '@/generated/clients/e-signature';
 import type { paths as FinancePaths } from '@/generated/clients/finance';
+import type { paths as GatewayPaths } from '@/generated/clients/gateway';
 import type { paths as IdentityPaths } from '@/generated/clients/identity';
 import type { paths as PeoplePaths } from '@/generated/clients/people';
 import type { paths as ProgramsSitesPaths } from '@/generated/clients/programs-sites';
@@ -50,6 +51,12 @@ const WEB_CALLER = 'web';
 const GATEWAY_LABEL = `Service ${GATEWAY_CALLEE} (called by ${WEB_CALLER})`;
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+/** A relayed service, or the gateway answering one of its own operations. */
+export type GatewayCallee = WebServiceName | typeof GATEWAY_CALLEE;
+
+/** Path of the gateway's own `getLegacyVersionMenu`, called at that path rather than through the relay. */
+export const LEGACY_VERSION_MENU_PATH = '/internal/v1/legacy-server/version-menu' satisfies keyof GatewayPaths;
 
 /** Per-request facts every call carries. */
 export interface GatewayCallContext {
@@ -160,7 +167,7 @@ export class GatewayUnavailableError extends LegacyServiceUnavailableError {
   override readonly name: string = 'GatewayUnavailableError';
 
   constructor(
-    readonly service: WebServiceName,
+    readonly service: GatewayCallee,
     /** Gateway status; undefined when the gateway itself could not be reached or did not answer in time. */
     readonly status?: number,
     override readonly cause?: unknown,
@@ -185,7 +192,7 @@ export class GatewayDenialError extends Error {
   override readonly name: string = 'GatewayDenialError';
 
   constructor(
-    readonly service: WebServiceName,
+    readonly service: GatewayCallee,
     readonly operation: string,
     readonly status: 401 | 403,
   ) {
@@ -204,7 +211,7 @@ type CallResult<T> =
  * @throws LegacyFaultError For an error envelope whose `stacktrace` names the fault legacy raises there.
  * @throws Error For any other non-2xx status.
  */
-export function okBody<T>(response: CallResult<T>, service: WebServiceName, operation: string): T {
+export function okBody<T>(response: CallResult<T>, service: GatewayCallee, operation: string): T {
   if (response.ok) return response.body;
   if (response.status === 401 || response.status === 403) {
     throw new GatewayDenialError(service, operation, response.status);
@@ -337,10 +344,13 @@ function toGatewayResponse<T>({ status, headers, body }: ServiceResponse<T>): Ga
 /** How a call returns its body: decoded by media type, as the received bytes, or a 2xx body unread as a stream. */
 type BodyMode = 'decoded' | 'bytes' | 'streamed';
 
-/** Sends one call through the gateway, failing closed on unavailability; every other status is returned. */
+/**
+ * Sends one call relayed to `service`, or to the gateway's own path, failing closed on unavailability; every other
+ * status is returned.
+ */
 async function send<T>(
   ctx: GatewayCallContext,
-  service: WebServiceName,
+  service: GatewayCallee,
   req: GatewayRequest,
   mode: BodyMode,
   serviceClient: ServiceClient | undefined,
@@ -355,7 +365,7 @@ async function send<T>(
   const request: ServiceRequest = {
     service: GATEWAY_CALLEE,
     method: req.method,
-    path: withQuery(`${GATEWAY_SERVICE_PREFIX}/${service}${req.path}`, req.query),
+    path: withQuery(service === GATEWAY_CALLEE ? req.path : `${GATEWAY_SERVICE_PREFIX}/${service}${req.path}`, req.query),
     json: req.json,
     body,
     headers,
@@ -506,6 +516,7 @@ type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 
 type GetUserPoolSitesOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/user-pool-sites', 'get'>;
 type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
 type UserSitesOperation = ProgramsSitesOperation<'/v1/user-sites', 'get'>;
+type LegacyVersionMenuOperation = OperationOf<GatewayPaths[typeof LEGACY_VERSION_MENU_PATH], 'get'>;
 
 /** Identity calls, plus the session and CSRF operations the shell and lib use. */
 export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
@@ -583,6 +594,8 @@ export interface GatewayClient {
   readonly timesheets: ServiceFacade<TimesheetsPaths>;
   readonly finance: ServiceFacade<FinancePaths>;
   readonly eSignature: ServiceFacade<ESignaturePaths>;
+  /** The legacy server facts of the nav Version menu, the gateway's own `getLegacyVersionMenu`. */
+  legacyVersionMenu(): Promise<OperationResponse<LegacyVersionMenuOperation>>;
 }
 
 type CoreCalls = Pick<GatewayClient, 'call' | 'raw' | 'stream'>;
@@ -708,5 +721,10 @@ export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: Ser
     timesheets: serviceFacade(core, 'timesheets'),
     finance: serviceFacade(core, 'finance'),
     eSignature: serviceFacade(core, 'e-signature'),
+    legacyVersionMenu: async () => {
+      const request: GatewayRequest = { method: 'GET', path: LEGACY_VERSION_MENU_PATH };
+      const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
+      return response as OperationResponse<LegacyVersionMenuOperation>;
+    },
   };
 }

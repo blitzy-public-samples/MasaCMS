@@ -6,13 +6,10 @@ import type { components, paths } from '@/generated/clients/strategies-content';
 import { secure, type GateDecision } from '@/lib/access-gate';
 import {
   discardStreamed,
-  multipartRelay,
   okBody,
   type FormInput,
   type GatewayClient,
   type GatewayResponse,
-  type MultipartBody,
-  type MultipartRelay,
 } from '@/lib/gateway-client';
 import {
   relayContext,
@@ -64,8 +61,6 @@ export type CarchOutcome<T> =
 export interface CarchCallOptions {
   /** The action's effective FW/1 rc, carch defaults applied; `ctx.req.rc` when omitted. */
   readonly rc?: Rc;
-  /** The inbound multipart body, posted unchanged in place of the rc fields (non-image uploads). */
-  readonly multipart?: MultipartBody;
 }
 
 /** Options of {@link relayCarchRaw}. */
@@ -79,8 +74,7 @@ type Answer<T> = (GatewayResponse<T> & { readonly ok: true }) | (GatewayResponse
 
 /** Body and headers of a POST. */
 interface PostInput {
-  readonly form?: FormInput;
-  readonly body?: MultipartRelay['body'];
+  readonly form: FormInput;
   readonly headers: Readonly<Record<string, string>>;
 }
 
@@ -258,14 +252,6 @@ const PAGE_CALLS = {
 
 /** The write operation of each carch action that posts to one. */
 const WRITE_CALLS = {
-  updateobjectparams: {
-    operation: 'updateObjectParams',
-    call: (sc, rc, input) =>
-      sc.call('post', '/v1/sites/{siteid}/content/versions/{contenthistid}/object-params', {
-        params: { ...siteOf(rc), contenthistid: segment(rc, 'contenthistid') },
-        ...input,
-      }),
-  },
   datamanager: {
     operation: 'deleteFormResponses',
     call: (sc, rc, input) =>
@@ -308,12 +294,9 @@ function csrfHeaders(req: AdminRequest): Record<string, string> {
   return inboundHeaders(req, CSRF_HEADERS);
 }
 
-/** A POST of the rc fields' relay URL-encoded, or of the multipart body as received. */
-function postInput(req: AdminRequest, rc: Rc, multipart: MultipartBody | undefined): PostInput {
-  const headers = csrfHeaders(req);
-  if (multipart === undefined) return { form: Object.entries(relayContext(req, rc)), headers };
-  const relay = multipartRelay(multipart);
-  return { body: relay.body, headers: { ...headers, ...relay.headers } };
+/** A POST of the rc fields' relay URL-encoded. */
+function postInput(req: AdminRequest, rc: Rc): PostInput {
+  return { form: Object.entries(relayContext(req, rc)), headers: csrfHeaders(req) };
 }
 
 /** The controller `secure()` decision for `req`, which always redirects. */
@@ -406,17 +389,17 @@ export async function carchPageData(
 }
 
 /**
- * Posts a carch write with every rc field (or the multipart body) and the CSRF headers unchanged.
+ * Posts a carch write with every rc field and the CSRF headers unchanged.
  * @throws TypeError When a path parameter is empty.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
  */
 export async function carchWrite(
   ctx: CarchCallContext,
   action: CarchWriteAction,
-  { rc = ctx.req.rc, multipart }: CarchCallOptions = {},
+  { rc = ctx.req.rc }: CarchCallOptions = {},
 ): Promise<CarchOutcome<CarchWriteResult>> {
   const { operation, call } = WRITE_CALLS[action];
-  const input = postInput(ctx.req, rc, multipart);
+  const input = postInput(ctx.req, rc);
   return settle(ctx.req, operation, await call(ctx.gateway.strategiesContent, rc, input));
 }
 
@@ -438,7 +421,7 @@ export async function toSubmitResult(
 
 /**
  * Relays a carch fragment, JSON or download action: GET sends the rc as url fields; POST sends `siteid` in the query and
- * the rc fields (or the multipart body) as the body; both carry the browser's forwarded host and scheme. The answer's
+ * the rc fields as the body; both carry the browser's forwarded host and scheme. The answer's
  * bytes are returned unchanged, a streamed 2xx body as it arrives, and the session values it reports set are applied to
  * `ctx.req`; a 401 or 403 becomes the controller `secure()` redirect.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
@@ -448,7 +431,7 @@ export async function relayCarchRaw(
   ctx: CarchCallContext,
   action: CarchRawAction,
   method: 'GET' | 'POST',
-  { rc = ctx.req.rc, multipart, stream = false }: CarchRawOptions = {},
+  { rc = ctx.req.rc, stream = false }: CarchRawOptions = {},
 ): Promise<RawBody> {
   const sc = ctx.gateway.strategiesContent;
   const path = `/v1/raw/carch/${action}` as const;
@@ -457,7 +440,7 @@ export async function relayCarchRaw(
   const forwarded = inboundHeaders(ctx.req, FORWARDED_HOST_HEADERS);
   const get = () => ({ query: { params: rcFields(fields) }, headers: { ...csrfHeaders(ctx.req), ...forwarded } });
   const post = () => {
-    const input = postInput(ctx.req, rc, multipart);
+    const input = postInput(ctx.req, rc);
     return { query: declared(fields, 'siteid'), ...input, headers: { ...input.headers, ...forwarded } };
   };
   let res: GatewayResponse<Buffer | Readable>;

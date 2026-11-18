@@ -96,7 +96,7 @@ export type UploadDeps = Pick<DomainDeps, 'db' | 'repository' | 'clock' | 'confi
 /** An upload and the fileBean values it is saved with. */
 export interface StoreUploadArgs {
   file: UploadedFile;
-  /** The owning item; empty for a multi-file upload, which links it later with `setFileContentId`. */
+  /** The owning item, where the upload has one. */
   contentId?: string | null;
   /** Module of the owning item; the fileBean default (site tree) when absent. */
   moduleId?: string;
@@ -254,17 +254,6 @@ export async function settleStagedUploads(deps: StoreObjectDeps, staged: readonl
       // The durable intent remains for recovery; preserve the caller's outcome.
     }
   }
-}
-
-/** multiFileUpload's `update tfiles set contentID`: links a stored file to its new item; `tx` is the file pool tenant's. */
-export function setFileContentId(
-  tx: TenantTx,
-  repository: ContentRepository,
-  fileId: string,
-  contentId: string,
-  write?: WriteContext,
-): Promise<FileRow | null> {
-  return repository.files.updateFile(tx, fileId, { contentid: contentId }, write);
 }
 
 /** fileDAO.deleteVersion: flags the file deleted; its objects stay until legacy's purgeDeleted. `tx` is the file pool tenant's. */

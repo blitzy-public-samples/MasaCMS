@@ -285,7 +285,6 @@ const ROUTES: ReadonlyArray<readonly [string, Method, string]> = [
   ['audit', 'GET', `/v1/sites/${SITE}/content/${NODE}/versions/${HIST}/audit`],
   ['multiFileUpload', 'GET', `/v1/sites/${SITE}/content/${NODE}/multi-file-upload`],
   ['summary', 'GET', `/v1/sites/${SITE}/content/versions/${HIST}/summary`],
-  ['updateObjectParams', 'POST', `/v1/sites/${SITE}/content/versions/${HIST}/object-params`],
   ['datamanager', 'GET', `/v1/sites/${SITE}/forms/${NODE}/responses`],
   ['datamanager writes', 'POST', `/v1/sites/${SITE}/forms/${NODE}/responses/delete`],
   ['selectmedia', 'GET', `/v1/sites/${SITE}/content/images?contentid=${NODE}`],
@@ -320,7 +319,7 @@ describe('route declarations', () => {
         return op === undefined || ((op['x-opt2-legacy-actions'] as string[] | undefined) ?? [])[0]?.startsWith('carch.') === true;
       })
       .map((route) => ({ method: route.method, url: route.url, transport: route.transport, requires: [...(route.requires ?? [])].sort() }));
-    expect(contract).toHaveLength(16);
+    expect(contract).toHaveLength(15);
     expect(registered.sort(byKey)).toEqual([...contract].sort(byKey));
     const { opt2 } = circuitRouteConfig('carch');
     for (const route of registered) expect({ requires: route.requires, transport: route.transport }).toEqual({ requires: [...(opt2.requires ?? [])].sort(), transport: opt2.transport });
@@ -1084,29 +1083,6 @@ describe('carch.multiFileUpload, carch.imagedetails and the version summary', ()
     const rc = await rcOf(`/v1/sites/${SITE}/content/versions/${HIST}/summary`);
     expect([rc.contentBean, rc.stats]).toEqual([{ active: 1, siteid: SITE, isNew: 1, stats: {} }, {}]);
     expect(paramsOfFirst(STATS)).toEqual([[''], SITE]);
-  });
-});
-
-describe('carch.updateObjectParams', () => {
-  const URL = `/v1/sites/${SITE}/content/versions/${HIST}/object-params`;
-
-  it('answers an unsaved result where legacy aborts on an unknown version, consuming no token', async () => {
-    expect(await writeOf(URL, { params: '{}' }, TOKEN)).toEqual({ saved: false, errors: {}, redirect: null });
-    expect([consumed, ran(WRITE)]).toEqual([[], false]);
-  });
-
-  it('answers an unsaved result where the actor holds no verdict on the version', async () => {
-    t.db.respond(VERSION, [versionRow()]);
-    expect(await writeOf(URL, { params: '{}' })).toEqual({ saved: false, errors: {}, redirect: null });
-  });
-
-  it('answers the editor’s version with the posted approval and change set when params is no JSON, writing nothing', async () => {
-    t.db.respond(VERSION, [versionRow({ approved: 0 })]);
-    t.db.respond(CRUMBS, [crumb(NODE)]);
-    const body = await writeOf(URL, { params: 'not json', approved: '1', changesetid: 'CS1', removePreviousChangeset: 'true' }, TOKEN);
-    expect(body).toMatchObject({ saved: true, errors: {}, redirect: null });
-    expect(body.data?.versionBean).toMatchObject({ ContentHistID: HIST, Approved: '1', changesetID: 'CS1', removePreviousChangeset: 'true', isNew: 0 });
-    expect([consumed, ran(WRITE)]).toEqual([[], false]);
   });
 });
 

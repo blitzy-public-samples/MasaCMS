@@ -63,7 +63,7 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 | `gateway.session_barrier` | Recorded and pending write positions per session and owner |
 
 - Activation validates the version, requires its `previous` to equal the active version, and commits a new `epoch`. Freeze and unfreeze also commit a new epoch.
-- Every write reads the epoch before routing; instances refresh their cached version and heartbeat every second. With no active version, or a cached one older than two seconds, every edge request the cut-over table dispatches (`edge*`) answers the legacy-shaped 503; `GET /healthz`, the internal operations (cut-over activate, freeze, unfreeze and status, in-flight orphan clearing, legacy-session mark-used) and the web service-call relay (`/internal/v1/relay/**` and its `/opt2/svc/**` alias) keep answering.
+- Every write reads the epoch before routing; instances refresh their cached version and heartbeat every second. With no active version, or a cached one older than two seconds, every edge request the cut-over table dispatches (`edge*`) answers the legacy-shaped 503; `GET /healthz`, the internal operations (cut-over activate, freeze, unfreeze and status, in-flight orphan clearing, legacy-session mark-used, the legacy Version menu facts) and the web service-call relay (`/internal/v1/relay/**` and its `/opt2/svc/**` alias) keep answering.
 - An operation is visible only once every live instance reports the new epoch; the transition procedure waits for this.
 - Freezing never changes where an entry routes. A frozen entry's requests wait up to 30 s, then answer the legacy-shaped 503.
 - Only the forwarding instance removes its `inflight` row, when the response completes. A target exchange that ends while the owner may still commit (a timeout, or a broken response) marks its row abandoned instead. A row is an orphan when its instance is dead or it is abandoned, and the v2 cut-over status (`cutoverStatusV2`) reports it `orphaned`; the v1 status keeps its payload, grouped by instance, route and side. An orphan is cleared only by evidence, never by time: `gates-closed` for target-bound writes (the owner's gates closed on the route's units), `legacy-restart` for legacy-bound writes (a controlled ColdFusion restart).
@@ -98,7 +98,7 @@ Identity owns all session state; the gateway owns only the cookie mapping and th
 
 ## Legacy bridge
 
-`legacy-bridge/cfml/` is CFML served by the legacy web root through an `Application.cfc` that extends `muraWRM.Application`: session describe, hydrate, mark-used, carry, export and end, site-monitor steps, scheduler hand-off, site registry and file store. It accepts only requests carrying an HMAC bridge assertion signed with `OPT2_BRIDGE_HMAC_KEY`, which only the gateway and the migration service hold; from outside, `/gateway/legacy-bridge/**` answers 404 at the gateway. See [`legacy-bridge/README.md`](legacy-bridge/README.md).
+`legacy-bridge/cfml/` is CFML served by the legacy web root through an `Application.cfc` that extends `muraWRM.Application`: session describe, hydrate, mark-used, carry, export and end, site-monitor steps, scheduler hand-off, site registry, the admin Version menu facts and file store. It accepts only requests carrying an HMAC bridge assertion signed with `OPT2_BRIDGE_HMAC_KEY`, which only the gateway and the migration service hold; from outside, `/gateway/legacy-bridge/**` answers 404 at the gateway. See [`legacy-bridge/README.md`](legacy-bridge/README.md).
 
 ## Internal API
 
@@ -113,7 +113,8 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `cutoverStatusV2` | `GET /internal/v2/cutover/status` | `platform.operator` or `platform.migration`; the migration service reads orphans from it |
 | `inflightClearOrphans` | `POST /internal/v1/inflight:clear-orphans` | `platform.operator` or `platform.migration` |
 | `legacySessionMarkUsed` | `POST /internal/v1/legacy-sessions/{sid}:mark-used` | Identity, `service:identity` |
-| `relayGet` … `relayDelete` | `/internal/v1/relay/{service}/{path}` (also reached as `/opt2/svc/{service}/{path}`) | Web, `service:web`; the user token passes on only with web's credential |
+| `getLegacyVersionMenu` | `GET /internal/v1/legacy-server/version-menu` | Web, `service:web`; legacy's admin Version menu facts through the bridge's `site.cfm?op=versionMenu` |
+| `relayGet` … `relayDelete` | `/internal/v1/relay/{service}/{path}` (also reached as `/opt2/svc/{service}/{path}`) | Web, `service:web`; the user token passes on only with web's credential. Only the callee's versioned API (`/v1/**`, `/v2/**`) is forwarded; any other callee path answers the legacy 404, as an unknown service does |
 | `edge*` | `/{path}` | Public; dispatched by the active version |
 
 ## Environment

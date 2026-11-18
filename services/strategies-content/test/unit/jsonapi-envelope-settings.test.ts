@@ -320,8 +320,17 @@ async function sendRecorded(api: TestApp, request: RecordedCase['request'], extr
 const REPLAYS = Object.entries(RECORDED.cases).flatMap(([name, recorded]) =>
   Object.entries(recorded.answers).map(([setting, answer]) => [name, setting, recorded, answer] as const),
 );
-const SERVED = REPLAYS.filter(([, , recorded]) => recorded.refusal === undefined);
+/** Whether legacy answered `recorded` from the content or contentnav save, which strategies-content withholds. */
+function withheldSave(recorded: RecordedCase, answer: RecordedAnswer): boolean {
+  const entity = /^\/_api\/\w+\/v1\/[^/?]+\/(\w+)/.exec(recorded.request.url)?.[1];
+  if (recorded.request.method !== 'POST' || (entity !== 'content' && entity !== 'contentnav')) return false;
+  const body = answer.body ?? (answer.text?.startsWith('{') ? (JSON.parse(answer.text) as Struct) : undefined);
+  return body?.method === 'save';
+}
+
+const SERVED = REPLAYS.filter(([, , recorded, answer]) => recorded.refusal === undefined && !withheldSave(recorded, answer));
 const REFUSED = REPLAYS.filter(([, , recorded]) => recorded.refusal !== undefined);
+const WITHHELD = REPLAYS.filter(([, , recorded, answer]) => withheldSave(recorded, answer));
 
 describe('the oracle under each envelope setting', () => {
   const apis = new Map<string, TestApp>();
@@ -369,6 +378,17 @@ describe('the oracle under each envelope setting', () => {
     expect(bodyOf(res)).toMatchObject({ error: { code: 'server_error' } });
     expect(routeErrors).toEqual([expect.objectContaining({ reason: recorded.refusal })]);
     expect(routeErrors[0]?.message).toMatch(/^REST credentials of an? [\w ]+ are verified by identity \(EX-JSONAPI-REST-CREDENTIALS\)$/);
+  });
+
+  it.each(WITHHELD)('answers the withheld content save %s under the %s settings with the legacy 503, writing nothing', async (_name, setting, recorded) => {
+    const api = recordedApi(setting);
+    const db = api.db as RecordingDb;
+    const written = db.writes().length;
+    const res = await sendRecorded(api, recorded.request);
+    expect(res.statusCode).toBe(503);
+    expect(bodyOf(res)).toMatchObject({ error: { code: 'server_error' } });
+    expect(routeErrors).toEqual([expect.objectContaining({ reason: 'jsonapi-content-save-not-ported' })]);
+    expect(db.writes().slice(written)).toEqual([]);
   });
 
   it('halts a tokenless REST call whose exchanged credentials the gateway reports, naming EX-JSONAPI-REST-CREDENTIALS', async () => {

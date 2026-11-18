@@ -1,6 +1,5 @@
 // Unit tests for the admin shell entry point: default.cfm's layout choice, shell data loading and document output.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +8,7 @@ import { renderCsrfFields } from '@opt2/platform/legacy-compat';
 import { businessClock } from '@opt2/platform/testing';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { resetLegacySettingsForTests } from '@/lib/env';
-import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError, LEGACY_VERSION_MENU_PATH } from '@/lib/gateway-client';
 import { isSafeHtml, raw, toString } from '@/lib/html';
 import { mergeFw1Context, type AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
@@ -27,6 +26,7 @@ import {
 import { renderDialog } from '@/shell/dialog';
 import { renderHtmlFoot } from '@/shell/html-foot';
 import { OPT2_NAV_MODULES as NAV_MODULES } from '@/shell/nav';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { CSRF_UPDATECORE } from '../fixtures/identity/csrf';
 import { PROMPT_TALLY_NONZERO, promptCountsNonZero, promptCountsZero } from '../fixtures/strategies-content/prompts';
 import {
@@ -71,16 +71,8 @@ const UPDATE_CORE_QUERY = renderCsrfFields(
   { token: CSRF_UPDATECORE.csrf_token, expires: CSRF_UPDATECORE.csrf_token_expires },
   'url',
 );
-/** `settings.versionMenu` of the ACF 2023 oracle's environment record, which has no `server.java`. */
-const RECORDED_MENU = {
-  appServerProductName: 'ColdFusion Server',
-  appServerVersion: '2023,0,26,331018',
-  dbProductName: 'Microsoft SQL Server',
-  dbProductVersion: 'Microsoft SQL Server 2022 - 16.0.4305.5',
-  javaVersion: null,
-  osName: 'UNIX',
-  osVersion: '6.12.105+',
-};
+const VERSION_MENU = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
+const VERSION_MENU_CALL: FakeCall = { service: 'gateway', method: 'GET', path: LEGACY_VERSION_MENU_PATH };
 
 /** Regions other renderers own, replaced by markers in the oracle fixtures: [marker, region start, region end]. */
 type Regions = ReadonlyArray<readonly [marker: string, start: string, end: string]>;
@@ -125,12 +117,16 @@ const listed = (siteid: string, site: string | null, extra: Record<string, unkno
 
 const DEFAULT_SITES = [listed('default', 'Default')];
 
-/** An in-memory gateway answering the user's sites with `sites`, identity's Update Core token pair and no `default` prompt. */
+/**
+ * An in-memory gateway answering the user's sites with `sites`, identity's Update Core token pair, no `default` prompt
+ * and the oracle's Version menu facts.
+ */
 function shellGateway(sites: readonly unknown[] = DEFAULT_SITES): FakeGatewayClient {
   return fakeGatewayClient({
     [USER_SITES]: { status: 200, body: { sites } },
     [ISSUE_TOKENS]: { status: 200, body: { tokens: [CSRF_UPDATECORE] } },
     [HEADER_PROMPTS]: { status: 200, body: promptCountsZero },
+    [VERSION_MENU]: { status: 200, body: LEGACY_VERSION_MENU },
   });
 }
 
@@ -205,13 +201,14 @@ describe('loadShellData', () => {
     { name: 'a compact request', ctx: () => adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } }) },
     { name: 'a session without a site', ctx: () => withoutSessionSite(adminS2Request({ circuit: 'cUsers', item: 'list' })) },
     { name: 'a public member', ctx: () => noSitesRequest({ s2IsPrivate: false }, { circuit: 'cEditProfile', item: 'edit' }) },
-  ])('loads no site list, prompt counts or tokens for $name', async ({ ctx }) => {
+  ])('loads no site list, prompt counts, tokens or server facts for $name', async ({ ctx }) => {
     const gateway = shellGateway();
     const data = await load(ctx(), gateway);
     expect(gateway.calls).toEqual([]);
     expect(data.userSites).toEqual([]);
     expect(data.prompts).toEqual(promptCountsZero);
     expect(data.updateCoreCsrfQuery).toBe('');
+    expect(data.server).toBeNull();
   });
 
   it("lists the owner's sites for S2 users, each with its own dashboard flag, and renders the Update Core tokens", async () => {
@@ -222,8 +219,8 @@ describe('loadShellData', () => {
     ]);
     const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: { record: { showDashboard: 1 } } });
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toHaveLength(3);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, UPDATE_CORE_CALL, HEADER_PROMPTS_CALL]));
+    expect(gateway.calls).toHaveLength(4);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, UPDATE_CORE_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
     expect(data.userSites).toEqual([
       { siteId: 'default', site: 'Default', showDashboard: false },
       { siteId: 'tenant-a', site: 'Tenant A', showDashboard: true },
@@ -237,8 +234,8 @@ describe('loadShellData', () => {
     resetLegacySettingsForTests();
     const gateway = shellGateway();
     const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway);
-    expect(gateway.calls).toHaveLength(2);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL]));
+    expect(gateway.calls).toHaveLength(3);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
     expect(data.updateCoreCsrfQuery).toBe('');
   });
 
@@ -251,8 +248,8 @@ describe('loadShellData', () => {
       listed('zeta', 'Zeta'),
     ]);
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toHaveLength(2);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL]));
+    expect(gateway.calls).toHaveLength(3);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
     expect(data.userSites).toEqual([
       { siteId: 'a', site: 'Alpha', showDashboard: false },
       { siteId: 'b', site: 'beta', showDashboard: true },
@@ -265,19 +262,27 @@ describe('loadShellData', () => {
   it('lists no site for a private user the owner lists none for', async () => {
     const gateway = shellGateway([]);
     const data = await load(noSitesRequest({ s2IsPrivate: true }, { circuit: 'cArch', item: 'list' }), gateway);
-    expect(gateway.calls).toEqual([USER_SITES_CALL]);
+    expect(gateway.calls).toHaveLength(2);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
     expect(data.userSites).toEqual([]);
   });
 
   it('rejects when programs-sites refuses the site list', async () => {
-    const gateway = fakeGatewayClient({
-      [USER_SITES]: { status: 403, body: {} },
-      [ISSUE_TOKENS]: { status: 200, body: { tokens: [CSRF_UPDATECORE] } },
-      [HEADER_PROMPTS]: { status: 200, body: promptCountsZero },
-    });
+    const gateway = shellGateway();
+    gateway.setRoute(USER_SITES, { status: 403, body: {} });
     await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toBeInstanceOf(
       GatewayDenialError,
     );
+  });
+
+  it('rejects when the gateway refuses the Version menu facts', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(VERSION_MENU, { status: 403, body: {} });
+    await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toMatchObject({
+      name: 'GatewayDenialError',
+      service: 'gateway',
+      operation: 'getLegacyVersionMenu',
+    });
   });
 
   it('lets gateway unavailability propagate', async () => {
@@ -288,37 +293,27 @@ describe('loadShellData', () => {
     );
   });
 
-  it('passes the labels and clock through and holds no plugins, export directory or, without a record, server facts', async () => {
+  it('passes the labels and clock through and holds no plugins or export directory', async () => {
     const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }));
     expect(data.rb).toBe(RB);
     expect(data.now).toBe(NOW);
     expect(data.sitePlugins).toEqual([]);
-    expect(data.server).toBeNull();
     expect(data.exportLocationExists).toBe(false);
   });
 
-  it("loads the environment record's server facts into the full layout's Version menu only", async () => {
-    const stateDir = mkdtempSync(path.join(os.tmpdir(), 'opt2-web-document-'));
-    try {
-      mkdirSync(path.join(stateDir, 'baseline'));
-      writeFileSync(path.join(stateDir, 'baseline', 'environment.json'), JSON.stringify({ settings: { versionMenu: RECORDED_MENU } }));
-      restoreEnv();
-      restoreEnv = useTestEnv({ OPT2_STATE_DIR: stateDir });
-      const ctx = adminS2Request({ circuit: 'cArch', item: 'list' });
-      const data = await load(ctx);
-      expect(data.server).toEqual({ ...RECORDED_MENU, javaVersion: '' });
-      const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
-      expect($('ul.version a.no-link').map((_, link) => $(link).text().replace(/\s+/g, ' ').trim()).get()).toEqual([
-        'Core Version 7.6.1',
-        'App Server ColdFusion (2023,0,26,331018)',
-        'DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)',
-        'OS Version UNIX (6.12.105+)',
-      ]);
-      expect((await load(compactEdit())).server).toBeNull();
-      expect((await load(anonymousRequest())).server).toBeNull();
-    } finally {
-      rmSync(stateDir, { recursive: true, force: true });
-    }
+  it("loads the gateway's server facts into the full layout's Version menu only", async () => {
+    const ctx = adminS2Request({ circuit: 'cArch', item: 'list' });
+    const data = await load(ctx);
+    expect(data.server).toEqual({ ...LEGACY_VERSION_MENU, javaVersion: '' });
+    const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
+    expect($('ul.version a.no-link').map((_, link) => $(link).text().replace(/\s+/g, ' ').trim()).get()).toEqual([
+      'Core Version 7.6.1',
+      'App Server ColdFusion (2023,0,26,331018)',
+      'DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)',
+      'OS Version UNIX (6.12.105+)',
+    ]);
+    expect((await load(compactEdit())).server).toBeNull();
+    expect((await load(anonymousRequest())).server).toBeNull();
   });
 
   it('loads the session site prompt counts into the header badges and their tally', async () => {
@@ -366,7 +361,8 @@ describe('loadShellData', () => {
   it('loads no prompt counts for a session site the token does not serve', async () => {
     const gateway = shellGateway();
     const data = await load(unservedEditorRequest({ circuit: 'cArch', item: 'list' }), gateway);
-    expect(gateway.calls).toEqual([USER_SITES_CALL]);
+    expect(gateway.calls).toHaveLength(2);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
     expect(data.prompts).toEqual(promptCountsZero);
   });
 

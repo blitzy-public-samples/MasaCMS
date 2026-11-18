@@ -1,4 +1,4 @@
-// The document carch.update and carch.variationtargeting answer after a compact-display save (server-only).
+// The document carch.variationtargeting answers after a compact-display save (server-only).
 import { cfEq } from '@opt2/platform/legacy-compat';
 import { encodeJs } from '@/lib/html';
 import { setSessionMuraValue } from '@/lib/request-context';

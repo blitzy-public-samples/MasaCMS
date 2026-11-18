@@ -21,10 +21,10 @@ import { GATEWAY_SERVICE_PREFIX } from '@/lib/env';
 import {
   WEB_SERVICE_NAMES,
   createGatewayClient,
+  type GatewayCallee,
   type GatewayClient,
   type HttpMethod,
   type ServicePath,
-  type WebServiceName,
 } from '@/lib/gateway-client';
 
 const JSON_CONTENT_TYPE = 'application/json;charset=utf-8';
@@ -76,12 +76,15 @@ export interface RecordedRequest {
 /** A fixed reply, or a handler computing one from the request. */
 export type FakeRoute = FakeReply | ((request: RecordedRequest) => FakeReply | Promise<FakeReply>);
 
-/** Routes keyed `METHOD /opt2/svc/<service>/<path>`, path without the query. */
+/** Routes keyed `METHOD /opt2/svc/<service>/<path>`, or `METHOD <path>` of the gateway's own, path without the query. */
 export type FakeRouteTable = Readonly<Record<string, FakeRoute>>;
 
-/** Route key of `method` on the service path `path` of `service`, for example `GET /opt2/svc/identity/v1/ping`. */
-export function routeKey(method: HttpMethod, service: WebServiceName, path: ServicePath): string {
-  return `${method} ${GATEWAY_SERVICE_PREFIX}/${service}${path}`;
+/**
+ * Route key of `method` on the service path `path` of `service`, for example `GET /opt2/svc/identity/v1/ping`; a
+ * `gateway` path is the gateway's own, unprefixed.
+ */
+export function routeKey(method: HttpMethod, service: GatewayCallee, path: ServicePath): string {
+  return `${method} ${service === 'gateway' ? path : `${GATEWAY_SERVICE_PREFIX}/${service}${path}`}`;
 }
 
 // An empty JSON 404, which the platform client decodes to `body: undefined` and `raw` returns as no bytes.
@@ -238,9 +241,10 @@ export function loadFixture<T = unknown>(relPath: string): T {
 
 /** One call the in-memory client received. */
 export interface FakeCall {
-  readonly service: WebServiceName;
+  /** The relayed service, or `gateway` for the gateway's own operation. */
+  readonly service: GatewayCallee;
   readonly method: HttpMethod;
-  /** Service path without the query, path parameters filled, for example `/v1/sites/default`. */
+  /** Service path without the query, path parameters filled, for example `/v1/sites/default`; a `gateway` call's own path. */
   readonly path: string;
   /** Query fields as the gateway parses them; absent when there are none. */
   readonly query?: Readonly<Record<string, string | string[]>>;
@@ -282,12 +286,13 @@ function receivedHeaders(headers: Record<string, string | string[]>): Record<str
 
 const RELAY_PREFIX = `${GATEWAY_SERVICE_PREFIX}/`;
 
-/** The relayed service named by the first segment of `path` under the gateway's service prefix. */
-function relayedService(path: string): WebServiceName {
-  const name = path.startsWith(RELAY_PREFIX) ? path.slice(RELAY_PREFIX.length).split('/')[0] : undefined;
+/** The relayed service and its service path of a gateway path under the service prefix; any other path is the gateway's own. */
+function calledPath(path: string): { service: GatewayCallee; path: string } {
+  if (!path.startsWith(RELAY_PREFIX)) return { service: 'gateway', path };
+  const name = path.slice(RELAY_PREFIX.length).split('/')[0];
   const service = WEB_SERVICE_NAMES.find((known) => known === name);
   if (service === undefined) throw new TypeError(`${path} is not a gateway service path`);
-  return service;
+  return { service, path: path.slice(`${RELAY_PREFIX}${service}`.length) };
 }
 
 /** `req` as the gateway receives it from the platform client, which mints no invocation credential here. */
@@ -388,12 +393,12 @@ export function fakeGatewayClient(
 ): FakeGatewayClient {
   const calls: FakeCall[] = [];
   const relay = fakeServiceClient(routes, (req, request) => {
-    const service = relayedService(request.path);
+    const { service, path } = calledPath(request.path);
     const headers = callerHeaders(req);
     calls.push({
       service,
       method: req.method,
-      path: request.path.slice(`${RELAY_PREFIX}${service}`.length),
+      path,
       ...(Object.keys(request.query).length > 0 ? { query: request.query } : {}),
       ...(req.json !== undefined ? { json: req.json } : {}),
       ...(request.form !== undefined ? { form: request.form } : {}),

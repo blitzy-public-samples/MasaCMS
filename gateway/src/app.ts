@@ -23,6 +23,7 @@ import {
 } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createResponseModes } from './admin/response-modes.js';
+import { registerVersionMenuRoute } from './admin/version-menu-route.js';
 import { createInflightStore } from './cutover/inflight.js';
 import { inventoryFactsOf, loadInventory, loadTableOwnership, loadVariants } from './cutover/loader.js';
 import { resolveGatewayPaths } from './cutover/paths.js';
@@ -38,7 +39,7 @@ import { replyFromOptions } from './dispatcher/response-head.js';
 import { createSiteRegistry } from './dispatcher/site-registry.js';
 import { createWriteWindowClient } from './dispatcher/write-window.js';
 import { jarIdleLimitMs, sessionTimeoutMinutes, trackJarActivity } from './session/activity.js';
-import { createBridgeClient, createSiteListClient, type BridgeClient } from './session/bridge-client.js';
+import { createBridgeClient, createSiteListClient, createVersionMenuClient, type BridgeClient } from './session/bridge-client.js';
 import { createSessionCarry } from './session/carry.js';
 import { createCsrfContinuity } from './session/csrf.js';
 import { createHydrator } from './session/hydration.js';
@@ -273,6 +274,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   await registerCutoverRoutes(app, { state, inflight });
   await registerMarkUsedRoute(app, { jar, bridge });
+  await registerVersionMenuRoute(app, {
+    versionMenu: createVersionMenuClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock }),
+  });
   await registerRelayRoutes(app, relay);
 
   const deps: DispatcherDeps = {

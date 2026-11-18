@@ -648,7 +648,6 @@ const FAMILIES: readonly Family[] = [
       at('GET', '/v1/sites/:siteid/content/drafts'),
       at('GET', '/v1/sites/:siteid/content/images'),
       at('GET', '/v1/sites/:siteid/content/tree'),
-      at('POST', '/v1/sites/:siteid/content/versions/:contenthistid/object-params'),
       at('GET', '/v1/sites/:siteid/content/versions/:contenthistid/summary'),
       at('GET', '/v1/sites/:siteid/feeds/display-fields'),
       at('GET', '/v1/sites/:siteid/files/image-details'),
@@ -1209,7 +1208,6 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
       ['carch', 'refreshsitesection', 'RangeError: Element RSTOP is undefined in RC.'],
       ['carch', 'savecopyinfo', 'UndefinedLegacyElementError: Element COPYALL is undefined in RC.'],
       ['carch', 'savequickedit', 'UndefinedLegacyElementError: Element RC.attribute is undefined in ARGUMENTS.'],
-      ['carch', 'update', 'UndefinedLegacyElementError: Element RC.contentBean is undefined in ARGUMENTS.'],
       ['cfeed', 'update', 'FeedElementUndefinedError: Element FEEDID is undefined in ARGUMENTS.RC.'],
       ['cform', 'getdataset', 'CformRequestError: Element RC.fieldID is undefined in ARGUMENTS.'],
       ['cform', 'getdialog', 'CformRequestError: Element RC.dialog is undefined in ARGUMENTS.'],
@@ -1217,11 +1215,6 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
       ['cform', 'getfieldtemplate', 'CformRequestError: Element RC.fieldtype is undefined in ARGUMENTS.'],
     ] as const
   ).map(([circuit, action, error]) => ({ routes: rawRoutes(circuit, action), status: 500, matches: threw(error) })),
-  {
-    routes: ['POST /v1/sites/:siteid/content/versions/:contenthistid/object-params'],
-    status: 500,
-    matches: threw('UndefinedLegacyElementError: Element RC.approved is undefined in ARGUMENTS.'),
-  },
   { routes: ['POST /v1/sites/:siteid/forms/import'], status: 500, matches: threw('CformRequestError: Element FORMZIP is undefined in FORM.') },
   { routes: ['POST /v1/sites/:siteid/variation-targeting'], status: 500, matches: threw('UndefinedLegacyElementError: Element INITJS is undefined in RC.') },
   // RecordingDb answers every seeded row of a table, unfiltered and without joined or aliased columns, so these reads fail past admission.
@@ -1517,33 +1510,17 @@ function familyOf(entry: RouteMatrixEntry): Family {
 
 describe('legacy handler gates', () => {
   const saveForm = `contentid=${IDS.content.section}&title=Probe&${CSRF_FIELDS}`;
-  const authorization = LEGACY_ERROR_MAP.authorization;
-  const refusedSave = { apiversion: 'v1', method: 'save', error: { message: authorization.message, code: authorization.code } };
 
-  it.each(['member', 'system-user'])(
-    'POST /_api/json/v1/tenant-a/content × %s → denied (401 authorization) after exactly one CSRF consume, writing nothing',
-    async (name) => {
-      const result = await send(postForm(`/_api/json/v1/${SITE_A}/content`, saveForm), await credentialOf(name));
-      expect(result.res.statusCode).toBe(authorization.status);
-      expect(JSON.parse(result.res.body)).toEqual(refusedSave);
-      expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [{ context: 'new' }] });
-    },
-  );
-
-  it('POST /_api/rest/v1/tenant-a/content × system-user → denied (401 authorization), sessionless REST consuming no token', async () => {
-    const result = await send(postForm(`/_api/rest/v1/${SITE_A}/content`, saveForm), await credentialOf('system-user'));
-    expect(result.res.statusCode).toBe(authorization.status);
-    expect(JSON.parse(result.res.body)).toEqual(refusedSave);
+  // The content save writes the decision-list table tcontenteventreminders, so it stays on legacy for every subject.
+  it.each([
+    ['json', 'member'],
+    ['json', 'system-user'],
+    ['json', 'editor'],
+    ['rest', 'system-user'],
+  ])('POST /_api/%s/v1/tenant-a/content × %s → the withheld save answers the legacy 503, consuming no token and writing nothing', async (family, name) => {
+    const result = await send(postForm(`/_api/${family}/v1/${SITE_A}/content`, saveForm), await credentialOf(name));
+    expect(result.res.statusCode).toBe(503);
     expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [] });
-  });
-
-  it('POST /_api/json/v1/tenant-a/content × editor → allowed past allowSave: one CSRF consume, then the content insert', async () => {
-    const form = `parentid=${IDS.content.section}&type=Page&title=Probe&${CSRF_FIELDS}`;
-    const result = await send(postForm(`/_api/json/v1/${SITE_A}/content`, form), await credentialOf('editor'));
-    // RecordingDb rows lack catalog columns, so the save fails after its insert; its full answer is the PostgreSQL suites'.
-    expect(result.res.body).not.toContain(authorization.message);
-    expect(result.csrfConsumes).toEqual([{ context: 'new' }]);
-    expect(result.writes.some((statement) => /^INSERT INTO "?content"?\."?content"?\b/i.test(statement.sql))).toBe(true);
   });
 
   it.each<[string, () => Promise<Credential>, keyof typeof LEGACY_ERROR_MAP]>([

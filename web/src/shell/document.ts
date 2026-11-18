@@ -141,7 +141,7 @@ async function loadUserPrompts(ctx: AdminRequest, gateway: GatewayClient): Promi
  * The data the shell renders beyond `ctx`; site list, prompt counts, Update Core tokens and the legacy server facts are
  * loaded only when the full layout shows its nav and header, the counts only for a session site the token serves.
  * Gateway unavailability propagates.
- * @throws GatewayDenialError When a service refuses a read (401 or 403).
+ * @throws GatewayDenialError When a service or the gateway refuses a read (401 or 403).
  */
 export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Promise<ShellData> {
   const now = deps.now ?? new Date();
@@ -153,7 +153,7 @@ export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Pro
     chrome && ctx.user !== undefined && tokenServesSite(ctx.user, ctx.session.siteid)
       ? loadUserPrompts(ctx, deps.gateway)
       : NO_PROMPTS,
-    chrome ? loadLegacyServerInfo() : null,
+    chrome ? loadLegacyServerInfo(deps.gateway) : null,
   ]);
   return {
     rb: deps.rb,

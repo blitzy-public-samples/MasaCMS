@@ -13,6 +13,7 @@ import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, fixedClock } from '@o
 import {
   createBridgeClient,
   createSiteListClient,
+  createVersionMenuClient,
   isBridgeSessionMismatch,
   type BridgeClient,
   type BridgeClientOptions,
@@ -23,6 +24,7 @@ import {
   type LegacyDescribe,
   type LegacyDescribeUser,
   type LegacyUsedToken,
+  type LegacyVersionMenu,
   type SiteListing,
 } from '../../src/session/bridge-client.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from '../helpers/env.js';
@@ -35,6 +37,7 @@ import {
   type RecordedRequest,
 } from '../helpers/http-double.js';
 import {
+  LEGACY_VERSION_MENU,
   createInProcessLegacyOrigin,
   parseWireTime,
   type CreatedSession,
@@ -942,5 +945,123 @@ describe('createSiteListClient', () => {
     expect(init).toMatchObject({ method: 'GET', redirect: 'manual', body: undefined });
     expect(Object.keys(init?.headers ?? {}).sort()).toEqual(['Accept', 'User-Agent', BRIDGE_ASSERTION_HEADER].sort());
     expect(timeout).toHaveBeenCalledWith(SERVICE_CALL_TIMEOUT_MS);
+  });
+});
+
+describe('createVersionMenuClient', () => {
+  const menus = (overrides: Partial<BridgeClientOptions> = {}) =>
+    createVersionMenuClient({
+      legacyOrigin: double.url,
+      hmacKey: VECTOR_KEY,
+      clock: fixedClock(NOW),
+      fetch: double.fetch,
+      ...overrides,
+    });
+
+  it('sends a signed GET to site.cfm?op=versionMenu without cookies, as the bridge bot', async () => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { ...LEGACY_VERSION_MENU, serverTime: SERVER_TIME });
+    });
+
+    await expect(menus().versionMenu()).resolves.toEqual(LEGACY_VERSION_MENU);
+
+    expect(double.requests).toHaveLength(1);
+    const [req] = double.requests;
+    expect(req?.method).toBe('GET');
+    expect(req?.url).toBe(`${SITE_PAGE}?op=versionMenu`);
+    expect(req?.headers.cookie).toBeUndefined();
+    expect(req?.headers['user-agent']).toBe('opt2-legacy-bridge-bot');
+    expect(req?.headers.accept).toBe('application/json');
+    expect(req?.body).toHaveLength(0);
+    const assertion = assertionOf(req);
+    const { exp, nonce, ...named } = claimsOf(assertion);
+    expect(named).toEqual({ aud: 'legacy-bridge', op: 'site.versionMenu', sid: '', sub: '', siteId: '' });
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(exp - VECTOR_NOW_SECONDS).toBe(60);
+    expect(verifyBridgeAssertion(assertion, VECTOR_KEY, new MemoryNonceStore(), NOW)).toMatchObject({ ok: true });
+  });
+
+  it('is answered by the legacy origin double behind its assertion guard', async () => {
+    const legacy = createInProcessLegacyOrigin({ bridgeKey: VECTOR_KEY, clock: fixedClock(NOW) });
+    try {
+      await expect(menus({ legacyOrigin: legacy.url, fetch: legacy.fetch }).versionMenu()).resolves.toEqual(LEGACY_VERSION_MENU);
+      const refused = await failureOf(menus({ legacyOrigin: legacy.url, fetch: legacy.fetch, hmacKey: 'not-the-bridge-key' }).versionMenu());
+      expect(refused.cause).toMatchObject({ status: 403 });
+    } finally {
+      await legacy.close();
+    }
+  });
+
+  it.each<[string, Record<string, unknown>, LegacyVersionMenu]>([
+    ['keeps text and null values', LEGACY_VERSION_MENU, LEGACY_VERSION_MENU],
+    [
+      'reads a Java version and the absent OS keys',
+      { ...LEGACY_VERSION_MENU, javaVersion: '11.0.2', osName: null, osVersion: null },
+      { ...LEGACY_VERSION_MENU, javaVersion: '11.0.2', osName: null, osVersion: null },
+    ],
+    [
+      'coerces values serializeJSON wrote as numbers to text',
+      { ...LEGACY_VERSION_MENU, appServerVersion: 2023, dbProductVersion: 16.5, javaVersion: 17, osVersion: 6 },
+      { ...LEGACY_VERSION_MENU, appServerVersion: '2023', dbProductVersion: '16.5', javaVersion: '17', osVersion: '6' },
+    ],
+  ])('%s', async (_case, answered, expected) => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { ...answered, serverTime: SERVER_TIME });
+    });
+
+    await expect(menus().versionMenu()).resolves.toEqual(expected);
+  });
+
+  it.each<{ status: number; body: string; error?: string }>([
+    { status: 400, body: '{"error":"badRequest","message":"GET required"}', error: 'badRequest' },
+    { status: 403, body: '' },
+    { status: 404, body: '{"error":"notFound","message":"unknown op"}', error: 'notFound' },
+    { status: 500, body: '{"error":"serverError","message":"database"}', error: 'serverError' },
+  ])('fails closed on HTTP $status', async ({ status, body, error }) => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, status, body);
+    });
+
+    const failure = await failureOf(menus().versionMenu());
+
+    const detail = error === undefined ? '' : ` ${error}`;
+    expect(failure.cause).toMatchObject({
+      message: `legacy bridge site.versionMenu answered HTTP ${String(status)}${detail}`,
+      code: `HTTP_${String(status)}`,
+      status,
+      error,
+    });
+  });
+
+  const without = (key: keyof LegacyVersionMenu): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(LEGACY_VERSION_MENU).filter(([name]) => name !== key));
+  it.each<[string, unknown]>([
+    ['no app server product name', { ...LEGACY_VERSION_MENU, appServerProductName: undefined }],
+    ['no database product name key', without('dbProductName')],
+    ['a null database version', { ...LEGACY_VERSION_MENU, dbProductVersion: null }],
+    ['a boolean app server version', { ...LEGACY_VERSION_MENU, appServerVersion: true }],
+    ['no OS name key', without('osName')],
+    ['an object Java version', { ...LEGACY_VERSION_MENU, javaVersion: { version: '17' } }],
+    ['an array OS version', { ...LEGACY_VERSION_MENU, osVersion: ['6.12'] }],
+    ['a JSON array body', [LEGACY_VERSION_MENU]],
+    ['a JSON null body', null],
+  ])('fails closed on a 2xx with %s', async (_case, body) => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, 200, JSON.stringify(body), { 'content-type': 'application/json; charset=utf-8' });
+    });
+
+    const failure = await failureOf(menus().versionMenu());
+
+    expect(failure.cause).toMatchObject({ message: 'legacy bridge site.versionMenu answered no Version menu values' });
+  });
+
+  it('fails closed on a 2xx that is not JSON', async () => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, 200, '<html>Masa CMS</html>', { 'content-type': 'text/html' });
+    });
+
+    const failure = await failureOf(menus().versionMenu());
+
+    expect(failure.cause).toBeInstanceOf(SyntaxError);
   });
 });

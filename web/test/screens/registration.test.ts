@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import { carchScreens } from '@/screens/carch';
 import { carchGate } from '@/screens/carch/controller';
+import { listGate } from '@/screens/carch/list';
 import { ccategoryScreens } from '@/screens/ccategory';
 import { cchainScreens } from '@/screens/cchain';
 import { ceditprofileScreens } from '@/screens/ceditprofile';
@@ -137,7 +138,7 @@ describe('carch barrel', () => {
       const record = carried.get(keyOf(def));
       expect(def.mode, keyOf(def)).toBe(record?.responseMode);
       expect(def.owner, keyOf(def)).toBe(record?.owningService);
-      expect(def.gate, keyOf(def)).toBe(carchGate);
+      expect(def.gate, keyOf(def)).toBe(keyOf(def) === 'admin:carch.list' ? listGate : carchGate);
     }
   });
 });

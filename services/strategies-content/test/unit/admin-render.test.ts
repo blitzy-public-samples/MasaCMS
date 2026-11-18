@@ -25,7 +25,6 @@ import {
   renderSiteManagerTab,
   renderStatusModal,
   renderTagArray,
-  renderUpdateResponse,
   type AdminRenderContext,
   type AdminRenderResult,
   type DiffVersion,
@@ -37,7 +36,6 @@ import {
   type SiteManagerModel,
   type SiteManagerRow,
   type StatusModalModel,
-  type UpdateResponseModel,
 } from '../../src/legacy/admin-render.js';
 import {
   esapiEncode,
@@ -47,7 +45,7 @@ import {
   type AdminSession,
   type EsapiContext,
 } from '../../src/legacy/admin-markup.js';
-import { acfSerializeJson, muraJsonEncode } from '../../src/legacy/cfjson.js';
+import { muraJsonEncode } from '../../src/legacy/cfjson.js';
 import { computeDiff } from '../../src/legacy/diff-match-patch.js';
 import { IDS, commentRow, contentRow } from '../helpers/seed.js';
 
@@ -476,24 +474,6 @@ describe('carch JSON and status panels', () => {
     const body = renderStatusModal(pendingModal(OTHER_USER_ID), context({ memberships: '' })).body;
     expect(body).toContain('<em>Waiting for Group:</em>');
     expect(body).not.toContain('approval-action-form');
-  });
-
-  it('renderUpdateResponse returns the failed ajax save with fresh CSRF fields for the version', () => {
-    const errors = { title: 'The Title field is required.' };
-    const model: UpdateResponseModel = {
-      qqfile: false,
-      ajaxRequest: true,
-      action: 'add',
-      content: { filename: 'page-one', contenthistid: IDS.hist.pageOneDraft, active: 0, isOnDisplay: false },
-      errors,
-    };
-    expect(renderUpdateResponse(model, context())).toEqual({
-      status: 200,
-      contentType: ADMIN_VIEW_CONTENT_TYPE,
-      body:
-        `{success:false,\n\t\terrors:${acfSerializeJson(errors, { preserveKeyCase: true })},` +
-        `\n\t\tcsrf_token: 'T-${IDS.hist.pageOneDraft}add',\n\t\tcsrf_token_expires: 'E'\n}`,
-    });
   });
 });
 

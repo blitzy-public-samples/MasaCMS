@@ -42,6 +42,7 @@ import {
 } from '../helpers/app.js';
 import { TEST_INSTANCE_ID } from '../helpers/env.js';
 import type { RecordedRequest } from '../helpers/http-double.js';
+import { BRIDGE_SITE_PATH, LEGACY_VERSION_MENU } from '../helpers/legacy-origin.js';
 import type { MemoryGatewayDb } from '../helpers/memory-store.js';
 import type { TargetDouble } from '../helpers/target-double.js';
 import { committedGroups, committedTable, cutoverTable, type CommittedVersion } from '../helpers/versions.js';
@@ -121,6 +122,7 @@ const GATEWAY_OPERATION_IDS = [
   'cutoverStatusV2',
   'inflightClearOrphans',
   'legacySessionMarkUsed',
+  'getLegacyVersionMenu',
   'relayGet',
   'relayPost',
   'relayPut',
@@ -161,7 +163,7 @@ const UNKNOWN_ROUTE = 'admin:nosuch.action';
 const CONTENT_LIST_PATH = '/_api/json/v1/default/content';
 const CONTENT_PATH = `${CONTENT_LIST_PATH}/C1`;
 const MISSING_PATH = `${CONTENT_LIST_PATH}/missing`;
-const RELAY_PATH = '/internal/v1/relay/people/opt2/people/ping';
+const RELAY_PATH = '/internal/v1/relay/people/v1/persons';
 const STUB_PATH = '/opt2/stub/notes';
 const USED_AT = '2026-06-30T12:00:00.000';
 const MARKED_SESSION = 'ids-contract-marked';
@@ -179,6 +181,7 @@ const UNFREEZE = '/internal/v1/cutover/unfreeze';
 const STATUS = '/internal/v1/cutover/status';
 const STATUS_V2 = '/internal/v2/cutover/status';
 const CLEAR = '/internal/v1/inflight:clear-orphans';
+const VERSION_MENU = '/internal/v1/legacy-server/version-menu';
 /** The keys of a v1 in-flight group; v2 adds `orphaned`. */
 const V1_INFLIGHT_KEYS = ['count', 'instanceId', 'oldestStartedAt', 'route', 'side'];
 /** Route of the live instance's running and abandoned writes, one v1 group and two v2 groups. */
@@ -824,6 +827,27 @@ const CONTROL_CASES: Case[] = [
     verify: (_res, _body, tg) => expect(tg.legacy.bridgeCalls.at(-1)).toMatchObject({ op: 'markUsed', status: 409 }),
   },
   ...credentialCases('legacySessionMarkUsed', markUsedUrl(MARKED_SESSION), 'POST', { tokens: [tokenEntry(MARKED_TOKEN)] }, 'operator', V0002),
+  {
+    operationId: 'getLegacyVersionMenu',
+    status: '200',
+    title: "legacy's Version menu facts through the bridge",
+    start: V0002,
+    request: async () => ({ method: 'GET', url: VERSION_MENU, headers: await webServiceHeaders() }),
+    verify: (_res, body, tg) => {
+      expect(body).toEqual(LEGACY_VERSION_MENU);
+      expect(tg.legacy.requests.at(-1)).toMatchObject({ method: 'GET', path: BRIDGE_SITE_PATH, query: { op: 'versionMenu' } });
+    },
+  },
+  {
+    operationId: 'getLegacyVersionMenu',
+    status: '503',
+    title: 'a bridge answering its 500 serverError',
+    start: V0002,
+    before: (tg) => tg.legacy.setVersionMenuAnswer({ status: 500, body: { error: 'serverError', message: 'database' } }),
+    after: (tg) => tg.legacy.setVersionMenuAnswer(),
+    request: async () => ({ method: 'GET', url: VERSION_MENU, headers: await webServiceHeaders() }),
+  },
+  ...credentialCases('getLegacyVersionMenu', VERSION_MENU, 'GET', undefined, 'identity', V0002),
 ];
 
 const relayOperation = (method: string): string => `relay${method.charAt(0)}${method.slice(1).toLowerCase()}`;
@@ -847,7 +871,7 @@ const RELAY_CASES: Case[] = RELAY_METHODS.flatMap((method): Case[] => [
       const echo = body as { method: string; path: string; authorization?: string; serverlessAuthorization?: string };
       expect({ method: echo.method, path: echo.path, authorization: echo.authorization }).toEqual({
         method,
-        path: '/opt2/people/ping',
+        path: '/v1/persons',
         authorization: `Bearer ${relayedUserToken}`,
       });
       const caller = await testVerifier('people').invocationVerifier.verify(String(echo.serverlessAuthorization));
@@ -861,6 +885,13 @@ const RELAY_CASES: Case[] = RELAY_METHODS.flatMap((method): Case[] => [
     title: 'an unknown service',
     start: V0002,
     request: async () => ({ method, url: '/internal/v1/relay/nosuch/x', headers: await webServiceHeaders() }),
+  },
+  {
+    operationId: relayOperation(method),
+    status: '404',
+    title: "a callee path outside the service's public versioned API",
+    start: V0002,
+    request: async () => ({ method, url: '/internal/v1/relay/identity/internal/v1/tokens', headers: await webWithUser() }),
   },
   {
     operationId: relayOperation(method),

@@ -1,4 +1,4 @@
-// Stand-in for LEGACY_ORIGIN: ColdFusion sessions, the bridge's session.cfm behind its assertion guard, and echoed pages.
+// Stand-in for LEGACY_ORIGIN: ColdFusion sessions, the bridge's session.cfm and site.cfm Version menu behind its assertion guard, and echoed pages.
 import { Buffer } from 'node:buffer';
 import type { ServerResponse } from 'node:http';
 import {
@@ -22,6 +22,7 @@ import type {
   ExportResult,
   ExportedValue,
   HydrateResult,
+  LegacyVersionMenu,
   MarkUsedResult,
   UsedSinceResult,
 } from '../../src/session/bridge-client.js';
@@ -38,10 +39,24 @@ import {
   type RecordedRequest,
 } from './http-double.js';
 
-/** Path of the bridge's session page, the only bridge page the double serves. */
+/** Path of the bridge's session page. */
 export const BRIDGE_SESSION_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
 
-/** Every path under this prefix other than {@link BRIDGE_SESSION_PATH} answers a bodiless 404. */
+/** Path of the bridge's site page, of which the double serves `op=versionMenu` only. */
+export const BRIDGE_SITE_PATH = '/gateway/legacy-bridge/cfml/site.cfm';
+
+/** `site.cfm?op=versionMenu` as the ACF 2023 oracle answers it, without `server.java`. */
+export const LEGACY_VERSION_MENU: LegacyVersionMenu = {
+  appServerProductName: 'ColdFusion Server',
+  appServerVersion: '2023,0,26,331018',
+  dbProductName: 'Microsoft SQL Server',
+  dbProductVersion: 'Microsoft SQL Server 2022 - 16.0.4305.5',
+  javaVersion: null,
+  osName: 'UNIX',
+  osVersion: '6.12.105+',
+};
+
+/** Every other path under this prefix answers a bodiless 404. */
 const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
 const ASSERTION_HEADER = BRIDGE_ASSERTION_HEADER.toLowerCase();
 
@@ -189,6 +204,8 @@ export type LegacyOrigin = HttpDouble & {
   consumeTokenDuringNextRequest(legacySessionId: string, token: string): void;
   /** The session's used-token ledger in wire form. */
   usedTokens(legacySessionId: string): LegacyUsedToken[];
+  /** Programs the answer of `site.cfm?op=versionMenu`; without an argument it answers {@link LEGACY_VERSION_MENU} again. */
+  setVersionMenuAnswer(answer?: { status: number; body: object }): void;
 };
 
 /** The legacy origin double served in process through its `fetch`, with no socket. */
@@ -728,6 +745,7 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
   const pendingTokens = new Map<string, string[]>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let responder: LegacyResponseSpec | LegacyResponder = {};
+  let versionMenuAnswer: { status: number; body: object } | undefined;
   let created = 0;
 
   const sessionById = (legacySessionId: string): LegacySession => {
@@ -835,6 +853,23 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
     sendJson(res, status, body, withSetCookies({}, setCookies, []));
   };
 
+  /** Answers `site.cfm?op=versionMenu` behind the guard: 403 unless signed for `site.versionMenu`, 400 unless GET. */
+  const versionMenu = (req: RecordedRequest, res: ServerResponse): void => {
+    const header = req.headers[ASSERTION_HEADER];
+    const result = typeof header === 'string' && header !== '' ? verifyBridgeAssertion(header, bridgeKey, nonces, clock.now()) : undefined;
+    if (result?.ok !== true || result.payload.op !== 'site.versionMenu' || result.payload.siteId !== queryValue(req, 'siteid')) {
+      sendBytes(res, 403, '');
+      return;
+    }
+    const serverTime = formatWireTime(clock.now());
+    if (req.method !== 'GET') {
+      sendJson(res, 400, { error: 'badRequest', message: 'GET required', serverTime });
+      return;
+    }
+    const { status, body } = versionMenuAnswer ?? { status: 200, body: LEGACY_VERSION_MENU };
+    sendJson(res, status, { ...body, serverTime });
+  };
+
   /** Records the session's pending tokens as used, as a validating legacy action's validateCSRFTokens does. */
   const consumePending = (session: LegacySession): void => {
     const tokens = pendingTokens.get(session.legacySessionId);
@@ -876,6 +911,7 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
 
   const handler: DoubleHandler = async (req, res) => {
     if (req.path === BRIDGE_SESSION_PATH) bridge(req, res);
+    else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'versionMenu') versionMenu(req, res);
     else if (req.path.startsWith(BRIDGE_PREFIX)) sendBytes(res, 404, '');
     else await page(req, res);
   };
@@ -894,6 +930,9 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
       pendingTokens.set(legacySessionId, [...(pendingTokens.get(legacySessionId) ?? []), token]);
     },
     usedTokens: (legacySessionId) => ledgerEntries(sessionById(legacySessionId).used),
+    setVersionMenuAnswer(answer) {
+      versionMenuAnswer = answer;
+    },
     // Bridge calls are recorded requests too, so both records are cleared together.
     clearRequests() {
       double.clearRequests();

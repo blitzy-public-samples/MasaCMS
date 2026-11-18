@@ -1,4 +1,4 @@
-/** contentManager.add through `domain/content` over a throwaway `content` schema: versions, moves, change sets, approvals, extended data, assignments and the JSON API save. */
+/** contentManager.add through `domain/content` over a throwaway `content` schema: versions, moves, change sets, approvals, extended data and assignments. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TENANT_UMBRELLA, pgAvailable } from '@opt2/platform/testing';
 import {
@@ -6,9 +6,9 @@ import {
   LegacyContentBean,
   REMINDER_UPDATES_UNBUILT,
   approveVersion,
+  getContentVersion,
   publish,
   saveContent,
-  saveContentEntity,
   saveContentInTx,
   saveDraft,
   type ContentInput,
@@ -238,7 +238,11 @@ describe.skipIf(!(await pgAvailable()))('domain/content saves', () => {
       [9002, '4'],
     ]);
     // A bean save autocompletes under its loaded version, so the stored value is kept.
-    const viaBean = await saveContentEntity(fx.deps, ADMIN, SITE, { event: { siteid: SITE_ID, contentid: saved.bean.contentId(), type: 'Page', extendsetid: setId, size: '5' } });
+    const active = await getContentVersion(fx.deps, ADMIN, { contentHistId: saved.bean.contentHistId(), siteId: SITE_ID });
+    if (active.isNew !== 0) throw new Error('the saved version is stored');
+    const bean = LegacyContentBean.fromVersion(active.version, ADMIN, NOW);
+    bean.setValue('size', '5');
+    const viaBean = await saveContent(fx.deps, ADMIN, SITE, bean);
     expect(viaBean.errors).toEqual({});
     const kept = await fx.rows('extend_data', 'baseid = $1', [viaBean.bean.contentHistId()], 'attributeid');
     expect(kept.map((r) => [r.attributeid, r.attributevalue])).toEqual([
@@ -298,57 +302,5 @@ describe.skipIf(!(await pgAvailable()))('domain/content saves', () => {
     const [row] = await content('title = $1', ['Needs Approval']);
     expect(row).toMatchObject({ approved: 0, lastupdatebyid: editor.userId });
     expect(await fx.rows('approval_request', 'contenthistid = $1', [row?.contenthistid])).toEqual([expect.objectContaining({ chainid: chainId, status: 'Pending' })]);
-  });
-
-  describe('JSON API save', () => {
-    it('denies an actor without node permission', async () => {
-      await expect(saveContentEntity(fx.deps, NOBODY, SITE, { event: { siteid: SITE_ID, parentid: HOME, type: 'Page', title: 'Nope' } })).rejects.toMatchObject({ type: 'authorization' });
-      expect(await content('title = $1', ['Nope'])).toHaveLength(0);
-    });
-
-    it('saves an editor save, reloads it and keys it by contenthistid', async () => {
-      const saved = await saveContentEntity(fx.deps, ADMIN, SITE, { event: { siteid: SITE_ID, parentid: HOME, type: 'Page', title: 'Api Page', approved: 1 } });
-      expect(saved).toMatchObject({ errors: {}, pk: 'contenthistid' });
-      expect(saved.bean.isNew).toBe(0);
-      expect(saved.bean.text('title')).toBe('Api Page');
-    });
-
-    it('keeps the event values on the reloaded bean of a save with errors', async () => {
-      const saved = await saveContentEntity(fx.deps, ADMIN, SITE, { event: { siteid: SITE_ID, contentid: aboutId, parentid: folderId, type: 'Page', title: 'Bad', template: 'x/y.cfm' } });
-      expect(saved.pk).toBe('contentid');
-      expect(saved.errors).toEqual({ template: 'invalid template' });
-      expect(saved.bean.text('title')).toBe('Bad');
-    });
-
-    it('saves an author save unapproved and removes categories on request', async () => {
-      const authors = cfId('G', 2);
-      const author: Actor = { ...NOBODY, userId: cfId('U', 3), roles: ['system-user', 'm:000'] };
-      await fx.inTenant(async (tx) => {
-        await fx.repo.projections.upsertGroupProjection(tx, { groupId: authors, siteId: SITE_ID, groupName: 'Authors', isPublic: 0, deleted: false });
-        await fx.repo.projections.replaceUserMemberships(tx, author.userId, SITE_ID, [authors]);
-        await fx.repo.projections.replaceGroupPermissions(tx, authors, SITE_ID, [{ contentId: HOME, siteId: SITE_ID, type: 'author' }]);
-      });
-      const saved = await saveContentEntity(fx.deps, author, SITE, { event: { siteid: SITE_ID, parentid: HOME, type: 'Page', title: 'Authored', approved: 1, removecategories: true } });
-      expect(saved.errors).toEqual({});
-      expect((await content('title = $1', ['Authored']))[0]).toMatchObject({ approved: 0, lastupdatebyid: author.userId });
-    });
-
-    it('saves a new Variation in a change set as an approved empty default, then the draft', async () => {
-      const changeset = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: aboutId, parentid: folderId, type: 'Page', title: 'For Variation', changesetid: 'other', changesetname: 'Variations' });
-      const changesetId = changeset.bean.text('changesetid');
-      const variations = '00000000000000000000000000000000099';
-      await fx.inTenant((tx) =>
-        fx.repo.content.insertVersion(tx, { contentid: variations, siteid: SITE_ID, parentid: END, type: 'Module', subtype: 'Default', moduleid: variations, active: 1, approved: 1, path: variations }),
-      );
-      const saved = await saveContentEntity(fx.deps, ADMIN, SITE, {
-        event: { siteid: SITE_ID, parentid: '00000000000000000000000000000000099', type: 'Variation', title: 'Hero', body: encodeURIComponent('[{"a":1}]'), changesetid: changesetId },
-      });
-      expect(saved.errors).toEqual({});
-      const versions = await content('contentid = $1', [saved.bean.contentId()]);
-      expect(versions.map((r) => [r.body, r.changesetid, r.approved])).toEqual([
-        ['[]', null, 1],
-        ['[{"a":1}]', changesetId, 0],
-      ]);
-    });
   });
 });

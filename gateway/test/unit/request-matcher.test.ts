@@ -439,6 +439,8 @@ describe('createMatcher target destinations', () => {
     entry('fixture:finance/records@get', 'finance'),
     entry('fixture:finance/records@post', 'finance'),
     entry('fixture:finance/records/{id}/submit@post', 'finance'),
+    entry('fixture:finance/records/{id}@get', 'finance'),
+    entry('fixture:finance/records/{id}/versions@get', 'finance'),
   ]);
   it.each<[method: string, url: string, route: string, path: string]>([
     ['GET', `${FIXTURE}/finance/records?siteid=tenant-a`, 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
@@ -446,10 +448,23 @@ describe('createMatcher target destinations', () => {
     ['GET', `${FIXTURE}/finance%2Frecords?siteid=tenant-a`, 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
     ['POST', '/legacy-fixtures//cfml/api.cfm/finance/Records/?siteid=tenant-a&q=a+b%2f', 'fixture:finance/records@post', `${FIXTURE}/finance/records?siteid=tenant-a&q=a+b%2f`],
     ['POST', `${FIXTURE}/FINANCE/Records/Ab-1/SUBMIT`, 'fixture:finance/records/{id}/submit@post', `${FIXTURE}/finance/records/Ab-1/submit`],
+    ['GET', `${FIXTURE}/finance/records/a%5C..%5Cb/versions`, 'fixture:finance/records/{id}/versions@get', `${FIXTURE}/finance/records/a%5C..%5Cb/versions`],
+    ['GET', `${FIXTURE}/finance/records/x../versions`, 'fixture:finance/records/{id}/versions@get', `${FIXTURE}/finance/records/x../versions`],
   ])('sends %s %s to its service on the api.cfm path legacy dispatches, the query as sent', async (method, url, route, path) => {
     const outcome = await matchOf(matcherWith({ active: () => FIXTURE_INDEX }), url, { method });
     expect(outcome.entry?.route).toBe(route);
-    expect(outcome.destination).toStrictEqual({ kind: 'target', service: 'finance', serviceUrl: urlOf('finance'), path, isWeb: false });
+    expect(outcome.destination).toStrictEqual({ kind: 'target', service: 'finance', serviceUrl: urlOf('finance'), path, isWeb: false, rawTarget: true });
+  });
+
+  it.each<[url: string, key: string]>([
+    [`${FIXTURE}/finance/records/..%5C..%5Cweb.config`, `static:${FIXTURE}/finance/records/..\\..\\web.config`],
+    [`${FIXTURE}/finance/records/..%5C..%5Cweb.config/versions`, 'page:render'],
+    [`${FIXTURE}/finance/records/.x/versions`, 'page:render'],
+  ])('keys %s as %s, off its target fixture entry, and sends it to legacy', async (url, key) => {
+    const outcome = await matchOf(matcherWith({ active: () => FIXTURE_INDEX }), url);
+    expect(outcome.result?.key).toBe(key);
+    expect(outcome.entry).toBeUndefined();
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
   });
 
   it("keys a REST request without a client's consumed-params header, which only the gateway may send", async () => {

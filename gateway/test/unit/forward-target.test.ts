@@ -734,6 +734,40 @@ describe('forwardToTarget fail closed', () => {
     expect(service.requests).toHaveLength(0);
   });
 
+  it.each<{ label: string; path: string; base: string; received: string }>([
+    {
+      label: 'an encoded backslash item closing with ..',
+      path: '/legacy-fixtures/cfml/api.cfm/finance/records/x%5C../versions?siteid=tenant-a',
+      base: '/',
+      received: '/legacy-fixtures/cfml/api.cfm/finance/records/x%5C../versions?siteid=tenant-a',
+    },
+    {
+      label: 'an item closing with ..',
+      path: '/legacy-fixtures/cfml/api.cfm/finance/records/x../versions',
+      base: '/',
+      received: '/legacy-fixtures/cfml/api.cfm/finance/records/x../versions',
+    },
+    {
+      label: "an item closing with .. after the callee's base path",
+      path: '/legacy-fixtures/cfml/api.cfm/finance/records/x../versions?a=%2e%2e',
+      base: '/svc//',
+      received: '/svc/legacy-fixtures/cfml/api.cfm/finance/records/x../versions?a=%2e%2e',
+    },
+  ])('sends a raw target with $label byte for byte, past what reply-from rejects', async ({ path, base, received }) => {
+    const raw = await startHarness(() => service, { gatewayAgent: true });
+    try {
+      raw.set({ path, rawTarget: true, serviceUrl: `${service.url}${base}` });
+      const res = await raw.app.inject({ method: 'GET', url: '/v1/notes' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: 'ok' });
+      expect(only(service).url).toBe(received);
+      expect(raw.logs.filter((line) => line.msg.startsWith('fail-closed'))).toEqual([]);
+      await expectSettledOnce(raw);
+    } finally {
+      await raw.app.close();
+    }
+  });
+
   it('fails closed when the Set-Cookie mapping fails', async () => {
     harness.set({
       mapSetCookies: async () => {

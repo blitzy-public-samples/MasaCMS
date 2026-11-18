@@ -1,6 +1,7 @@
 /**
  * JSON API `content` and `contentnav` entity (core/mura/client/api/json/v1/jsonApiUtility.cfc:69-105): the generic
- * finders, save and delete of contentBean and contentNavBean over ../../domain/content.ts, content-tree.ts and search.ts.
+ * finders and delete of contentBean and contentNavBean over ../../domain/content.ts, content-tree.ts and search.ts.
+ * Their save is withheld: with no handler, the dispatcher answers it with the legacy 503.
  */
 import {
   LEGACY_ADMIN_SENTINEL_ID,
@@ -13,10 +14,9 @@ import {
   cfNumberString,
   cfToBoolean,
   isCfUuid,
-  javaTrim,
 } from '@opt2/platform/legacy-compat';
 import { throwIfRequestAborted } from '@opt2/platform/service-kit';
-import { deleteContentEntity, LegacyContentBean, saveContentEntity, type ContentDeps } from '../../domain/content.js';
+import { deleteContentEntity, LegacyContentBean, type ContentDeps } from '../../domain/content.js';
 import { getCrumbList, readContent, readContentVersions, type ContentBean, type ContentRef, type ContentVersionRef } from '../../domain/content-tree.js';
 import type { Actor, SiteContentSettings } from '../../domain/context.js';
 import { FeedContentUnsupportedError } from '../../domain/feeds.js';
@@ -628,31 +628,6 @@ const findPermissions: JsonApiHandlerFn = async (ctx, call) => {
 
 // ---- writes ----
 
-/** `entity.getValue('saveErrors')` after a content save: the posted value as setValue stores it, else ''. */
-function postedSaveErrors(call: JsonApiCall): unknown {
-  const posted = call.params.get('saveErrors');
-  if (posted === undefined || posted === null) return '';
-  return typeof posted === 'string' ? javaTrim(posted) : posted;
-}
-
-/** save (1903-2074): CSRF, then the domain save; the reloaded version expanded, with `saveErrors` and `errors` (403 when errors). */
-const save: JsonApiHandlerFn = async (ctx, call) => {
-  if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
-  const scope = scopeOf(ctx, call);
-  const saved = await saveContentEntity(writeDeps(ctx), scope.reader, call.site, { event: eventValues(call), id: call.id ?? 'new' }, { files: call.files });
-  const saveErrors = postedSaveErrors(call);
-  // The domain sets the request values back onto the reloaded bean whenever the save has errors; legacy skips that
-  // when the request posted a true `saveErrors` (2049-2057), so that bean is read again as stored.
-  const bean =
-    Object.keys(saved.errors).length > 0 && isTrue(saveErrors)
-      ? await loadBean(scope, { siteId: saved.bean.text('siteid'), contentHistId: saved.bean.contentHistId() })
-      : saved.bean;
-  const data = await serializeView(scope, contentView(scope, bean, ENTITY), { expanded: true, expandLinks: expandOf(call), pk: saved.pk });
-  setNoCase(data, 'saveErrors', saveErrors);
-  setNoCase(data, 'errors', saved.errors);
-  return jsonApiResultOf(data, ENTITY);
-};
-
 /** delete (3259-3335) in legacy's order (load, exists, AllowAction, CSRF, delete); answers ''. */
 const remove: JsonApiHandlerFn = async (ctx, call) => {
   // Legacy's component-scope `pk` (3287-3289) is process history a stateless service does not keep, so a CF-UUID
@@ -673,7 +648,6 @@ export const contentHandler: EntityHandler = Object.freeze({
   findQuery,
   findProperties,
   findPermissions,
-  save,
   delete: remove,
   loadBy,
 });

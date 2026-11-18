@@ -46,7 +46,7 @@
       "appliesTo": [],
       "difference": "Legacy `settingsBean.getThemeAssetPath` (core/mura/settings/settingsBean.cfc:821-849) returns the first existing theme directory on the legacy web root (`<siteDir>/<displayPoolID>/themes/<theme>`, then `<siteDir>/<displayPoolID>/includes/themes/<theme>`, then `<webroot>/themes/<theme>`, else the site asset path), printed as `themepath` by admin/common/layouts/includes/html_head.cfm:125 and by `Mura.init` in admin/common/layouts/template.cfm:544,551 and admin/common/layouts/compact.cfm:288,295. Web cannot read the legacy web root and no owner contract carries the layout, so the admin shell prints the `<webroot>/themes/<theme>` form.",
       "decision": "preserve",
-      "reason": "The target matches legacy for every site of this deployment, whose themes are under `<webroot>/themes` (Masa 7.6.1 installs themes/default there and legacy-fixtures/cfml/seed.cfm:138-139 gives seeded sites the default site's theme). A deployment whose session site keeps its theme under its site directory, under `includes/themes`, or has no theme directory keeps its admin page routes legacy (the entry becomes `halted` for it) until an owner contract supplies the resolved layout; the DOM comparison excludes scripts, so this entry is the record of that case.",
+      "reason": "The target matches legacy for every site of this deployment, whose themes are under `<webroot>/themes` (Masa 7.6.1 installs themes/default there and legacy-fixtures/cfml/seed.cfm:158-159 gives seeded sites the default site's theme). A deployment whose session site keeps its theme under its site directory, under `includes/themes`, or has no theme directory keeps its admin page routes legacy (the entry becomes `halted` for it) until an owner contract supplies the resolved layout; the DOM comparison excludes scripts, so this entry is the record of that case.",
       "status": "open",
       "evidence": {
         "golden": "harness/golden/sets/GS-CO-01.json",
@@ -1175,21 +1175,6 @@
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     },
     {
-      "id": "EX-CARCH-UPDATE-RERENDER",
-      "scenario": "GS-CO-02",
-      "routeKey": "admin:carch.update",
-      "appliesTo": [],
-      "difference": "Legacy `cArch.update` re-renders the edit form through admin/core/views/carch/update.cfm when the save's bean has errors, keeping the bean in `session.mura.editBean` (admin/core/controllers/carch.cfc:336-451; admin/core/views/carch/update.cfm:103-105,335). The errors come from `contentBean.validate`: the subtype's stored extended-attribute rules, a Form or Component title already stored, stored display conflicts, a file-less new File, a template with a path separator, an invalid canonical URL, a top-level filename naming a site, and restricted file types (core/mura/content/contentBean.cfc:467-526; core/mura/content/contentManager.cfc:1129-1136). strategies-content cannot render that form (`EX-CARCH-EDIT-FORM`), so it answers a rejected save with the legacy-shaped 503 naming the halt reason `carch-update-halted`, before any write.",
-      "decision": "preserve",
-      "reason": "Whether a save is rejected depends mostly on stored data (subtype attribute definitions, stored titles and display windows, the site list), so no request-decidable variant can keep the case on legacy, and halting `admin:carch.update` would send every content save there. The route stays `target` and fails closed on this case only; the entry closes with `EX-CARCH-EDIT-FORM`. No golden step submits a rejected admin save, so the entry excuses no difference.",
-      "status": "open",
-      "evidence": {
-        "golden": "harness/golden/sets/GS-CO-02.json",
-        "replay": "opt2/reports/parity.json#GS-CO-02"
-      },
-      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
-    },
-    {
       "id": "EX-CARCH-SORT-SHARED-ID",
       "scenario": "GS-CO-08",
       "routeKey": "admin:carch.list{sharedid}",
@@ -1272,6 +1257,21 @@
       "evidence": {
         "golden": "harness/golden/sets/GS-CO-13.json",
         "replay": "opt2/reports/parity.json#GS-CO-13"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-CARCH-LIST-UNREGISTERED-SITE",
+      "scenario": "GS-CO-08",
+      "routeKey": "admin:carch.list",
+      "appliesTo": [],
+      "difference": "Legacy carch before() passes `getModulePerm('00000000000000000000000000000000000', rc.siteid)` for a session whose memberships hold `S2` (a case-sensitive `listFind`) or `Admin;<privateUserPoolID of getSite(rc.siteid)>;0` (admin/core/controllers/carch.cfc:16-19; core/mura/permission.cfc:302-313), and `getSite` answers the `default` site for an id no site registers (core/mura/settings/settingsManager.cfc:537-566). For such an id list() finds no rows, resets `rc.topid` to the module root and stores it as `session[session.moduleid]` (carch.cfc:214-222); for the four content module ids its `listFind` names (carch.cfc:225-227) the view makes its session writes and, `getCrumbList` finding no crumb, answers 302 to `./?muraAction=cArch.list&siteid=<rc.siteid>&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001` (admin/core/views/carch/list.cfm:456-462,479,489-586,636-637), which answers the same 302 again. On the oracle the admin's `cArch.list&siteid=nosuchsite&moduleid=00000000000000000000000000000000000` answered that 302 on every follow. identity mints the token of an unregistered site without roles or S2 (`mint` in services/identity/src/domain/tokens.ts), and strategies-content refuses it. Web reproduces the loop for a session holding `S2`: in web/src/screens/carch/list.ts, cArch.list's own gate `listGate` admits it by the session memberships, and `runList` answers the root-list redirect without a tree read when `redirectsUnregisteredSite` finds one of the four content module ids and an `rc.siteid` that names no entry of `session.siteArray`, where identity lists every registered site for an S2 session, after making list()'s tree reset and the view's `session.mura.nextN`, `session.moduleid` and `session.keywords` writes, and its `session.flatViewArgs[session.siteid]` defaults and URL-keyword writes (list.cfm:489-586), stored as `session.mura.flatViewArgs`, where strategies-content keeps them for a registered site. Three cases remain: (a) a session holding `Admin;<the default site's privateUserPoolID>;0` without `S2` gets secure()'s redirect to the Referer or `./`; (b) with `orderperm`, the view's sort writes (list.cfm:590-634; see EX-CARCH-SORT-SHARED-ID) are not made for such a request; (c) an `rc.moduleid` outside those four ids, such as `LEGACY` or the 36-character `000000000000000000000000000000000099` that before() whitelists (carch.cfc:79-84), keeps the strategies-content read and so gets secure(), where legacy runs that module's view.",
+      "decision": "preserve",
+      "reason": "The target matches legacy's loop and the view's session writes for the S2 sessions GS-CO-08's admin role holds. The remaining cases need what the target does not hold: (a) roles on a site identity does not register, which the site-to-tenant binding withholds from an unknown site, and the default site's private user pool, which no contract gives web; (b) strategies-content's sort writes, which it serves only to a token with roles, over the other sites' rows EX-CARCH-SORT-SHARED-ID halts on; (c) strategies-content's views, which it likewise serves only to a token with roles. The entry has no `matches`, so it excuses no difference; no golden step requests an unregistered site. It stays open until an unknown site's token carries the `default` site's grants, as getSite's fallback does, or the user accepts the difference.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-08.json",
+        "replay": "opt2/reports/parity.json#GS-CO-08"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }

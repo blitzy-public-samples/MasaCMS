@@ -20,7 +20,7 @@ export { carchContentNav } from './content-nav';
 export { carchSecondaryMenu } from './secondary-menu';
 
 /** Inline writes kept withheld on legacy: their content saves write the decision-list table tcontenteventreminders. */
-const WITHHELD_INLINE_WRITES: ReadonlySet<string> = new Set(['savequickedit', 'updateobjectparams']);
+const WITHHELD_INLINE_WRITES: ReadonlySet<string> = new Set(['savequickedit']);
 
 // Every screen applies the `before()` defaults in its own first step. Legacy keeps the bundle-engine actions (export,
 // import, exportcontent, exportcomponent and importcomponent legacy-served; importcontent withheld), emailTest, the

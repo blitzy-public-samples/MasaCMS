@@ -4,15 +4,12 @@ import { TENANT_A, TENANT_LIST, TENANT_UMBRELLA, pgAvailable, type ThrowawaySche
 import { approvalAction } from '../../src/domain/approvals.js';
 import { publish as publishChangeset, rollback as rollbackChangeset, saveChangeset } from '../../src/domain/changesets.js';
 import {
-  carchUpdate,
   deleteAll,
-  multiFileUpload,
   publish,
   saveContent,
   saveContentInTx,
   saveDraft,
   saveQuickEdit,
-  updateObjectParams,
   type ContentDeps,
   type ContentInput,
   type ContentSaveSite,
@@ -272,24 +269,10 @@ describe.skipIf(!(await pgAvailable()))('content write paths over a seeded schem
   it.each([
     { entry: 'saveContent', type: 'File', slug: 'added-file', link: undefined },
     { entry: 'saveContent', type: 'Link', slug: 'added-link', link: 'https://example.com/added-link' },
-    { entry: 'carch.update add', type: 'File', slug: 'carch-file', link: undefined },
-    { entry: 'carch.update add', type: 'Link', slug: 'carch-link', link: 'https://example.com/carch-link' },
-  ])('$entry of a new $type stores the upload filename or URL as its body', async ({ entry, type, slug, link }) => {
+  ])('$entry of a new $type stores the upload filename or URL as its body', async ({ type, slug, link }) => {
     const files = link === undefined ? [part(`${slug}.pdf`)] : [];
     const input: ContentInput = { siteid: SITE_ID, parentid: HOME, type, title: slug, approved: 1, ...(link === undefined ? {} : { body: link }) };
-    let written: ContentRow[] = [];
-    if (entry === 'saveContent') {
-      written = (await saveContent(deps, ADMIN, SITE, input, { files })).written;
-    } else {
-      const result = await carchUpdate(deps, ADMIN, SITE, {
-        rc: { ...input, action: 'add', topid: HOME },
-        files,
-        validateCsrf: () => true,
-        session: { openSectionList: '', multiFileUpload: false },
-        accessControlOriginDomains: 'localhost',
-      });
-      expect(result.outcome.kind).toBe('redirect');
-    }
+    const { written } = await saveContent(deps, ADMIN, SITE, input, { files });
     const [stored] = await rows('title = $1 AND active = 1', [slug]);
     expect(stored).toMatchObject({ type, approved: 1, body: link ?? `${slug}.pdf` });
     expect(stored?.filename).toEqual(expect.any(String));
@@ -345,42 +328,6 @@ describe.skipIf(!(await pgAvailable()))('content write paths over a seeded schem
     expect(result?.errors).toEqual({});
     expect(await active(file.contentId())).toMatchObject({ contenthistid: result?.bean.contentHistId(), isnav: 0, body: 'quick-file.pdf' });
     await expectPredicateEmpty(result?.written);
-  });
-
-  it('updateObjectParams on a File saves a new active version that keeps its body', async () => {
-    const file = await newFile('objects-file', 'objects-file.pdf');
-    const saved = await updateObjectParams(deps, ADMIN, SITE, {
-      siteid: SITE_ID,
-      contenthistid: file.contentHistId(),
-      approved: 1,
-      params: '{"a":1}',
-      regionid: 2,
-      object: 'text',
-      objectid: 'obj1',
-      name: 'Text',
-    });
-    expect(saved?.contentHistId()).not.toBe(file.contentHistId());
-    expect(await active(file.contentId())).toMatchObject({ contenthistid: saved?.contentHistId(), body: 'objects-file.pdf' });
-    await expectPredicateEmpty();
-  });
-
-  it('multiFileUpload of two non-image files, one request each, adds two File items with bodies', async () => {
-    const names = ['brochure-a.pdf', 'brochure-b.pdf'];
-    for (const name of names) {
-      const item = await multiFileUpload(deps, ADMIN, SITE, {
-        siteId: SITE_ID,
-        parentId: HOME,
-        subType: 'Default',
-        approved: 1,
-        files: [part(name, 'files')],
-        extraParams: JSON.stringify({ body: name }),
-      });
-      expect(item).toMatchObject({ filename: name, body: name });
-    }
-    expect((await rows('title = ANY($1)', [names])).map((stored) => [stored.title, stored.type, stored.active, stored.body])).toEqual(
-      names.map((name) => [name, 'File', 1, name]),
-    );
-    await expectPredicateEmpty();
   });
 
   it('deleteAll of a section holding a File and a Link trashes all three and leaves no violating row', async () => {

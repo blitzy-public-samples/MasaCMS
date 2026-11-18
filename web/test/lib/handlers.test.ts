@@ -2,10 +2,11 @@
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_PAGE_HTML, esapiUrlEncode } from '@opt2/platform/legacy-compat';
-import { setServiceClientForTests } from '@/lib/gateway-client';
+import { LEGACY_VERSION_MENU_PATH, setServiceClientForTests } from '@/lib/gateway-client';
 import { handleAdminPage, handleOpt2Page } from '@/lib/handlers';
 import { logRequest } from '@/lib/telemetry';
 import { OPT2_NAV_MODULES } from '@/shell/document';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { CSRF_BY_CONTEXT, CSRF_LOGIN } from '../fixtures/identity/csrf';
 import { loginPageDefault, loginSessionAnonymous } from '../fixtures/identity/session-login';
 import { timesheetsAnswersByRole } from '../fixtures/opt2/timesheets';
@@ -37,6 +38,7 @@ const CSRF_TOKENS = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const HREF_DOMAINS = routeKey('GET', 'programs-sites', '/v1/href-domains');
 const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
 const TIMESHEETS_SHEETS = routeKey('GET', 'timesheets', '/v1/timesheets/sheets');
+const VERSION_MENU = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
 const shellSiteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
 const headerPromptsRoute = (siteId: string): string =>
   routeKey('GET', 'strategies-content', `/v1/sites/${siteId}/header-prompts`);
@@ -113,6 +115,7 @@ const BASE_ROUTES: FakeRouteTable = {
   [USER_SITES]: { status: 200, body: { sites: [userSite(TENANT_A_ID)] } },
   [shellSiteRoute(TENANT_A_ID)]: { status: 200, body: { site: TENANT_A, isNew: 0 } },
   [headerPromptsRoute(TENANT_A_ID)]: { status: 200, body: NO_PROMPTS },
+  [VERSION_MENU]: { status: 200, body: LEGACY_VERSION_MENU },
 };
 
 /** What identity holds for a logged-in session. */

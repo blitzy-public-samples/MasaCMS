@@ -1,8 +1,32 @@
 <cfscript>
-// Masa's in-memory site registry: lists its site ids and domain bindings, and rebuilds it from tsettings after a reverse-projected tsettings batch.
+// Masa's in-memory site registry: lists its site ids and domain bindings, and rebuilds it from tsettings after a reverse-projected tsettings batch;
+// also reports the server facts the admin Version menu prints.
 app = request.opt2BridgeApp;
 try {
-	if (compare(url.op, "list") == 0) {
+	if (compare(url.op, "versionMenu") == 0) {
+		if (compare(cgi.request_method, "GET") != 0) {
+			app.raise(400, "badRequest", "GET required");
+		}
+		// The values admin/common/layouts/includes/nav.cfm 383-407 prints; null where its structKeyExists finds the server key absent.
+		dbVersion = application.serviceFactory.getBean("dbUtility").version();
+		body = structNew("ordered");
+		body["appServerProductName"] = javaCast("string", server.coldfusion.productname);
+		body["appServerVersion"] = javaCast("string", server.coldfusion.productversion);
+		body["dbProductName"] = javaCast("string", dbVersion.database_productname);
+		body["dbProductVersion"] = javaCast("string", dbVersion.database_version);
+		if (structKeyExists(server, "java") && structKeyExists(server.java, "version")) {
+			body["javaVersion"] = javaCast("string", server.java.version);
+		} else {
+			body["javaVersion"] = javaCast("null", "");
+		}
+		if (structKeyExists(server, "os") && structKeyExists(server.os, "name")) {
+			body["osName"] = javaCast("string", server.os.name);
+			body["osVersion"] = javaCast("string", server.os.version);
+		} else {
+			body["osName"] = javaCast("null", "");
+			body["osVersion"] = javaCast("null", "");
+		}
+	} else if (compare(url.op, "list") == 0) {
 		if (compare(cgi.request_method, "GET") != 0) {
 			app.raise(400, "badRequest", "GET required");
 		}

@@ -24,7 +24,6 @@ import {
   requestHasRestrictedFiles,
   resolveRenderObject,
   saveFileMetaData,
-  setFileContentId,
   storeUploadedFile,
   type FileMetaDataValues,
   type RenderResolution,
@@ -243,12 +242,6 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
       const stream = vi.spyOn(file, 'stream');
       await expect(storeUploadedFile(deps, actorOf('nowhere'), { file })).rejects.toBeInstanceOf(UnregisteredTenantError);
       expect(stream).not.toHaveBeenCalled();
-    });
-
-    it('links a stored file to its content item', async () => {
-      const stored = await storeUploadedFile(deps, actorOf(TENANT_B.siteId), { file: upload('multi.pdf') });
-      const linked = await gated(TENANT_B.tenantId, (tx) => setFileContentId(tx, repo, stored.fileid, cfId('C', 9)));
-      expect(linked?.contentid).toBe(cfId('C', 9));
     });
 
     describe('failed uploads', () => {

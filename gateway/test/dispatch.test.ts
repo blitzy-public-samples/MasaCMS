@@ -19,6 +19,7 @@ import { buildRoutingIndex } from '../src/cutover/loader.js';
 import type { CutoverEntry, EntryKind, InventoryFacts, OwningService, RoutingIndex } from '../src/cutover/types.js';
 import { registerEdgeRoute, type DispatcherDeps } from '../src/dispatcher/dispatch.js';
 import { createMatcher } from '../src/dispatcher/match.js';
+import { replyFromOptions } from '../src/dispatcher/response-head.js';
 import { createSiteRegistry, type SiteRegistry } from '../src/dispatcher/site-registry.js';
 import type { SiteListing } from '../src/session/bridge-client.js';
 import type { SessionSnapshot } from '../src/session/identity-client.js';
@@ -197,7 +198,7 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
     cookieSettings: { secure: false, domain: '' },
     clock: systemClock,
   };
-  await app.register(replyFrom);
+  await app.register(replyFrom, replyFromOptions());
   await app.register(async (edge) => {
     edge.removeAllContentTypeParsers();
     edge.addContentTypeParser<Buffer>('*', { parseAs: 'buffer', bodyLimit: LEGACY_POST_LIMIT_BYTES }, (_request, body, done) =>

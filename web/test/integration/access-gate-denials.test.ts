@@ -14,6 +14,7 @@ import {
 } from '@/lib/gateway-client';
 import { ORIGINAL_URL_HEADER, buildAdminRequest, type AdminMode, type AdminRequest } from '@/lib/request-context';
 import { carchGate } from '@/screens/carch/controller';
+import { listGate } from '@/screens/carch/list';
 import { editorRequest, noSitesRequest } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
 import {
@@ -191,11 +192,17 @@ describe('a signed-in user whose token grants no role on the requested site', ()
   };
 
   /** The real set-up of `cArch.list&siteid=<site>` under the role-less token identity mints for that site. */
-  async function carchListOn(subject: WebTestSubject, site: string, sites: string[], referer?: string) {
+  async function carchListOn(
+    subject: WebTestSubject,
+    site: string,
+    sites: string[],
+    referer?: string,
+    memberships = 'S2IsPrivate',
+  ) {
     const headers = new Headers({ [INVOCATION_HEADER]: `Bearer ${await gatewayInvocation()}` });
     headers.set('authorization', `Bearer ${await userTokenFor(subject, { site, roles: [], s2: false })}`);
     const auth = await authenticateRequest(headers, '/admin/');
-    const user = { isLoggedIn: true, userID: subject.sub, siteID: subject.site, memberships: 'S2IsPrivate' };
+    const user = { isLoggedIn: true, userID: subject.sub, siteID: subject.site, memberships };
     const gateway = fakeGatewayClient(
       {
         [SESSION_ROUTES.current]: {
@@ -224,7 +231,14 @@ describe('a signed-in user whose token grants no role on the requested site', ()
     ['qa_editor on tenant-a, back to the Referer', SUBJECTS.qaEditor, 'tenant-a', ['default'], REFERER, REFERER],
     ['qa_editor on tenant-a without a Referer', SUBJECTS.qaEditor, 'tenant-a', ['default'], undefined, './'],
     ['the tenant-a site admin on tenant-b', SUBJECTS.siteAdmin, 'tenant-b', ['tenant-a'], REFERER, REFERER],
-    ['the S2 admin on an unregistered site', SUBJECTS.admin, 'nosuchsite', ['default', 'tenant-a'], undefined, './'],
+    [
+      'the admin without the S2 membership on an unregistered site',
+      SUBJECTS.admin,
+      'nosuchsite',
+      ['default', 'tenant-a'],
+      undefined,
+      './',
+    ],
   ])('gets secure() past the application gate: %s', async (_label, subject, site, sites, referer, location) => {
     const { request, gateway } = await carchListOn(subject, site, sites, referer);
 
@@ -232,5 +246,14 @@ describe('a signed-in user whose token grants no role on the requested site', ()
     expect(request.session.siteArray).toEqual(sites);
     expect(applicationGate(request)).toEqual({ kind: 'allow' });
     await expect(runGate(request, carchGate)).resolves.toEqual({ kind: 'redirect', location });
+  });
+
+  it('admits the S2 admin on an unregistered site at the cArch.list gate alone, by its S2 membership', async () => {
+    const sites = ['default', 'tenant-a'];
+    const { request } = await carchListOn(SUBJECTS.admin, 'nosuchsite', sites, undefined, 'S2IsPrivate,S2');
+
+    expect([request.isS2, request.session.siteArray]).toEqual([false, sites]);
+    await expect(runGate(request, listGate)).resolves.toEqual({ kind: 'allow' });
+    await expect(runGate(request, carchGate)).resolves.toEqual({ kind: 'redirect', location: './' });
   });
 });

@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: gateway
   version: 1.0.0
-  summary: 'Gateway and compatibility dispatcher: health, cut-over control, orphan clearing, legacy-session mark-used, the web relay and the dispatched edge.'
+  summary: 'Gateway and compatibility dispatcher: health, cut-over control, orphan clearing, legacy-session mark-used, the legacy Version menu facts, the web relay and the dispatched edge.'
   license:
     name: GPL-2.0-only
     url: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
@@ -195,6 +195,34 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /internal/v1/legacy-server/version-menu:
+    get:
+      operationId: getLegacyVersionMenu
+      summary: Reads the legacy server facts the admin nav Version menu prints, through the bridge's `site.cfm?op=versionMenu`.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      responses:
+        '200':
+          description: The app server, database, Java and OS values legacy reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyVersionMenu'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: The legacy bridge is unreachable or answered no Version menu values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyUnavailable'
   '/internal/v1/legacy-sessions/{sid}:mark-used':
     parameters:
       - name: sid
@@ -261,7 +289,7 @@ paths:
       - name: path
         in: path
         required: true
-        description: Remainder of the callee path; may contain `/`.
+        description: Remainder of the callee path; may contain `/`. It must lie in the callee's public versioned API, under `/v1/` or `/v2/`.
         schema:
           type: string
     get:
@@ -571,7 +599,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     UnknownService:
-      description: Unknown service.
+      description: Unknown service, or a callee path outside the service's public versioned API.
       content:
         application/json:
           schema:
@@ -964,6 +992,46 @@ components:
                 description: Legacy server local time, without an offset.
                 type: string
                 pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
+    LegacyVersionMenu:
+      description: 'What `admin/common/layouts/includes/nav.cfm` 383-407 prints; null where legacy finds the server key absent.'
+      type: object
+      additionalProperties: false
+      required:
+        - appServerProductName
+        - appServerVersion
+        - dbProductName
+        - dbProductVersion
+        - javaVersion
+        - osName
+        - osVersion
+      properties:
+        appServerProductName:
+          description: '`server.coldfusion.productname`; the menu prints its first space-delimited word.'
+          type: string
+        appServerVersion:
+          description: '`server.coldfusion.productversion`.'
+          type: string
+        dbProductName:
+          description: '`dbUtility.version().database_productname`.'
+          type: string
+        dbProductVersion:
+          description: '`dbUtility.version().database_version`.'
+          type: string
+        javaVersion:
+          description: '`server.java.version`.'
+          type:
+            - string
+            - 'null'
+        osName:
+          description: '`server.os.name`.'
+          type:
+            - string
+            - 'null'
+        osVersion:
+          description: '`server.os.version`.'
+          type:
+            - string
+            - 'null'
     LegacyError:
       type: object
       additionalProperties: false

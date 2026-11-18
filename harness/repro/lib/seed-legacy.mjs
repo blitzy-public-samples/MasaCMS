@@ -13,7 +13,7 @@ import { CookieJar } from 'tough-cookie';
 const USAGE = `Usage: node seed-legacy.mjs --origin <url> --fixtures true|false [--seed-dir <dir>] [--timeout-s <n>]
 
 Logs in to the legacy admin, then posts every part of <seed-dir>/manifest.json, in manifest order,
-to /legacy-fixtures/cfml/seed.cfm.
+to /legacy-fixtures/cfml/seed.cfm, each with a fresh opt2-seed CSRF token pair.
 
   --origin <url>          legacy origin, straight to ColdFusion (e.g. http://127.0.0.1:8080)
   --fixtures true|false   whether the fixture schemas are loaded; false skips every fixtures.* part
@@ -36,6 +36,9 @@ const OPTIONS = {
 const LOGIN_PATH = '/admin/?muraAction=clogin.main';
 const LOGIN_ACTION = '?muraAction=clogin.login';
 const SEED_PATH = '/legacy-fixtures/cfml/seed.cfm';
+const CSRF_TOKENS_PATH = '/_api/json/v1/default/generateCSRFTokens';
+// The CSRF context seed.cfm validates its single-use token pair against.
+const SEED_CSRF_CONTEXT = 'opt2-seed';
 // CSRF_FIELD_TOKEN and CSRF_FIELD_EXPIRES of platform/src/legacy-compat/csrf.ts.
 const CSRF_FIELDS = ['csrf_token', 'csrf_token_expires'];
 const MAX_REDIRECTS = 5;
@@ -222,13 +225,39 @@ function describeError(error) {
   return [error.type ?? error.code, error.message].filter((s) => typeof s === 'string' && s !== '').join(' ');
 }
 
-/** Posts one part; resolves {inserted}, or {failure, loggedOut} where loggedOut means a fresh login may cure it. */
+/** Fetches a fresh seed CSRF token pair for `session` as X-csrf_token headers; throws SeedError naming only the step and status. */
+async function seedTokenHeaders(session, origin, label) {
+  const url = new URL(CSRF_TOKENS_PATH, origin);
+  url.search = new URLSearchParams({ context: SEED_CSRF_CONTEXT }).toString();
+  let res;
+  try {
+    res = await session.request(url);
+  } catch (err) {
+    throw failed(`${label}: CSRF tokens`, err);
+  }
+  let envelope;
+  try {
+    envelope = JSON.parse(res.body);
+  } catch {
+    throw new SeedError(`${label}: CSRF tokens: HTTP ${res.status} body is not JSON`);
+  }
+  // Masa moves data's members to the top level when useDataNamespaceForAPI is off.
+  const data = envelope?.data ?? envelope;
+  const values = CSRF_FIELDS.map((name) => data?.[name]);
+  if (res.status !== 200 || values.some((value) => typeof value !== 'string' || value === '')) {
+    throw new SeedError(`${label}: CSRF tokens: HTTP ${res.status} without a token pair`);
+  }
+  return Object.fromEntries(CSRF_FIELDS.map((name, i) => [`x-${name}`, values[i]]));
+}
+
+/** Posts one part with a fresh seed token pair; resolves {inserted}, or {failure, loggedOut} where loggedOut means a fresh login may cure it. */
 async function postPart(session, url, body, label) {
+  const tokens = await seedTokenHeaders(session, url.origin, label);
   let res;
   try {
     res = await session.request(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) },
+      headers: { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body), ...tokens },
       body,
     });
   } catch (err) {

@@ -1,7 +1,7 @@
-/** File handling of contentManager.add, contentUtility.copy and multiFileUpload over a throwaway `content` schema and local storage. */
+/** File handling of contentManager.add over a throwaway `content` schema and local storage. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TENANT_UMBRELLA, pgAvailable } from '@opt2/platform/testing';
-import { copy, multiFileUpload, publish, saveContent, saveDraft, type ContentInput, type SaveContentOptions } from '../../src/domain/content.js';
+import { publish, saveContent, saveDraft, type ContentInput, type SaveContentOptions } from '../../src/domain/content.js';
 import type { UploadedFile } from '../../src/domain/files.js';
 import { StartupPredicateViolationError } from '../../src/domain/startup-guard.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
@@ -81,39 +81,5 @@ describe.skipIf(!(await pgAvailable()))('domain/content files', () => {
     expect(String((await content('contentid = $1', [page.bean.contentId()]))[0]?.fileid)).not.toBe('');
     const cleared = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: page.bean.contentId(), parentid: HOME, type: 'Page', title: 'With Attachment', deletefile: 'true' });
     expect((await content('contenthistid = $1', [cleared.bean.contentHistId()]))[0]?.fileid).toBeNull();
-  });
-
-  it('copies an item and its children under a parent, the copy titled with the legacy suffix', async () => {
-    const folder = await save({ parentid: HOME, type: 'Folder', title: 'Source', approved: 1, tags: 'keep' });
-    await save({ parentid: folder.bean.contentId(), type: 'Page', title: 'Source Kid', approved: 1 });
-    const copied = await copy(fx.deps, ADMIN, SITE, { siteId: SITE_ID, contentId: folder.bean.contentId(), parentId: HOME, recurse: true, setNotOnDisplay: true });
-    expect(copied.contentId()).not.toBe(folder.bean.contentId());
-    const [row] = await content('contentid = $1 AND active = 1', [copied.contentId()]);
-    expect(row).toMatchObject({ title: 'Source', menutitle: 'Source - Copy', filename: 'source1', display: 0, parentid: HOME });
-    const kids = await content('parentid = $1 AND active = 1', [copied.contentId()]);
-    expect(kids.map((r) => [r.title, r.menutitle, r.filename])).toEqual([['Source Kid', 'Source Kid', 'source1/source-kid']]);
-    expect(await fx.rows('content_tag', 'contenthistid = $1', [row?.contenthistid])).toEqual([expect.objectContaining({ tag: 'keep' })]);
-    expect((await copy(fx.deps, ADMIN, SITE, { siteId: SITE_ID, contentId: folder.bean.contentId(), parentId: folder.bean.contentId() })).contentId()).toBe(folder.bean.contentId());
-  });
-
-  describe('multiFileUpload', () => {
-    const args = { siteId: SITE_ID, parentId: HOME, subType: 'Default', approved: 1 };
-
-    it('answers nothing without a posted `files` part', async () => {
-      expect(await multiFileUpload(fx.deps, ADMIN, SITE, { ...args, files: [part('x.pdf')] })).toBeNull();
-    });
-
-    it('refuses a File item whose body stays empty before storing anything', async () => {
-      await expect(multiFileUpload(fx.deps, ADMIN, SITE, { ...args, files: [part('a.pdf', 'files')] })).rejects.toBeInstanceOf(StartupPredicateViolationError);
-    });
-
-    it('adds a File item for the upload and answers its response struct with the extra params', async () => {
-      const item = await multiFileUpload(fx.deps, ADMIN, SITE, { ...args, files: [part('brochure.pdf', 'files')], extraParams: JSON.stringify({ body: 'brochure.pdf', summary: '<p></p>', credits: 'Ann' }) });
-      // structAppend(returnStr, extraParams) overwrites, so the posted summary replaces the response's.
-      expect(item).toMatchObject({ filename: 'brochure.pdf', title: 'brochure.pdf', summary: '<p></p>', size: Buffer.from('bytes of brochure.pdf').length, delete_url: '', delete_type: 'DELETE', body: 'brochure.pdf' });
-      expect(String(item?.edit_url)).toMatch(/^\/admin\/\?muraAction=cArch\.edit&contenthistid=/);
-      const [row] = await content('title = $1', ['brochure.pdf']);
-      expect(row).toMatchObject({ type: 'File', parentid: HOME, approved: 1, body: 'brochure.pdf', credits: 'Ann' });
-    });
   });
 });

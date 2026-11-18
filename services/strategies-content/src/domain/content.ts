@@ -1,6 +1,6 @@
 /**
- * Content version writes: contentManager.add, delete, deleteHistAll, deleteAll and multiFileUpload, contentUtility.copy,
- * and the carch.update, saveQuickEdit and updateObjectParams controllers, with the JSON API content save and delete.
+ * Content version writes: contentManager.add, delete, deleteHistAll and deleteAll, the carch.saveQuickEdit controller
+ * and the JSON API content delete.
  */
 import {
   LEGACY_ADMIN_SENTINEL_ID,
@@ -19,13 +19,12 @@ import {
   cfDateTimeFormat,
   cfToNumber,
   cfUuid,
-  esapiUrlEncode,
   isCfUuid,
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import type { StoragePort } from '@opt2/platform/storage';
 import { poolTenantFor, withTenant, type TenantTx } from '@opt2/platform/tenancy';
-import { contentImageUrl, contentUrl, formatFilename, getUrlStem, isCfUrl, materializedPath, uniqueFilename, uniqueTitle, uniqueUrlTitle } from '../legacy/content-urls.js';
+import { formatFilename, getUrlStem, isCfUrl, materializedPath, uniqueFilename, uniqueUrlTitle } from '../legacy/content-urls.js';
 import type { CategoryAssignmentRow, ContentVersionRow, Crumb } from '../repo/content-queries.js';
 import type { CategoryAssignmentInput, ContentObjectInput, ContentTagInput, ExtendDataInput, RelatedItemInput, VersionInput } from '../repo/repository.js';
 import type { StagedObjectEntry } from '../repo/files.js';
@@ -40,7 +39,6 @@ import {
   deleteIfNotUsed,
   requestHasRestrictedFiles,
   saveFileMetaData,
-  setFileContentId,
   settleStagedUploads,
   storeUploadedFile,
   type FileMetaDataValues,
@@ -49,7 +47,7 @@ import {
 } from './files.js';
 import { allowContentAction, getNodePerm, loadMemberships } from './permissions.js';
 import { UnregisteredTenantError, poolTenantTx } from './pools.js';
-import { StartupPredicateViolationError, applyFileBody, assertStartupSafe } from './startup-guard.js';
+import { applyFileBody, assertStartupSafe } from './startup-guard.js';
 import { createTrashCounter, deleteMarkerAssignments, deleteMarkers, deletedParentId, takeOut, throwIn, trashObjectSubType, trashObjectType, type DeleteMarkers, type TrashRequestCounter } from './trash.js';
 import { WddxDate, WddxNumber, cfStruct, wddxNumber, type WddxQuery, type WddxStruct, type WddxValue } from './wddx.js';
 import { getCrumbList } from './content-tree.js';
@@ -72,8 +70,6 @@ const TITLE_DERIVED_TYPES = ['variation', 'component', 'form', 'module'];
 const MOVE_TYPES = ['Page', 'Calendar', 'Folder', 'Gallery', 'Link', 'File'];
 /** contentUtility.movelink's types. */
 const MOVELINK_TYPES = ['Page', 'Calendar', 'Folder', 'Component', 'Form', 'Gallery', 'Link', 'File'];
-/** contentUtility.copy keeps filenames unique for these types and titles for the others. */
-const FILENAME_COPY_TYPES = ['page', 'folder', 'gallery', 'calendar', 'link', 'file'];
 /** Types whose approved versions archive their filename (contentManager.cfc:1661). */
 const ARCHIVED_FILENAME_TYPES = ['file', 'link', 'page', 'folder', 'gallery', 'calendar'];
 /** extendManager's types without `Base` set inheritance. */
@@ -96,9 +92,6 @@ export const REMINDER_UPDATES_UNBUILT = ['reminderManager.updateReminders', 'rem
 
 /** contentUtility.sendNotices' `tredirects` inserts are not run: identity owns `tredirects`, so the mail links name redirect ids no row holds. */
 export const NOTIFY_REDIRECTS_UNBUILT = ['tredirects'] as const;
-
-/** contentUtility.copy's `tpermissions` copy is not run: identity owns node permissions, so a copied node starts without its source's grants. */
-export const COPY_PERMISSIONS_UNBUILT = ['tpermissions'] as const;
 
 /** English resource-bundle values of the keys content saves report. */
 const RB_EN: Readonly<Record<string, string>> = Object.freeze({
@@ -395,45 +388,9 @@ function dayPartHour(hour: unknown, dayPart: unknown): unknown {
   return hour;
 }
 
-/** ACF `JSStringFormat`. */
-function jsStringFormat(value: string): string {
-  return value.replace(/[\\'"\n\r\t\b\f]/gu, (ch) => {
-    switch (ch) {
-      case '\n':
-        return '\\n';
-      case '\r':
-        return '\\r';
-      case '\t':
-        return '\\t';
-      case '\b':
-        return '\\b';
-      case '\f':
-        return '\\f';
-      default:
-        return `\\${ch}`;
-    }
-  });
-}
-
 /** CFML `urlDecode`; a malformed escape fails as ACF fails it. */
 function safeUrlDecode(value: string): string {
   return decodeURIComponent(value.replace(/\+/gu, ' '));
-}
-
-/** utility.textPreview (utility.cfc:981-1017): tags stripped, cut at `[break]` or after the first sentence end past `maxlen`. */
-function textPreview(value: string, maxlen = 100): string {
-  const text = value.replace(/<[^>]*>/gu, '');
-  const breakAt = text.indexOf('[break]');
-  if (breakAt >= 0) return text.slice(0, breakAt);
-  const finishSymbols = ['.', '?', '!'];
-  if (finishSymbols.includes(text.charAt(maxlen - 2))) return text.slice(0, maxlen);
-  let finish = text.length;
-  for (const symbol of finishSymbols) {
-    const at = text.slice(maxlen - 1).search(new RegExp(`[${symbol}][\\s<]`, 'u'));
-    const position = at < 0 ? 0 : at + maxlen;
-    if (position > 0 && position < finish) finish = position;
-  }
-  return text.slice(0, finish);
 }
 
 // ---- contentBean ----
@@ -1059,15 +1016,6 @@ async function setUniqueUrlTitle(scope: WriteScope, bean: LegacyContentBean): Pr
     (candidate) => doesLoadKeyExist(scope, bean, 'urltitle', candidate),
   );
   bean.put('urltitle', urlTitle);
-}
-
-/** contentUtility.setUniqueTitle (contentUtility.cfc:789-804). */
-async function setUniqueTitle(scope: WriteScope, bean: LegacyContentBean): Promise<void> {
-  const title = await resolveUnique(
-    (exists) => uniqueTitle({ title: bean.text('title'), exists }),
-    (candidate) => doesLoadKeyExist(scope, bean, 'title', candidate),
-  );
-  bean.setValue('title', title);
 }
 
 /** The configBean filename settings, carried in the site URL settings. */
@@ -2651,22 +2599,6 @@ export function deleteVersion(
   return withGatedTenant(deps.db, actor.tenantId, (tx) => deleteVersionInTx(scopeOf(tx, deps, actor, site, opts), args.contentHistId, args.siteId));
 }
 
-/** contentManager.delete, answering the version bean it reads first, which its plugin event leaves in the caller's rc as `contentBean`. */
-function deleteVersionWithBean(
-  deps: ContentDeps,
-  actor: Actor,
-  site: ContentSaveSite,
-  args: { contentHistId: string; siteId: string },
-  opts: Pick<SaveContentOptions, 'requestId'>,
-): Promise<LegacyContentBean> {
-  return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    const scope = scopeOf(tx, deps, actor, site, opts);
-    const version = await readBean(scope, { siteId: args.siteId, contentHistId: args.contentHistId });
-    await deleteVersionInTx(scope, args.contentHistId, args.siteId);
-    return version;
-  });
-}
-
 /**
  * contentManager.delete of one version inside the caller's transaction `tx`, as an approval-chain activation deletes its
  * source version and a change-set publish deletes the superseded version of an item with an approval request.
@@ -2911,123 +2843,12 @@ async function deleteAllWithBean(
   });
 }
 
-// ---- copy ----
-
-/** contentUtility.copy arguments; `appendTitle` defaults to true, `recurse` and `setNotOnDisplay` to false. */
-export interface CopyContentArgs {
-  siteId: string;
-  contentId: string;
-  parentId: string;
-  recurse?: boolean;
-  appendTitle?: boolean;
-  setNotOnDisplay?: boolean;
-}
-
-/** contentUtility.copy (contentUtility.cfc:957-1096) in `scope`'s transaction; `path` is the copied parent's. */
-async function copyInTx(scope: WriteScope, opts: SaveContentOptions, args: CopyContentArgs, path: string): Promise<LegacyContentBean> {
-  const repo = scope.deps.repository;
-  const { siteId, contentId, parentId } = args;
-  const source = await readBean(scope, { siteId, contentId });
-  if (cfEq(contentId, parentId)) return source;
-  await autocompleteExtendData(scope, source);
-  const sourceHistId = source.contentHistId();
-  source.isNew = 1;
-  source.setValue('contentID', '');
-  source.setValue('contentHistID', '');
-  source.setValue('parentID', parentId);
-  source.setValue('menuTitle', args.appendTitle ?? true ? `${source.text('menutitle')} - Copy` : source.text('menutitle'));
-  if (args.setNotOnDisplay === true) source.setValue('display', 0);
-  if (inList(FILENAME_COPY_TYPES, source.text('type'))) await setUniqueFilename(scope, source);
-  else await setUniqueTitle(scope, source);
-  source.setValue('path', cfListAppend(path, source.contentId()));
-  source.setValue('created', scope.now);
-  const result = await saveContentInTx(scope.tx, scope.deps, scope.actor, scope.site, source, nestedOptions(opts));
-  if (result.afterCommitError !== undefined) throw new ErrorAfterWrites(result.afterCommitError);
-  const copied = result.bean;
-  const newHistId = copied.contentHistId();
-  const newId = copied.contentId();
-  const ofSource = (row: { siteid?: string | null; contentid?: string | null }): boolean =>
-    sqlKey(row.siteid) === sqlKey(siteId) && sqlKey(row.contentid) === sqlKey(contentId);
-
-  // The insert-selects append to whatever the save wrote for the new version.
-  const assignments = [
-    ...(await repo.content.categoryAssignments(scope.tx, { contentHistId: newHistId })),
-    ...(await repo.content.categoryAssignments(scope.tx, { contentHistId: sourceHistId })).filter(ofSource).map((row) => ({ ...row, contentid: newId })),
-  ].map((row) => assignmentInput(row));
-  if (assignments.length > 0) await repo.content.replaceCategoryAssignments(scope.tx, newHistId, assignments, scope.write);
-  const sourceRelated = await repo.content.relatedItems(scope.tx, { contentHistId: sourceHistId, siteId });
-  if (sourceRelated.length > 0) {
-    const related = [
-      ...(await repo.content.relatedItems(scope.tx, { contentHistId: newHistId, siteId })).map((row) => ({ contentid: newId, ...row })),
-      ...sourceRelated.map((row) => ({ contentid: newId, relatedid: row.relatedid, relatedcontentsetid: row.relatedcontentsetid, orderno: row.orderno })),
-    ];
-    await repo.content.replaceRelatedItems(scope.tx, newHistId, siteId, related, scope.write);
-  }
-  const sourceObjects = (await repo.content.contentObjects(scope.tx, { contentHistId: sourceHistId, siteId })).filter(ofSource);
-  if (sourceObjects.length > 0) {
-    const objectInput = (row: (typeof sourceObjects)[number]): ContentObjectInput => ({
-      contentid: newId,
-      siteid: row.siteid,
-      object: row.object,
-      name: row.name,
-      objectid: row.objectid,
-      orderno: row.orderno,
-      columnid: row.columnid,
-      params: row.params,
-    });
-    const objects = [...(await repo.content.contentObjects(scope.tx, { contentHistId: newHistId, siteId })), ...sourceObjects].map(objectInput);
-    await repo.content.replaceObjects(scope.tx, newHistId, objects, scope.write);
-  }
-  // COPY_PERMISSIONS_UNBUILT: the tpermissions copy belongs to identity.
-  const fileIds = copied
-    .entries()
-    .map(([, value]) => value)
-    .filter((value): value is string => typeof value === 'string' && value !== '');
-  await repo.content.persistVersionedObjects(scope.tx, sourceHistId, newHistId, { fileIds }, scope.write);
-
-  if (args.recurse === true) {
-    const sortBy = copied.text('sortby');
-    const sortDirection = cfEq(sortBy, 'orderno') ? (cfEq(copied.text('sortdirection'), 'asc') ? 'desc' : copied.text('sortdirection')) : 'asc';
-    for (const kid of await repo.content.nest(scope.tx, { parentId: contentId, siteId, sortBy, sortDirection })) {
-      await copyInTx(
-        scope,
-        opts,
-        { siteId, contentId: kid.contentid ?? '', parentId: newId, recurse: (kid.haskids ?? 0) !== 0, appendTitle: false, setNotOnDisplay: args.setNotOnDisplay ?? false },
-        copied.text('path'),
-      );
-    }
-  }
-  return copied;
-}
-
-/** contentManager.copy (contentManager.cfc:2288-2298) in one gated transaction; returns the copy. */
-export async function copy(deps: ContentDeps, actor: Actor, site: ContentSaveSite, args: CopyContentArgs, opts: SaveContentOptions = {}): Promise<LegacyContentBean> {
-  const prepared = await preparedOptions(deps, actor, opts);
-  const outcome = await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    try {
-      return { bean: await copyInTx(scopeOf(tx, deps, actor, site, prepared), prepared, args, ''), afterCommitError: undefined };
-    } catch (err) {
-      if (err instanceof ErrorAfterWrites) return { bean: undefined, afterCommitError: err.error };
-      throw err;
-    }
-  });
-  if (outcome.afterCommitError !== undefined) throw outcome.afterCommitError;
-  return outcome.bean;
-}
-
-// ---- carch quick edit and object params ----
+// ---- carch quick edit ----
 
 /** `arguments.rc.<key>` in a controller, raising ACF's error (the key as the source spells it) when the request lacks it. */
 function rcValue(rc: ReadonlyMap<string, unknown>, sourceKey: string): unknown {
   const key = sourceKey.toLowerCase();
   if (!given(rc, key)) throw new UndefinedLegacyElementError(`Element RC.${sourceKey} is undefined in ARGUMENTS.`);
-  return rc.get(key);
-}
-
-/** A declared argument of a bean method called with `argumentCollection=rc`, raising ACF's error when it was not passed. */
-function argValue(rc: ReadonlyMap<string, unknown>, name: string): unknown {
-  const key = name.toLowerCase();
-  if (!given(rc, key)) throw new UndefinedLegacyElementError(`Element ${name.toUpperCase()} is undefined in ARGUMENTS.`);
   return rc.get(key);
 }
 
@@ -3074,598 +2895,7 @@ export async function saveQuickEdit(
   return result === null ? null : settle(result);
 }
 
-/** contentBean.addDisplayObject (contentBean.cfc:1143-1176) on one region of the version, as `objectlist<region>`. */
-async function addDisplayObject(scope: WriteScope, bean: LegacyContentBean, rc: ReadonlyMap<string, unknown>): Promise<void> {
-  const regionId = argValue(rc, 'regionID');
-  if (!cfIsNumeric(regionId)) throw new Error('The REGIONID argument passed to the readRegionObjects function is not of type numeric.');
-  const objectId = cfText(argValue(rc, 'objectID'));
-  const object = cfText(argValue(rc, 'object'));
-  const name = cfText(argValue(rc, 'name'));
-  const params = given(rc, 'params') ? cfText(rc.get('params')) : '';
-  const orderNo = given(rc, 'orderno') ? rc.get('orderno') : '';
-  const stored = await scope.deps.repository.content.regionObjects(scope.tx, { contentHistId: bean.contentHistId(), columnId: cfToNumber(regionId), siteId: bean.text('siteid') });
-  const region: Array<{ object: string | null; name: string | null; objectid: string | null; params: string | null; orderno: number | null }> = stored.map((row) => ({
-    object: row.object,
-    name: row.name,
-    objectid: row.objectid,
-    params: row.params,
-    orderno: row.orderno,
-  }));
-  // The loop reads the query's current row, its first, on every pass.
-  const [first] = region;
-  if (cfIsNumeric(orderNo) && first !== undefined && cfEq(first.objectid ?? '', objectId) && cfEq(first.object ?? '', object) && first.orderno === cfToNumber(orderNo)) {
-    first.name = name;
-    first.params = params;
-  } else if (!region.some((row) => row.objectid === objectId && row.object === object)) {
-    // hasDisplayObject is a query of queries, whose comparisons are case-sensitive.
-    region.push({ object, name, objectid: objectId, params, orderno: null });
-  }
-  bean.put(`objectlist${cfText(regionId)}`, regionObjectsString(region));
-}
-
-/**
- * carch.updateObjectParams (carch.cfc:546-576): one display object's params on a version, saved when `params` is JSON.
- * @returns the version as the view reads it, or null where legacy aborts.
- */
-export async function updateObjectParams(
-  deps: ContentDeps,
-  actor: Actor,
-  site: ContentSaveSite,
-  input: ContentInput,
-  opts: SaveContentOptions = {},
-): Promise<LegacyContentBean | null> {
-  const rc = dataOf(input);
-  const outcome = await settlingUploads(deps, await preparedOptions(deps, actor, opts), (prepared) =>
-    withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-      const scope = scopeOf(tx, deps, actor, site, prepared);
-      const version = await readBean(scope, { siteId: cfText(rcValue(rc, 'siteid')), contentHistId: cfText(rcValue(rc, 'contentHistID')) });
-      if (version.isNew === 1) return null;
-      const crumbs = await deps.repository.content.crumbPath(tx, { contentId: version.contentId(), siteId: dataText(rc, 'siteid') });
-      const perm = await getNodePerm(deps, actor, crumbs);
-      if (rc.has('changesetid')) version.setValue('changesetID', rc.get('changesetid'));
-      if (rc.has('removepreviouschangeset')) version.setValue('removePreviousChangeset', rc.get('removepreviouschangeset'));
-      if (perm === 'author') version.setValue('approved', 0);
-      else if (perm === 'editor') version.setValue('approved', rcValue(rc, 'approved'));
-      else return null;
-      if (!isJson(rcValue(rc, 'params'))) return { bean: version, result: undefined };
-      await addDisplayObject(scope, version, rc);
-      return { bean: version, result: await saveContentInTx(tx, deps, actor, site, version, prepared) };
-    }),
-  );
-  if (outcome === null) return null;
-  if (outcome.result === undefined) return outcome.bean;
-  return settle(outcome.result).bean;
-}
-
-// ---- multiFileUpload ----
-
-/** contentManager.multiFileUpload arguments: the request data and its posted parts. */
-export interface MultiFileUploadArgs {
-  siteId: string;
-  parentId: string;
-  subType: string;
-  approved: unknown;
-  /** The `extraParams` form field (JSON), merged over each item and its response. */
-  extraParams?: string;
-  files: readonly UploadedFile[];
-  /** configBean `getAdminPath()`; defaults to the site context plus `/admin`. */
-  adminPath?: string;
-}
-
-/** One file's response struct, encoded by the route inside `{"files":[...]}`. */
-export type MultiFileUploadItem = Record<string, unknown>;
-
-/**
- * contentManager.multiFileUpload's ACF branch (contentManager.cfc:2606-2690): the posted `files` part stored, a File item
- * added for it and its response struct; null without a part. Legacy leaves the item's body empty, which the start-up
- * guard refuses before anything is stored unless `extraParams` supplies a body.
- */
-export async function multiFileUpload(
-  deps: ContentDeps,
-  actor: Actor,
-  site: ContentSaveSite,
-  args: MultiFileUploadArgs,
-  opts: SaveContentOptions = {},
-): Promise<MultiFileUploadItem | null> {
-  // `form.files` is one simple value on ACF; the per-file loop is commented out there.
-  const part = args.files.find((file) => cfEq(file.fieldName, 'files') && file.fileName !== '');
-  if (part === undefined) return null;
-  const extraParams: Record<string, unknown> = {};
-  if ((args.extraParams ?? '') !== '') {
-    const parsed: unknown = JSON.parse(args.extraParams ?? '');
-    if (isPlainObject(parsed)) Object.assign(extraParams, parsed);
-  }
-  const item = new Map<string, unknown>([
-    ['siteid', args.siteId],
-    ['parentid', args.parentId],
-    ['type', 'File'],
-    ['subtype', args.subType],
-    ['display', 1],
-    ['isnav', 1],
-    ['contentid', ''],
-    ['approved', args.approved],
-  ]);
-  // structAppend(fileItem, extraParams) overwrites.
-  for (const [key, value] of Object.entries(extraParams)) item.set(key.toLowerCase(), value);
-  if (inList(['file', 'link'], cfText(item.get('type'))) && cfText(item.get('body')) === '') throw new StartupPredicateViolationError(null);
-
-  const text = (key: string): string | null => (item.has(key) ? cfText(item.get(key)) : null);
-  if (deps.storage === undefined) throw new Error('multiFileUpload needs the storage port');
-  const stored = await storeUploadedFile(
-    { ...deps, storage: deps.storage },
-    actor,
-    {
-      file: part,
-      contentId: text('contentid'),
-      ...(item.has('moduleid') ? { moduleId: cfText(item.get('moduleid')) } : {}),
-      caption: item.has('summary') ? cfText(item.get('summary')) : text('caption'),
-      credits: text('credits'),
-      alttext: text('alttext'),
-      remoteId: text('remoteid'),
-      remoteUrl: text('remoteurl'),
-      remotePubDate: item.has('remotepubdate') ? asDate(item.get('remotepubdate')) : null,
-      remoteSource: text('remotesource'),
-      remoteSourceUrl: text('remotesourceurl'),
-      ...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
-    },
-  );
-  item.set('filename', stored.filename);
-  item.set('fileid', stored.fileid);
-  if (!item.has('title')) item.set('title', stored.filename);
-  item.set('credits', textPreview(stored.kind === 'stored' ? (stored.file.credits ?? '') : cfText(item.get('credits')), 255));
-
-  let response: MultiFileUploadItem;
-  if (stored.kind === 'stored') {
-    const result = settle(
-      await settlingUploads(deps, await preparedOptions(deps, actor, opts), (prepared) =>
-        withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-          const saved = await saveContentInTx(tx, deps, actor, site, new Map(item), prepared);
-          if (saved.afterCommitError !== undefined) return { ...saved, meta: null };
-          const scope = scopeOf(tx, deps, actor, site, prepared);
-          await inFilePool(scope, [UNIT_OF.file], (fileTx) => setFileContentId(fileTx, deps.repository, stored.fileid, saved.bean.contentId(), scope.write));
-          const bean = await readBean(scope, { siteId: args.siteId, contentHistId: saved.bean.contentHistId() });
-          const metas = await deps.repository.files.listFileMetadata(tx, { siteId: bean.text('siteid'), fileId: stored.fileid, contentHistId: bean.contentHistId() });
-          const meta = metas.find((row) => sqlKey(row.contentid) === sqlKey(bean.contentId())) ?? stored.file;
-          return { ...saved, bean, meta };
-        }),
-      ),
-    );
-    const bean = result.bean;
-    const imageRow = { type: bean.text('type'), fileid: stored.fileid, fileext: stored.file.fileext };
-    const topId = inList(['form', 'component'], bean.text('type')) ? bean.text('moduleid') : HOME_ID;
-    const adminPath = args.adminPath ?? `${site.urls.context}/admin`;
-    const editUrl =
-      `${adminPath}/?muraAction=cArch.edit&contenthistid=${esapiUrlEncode(bean.contentHistId())}&contentid=${esapiUrlEncode(bean.contentId())}` +
-      `&type=${esapiUrlEncode(bean.text('type'))}&siteid=${esapiUrlEncode(bean.text('siteid'))}&topid=${esapiUrlEncode(topId)}` +
-      `&parentid=${esapiUrlEncode(bean.text('parentid'))}&moduleid=${esapiUrlEncode(bean.text('moduleid'))}&compactdisplay=false`;
-    response = {
-      filename: jsStringFormat(stored.filename),
-      title: jsStringFormat(bean.text('title')),
-      summary: cfEq(bean.text('summary'), '<p></p>') ? '' : jsStringFormat(bean.text('summary')),
-      altext: jsStringFormat(result.meta?.alttext ?? ''),
-      credits: jsStringFormat(result.meta?.credits ?? ''),
-      size: stored.file.filesize,
-      url: jsStringFormat(contentImageUrl(site.urls, imageRow, { size: 'source' })),
-      edit_url: jsStringFormat(editUrl),
-      thumbnail_url: jsStringFormat(contentImageUrl(site.urls, imageRow, { size: 'small' })),
-      delete_url: '',
-      delete_type: 'DELETE',
-    };
-  } else {
-    response = {
-      filename: jsStringFormat(stored.filename),
-      title: jsStringFormat(stored.filename),
-      summary: '',
-      altext: '',
-      credits: '',
-      size: '',
-      url: '',
-      edit_url: '',
-      thumbnail_url: '',
-      delete_url: '',
-      delete_type: 'DELETE',
-    };
-  }
-  return { ...response, ...extraParams };
-}
-
-// ---- carch.update ----
-
-/** carch.before's request defaults for a non-ajax request (carch.cfc:24-72); session-held module and top ids are the route's. */
-const CARCH_RC_DEFAULTS: ReadonlyArray<readonly [string, () => unknown]> = [
-  ['return', () => ''],
-  ['startrow', () => 1],
-  ['contentid', () => ''],
-  ['ptype', () => 'Page'],
-  ['type', () => 'Page'],
-  ['contenthistid', () => cfUuid()],
-  ['parenthistid', () => ''],
-  ['notify', () => ''],
-  ['preview', () => 0],
-  ['size', () => 20],
-  ['action', () => ''],
-  ['closecompactdisplay', () => ''],
-  ['compactdisplay', () => ''],
-  ['returnurl', () => ''],
-  ['homeid', () => ''],
-  ['objectid', () => ''],
-  ['locking', () => false],
-  ['moduleassign', () => ''],
-  ['orderno', () => 0],
-  ['cancelpendingapproval', () => false],
-  ['date1', () => ''],
-  ['date2', () => ''],
-  ['ommitpublishingtab', () => false],
-  ['ommitrelatedcontenttab', () => false],
-  ['ommitadvancedtab', () => false],
-  ['murakeepediting', () => false],
-  ['locknode', () => false],
-  ['frontend', () => false],
-];
-
-/** carch.before's `param` defaults (carch.cfc:20-74), applied where the request has no value. */
-function carchDefaults(rc: Data): void {
-  const param = (key: string, value: () => unknown): void => {
-    if (!given(rc, key)) rc.set(key, value());
-  };
-  param('ajaxrequest', () => false);
-  param('moduleid', () => SITE_TREE_MODULE_ID);
-  param('instanceid', () => '');
-  if (cfBool(rc.get('ajaxrequest'))) return;
-  for (const [key, value] of CARCH_RC_DEFAULTS) param(key, value);
-  if (!cfBool(rc.get('ommitpublishingtab'))) {
-    for (const [key, value] of [['isnav', 0], ['target', '_self'], ['searchexclude', 0], ['restricted', 0], ['mobileexclude', 0]] as const) param(key, () => value);
-  }
-  if (!cfBool(rc.get('ommitadvancedtab'))) {
-    for (const [key, value] of [['islocked', 0], ['forcessl', 0], ['docache', 1], ['displaytitle', 0]] as const) param(key, () => value);
-  }
-  if (!cfBool(rc.get('ommitrelatedcontenttab'))) param('relatedcontentsetdata', () => '');
-  param('responsechart', () => 0);
-  param('parentid', () => '');
-}
-
-/** utility.removeLeadingDoubleSlash (utility.cfc:1443-1468). */
-function removeLeadingDoubleSlash(url: string): string {
-  let clean = cfTrim(url);
-  if (clean.length > 1 && clean.startsWith('//') && !(clean.startsWith('http://') || clean.startsWith('https://'))) {
-    clean = clean.length > 2 ? clean.slice(2) : '';
-    if (clean === '' || !clean.startsWith('/')) clean = `/${clean}`;
-  }
-  return clean;
-}
-
-/** utility.sanitizeHref (utility.cfc:1364-1441) with the settingsManager origin-domain list and the site's domain. */
-function sanitizeHref(href: string, originDomains: string, siteDomain: string): string {
-  if (cfTrim(href) === '') return href;
-  let clean = cfTrim(href);
-  if (clean.length > 1 && clean.startsWith('//')) {
-    if (clean.length === 2) return '/';
-    clean = clean.slice(2);
-    return clean.startsWith('/') ? clean : `/${clean}`;
-  }
-  const scheme = cfListToArray(clean, ':')[0] ?? '';
-  if (!inList(['http', 'https'], scheme)) return clean;
-  const protocolEnd = clean.indexOf('://');
-  if (protocolEnd >= 0) {
-    const afterProtocol = clean.slice(protocolEnd + 3);
-    const firstSlash = afterProtocol.indexOf('/');
-    if (firstSlash >= 0) {
-      const domainPart = afterProtocol.slice(0, firstSlash);
-      const pathPart = afterProtocol.slice(firstSlash).replace(/\/\/[^/]+/gu, '');
-      clean = `${scheme}://${domainPart}${pathPart}`;
-    }
-  }
-  let urlDomain = clean.replace(/^\w+:\/\/([^/:]+)[\w\W]*$/u, '$1');
-  if (urlDomain.length > 1 && urlDomain.startsWith('//')) urlDomain = cfListToArray(urlDomain.slice(2), '/')[0] ?? '';
-  if (urlDomain !== '' && !cfListToArray(originDomains).some((domain) => cfEq(domain, urlDomain))) {
-    // CFML `replace`: the first occurrence, case-sensitive.
-    clean = clean.replace(urlDomain, () => siteDomain);
-  }
-  return clean;
-}
-
-/** A carch.update session write the route applies. */
-export type CarchSessionEffect =
-  | { kind: 'openSectionList'; value: string }
-  | { kind: 'multiFileUpload'; value: boolean }
-  | { kind: 'editBean'; bean: LegacyContentBean | null };
-
-/** What carch.update answers: an FW/1 redirect, a location, a rendered view, the upload response or legacy's bare abort. */
-export type CarchUpdateOutcome =
-  | { kind: 'redirect'; action: string; append: string[]; params: Record<string, string>; path?: string }
-  | { kind: 'location'; url: string }
-  /** update.cfm's edit form for a save with errors; `compactDisplay` is its forced `rc.compactDisplay=true`. */
-  | { kind: 'rerender'; bean: LegacyContentBean; compactDisplay: boolean }
-  /** The ajax literal: `location` is the bean's getURL (unencoded), null for errors with a fresh `contenthistid&'add'` token. */
-  | { kind: 'ajax'; bean: LegacyContentBean; location: string | null }
-  | { kind: 'closeCompactDisplay'; bean: LegacyContentBean }
-  | { kind: 'text'; body: string }
-  /** `{"files":[item]}`, or only legacy's `{"files":[` where its `cftry` caught a failure after that output. */
-  | { kind: 'multiFileUpload'; item: MultiFileUploadItem | null }
-  | { kind: 'abort' };
-
-/** The session values carch.update reads. */
-export interface CarchUpdateSession {
-  openSectionList: string;
-  /** `session.mura.multifileupload`. */
-  multiFileUpload: boolean;
-  /** `session[<moduleID>].topID` where the session holds such a key. */
-  topIdsByModule?: Readonly<Record<string, string>>;
-}
-
-/** One carch.update request. */
-export interface CarchUpdateInput {
-  rc: ContentInput;
-  files?: readonly UploadedFile[];
-  /** `$.validateCSRFTokens(context)`, which consumes the token it accepts. */
-  validateCsrf: (context: string) => boolean | Promise<boolean>;
-  session: CarchUpdateSession;
-  /** `isDefined("url.qqfile")`. */
-  qqfile?: boolean;
-  /** The `extraParams` form field of a multi-file upload. */
-  extraParams?: string;
-  /** settingsManager.getAccessControlOriginDomainList(), the domains a return URL may keep. */
-  accessControlOriginDomains: string;
-  /** configBean `getAdminPath()`. */
-  adminPath?: string;
-}
-
-/** carch.update's outcome with the session writes it made. */
-export interface CarchUpdateResult {
-  outcome: CarchUpdateOutcome;
-  sessionEffects: CarchSessionEffect[];
-}
-
-/** FW/1 redirect: `append` names the request values the URL carries, where the request holds them. */
-function redirectTo(rc: ReadonlyMap<string, unknown>, action: string, append: string, path?: string): CarchUpdateOutcome {
-  const keys = append.split(',');
-  const params: Record<string, string> = {};
-  for (const key of keys) {
-    const value = rc.get(key.toLowerCase());
-    if (value !== undefined && value !== null && isSimple(value)) params[key] = cfText(value);
-  }
-  return { kind: 'redirect', action, append: keys, params, ...(path === undefined ? {} : { path }) };
-}
-
-/** CFML `x == 0`: a numeric zero, or a false boolean string ('false', 'no'). */
-function cfIsZero(value: unknown): boolean {
-  if (cfIsNumeric(value)) return cfToNumber(value) === 0;
-  return cfIsBoolean(value) && !cfToBoolean(value);
-}
-
-/** CFML `listFindNoCase(list, value)`; empty elements are skipped, so '' is never found. */
-function listFindNoCase(list: string, value: string): boolean {
-  return value !== '' && cfListToArray(list).some((item) => cfEq(item, value));
-}
-
-/** contentBean.getIsOnDisplay (contentBean.cfc:1355-1376) at `now`. */
-function isOnDisplay(bean: LegacyContentBean, now: Date): boolean {
-  const display = bean.number('display');
-  if (display === 1) return true;
-  if (display !== 2) return false;
-  const start = asDate(bean.raw('displaystart'));
-  if (start === null || start > now) return false;
-  if (cfText(bean.raw('displaystop')) === '') return true;
-  const stop = asDate(bean.raw('displaystop'));
-  return stop !== null && stop >= now;
-}
-
-/** `rc.<key>` read through the `rc` argument itself, raising ACF's error for a key the request lacks. */
-function rcScopeValue(rc: ReadonlyMap<string, unknown>, key: string): unknown {
-  if (!given(rc, key)) throw new UndefinedLegacyElementError(`Element ${key.toUpperCase()} is undefined in RC.`);
-  return rc.get(key);
-}
-
-/** `session[moduleID].topID`, where the session holds that key (CFML keys ignore case). */
-function moduleTopId(session: CarchUpdateSession, moduleId: string): string | undefined {
-  const entry = Object.entries(session.topIdsByModule ?? {}).find(([key]) => cfEq(key, moduleId));
-  return entry?.[1];
-}
-
-/**
- * carch.update's `add` (carch.cfc:372-392): the version by `sourceid`, `contenthistid` (when CF UUIDs) or the active
- * one, set from the request; saved with a valid `contenthistid&"add"` token, else validated and given the token error.
- */
-async function carchAdd(deps: ContentDeps, actor: Actor, site: ContentSaveSite, rc: Data, input: CarchUpdateInput, opts: SaveContentOptions): Promise<LegacyContentBean> {
-  const siteId = dataText(rc, 'siteid');
-  const uuidOf = (key: string): string | null => (given(rc, key) && isCfUuid(dataText(rc, key)) ? dataText(rc, key) : null);
-  const sourceId = uuidOf('sourceid');
-  const histId = uuidOf('contenthistid');
-  const ref: BeanRef = sourceId !== null ? { siteId, contentHistId: sourceId } : histId !== null ? { siteId, contentHistId: histId } : { siteId, contentId: dataText(rc, 'contentid') };
-  const bean = await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    const scope = scopeOf(tx, deps, actor, site, opts);
-    const loaded = await readBean(scope, ref);
-    loaded.set(rc, actor);
-    await applyStatus(scope, loaded);
-    return loaded;
-  });
-  if (await input.validateCsrf(`${bean.contentHistId()}add`)) return (await saveContent(deps, actor, site, bean, opts)).bean;
-  return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    const errors = await validateBean(scopeOf(tx, deps, actor, site, opts), bean, opts);
-    bean.errors = structErrors([...Object.entries(errors), ['csrf', 'Your request contained invalid tokens']]);
-    return bean;
-  });
-}
-
-/**
- * carch.update's multi-file upload. Legacy's `cftry` turns a failure after its `{"files":[` output into that partial
- * body; only failures legacy itself raises are caught, so gate, guard and storage errors still fail closed.
- */
-async function carchMultiFileUpload(
-  deps: ContentDeps,
-  actor: Actor,
-  site: ContentSaveSite,
-  rc: Data,
-  input: CarchUpdateInput,
-  opts: SaveContentOptions,
-): Promise<CarchUpdateOutcome> {
-  const siteId = requiredText(rc, 'siteid');
-  const parentId = requiredText(rc, 'parentID');
-  const subType = requiredText(rc, 'subType');
-  requiredText(rc, 'approved');
-  const args: MultiFileUploadArgs = {
-    siteId,
-    parentId,
-    subType,
-    approved: rc.get('approved'),
-    files: input.files ?? [],
-    ...(input.extraParams === undefined ? {} : { extraParams: input.extraParams }),
-    ...(input.adminPath === undefined ? {} : { adminPath: input.adminPath }),
-  };
-  try {
-    const item = await multiFileUpload(deps, actor, site, args, opts);
-    return item === null ? { kind: 'abort' } : { kind: 'multiFileUpload', item };
-  } catch (err) {
-    if (err instanceof ContentSaveDataError || err instanceof UndefinedLegacyElementError || err instanceof SyntaxError) return { kind: 'multiFileUpload', item: null };
-    throw err;
-  }
-}
-
-/**
- * carch.update (carch.cfc:336-450) and its update.cfm view: the branch's writes, then legacy's outcome and session writes.
- * Writes commit as they happen, so an error legacy raises afterwards follows them.
- */
-export async function carchUpdate(
-  deps: ContentDeps,
-  actor: Actor,
-  site: ContentSaveSite,
-  input: CarchUpdateInput,
-  opts: SaveContentOptions = {},
-): Promise<CarchUpdateResult> {
-  const rc = dataOf(input.rc);
-  carchDefaults(rc);
-  const sessionEffects: CarchSessionEffect[] = [];
-  const answer = (outcome: CarchUpdateOutcome): CarchUpdateResult => ({ outcome, sessionEffects });
-  if (given(rc, 'orderno') && !cfIsNumeric(rc.get('orderno'))) rc.set('orderno', 0);
-  const objectParams = rc.get('objectparams');
-  if (typeof objectParams === 'string' && objectParams !== '' && !isJson(objectParams)) rc.set('objectparams', safeUrlDecode(objectParams));
-
-  const contentId = cfText(rcValue(rc, 'contentID'));
-  const siteId = cfText(rcValue(rc, 'siteid'));
-  const prepared = await preparedOptions(deps, actor, input.files === undefined ? opts : { ...opts, files: input.files });
-  const own = await getCrumbList(deps, actor, { contentId, siteId });
-  let perm: unknown;
-  if (own.length > 0) perm = await getNodePerm(deps, actor, own);
-  if (own.length === 0) {
-    const parentId = cfText(rcValue(rc, 'parentID'));
-    if (parentId !== '') perm = await getNodePerm(deps, actor, await getCrumbList(deps, actor, { contentId: parentId, siteId }));
-  }
-  // Where neither branch computes it, legacy reads `rc.perm` as the request supplied it; reproduced as legacy reads it.
-  perm ??= rcValue(rc, 'perm');
-  const allowAction = inList(['author', 'editor'], cfText(perm));
-  const isAction = (name: string): boolean => allowAction && cfEq(cfText(rcValue(rc, 'action')), name);
-
-  // Each delete manager wraps rc in its plugin event and sets `contentBean` on it, so a delete continues with that bean;
-  // a branch that does not run leaves rc.contentBean undefined.
-  let bean: LegacyContentBean | undefined;
-  if (isAction('deleteall') && (await input.validateCsrf(`${contentId}deleteall`))) {
-    const deleted = await deleteAllWithBean(deps, actor, site, { contentId, siteId, ...(given(rc, 'topid') ? { topId: dataText(rc, 'topid') } : {}) }, prepared);
-    if (deleted.aborted) return answer({ kind: 'abort' });
-    rc.set('topid', deleted.topId);
-    bean = deleted.bean;
-  }
-  if (isAction('deletehistall') && (await input.validateCsrf(`${contentId}deletehistall`))) {
-    bean = await deleteHistAllWithBean(deps, actor, site, { contentId, siteId }, prepared);
-  }
-  if (isAction('delete') && (await input.validateCsrf(`${cfText(rcScopeValue(rc, 'contenthistid'))}delete`))) {
-    bean = await deleteVersionWithBean(deps, actor, site, { contentHistId: dataText(rc, 'contenthistid'), siteId }, prepared);
-  }
-  if (isAction('add')) bean = await carchAdd(deps, actor, site, rc, input, prepared);
-  const contentBean = (): LegacyContentBean => {
-    if (bean === undefined) throw new UndefinedLegacyElementError('Element RC.contentBean is undefined in ARGUMENTS.');
-    return bean;
-  };
-  const hasErrors = (): boolean => Object.keys(contentBean().errors).length > 0;
-
-  if (!cfBool(rc.get('ajaxrequest'))) {
-    if (isAction('multifileupload')) {
-      const tokenValid = await input.validateCsrf(`${dataText(rc, 'parentid')}multifileupload`);
-      const allowed = tokenValid || input.session.multiFileUpload;
-      sessionEffects.push({ kind: 'multiFileUpload', value: allowed });
-      if (allowed) return answer(await carchMultiFileUpload(deps, actor, site, rc, input, prepared));
-    }
-    if (isAction('add') && !cfEq(contentId, HOME_ID)) {
-      const saved = contentBean();
-      const parentId = saved.text('parentid');
-      const path = saved.text('path');
-      const topId = moduleTopId(input.session, saved.text('moduleid'));
-      const inOpenSection = listFindNoCase(input.session.openSectionList, parentId) && topId !== undefined && listFindNoCase(path, topId);
-      if (!inOpenSection || path === '') {
-        rc.set('topid', parentId);
-        sessionEffects.push({ kind: 'openSectionList', value: cfListAppend(input.session.openSectionList, parentId) });
-      }
-    }
-    let keepEditing = cfBool(rc.get('murakeepediting'));
-    if (!keepEditing) {
-      const target = contentBean();
-      keepEditing = await withGatedTenant(deps.db, actor.tenantId, (tx) => hasDisplayConflicts(scopeOf(tx, deps, actor, site, prepared), target, prepared));
-      rc.set('murakeepediting', keepEditing);
-    }
-    const action = dataText(rc, 'action');
-    if ((!cfEq(dataText(rc, 'closecompactdisplay'), 'true') || keepEditing) && !cfEq(action, 'multiFileUpload')) {
-      const deleting = cfEq(action, 'delete') || cfEq(action, 'deletehistall');
-      const preview = cfIsZero(rc.get('preview'));
-      const returnUrl = dataText(rc, 'returnurl');
-      if (returnUrl !== '' && (deleting || (preview && !keepEditing))) {
-        return answer({ kind: 'location', url: sanitizeHref(removeLeadingDoubleSlash(returnUrl), input.accessControlOriginDomains, site.urls.domain) });
-      }
-      if (deleting || (cfEq(dataText(rc, 'return'), 'hist') && preview && !keepEditing && !hasErrors())) {
-        return answer(redirectTo(rc, 'cArch.hist', 'contentid,siteid,startrow,moduleid,parentid,type,compactDisplay'));
-      }
-      if (cfEq(dataText(rc, 'return'), 'changesets') && contentBean().text('changesetid') !== '' && !keepEditing) {
-        return answer(redirectTo(rc, 'cChangesets.assignments', 'changesetID,siteid', './'));
-      }
-      if (!hasErrors()) {
-        sessionEffects.push({ kind: 'editBean', bean: null });
-        const saved = contentBean();
-        if (preview && !keepEditing) {
-          if (cfBool(rc.get('frontend'))) {
-            return answer({ kind: 'location', url: contentUrl(site.urls, { filename: saved.text('filename') }, { complete: true, secure: site.urls.useSSL }) });
-          }
-          return answer(redirectTo(rc, 'cArch.list', 'topid,siteid,startrow,moduleid', './'));
-        }
-        rc.set('parentid', saved.text('parentid'));
-        rc.set('type', saved.text('type'));
-        rc.set('contentid', saved.contentId());
-        rc.set('contenthistid', saved.contentHistId());
-        return answer(redirectTo(rc, 'cArch.edit', 'contenthistid,contentid,type,parentid,topid,siteid,moduleid,preview,startrow,return,compactDisplay', './'));
-      }
-    }
-  }
-
-  // update.cfm
-  if (input.qqfile === true) return answer({ kind: 'text', body: '{success:true}' });
-  if (cfBool(rc.get('ajaxrequest'))) {
-    const saved = contentBean();
-    if (hasErrors()) return answer({ kind: 'ajax', bean: saved, location: null });
-    const live = saved.number('active') !== 0 && isOnDisplay(saved, deps.clock.now());
-    const query = live ? {} : { querystring: `previewid=${saved.contentHistId()}` };
-    return answer({ kind: 'ajax', bean: saved, location: contentUrl(site.urls, { filename: saved.text('filename') }, query) });
-  }
-  if (cfEq(dataText(rc, 'action'), 'multiFileUpload')) return answer({ kind: 'text', body: 'success' });
-  const saved = contentBean();
-  if (hasErrors()) {
-    if (asDate(saved.raw('lastupdate')) === null) saved.setValue('lastUpdate', deps.clock.now());
-    sessionEffects.push({ kind: 'editBean', bean: saved });
-    return answer({ kind: 'rerender', bean: saved, compactDisplay: cfEq(dataText(rc, 'closecompactdisplay'), 'true') });
-  }
-  sessionEffects.push({ kind: 'editBean', bean: null });
-  return answer({ kind: 'closeCompactDisplay', bean: saved });
-}
-
-// ---- JSON API content save and delete ----
-
-/** contentBean.removeCategory (contentBean.cfc:905-930): `categoryAssign<id>` cleared and the id dropped from `categoryID`. */
-function removeCategory(bean: LegacyContentBean, categoryId: string): void {
-  bean.put(`categoryAssign${categoryId.replaceAll('-', '')}`, '');
-  const ids = cfListToArray(bean.text('categoryid'));
-  // listFind is case-sensitive.
-  const at = ids.indexOf(categoryId);
-  if (at >= 0) {
-    ids.splice(at, 1);
-    bean.put('categoryID', ids.join(','));
-  }
-}
+// ---- JSON API content delete ----
 
 /** JSON API AllowAction for a content bean: `authorization` unless the actor is the node's author or editor; authors save unapproved. */
 async function authorizeContentAction(deps: ContentDeps, actor: Actor, bean: LegacyContentBean, event: ReadonlyMap<string, unknown>): Promise<void> {
@@ -3674,101 +2904,6 @@ async function authorizeContentAction(deps: ContentDeps, actor: Actor, bean: Leg
   const verdict = await allowContentAction(deps, actor, { type: bean.text('type'), contentId: bean.contentId(), siteId: bean.text('siteid'), parentId: bean.text('parentid') });
   if (!verdict.allowed) throw new LegacyApiError('authorization');
   if (verdict.forceUnapproved) bean.setValue('approved', 0);
-}
-
-/** The JSON API content save request; the route validates its CSRF token (context: the path id) first, as legacy does. */
-export interface SaveContentEntityInput {
-  /** `$.event()` values. */
-  event: ContentInput;
-  /** The path id; 'new' when absent. */
-  id?: string;
-}
-
-/** The JSON API content save's outcome: the reloaded entity, the save's errors and the pk its response is keyed by. */
-export interface SaveContentEntityResult {
-  bean: LegacyContentBean;
-  errors: LegacyErrors;
-  pk: 'contentid' | 'contenthistid';
-}
-
-/**
- * JSON API `save` of a content entity (jsonApiUtility.cfc:1903-2058): load, `removecategories`, set, authorize, save,
- * reload; a new Variation in a change set saves its empty default first.
- */
-export async function saveContentEntity(
-  deps: ContentDeps,
-  actor: Actor,
-  site: ContentSaveSite,
-  input: SaveContentEntityInput,
-  opts: SaveContentOptions = {},
-): Promise<SaveContentEntityResult> {
-  const event = dataOf(input.event);
-  const pk = dataText(event, 'contenthistid') === '' && dataText(event, 'contentid') !== '' ? 'contentid' : 'contenthistid';
-  let id = input.id ?? 'new';
-  const pkValue = dataText(event, pk);
-  if (pkValue !== '' && (isCfUuid(pkValue) || pkValue === HOME_ID)) id = pkValue;
-  if (cfEq(id, 'new')) {
-    id = cfUuid();
-    event.set('id', id);
-    event.set(pk, id);
-  }
-  const siteId = dataText(event, 'siteid');
-  const variation = cfEq(dataText(event, 'type'), 'Variation');
-  let ref: BeanRef;
-  if (dataText(event, 'contenthistid') !== '') {
-    ref = { siteId, contentHistId: dataText(event, 'contenthistid') };
-    if (variation) {
-      try {
-        event.set('body', safeUrlDecode(dataText(event, 'body')));
-      } catch {
-        event.set('body', '');
-      }
-    }
-  } else {
-    ref = pk === 'contentid' ? { siteId, contentId: id } : { siteId, contentHistId: id };
-  }
-
-  const prepared = await preparedOptions(deps, actor, opts);
-  const pool = new Set((prepared.poolCategories ?? []).map((row) => sqlKey(row.categoryid)));
-  const entity = await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    const scope = scopeOf(tx, deps, actor, site, prepared);
-    const loaded = await readBean(scope, ref);
-    if (cfBool(event.get('removecategories'))) {
-      for (const row of await deps.repository.content.categoryAssignments(tx, { contentHistId: loaded.contentHistId() })) {
-        if (pool.has(sqlKey(row.categoryid))) removeCategory(loaded, row.categoryid ?? '');
-      }
-    }
-    loaded.set(event, actor);
-    await applyStatus(scope, loaded);
-    return loaded;
-  });
-  // contentBean has no allowSave of its own, so AllowAction decides.
-  await authorizeContentAction(deps, actor, entity, event);
-
-  let saved: LegacyContentBean;
-  if (variation && entity.isNew === 1 && entity.text('changesetid') !== '') {
-    entity.setValue('body', '[]');
-    entity.setValue('changesetID', '');
-    entity.setValue('approved', 1);
-    const draft = (await saveContent(deps, actor, site, entity, prepared)).bean;
-    draft.setValue('body', event.get('body') ?? '');
-    draft.setValue('changesetID', event.get('changesetid') ?? '');
-    draft.setValue('approved', 0);
-    saved = (await saveContent(deps, actor, site, draft, prepared)).bean;
-  } else {
-    saved = (await saveContent(deps, actor, site, entity, prepared)).bean;
-  }
-
-  const errors = saved.errors;
-  const reloaded = await withGatedTenant(deps.db, actor.tenantId, (tx) =>
-    readBean(scopeOf(tx, deps, actor, site, prepared), { siteId: saved.text('siteid'), contentHistId: saved.contentHistId() }),
-  );
-  if (Object.keys(errors).length > 0) {
-    for (const [key, value] of event) {
-      if (reloaded.has(key)) reloaded.setValue(key, value);
-    }
-  }
-  return { bean: reloaded, errors, pk };
 }
 
 /** The JSON API content delete request. */

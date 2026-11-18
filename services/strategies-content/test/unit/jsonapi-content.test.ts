@@ -16,7 +16,7 @@ import { ADMIN, END, HOME, NOBODY, SITE, SITE_ID, cfId, createContentFixture, ty
 import { recordingRelatedReader } from '../helpers/related-reader.js';
 
 type Struct = Record<string, unknown>;
-type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'save' | 'delete';
+type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'delete';
 
 const FX = JSON.parse(readFileSync(new URL('../fixtures/legacy-jsonapi-recorded.json', import.meta.url), 'utf8')) as {
   oracle: { home: { data: Struct } };
@@ -79,7 +79,7 @@ function callFor(method: Op, a: CallArgs = {}): JsonApiCall & { validateCsrf: Re
     site: { ...SITE, ...a.site },
     ...(a.defaultSiteUrls === undefined ? {} : { defaultSiteUrls: a.defaultSiteUrls }),
     apiContext,
-    httpMethod: method === 'save' ? 'POST' : method === 'delete' ? 'DELETE' : 'GET',
+    httpMethod: method === 'delete' ? 'DELETE' : 'GET',
     headers: {},
     validateCsrf: vi.fn(() => Promise.resolve(a.csrf ?? true)),
   };
@@ -110,8 +110,8 @@ function wire(result: JsonApiResult): Struct {
 
 const itemsOf = (result: JsonApiResult): Struct[] => wire(result)['items'] as Struct[];
 
-/** Validates `result`, enveloped as the dispatcher sends it, against the contract's `GET|POST /_api/json/v1/{siteid}/{path}` for a one-segment path. */
-function assertContract(method: 'GET' | 'POST', path: string, result: JsonApiResult): void {
+/** Validates `result`, enveloped as the dispatcher sends it, against the contract's `GET /_api/json/v1/{siteid}/{path}` for a one-segment path. */
+function assertContract(method: 'GET', path: string, result: JsonApiResult): void {
   const status = result.status ?? 200;
   const { body, headers } = serializeResponse(buildEnvelope({ method: 'findOne', data: result.data }), {
     statusCode: status,
@@ -410,50 +410,9 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
   });
 
   describe('save', () => {
-    it('refuses a failed CSRF check with invalidTokens before writing', async () => {
-      const call = callFor('save', { actor: ADMIN, form: { parentid: HOME, type: 'Page', title: 'Never', approved: 1 }, csrf: false });
-      expect(await run('save', call)).toEqual({ error: 'invalidTokens' });
-      expect(call.validateCsrf).toHaveBeenCalledTimes(1);
-      expect(await fx.rows('content', 'title = $1', ['Never'])).toEqual([]);
-    });
-
-    it('saves a new page and answers the reloaded version keyed by contenthistid', async () => {
-      const result = await on('save', { actor: ADMIN, form: { parentid: HOME, type: 'Page', title: 'Saved', approved: 1 } });
-      expect(result.status).toBe(200);
-      const data = wire(result);
-      const [stored] = (await fx.rows('content', 'title = $1 AND active = 1', ['Saved'])) as Array<{ contenthistid: string; contentid: string }>;
-      expect(data).toMatchObject({ id: stored?.contenthistid, contentid: stored?.contentid, title: 'Saved', isnew: 0, saveerrors: '', errors: {} });
-    });
-
-    it('answers a save with errors with 403, the request values set back unless saveErrors is true', async () => {
-      const form = { contentid: ALPHA, parentid: HOME, type: 'Page', title: 'Bad', template: 'x/y.cfm' };
-      const result = await on('save', { actor: ADMIN, form });
-      expect(result.status).toBe(403);
-      expect(wire(result)).toMatchObject({ id: ALPHA, title: 'Bad', errors: { template: 'invalid template' }, saveerrors: '' });
-      const kept = wire(await on('save', { actor: ADMIN, form: { ...form, saveErrors: ' true ' } }));
-      expect(kept).toMatchObject({ id: ALPHA, title: 'Alpha', saveerrors: true });
-    });
-
-    it.each([
-      ['a Form save without the Forms module', 'save', SITE_MANAGER, { form: { parentid: HOME, type: 'Form', title: 'Survey' } }],
-      ['an anonymous save', 'save', ANONYMOUS, { form: { parentid: HOME, type: 'Page', title: 'Anon' } }],
-      ['a member save', 'save', { ...NOBODY, roles: ['member'] }, { form: { parentid: HOME, type: 'Page', title: 'Member' } }],
-      ['an anonymous delete', 'delete', ANONYMOUS, { id: HOME }],
-    ] satisfies Array<[string, Op, Actor, CallArgs]>)('raises authorization for %s', async (_label, op, actor, args) => {
-      await expect(on(op, { ...args, actor })).rejects.toEqual(legacyError('authorization'));
-      expect(await fx.rows('content', 'title IN ($1, $2, $3)', ['Survey', 'Anon', 'Member'])).toEqual([]);
-    });
-
-    it('saves an author\'s save unapproved', async () => {
-      const authors = cfId('G', 9);
-      const author: Actor = { ...SITE_MANAGER, userId: cfId('U', 9) };
-      await fx.inTenant(async (tx) => {
-        await fx.repo.projections.upsertGroupProjection(tx, { groupId: authors, siteId: SITE_ID, groupName: 'Authors', isPublic: 0, deleted: false });
-        await fx.repo.projections.replaceUserMemberships(tx, author.userId, SITE_ID, [authors]);
-        await fx.repo.projections.replaceGroupPermissions(tx, authors, SITE_ID, [{ contentId: HOME, siteId: SITE_ID, type: 'author' }]);
-      });
-      wire(await on('save', { actor: author, form: { parentid: HOME, type: 'Page', title: 'Authored', approved: 1 } }));
-      expect((await fx.rows('content', 'title = $1', ['Authored']))[0]).toMatchObject({ approved: 0, lastupdatebyid: author.userId });
+    // The save writes the decision-list table tcontenteventreminders, so it stays on legacy; the dispatcher answers it with the legacy 503.
+    it('defines no handler for the withheld save of content and contentnav', () => {
+      expect(Object.hasOwn(contentHandler, 'save')).toBe(false);
     });
   });
 
@@ -479,15 +438,19 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
       expect(await on('delete', { actor: ADMIN, id: doomed })).toMatchObject({ data: '' });
       expect(await versions(doomed)).toEqual([]);
     });
+
+    it('raises authorization for an anonymous delete', async () => {
+      const before = await versions(HOME);
+      await expect(on('delete', { actor: ANONYMOUS, id: HOME })).rejects.toEqual(legacyError('authorization'));
+      expect(await versions(HOME)).toEqual(before);
+    });
   });
 
   describe('contract', () => {
-    it('answers entities, collections and rejected saves in the envelopes the contract declares', async () => {
+    it('answers entities and collections in the envelopes the contract declares', async () => {
       assertContract('GET', 'content', await on('findOne', { id: HOME }));
       assertContract('GET', 'content', await on('findQuery', { url: { title: 'Alpha' } }));
       assertContract('GET', 'contentnav', await on('findNew'));
-      const rejected = await on('save', { actor: ADMIN, form: { contentid: ALPHA, parentid: HOME, type: 'Page', title: 'Bad', template: 'x/y.cfm' } });
-      assertContract('POST', 'content', rejected);
     });
   });
 

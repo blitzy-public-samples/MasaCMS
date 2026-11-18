@@ -1,4 +1,4 @@
-// Web's service relay: forwards web's calls to the ten services with the verified user token and the gateway's own credential.
+// Web's service relay: forwards web's calls to the ten services' versioned APIs with the verified user token and the gateway's own credential.
 import {
   AuthDenial,
   hasAnyRole,
@@ -47,6 +47,12 @@ export const RELAY_CALLER_ROLE = serviceRole('web');
 
 /** Path segments before the callee path: `internal`, `v1`, `relay` and the service. */
 const RELAY_PREFIX_SEGMENTS = 4;
+
+/** First callee path segments the relay forwards: the services' public versioned APIs. */
+const RELAY_API_VERSIONS: ReadonlySet<string> = new Set(['v1', 'v2']);
+
+/** Origin a callee path is resolved against, as the forward resolves it after the service URL. */
+const PATH_RESOLUTION_ORIGIN = 'http://relay.invalid';
 
 // The callee runs its own site check against the same verified token; the alias reaches the relay without the
 // platform preHandler, so the canonical form skips it too and both forms stay one transparent pipe.
@@ -114,7 +120,25 @@ function servicePathOf(url: string): string {
 }
 
 /**
- * Forwards a verified web call to `target.service` once; an unknown or unconfigured service answers the legacy 404.
+ * Whether the callee routes `path` (path and raw query) under its public versioned API: the first segment of the path
+ * it receives, once dot segments and backslashes are resolved as the forward resolves them, decodes to `v1` or `v2`.
+ */
+function isVersionedApiPath(path: string): boolean {
+  const queryAt = path.indexOf('?');
+  const pathPart = queryAt === -1 ? path : path.slice(0, queryAt);
+  if (!pathPart.startsWith('/')) return false;
+  const [, first = ''] = new URL(`${PATH_RESOLUTION_ORIGIN}${pathPart}`).pathname.split('/', 2);
+  try {
+    return RELAY_API_VERSIONS.has(decodeURIComponent(first));
+  } catch {
+    // A malformed escape names no route of the callee.
+    return false;
+  }
+}
+
+/**
+ * Forwards a verified web call to `target.service` once; an unknown or unconfigured service, or a callee path outside
+ * its public versioned API, answers the legacy 404.
  * @returns The reply, sent or being streamed.
  */
 export async function relayHandler(
@@ -124,7 +148,7 @@ export async function relayHandler(
   deps: RelayDeps,
 ): Promise<FastifyReply> {
   const serviceUrl = isRelayService(target.service) ? deps.env.OPT2_SERVICE_URLS[target.service] : undefined;
-  if (serviceUrl === undefined) {
+  if (serviceUrl === undefined || !isVersionedApiPath(target.path)) {
     // The service-kit not-found handler answers legacy's 404 invalidMethodCall envelope, as the contract declares.
     reply.callNotFound();
     return reply;

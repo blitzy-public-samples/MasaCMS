@@ -22,6 +22,7 @@ COPY services/surveys/contracts/openapi.yaml /repo/services/surveys/contracts/
 COPY services/timesheets/contracts/openapi.yaml /repo/services/timesheets/contracts/
 COPY services/finance/contracts/openapi.yaml /repo/services/finance/contracts/
 COPY services/e-signature/contracts/openapi.yaml /repo/services/e-signature/contracts/
+COPY gateway/contracts/openapi.yaml /repo/gateway/contracts/
 # Legacy resource bundles `generate:rb` reads: the admin, core-assets and global layers.
 COPY core/mura/resourceBundle/resources/ /repo/core/mura/resourceBundle/resources/
 COPY core/modules/v1/core_assets/resource_bundles/ /repo/core/modules/v1/core_assets/resource_bundles/

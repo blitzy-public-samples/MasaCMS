@@ -48,7 +48,7 @@ export interface MatchRequest extends AdminRequestLike {
 /** Why the gateway cannot serve a request; dispatch answers the legacy-shaped 503. */
 export type UnavailableReason = 'no-active-version' | 'admin-unmapped' | 'no-service-url';
 
-/** Web's service call through the relay alias; `relay.ts` validates `service`. */
+/** Web's service call through the relay alias; `relay.ts` validates `service` and `path`. */
 export interface RelayDestination {
   readonly kind: 'relay';
   readonly service: string;
@@ -89,6 +89,8 @@ export interface TargetDestination {
   readonly method?: string;
   /** False when web must receive no body; absent means the body is forwarded. */
   readonly forwardBody?: boolean;
+  /** True when `path` is sent as the request target byte for byte: a fixture route's api.cfm dispatch path, which the gateway builds item by item. */
+  readonly rawTarget?: boolean;
 }
 
 /** Where a request goes. */
@@ -471,6 +473,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
     return toService(entry.owningService, {
       path: fixturePath === undefined ? request.url : `${fixturePath}${search}`,
       isWeb: entry.owningService === 'web',
+      ...(fixturePath === undefined ? {} : { rawTarget: true }),
     });
   };
 

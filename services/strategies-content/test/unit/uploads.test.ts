@@ -1,8 +1,8 @@
-/** EX-FILE-RENDITION upload rules: image uploads halted, restricted files refused, non-image uploads stored under the file pool tenant, in the domain and through carch.update and the JSON API file save. */
+/** EX-FILE-RENDITION upload rules: image uploads halted, restricted files refused, non-image uploads stored under the file pool tenant, in the domain and through the JSON API file save. */
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
-import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE, isCfUuid } from '@opt2/platform/legacy-compat';
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { contentFileKey } from '@opt2/platform/storage';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, type TenantFixture } from '@opt2/platform/testing';
@@ -27,11 +27,8 @@ type Json = Record<string, unknown>;
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 const SITE = TENANT_A.siteId;
-const HOME = IDS.content.root;
-const UPDATE_URL = `/v1/raw/carch/update?siteid=${SITE}`;
 const FILE_SAVE_URL = `/_api/json/v1/${SITE}/file`;
 const TOKEN = { csrf_token: 'T0KEN', csrf_token_expires: '260630235959000' } as const;
-const RESTRICTED_FILES = 'The posted request contained restricted file types';
 
 /** The actor of a token subject's verified claims. */
 function actorOf(subject: TokenSubject): Actor {
@@ -179,75 +176,13 @@ function multipart(parts: readonly Part[]): { payload: Buffer; headers: Record<s
   return { payload: Buffer.concat([...chunks, Buffer.from(`--${boundary}--\r\n`)]), headers: { 'content-type': `multipart/form-data; boundary=${boundary}` } };
 }
 
-/** carch.update's add of a new File item under the home page, posting `file` as the edit form does. */
-const fileAdd = (file: Part, form: Readonly<Record<string, string>> = {}): Part[] => [
-  ...fields({ siteid: SITE, contentid: '', parentid: HOME, type: 'File', subtype: 'Default', title: 'Uploaded', action: 'add', approved: '1', ...TOKEN, ...form }),
-  file,
-];
-
-/** carch.update's multi-file upload of `files` into the home page, the item body supplied as the uploader's extra params do. */
-const multiFileUpload = (files: readonly Part[], body: string): Part[] => [
-  ...fields({ siteid: SITE, parentid: HOME, action: 'multiFileUpload', subtype: 'Default', approved: '1', extraParams: JSON.stringify({ body }), ...TOKEN }),
-  ...files,
-];
-
 /** The JSON API `file` save of `files`. */
 const fileSave = (files: readonly Part[]): Part[] => [...fields(TOKEN), ...files];
-
-/** The active home page of tenant-a. */
-const homeRow = (): Json => ({
-  tenant_id: TENANT_A.tenantId,
-  contentid: HOME,
-  contenthistid: IDS.hist.rootActive,
-  siteid: SITE,
-  parentid: IDS.rootParent,
-  path: HOME,
-  type: 'Page',
-  subtype: 'Default',
-  title: 'Home',
-  menutitle: 'Home',
-  filename: '',
-  active: 1,
-  approved: 1,
-  display: 1,
-  isnav: 1,
-  inheritobjects: 'Inherit',
-  moduleid: IDS.modules.content,
-  lastupdate: new Date(2026, 5, 2, 14, 5, 6),
-  changesetid: null,
-  remoteurl: null,
-});
-
-/**
- * Answers carch.update's version reads over the home page and the versions it inserts, matching the ids bound as `$1`.
- * seedRecordingDb is not used here: it answers every content read with every row, so carch.update's crumb walk never ends.
- */
-function seedContentReads(db: RecordingDb): Json[] {
-  const rows: Json[] = [homeRow()];
-  const byIds =
-    (column: 'contentid' | 'contenthistid', activeOnly: boolean) =>
-    (params: readonly unknown[]): Json[] => {
-      const ids = [params[0]].flat().map((id) => String(id).toLowerCase());
-      return rows.filter((row) => (!activeOnly || row.active === 1) && ids.includes(String(row[column]).toLowerCase()));
-    };
-  db.respond(/^SELECT tcontent\.active, .* WHERE tcontent\.contentid = ANY/, byIds('contentid', true));
-  db.respond(/^SELECT tcontent\.active, .* WHERE tcontent\.contenthistid = ANY/, byIds('contenthistid', false));
-  db.respond(/tfiles\.fileext, tapprovalassignments\.chainid, tapprovalassignments\.exemptid FROM/, (params) =>
-    byIds('contentid', true)(params).map((row) => ({ fileext: null, chainid: null, exemptid: null, ...row })),
-  );
-  db.respond(/^INSERT INTO "content"\."content" \(/, (params, sql) => {
-    const row = { ...boundRow({ sql, params, tenantId: null }), tcontent_id: rows.length + 1 };
-    rows.push(row);
-    return [row];
-  });
-  return rows;
-}
 
 describe('upload routes', () => {
   const db = createRecordingDb();
   const storage = createMemoryStorage();
   let t: TestApp;
-  let content: Json[] = [];
 
   beforeAll(async () => {
     t = await buildTestApp({
@@ -256,13 +191,6 @@ describe('upload routes', () => {
       clientHandlers: {
         identity: {
           'GET /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: {} }),
-          'POST /v1/csrf/tokens': (req) => ({
-            status: 200,
-            headers: {},
-            body: {
-              tokens: (req.json as { contexts: string[] }).contexts.map((context) => ({ context, csrf_token: `ISSUED-${context}`, csrf_token_expires: TOKEN.csrf_token_expires })),
-            },
-          }),
         },
       },
     });
@@ -278,7 +206,6 @@ describe('upload routes', () => {
     storage.clear();
     t.client.clear();
     t.client.csrfValid = true;
-    content = seedContentReads(db);
   });
 
   /** Posts `parts` to `url` as tenant-a's S2 admin, relayed by the gateway. */
@@ -292,23 +219,6 @@ describe('upload routes', () => {
     assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: url.split('?')[0] ?? url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
   }
 
-  // The `{upload=image}` variants are excluded from the contract and routed to legacy by the gateway; a direct call
-  // reaching carch.update gets the service's unhandled-error answer, the admin error page.
-  it.each<[string, Part[], unknown]>([
-    ['adding a File with a .jpg', fileAdd(filePart('newfile', 'photo.jpg', 'image/jpeg')), expect.stringMatching(/^[0-9A-F-]{35}add$/)],
-    [
-      'a multi-file upload of a .png among PDFs',
-      multiFileUpload([filePart('files', 'photo.png', 'image/png'), filePart('files', 'a.pdf'), filePart('files', 'b.pdf')], 'photo.png'),
-      `${HOME}multifileupload`,
-    ],
-  ])('refuses carch.update %s at the upload, after its token is accepted, with the admin error page and no storage put or write', async (_case, parts, context) => {
-    const res = await post(UPDATE_URL, parts);
-    expect(t.client.csrfConsumes.map((consume) => consume.context)).toEqual([context]);
-    expect([res.statusCode, res.headers['content-type'], res.body]).toEqual([500, LEGACY_HTML_CONTENT_TYPE, LEGACY_ERROR_PAGE_HTML]);
-    expect(storage.calls).toEqual([]);
-    expect(db.writes()).toEqual([]);
-  });
-
   it.each<[string, Part[]]>([
     ['a .gif', [filePart('newfile', 'banner.gif', 'image/gif')]],
     ['a PDF beside a .gif', [filePart('newfile', 'a.pdf'), filePart('attachment', 'banner.gif', 'image/gif')]],
@@ -321,53 +231,8 @@ describe('upload routes', () => {
     expect(db.writes()).toEqual([]);
   });
 
-  it('answers an ajax File add of a restricted .exe with the legacy requestHasRestrictedFiles error, writing nothing', async () => {
-    const res = await post(UPDATE_URL, fileAdd(filePart('newfile', 'setup.exe', 'application/octet-stream'), { ajaxrequest: 'true' }));
-    expectContract(UPDATE_URL, res);
-    expect([res.statusCode, res.headers['content-type']]).toEqual([200, 'text/html;charset=UTF-8']);
-    expect(res.body).toMatch(
-      new RegExp(
-        `^\\{success:false,\\n\\t\\terrors:\\{"requestHasRestrictedFiles":"${RESTRICTED_FILES}"\\},\\n\\t\\tcsrf_token: 'ISSUED-[0-9A-F-]{35}add',\\n\\t\\tcsrf_token_expires: '${TOKEN.csrf_token_expires}'\\n\\}$`,
-      ),
-    );
-    expect(storage.calls).toEqual([]);
-    expect(db.writes()).toEqual([]);
-  });
-
-  it.each<[string, string, Part[], (res: Awaited<ReturnType<typeof post>>, fileId: string) => void]>([
-    [
-      'carch.update adding a File',
-      UPDATE_URL,
-      fileAdd(filePart('newfile', 'guide-2.pdf', 'application/pdf', GUIDE)),
-      (res, fileId) => {
-        expectContract(UPDATE_URL, res);
-        expect(res.statusCode).toBe(302);
-        expect(res.headers.location).toMatch(/muraAction=cArch\.list&/);
-        expect(content.at(-1)).toMatchObject({ type: 'File', fileid: fileId, body: 'guide-2.pdf' });
-      },
-    ],
-    [
-      'carch.update multiFileUpload',
-      UPDATE_URL,
-      multiFileUpload([filePart('files', 'guide-2.pdf', 'application/pdf', GUIDE)], 'guide-2.pdf'),
-      (res, fileId) => {
-        expect([res.statusCode, res.headers['content-type']]).toEqual([200, 'text/plain; charset=utf-8']);
-        expect(JSON.parse(res.body)).toEqual({ files: [expect.objectContaining({ filename: 'guide-2.pdf', body: 'guide-2.pdf', size: GUIDE.length })] });
-        expect(content.at(-1)).toMatchObject({ type: 'File', fileid: fileId, body: 'guide-2.pdf' });
-      },
-    ],
-    [
-      'the JSON API file save',
-      FILE_SAVE_URL,
-      fileSave([filePart('newfile', 'guide-2.pdf', 'application/pdf', GUIDE)]),
-      (res, fileId) => {
-        expectContract(FILE_SAVE_URL, res);
-        expect(res.statusCode).toBe(200);
-        expect(JSON.parse(res.body)).toMatchObject({ data: { fileid: fileId } });
-      },
-    ],
-  ])('stores a PDF through %s once at its content-files key in the umbrella file pool, byte for byte as posted', async (_case, url, parts, answers) => {
-    const res = await post(url, parts);
+  it('stores a PDF through the JSON API file save once at its content-files key in the umbrella file pool, byte for byte as posted', async () => {
+    const res = await post(FILE_SAVE_URL, fileSave([filePart('newfile', 'guide-2.pdf', 'application/pdf', GUIDE)]));
     const files = insertsInto(db, 'file');
     expect(files.map((statement) => statement.tenantId)).toEqual([TENANT_UMBRELLA.tenantId]);
     const fileId = String(boundRow(files[0] as RecordedStatement).fileid);
@@ -379,6 +244,8 @@ describe('upload routes', () => {
     expect(files.map(boundRow)).toEqual([expect.objectContaining({ fileid: fileId, filesize: GUIDE.length })]);
     expect(insertsInto(db, 'staged_object').map(boundRow)).toEqual([expect.objectContaining({ object_key: key, kind: 'upload', ...posted })]);
     expect(insertsInto(db, 'file_object').map(boundRow)).toEqual([expect.objectContaining({ object_key: key, size: String(GUIDE.length), sha256: posted.sha256 })]);
-    answers(res, fileId);
+    expectContract(FILE_SAVE_URL, res);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ data: { fileid: fileId } });
   });
 });

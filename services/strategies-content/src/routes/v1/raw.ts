@@ -87,7 +87,6 @@ const RAW_PATHS: readonly RawPathRow[] = [
   { circuit: 'carch', action: 'statusmodal', operations: { GET: 'raw_carch_statusmodal', POST: 'raw_carch_statusmodal_post' } },
   { circuit: 'carch', action: 'unlockfile', operations: { GET: 'raw_carch_unlockfile', POST: 'raw_carch_unlockfile_post' } },
   { circuit: 'carch', action: 'unlocknode', operations: { GET: 'raw_carch_unlocknode', POST: 'raw_carch_unlocknode_post' } },
-  { circuit: 'carch', action: 'update', operations: { GET: 'raw_carch_update', POST: 'raw_carch_update_post' } },
   { circuit: 'cchangesets', action: 'loadtagarray', operations: { GET: 'raw_cchangesets_loadtagarray', POST: 'raw_cchangesets_loadtagarray_post' } },
   { circuit: 'ccomments', action: 'ajax', operations: { GET: 'raw_ccomments_ajax', POST: 'raw_ccomments_ajax_post' } },
   { circuit: 'ccomments', action: 'loadcomments', operations: { GET: 'raw_ccomments_loadcomments', POST: 'raw_ccomments_loadcomments_post' } },

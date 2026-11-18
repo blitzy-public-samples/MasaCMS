@@ -15,7 +15,6 @@ import {
   materializedPath,
   shouldArchiveFilename,
   uniqueFilename,
-  uniqueTitle,
   uniqueUrlTitle,
   urlSafeFormat,
   type LegacySiteUrlConfig,
@@ -93,7 +92,7 @@ describe('title text [contentUtility.cfc urlSafeFormat, formatFilename]', () => 
   });
 });
 
-describe('unique names [contentUtility.cfc setUniqueFilename, setUniqueURLTitle, setUniqueTitle]', () => {
+describe('unique names [contentUtility.cfc setUniqueFilename, setUniqueURLTitle]', () => {
   const section = contentRow({ contentid: IDS.content.section, type: 'Folder', title: 'About Us', filename: 'about-us', urltitle: 'about-us' });
   const page = contentRow({ contentid: IDS.content.pageOne, parentid: IDS.content.section, title: CAFE });
   const unique = (parentId: string, parentFilename: string, exists: (candidate: string) => boolean) =>
@@ -111,14 +110,10 @@ describe('unique names [contentUtility.cfc setUniqueFilename, setUniqueURLTitle,
     expect(exists).toHaveBeenCalledExactlyOnceWith('cafe-deja-vu');
   });
 
-  it('uniqueUrlTitle and uniqueTitle probe the value, then value1, value2…', () => {
+  it('uniqueUrlTitle probes the value, then value1, value2…', () => {
     const urlTitleExists = vi.fn((candidate: string) => candidate === 'cafe-deja-vu');
     expect(uniqueUrlTitle({ urlTitle: 'cafe-deja-vu', exists: urlTitleExists })).toBe('cafe-deja-vu1');
     expect(urlTitleExists.mock.calls.map(([candidate]) => candidate)).toEqual(['cafe-deja-vu', 'cafe-deja-vu1']);
-
-    const titleExists = vi.fn((candidate: string) => candidate !== `${CAFE}2`);
-    expect(uniqueTitle({ title: CAFE, exists: titleExists })).toBe(`${CAFE}2`);
-    expect(titleExists.mock.calls.map(([candidate]) => candidate)).toEqual([CAFE, `${CAFE}1`, `${CAFE}2`]);
   });
 });
 

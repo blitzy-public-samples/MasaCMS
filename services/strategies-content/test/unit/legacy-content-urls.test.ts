@@ -18,7 +18,6 @@ import {
   materializedPath,
   shouldArchiveFilename,
   uniqueFilename,
-  uniqueTitle,
   uniqueUrlTitle,
   urlSafeFormat,
   type LegacySiteUrlConfig,
@@ -143,10 +142,8 @@ describe('filename and title rules', () => {
     expect(uniqueFilename({ ...base, urlTitle: 'x', parentId: 'P1', parentFilename: slashAt250 }).filename).toBe(`${'q'.repeat(249)}/x`);
   });
 
-  it('uniqueUrlTitle and uniqueTitle append the first free pass number', () => {
+  it('uniqueUrlTitle appends the first free pass number', () => {
     expect(uniqueUrlTitle({ urlTitle: 'news', exists: existing('news', 'news1') })).toBe('news2');
-    expect(uniqueTitle({ title: 'News', exists: existing('News') })).toBe('News1');
-    expect(uniqueTitle({ title: 'Free', exists: () => false })).toBe('Free');
   });
 
   it.each([

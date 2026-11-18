@@ -304,6 +304,8 @@ const RFC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 const DIGITS = /^\d+$/;
 const FILE_EXTENSION = /\.[A-Za-z0-9]+$/;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
+/** CommandBox's default 404 rules over a decoded path: a `.`-led segment, a sensitive file name, an Axis or flash remoting suffix. */
+const CONTAINER_404 = /\/\.|\/(?:box\.json|server\.json|web\.config|urlrewrite\.xml|package\.json|package-lock\.json|gulpfile\.js)|\.(?:jws|mxml|cfswf)$/i;
 const PATH_PARAM_CHARS = /[^0-9A-Za-z._,\-*]/g;
 const ENTITY_NAME_CHARS = /[^0-9A-Za-z_,\-*]/g;
 const REST_HEADER_PARAMS: ReadonlyArray<readonly [string, string]> = [
@@ -976,10 +978,19 @@ function fixtureHttpMethod(req: RouteKeyRequest): string {
   return (override === undefined || override === '' ? req.method : override).toUpperCase();
 }
 
-/** api.cfm's path_info items of a raw path as the legacy forwarder and container dispatch it; undefined when api.cfm does not serve it. */
+/** Whether legacy's container answers a raw path itself, before CFML, under CommandBox's default blockSensitivePaths and blockFlashRemoting rules. */
+function containerAnswers(rawPath: string): boolean {
+  if (rawPath.includes('\\')) return true;
+  // Undertow drops each segment's raw `;` parameters, then decodes every escape but an encoded slash.
+  const unparameterised = rawPath.split('/').map((s) => s.split(';', 1)[0] ?? '').join('/');
+  const path = percentDecode(unparameterised.replace(/%2f/gi, '%252F'), false);
+  return path === undefined || CONTAINER_404.test(path);
+}
+
+/** api.cfm's path_info items of a raw path as legacy's container dispatches it; undefined when api.cfm does not serve it. */
 function fixtureItems(rawPath: string, context: string): string[] | undefined {
-  const kept = listToArray(rawPath, '/\\').filter((s) => percentDecode(s, false) !== '.');
-  const segments = listToArray(withoutContext(`/${kept.join('/')}`, contextPrefix(context)), '/');
+  if (containerAnswers(rawPath)) return undefined;
+  const segments = listToArray(withoutContext(`/${listToArray(rawPath, '/').join('/')}`, contextPrefix(context)), '/');
   // Directory and script names resolve case-sensitively; only a directory segment drops its `;` parameters.
   const directory = (n: number): string | undefined => percentDecode(nth(segments, n).split(';', 1)[0] ?? '', false);
   if (directory(1) !== 'legacy-fixtures' || directory(2) !== 'cfml' || percentDecode(nth(segments, 3), false) !== 'api.cfm') {
@@ -988,7 +999,7 @@ function fixtureItems(rawPath: string, context: string): string[] | undefined {
   const pathInfo = percentDecode(segments.slice(3).join('/'), false);
   if (pathInfo === undefined) return undefined;
   const items = listToArray(pathInfo, '/');
-  // The legacy forwarder refuses a decoded `..` segment, so legacy never serves one.
+  // Only a decoded `%2F` can yield a `..` item here (records%2F..); such a path keys no fixture route.
   return items.includes('..') ? undefined : items;
 }
 

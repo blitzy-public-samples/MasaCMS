@@ -22,7 +22,7 @@ import {
   type AdminRenderContext,
   type NodePerm,
 } from './admin-markup.js';
-import { acfSerializeJson, muraJsonEncode } from './cfjson.js';
+import { muraJsonEncode } from './cfjson.js';
 import { contentUrl, imageUrl } from './content-urls.js';
 import type {
   ApprovalActionRow,
@@ -51,13 +51,11 @@ export interface PanelRenderResult {
 export interface PanelMuraSessionEffects {
   /** `structDelete(session.mura, 'editBean')`. */
   clearEditBean?: true;
-  /** `session.mura.objectInstanceId`. */
-  objectInstanceId?: string;
 }
 
-/** A branch served elsewhere: `legacy` for markup only CFML renders, `edit-page` for web's edit form (page mode). */
+/** A branch only CFML renders, served by legacy. */
 export interface PanelDelegation {
-  delegate: 'legacy' | 'edit-page';
+  delegate: 'legacy';
   reason: string;
 }
 
@@ -106,10 +104,8 @@ class CfOutput {
 }
 
 /** A `request.layout=false` view's response. */
-function viewResult(o: CfOutput, muraSessionEffects?: PanelMuraSessionEffects): PanelRenderResult {
-  const result: PanelRenderResult = { status: 200, contentType: VIEW_CONTENT_TYPE, body: o.toString() };
-  if (muraSessionEffects !== undefined) result.muraSessionEffects = muraSessionEffects;
-  return result;
+function viewResult(o: CfOutput): PanelRenderResult {
+  return { status: 200, contentType: VIEW_CONTENT_TYPE, body: o.toString() };
 }
 
 /** `LSDateFormat(text, mask)` under `locale` of a request or bean string: '' when blank, else the date it parses to. */
@@ -2272,139 +2268,6 @@ export function renderDraftPromptData(model: DraftPromptModel, ctx: AdminRenderC
     historyid: data.historyId,
   });
   return { status: 200, contentType: LEGACY_JSON_CONTENT_TYPE, body: `${json} ` };
-}
-
-// --- Update responses ---
-
-/** dsp_close_compact_display.cfm inputs, read after a successful non-ajax save. */
-export interface CloseCompactDisplayModel {
-  /** The location the view computes from the saved version, its parent or the home page. */
-  href: string;
-  /** `rc.contentBean.getType()`. */
-  type: string;
-  /** `rc.contentBean.getContentId()`. */
-  contentId: string;
-  /** `application.coreversion`. */
-  coreVersion: string;
-  /** `session.frontEndProxyLoc`. */
-  frontEndProxyLoc: string;
-  /** `session.mura.objectInstanceId`. */
-  objectInstanceId: string;
-  /** `rc.$.getContentRenderer().useLayoutmanager()`. */
-  useLayoutManager: boolean;
-}
-
-/** Inputs of {@link renderUpdateResponse}: `carch.update` after the controller saved `rc.contentBean`. */
-export interface UpdateResponseModel {
-  /** `isDefined("url.qqfile")`. */
-  qqfile: boolean;
-  /** `rc.ajaxrequest`. */
-  ajaxRequest: boolean;
-  /** `rc.action`. */
-  action: string;
-  content: Pick<ContentRow, 'filename' | 'contenthistid' | 'active'> & {
-    /** `getIsOnDisplay()`. */
-    isOnDisplay: boolean;
-  };
-  /** `getErrors()`, keyed as ACF prints them: upper case where legacy set the key by dot notation. */
-  errors: Readonly<Record<string, unknown>>;
-  /** Required for the non-ajax success branch. */
-  close?: CloseCompactDisplayModel;
-}
-
-/** The setLocation command of dsp_close_compact_display.cfm. */
-function setLocationCommand(href: string): string {
-  return `var cmd={cmd:'setLocation',location:encodeURIComponent("${esapiEncode('javascript', href)}")};`;
-}
-
-/** dsp_close_compact_display.cfm: the page that sends the front-end proxy (or the window) to the saved content. */
-function closeCompactDisplay(o: CfOutput, close: CloseCompactDisplayModel, ctx: AdminRenderContext): void {
-  const adminPath = `${ctx.config.context}${ctx.config.adminDir}`;
-  o.t(
-    '\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />\n',
-  );
-  o.t('\n');
-  o.t('\n<script src="');
-  o.e(adminPath);
-  o.t('/assets/js/jquery/jquery.js?coreversion=');
-  o.e(close.coreVersion);
-  o.t('" type="text/javascript"></script>\n<script src="');
-  o.e(adminPath);
-  o.t('/assets/js/porthole/porthole.min.js?coreversion=');
-  o.e(close.coreVersion);
-  o.t('" type="text/javascript"></script>\n<script>\n\t');
-  o.t('\n\t');
-  const instanceId = close.objectInstanceId;
-  if (close.useLayoutManager && instanceId !== '') {
-    o.t('\n\t\t');
-    if (cfEq(close.type, 'Form') || cfEq(close.type, 'Component')) {
-      o.t("\n\t\t\tvar cmd={cmd:'setObjectParams',reinit:true,instanceid:'");
-      o.e(instanceId);
-      o.t("',params:{objectid:'");
-      o.e(close.contentId);
-      o.t("'}};\n\t\t");
-    } else {
-      o.t("\n\t\t\tvar cmd={cmd:'setObjectParams',reinit:true,instanceid:'");
-      o.e(instanceId);
-      o.t("',params:{}};\n\t\t");
-    }
-    o.t('\n\n\t');
-  } else {
-    o.t(`\n\t\t${setLocationCommand(close.href)}\n\t`);
-  }
-  o.t('\n\t');
-  o.t('\n\tfunction reload(){\n\t\tif (top.location != self.location) {\n\t\t\tfrontEndProxy = new Porthole.WindowProxy("');
-  o.e(esapiEncode('javascript', close.frontEndProxyLoc));
-  o.e(adminPath);
-  o.t(
-    '/assets/js/porthole/proxy.html");\n\t\t\tif (jQuery("#ProxyIFrame").length) {\n\t\t\t\tjQuery("#ProxyIFrame").load(function(){\n\t\t\t\t\tfrontEndProxy.post({cmd:\'scrollToTop\'});\n\t\t\t\t\tfrontEndProxy.post(cmd);\n\t\t\t\t});\n\t\t\t}\n\t\t\telse {\n\t\t\t\tfrontEndProxy.post({cmd:\'scrollToTop\'});\n\t\t\t\tfrontEndProxy.post(cmd);\n\t\t\t}\n\n\t\t} else {\n\t\t\tlocation.href="',
-  );
-  o.e(esapiEncode('javascript', close.href));
-  o.t('";\n\t\t}\n\t}\n</script>\n');
-  o.t('\n</head>\n<body onload="reload()">\n</body>\n</html>\n');
-}
-
-/** update.cfm responses; a failed non-ajax save delegates to web's edit page. */
-export function renderUpdateResponse(model: UpdateResponseModel, ctx: AdminRenderContext): PanelRenderResult | PanelDelegation {
-  const o = new CfOutput();
-  const { content } = model;
-  const hasErrors = Object.keys(model.errors).length > 0;
-  if (model.qqfile) {
-    o.t('{success:true}');
-    o.t('\n');
-    return viewResult(o);
-  }
-  if (model.ajaxRequest) {
-    if (!hasErrors) {
-      const live = (content.active ?? 0) !== 0 && content.isOnDisplay;
-      const url = contentUrl(ctx.site, content, live ? {} : { querystring: `previewid=${content.contenthistid ?? ''}` });
-      o.t('{success:true,location:');
-      o.t("\n\t'");
-      o.e(esapiEncode('javascript', url));
-      o.t("'\n");
-      o.t('}');
-      o.t('\n');
-      return viewResult(o);
-    }
-    const tokens = ctx.csrf(`${content.contenthistid ?? ''}add`);
-    o.t('{success:false,\n\t\terrors:');
-    o.e(acfSerializeJson(model.errors, { preserveKeyCase: true }));
-    o.t(",\n\t\tcsrf_token: '");
-    o.e(tokens.token);
-    o.t("',\n\t\tcsrf_token_expires: '");
-    o.e(tokens.expires);
-    o.t("'\n}");
-    return viewResult(o);
-  }
-  if (cfEq(model.action, 'multiFileUpload')) {
-    o.t('success');
-    o.t('\n');
-    return viewResult(o);
-  }
-  if (hasErrors) return { delegate: 'edit-page', reason: 'update.cfm re-renders the edit form with the validation errors' };
-  if (model.close === undefined) throw new TypeError('update: close is required after a successful save.');
-  closeCompactDisplay(o, model.close, ctx);
-  return viewResult(o, { clearEditBean: true, objectInstanceId: '' });
 }
 
 // --- JSON responses ---

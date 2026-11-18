@@ -170,6 +170,11 @@ export function isSuperOrAdminUser(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin
   return req.isS2 || req.isSiteAdmin;
 }
 
+/** Membership `S2` as legacy's case-sensitive `listFind(session.mura.memberships, 'S2')` finds it, for any site. */
+export function isS2Member(req: { readonly session: { readonly mura: Pick<SessionUser, 'memberships'> } }): boolean {
+  return cfListToArray(req.session.mura.memberships ?? '').includes('S2');
+}
+
 /** Membership `S2IsPrivate`, or with `siteId` the case-insensitive `S2IsPrivate;<siteId>`. */
 export function isS2IsPrivate(req: Pick<CarchSessionFlags, 'session'>, siteId?: string): boolean {
   if (siteId === undefined) return req.session.s2IsPrivate;

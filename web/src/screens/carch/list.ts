@@ -1,6 +1,14 @@
 // The `cArch.list` Site Manager page of `carch/list.cfm`: the content modules' tree and flat-view tabs, and the
 // LEGACY module grid (server-only).
-import { cfEq, cfIsNumeric, cfLsDateFormat, cfLsTimeFormat, cfToBoolean } from '@opt2/platform/legacy-compat';
+import {
+  cfEq,
+  cfIsBoolean,
+  cfIsNumeric,
+  cfLsDateFormat,
+  cfLsTimeFormat,
+  cfToBoolean,
+} from '@opt2/platform/legacy-compat';
+import type { GateDecision, ScreenGate } from '@/lib/access-gate';
 import { parseLegacyDate } from '@/lib/dates';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import {
@@ -22,6 +30,7 @@ import {
   FORM_MODULE_ID,
   ROOT_CONTENT_ID,
   VARIATION_MODULE_ID,
+  isS2Member,
   isSiteAdminOrS2,
   structText,
   structValue,
@@ -273,6 +282,73 @@ function withActiveTab(req: AdminRequest, model: CarchPageModel, url: ReadonlyMa
 const rootListLocation = (siteId: string): string =>
   `./?muraAction=cArch.list&siteid=${encodeUrl(siteId)}&moduleid=${CONTENT_MODULE_ID}&topid=${ROOT_CONTENT_ID}`;
 
+// identity lists every registered site in an S2 session's siteArray; getSite matches its keys ignoring case.
+/** Whether an S2 member's content-module list of an unregistered `rc.siteid` takes list.cfm 636-637's redirect. */
+function redirectsUnregisteredSite(req: AdminRequest): boolean {
+  const siteId = rcText(req.rc, 'siteid').toLowerCase();
+  const moduleId = rcText(req.rc, 'moduleid');
+  return (
+    isS2Member(req) &&
+    CONTENT_CASE.some((id) => id === moduleId) &&
+    siteId !== '' &&
+    !req.session.siteArray.some((id) => id.toLowerCase() === siteId)
+  );
+}
+
+/** list()'s empty-tree reset of `session[session.moduleid]` to the module's top id (carch.cfc:216-222). */
+function resetEmptyTree(req: AdminRequest): void {
+  const moduleId = rcText(req.rc, 'moduleid');
+  const topId = cfEq(moduleId, CONTENT_MODULE_ID) ? ROOT_CONTENT_ID : moduleId;
+  applySessionEffects(req, { moduleTopIds: { ...req.session.moduleTopIds, [req.session.moduleid]: topId } });
+}
+
+/** The view's `session.flatViewArgs[session.siteid]` defaults and URL-keyword writes (list.cfm 494-584), if changed. */
+function applyFlatViewArgs(req: AdminRequest, url: ReadonlyMap<string, string>): void {
+  const struct = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value) ? { ...value } : {};
+  const stored = struct(structValue(req.session.mura, 'flatViewArgs'));
+  const all = Object.fromEntries(Object.entries(stored).map(([id, args]) => [id, struct(args)]));
+  const before = JSON.stringify(all);
+  const site = req.session.siteid.toLowerCase();
+  const args = (all[Object.keys(all).find((id) => id.toLowerCase() === site) ?? req.session.siteid] ??= {});
+  const keyOf = (name: string) => Object.keys(args).find((key) => key.toLowerCase() === name.toLowerCase());
+  const set = (name: string, value: unknown): void => {
+    args[keyOf(name) ?? name] = value;
+  };
+  const rc = (name: string, fallback: unknown): unknown => rcValue(req.rc, name) ?? fallback;
+  if (rcValue(req.rc, 'refreshFlatview') !== undefined) {
+    set('report', rcText(req.rc, 'report'));
+    const sortBy = rcValue(req.rc, 'reportSortBy');
+    if (sortBy !== undefined) set('sortby', sortBy);
+    const direction = rcValue(req.rc, 'reportSortDirection');
+    if (direction !== undefined) set('direction', direction);
+  }
+  const defaults: ReadonlyArray<readonly [string, unknown]> = [
+    ['moduleid', rcText(req.rc, 'moduleid')],
+    ['sortby', 'lastupdate'],
+    ['sortdirection', 'desc'],
+    ['lockid', rc('lockid', '')],
+    ['assignments', rc('assignments', false)],
+    ['categoryid', rc('categoryid', '')],
+    ['tags', rc('tags', '')],
+    ['page', rc('page', 1)],
+    ['type', ''],
+    ['subtype', rc('subtype', '')],
+    ['report', ''],
+    ['keywords', ''],
+    ['tab', 0],
+  ];
+  for (const [name, value] of defaults) if (keyOf(name) === undefined) args[name] = value;
+  if (!cfIsBoolean(structValue(args, 'filtered'))) set('filtered', false);
+  const keywords = url.get('keywords');
+  if (keywords !== undefined) {
+    if (!cfEq(structText(args, 'keywords'), keywords)) set('page', 1);
+    set('keywords', keywords);
+    set('report', '');
+  }
+  if (JSON.stringify(all) !== before) setSessionMuraValue(req, 'flatViewArgs', all);
+}
+
 /** Whether `getCrumbList(rc.topid)` found no crumb with a site id (list.cfm 636). */
 function lacksCrumbs(model: CarchPageModel): boolean {
   const crumbs = requiredRows(model.rc, 'crumbdata', 'RC');
@@ -297,6 +373,13 @@ async function runList(ctx: ScreenContext): Promise<ListOutcome> {
   const { req } = ctx;
   const url = urlScope(req);
   const listCase = listCaseOf(rcText(req.rc, 'moduleid'));
+  // strategies-content refuses the role-less token of an unregistered site.
+  if (redirectsUnregisteredSite(req)) {
+    resetEmptyTree(req);
+    applyContentSessionWrites(req, url);
+    applyFlatViewArgs(req, url);
+    return { kind: 'location', location: rootListLocation(rcText(req.rc, 'siteid')) };
+  }
   const rc = serviceRc(req.rc, url);
   const outcome = await carchPageData(ctx, 'list', rc, serviceRelay(req, rc));
   if (outcome.kind === 'redirect') return { kind: 'location', location: outcome.location };
@@ -936,13 +1019,18 @@ async function renderList(ctx: ScreenContext, data: ListData): Promise<ShellView
   return { body: raw(''), ajax };
 }
 
+const ALLOW: GateDecision = Object.freeze({ kind: 'allow' });
+
+/** carchGate or getModulePerm's S2 branch (core/mura/permission.cfc:312), which holds on an unregistered rc.siteid. */
+export const listGate: ScreenGate = (req, helpers) => (isS2Member(req) ? ALLOW : carchGate(req, helpers));
+
 /** `cArch.list`: the Site Manager of the content modules and the LEGACY module grid. */
 export const listScreen: PageScreen<ListData> = Object.freeze({
   circuit: 'carch',
   action: 'list',
   owner: CARCH_OWNER,
   mode: 'page',
-  gate: carchGate,
+  gate: listGate,
   secondaryMenu: 'carch',
   async redirect(ctx: ScreenContext): Promise<PageControllerRedirect | undefined> {
     const outcome = await loadList(ctx);

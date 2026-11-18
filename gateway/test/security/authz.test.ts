@@ -59,6 +59,7 @@ const STATUS_URL = '/internal/v1/cutover/status';
 const STATUS_V2_URL = '/internal/v2/cutover/status';
 const CLEAR_ORPHANS_URL = '/internal/v1/inflight::clear-orphans';
 const MARK_USED_URL = '/internal/v1/legacy-sessions/:sid(.+)::mark-used';
+const VERSION_MENU_URL = '/internal/v1/legacy-server/version-menu';
 const RELAY_URL = '/internal/v1/relay/:service/*';
 const EDGE_URL = '/*';
 
@@ -67,8 +68,8 @@ const RELAY_PROBE_PATH = '/internal/v1/relay/people/v1/authz-probe';
 const MARK_USED_PROBE_PATH = '/internal/v1/legacy-sessions/ids-authz-unmapped:mark-used';
 const STUB_PATH = '/opt2/stub/notes';
 const CONTENT_PATH = '/_api/json/v1/default/content/C1';
-const RELAY_PATH = '/internal/v1/relay/people/opt2/people/ping';
-const ALIAS_PATH = '/opt2/svc/people/opt2/people/ping';
+const RELAY_PATH = '/internal/v1/relay/people/v1/persons';
+const ALIAS_PATH = '/opt2/svc/people/v1/persons';
 const PROBE_TOKEN = randomBytes(32).toString('hex');
 const JSON_BODY_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH']);
 const FORM_BODY_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -128,6 +129,14 @@ const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
     requires: [serviceRole('identity')],
     siteCheck: true,
   },
+  {
+    operationId: 'getLegacyVersionMenu',
+    method: 'GET',
+    url: VERSION_MENU_URL,
+    transport: 'service',
+    requires: [serviceRole('web')],
+    siteCheck: true,
+  },
   { operationId: 'relayGet', method: 'GET', url: RELAY_URL, transport: 'service', requires: [serviceRole('web')], siteCheck: false },
   { operationId: 'relayPost', method: 'POST', url: RELAY_URL, transport: 'service', requires: [serviceRole('web')], siteCheck: false },
   { operationId: 'relayPut', method: 'PUT', url: RELAY_URL, transport: 'service', requires: [serviceRole('web')], siteCheck: false },
@@ -169,6 +178,8 @@ const PROBES: Readonly<Record<string, Probe>> = {
   [CLEAR_ORPHANS_URL]: { admitted: 200 },
   // No jar maps the probe's sid, so an admitted call answers the legacy 404.
   [MARK_USED_URL]: { admitted: 404 },
+  // An admitted call reads the facts from the bridge's site.cfm.
+  [VERSION_MENU_URL]: { admitted: 200, reaches: 'legacy' },
   [RELAY_URL]: { admitted: 200, reaches: 'people' },
   [EDGE_URL]: { admitted: 200, reaches: 'legacy' },
 };
@@ -578,7 +589,7 @@ describe('route declarations', () => {
 
   it('the table has one row per contract operation, declared as the contract declares it', async () => {
     const ids = EXPECTED_ROUTES.map((row) => row.operationId);
-    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 20, unique: 20 });
+    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 21, unique: 21 });
     expect(tableOperations()).toEqual(await contractOperations());
   });
 
@@ -624,7 +635,7 @@ describe('user tokens on service routes', () => {
       AuthDenial.unauthenticated('invalid-credential'),
     ],
   ];
-  const cases = ['cutoverActivate', 'cutoverStatus', 'legacySessionMarkUsed', 'relayGet'].flatMap((operationId) =>
+  const cases = ['cutoverActivate', 'cutoverStatus', 'legacySessionMarkUsed', 'getLegacyVersionMenu', 'relayGet'].flatMap((operationId) =>
     [Roles.siteAdmin, Roles.s2].flatMap((subject) =>
       placements.map(([placement, headers, denial]) => ({ operationId, subject, placement, headers, denial })),
     ),

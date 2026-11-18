@@ -106,7 +106,7 @@ export interface ShellData {
   readonly userSites: ShellSite[];
   readonly prompts: UserPrompts;
   readonly sitePlugins: ShellPlugin[];
-  /** Null when no legacy runtime facts are available. */
+  /** Null when the layout loads no legacy runtime facts. */
   readonly server: LegacyServerInfo | null;
   /** `renderCSRFTokens(context='updatecore', format='url')`, or `''`. */
   readonly updateCoreCsrfQuery: string;

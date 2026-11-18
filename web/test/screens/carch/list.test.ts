@@ -3,10 +3,11 @@
 import * as cheerio from 'cheerio';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { secure } from '@/lib/access-gate';
 import { legacySettings } from '@/lib/env';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { CARCH_OWNER, carchGate } from '@/screens/carch/controller';
-import { listScreen } from '@/screens/carch/list';
+import { listGate, listScreen } from '@/screens/carch/list';
 import { categoriesNest, type CategoryNestNode } from '@/screens/carch/partials/categories-nest';
 import { draftPromptJs } from '@/screens/carch/partials/draft-prompt-js';
 import { carchJs } from '@/screens/carch/partials/js';
@@ -139,11 +140,25 @@ describe('cArch.list definition and access', () => {
       action: 'list',
       owner: 'strategies-content',
       mode: 'page',
-      gate: carchGate,
+      gate: listGate,
       secondaryMenu: 'carch',
     });
     expect(listScreen.owner).toBe(CARCH_OWNER);
     expect(Object.isFrozen(listScreen)).toBe(true);
+  });
+
+  it.each<[string, () => Req]>([
+    ['an anonymous request', () => anonymousRequest(LIST)],
+    ['a tenant-a system user', () => makeAdminRequest({ ...LIST, session: { siteid: TENANT } }, 'systemUser')],
+    ['qa_editor with Site Manager', () => editorRequest(LIST)],
+    ['the tenant-a site admin on tenant-a', () => siteAdminRequest(TENANT, { ...LIST, rc: { siteid: TENANT } })],
+    ['the tenant-a site admin on default', () => siteAdminRequest(TENANT, { ...LIST, rc: { siteid: 'default' } })],
+  ])('answers as carchGate for %s, which holds no S2 membership', async (_case, request) => {
+    const req = request();
+    const helpers = { secure: () => secure(req) };
+
+    expect(req.session.mura.memberships ?? '').not.toMatch(/(^|,)S2(,|$)/);
+    expect(await screen.gate(req, helpers)).toEqual(await carchGate(req, helpers));
   });
 
   it('sends an anonymous request to the login form before any strategies-content read', async () => {
@@ -490,5 +505,171 @@ describe('cArch.list LEGACY module', () => {
       ['edit', 'version-history', 'delete'],
       ['edit disabled', 'version-history', 'delete disabled'],
     ]);
+  });
+});
+
+// ---- Unregistered sites ----
+
+describe('cArch.list on a site identity does not register', () => {
+  const NO_SITE = 'nosuchsite';
+  const VARIATIONS = '00000000000000000000000000000000099';
+  const S2_MEMBERSHIPS = 'S2IsPrivate;default,S2IsPrivate,S2';
+  const LISTED_SITES = ['default', TENANT];
+
+  /** The admin on `siteid` under the role-less token identity mints for it, its session listing registered sites. */
+  const adminOn = (siteid: string, partial: AdminRequestPartial = {}): Req =>
+    makeAdminRequest(
+      {
+        ...LIST,
+        ...partial,
+        rc: { siteid, ...partial.rc },
+        user: { site: siteid, roles: [], s2: false },
+        session: { siteArray: LISTED_SITES, mura: { memberships: S2_MEMBERSHIPS }, ...partial.session },
+      },
+      'admin',
+    );
+
+  /** A screen context whose tree read on `siteId` answers `reply`. */
+  const siteContext = (req: Req, siteId: string, reply: FakeReply): Ctx =>
+    makeScreenContext({ req, gateway: fakeGatewayClient({ [treeRoute(siteId)]: reply }) });
+
+  it.each([
+    ['admits', S2_MEMBERSHIPS, true],
+    ['refuses', 'S2IsPrivate;default,S2IsPrivate', false],
+    ['refuses, matching S2 case-sensitively,', 'S2IsPrivate;default,S2IsPrivate,s2', false],
+  ])('%s the role-less token at the list gate by the session memberships %j', async (_verb, memberships, allowed) => {
+    const req = adminOn(NO_SITE, { session: { mura: { memberships } } });
+    const helpers = { secure: () => secure(req) };
+
+    expect([req.isS2, req.modulePerm(SITE_MANAGER)]).toEqual([false, false]);
+    expect(await screen.gate(req, helpers)).toEqual(allowed ? { kind: 'allow' } : secure(req));
+    expect(await carchGate(req, helpers)).toEqual(secure(req));
+  });
+
+  it.each([
+    ['Site Manager', SITE_MANAGER, HOME],
+    ['Components', COMPONENTS, COMPONENTS],
+    ['Forms', FORMS, FORMS],
+    ['Variations', VARIATIONS, VARIATIONS],
+  ])('sends an S2 member in the %s module to the root list without a tree read', async (_m, moduleid, top) => {
+    const ctx = siteContext(adminOn(NO_SITE, { rc: { moduleid } }), NO_SITE, { status: 403 });
+    const location = `./?muraAction=cArch.list&siteid=${NO_SITE}&moduleid=${SITE_MANAGER}&topid=${HOME}`;
+
+    expect(await screen.redirect(ctx)).toEqual({ kind: 'location', location });
+    await expect(renderScreenPage(listScreen, ctx)).rejects.toThrow(`The page redirect step fires (to ${location})`);
+    expect(ctx.gateway.calls.filter((call) => call.service === 'strategies-content')).toEqual([]);
+    expect(ctx.req.sessionWrites.moduleTopIds).toMatchObject({ [moduleid]: top });
+  });
+
+  it('records the view session writes of the request carrying nextN and URL keywords before redirecting', async () => {
+    const currentUrl = `./?muraAction=cArch.list&siteid=${NO_SITE}&nextN=50&keywords=news`;
+    const req = adminOn(NO_SITE, { currentUrl, rc: { nextN: '50', keywords: 'news' } });
+    const ctx = siteContext(req, NO_SITE, { status: 403 });
+
+    expect(await screen.redirect(ctx)).toMatchObject({ kind: 'location' });
+    expect(ctx.req.sessionWrites).toMatchObject({
+      muraValues: { nextN: '50' },
+      keywords: 'news',
+      moduleTopIds: { [SITE_MANAGER]: HOME, [`m${SITE_MANAGER}`]: HOME },
+    });
+    expect(ctx.req.session.mura).toMatchObject({ nextN: '50' });
+  });
+
+  /** list.cfm 494-573's `session.flatViewArgs[session.siteid]` defaults for a Site Manager request. */
+  const FLAT_VIEW_DEFAULTS = Object.freeze({
+    moduleid: SITE_MANAGER,
+    sortby: 'lastupdate',
+    sortdirection: 'desc',
+    lockid: '',
+    assignments: false,
+    categoryid: '',
+    tags: '',
+    page: 1,
+    type: '',
+    subtype: '',
+    report: '',
+    keywords: '',
+    tab: 0,
+    filtered: false,
+  });
+
+  /** The redirected request on `NO_SITE` whose session stores `flatViewArgs`, with URL `keywords` when given. */
+  async function flatViewRedirect(flatViewArgs: unknown, keywords?: string, rc: Readonly<Record<string, string>> = {}) {
+    const query = keywords === undefined ? '' : `&keywords=${keywords}`;
+    const req = adminOn(NO_SITE, {
+      currentUrl: `./?muraAction=cArch.list&siteid=${NO_SITE}${query}`,
+      rc: { ...rc, ...(keywords === undefined ? {} : { keywords }) },
+      session: flatViewArgs === undefined ? {} : { muraValues: { flatViewArgs } },
+    });
+    const ctx = siteContext(req, NO_SITE, { status: 403 });
+
+    expect(await screen.redirect(ctx)).toMatchObject({ kind: 'location' });
+    expect(ctx.gateway.calls.filter((call) => call.service === 'strategies-content')).toEqual([]);
+    return ctx.req;
+  }
+
+  it.each([
+    ['resets the page for new URL keywords', 'old', 1],
+    ['keeps the page for URL keywords CFML neq finds equal', 'NEWS', 3],
+  ])('%s of the session site, keeping its other values', async (_case, stored, page) => {
+    const session = { default: { keywords: stored, page: 3, report: 'drafts', filtered: 'yes' } };
+    const req = await flatViewRedirect(session, 'news');
+    const flatViewArgs = { default: { ...FLAT_VIEW_DEFAULTS, keywords: 'news', page, report: '', filtered: 'yes' } };
+
+    expect(req.session.mura).toMatchObject({ flatViewArgs });
+    expect(req.sessionWrites.muraValues).toEqual({ flatViewArgs });
+    expect(req.sessionWrites.keywords).toBe('news');
+  });
+
+  it('stores the full default struct for the session site of a session without flatViewArgs', async () => {
+    const req = await flatViewRedirect(undefined);
+
+    expect(req.sessionWrites.muraValues).toEqual({ flatViewArgs: { default: FLAT_VIEW_DEFAULTS } });
+  });
+
+  it('updates the session site entry stored under another case in place, a non-boolean filtered reset', async () => {
+    const req = await flatViewRedirect({ Default: { keywords: 'old', page: 3, filtered: 'maybe' } }, 'news');
+
+    expect(req.sessionWrites.muraValues).toEqual({
+      flatViewArgs: { Default: { ...FLAT_VIEW_DEFAULTS, keywords: 'news' } },
+    });
+  });
+
+  it('takes the report and its sort from a refreshFlatview request, and rc values as defaults', async () => {
+    const report = { report: 'mydrafts', sortby: 'title', direction: 'asc' };
+    const rc = { refreshFlatview: 'true', report: 'mydrafts', reportSortBy: 'title', reportSortDirection: 'asc' };
+    const req = await flatViewRedirect(undefined, undefined, { ...rc, tags: 'news', page: '2' });
+
+    expect(req.sessionWrites.muraValues).toEqual({
+      flatViewArgs: { default: { ...FLAT_VIEW_DEFAULTS, ...report, tags: 'news', page: '2' } },
+    });
+  });
+
+  it.each([
+    ['without URL keywords', undefined],
+    ['with the stored URL keywords', 'news'],
+  ])('queues no session.mura write for flatViewArgs it leaves unchanged, %s', async (_case, keywords) => {
+    const req = await flatViewRedirect({ default: { ...FLAT_VIEW_DEFAULTS, keywords: 'news', page: 3 } }, keywords);
+
+    expect(req.sessionWrites.muraValues).toBeUndefined();
+    expect(req.session.mura).toMatchObject({ flatViewArgs: { default: { keywords: 'news', page: 3 } } });
+  });
+
+  it('reads the tree of a listed site that rc.siteid names in another case', async () => {
+    const ctx = siteContext(adminOn('Tenant-A'), 'Tenant-A', ok(carchListData));
+
+    expect(await screen.redirect(ctx)).toBeUndefined();
+    expect(treeCalls(ctx).map((call) => call.path)).toEqual(['/v1/sites/Tenant-A/content/tree']);
+  });
+
+  it.each<[string, AdminRequestPartial]>([
+    ['the LEGACY module', { rc: LEGACY_RC }],
+    ['the 36-character module id', { rc: { moduleid: '000000000000000000000000000000000099', topid: HOME } }],
+    ['a session without the S2 membership', { session: { mura: { memberships: 'S2IsPrivate;default,S2IsPrivate' } } }],
+  ])('leaves %s to strategies-content, whose 403 answers secure()', async (_case, partial) => {
+    const ctx = siteContext(adminOn(NO_SITE, partial), NO_SITE, { status: 403 });
+
+    expect(await screen.redirect(ctx)).toEqual({ kind: 'location', location: './' });
+    expect(treeCalls(ctx).map((call) => call.path)).toEqual([`/v1/sites/${NO_SITE}/content/tree`]);
   });
 });

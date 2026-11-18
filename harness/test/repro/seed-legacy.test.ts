@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,6 +34,10 @@ let seedDir: string;
 let answers: Answer[];
 let posts: { cookie: string | undefined }[];
 let agents: (string | undefined)[];
+let issued: { cookie: string | undefined; context: string | null; token: string; expires: string }[];
+let seeds: { cookie: string | undefined; token: IncomingHttpHeaders[string]; expires: IncomingHttpHeaders[string]; contentType: string | undefined }[];
+let seedStatuses: number[];
+let events: ('login' | 'tokens' | 'seed')[];
 
 /** Answers a login POST the way Masa does for `answer`. */
 function answerLogin(res: ServerResponse, answer: Answer): void {
@@ -56,6 +60,10 @@ beforeEach(async () => {
   answers = [];
   posts = [];
   agents = [];
+  issued = [];
+  seeds = [];
+  seedStatuses = [];
+  events = [];
   let pages = 0;
   server = createServer((req, res) => {
     agents.push(req.headers['user-agent']);
@@ -63,7 +71,29 @@ beforeEach(async () => {
     if (req.method === 'POST' && url.pathname === '/admin/index.cfm') {
       req.resume().on('end', () => {
         posts.push({ cookie: req.headers.cookie });
+        events.push('login');
         answerLogin(res, answers.shift() ?? 'error');
+      });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/_api/json/v1/default/generateCSRFTokens') {
+      const n = issued.length + 1;
+      const pair = { cookie: req.headers.cookie, context: url.searchParams.get('context'), token: `token-${n}`, expires: `expires-${n}` };
+      issued.push(pair);
+      events.push('tokens');
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ apiversion: 'v1', data: { csrf_token: pair.token, csrf_token_expires: pair.expires }, method: 'generateCSRFTokens' }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/legacy-fixtures/cfml/seed.cfm') {
+      req.resume().on('end', () => {
+        const h = req.headers;
+        seeds.push({ cookie: h.cookie, token: h['x-csrf_token'], expires: h['x-csrf_token_expires'], contentType: h['content-type'] });
+        events.push('seed');
+        const status = seedStatuses.shift() ?? 200;
+        const outcome = status === 200 ? { data: { inserted: 1 } } : { error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } };
+        res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ apiversion: 'v1', method: 'seed', ...outcome }));
       });
       return;
     }
@@ -160,5 +190,27 @@ describe('seed-legacy.mjs admin login', () => {
     expect(run.code).toBe(0);
     expect(agents.length).toBeGreaterThan(0);
     expect(new Set(agents)).toStrictEqual(new Set(['opt2-seed-legacy']));
+  });
+});
+
+describe('seed-legacy.mjs seed parts', () => {
+  it('sends each seed POST the opt2-seed token pair issued to its session just before it, again after a re-login', async () => {
+    answers = ['success', 'success'];
+    seedStatuses = [401, 200];
+    await writeFile(path.join(seedDir, 'dataset-0001.json'), JSON.stringify({ digest: DIGEST, array: 'masa.sites', offset: 0, rows: [{ siteID: 'umbrella' }] }));
+    const parts = [{ file: 'dataset-0001.json', array: 'masa.sites', offset: 0, count: 1 }];
+    await writeFile(path.join(seedDir, 'manifest.json'), JSON.stringify({ digest: DIGEST, businessDate: '2026-06-30', parts }));
+
+    const run = await runScript();
+
+    expect(run.code).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ parts: 1, skipped: 0, inserted: { 'masa.sites': 1 }, digest: DIGEST });
+    expect(run.stderr).toBe('masa.sites 0+1 answered as logged out; logging in again\nmasa.sites 0+1 inserted 1\n');
+    expect(events).toStrictEqual(['login', 'tokens', 'seed', 'login', 'tokens', 'seed']);
+    expect(issued.map((pair) => pair.context)).toStrictEqual(['opt2-seed', 'opt2-seed']);
+    expect(seeds).toStrictEqual(
+      issued.map((pair) => ({ cookie: pair.cookie, token: pair.token, expires: pair.expires, contentType: 'application/json; charset=utf-8' })),
+    );
+    expect(seeds[1]?.cookie).toContain('CFID2=session');
   });
 });

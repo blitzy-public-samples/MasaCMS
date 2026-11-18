@@ -1,4 +1,4 @@
-// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list.
+// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list and Version menu facts.
 import { BRIDGE_ASSERTION_HEADER, isLegacySessionCookie, signBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
@@ -129,7 +129,7 @@ export interface BridgeClient {
   end(cookies: LegacyCookies, call: BridgeSessionCall): Promise<BridgeResult<EndResult>>;
 }
 
-/** Construction options of {@link createBridgeClient} and {@link createSiteListClient}. */
+/** Construction options of {@link createBridgeClient}, {@link createSiteListClient} and {@link createVersionMenuClient}. */
 export interface BridgeClientOptions {
   /** `LEGACY_ORIGIN`, addressed directly. */
   legacyOrigin: string;
@@ -160,6 +160,30 @@ export interface SiteListing {
 export interface SiteListClient {
   /** `op=list`: the registered site ids and their domain bindings. */
   listSites(): Promise<SiteListing>;
+}
+
+/** `op=versionMenu` answer: what the admin Version menu prints (`nav.cfm` 383-407); null where legacy finds the server key absent. */
+export interface LegacyVersionMenu {
+  /** `server.coldfusion.productname`. */
+  appServerProductName: string;
+  /** `server.coldfusion.productversion`. */
+  appServerVersion: string;
+  /** `dbUtility.version().database_productname`. */
+  dbProductName: string;
+  /** `dbUtility.version().database_version`. */
+  dbProductVersion: string;
+  /** `server.java.version`. */
+  javaVersion: string | null;
+  /** `server.os.name`. */
+  osName: string | null;
+  /** `server.os.version`. */
+  osVersion: string | null;
+}
+
+/** The gateway's read of the legacy server facts through `site.cfm`. */
+export interface VersionMenuClient {
+  /** `op=versionMenu`: the app server, database, Java and OS values of the admin Version menu. */
+  versionMenu(): Promise<LegacyVersionMenu>;
 }
 
 type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'export' | 'end';
@@ -340,6 +364,43 @@ export function createSiteListClient(opts: BridgeClientOptions): SiteListClient 
         throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.list answered no list of sites and bindings'));
       }
       return listing;
+    },
+  };
+}
+
+/** A {@link wireText} value as text, null for JSON null, undefined for anything else. */
+function wireTextOrNull(value: unknown): string | null | undefined {
+  return value === null ? null : wireText(value);
+}
+
+/** An `op=versionMenu` body; undefined unless the four menu texts are present and Java and OS are text or null. */
+function versionMenuOf(body: unknown): LegacyVersionMenu | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const fields = body as Record<string, unknown>;
+  const menu = {
+    appServerProductName: wireText(fields.appServerProductName),
+    appServerVersion: wireText(fields.appServerVersion),
+    dbProductName: wireText(fields.dbProductName),
+    dbProductVersion: wireText(fields.dbProductVersion),
+    javaVersion: wireTextOrNull(fields.javaVersion),
+    osName: wireTextOrNull(fields.osName),
+    osVersion: wireTextOrNull(fields.osVersion),
+  };
+  return Object.values(menu).includes(undefined) ? undefined : (menu as LegacyVersionMenu);
+}
+
+/** Creates the signed `site.cfm?op=versionMenu` client; a body without the menu's values fails closed. */
+export function createVersionMenuClient(opts: BridgeClientOptions): VersionMenuClient {
+  const send = bridgeSender<'versionMenu'>(opts, 'site');
+
+  return {
+    async versionMenu() {
+      const { body } = await send<unknown>('versionMenu', { method: 'GET' }, {}, { userAgent: BOT_USER_AGENT });
+      const menu = versionMenuOf(body);
+      if (menu === undefined) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.versionMenu answered no Version menu values'));
+      }
+      return menu;
     },
   };
 }

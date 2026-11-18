@@ -25,6 +25,7 @@ import {
   isWebPageRedirect,
   normaliseWebResponseHeaders,
 } from './headers.js';
+import { withRequestTarget } from './request-target.js';
 import { recordResponseHead, upstreamReasonPhrase, type ResponseHeadSlot } from './response-head.js';
 import { settlingRelay } from './settling-relay.js';
 
@@ -52,6 +53,8 @@ export interface TargetForwardContext {
   method?: string;
   /** False when the callee must receive no body; absent means the raw body is forwarded. */
   forwardBody?: boolean;
+  /** True when `path` is sent after the callee's base path as the request target byte for byte, never parsed by reply-from. */
+  rawTarget?: boolean;
   /** Identity session whose barrier records the response's write positions. */
   sessionId?: string;
   /** True for a write the session's legacy reads must await; it is declared in the barrier before it is forwarded. */
@@ -393,9 +396,17 @@ export async function forwardToTarget(
 
   let forwarded: FastifyReply;
   try {
-    forwarded = recordResponseHead(targetHead, () =>
-      replyFromCallee(reply, ctx.service, `${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options),
-    );
+    if (ctx.rawTarget === true) {
+      // reply-from resolves only the origin; the gateway's agent (replyFromOptions) sends the base path and ctx.path in its place.
+      const base = new URL(ctx.serviceUrl);
+      forwarded = withRequestTarget(`${base.pathname.replace(/\/+$/, '')}${ctx.path}`, () =>
+        recordResponseHead(targetHead, () => replyFromCallee(reply, ctx.service, base.origin, options)),
+      );
+    } else {
+      forwarded = recordResponseHead(targetHead, () =>
+        replyFromCallee(reply, ctx.service, `${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options),
+      );
+    }
   } catch (error) {
     // reply-from rejects a path it cannot parse, and a GET or HEAD carrying a body, before anything is sent.
     return failUnsent(error, `forward to ${ctx.service} rejected before sending`);

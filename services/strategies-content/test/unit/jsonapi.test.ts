@@ -198,7 +198,7 @@ describe('site resolution and route keys', () => {
   }
 
   const KEY_CASES: readonly KeyCase[] = [
-    { name: 'a generic save of content', method: 'POST', url: `${API}/?method=save&entityname=content`, body: { title: 'Saved' }, key: 'api:content.save', target: 'entity' },
+    { name: 'a generic save of content', method: 'POST', url: `${API}/?method=save&entityname=content`, body: { title: 'Saved' }, key: 'api:content.save', target: 'refused' },
     { name: 'the same save of user, which keeps its entity', method: 'POST', url: `${API}/?method=save&entityname=user`, body: { fname: 'Ada' }, key: 'api:user.save', target: 'foreign' },
     { name: 'a dotted content.findOne', method: 'GET', url: `${API}/?method=content.findOne`, key: 'api:content.findone', target: 'entity' },
     {
@@ -220,7 +220,7 @@ describe('site resolution and route keys', () => {
       target: 'error',
     },
     { name: 'GET of a content id path', method: 'GET', url: `${API}${PAGE_ONE_PATH}`, key: 'api:content.findone', target: 'entity' },
-    { name: 'PUT of a content id path', method: 'PUT', url: `${API}${PAGE_ONE_PATH}`, key: 'api:content.save', target: 'entity' },
+    { name: 'PUT of a content id path', method: 'PUT', url: `${API}${PAGE_ONE_PATH}`, key: 'api:content.save', target: 'refused' },
     { name: 'DELETE of a content id path', method: 'DELETE', url: `${API}${PAGE_ONE_PATH}`, key: 'api:content.delete', target: 'entity' },
     {
       name: 'a POST that X-HTTP-Method-Override turns into DELETE',
@@ -547,26 +547,21 @@ describe('entity registration and the legacy error map', () => {
     expect(api.db.writes()).toEqual([]);
   });
 
-  it('answers a content save whose validation fails with 403 and its data.errors, writing nothing', async () => {
+  // The content and contentnav saves write the decision-list table tcontenteventreminders, so they stay on legacy.
+  it.each([
+    ['POST', `${API}/content`],
+    ['POST', `${API}/contentnav`],
+    ['PUT', `${API}${PAGE_ONE_PATH}`],
+    ['POST', `/_api/rest/v1/${SITE}/content`],
+    ['POST', `/_api/rest/v1/${SITE}/contentnav`],
+  ] as const)('answers the withheld save %s %s with the legacy 503 before any CSRF consume or write', async (method, url) => {
     api.db.clear();
-    const res = await send(api, {
-      method: 'POST',
-      url: `${API}/content`,
-      subject: 's2',
-      headers: { 'content-type': FORM },
-      payload: formBody({
-        parentid: IDS.content.root,
-        type: 'Page',
-        title: 'Bad',
-        template: 'x/y.cfm',
-        csrf_token: 'form-csrf-token',
-        csrf_token_expires: 'form-csrf-expiry',
-      }),
-    });
-    expect(res.statusCode).toBe(403);
-    const body = bodyOf(res);
-    expect(body.method).toBe('save');
-    expect((body.data as Struct).errors).toEqual({ template: 'invalid template' });
+    api.client.clear();
+    const payload = formBody({ parentid: IDS.content.root, type: 'Page', title: 'Withheld', csrf_token: 'form-csrf-token', csrf_token_expires: 'form-csrf-expiry' });
+    const res = await send(api, { method, url, subject: 's2', headers: { 'content-type': FORM }, payload });
+    expect(res.statusCode).toBe(503);
+    expect(bodyOf(res).error).toEqual(errorBody('server_error'));
+    expect(api.client.csrfConsumes).toEqual([]);
     expect(api.db.writes()).toEqual([]);
   });
 });

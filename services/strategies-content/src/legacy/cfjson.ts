@@ -203,7 +203,7 @@ function acfJson(value: unknown, preserveKeyCase: boolean): string {
   throw new TypeError(`serializeJSON has no CFML form for a ${typeof value === 'object' ? 'class instance' : typeof value}`);
 }
 
-/** Port of ACF 2023 native serializeJSON (carch update errors, cfobject getAsJSON). */
+/** Port of ACF 2023 native serializeJSON (cfobject getAsJSON, form-builder JSON). */
 export function acfSerializeJson(value: unknown, opts: AcfSerializeJsonOptions = {}): string {
   return acfJson(value, opts.preserveKeyCase === true);
 }

@@ -50,6 +50,8 @@ export type CutoverVersionEntry = CutoverVersion['entries'][number];
 
 /** Package whose own Fastify routes answer before its edge catch-all. */
 const GATEWAY_PACKAGE = 'gateway';
+/** Wildcard prefix of the gateway's own probe paths: its relay forwards only a callee's versioned API. */
+const GATEWAY_WILDCARD_PREFIX = 'v1/';
 /** Path prefix of web's relay alias, which the gateway opens only to web's invocation credential. */
 export const RELAY_ALIAS_PREFIX = '/opt2/svc/';
 /** Route-key prefix on which the gateway verifies a local signed URL before forwarding it. */
@@ -319,7 +321,8 @@ function reachOf(context: ReachContext, matrix: LoadedMatrix, route: RouteMatrix
   const { method, url } = route;
   const given = givenParams(context.inputs, pkg, url);
   const defaults = freeParams(url).map((name) => (Object.hasOwn(given, name) ? (given[name] as string) : cfUuid()));
-  const suffix = `opt2-authz-probe/${cfUuid()}`;
+  const probe = `opt2-authz-probe/${cfUuid()}`;
+  const suffix = pkg === GATEWAY_PACKAGE ? `${GATEWAY_WILDCARD_PREFIX}${probe}` : probe;
   const defaultPath = fillTemplate(url, defaults, suffix);
   if (pkg === GATEWAY_PACKAGE) {
     return { package: pkg, method, url, reach: 'gateway-own', paths: [{ path: defaultPath }] };

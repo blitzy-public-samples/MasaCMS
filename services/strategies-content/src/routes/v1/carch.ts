@@ -5,7 +5,6 @@ import { AuthDenial } from '@opt2/platform/auth';
 import {
   LEGACY_ADMIN_SENTINEL_ID,
   LegacyServiceUnavailableError,
-  accessControlOriginDomains,
   cfEq,
   cfIsBoolean,
   cfIsNumeric,
@@ -26,20 +25,18 @@ import {
   IDENTITY_SERVICE,
   ServiceUnavailableError,
   legacyParamsOf,
-  legacyScopesOf,
   multipartFilesOf,
   type FastifyInstance,
   type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { poolTenantFor, registryEntries, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { poolTenantFor, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { loadRequest, requiresApproval } from '../../domain/approval-requests.js';
 import { approvalAction } from '../../domain/approvals.js';
 import { readChangeset } from '../../domain/changesets.js';
 import { countCategories, readCategoryTree, type CategoryTreeLevels } from '../../domain/categories.js';
 import {
-  carchUpdate,
   getActiveContent,
   getActiveContents,
   getApprovalsQuery,
@@ -75,7 +72,6 @@ import {
   sortSiteManagerLevel,
   unlockFile,
   unlockNode,
-  updateObjectParams,
   withPooledFiles,
   type ContentBean,
   type ContentSaveSite,
@@ -137,7 +133,6 @@ import {
   renderSiteManagerJson,
   renderSiteManagerTab,
   renderTagArray,
-  renderUpdateResponse,
   type AdminLabels,
   type AdminRenderContext,
   type AdminRenderResult,
@@ -180,22 +175,18 @@ import {
   type StatusModalApproval,
   type StatusModalModel,
   type StatusModalUser,
-  type UpdateResponseModel,
 } from '../../legacy/admin-render.js';
 import { buildCustomIconLookup, getNextN, iconClass, type AdminSessionState, type CustomIconLookup, type NodePerm } from '../../legacy/admin-markup.js';
-import { muraJsonEncode } from '../../legacy/cfjson.js';
-import { contentUrl, imageUrl } from '../../legacy/content-urls.js';
+import { imageUrl } from '../../legacy/content-urls.js';
 import type { ContentRouteContext } from '../index.js';
 import { requestSiteUrls } from '../jsonapi.js';
 import {
   SESSION_EFFECTS_HEADER,
   adminCsrf,
-  adminRedirect,
   circuitRouteConfig,
   csrfRejected,
   requireCircuitAccess,
   siteFlagsOf,
-  type AdminRedirect,
   type AdminWriteResult,
   type SessionEffects,
 } from './access.js';
@@ -234,8 +225,6 @@ const TAB_ASSIGNMENTS = '';
 const CSRF_TOKENS_PATH = '/v1/csrf/tokens';
 /** downloaddata.cfm's `<cfcontent type="application/msexcel">`. */
 const DOWNLOAD_CONTENT_TYPE = 'application/msexcel';
-/** The content type of a JSON AdminWriteResult answer. */
-const BARE_JSON_CONTENT_TYPE = 'application/json';
 /** Types extendSubType reads no Base sets for (extendSubType.cfc:557). */
 const NO_BASE_EXTEND_TYPES = '1,2,User,Group,Address,Site,Component,Form';
 
@@ -968,8 +957,8 @@ async function contentEditModel(
 }
 
 /**
- * The edit form (edit.cfm and its panels) prints data only other owners or the legacy web root hold, so carch.edit and
- * update.cfm's re-render of a rejected save are halted, before any write, rather than served with guessed values.
+ * The edit form (edit.cfm and its panels) prints data only other owners or the legacy web root hold, so carch.edit is
+ * halted rather than served with guessed values.
  */
 function editFormHalted(action: string, surface: LegacyErrorSurface = 'admin'): CarchHaltedError {
   return new CarchHaltedError(
@@ -1224,15 +1213,6 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     return viewModel({ ...rc, contentBean: { ...beanValues(version), stats: stats ?? {} }, stats: stats ?? {} });
   });
 
-  /** carch.updateObjectParams (carch.cfc:546-573): a display object's params on a version; legacy checks no token. */
-  app.post<Version>('/v1/sites/:siteid/content/versions/:contenthistid/object-params', { config }, async (request): Promise<AdminWriteResult> => {
-    const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
-    const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
-    const saved = await updateObjectParams(ctx.domain, actor, await siteOf(request, ctx, actor), rc);
-    if (saved === null) return { saved: false, errors: {}, redirect: null };
-    return { saved: true, errors: saved.errors, redirect: null, data: modelValue({ versionBean: Object.fromEntries(saved.entries()) }) as Record<string, unknown> };
-  });
-
   /** carch.datamanager (carch.cfc:472-475): a form's responses as datamanager.cfm lists them. */
   app.get<Item>('/v1/sites/:siteid/forms/:contentid/responses', { config }, async (request) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
@@ -1409,7 +1389,6 @@ async function renderRaw<T>(request: FastifyRequest, ctx: ContentRouteContext, a
 function panelResult(result: PanelRenderResult): CarchRawResult {
   const mura: Record<string, unknown> = {};
   if (result.muraSessionEffects?.clearEditBean === true) mura.editBean = null;
-  if (result.muraSessionEffects?.objectInstanceId !== undefined) mura.objectInstanceId = result.muraSessionEffects.objectInstanceId;
   return withEffects({ status: result.status, contentType: result.contentType, body: result.body }, sessionEffectsOf(undefined, mura));
 }
 
@@ -1716,7 +1695,7 @@ async function nestNodes(scope: NestScope, parentId: string, sort: { sortBy: str
   return nodes;
 }
 
-/** list() and loadsitemanager()'s empty-tree reset `session[session.moduleid] = {topid}` (carch.cfc:216-221), which carch.update reads back. */
+/** list() and loadsitemanager()'s empty-tree reset `session[session.moduleid] = {topid}` (carch.cfc:216-221). */
 async function saveTreeReset(request: FastifyRequest, moduleId: string, topId: string): Promise<void> {
   const state = await storedSession(request);
   await saveSession(request, { moduleTopIds: { ...(state.moduleTopIds ?? {}), [moduleId]: topId } });
@@ -2874,147 +2853,6 @@ async function runStatusModal(request: FastifyRequest, ctx: ContentRouteContext,
   return panelResult(result);
 }
 
-/** FW/1 `redirect()` (framework.cfc:735-781): `<path>?muraAction=<action>` then the append pairs; path-less redirects use the admin script. */
-function fw1Location(redirect: AdminRedirect, path: string | undefined, site: ContentSaveSite): string {
-  const base = path ?? `${site.urls.context}/admin/index.cfm`;
-  const query = redirect.params.map(([name, value]) => `&${name}=${esapiUrlEncode(value)}`).join('');
-  return `${base}?muraAction=${redirect.circuit}.${redirect.action}${query}`;
-}
-
-/** contentBean.getIsOnDisplay (contentBean.cfc:1355-1376) at `now`. */
-function isOnDisplayAt(bean: LegacyContentBean, now: Date): boolean {
-  const display = bean.number('display');
-  if (display === 1) return true;
-  if (display !== 2) return false;
-  const start = bean.raw('displaystart');
-  if (!(start instanceof Date) || start > now) return false;
-  const stop = bean.raw('displaystop');
-  if (stop === '' || stop === null || stop === undefined) return true;
-  return stop instanceof Date && stop >= now;
-}
-
-/** A bean as dsp_close_compact_display.cfm reads it, with its URL and the URL previewing its own version. */
-function closeBean(bean: LegacyContentBean, site: ContentSaveSite, now: Date): Rc {
-  const url = (querystring?: string): string => contentUrl(site.urls, { filename: bean.text('filename') }, querystring === undefined ? {} : { querystring });
-  return {
-    active: bean.number('active'),
-    isOnDisplay: isOnDisplayAt(bean, now),
-    type: bean.text('type'),
-    contentID: bean.contentId(),
-    contentHistID: bean.contentHistId(),
-    url: url(),
-    previewURL: url(`previewid=${bean.contentHistId()}`),
-  };
-}
-
-/** dsp_close_compact_display.cfm's reads for a save without errors: the saved, current, parent and home beans. */
-async function closeData(ctx: ContentRouteContext, actor: Actor, site: ContentSaveSite, rc: Rc, saved: LegacyContentBean): Promise<Rc> {
-  const now = ctx.clock.now();
-  const siteId = rcText(rc, 'siteid');
-  const data: Rc = {
-    contentBean: { type: saved.text('type'), contentID: saved.contentId(), remoteURL: saved.text('remoteurl'), active: saved.number('active') },
-    useLayoutManager: false,
-  };
-  const homeId = rcText(rc, 'homeID');
-  if (homeId !== '') data.homeURL = contentUrl(site.urls, { filename: (await activeLegacyBean(ctx, actor, homeId, siteId)).text('filename') });
-  if (cfEq(rcText(rc, 'action'), 'add')) {
-    const current = saved.number('active') !== 0 ? await activeLegacyBean(ctx, actor, saved.contentId(), saved.text('siteid')) : saved;
-    data.currentBean = { ...closeBean(current, site, now), editedPreviewURL: contentUrl(site.urls, { filename: current.text('filename') }, { querystring: `previewID=${saved.contentHistId()}` }) };
-    if (['file', 'link'].includes(saved.text('type').toLowerCase())) {
-      const parent = await activeLegacyBean(ctx, actor, current.text('parentid'), current.text('siteid'));
-      const parentHistId = rcText(rc, 'parenthistid');
-      data.parentBean = {
-        ...closeBean(parent, site, now),
-        ...(parentHistId === ''
-          ? {}
-          : {
-              parentHistPreviewURL: contentUrl(site.urls, { filename: parent.text('filename') }, { querystring: `previewid=${parentHistId}` }),
-              parentHistExists: (await getContentVersion(ctx.domain, actor, { contentHistId: parentHistId, siteId })).isNew === 0,
-            }),
-      };
-    }
-  } else {
-    data.parentContentBean = closeBean(await activeLegacyBean(ctx, actor, rcText(rc, 'parentid'), siteId), site, now);
-  }
-  return data;
-}
-
-/** The domains a return URL may keep: settingsManager.getAccessControlOriginDomainList over the registered sites. */
-async function originDomains(ctx: ContentRouteContext): Promise<string> {
-  const entries = await registryEntries(ctx.domain.db);
-  return accessControlOriginDomains(entries.map((entry) => ({ domain: entry.domains.join(',') })), {}).join(',');
-}
-
-/** update.cfm's `{"files":[…]}` answer, typed by the request's Accept header as contentManager.multiFileUpload types it. */
-function multiFileUploadResult(request: FastifyRequest, item: Record<string, unknown> | null): AdminRenderResult {
-  const json = (request.headers.accept ?? '').includes('application/json');
-  return { status: 200, contentType: json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8', body: item === null ? '{"files":[' : `{"files":[${muraJsonEncode(item)}]}` };
-}
-
-/** carch.update (carch.cfc:336-451) and update.cfm: content deletes, saves and uploads; each CSRF context is checked only where legacy validates. */
-async function runUpdate(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
-  const { rc } = await carchContext(paramsOf(request), actor, () => storedSession(request));
-  const state = await storedSession(request);
-  const site = await siteOf(request, ctx, actor);
-  // update.cfm's isDefined("url.qqfile") reads the url scope the start-up scan left.
-  const qqfile = legacyScopesOf(request).url.entries.some(([key]) => key.toLowerCase() === 'qqfile');
-  const multiFileUpload = muraValue(state, 'multifileupload');
-  // `session[<moduleID>]` (no `m`), which the Site Manager reset writes; `session['m<moduleID>']` is before()'s.
-  const topIdsByModule = Object.fromEntries(Object.entries(state.moduleTopIds ?? {}).filter(([key]) => !/^m/i.test(key)));
-  const result = await carchUpdate({ ...ctx.domain, storage: ctx.storage }, actor, site, {
-    rc,
-    files: uploadsOf(request),
-    validateCsrf: (context) => validateCsrf(request, context),
-    session: { openSectionList: state.openSectionList ?? '', multiFileUpload: cfIsBoolean(multiFileUpload) && cfToBoolean(multiFileUpload), topIdsByModule },
-    qqfile,
-    ...(rcHas(rc, 'extraParams') ? { extraParams: rcText(rc, 'extraParams') } : {}),
-    accessControlOriginDomains: await originDomains(ctx),
-  });
-  const mura: Record<string, unknown> = {};
-  let openSectionList: string | undefined;
-  for (const effect of result.sessionEffects) {
-    if (effect.kind === 'openSectionList') openSectionList = effect.value;
-    else if (effect.kind === 'multiFileUpload') mura.multifileupload = effect.value;
-    // A kept bean travels as the rejected save's `data.contentBean`, which web stores as `session.mura.editBean`.
-    else if (effect.bean === null) mura.editBean = null;
-  }
-  const effects = sessionEffectsOf(openSectionList === undefined ? undefined : { openSectionList }, mura);
-  const answer = (out: AdminRenderResult, headers: Record<string, string> = {}): CarchRawResult => withEffects(out, effects, headers);
-  const written = (write: AdminWriteResult): CarchRawResult => answer({ status: 200, contentType: BARE_JSON_CONTENT_TYPE, body: JSON.stringify(modelValue(write)) });
-  const outcome = result.outcome;
-  const now = ctx.clock.now();
-  switch (outcome.kind) {
-    case 'redirect': {
-      const location = fw1Location(adminRedirect(outcome.action as `${string}.${string}`, outcome.params, outcome.append), outcome.path, site);
-      return answer({ status: 302, contentType: ADMIN_VIEW_CONTENT_TYPE, body: '', redirect: location }, { location });
-    }
-    case 'location':
-      return answer({ status: 302, contentType: ADMIN_VIEW_CONTENT_TYPE, body: '', redirect: outcome.url }, { location: outcome.url });
-    case 'abort':
-      return answer({ status: 200, contentType: ADMIN_VIEW_CONTENT_TYPE, body: '' });
-    case 'multiFileUpload':
-      return answer(multiFileUploadResult(request, outcome.item));
-    case 'text':
-    case 'ajax': {
-      const bean = outcome.kind === 'ajax' ? outcome.bean : undefined;
-      const model: UpdateResponseModel = {
-        qqfile: outcome.kind === 'text' && outcome.body === '{success:true}',
-        ajaxRequest: outcome.kind === 'ajax',
-        action: outcome.kind === 'text' && outcome.body !== '{success:true}' ? 'multiFileUpload' : rcText(rc, 'action'),
-        content: { filename: bean?.text('filename') ?? '', contenthistid: bean?.contentHistId() ?? '', active: bean?.number('active') ?? 0, isOnDisplay: bean === undefined ? false : isOnDisplayAt(bean, now) },
-        errors: bean?.errors ?? {},
-      };
-      const out = await renderRaw(request, ctx, actor, (rctx) => renderUpdateResponse(model, rctx));
-      if ('delegate' in out) throw new TypeError(`update.cfm answered ${outcome.kind} with the edit page`);
-      return answer({ status: out.status, contentType: out.contentType, body: out.body });
-    }
-    case 'rerender':
-      throw editFormHalted('update');
-    case 'closeCompactDisplay':
-      return written({ saved: true, errors: {}, redirect: null, data: await closeData(ctx, actor, site, rc, outcome.bean) });
-  }
-}
-
 /** The CSRF context of a raw action whose legacy handler validates `rc.contentid & suffix` before anything else. */
 function contentIdContext(suffix: string): (request: FastifyRequest) => string {
   return (request) => `${rcText(paramsOf(request), 'contentid')}${suffix}`;
@@ -3055,5 +2893,4 @@ export const carchRawActions = {
   statusmodal: { run: runStatusModal },
   unlockfile: { run: runUnlock(unlockFile), csrfContext: contentIdContext('unlockfile') },
   unlocknode: { run: runUnlock(unlockNode), csrfContext: contentIdContext('unlocknode') },
-  update: { run: runUpdate },
 };

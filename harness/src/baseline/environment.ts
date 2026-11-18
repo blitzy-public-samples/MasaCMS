@@ -108,7 +108,7 @@ export type VersionMenu = {
   osVersion: string | null;
 };
 
-/** Settings recorded by `--phase services`; `up.sh` reads `timeZone`, `ping`, `startup.writersClosed` and `mysqlFallback`; web reads `versionMenu`. */
+/** Settings recorded by `--phase services`; `up.sh` reads `timeZone`, `ping`, `startup.writersClosed` and `mysqlFallback`. */
 export type EnvironmentSettings = {
   timeZone: string | null;
   utcTotalOffset: number | null;

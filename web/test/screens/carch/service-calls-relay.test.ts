@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
-import { GatewayUnavailableError, type MultipartBody, type ServicePath } from '@/lib/gateway-client';
+import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { REDIRECT_HEADERS } from '@/lib/responses';
 import {
@@ -25,7 +25,6 @@ import {
   routeKey,
   type FakeGatewayClient,
   type FakeRouteTable,
-  type RecordedRequest,
 } from '../../helpers/fake-gateway';
 
 const SITE = 'default';
@@ -43,26 +42,11 @@ const SENT_CSRF = { 'x-csrf_token': 'T1', 'x-csrf_token_expires': '9912312359590
 const MODEL = { rc: { contentBean: { contentid: CONTENT_ID, title: 'About Us' } } };
 const WRITTEN: CarchWriteResult = { saved: true, errors: {}, redirect: null };
 const SERVER_ERROR = { apiversion: 'v1', method: 'carch', error: { message: 'Unexpected', code: 'server_error' } };
-// carch.update: fw.redirect(action="cArch.list",append="topid,siteid,startrow,moduleid",path="./").
+// FW/1's redirect to cArch.list: fw.redirect(action="cArch.list",append="topid,siteid,startrow,moduleid",path="./").
 const LIST_LOCATION =
   `./?muraAction=cArch.list&topid=${HOME_ID}&siteid=${SITE}&startrow=1&moduleid=${CONTENT_MODULE_ID}`;
 const CSV = readFileSync(new URL('../../fixtures/strategies-content/downloaddata.csv', import.meta.url));
 const DIFF = readFileSync(new URL('../../fixtures/strategies-content/loaddiff.html', import.meta.url));
-const BOUNDARY = '----opt2carch7';
-const MULTIPART_TYPE = `multipart/form-data; boundary=${BOUNDARY}`;
-const MULTIPART = [
-  `--${BOUNDARY}`,
-  'Content-Disposition: form-data; name="siteid"',
-  '',
-  SITE,
-  `--${BOUNDARY}`,
-  'Content-Disposition: form-data; name="newfile"; filename="brochure.pdf"',
-  'Content-Type: application/pdf',
-  '',
-  '%PDF-1.4 synthetic',
-  `--${BOUNDARY}--`,
-  '',
-].join('\r\n');
 
 const sitePath = (rest: string): ServicePath => `/v1/sites/${SITE}${rest}`;
 const svc = (method: 'GET' | 'POST', path: ServicePath): string => routeKey(method, 'strategies-content', path);
@@ -311,20 +295,6 @@ type WriteCase = [CarchWriteAction, string, Rc, ServicePath];
 // Operation and path of each write action, per the strategies-content contract.
 const WRITE_CASES: WriteCase[] = [
   [
-    'updateobjectparams',
-    'updateObjectParams',
-    {
-      siteid: SITE,
-      contenthistid: HIST_ID,
-      regionid: '2',
-      object: 'feed',
-      objectid: 'O1',
-      params: '{"displaylist":"Title"}',
-      approved: '1',
-    },
-    sitePath(`/content/versions/${HIST_ID}/object-params`),
-  ],
-  [
     'datamanager',
     'deleteFormResponses',
     { siteid: SITE, contentid: CONTENT_ID, responseid: RESPONSE_ID, action: 'Delete', moduleid: CONTENT_MODULE_ID },
@@ -461,41 +431,6 @@ describe('relayCarchRaw', () => {
     });
     expect(gateway.calls).toEqual([
       { service: 'strategies-content', method: 'POST', path, query: { siteid: SITE }, form: rc, headers: FORWARDED_HOST_HEADERS },
-    ]);
-  });
-
-  const SIZE = Buffer.byteLength(MULTIPART);
-  const SIZED = { 'content-length': String(SIZE) };
-
-  it.each<[string, () => MultipartBody['body'], Readonly<Record<string, string>>]>([
-    ['Uint8Array', () => new TextEncoder().encode(MULTIPART), {}],
-    ['ArrayBuffer', () => new TextEncoder().encode(MULTIPART).buffer, {}],
-    ['Blob', () => new Blob([MULTIPART]), SIZED],
-    ['sized re-readable source', () => ({ size: SIZE, stream: () => new Blob([MULTIPART]).stream() }), SIZED],
-    ['ReadableStream', () => new Blob([MULTIPART]).stream(), {}],
-  ])('posts a %s multipart body unchanged', async (_name, body, framing) => {
-    let received: RecordedRequest | undefined;
-    const route = (request: RecordedRequest) => {
-      received = request;
-      return { status: 302, headers: { Location: LIST_LOCATION } };
-    };
-    const { gateway, ctx } = context({ [svc('POST', '/v1/raw/carch/update')]: route }, adminWith('update', CSRF));
-    const options = { rc: { siteID: SITE, action: 'add' }, multipart: { contentType: MULTIPART_TYPE, body: body() } };
-    await expect(relayCarchRaw(ctx, 'update', 'POST', options)).resolves.toEqual({
-      status: 302,
-      contentType: HTML_TYPE,
-      body: Buffer.alloc(0),
-      headers: { ...REDIRECT_HEADERS, location: LIST_LOCATION },
-    });
-    expect(received?.body).toBe(MULTIPART);
-    expect(gateway.calls).toEqual([
-      {
-        service: 'strategies-content',
-        method: 'POST',
-        path: '/v1/raw/carch/update',
-        query: { siteid: SITE },
-        headers: { ...SENT_CSRF, 'content-type': MULTIPART_TYPE, ...framing },
-      },
     ]);
   });
 

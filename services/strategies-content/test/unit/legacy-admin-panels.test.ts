@@ -18,7 +18,6 @@ import {
   renderLoadFileMetadata,
   renderStatusModal,
   renderTagArray,
-  renderUpdateResponse,
   type AssocFileRow,
   type CategoryAssignmentModel,
   type DraftPromptModel,
@@ -34,7 +33,6 @@ import {
   type PanelLayoutBody,
   type PanelRenderResult,
   type StatusModalModel,
-  type UpdateResponseModel,
 } from '../../src/legacy/admin-render-panels.js';
 import { cfJsStringFormat } from '../../src/legacy/cfjson.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
@@ -769,77 +767,6 @@ describe('renderDraftPromptData', () => {
   it('requires the draft version whenever a draft exists', () => {
     const { draftVersion: _, ...model } = draftModel(scenario<DraftScenario>('dp_hasdraft_editor'));
     expect(() => renderDraftPromptData(model, context())).toThrow('draftVersion');
-  });
-});
-
-interface UpdateScenario {
-  errors: { titleconflict?: string; filename?: string };
-  active: number;
-  onDisplay: boolean;
-  contenthistid: string;
-  contentid: string;
-  type: string;
-  ajax: boolean;
-  action: string;
-  href: string;
-  proxyLoc: string;
-  lm: boolean;
-  instanceId?: string;
-}
-
-describe('renderUpdateResponse', () => {
-  it('renders the ajax success location as recorded', () => {
-    const model: UpdateResponseModel = {
-      qqfile: false,
-      ajaxRequest: true,
-      action: 'update',
-      content: { filename: 'about', contenthistid: HOME_HIST, active: 1, isOnDisplay: true },
-      errors: {},
-    };
-    const ctx = { ...context(), site: { ...SITE, siteIdInUrls: true } };
-    expectRecorded(bare(renderUpdateResponse(model, ctx)), 'updateAjaxSuccess');
-  });
-
-  const names = Object.keys(RECORDED).filter((name) => name.startsWith('up_'));
-  it.each(names)('renders %s as recorded', (name) => {
-    const s = scenario<UpdateScenario>(name);
-    const errors: Record<string, string> = {};
-    // update.cfm serializes getErrors(): keys legacy set by dot notation print upper-cased.
-    if (s.errors.titleconflict !== undefined) errors.TITLECONFLICT = s.errors.titleconflict;
-    if (s.errors.filename !== undefined) errors.filename = s.errors.filename;
-    const model: UpdateResponseModel = {
-      qqfile: name === 'up_qqfile',
-      ajaxRequest: s.ajax,
-      action: s.action,
-      content: { filename: '', contenthistid: s.contenthistid, active: s.active, isOnDisplay: s.onDisplay },
-      errors,
-      close: {
-        href: s.href,
-        type: s.type,
-        contentId: s.contentid,
-        coreVersion: '7.6.1',
-        frontEndProxyLoc: s.proxyLoc,
-        objectInstanceId: s.instanceId ?? '',
-        useLayoutManager: s.lm,
-      },
-    };
-    const expires = /csrf_token_expires: '(\d+)'/.exec(recorded(name).body)?.[1] ?? '';
-    const csrf = (ctx: string) => {
-      expect(ctx).toBe(`${s.contenthistid}add`);
-      return { token: 'REDACTED_CSRF_TOKEN', expires };
-    };
-    const result = bare(renderUpdateResponse(model, context({ csrf })));
-    expectRecorded(result, name);
-    if (name.startsWith('up_close')) expect(result.muraSessionEffects).toEqual({ clearEditBean: true, objectInstanceId: '' });
-  });
-
-  const failed = { qqfile: false, ajaxRequest: false, action: 'update', content: { filename: '', contenthistid: 'H', active: 0, isOnDisplay: false } };
-  it('hands a failed non-ajax save to the edit page', () => {
-    expect(renderUpdateResponse({ ...failed, errors: { TITLECONFLICT: 'x' } }, context())).toMatchObject({ delegate: 'edit-page' });
-  });
-
-  it('requires the close-page inputs after a successful non-ajax save', () => {
-    expect(() => renderUpdateResponse({ ...failed, errors: {} }, context())).toThrow('close');
   });
 });
 

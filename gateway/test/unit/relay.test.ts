@@ -1,5 +1,7 @@
-// Tests web's service relay: web-only admission, transparent forwarding under the gateway's credential, write positions and fail-closed 503s.
+// Tests web's service relay: web-only admission of versioned API paths, transparent forwarding under the gateway's credential, write positions and fail-closed 503s.
 import { Buffer } from 'node:buffer';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { WRITE_POSITION_HEADER_LC, formatWritePosition } from '@opt2/platform/migration-kit';
@@ -47,6 +49,44 @@ async function callHeaders(caller: string | null = 'web'): Promise<Record<string
   return headers;
 }
 
+/** Sends `method url` over a socket, byte for byte: inject would resolve dot segments and backslashes first. */
+async function sendRaw(
+  g: TestGateway,
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<{ status: number; body: string }> {
+  if (!g.app.server.listening) await g.app.listen({ host: '127.0.0.1', port: 0 });
+  const { port } = g.app.server.address() as AddressInfo;
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, method, path: url, headers, agent: false }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.once('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      res.once('error', reject);
+    });
+    req.once('error', reject);
+    req.end(body);
+  });
+}
+
+/** Status and legacy envelope fields of an answer; an empty body has no envelope. */
+interface Answer {
+  status: number;
+  apiversion?: unknown;
+  code?: unknown;
+}
+
+/** The legacy 404 invalidMethodCall envelope the service-kit not-found handler answers. */
+const NOT_FOUND: Answer = { status: 404, apiversion: 'v1', code: 'invalid_request' };
+
+function answerOf(res: { status: number; body: string }): Answer {
+  if (res.body === '') return { status: res.status };
+  const body = JSON.parse(res.body) as { apiversion?: unknown; error?: { code?: unknown } };
+  return { status: res.status, apiversion: body.apiversion, code: body.error?.code };
+}
+
 /** Requests received so far by every upstream the gateway can reach. */
 function upstreamCounts(g: TestGateway): Record<string, number> {
   const doubles = { legacy: g.legacy, identity: g.identity, migration: g.migration, ...g.targets };
@@ -89,6 +129,71 @@ describe('relay admission', () => {
       expect(res.statusCode).toBe(404);
       expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
       expect(upstreamCounts(g)).toEqual(before);
+    },
+  );
+
+  it.each(
+    FORMS.flatMap(({ form, base }) =>
+      [
+        { path: '/internal/v1/tokens', answer: NOT_FOUND },
+        { path: '/%69nternal/v1/tokens', answer: NOT_FOUND },
+        { path: '/./internal/v1/tokens', answer: NOT_FOUND },
+        { path: '/v1/../internal/v1/tokens', answer: NOT_FOUND },
+        { path: '/v1\\..\\internal/v1/tokens', answer: NOT_FOUND },
+        { path: '/v1%2F..%2Finternal/v1/tokens', answer: NOT_FOUND },
+        { path: '//internal/v1/tokens', answer: NOT_FOUND },
+        { path: '/healthz', answer: NOT_FOUND },
+        { path: '/', answer: NOT_FOUND },
+        { path: '', answer: NOT_FOUND },
+        { path: '/V1/x', answer: NOT_FOUND },
+        // The router answers a malformed escape with legacy's empty 400 before any handler runs.
+        { path: '/%zz/v1/x', answer: { status: 400 } },
+      ].map((call) => ({ form, base, ...call })),
+    ),
+  )(
+    "the $form relay answers the callee path '$path', outside the versioned API, as an unknown service with $answer.status and reaches no upstream",
+    async ({ base, path, answer }) => {
+      const g = await start('v0002');
+      const before = upstreamCounts(g);
+      const send = async (service: string): Promise<{ status: number; body: string }> =>
+        sendRaw(
+          g,
+          'POST',
+          `${base}/${service}${path}`,
+          { ...(await callHeaders()), 'content-type': 'application/json' },
+          `{"sessionId":"${SESSION_ID}","siteId":"default"}`,
+        );
+      const res = await send('identity');
+      expect(answerOf(res)).toEqual(answer);
+      expect(res).toEqual(await send('nosuch'));
+      expect(upstreamCounts(g)).toEqual(before);
+      expect(barrierRows(g)).toEqual([]);
+    },
+  );
+
+  it.each(
+    FORMS.flatMap(({ form, base }) =>
+      [
+        { service: 'people', path: '/v1/persons?siteid=x', user: true },
+        { service: 'people', path: '/v2/users/search', user: true },
+        { service: 'programs-sites', path: '/v1/sites/tenant%2Da', user: true },
+        { service: 'programs-sites', path: '/v1/href-domains?siteid=default', user: false },
+      ].map((call) => ({ form, base, ...call })),
+    ),
+  )(
+    "the $form relay forwards $service's versioned API path '$path' as sent (user token: $user) under the gateway's credential",
+    async ({ base, service, path, user }) => {
+      const g = await start();
+      const headers = await callHeaders();
+      if (!user) delete headers.authorization;
+      const res = await sendRaw(g, 'GET', `${base}/${service}${path}`, headers);
+      expect(res.status).toBe(200);
+      const echoes = g.targets[service]?.echoes() ?? [];
+      expect(echoes.map((echo) => ({ url: echo.url, authorization: echo.authorization }))).toEqual([
+        { url: path, authorization: headers.authorization },
+      ]);
+      const caller = await testVerifier(service).invocationVerifier.verify(String(echoes[0]?.serverlessAuthorization));
+      expect(caller.name).toBe('gateway');
     },
   );
 });

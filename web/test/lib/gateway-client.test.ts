@@ -1,17 +1,23 @@
-// The gateway client's streamed calls over the in-memory platform client: an unread 2xx stream, bytes otherwise.
+// The gateway client's streamed calls and its own Version menu read over the in-memory platform client: an unread
+// 2xx stream, bytes otherwise; and the multipart relay of an inbound body.
 import { PassThrough, Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ServiceUnavailableError, type ServiceRequest } from '@opt2/platform/service-kit';
+import { REQUEST_ID_HEADER, ServiceUnavailableError, type ServiceRequest } from '@opt2/platform/service-kit';
 import {
   GatewayUnavailableError,
+  LEGACY_VERSION_MENU_PATH,
   createGatewayClient,
   discardStreamed,
+  multipartRelay,
   streamedCallOf,
   type GatewayClient,
   type GatewayResponse,
+  type MultipartBody,
   type StreamedCall,
   type StreamedResponse,
 } from '@/lib/gateway-client';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { useTestEnv } from '../helpers/env';
 import { fakeServiceClient, routeKey, type FakeReply, type FakeServiceClient } from '../helpers/fake-gateway';
 
@@ -145,5 +151,74 @@ describe('discardStreamed', () => {
     await closed;
 
     expect(body.destroyed).toBe(true);
+  });
+});
+
+describe('multipartRelay', () => {
+  const BOUNDARY = '----opt2relay7';
+  const CONTENT_TYPE = `multipart/form-data; boundary=${BOUNDARY}`;
+  const MULTIPART = [
+    `--${BOUNDARY}`,
+    'Content-Disposition: form-data; name="newfile"; filename="brochure.pdf"',
+    'Content-Type: application/pdf',
+    '',
+    '%PDF-1.4 synthetic',
+    `--${BOUNDARY}--`,
+    '',
+  ].join('\r\n');
+  const SIZED = { 'content-length': String(Buffer.byteLength(MULTIPART)) };
+
+  it.each<[string, () => MultipartBody['body'], Readonly<Record<string, string>>]>([
+    ['Uint8Array', () => new TextEncoder().encode(MULTIPART), {}],
+    ['ArrayBuffer', () => new TextEncoder().encode(MULTIPART).buffer, {}],
+    ['Blob', () => new Blob([MULTIPART]), SIZED],
+    ['sized re-readable source', () => ({ size: Buffer.byteLength(MULTIPART), stream: () => new Blob([MULTIPART]).stream() }), SIZED],
+    ['ReadableStream', () => new Blob([MULTIPART]).stream(), {}],
+  ])('relays a %s body unchanged under its content type', async (_name, body, framing) => {
+    const relayed = multipartRelay({ contentType: CONTENT_TYPE, body: body() });
+    expect(relayed.headers).toEqual({ 'content-type': CONTENT_TYPE, ...framing });
+    const bytes = relayed.body instanceof Readable ? await buffer(relayed.body) : relayed.body;
+    expect(bytes.toString('utf8')).toBe(MULTIPART);
+  });
+});
+
+describe('legacyVersionMenu', () => {
+  const MENU_ROUTE = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
+
+  it("sends a GET to the gateway's own path with the request id and user token, and decodes the facts", async () => {
+    relay.setRoute(MENU_ROUTE, { status: 200, body: LEGACY_VERSION_MENU });
+
+    const response = await createGatewayClient({ userToken: 'user-token', requestId: 'req-menu', inbound: {} }, relay).legacyVersionMenu();
+
+    expect(response).toMatchObject({ status: 200, ok: true, body: LEGACY_VERSION_MENU });
+    expect(sent).toEqual([
+      expect.objectContaining({
+        service: 'gateway',
+        method: 'GET',
+        path: LEGACY_VERSION_MENU_PATH,
+        userToken: 'user-token',
+        headers: { [REQUEST_ID_HEADER]: 'req-menu' },
+        rawBody: true,
+      }),
+    ]);
+  });
+
+  it('returns a denial as relayed', async () => {
+    relay.setRoute(MENU_ROUTE, { status: 403, body: { error: 'forbidden' } });
+
+    await expect(client.legacyVersionMenu()).resolves.toMatchObject({ status: 403, ok: false, body: { error: 'forbidden' } });
+  });
+
+  it.each<[string, (fake: FakeServiceClient) => void, number | undefined]>([
+    ['HTTP 503', (fake) => fake.setRoute(MENU_ROUTE, { status: 503, body: '<h1>Service Unavailable</h1>' }), 503],
+    ['a refused connection', (fake) => fake.failWith(), undefined],
+  ])('fails closed on %s as the gateway unavailable', async (_label, arrange, status) => {
+    arrange(relay);
+
+    const error = await client.legacyVersionMenu().catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GatewayUnavailableError);
+    expect(error).toMatchObject({ service: 'gateway', status });
+    expect(sent).toHaveLength(1);
   });
 });

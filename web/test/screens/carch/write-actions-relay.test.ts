@@ -55,12 +55,11 @@ const CSRF_HEADERS = { 'X-csrf_token': FIXED_CSRF.token, 'X-csrf_token_expires':
 const SENT_CSRF = { 'x-csrf_token': FIXED_CSRF.token, 'x-csrf_token_expires': FIXED_CSRF.expires };
 const CSRF_FIELDS = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
 const FIELDS = { contentid: CONTENT_ID, contenthistid: HIST_ID, ...CSRF_FIELDS };
-const ABORTED: RawBody = { status: 200, contentType: HTML_TYPE, body: '' };
 const SERVICE_ERROR = { apiversion: 'v1', method: 'carch', error: { message: 'Denied', code: 'denied' } };
 
-// Inventoried response mode of each defined action (opt2/inventory/legacy-inventory.json); savequickedit and
-// updateobjectparams are withheld, so the carch barrel leaves them to legacy, and the halted loadsiteflat has no
-// definition.
+// Inventoried response mode of each defined action (opt2/inventory/legacy-inventory.json); savequickedit is
+// withheld, so the carch barrel leaves it to legacy, and the withheld updateobjectparams and halted loadsiteflat have
+// no definition.
 const MODES: Readonly<Record<string, ScreenMode>> = {
   approvalaction: 'json',
   assocfiles: 'fragment',
@@ -93,7 +92,6 @@ const MODES: Readonly<Record<string, ScreenMode>> = {
   savecopyinfo: 'json',
   unlockfile: 'json',
   unlocknode: 'json',
-  updateobjectparams: 'json',
   lockfile: 'json',
   editlive: 'redirect',
 };
@@ -103,7 +101,7 @@ const ACTIONS = Object.keys(MODES);
 const ABORTING = new Set(['savequickedit', 'savecopyinfo', 'unlockfile', 'unlocknode', 'lockfile']);
 
 /** Actions relayed through `/v1/raw/carch/<action>`. */
-const RELAYED = ACTIONS.filter((action) => action !== 'editlive' && action !== 'updateobjectparams');
+const RELAYED = ACTIONS.filter((action) => action !== 'editlive');
 
 type RelayKind = 'fragment' | 'json' | 'download' | 'aborted';
 
@@ -145,7 +143,6 @@ const DEFINITIONS: readonly ScreenDefinition[] = [
 
 const rawPath = (action: string): ServicePath => `/v1/raw/carch/${action}`;
 const contentPath = (contentId: string): ServicePath => `/v1/sites/${SITE}/content/${contentId}`;
-const OBJECT_PARAMS_PATH: ServicePath = `/v1/sites/${SITE}/content/versions/${HIST_ID}/object-params`;
 const svc = (method: 'GET' | 'POST', path: ServicePath): string => routeKey(method, SERVICE, path);
 
 let restore: () => void;
@@ -168,7 +165,6 @@ const relayKind = (action: string): RelayKind => (ABORTING.has(action) ? 'aborte
 /** The strategies-content route `action` calls for a GET carrying {@link FIELDS}. */
 function routeOf(action: string): string {
   if (action === 'editlive') return svc('GET', contentPath(CONTENT_ID));
-  if (action === 'updateobjectparams') return svc('POST', OBJECT_PARAMS_PATH);
   return svc('GET', rawPath(action));
 }
 
@@ -373,72 +369,6 @@ describe('relayed carch actions', () => {
       });
     },
   );
-});
-
-describe('carch.updateobjectparams', () => {
-  const RC = {
-    contenthistid: HIST_ID,
-    regionid: '2',
-    object: 'feed',
-    objectid: 'O1',
-    name: 'Latest News',
-    params: '{"displaylist":"Title,Date"}',
-    approved: '0',
-    ...CSRF_FIELDS,
-  };
-  const written = (data?: Readonly<Record<string, unknown>>): FakeReply => ({
-    status: 200,
-    body: { saved: true, errors: {}, redirect: null, ...(data === undefined ? {} : { data }) },
-  });
-  const posted = (reply: FakeReply, rc: Readonly<Record<string, string>> = RC) =>
-    screenContext('updateobjectparams', { rc, post: true, routes: { [svc('POST', OBJECT_PARAMS_PATH)]: reply } });
-  const run = (ctx: ScreenContext) => invoke(definition('updateobjectparams'), ctx);
-
-  it('posts every rc field and the csrf headers, then writes the version literal', async () => {
-    const ctx = posted(written({ contentID: CONTENT_ID, contentHistID: HIST_ID }));
-    await expect(run(ctx)).resolves.toEqual({
-      status: 200,
-      contentType: HTML_TYPE,
-      body: `{contentid:'${CONTENT_ID}',contenthistid:'${HIST_ID}'} `,
-    });
-    expect(ctx.gateway.calls).toEqual([
-      { service: SERVICE, method: 'POST', path: OBJECT_PARAMS_PATH, form: { ...ctx.req.rc }, headers: SENT_CSRF },
-    ]);
-    expect(ctx.gateway.calls[0]?.form).toEqual(expect.objectContaining({ ...RC, siteid: SITE }));
-  });
-
-  it.each<[string, Readonly<Record<string, unknown>> | undefined]>([
-    ['no data', undefined],
-    ['no contenthistid', { contentid: CONTENT_ID }],
-    ['a non-string contentid', { contentid: 7, contenthistid: HIST_ID }],
-  ])('aborts empty when the result carries %s', async (_name, data) => {
-    await expect(run(posted(written(data)))).resolves.toEqual(ABORTED);
-  });
-
-  it('aborts on an empty contenthistid without a call', async () => {
-    const ctx = posted(written(), { ...RC, contenthistid: '' });
-    await expect(run(ctx)).resolves.toEqual(ABORTED);
-    expect(ctx.gateway.calls).toEqual([]);
-  });
-
-  it('aborts on an unknown version', async () => {
-    await expect(run(posted({ status: 404, body: SERVICE_ERROR }))).resolves.toEqual(ABORTED);
-  });
-
-  it('fails on any other rejection', async () => {
-    await expect(run(posted({ status: 400, body: SERVICE_ERROR }))).rejects.toEqual(
-      new Error('strategies-content rejected carch.updateobjectparams with HTTP 400'),
-    );
-  });
-
-  it.each([401, 403])('answers a %i with a 302 to the secure() target', async (status) => {
-    await expect(run(posted({ status, body: SERVICE_ERROR }))).resolves.toEqual({
-      status: 302,
-      contentType: HTML_TYPE,
-      body: '',
-      headers: { ...REDIRECT_HEADERS, location: REFERER },
-    });
-  });
 });
 
 describe('carch.editlive', () => {

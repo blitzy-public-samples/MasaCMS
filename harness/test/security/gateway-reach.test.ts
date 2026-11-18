@@ -208,7 +208,7 @@ describe('gatewayReach', () => {
       { path: '/internal/v1/inflight:clear-orphans' },
     ]);
     expect(probedOf('gateway', 'GET', RELAY_URL).paths[0]?.path).toMatch(
-      new RegExp(`^/internal/v1/relay/${RELAY_TARGET}/opt2-authz-probe/${ID}$`),
+      new RegExp(`^/internal/v1/relay/${RELAY_TARGET}/v1/opt2-authz-probe/${ID}$`),
     );
   });
 
@@ -220,7 +220,7 @@ describe('gatewayReach', () => {
     const { variants } = await loadInventoryVariants();
     const filled = gatewayReach({ matrices, version, variants, sign: (path) => path, gatewayParams });
     const relay = filled.probed.find((entry) => entry.package === 'gateway' && entry.method === 'GET' && entry.url === RELAY_URL);
-    expect(relay?.paths[0]?.path).toMatch(new RegExp(`^/internal/v1/relay/${service}/opt2-authz-probe/${ID}$`));
+    expect(relay?.paths[0]?.path).toMatch(new RegExp(`^/internal/v1/relay/${service}/v1/opt2-authz-probe/${ID}$`));
     const note = filled.probed.find((entry) => entry.package === 'stub' && entry.url === '/opt2/stub/notes/:noteId');
     expect(note?.paths[0]?.path).toMatch(filledPattern('/opt2/stub/notes/:noteId'));
   });

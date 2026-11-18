@@ -1,65 +1,41 @@
-// Unit tests for the Version menu facts read from the legacy environment record.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+// Unit tests for the Version menu facts read through the gateway's getLegacyVersionMenu.
+import { describe, expect, it } from 'vitest';
+import { GatewayDenialError, GatewayUnavailableError, LEGACY_VERSION_MENU_PATH } from '@/lib/gateway-client';
 import { loadLegacyServerInfo } from '@/shell/legacy-server';
-import { useTestEnv } from '../helpers/env';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
+import { fakeGatewayClient, routeKey, type FakeReply } from '../helpers/fake-gateway';
 
-/** `settings.versionMenu` as `harness/src/baseline/environment.ts` records the ACF 2023 oracle. */
-const ORACLE_MENU = {
-  appServerProductName: 'ColdFusion Server',
-  appServerVersion: '2023,0,26,331018',
-  dbProductName: 'Microsoft SQL Server',
-  dbProductVersion: 'Microsoft SQL Server 2022 - 16.0.4305.5',
-  javaVersion: null,
-  osName: 'UNIX',
-  osVersion: '6.12.105+',
-};
-
-let stateDir: string;
-let restoreEnv: () => void;
-
-/** Writes `text` as `<stateDir>/baseline/environment.json`. */
-function writeRecord(text: string): void {
-  mkdirSync(path.join(stateDir, 'baseline'), { recursive: true });
-  writeFileSync(path.join(stateDir, 'baseline', 'environment.json'), text);
-}
-
-beforeEach(() => {
-  stateDir = mkdtempSync(path.join(os.tmpdir(), 'opt2-web-legacy-server-'));
-  restoreEnv = useTestEnv({ OPT2_STATE_DIR: stateDir });
-});
-
-afterEach(() => {
-  restoreEnv();
-  rmSync(stateDir, { recursive: true, force: true });
-});
+const VERSION_MENU = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
 
 describe('loadLegacyServerInfo', () => {
-  it('reads the recorded Version menu values, an absent Java or OS key as empty text', async () => {
-    writeRecord(JSON.stringify({ local: null, services: { probes: [] }, settings: { ping: false, versionMenu: ORACLE_MENU } }));
-    expect(await loadLegacyServerInfo()).toEqual({ ...ORACLE_MENU, javaVersion: '' });
-    writeRecord(JSON.stringify({ settings: { versionMenu: { ...ORACLE_MENU, javaVersion: '11.0.2', osName: null, osVersion: null } } }));
-    expect(await loadLegacyServerInfo()).toEqual({ ...ORACLE_MENU, javaVersion: '11.0.2', osName: '', osVersion: '' });
+  it.each([
+    { name: "the oracle's facts, an absent Java key as empty text", menu: LEGACY_VERSION_MENU, expected: { ...LEGACY_VERSION_MENU, javaVersion: '' } },
+    {
+      name: 'a Java version and absent OS keys as empty text',
+      menu: { ...LEGACY_VERSION_MENU, javaVersion: '11.0.2', osName: null, osVersion: null },
+      expected: { ...LEGACY_VERSION_MENU, javaVersion: '11.0.2', osName: '', osVersion: '' },
+    },
+  ])('reads $name from the gateway on each call', async ({ menu, expected }) => {
+    const gateway = fakeGatewayClient({ [VERSION_MENU]: { status: 200, body: menu } }, { userToken: 'user-token', requestId: 'req-1' });
+    expect(await loadLegacyServerInfo(gateway)).toEqual(expected);
+    expect(await loadLegacyServerInfo(gateway)).toEqual(expected);
+    const call = { service: 'gateway', method: 'GET', path: LEGACY_VERSION_MENU_PATH, userToken: 'user-token', requestId: 'req-1' };
+    expect(gateway.calls).toEqual([call, call]);
   });
 
-  it.each([
-    { name: 'no record exists', record: undefined },
-    { name: 'only the local phase is recorded', record: { local: { probes: [] }, services: null, settings: null } },
-    { name: 'legacy answered no Version menu values', record: { settings: { ping: null, versionMenu: null } } },
-    { name: 'the record predates the Version menu values', record: { settings: { ping: false } } },
-  ])('answers null when $name', async ({ record }) => {
-    if (record !== undefined) writeRecord(JSON.stringify(record));
-    expect(await loadLegacyServerInfo()).toBeNull();
+  it.each<{ name: string; reply: FakeReply; error: new (...args: never[]) => Error }>([
+    { name: 'refuses web with 401', reply: { status: 401, body: {} }, error: GatewayDenialError },
+    { name: 'refuses web with 403', reply: { status: 403, body: {} }, error: GatewayDenialError },
+    { name: 'answers 503 for an unreachable bridge', reply: { status: 503, body: {} }, error: GatewayUnavailableError },
+    { name: 'answers 500', reply: { status: 500, body: {} }, error: Error },
+  ])('rejects when the gateway $name', async ({ reply, error }) => {
+    const gateway = fakeGatewayClient({ [VERSION_MENU]: reply });
+    await expect(loadLegacyServerInfo(gateway)).rejects.toBeInstanceOf(error);
   });
 
-  it.each([
-    { name: 'is no JSON', write: () => writeRecord('{"settings":'), error: SyntaxError },
-    { name: 'mistypes a value', write: () => writeRecord(JSON.stringify({ settings: { versionMenu: { ...ORACLE_MENU, dbProductName: 7 } } })), error: Error },
-    { name: 'cannot be read', write: () => mkdirSync(path.join(stateDir, 'baseline', 'environment.json'), { recursive: true }), error: Error },
-  ])('rejects when the record $name', async ({ write, error }) => {
-    write();
-    await expect(loadLegacyServerInfo()).rejects.toBeInstanceOf(error);
+  it('lets an unreachable gateway propagate', async () => {
+    const gateway = fakeGatewayClient({ [VERSION_MENU]: { status: 200, body: LEGACY_VERSION_MENU } });
+    gateway.failWith();
+    await expect(loadLegacyServerInfo(gateway)).rejects.toMatchObject({ name: 'GatewayUnavailableError', service: 'gateway' });
   });
 });

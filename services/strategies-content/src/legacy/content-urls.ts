@@ -228,14 +228,6 @@ export function uniqueUrlTitle(input: { urlTitle: string; exists: (urlTitle: str
 }
 
 /**
- * contentUtility `setUniqueTitle` (contentUtility.cfc:789-804). `exists` is doesLoadKeyExist for `title`
- * (339-377): `title =` the candidate, same site and module, active, other content id.
- */
-export function uniqueTitle(input: { title: string; exists: (title: string) => boolean }): string {
-  return appendPassUntilFree(input.title, input.exists);
-}
-
-/**
  * Whether a save archives the filename in `content.filename_archive` (contentManager.cfc:1693-1698). Legacy swallows
  * any archive error (cftry), so the caller must not fail the save on an archive conflict.
  */

@@ -9,7 +9,13 @@ import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { REDACTED, SEVERITY_BY_LEVEL, validateLogRecord } from '@opt2/platform/logging';
 import type { ScreenGate } from '@/lib/access-gate';
-import { GatewayDenialError, GatewayUnavailableError, setServiceClientForTests, type StreamedResponse } from '@/lib/gateway-client';
+import {
+  GatewayDenialError,
+  GatewayUnavailableError,
+  LEGACY_VERSION_MENU_PATH,
+  setServiceClientForTests,
+  type StreamedResponse,
+} from '@/lib/gateway-client';
 import { html } from '@/lib/html';
 import { setSessionMuraValue } from '@/lib/request-context';
 import { adminRbFor, rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
@@ -22,6 +28,7 @@ import type {
   UploadPart,
 } from '@/screens/registry';
 import { installRequestScope, type RequestScope } from '@/server/shared';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
@@ -256,6 +263,7 @@ function installRoutes(): void {
     status: 200,
     body: promptCountsZero,
   });
+  fake.setRoute(routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH), { status: 200, body: LEGACY_VERSION_MENU });
 }
 
 beforeEach(() => {

@@ -3,9 +3,11 @@
 import * as cheerio from 'cheerio';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, type CsrfTokens } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';
+import { LEGACY_VERSION_MENU_PATH } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import type { ScreenContext } from '@/screens/registry';
+import { LEGACY_VERSION_MENU } from '../../../fixtures/gateway/version-menu';
 import { routeKey, type FakeGatewayClient, type FakeReply, type FakeRouteTable, type RecordedRequest } from '../../../helpers/fake-gateway';
 
 /** The pair identity issues for every CSRF context in these tests. */
@@ -46,6 +48,7 @@ export function shellAndCsrfRoutes(siteId: string): FakeRouteTable {
       status: 200,
       body: { drafts: 0, submissions: 0, approvals: 0, expires: 0, pendingChangesets: 0 },
     },
+    [routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH)]: { status: 200, body: LEGACY_VERSION_MENU },
   };
 }
 

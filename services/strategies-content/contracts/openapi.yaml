@@ -74,14 +74,26 @@ x-opt2-excluded:
     reason: Halted under EX-FILE-RENDITION; rewrites renditions with the ColdFusion image engine.
   - key: 'admin:carch.rotateimage'
     reason: Halted under EX-FILE-RENDITION; rewrites renditions with the ColdFusion image engine.
+  - key: 'admin:carch.update'
+    reason: Withheld; writes the decision-list table tcontenteventreminders.
   - key: 'admin:carch.update{approved=1}'
     reason: Withheld; writes the decision-list table tcontenteventreminders.
   - key: 'admin:carch.update{notify}'
+    reason: Withheld; writes the decision-list table tcontenteventreminders.
+  - key: 'admin:carch.updateobjectparams'
     reason: Withheld; writes the decision-list table tcontenteventreminders.
   - key: 'admin:carch.updateobjectparams{approved=1}'
     reason: Withheld; writes the decision-list table tcontenteventreminders.
   - key: 'admin:cchangesets.publish'
     reason: Withheld; writes the decision-list table tcontenteventreminders.
+  - key: 'api:content.save'
+    reason: Withheld; writes the decision-list table tcontenteventreminders. Its JSON API route answers the legacy 503.
+  - key: 'rest:content.save'
+    reason: Withheld; writes the decision-list table tcontenteventreminders. Its JSON API route answers the legacy 503.
+  - key: 'api:contentnav.save'
+    reason: Withheld; writes the decision-list table tcontenteventreminders. Its JSON API route answers the legacy 503.
+  - key: 'rest:contentnav.save'
+    reason: Withheld; writes the decision-list table tcontenteventreminders. Its JSON API route answers the legacy 503.
   - key: 'admin:cfeed.import2'
     reason: Withheld; writes the decision-list table tcontenteventreminders.
   - key: 'admin:carch.importcomponent'
@@ -2633,7 +2645,6 @@ paths:
     get:
       operationId: getMultiFileUploadModel
       summary: Reads the multi-file upload screen model for new children of a node.
-      description: The uploads themselves post to the raw `carch.update` operation.
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2671,36 +2682,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '503':
-          $ref: '#/components/responses/Unavailable'
-  /v1/sites/{siteid}/content/versions/{contenthistid}/object-params:
-    parameters:
-      - $ref: '#/components/parameters/SiteIdPath'
-      - $ref: '#/components/parameters/ContentHistIdPath'
-    post:
-      operationId: updateObjectParams
-      summary: Saves a display object's parameters on a content version.
-      tags: [content]
-      x-opt2-transport: service
-      x-opt2-requires: [s2, site-admin, 'm:000']
-      x-opt2-legacy-actions: [carch.updateobjectparams]
-      x-opt2-inhandler-checks: ['node:author|editor']
-      x-opt2-csrf:
-        validation: none
-      security: [{userToken: [], invocationCredential: []}]
-      requestBody:
-        $ref: '#/components/requestBodies/LegacyForm'
-      responses:
-        '200':
-          $ref: '#/components/responses/AdminWritten'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/AdminNotFound'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/forms/{contentid}/responses:
@@ -5987,110 +5968,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/RawUnavailable'
-  /v1/raw/carch/update:
-    get:
-      operationId: raw_carch_update
-      summary: Answers `carch.update` with the legacy fragment bytes.
-      tags: [raw]
-      x-opt2-transport: service
-      x-opt2-requires: [s2, site-admin, 'm:000']
-      x-opt2-legacy-actions: [carch.update]
-      x-opt2-response-mode: fragment
-      x-opt2-inhandler-checks: ['node:author|editor']
-      x-opt2-csrf:
-        validation: validates
-        context: rc.contentid & "deleteall" | rc.contentid & "deletehistall" | rc.contenthistid & "delete" | rc.contentBean.getContentHistID() & "add" | rc.parentid & "multifileupload"
-      security: [{userToken: [], invocationCredential: []}]
-      parameters:
-        - $ref: '#/components/parameters/SiteIdQuery'
-        - $ref: '#/components/parameters/RawParams'
-        - $ref: '#/components/parameters/CsrfTokenHeader'
-        - $ref: '#/components/parameters/CsrfExpiresHeader'
-        - $ref: '#/components/parameters/CsrfTokenQuery'
-        - $ref: '#/components/parameters/CsrfExpiresQuery'
-      responses:
-        '200':
-          description: 'The bare body of a branch the view aborts with: `{success:true}` for a `url.qqfile` upload, the ajax save''s `{success:…}` literal, or `success` after a multi-file upload. As JSON, a save the view renders (`redirect` null): with `errors`, the rejected save, whose `data` holds the `getContentEditModel` `rc` keys for the bean as update.cfm leaves it (`contentBean` with its errors and `lastUpdate`), from which web re-renders the editor inside the layout and keeps `contentBean` as `session.mura.editBean`; without `errors`, the compact-display close, whose `data` holds what dsp_close_compact_display.cfm reads: `contentBean` (`type`, `contentID`, `remoteURL`, `active`), `useLayoutManager`, `homeURL` when `rc.homeID` is set, `currentBean` for an add (with `editedPreviewURL`, its URL previewing the saved version), `parentBean` for a File or Link add (with `parentHistPreviewURL` and `parentHistExists` for `rc.parenthistid`) and `parentContentBean` (the active `rc.parentid`) for any other save; each with `active`, `isOnDisplay`, `type`, `contentID`, `contentHistID`, `url` and `previewURL`.'
-          headers:
-            Generator:
-              $ref: '#/components/headers/Generator'
-            Strict-Transport-Security:
-              $ref: '#/components/headers/StrictTransportSecurity'
-            X-Opt2-Write-Position:
-              $ref: '#/components/headers/XOpt2WritePosition'
-            X-Opt2-Session-Effects:
-              $ref: '#/components/headers/XOpt2SessionEffects'
-          content:
-            text/html;charset=UTF-8:
-              schema:
-                $ref: '#/components/schemas/LegacyHtml'
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AdminWriteResult'
-        '302':
-          description: The FW/1 or `returnURL` redirect a saved, deleted or previewed version takes.
-          headers:
-            Location:
-              $ref: '#/components/headers/Location'
-            X-Opt2-Session-Effects:
-              $ref: '#/components/headers/XOpt2SessionEffects'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '503':
-          $ref: '#/components/responses/RawUnavailable'
-    post:
-      operationId: raw_carch_update_post
-      summary: Answers `carch.update` with the legacy fragment bytes.
-      tags: [raw]
-      x-opt2-transport: service
-      x-opt2-requires: [s2, site-admin, 'm:000']
-      x-opt2-legacy-actions: [carch.update]
-      x-opt2-response-mode: fragment
-      x-opt2-inhandler-checks: ['node:author|editor']
-      x-opt2-csrf:
-        validation: validates
-        context: rc.contentid & "deleteall" | rc.contentid & "deletehistall" | rc.contenthistid & "delete" | rc.contentBean.getContentHistID() & "add" | rc.parentid & "multifileupload"
-      security: [{userToken: [], invocationCredential: []}]
-      parameters:
-        - $ref: '#/components/parameters/SiteIdQuery'
-        - $ref: '#/components/parameters/CsrfTokenHeader'
-        - $ref: '#/components/parameters/CsrfExpiresHeader'
-      requestBody:
-        $ref: '#/components/requestBodies/RawForm'
-      responses:
-        '200':
-          description: 'The bare body of a branch the view aborts with: `{success:true}` for a `url.qqfile` upload, the ajax save''s `{success:…}` literal, or `success` after a multi-file upload. As JSON, a save the view renders (`redirect` null): with `errors`, the rejected save, whose `data` holds the `getContentEditModel` `rc` keys for the bean as update.cfm leaves it (`contentBean` with its errors and `lastUpdate`), from which web re-renders the editor inside the layout and keeps `contentBean` as `session.mura.editBean`; without `errors`, the compact-display close, whose `data` holds what dsp_close_compact_display.cfm reads: `contentBean` (`type`, `contentID`, `remoteURL`, `active`), `useLayoutManager`, `homeURL` when `rc.homeID` is set, `currentBean` for an add (with `editedPreviewURL`, its URL previewing the saved version), `parentBean` for a File or Link add (with `parentHistPreviewURL` and `parentHistExists` for `rc.parenthistid`) and `parentContentBean` (the active `rc.parentid`) for any other save; each with `active`, `isOnDisplay`, `type`, `contentID`, `contentHistID`, `url` and `previewURL`.'
-          headers:
-            Generator:
-              $ref: '#/components/headers/Generator'
-            Strict-Transport-Security:
-              $ref: '#/components/headers/StrictTransportSecurity'
-            X-Opt2-Write-Position:
-              $ref: '#/components/headers/XOpt2WritePosition'
-            X-Opt2-Session-Effects:
-              $ref: '#/components/headers/XOpt2SessionEffects'
-          content:
-            text/html;charset=UTF-8:
-              schema:
-                $ref: '#/components/schemas/LegacyHtml'
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AdminWriteResult'
-        '302':
-          description: The FW/1 or `returnURL` redirect a saved, deleted or previewed version takes.
-          headers:
-            Location:
-              $ref: '#/components/headers/Location'
-            X-Opt2-Session-Effects:
-              $ref: '#/components/headers/XOpt2SessionEffects'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '503':
-          $ref: '#/components/responses/RawUnavailable'
   /v1/raw/cchangesets/loadtagarray:
     get:
       operationId: raw_cchangesets_loadtagarray
@@ -8053,10 +7930,6 @@ components:
         minimum: 1
     Location:
       description: Redirect target in the legacy form.
-      schema:
-        type: string
-    XOpt2SessionEffects:
-      description: 'JSON object of the admin session values the controller set, under their legacy names: `openSectionList`, and in `mura` the `session.mura` values (`multifileupload`; `editBean` null where it was deleted). Absent when it set none; web applies it to the session it persists and never relays it.'
       schema:
         type: string
   parameters:

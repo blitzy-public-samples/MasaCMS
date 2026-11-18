@@ -12,12 +12,13 @@ import {
   type CsrfTokens,
 } from '@opt2/platform/legacy-compat';
 import { BUSINESS_DATE, TENANT_A } from '@opt2/platform/testing';
-import { setServiceClientForTests } from '@/lib/gateway-client';
+import { LEGACY_VERSION_MENU_PATH, setServiceClientForTests } from '@/lib/gateway-client';
 import type { UserUpdateResult } from '@/screens/cusers/update';
 import * as adminPage from '../../app/admin/[circuit]/[action]/route';
 import * as adminActions from '../../app/admin-actions/[circuit]/[action]/route';
 import * as adminRaw from '../../app/admin-raw/[circuit]/[action]/route';
 import * as opt2Actions from '../../app/opt2/admin-actions/[module]/[action]/route';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { CSRF_BY_CONTEXT } from '../fixtures/identity/csrf';
 import {
   LOGOUT_DELETE_COOKIES,
@@ -65,6 +66,7 @@ const LOGOUT = routeKey('POST', 'identity', '/v1/sessions/logout');
 const LOGIN = routeKey('POST', 'identity', '/v1/sessions/login');
 const HREF_DOMAINS = routeKey('GET', 'programs-sites', '/v1/href-domains');
 const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
+const VERSION_MENU = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
 const UPDATE_USER = routeKey('POST', 'people', '/v1/users:update');
 const UPDATE_PROFILE = routeKey('POST', 'people', '/v1/profile:update');
 const ROUTE_USER = routeKey('GET', 'people', '/v1/users/route');
@@ -175,6 +177,7 @@ function baseRoutes(): FakeRouteTable {
         ],
       ]),
     ),
+    [VERSION_MENU]: { status: 200, body: LEGACY_VERSION_MENU },
   };
 }
 

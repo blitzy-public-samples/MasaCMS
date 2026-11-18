@@ -2,7 +2,7 @@
 
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 
-The legacy bridge is a set of new CFML endpoints under the legacy web root, which is the repository root (setup §1). Through them the gateway and the migration service act on the running Masa 7.6.1 application: its sessions, site-monitor steps, ACF scheduled tasks, in-memory site registry, caches and file store. The bridge changes no Masa file and no Masa table schema (AAP 0.2.1, conflict C1; Masa licence header `Application.cfc:59`).
+The legacy bridge is a set of new CFML endpoints under the legacy web root, which is the repository root (setup §1). Through them the gateway and the migration service act on the running Masa 7.6.1 application: its sessions, site-monitor steps, ACF scheduled tasks, in-memory site registry, admin Version menu facts, caches and file store. The bridge changes no Masa file and no Masa table schema (AAP 0.2.1, conflict C1; Masa licence header `Application.cfc:59`).
 
 This README is the normative contract. The pages in [`cfml/`](cfml/) implement it, and the TypeScript callers build against it.
 
@@ -12,7 +12,7 @@ This README is the normative contract. The pages in [`cfml/`](cfml/) implement i
 | `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, shared values (carry and export), end |
 | `cfml/jobs.cfm` | Site-monitor steps, cursor, cache purge |
 | `cfml/scheduler.cfm` | ACF scheduled-task control |
-| `cfml/site.cfm` | In-memory site registry list and rebuild |
+| `cfml/site.cfm` | In-memory site registry list and rebuild; the admin Version menu's server facts |
 | `cfml/files.cfm` | Legacy file store list, get, put, delete |
 
 Every endpoint is `${LEGACY_ORIGIN}/gateway/legacy-bridge/cfml/<page>.cfm?op=<op>`, or `jobs.cfm?job=<job>`.
@@ -269,6 +269,23 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createSiteListClie
 - Reads what `contentServer.bindToDomain` binds a request host with (`core/mura/content/contentServer.cfc:170-220`): each row of `settingsManager.getList(sortBy="orderno")` in row order, with its site's `getDomain()` and its `domainAlias` lines split by `chr(13)&chr(10)` as `settingsBean.isValidDomain` splits them (`core/mura/settings/settingsBean.cfc:1189-1221`), and `configBean.getAdminDomain()`. A site whose settings fail to load keeps its place with an empty domain and no aliases, since `bindToDomain` skips it. Nothing is rebuilt or written.
 - Response: `{sites:[<siteid>], bindings:[{siteId, domain, aliases:[<alias>]}], adminDomain, serverTime}`; `sites` is in no defined order, `bindings` in bind order. ColdFusion may serialise a numeric-looking id, domain or alias as a JSON number, so callers read each one as a string.
 
+### `site.cfm?op=versionMenu`
+
+Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createVersionMenuClient`), for its `GET /internal/v1/legacy-server/version-menu` (`getLegacyVersionMenu`), which web's full admin layout reads. Assertion op `site.versionMenu`, `siteId` `""`.
+
+- GET, no parameters, no body. Nothing is written.
+- Reads what the nav Version menu prints (`admin/common/layouts/includes/nav.cfm:383-407`):
+
+| Key | Value |
+|---|---|
+| `appServerProductName` | `server.coldfusion.productname`; the menu prints its first space-delimited word |
+| `appServerVersion` | `server.coldfusion.productversion` |
+| `dbProductName`, `dbProductVersion` | `dbUtility.version()`'s `database_productname` and `database_version` |
+| `javaVersion` | `server.java.version`; `null` when `server.java.version` is absent, as on ACF 2023 |
+| `osName`, `osVersion` | `server.os.name` and `server.os.version`; both `null` when `server.os.name` is absent |
+
+- Response: `{appServerProductName, appServerVersion, dbProductName, dbProductVersion, javaVersion, osName, osVersion, serverTime}`, every value a string or `null` as above.
+
 ### `files.cfm?op=…`
 
 Caller: the migration service, `migration/src/files/` and the reverse projector (AAP 0.8.1, 0.8.3). Assertion op `files.<op>`, `siteId` equal to `siteid`.
@@ -323,7 +340,7 @@ The rendered server definition, `harness/repro/server.json.template`, also sets 
 | `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, shared values around legacy admin requests, logout |
 | `jobs.cfm` | The migration service on behalf of `services/programs-sites/src/jobs/dispatch.ts`; the reverse projector (`purgeCache`) | Legacy site-monitor steps, cursor hand-off, cache purge |
 | `scheduler.cfm` | `migration/src/scheduler/` and `opt2-ops` | `up.sh`, transitions, drain and resume, `down.sh` |
-| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`) | After a `tsettings` batch; gateway start and every second after |
+| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `versionMenu`) | After a `tsettings` batch; gateway start and every second after (`list`); each full-layout web admin page (`versionMenu`) |
 | `files.cfm` | `migration/src/files/` and the reverse projector | Snapshot manifest, transfer, reverse projection |
 
 ## Smoke check

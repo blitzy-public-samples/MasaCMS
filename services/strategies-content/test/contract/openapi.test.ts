@@ -1046,13 +1046,13 @@ describe('full app responses', () => {
       verify: (res) => expect(hasItems(res)).toBe(true),
     },
     {
-      name: 'refuses an anonymous save without CSRF tokens with the legacy 400',
+      name: 'answers the withheld content save with the legacy 503',
       method: 'POST',
       url: contentUrl(''),
       headers: () => contentHeaders('anonymous'),
       payload: { title: 'Unsaved' },
-      status: 400,
-      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Invalid CSRF tokens', code: 'invalid_request' }),
+      status: 503,
+      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Unhandled Exception', code: 'server_error' }),
     },
     {
       name: 'refuses an unverifiable bearer token with the legacy 401 and its challenge',
