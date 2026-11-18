@@ -1252,6 +1252,36 @@
         "replay": "opt2/reports/parity.json#GS-ID-08"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-FORM-IMPORT",
+      "scenario": "GS-CO-14",
+      "routeKey": "admin:cform.importform{formzip}",
+      "appliesTo": [],
+      "difference": "Legacy `cForm.importForm` with a non-empty `formzip` and a valid token for the context `formimport` checks the upload, the title and `form.json`, then builds a new Form of the request site in the Forms module from the export's `body`, `responseMessage` and `responseSendTo` and the posted title, saves it with `contentBean.save` and answers the cflocation `?muraAction=cArch.list&siteid=<siteid>&topid=00000000000000000000000000000000004&moduleid=00000000000000000000000000000000004&activeTab=0` (admin/core/controllers/cform.cfc:110-157). The save runs `contentManager.add`, which reads the site's settings, its locking among them (core/mura/content/contentManager.cfc:950-1366). On the oracle a valid import answers 302 with an empty body and stores the Form as a draft (`approved=0`); a second import under the same title answers the same redirect and stores nothing, the title being taken (core/mura/content/contentBean.cfc:476-478). strategies-content answers a valid import with the legacy-shaped 503 naming the halt reason `form-import-site-settings` after the same checks, writing nothing.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible: the new Form's save needs the site settings `contentManager.add` reads, and no verified contract gives them to strategies-content. Legacy saves only when `form.formzip` is non-empty (cform.cfc:115), so the request alone decides the case: `admin:cform.importform{formzip}` is a `legacy-write` entry in every cut-over version and runs on legacy inside a write window, which imports the new Form, and `grp:content.approval_action` still moves. A post without an upload keys to `admin:cform.importform`, which stays `target` and re-renders the import form. strategies-content keeps its 503 as the fail-closed answer should a halted request reach it. The entry closes when strategies-content reads these settings through a programs-sites contract.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-14.json",
+        "replay": "opt2/reports/parity.json#GS-CO-14"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-FEED-COMPACT-CLOSE",
+      "scenario": "GS-CO-13",
+      "routeKey": "admin:cfeed.update{closecompactdisplay=true}",
+      "appliesTo": [],
+      "difference": "Legacy `cFeed.update` posted from the compact-display edit form, whose hidden `closeCompactDisplay` is `true`, runs the add, update or delete for a valid token and then takes no redirect (admin/core/controllers/cfeed.cfc:117-146, the test at 136): admin/core/views/cfeed/update.cfm renders the edit form again through edit.cfm when the save has errors (update.cfm:77-78), and otherwise answers the `Close` document, which prints the site content renderer's `useLayoutManager()` choice between a layout-manager command for the feed and a `setLocation` to the site's home page URL built by `createHREF`, and the session's `frontEndProxyLoc` (update.cfm:80-135). On the oracle a compact save of a default-site Local feed answered 200 with a 1,097-byte `Close` document and saved the feed. strategies-content answers the save with the legacy-shaped 503 naming the halt reason `feed-compact-display` after consuming the token, writing nothing.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible: the theme content renderer's layout-manager flag is CFML runtime state, the home page URL needs the site's URL settings, the front-end proxy location is legacy session state, and the error branch renders the edit form, whose site values strategies-content does not hold (`feed-edit-site-values`); no verified contract gives this service any of them. The request alone decides the case, `closeCompactDisplay` compared with `true` as CFML compares (cfeed.cfc:136), so `admin:cfeed.update{closecompactdisplay=true}` is a `legacy-write` entry in every cut-over version and runs on legacy inside a write window, which imports the feed rows it writes, and `grp:content.approval_action` still moves. Every other feed save keys to `admin:cfeed.update` and stays `target`. strategies-content keeps its 503 as the fail-closed answer should a halted request reach it. The entry closes when strategies-content renders the close document from owner contracts.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-13.json",
+        "replay": "opt2/reports/parity.json#GS-CO-13"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

@@ -21,7 +21,6 @@
     "grp:content.approval_assignment": "legacy",
     "grp:content.changeset_rollback": "legacy",
     "grp:content.comment": "target",
-    "grp:content.commenter": "legacy",
     "grp:content.display_title_approval": "legacy",
     "grp:content.extend_attribute": "legacy",
     "grp:content.extend_rc_set": "legacy",
@@ -3735,6 +3734,7 @@
       "group": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -3748,6 +3748,7 @@
       "group": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -3949,6 +3950,7 @@
       "group": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -3962,6 +3964,7 @@
       "group": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -5101,6 +5104,22 @@
       "disposition": "carry"
     },
     {
+      "route": "admin:cfeed.update{closecompactdisplay=true}",
+      "owningService": "strategies-content",
+      "tableVersion": "v0001",
+      "state": "legacy",
+      "kind": "legacy-write",
+      "group": null,
+      "units": [
+        "content.content_object",
+        "content.feed",
+        "content.feed_advanced_param",
+        "content.feed_item",
+        "content.trash"
+      ],
+      "disposition": "carry"
+    },
+    {
       "route": "admin:cfilemanager.default",
       "owningService": "strategies-content",
       "tableVersion": "v0001",
@@ -5507,6 +5526,33 @@
       "state": "target",
       "kind": "write",
       "group": "grp:content.approval_action",
+      "units": [
+        "content.approval_action",
+        "content.approval_request",
+        "content.changeset",
+        "content.changeset_category_assign",
+        "content.changeset_tag_assign",
+        "content.content",
+        "content.content_category_assign",
+        "content.content_object",
+        "content.content_related",
+        "content.content_tag",
+        "content.extend_data",
+        "content.file",
+        "content.file_metadata",
+        "content.filename_archive",
+        "content.source_map",
+        "content.variation_targeting"
+      ],
+      "disposition": "carry"
+    },
+    {
+      "route": "admin:cform.importform{formzip}",
+      "owningService": "strategies-content",
+      "tableVersion": "v0001",
+      "state": "legacy",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "content.approval_action",
         "content.approval_request",
@@ -9875,6 +9921,7 @@
       "group": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -17079,8 +17126,8 @@
     {
       "route": "opt2:/opt2/admin-actions/communications/**",
       "owningService": "web",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": null,
       "units": [],
@@ -17109,8 +17156,8 @@
     {
       "route": "opt2:/opt2/admin-actions/reporting/**",
       "owningService": "web",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": null,
       "units": [],
@@ -17139,20 +17186,14 @@
     {
       "route": "opt2:/opt2/admin/communications/**",
       "owningService": "web",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "read",
       "group": null,
       "units": [
         "communications.delivery_status",
-        "communications.email",
-        "communications.email_return_stat",
-        "communications.email_stat",
-        "communications.mailing_list",
-        "communications.mailing_list_member",
         "communications.message",
-        "communications.message_template",
-        "communications.scheduled_task"
+        "communications.message_template"
       ],
       "disposition": "carry"
     },
@@ -17188,14 +17229,12 @@
     {
       "route": "opt2:/opt2/admin/reporting/**",
       "owningService": "web",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "read",
       "group": null,
       "units": [
-        "reporting.export_definition",
-        "reporting.export_job",
-        "reporting.session_tracking"
+        "reporting.export_job"
       ],
       "disposition": "carry"
     },
@@ -17207,6 +17246,7 @@
       "kind": "read",
       "group": null,
       "units": [
+        "communications.scheduled_task",
         "surveys.survey",
         "surveys.survey_reminder",
         "surveys.survey_response",
@@ -19995,6 +20035,7 @@
       "group": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -20008,6 +20049,7 @@
       "group": null,
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"
@@ -20021,6 +20063,7 @@
       "group": null,
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_stats"
       ],
       "disposition": "carry"

@@ -784,6 +784,13 @@
       },
       {
         "scenario": "GS-CO-13",
+        "exceptionId": "EX-FEED-COMPACT-CLOSE",
+        "routeKeys": [
+          "admin:cfeed.update{closecompactdisplay=true}"
+        ]
+      },
+      {
+        "scenario": "GS-CO-13",
         "exceptionId": "EX-REST-SITEID-STARTUP",
         "routeKeys": [
           "rest:variationtargeting.save{siteid}",
@@ -822,6 +829,13 @@
           "rest:stats.save{siteid}",
           "rest:tokeninfo{siteid}",
           "rest:user.save{siteid}"
+        ]
+      },
+      {
+        "scenario": "GS-CO-14",
+        "exceptionId": "EX-FORM-IMPORT",
+        "routeKeys": [
+          "admin:cform.importform{formzip}"
         ]
       },
       {

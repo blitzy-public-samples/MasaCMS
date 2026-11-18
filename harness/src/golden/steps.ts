@@ -346,9 +346,82 @@ function onePagePdf(): Buffer {
   return Buffer.from(pdf, 'latin1');
 }
 
+const FORM_EXPORT_FORM_ID = '6F1C2A3B-4D5E-4F60-8A1B2C3D4E5F6A7B';
+const FORM_EXPORT_FIELD_ID = '7A2B3C4D-5E6F-4071-9B2C3D4E5F6A7B8C';
+
+/** The form-builder definition a one-field Form stores as its body. */
+function formExportBody(): string {
+  return JSON.stringify({
+    datasets: {},
+    form: {
+      formid: FORM_EXPORT_FORM_ID,
+      name: '',
+      fields: {
+        [FORM_EXPORT_FIELD_ID]: {
+          fieldid: FORM_EXPORT_FIELD_ID,
+          formid: FORM_EXPORT_FORM_ID,
+          name: 'fullname',
+          label: 'Full Name',
+          type: 'COMMON',
+          fieldtype: { fieldtype: 'textfield', displaytype: 'field', islong: 0, isdata: 0 },
+          isrequired: 1,
+          isactive: 1,
+          orderno: 0,
+          value: '',
+          placeholder: '',
+          validatetype: '',
+          validatemessage: '',
+        },
+      },
+      pages: [[FORM_EXPORT_FIELD_ID]],
+      formattributes: { muraormentities: 0 },
+      deletedfields: {},
+      fieldorder: [],
+    },
+  });
+}
+
+// cForm.export writes form.json with these upper-cased keys (cform.cfc:93-99), and importForm reads each of them
+// (cform.cfc:145-147). The entry is stored, not deflated, and dated 1980-01-01 00:00, so the bytes never vary.
+/** A cForm.export zip: one stored `form.json` entry with the body, response message and recipients of a one-field Form. */
+function formExportZip(): Buffer {
+  const name = Buffer.from('form.json', 'latin1');
+  const data = Buffer.from(
+    JSON.stringify({ BODY: formExportBody(), RESPONSEMESSAGE: '<p>Thank you for your submission.</p>', RESPONSESENDTO: '' }),
+    'utf8',
+  );
+  const crc = crc32(data);
+  const dosDate = (1 << 5) | 1;
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(10, 4);
+  local.writeUInt16LE(dosDate, 12);
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(10, 4);
+  central.writeUInt16LE(10, 6);
+  central.writeUInt16LE(dosDate, 14);
+  central.writeUInt32LE(crc, 16);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + name.length, 12);
+  end.writeUInt32LE(local.length + name.length + data.length, 16);
+  return Buffer.concat([local, name, data, central, name, end]);
+}
+
 const FIXTURE_FILES: Readonly<Record<string, () => Buffer>> = {
   'image-png-8x8': png8x8,
   'pdf-one-page': onePagePdf,
+  'form-export-zip': formExportZip,
 };
 
 /** Bytes of catalogue file fixture `fixture`; throws GoldenConfigError for an unknown id. */

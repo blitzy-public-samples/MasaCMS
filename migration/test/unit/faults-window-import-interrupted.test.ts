@@ -33,7 +33,7 @@ const GATEWAY_URL = 'http://gateway.test';
 const CONTENT_UNIT = 'content.content';
 const TARGET_UNIT = 'reporting.export_job';
 // No carry write entry writes it, so legacy-authoritative in every committed version.
-const COMMITTED_LEGACY_UNIT = 'content.commenter';
+const COMMITTED_LEGACY_UNIT = 'content.display_title_approval';
 // Outside every group of the content read's units and written by no carry write entry, so legacy-authoritative under both cut-over doubles.
 const LEGACY_UNIT = 'timesheets.timesheet';
 const DEFAULTS = windowImportInterrupted.paramsSchema.parse({});

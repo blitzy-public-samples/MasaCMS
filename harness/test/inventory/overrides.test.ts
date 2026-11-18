@@ -293,6 +293,41 @@ describe('committed override files', () => {
     expect(display).toMatch(/\.sendNotification\(\)/);
   });
 
+  it('attributes the commenter row of a comment save to setCommenter under every comment-save route', async () => {
+    const commenter = writers.writers.filter(
+      (w) => w.tables?.includes('tcontentcommentcommenters') && w.component === 'core/mura/content/contentCommentBean.cfc',
+    );
+    expect(commenter.map((w) => [w.id, w.method, w.op, w.source, w.routeKeys, w.keyScope, w.trigger, w.sessionEffects])).toEqual([
+      [
+        'wov:comment-save-commenter',
+        'setCommenter',
+        'save',
+        { path: 'core/mura/Handler/standardEventsHandler.cfc', lines: [158, 183] },
+        [
+          'admin:ccomments.approve',
+          'admin:ccomments.bulkedit',
+          'admin:ccomments.singleedit',
+          'admin:ccomments.unapprove',
+          'api:comment.save',
+          'rest:comment.save',
+          'rest:comment.save{session}',
+          'rest:comment.save{siteid}',
+        ],
+        'table',
+        'request',
+        'none',
+      ],
+    ]);
+    const bean = (await readFile(path.join(REPO_ROOT, 'core/mura/content/contentCommentBean.cfc'), 'utf8')).split(/\r?\n/);
+    expect(bean[272]).toMatch(/pluginEvent\.getHandler\("standardSetCommenter"\)\.handle\(pluginEvent\)/);
+    expect(bean[465]).toMatch(/<cfif\s+structIsEmpty\(getErrors\(\)\)>/i);
+    expect(bean[467]).toMatch(/<cfset\s+setCommenter\(\)>/i);
+    const handler = (await readFile(path.join(REPO_ROOT, 'core/mura/Handler/standardEventsHandler.cfc'), 'utf8')).split(/\r?\n/);
+    expect(handler[157]).toMatch(/<cffunction\s+name="standardSetCommenterHandler"/i);
+    expect(handler[179]).toMatch(/<cfset\s+commenter\.save\(\)>/i);
+    expect(handler[182]).toMatch(/<\/cffunction>/i);
+  });
+
   it.each<[Trigger, string[]]>([
     ['scheduler', ['wov:native-sitemonitor-task', 'wov:fixture-survey-tasks']],
     ['appstart', ['wov:scheduler-registration', 'wov:startup-url-conversion']],

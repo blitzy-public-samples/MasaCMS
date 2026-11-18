@@ -380,6 +380,19 @@ writers:
     condition: "contentCommentBean.flag increments flagCount and recounts the content's comment stats (core/mura/content/contentCommentBean.cfc:363-382)"
     reason: "The comment bean comes from contentManager.getCommentBean(), a getter whose result the extractor does not follow."
 
+  - id: wov:comment-save-commenter
+    tables: [tcontentcommentcommenters]
+    component: core/mura/content/contentCommentBean.cfc
+    method: setCommenter
+    op: save
+    source: {path: core/mura/Handler/standardEventsHandler.cfc, lines: [158, 183]}
+    routeKeys: ["admin:ccomments.approve", "admin:ccomments.bulkedit", "admin:ccomments.singleedit", "admin:ccomments.unapprove", "api:comment.save", "rest:comment.save", "rest:comment.save{session}", "rest:comment.save{siteid}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "contentCommentBean.save finds no validation errors (core/mura/content/contentCommentBean.cfc:466-468); standardSetCommenterHandler loads the commenter by the comment's userID for a stored comment, else by the signed-in user's id or the comment e-mail, sets its name and e-mail and saves it (core/mura/Handler/standardEventsHandler.cfc:164-180)"
+    reason: "setCommenter runs the standardSetCommenter handler through pluginEvent.getHandler(...).handle (core/mura/content/contentCommentBean.cfc:273), a handler-factory lookup the extractor does not follow."
+
   - id: wov:comments-display-object-writes
     tables: [tcontentcommentcommenters, tcontentcomments, tcontentstats, ttrash]
     component: core/modules/v1/comments/index.cfm
@@ -1086,7 +1099,7 @@ settledCalls:
     source: {path: core/mura/content/contentCommentBean.cfc, lines: [534, 544]}
     calls: [obj.save, obj.delete]
     resolution: counted
-    countedBy: [tcontentcomments, tcontentstats]
+    countedBy: [tcontentcomments, tcontentcommentcommenters, tcontentstats]
     reason: "Kid comments that request data adds (core/mura/bean/bean.cfc:348-375) save through this same contentCommentBean.save, and removeObject keeps only a self-parented kid (bean.cfc:235-239), whose delete updates tcontentcomments and recounts tcontentstats as this save does (core/mura/content/contentCommentBean.cfc:330-336)."
 
   - id: wov:effect-comment-subscriber-mail

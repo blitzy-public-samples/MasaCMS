@@ -3831,6 +3831,34 @@ scenarios:
           feedID: ${save-remote.feedID}
           siteid: tenant-a
           action: delete
+      # The compact-display form posts its hidden closeCompactDisplay=true, so the save answers update.cfm's Close document.
+      - name: edit-local-compact
+        method: GET
+        route: /admin/?muraAction=cFeed.edit&siteid=tenant-a&feedID=${save-local.feedID}&type=Local&compactDisplay=true
+        as: admin
+      - name: save-local-compact
+        method: POST
+        route: /admin/?muraAction=cFeed.update&siteid=tenant-a
+        as: admin
+        csrf: fetch-form
+        csrfFrom: edit-local-compact
+        form:
+          feedID: ${save-local.feedID}
+          siteid: tenant-a
+          action: update
+          closeCompactDisplay: 'true'
+          type: Local
+          name: GS-CO-13 Local Feed
+          isActive: '1'
+          isPublic: '1'
+          maxItems: '20'
+          contentID: ${seed.folder.contentID}
+          paramRelationship1: and
+          paramField1: ''
+          paramCondition1: Equals
+          paramCriteria1: ''
+        expected: halted
+        exceptionId: EX-FEED-COMPACT-CLOSE
       - name: edit-local
         method: GET
         route: /admin/?muraAction=cFeed.edit&siteid=tenant-a&feedID=${save-local.feedID}&type=Local
@@ -3924,6 +3952,7 @@ scenarios:
       - admin:cfeed.list
       - admin:cfeed.edit
       - admin:cfeed.update
+      - admin:cfeed.update{closecompactdisplay=true}
       - admin:cfeed.loadsite
       - admin:cfeed.siteparents
       - feed:v1
@@ -3970,6 +3999,27 @@ scenarios:
           changesetid: ''
           removepreviouschangeset: 'false'
           preview: '0'
+      # The import saves a draft Form, which later admin headers count, so it runs early too. On a re-run its title is
+      # taken and nothing is saved, so only the import form, fetched before it, can show another count: it compares status.
+      - name: import-form
+        method: GET
+        route: /admin/?muraAction=cForm.importForm&siteid=tenant-a
+        as: admin
+        compare: [status]
+      - name: import-zip
+        method: POST
+        route: /admin/?muraAction=cForm.importForm
+        as: admin
+        csrf: fetch-form
+        csrfFrom: import-form
+        multipart:
+          fields:
+            siteid: tenant-a
+            title: GS-CO-14 Imported Form
+          files:
+            - {field: formzip, fixture: form-export-zip, filename: gs-co-14-form.zip, contentType: application/zip}
+        expected: halted
+        exceptionId: EX-FORM-IMPORT
       # The published version's edit form links its latest draft, the one updateObjectParams just saved.
       - name: page-edit
         method: GET
@@ -4074,6 +4124,7 @@ scenarios:
       - admin:cform.getdataset
       - admin:cform.export
       - admin:cform.importform
+      - admin:cform.importform{formzip}
       - admin:carch.datamanager
       - admin:carch.downloaddata
       - api:content.findone

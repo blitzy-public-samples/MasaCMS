@@ -389,10 +389,37 @@ describe('fixtureBytes', () => {
     offsets.forEach((offset, i) => expect(text.slice(offset).startsWith(`${i + 1} 0 obj\n`)).toBe(true));
   });
 
+  it('generates a stored cForm.export zip whose form.json carries the keys importForm reads', () => {
+    const zip = Buffer.from(fixtureBytes('form-export-zip'));
+    expect(Buffer.from(fixtureBytes('form-export-zip'))).toStrictEqual(zip);
+    const end = zip.length - 22;
+    expect(zip.readUInt32LE(end)).toBe(0x06054b50);
+    expect([zip.readUInt16LE(end + 8), zip.readUInt16LE(end + 10)]).toStrictEqual([1, 1]);
+    const central = zip.readUInt32LE(end + 16);
+    expect(central + zip.readUInt32LE(end + 12)).toBe(end);
+    expect(zip.readUInt32LE(central)).toBe(0x02014b50);
+    const nameLength = zip.readUInt16LE(central + 28);
+    expect(zip.toString('latin1', central + 46, central + 46 + nameLength)).toBe('form.json');
+    const local = zip.readUInt32LE(central + 42);
+    expect(zip.readUInt32LE(local)).toBe(0x04034b50);
+    // Method 0 (stored): the entry's bytes follow its local header as they are.
+    expect([zip.readUInt16LE(local + 8), zip.readUInt16LE(central + 10)]).toStrictEqual([0, 0]);
+    const size = zip.readUInt32LE(central + 24);
+    expect(zip.readUInt32LE(central + 20)).toBe(size);
+    const at = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const data = zip.subarray(at, at + size);
+    expect(zip.readUInt32LE(central + 16)).toBe(crc32(data));
+    expect(zip.readUInt32LE(local + 14)).toBe(crc32(data));
+    const exported = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+    expect(Object.keys(exported)).toStrictEqual(['BODY', 'RESPONSEMESSAGE', 'RESPONSESENDTO']);
+    const body = JSON.parse(String(exported.BODY)) as { form: { fields: Record<string, { name: string }>; pages: string[][] } };
+    expect(body.form.pages.flat().map((id) => body.form.fields[id]?.name)).toStrictEqual(['fullname']);
+  });
+
   it('rejects an unknown fixture id, naming the known ones', () => {
     expect(() => fixtureBytes('no-such-fixture')).toThrow(GoldenConfigError);
     expect(() => fixtureBytes('no-such-fixture')).toThrow(
-      'unknown file fixture no-such-fixture; known: image-png-8x8, pdf-one-page',
+      'unknown file fixture no-such-fixture; known: image-png-8x8, pdf-one-page, form-export-zip',
     );
   });
 });

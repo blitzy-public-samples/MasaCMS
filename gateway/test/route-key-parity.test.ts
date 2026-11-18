@@ -1,6 +1,6 @@
 // The shared route-key conflict table through the dispatcher's matcher over the committed variants.json and v0001 index,
-// and the inventoried remote-function keys under app.ts's own route-key options.
-import { routeKeyForRequest, type RouteKeyResult } from '@opt2/platform/legacy-compat';
+// the inventoried remote-function keys under app.ts's own route-key options, and v0002 routing of moved and halted entries.
+import { matchRouteKey, routeKeyForRequest, type RouteKeyResult } from '@opt2/platform/legacy-compat';
 import {
   routeKeyCaseOptions,
   routeKeyCaseVariants,
@@ -136,5 +136,97 @@ describe("remote-function keys through the gateway's route-key options", () => {
     expect(facts.entityRemoteFunctions[entity]).toContain(name);
     const root = family === 'rest' ? DEFAULT_REST : DEFAULT_API;
     expect(await gatewayEntry(apiCall('POST', `${root}/`, { query: { method: `${entity}.${name}` } }, key))).toBeDefined();
+  });
+});
+
+// The committed v0002 through app.ts's options: the synthetic screens and the comment, feed and form writes.
+const v0002 = await committedIndex('v0002');
+const v0002Matcher = createMatcher({
+  state: fakeCutoverState(v0002),
+  variants,
+  modes: createResponseModes(facts),
+  env: testEnv(),
+  clock: TEST_CLOCK,
+  routeKeyOptions: gatewayOptions,
+});
+
+/** The shared conflict case named `name`. */
+function sharedCase(name: string): RouteKeyConflictCase {
+  const found = routeKeyConflictCases.find((c) => c.name === name);
+  if (found === undefined) throw new Error(`no shared route-key case ${name}`);
+  return found;
+}
+
+/** A request with no body, keyed `expectedKey`. */
+function bodiless(method: string, path: string, query: Record<string, string>, expectedKey: string): RouteKeyConflictCase {
+  return { name: expectedKey, source: 'gateway/cutover/versions/v0002.json', request: { method, path, query, headers: {} }, expectedKey };
+}
+
+const TENANT = { siteid: 'tenant-a' };
+
+describe("v0002 routing through the gateway's route-key options", () => {
+  it.each<[string, RouteKeyConflictCase, Partial<CutoverEntry>, 'target' | 'legacy']>([
+    [
+      'the reporting export list',
+      bodiless('GET', '/opt2/admin/reporting/exports', TENANT, 'opt2:/opt2/admin/reporting/exports'),
+      { route: 'opt2:/opt2/admin/reporting/**', state: 'target', kind: 'read', units: ['reporting.export_job'] },
+      'target',
+    ],
+    [
+      'a reporting queue action',
+      bodiless('POST', '/opt2/admin-actions/reporting/queue', TENANT, 'opt2:/opt2/admin-actions/reporting/queue'),
+      { route: 'opt2:/opt2/admin-actions/reporting/**', state: 'target', kind: 'write' },
+      'target',
+    ],
+    [
+      'the communications templates',
+      bodiless('GET', '/opt2/admin/communications/templates', TENANT, 'opt2:/opt2/admin/communications/templates'),
+      { route: 'opt2:/opt2/admin/communications/**', state: 'target', kind: 'read' },
+      'target',
+    ],
+    [
+      'the timesheet list, whose sheets no carry entry writes',
+      bodiless('GET', '/opt2/admin/timesheets/sheets', TENANT, 'opt2:/opt2/admin/timesheets/sheets'),
+      { route: 'opt2:/opt2/admin/timesheets/**', state: 'legacy', kind: 'read' },
+      'legacy',
+    ],
+    [
+      'a compact-display feed save',
+      sharedCase('admin-cfeed-update-close-compact-display-variant'),
+      { route: 'admin:cfeed.update{closecompactdisplay=true}', state: 'legacy', kind: 'legacy-write' },
+      'legacy',
+    ],
+    [
+      'a form import with its zip',
+      sharedCase('admin-cform-importform-zip-part-variant'),
+      { route: 'admin:cform.importform{formzip}', state: 'legacy', kind: 'legacy-write' },
+      'legacy',
+    ],
+    [
+      'a single comment approval',
+      bodiless('GET', '/admin/', { muraAction: 'cComments.singleEdit', updateaction: 'approve' }, 'admin:ccomments.singleedit'),
+      {
+        route: 'admin:ccomments.singleedit',
+        state: 'target',
+        kind: 'write',
+        group: 'grp:content.comment',
+        units: expect.arrayContaining(['content.commenter']),
+      },
+      'target',
+    ],
+  ])('routes %s', async (_label, c, expected, destination) => {
+    const shared = routeKeyForRequest(c.request, { ...gatewayOptions, variants: variants.variants });
+    expect(shared.key).toBe(c.expectedKey);
+    const entry = v0002.entryFor(matchRouteKey(shared, v0002.matchKeys) ?? '');
+    expect(entry).toMatchObject(expected);
+    const { request, body } = matcherInputFromCase(c);
+    const outcome = await v0002Matcher.match(request, body, v0002);
+    expect(outcome.destination.kind).toBe(destination);
+    if (destination === 'target') {
+      expect(outcome.entry).toBe(entry);
+      expect(outcome.destination).toMatchObject({ service: 'web' });
+    } else if (entry?.kind === 'legacy-write') {
+      expect(outcome.entry).toBe(entry);
+    }
   });
 });

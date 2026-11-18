@@ -63,6 +63,23 @@ const targetRoutes = (table: CutoverTable): string[] => table.entries.filter((e)
 const withoutState = (table: CutoverTable) => table.entries.map(({ tableVersion: _v, state: _s, ...rest }) => rest);
 const NATIVE_TARGETS = ['bridge:/gateway/legacy-bridge/**', 'opt2:/opt2/stub/**', 'static:/_next/**'];
 const HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
+/** Units each synthetic module's screens read and actions write through its `/v1/` operations. */
+const SCREEN_UNITS: Readonly<Record<string, readonly string[]>> = {
+  communications: ['communications.delivery_status', 'communications.message', 'communications.message_template'],
+  'e-signature': ['esignature.audit_entry', 'esignature.signature', 'esignature.signature_request'],
+  finance: ['finance.attachment', 'finance.record', 'finance.record_version', 'finance.rollup'],
+  reporting: ['reporting.export_job'],
+  surveys: [
+    'communications.scheduled_task',
+    'surveys.survey',
+    'surveys.survey_reminder',
+    'surveys.survey_response',
+    'surveys.survey_schedule',
+    'surveys.survey_target',
+  ],
+  timesheets: ['timesheets.approval_action', 'timesheets.blackout', 'timesheets.timesheet', 'timesheets.timesheet_day'],
+};
+const SCREEN_UNIT_SET: ReadonlySet<string> = new Set(Object.values(SCREEN_UNITS).flat());
 
 // ---- Committed inputs ----
 
@@ -206,6 +223,31 @@ describe('committed inputs', () => {
     expect([templates?.group, templates?.units]).toEqual([messages?.group, messages?.units]);
     expect(servesSyntheticRoutes(unavailable[1] as CutoverTable)).toBe(true);
     expect(available.some(servesSyntheticRoutes)).toBe(false);
+  });
+
+  it.each<[string, readonly string[]]>([
+    ['communications', []],
+    ['e-signature', []],
+    ['finance', []],
+    ['reporting', []],
+    ['surveys', []],
+    // No carry entry writes Program_N.timesheet, so its group, and every reader of it, stays legacy.
+    ['timesheets', ['timesheets.timesheet']],
+  ])('routes the %s screens and actions over their own units, legacy in v0002 only over %j', (module, legacyUnits) => {
+    const [v0001, v0002, v0003] = available as [CutoverTable, CutoverTable, CutoverTable];
+    const unitGroup = new Map(ctx.groups.groups.flatMap((g) => g.units.map((unit): [string, string] => [unit, g.id])));
+    const screens = `opt2:/opt2/admin/${module}/**`;
+    const actions = `opt2:/opt2/admin-actions/${module}/**`;
+    const units = SCREEN_UNITS[module] ?? [];
+    expect(entryOf(v0002, screens)).toMatchObject({ owningService: 'web', kind: 'read', group: null, units });
+    expect(entryOf(v0002, actions)).toMatchObject({ owningService: 'web', kind: 'write', group: null, units: [] });
+    expect(units.filter((unit) => v0002.groupAuthority[unitGroup.get(unit) ?? ''] !== 'target')).toEqual(legacyUnits);
+    const state = legacyUnits.length === 0 ? 'target' : 'legacy';
+    expect([v0001, v0002, v0003].map((table) => [entryOf(table, screens)?.state, entryOf(table, actions)?.state])).toEqual([
+      ['legacy', 'legacy'],
+      [state, state],
+      [state, state],
+    ]);
   });
 
   it.each(['communications', 'e-signature', 'finance', 'reporting', 'surveys', 'timesheets'])(
@@ -368,13 +410,14 @@ function ownershipOf(units: Record<string, readonly string[]>): OwnershipDoc {
       owner: unit.startsWith('content.') ? 'strategies-content' : (unit.split('.')[0] as string),
       legacyTables,
     })),
-    tables: Object.entries(units).map(([unit, [table]]) => ({
-      table: table as string,
-      owner: unit.split('.')[0] as string,
-      targets: [{ unit, rowPredicate: null, ownedColumns: [] }],
-    })),
+    tables: Object.entries(units).flatMap(([unit, [table]]) =>
+      table === undefined ? [] : [{ table, owner: unit.split('.')[0] as string, targets: [{ unit, rowPredicate: null, ownedColumns: [] }] }],
+    ),
   };
 }
+
+// The synthetic screens' units, tableless unless UNITS or a spec maps them, so every fixture context can build their entries.
+const SCREEN_ONLY_UNITS: Record<string, readonly string[]> = Object.fromEntries([...SCREEN_UNIT_SET].map((unit) => [unit, []]));
 
 interface FixtureSpec {
   tables?: InventoryTable[];
@@ -425,7 +468,7 @@ function fixtureContext(spec: FixtureSpec = {}): ValidationContext {
     ],
     tables: spec.tables ?? [],
   };
-  const ownership = ownershipOf(spec.units ?? UNITS);
+  const ownership = ownershipOf({ ...SCREEN_ONLY_UNITS, ...(spec.units ?? UNITS) });
   const exceptions = { sourceSha: SHA, entries: spec.exceptions ?? [] };
   const groups = buildGroups({
     sourceSha: SHA,
@@ -492,8 +535,10 @@ describe('buildVersions on fixture inventories', () => {
     expect(entryOf(v0003, ADD)).toMatchObject({ state: 'legacy', tableVersion: 'v0003' });
     expect(entryOf(v0003, EXPORT)).toMatchObject({ state: 'target', tableVersion: 'v0002' });
     expect(v0003.rollbackRefs[0]?.groups).toEqual(rosterGroupSet(ctx.groups));
-    expect(entryOf(v0002, 'opt2:/opt2/admin/reporting/**')).toMatchObject({ kind: 'read', state: 'legacy' });
-    expect(entryOf(v0002, 'opt2:/opt2/admin-actions/reporting/**')).toMatchObject({ kind: 'write', units: [], state: 'legacy' });
+    // The screens read only the export jobs, so they move while the fixture list, over every reporting unit, stays legacy.
+    expect(entryOf(v0002, 'opt2:/opt2/admin/reporting/**')).toMatchObject({ kind: 'read', units: ['reporting.export_job'], state: 'target' });
+    expect(entryOf(v0002, 'opt2:/opt2/admin-actions/reporting/**')).toMatchObject({ kind: 'write', units: [], state: 'target' });
+    expect(entryOf(v0002, 'opt2:/opt2/admin/timesheets/**')).toMatchObject({ kind: 'read', state: 'legacy' });
   });
 
   it.each([
@@ -504,6 +549,7 @@ describe('buildVersions on fixture inventories', () => {
     const v0002 = buildVersions(ctx, { available: true })[1] as CutoverTable;
     expect(v0002.groupAuthority[groupOfUnit(ctx, 'reporting.export_job')]).toBe(expected);
     expect(entryOf(v0002, EXPORT)?.state).toBe(expected);
+    expect(entryOf(v0002, 'opt2:/opt2/admin/reporting/**')?.state).toBe(expected);
   });
 
   it('keeps a halted carry read on legacy', () => {
@@ -549,6 +595,14 @@ describe('buildVersions on fixture inventories', () => {
     expect(() => buildVersions({ ...ctx, groups }, { available: true })).toThrow(`carry write entry ${ADD} is in 0 groups`);
   });
 
+  it('fails when a screen unit is not in the ownership file', () => {
+    const ctx = fixtureContext();
+    const ownership = { ...ctx.ownership, units: ctx.ownership.units.filter((unit) => unit.unit !== 'finance.rollup') };
+    const build = (): CutoverTable[] => buildVersions({ ...ctx, ownership }, { available: true });
+    expect(build).toThrow(CutoverBuildError);
+    expect(build).toThrow('opt2:/opt2/admin/finance/**: units finance.rollup are not in opt2/table-ownership.json');
+  });
+
   it('fails on an owner the cut-over table cannot name', () => {
     expect(() => buildVersions(fixtureContext({ owner: 'split' }), { available: true })).toThrow(/owner split is not a cut-over owning service/);
   });
@@ -568,7 +622,7 @@ describe('buildVersions on fixture inventories', () => {
   it('returns no rollback reference when no group holds the roster', () => {
     const ctx = fixtureContext();
     const groups = { ...ctx.groups, groups: ctx.groups.groups.filter((g) => !rosterGroupSet(ctx.groups).includes(g.id)) };
-    const units = ctx.ownership.units.filter((u) => groups.groups.some((g) => g.units.includes(u.unit)));
+    const units = ctx.ownership.units.filter((u) => SCREEN_UNIT_SET.has(u.unit) || groups.groups.some((g) => g.units.includes(u.unit)));
     const inventory = { ...ctx.inventory, controllers: [], routes: ctx.inventory.routes.filter((r) => r.routeKey !== ARCHIVE) };
     const trimmed = { ...ctx, groups, inventory, inventoryKeys: inventoryKeyFacts(inventory), ownership: { ...ctx.ownership, units } };
     expect(buildVersions(trimmed, { available: true })[2]?.rollbackRefs).toEqual([]);

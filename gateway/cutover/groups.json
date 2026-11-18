@@ -2,7 +2,7 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "f2b892511f78217ea34f2828c5c6d27bcde9ca553661d3afed1cf1e0107ecef3",
+    "inventorySha256": "103262a3045b15dde68855260dcb09446b28adbbe72c22431484a28d10a4f9a8",
     "tableOwnershipSha256": "bd8bb32df7f719aff9da87a78d8fdfe985dea1535571e982c6a4cacfccf1adb6"
   },
   "groups": [
@@ -217,6 +217,7 @@
       "id": "grp:content.comment",
       "units": [
         "content.comment",
+        "content.commenter",
         "content.content_rating",
         "content.content_stats"
       ],
@@ -253,14 +254,6 @@
         "rest:stats.save"
       ],
       "hasCarryWrite": true
-    },
-    {
-      "id": "grp:content.commenter",
-      "units": [
-        "content.commenter"
-      ],
-      "writeEntries": [],
-      "hasCarryWrite": false
     },
     {
       "id": "grp:content.display_title_approval",

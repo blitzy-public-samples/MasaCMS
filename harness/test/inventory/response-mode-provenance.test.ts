@@ -142,8 +142,11 @@ describe('bare-body response modes against the pinned view and its includes', ()
 describe('cform.importform post-action mode against the pinned controller', () => {
   const action = actions.find((a) => a.id === 'ctl:cform.importform');
 
-  it('records redirect without layout or content type', () => {
-    expect(action?.variants.map((v) => [v.responseMode, v.layout, v.contentType])).toEqual([['redirect', null, null]]);
+  it('records redirect without layout or content type, the zip-part variant as the base', () => {
+    expect(action?.variants.map((v) => [v.id, v.responseMode, v.layout, v.contentType])).toEqual([
+      ['ctl:cform.importform{formzip}', 'redirect', null, null],
+      ['ctl:cform.importform', 'redirect', null, null],
+    ]);
   });
 
   it('reads the multipart formzip file part and answers with location() in the recorded method', () => {

@@ -775,6 +775,26 @@
       ]
     },
     {
+      "route": "admin:cfeed.update",
+      "variant": "closecompactdisplay=true",
+      "when": [
+        {
+          "param": "closeCompactDisplay",
+          "equals": "true"
+        }
+      ]
+    },
+    {
+      "route": "admin:cform.importform",
+      "variant": "formzip",
+      "when": [
+        {
+          "param": "formzip",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
       "route": "admin:clogin.login",
       "variant": "status=sendlogin",
       "when": [

@@ -33,6 +33,7 @@ interface InventoryVariant {
   readonly disposition: string | null;
   readonly owningService: string | null;
   readonly responseMode: string | null;
+  readonly exceptionRef?: string | null;
 }
 
 interface InventoryController {
@@ -52,7 +53,8 @@ function cformRecords(): Array<InventoryVariant & { readonly action: string }> {
 }
 
 const INVENTORY = cformRecords();
-const CARRIED = INVENTORY.filter((record) => record.disposition === 'carry');
+// A halted carried variant, such as importform{formzip}, stays on legacy as a legacy-write entry, so no screen serves it.
+const CARRIED = INVENTORY.filter((record) => record.disposition === 'carry' && (record.exceptionRef ?? null) === null);
 
 const actionOf = (screen: ScreenDefinition): string => normaliseRouteKey(screen.action);
 
@@ -178,6 +180,8 @@ describe('cformScreens', () => {
     expect(CARRIED).not.toHaveLength(0);
     expect(byAction.size).toBe(actions.length);
     expect(actions.toSorted()).toEqual(CARRIED.map((record) => record.action).toSorted());
+    expect(INVENTORY.find((record) => record.action === 'importform{formzip}')?.exceptionRef).toBe('EX-FORM-IMPORT');
+    expect(actions).not.toContain('importform{formzip}');
   });
 
   it.each(CARRIED.map((record) => [record.action, record] as const))('serves carried %s in its inventoried mode', (action, record) => {

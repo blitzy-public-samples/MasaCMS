@@ -71,21 +71,54 @@ const OWNING_SERVICES: ReadonlySet<string> = new Set<OwningService>([
   'none',
 ]);
 
-/** A synthetic module: its service, fixture module prefix, web module path segment and own `/v1/` resource prefixes. */
+/** A synthetic module: its service, web path segment, own `/v1/` prefixes, and the units its screens read and actions write. */
 interface SyntheticModule {
   readonly service: OwningService;
-  readonly fixture: string;
   readonly web: string;
   readonly v1: readonly string[];
+  readonly screenUnits: readonly string[];
 }
 
 const SYNTHETIC_MODULES: readonly SyntheticModule[] = [
-  { service: 'communications', fixture: 'communications', web: 'communications', v1: SYNTHETIC_V1_PREFIXES.communications },
-  { service: 'e-signature', fixture: 'esignature', web: 'e-signature', v1: SYNTHETIC_V1_PREFIXES['e-signature'] },
-  { service: 'finance', fixture: 'finance', web: 'finance', v1: SYNTHETIC_V1_PREFIXES.finance },
-  { service: 'reporting', fixture: 'reporting', web: 'reporting', v1: SYNTHETIC_V1_PREFIXES.reporting },
-  { service: 'surveys', fixture: 'surveys', web: 'surveys', v1: SYNTHETIC_V1_PREFIXES.surveys },
-  { service: 'timesheets', fixture: 'timesheets', web: 'timesheets', v1: SYNTHETIC_V1_PREFIXES.timesheets },
+  {
+    service: 'communications',
+    web: 'communications',
+    v1: SYNTHETIC_V1_PREFIXES.communications,
+    screenUnits: ['communications.delivery_status', 'communications.message', 'communications.message_template'],
+  },
+  {
+    service: 'e-signature',
+    web: 'e-signature',
+    v1: SYNTHETIC_V1_PREFIXES['e-signature'],
+    screenUnits: ['esignature.audit_entry', 'esignature.signature', 'esignature.signature_request'],
+  },
+  {
+    service: 'finance',
+    web: 'finance',
+    v1: SYNTHETIC_V1_PREFIXES.finance,
+    screenUnits: ['finance.attachment', 'finance.record', 'finance.record_version', 'finance.rollup'],
+  },
+  { service: 'reporting', web: 'reporting', v1: SYNTHETIC_V1_PREFIXES.reporting, screenUnits: ['reporting.export_job'] },
+  {
+    service: 'surveys',
+    web: 'surveys',
+    v1: SYNTHETIC_V1_PREFIXES.surveys,
+    // The schedule screen lists a survey's tasks, which surveys reads from communications.
+    screenUnits: [
+      'communications.scheduled_task',
+      'surveys.survey',
+      'surveys.survey_reminder',
+      'surveys.survey_response',
+      'surveys.survey_schedule',
+      'surveys.survey_target',
+    ],
+  },
+  {
+    service: 'timesheets',
+    web: 'timesheets',
+    v1: SYNTHETIC_V1_PREFIXES.timesheets,
+    screenUnits: ['timesheets.approval_action', 'timesheets.blackout', 'timesheets.timesheet', 'timesheets.timesheet_day'],
+  },
 ];
 
 /** Bucket owners of the local signed-file routes; `fileStore` buckets hold Masa's file store (the tfiles units). */
@@ -268,19 +301,23 @@ function nativeEntry(
   return { route, owningService, kind, group: null, units, disposition, rule };
 }
 
-/** Entries of OPT-2's own paths and the legacy static assets, which the inventory does not list. */
-function nativeEntries(ctx: ValidationContext, inventoried: readonly PlannedEntry[]): PlannedEntry[] {
+/**
+ * Entries of OPT-2's own paths and the legacy static assets, which the inventory does not list. A module's actions follow its
+ * screens' units, since they re-render those screens; throws `CutoverBuildError` for a screen unit not in the ownership file.
+ */
+function nativeEntries(ctx: ValidationContext): PlannedEntry[] {
+  const unitOwner = new Map(ctx.ownership.units.map((unit) => [unit.unit, unit.owner]));
   const modules = SYNTHETIC_MODULES.flatMap((module) => {
-    const prefix = `fixture:${module.fixture}/`;
-    const carry = inventoried.filter((entry) => entry.route.startsWith(prefix) && entry.disposition === 'carry');
-    const units = sorted(carry.flatMap((entry) => entry.units));
+    const read = globRoute(`/opt2/admin/${module.web}`);
+    const unknown = module.screenUnits.filter((unit) => !unitOwner.has(unit));
+    if (unknown.length > 0) throw new CutoverBuildError(`${read}: units ${unknown.join(', ')} are not in opt2/table-ownership.json`);
+    const units = sorted(module.screenUnits);
     const rule: StateRule = { type: 'units', units };
     return [
-      nativeEntry(globRoute(`/opt2/admin/${module.web}`), 'web', 'read', units, rule),
+      nativeEntry(read, 'web', 'read', units, rule),
       nativeEntry(globRoute(`/opt2/admin-actions/${module.web}`), 'web', 'write', [], rule),
     ];
   });
-  const unitOwner = new Map(ctx.ownership.units.map((unit) => [unit.unit, unit.owner]));
   const targets: readonly ObjectTarget[] = ctx.ownership.tables.flatMap((table) => table.targets);
   const fileStoreUnits = ctx.ownership.tables
     .filter((table) => table.table.toLowerCase() === FILE_STORE_TABLE)
@@ -305,7 +342,7 @@ function planEntries(ctx: ValidationContext, fixturesAvailable: boolean): EntryP
   const written = new Set(groupOf.values());
   const synthetic = fixturesAvailable ? [] : SYNTHETIC_MODULES.flatMap((module) => syntheticEntries(ctx, module, written));
   for (const entry of synthetic) if (entry.group !== null) written.add(entry.group);
-  return { shared: [...entries, ...nativeEntries(ctx, entries)], synthetic, written };
+  return { shared: [...entries, ...nativeEntries(ctx)], synthetic, written };
 }
 
 /**

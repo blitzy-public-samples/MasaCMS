@@ -321,6 +321,8 @@ export const NOT_BUILT_VARIANTS: readonly NotBuiltVariant[] = Object.freeze([
   notBuilt('carch', 'updateobjectparams', 'approved=1', truthy('approved')),
   notBuilt('carch', 'variationtargeting', 'notify', nonEmpty('notify')),
   notBuilt('carch', 'approvalaction', 'action=approve', equals('action', 'approve')),
+  notBuilt('cfeed', 'update', 'closecompactdisplay=true', equals('closeCompactDisplay', 'true')),
+  notBuilt('cform', 'importform', 'formzip', nonEmpty('formzip')),
   // A sort reaching a content id every site shares is halted to legacy; the carried list serves every other request.
   notBuilt('carch', 'list', 'sharedid', ...SHARED_ID_SORT_CONDITIONS),
 ]);

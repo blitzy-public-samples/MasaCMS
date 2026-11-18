@@ -27,6 +27,8 @@ const CONTENT_SERVER = 'core/mura/content/contentServer.cfc';
 const ADMIN_APP = 'admin/Application.cfc';
 const FW1 = 'admin/framework.cfc';
 const CUSERS = 'admin/core/controllers/cusers.cfc';
+const CFEED = 'admin/core/controllers/cfeed.cfc';
+const CFORM = 'admin/core/controllers/cform.cfc';
 const CARCH_LIST = 'admin/core/views/carch/list.cfm';
 const USER_MANAGER = 'core/mura/user/userManager.cfc';
 const FILE_DAO = 'core/mura/content/file/fileDAO.cfc';
@@ -178,6 +180,8 @@ export const routeKeyCaseVariants: readonly VariantDeclaration[] = deepFreeze([
   variant('admin:carch.updateobjectparams', 'approved=1', truthy('approved')),
   variant('admin:carch.variationtargeting', 'notify', nonEmpty('notify')),
   variant('admin:ceditprofile.update', 'extdata', nonEmpty('extendSetID')),
+  variant('admin:cfeed.update', 'closecompactdisplay=true', eq('closeCompactDisplay', 'true')),
+  variant('admin:cform.importform', 'formzip', nonEmpty('formzip')),
   variant('admin:clogin.login', 'status=sendlogin', eq('status', 'sendLogin')),
   variant('admin:clogin.main', 'status=sendlogin', eq('status', 'sendLogin')),
   variant('admin:csettings.updatesite', 'action=add', eq('action', 'Add')),
@@ -550,6 +554,40 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
     `${USER_MANAGER}:495-497`,
     request('POST', '/admin/', { query: { muraAction: 'cEditProfile.update' }, files: [['newFile', 'me.png']] }),
     'admin:ceditprofile.update{photo}',
+  ),
+  conflict(
+    'admin-cfeed-update-close-compact-display-variant',
+    `${CFEED}:136`,
+    request('POST', '/admin/', {
+      query: { muraAction: 'cFeed.update' },
+      form: { feedID: ID, action: 'update', closeCompactDisplay: 'TRUE' },
+    }),
+    'admin:cfeed.update{closecompactdisplay=true}',
+  ),
+  conflict(
+    'admin-cfeed-update-close-compact-display-false-has-no-variant',
+    `${CFEED}:136`,
+    request('POST', '/admin/', {
+      query: { muraAction: 'cFeed.update' },
+      form: { feedID: ID, action: 'update', closeCompactDisplay: 'false' },
+    }),
+    'admin:cfeed.update',
+  ),
+  conflict(
+    'admin-cform-importform-zip-part-variant',
+    `${CFORM}:115`,
+    request('POST', '/admin/', {
+      query: { muraAction: 'cForm.importForm' },
+      form: { title: 'Imported' },
+      files: [['formzip', 'form.zip']],
+    }),
+    'admin:cform.importform{formzip}',
+  ),
+  conflict(
+    'admin-cform-importform-empty-formzip-has-no-variant',
+    `${CFORM}:115`,
+    request('POST', '/admin/', { query: { muraAction: 'cForm.importForm' }, form: { formzip: '' } }),
+    'admin:cform.importform',
   ),
   conflict(
     'api-process-async-object-saveform-variant',

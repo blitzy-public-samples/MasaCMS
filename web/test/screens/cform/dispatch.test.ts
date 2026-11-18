@@ -18,10 +18,8 @@ vi.mock('@/lib/telemetry', async (importOriginal) => ({
 }));
 
 const SITE = 'default';
-const FORMS_MODULE = '00000000000000000000000000000000004';
 const SERVICE_PREFIX = '/opt2/svc/strategies-content/';
 const IMPORT_ROUTE = routeKey('POST', 'strategies-content', `/v1/sites/${SITE}/forms/import`);
-const LEGACY_LOCATION = `?muraAction=cArch.list&siteid=${SITE}&topid=${FORMS_MODULE}&moduleid=${FORMS_MODULE}&activeTab=0`;
 const ZIP_BYTES = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x0d, 0x0a, 0x2d, 0x2d]);
 const HTML_TYPE = 'text/html;charset=UTF-8';
 const JSON_TYPE = 'application/json;charset=utf-8';
@@ -87,26 +85,8 @@ const contentRequests = () =>
   fake.requests.filter((request) => request.path.startsWith(SERVICE_PREFIX) && !request.path.endsWith('/header-prompts'));
 
 describe('cForm.importform through the post-action handler', () => {
-  it('relays the native multipart form byte-for-byte to importForm once and answers its legacy location()', async () => {
-    serve({
-      [IMPORT_ROUTE]: {
-        status: 200,
-        body: {
-          saved: true,
-          errors: {},
-          redirect: {
-            circuit: 'cArch',
-            action: 'list',
-            params: [
-              ['siteid', SITE],
-              ['topid', FORMS_MODULE],
-              ['moduleid', FORMS_MODULE],
-              ['activeTab', '0'],
-            ],
-          },
-        },
-      },
-    });
+  it('answers 404 for an upload, the halted {formzip} variant legacy serves, without calling importForm', async () => {
+    serve({ [IMPORT_ROUTE]: { status: 200, body: { saved: true, errors: {}, redirect: null } } });
     const request = await adminRequest('/admin-actions/cform/importform?muraAction=cForm.importform', {
       user: 'admin',
       multipart: {
@@ -116,17 +96,11 @@ describe('cForm.importform through the post-action handler', () => {
       },
     });
     expect(request.headers.get('x-opt2-original-url')).toBe('/admin/?muraAction=cForm.importform');
-    const sent = Buffer.from(await request.clone().arrayBuffer());
 
     const response = await handleAdminAction(request, { circuit: 'cform', action: 'importform' });
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(LEGACY_LOCATION);
-    const imports = contentRequests();
-    expect(imports.map(({ method, path }) => `${method} ${path}`)).toEqual([IMPORT_ROUTE]);
-    expect(imports[0]?.headers['content-type']).toBe(request.headers.get('content-type'));
-    expect(imports[0]?.bytes.equals(sent)).toBe(true);
-    expect(imports[0]?.bytes.includes(ZIP_BYTES)).toBe(true);
+    expect(response.status).toBe(404);
+    expect(contentRequests()).toEqual([]);
   });
 
   it('answers a GET with the Import Form inside the layout and imports nothing', async () => {
