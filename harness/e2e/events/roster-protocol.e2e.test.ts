@@ -22,7 +22,6 @@ import {
 import { TENANT_A } from '@opt2/platform/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { FAULT_ENV, FAULT_PREFIX, ROSTER_STEPS, type RosterStep } from '../../../services/people/src/domain/faults.js';
 import { pollUntil, readOwnerExport, unitFor } from '../../src/events/seams.js';
 import { fetchFormTokens, type FormTokens } from '../../src/golden/session.js';
 import { HttpRequestError, createHttpSession, type HttpResult, type HttpSession } from '../../src/lib/http.js';
@@ -86,12 +85,17 @@ const CHECKPOINT_SQL =
   'SELECT owner, CONVERT(varchar(20), cursor_xid) AS cursor_xid, CONVERT(varchar(20), cursor_seq) AS cursor_seq, batch_id ' +
   'FROM opt2_sync.projector_checkpoint WHERE tenant_id = @tenantId AND owner IN (@people, @identity)';
 const PROJECTOR_HOLD_PATH = '/internal/v1/faults/projector-hold';
+/** Variable and value prefix of people's `OPT2_FAULT=roster:<step>` kill hook. */
+const FAULT_ENV = 'OPT2_FAULT';
+const FAULT_PREFIX = 'roster:';
 const ACCOUNT_STEP_PATH = /^\/internal\/v1\/accounts\/([^/]+)\/operations\/([^/]+?):(prepare|commit|abort|finish|revert)$/;
 
 type Participant = (typeof PARTICIPANTS)[number];
 type CaseKind = 'create' | 'edit';
 type FinalState = 'old' | 'new';
 type ExpectedResponse = '503' | 'success-or-503';
+/** A roster step boundary as people's fault hook names it. */
+type RosterStep = 'after-start' | 'after-prepare' | 'after-people-commit' | 'after-identity-commit' | 'after-done';
 type IdentityFault = 'before-prepare' | 'after-prepare-withheld' | 'after-commit-lost' | 'before-finish';
 type AccountStep = 'prepare' | 'commit' | 'finish';
 /** What one read of the user showed. */
@@ -123,6 +127,9 @@ const PEOPLE_CASES: Record<RosterStep, Expectation> = {
   },
   'after-done': { kind: 'edit', response: '503', final: 'new', recovery: 'repeat lost :finish' },
 };
+
+/** Every roster step boundary, in protocol order. */
+const ROSTER_STEPS: readonly RosterStep[] = ['after-start', 'after-prepare', 'after-people-commit', 'after-identity-commit', 'after-done'];
 
 const IDENTITY_FAULTS: readonly IdentityFault[] = ['before-prepare', 'after-prepare-withheld', 'after-commit-lost', 'before-finish'];
 
