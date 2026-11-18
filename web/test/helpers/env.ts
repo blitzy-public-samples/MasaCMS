@@ -1,7 +1,8 @@
-// Installs and restores one test's web environment and auth runtime, over the platform test keys.
+// Installs and restores one test's web environment and auth runtime, over the platform test keys, and the oracle's URL settings.
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { vi } from 'vitest';
 import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import { loadEnv } from '@opt2/platform/service-kit';
 import { testVerifier } from '@opt2/platform/testing';
@@ -65,4 +66,20 @@ export function useTestEnv(overrides: Partial<Record<string, string>> = {}): () 
     restoreEnv();
     removeOwnStateDir();
   };
+}
+
+/** The legacy oracle's content URL settings: port 8080, neither the site id nor the index file in URLs. */
+export const ORACLE_URL_SETTINGS: Readonly<Record<string, string | undefined>> = Object.freeze({
+  MURA_PORT: '8080',
+  MURA_CONTEXT: undefined,
+  MURA_SITEIDINURLS: 'false',
+  MURA_INDEXFILEINURLS: 'false',
+  MURA_HASHURLS: undefined,
+  MURA_LEGACYINDEXFILELOCATION: undefined,
+  MURA_SITEDIR: undefined,
+});
+
+/** Stubs {@link ORACLE_URL_SETTINGS} into `process.env` for one test; call before `useTestEnv`, which drops cached settings. */
+export function stubOracleUrlSettings(): void {
+  for (const [name, value] of Object.entries(ORACLE_URL_SETTINGS)) vi.stubEnv(name, value);
 }

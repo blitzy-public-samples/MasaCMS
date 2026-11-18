@@ -74,7 +74,7 @@ import {
 import { OUTBOX_TABLE, OutboxPayloadError, outboxDrainCounts, registryTenants, type OutboxDrainCounts, type OutboxKind } from '../outbox/index.js';
 import { INBOX_TABLE, isTopicName } from '../events/index.js';
 import { Roles, type Opt2RouteConfig } from '../auth/index.js';
-import { z, type FastifyInstance, type FastifyRequest, type Opt2RouteLogConfig } from '../service-kit/index.js';
+import { z, type FastifyInstance, type FastifyRequest, type Opt2RouteLogConfig, type Opt2RouteOutboxConfig } from '../service-kit/index.js';
 import { LegacyApiError } from '../legacy-compat/index.js';
 import { serializeError } from '../logging/index.js';
 
@@ -304,6 +304,8 @@ export interface GateResponse {
 const ROUTE: { opt2: Opt2RouteConfig } = { opt2: { transport: 'service', requires: [Roles.platformMigration] } };
 /** Config of `GET /changes`, which the reverse projector polls, so its successful requests log at debug. */
 const POLLED_ROUTE: { opt2: Opt2RouteConfig; opt2Log: Opt2RouteLogConfig } = { ...ROUTE, opt2Log: { successLevel: 'debug' } };
+/** Config of `POST /apply`: a batch committed with its state events left to the sweep answers 503, and its re-send by `batchId` a duplicate. */
+const APPLY_ROUTE: { opt2: Opt2RouteConfig; opt2Outbox: Opt2RouteOutboxConfig } = { ...ROUTE, opt2Outbox: { incompleteFlush: 'unavailable' } };
 const EXPORT_CURSOR_COLUMN = '__opt2_export_key';
 const ROW_HASH_COLUMN = 'legacy_row_hash';
 const OCCURRENCE_COLUMN = 'occurrence';
@@ -1244,7 +1246,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     }
   }
 
-  app.post(`${MIGRATION_PATH_PREFIX}/apply`, { config: ROUTE }, (request) =>
+  app.post(`${MIGRATION_PATH_PREFIX}/apply`, { config: APPLY_ROUTE }, (request) =>
     handle(request, () => apply(applyBodySchema.parse(request.body), request.log), true),
   );
 

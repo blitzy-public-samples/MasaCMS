@@ -1053,12 +1053,13 @@ async function draftRows(request: FastifyRequest, ctx: ContentRouteContext, acto
   });
 }
 
-/** The history and audit screens' rc: the screen model under legacy names, the site's settings and flags, and `rc.deletable` (hist.cfm:96). */
+/** The history and audit screens' rc: the screen model under legacy names, crumbs with icon classes, the site's settings and flags, and `rc.deletable` (hist.cfm:96). */
 function versionScreenRc(
   rc: Rc,
   model: Awaited<ReturnType<typeof getHistory>> | Awaited<ReturnType<typeof getAudit>>,
   site: ContentSaveSite,
   flags: SiteConfigFlags,
+  customIcons: CustomIconLookup,
   purgeDrafts: boolean,
 ): Rc {
   if (!rcHas(rc, 'parentid')) throw new UndefinedLegacyElementError('Element PARENTID is undefined in RC.');
@@ -1073,7 +1074,7 @@ function versionScreenRc(
   return {
     contentBean: { ...contentBean, stats },
     rsCount: model.rsCount,
-    crumbdata: model.crumbs,
+    crumbdata: model.crumbs.map((crumb) => ({ ...crumb, iconclass: iconClass(customIcons, crumb) })),
     perm: model.perm,
     stats,
     deletable,
@@ -1082,24 +1083,6 @@ function versionScreenRc(
     purgeDrafts,
     siteLocking: site.locking,
   };
-}
-
-/** The exceptions-list entry of a history or audit list holding a version whose preview URL hist.cfm and audit.cfm print. */
-export const CARCH_VERSION_PREVIEW_EXCEPTION = 'EX-CARCH-VERSION-PREVIEW';
-/** LegacyServiceUnavailableError reason of a version screen needing site URL settings this service does not hold. */
-export const CARCH_SITE_SETTINGS_REASON = 'carch-site-settings';
-/** The version types whose row prints `rc.contentBean.getURL(complete=1)` (the views' `cfcase` list less Variation, matched case-insensitively). */
-const VERSION_PREVIEW_TYPES: readonly string[] = ['page', 'folder', 'calendar', 'gallery', 'link', 'file'];
-
-/** Halts `action` with the contract's 503 when any version prints a preview URL read from tsettings and configBean URL values this service does not hold. */
-function haltVersionPreviews(action: string, versions: readonly { type: string | null }[]): void {
-  if (versions.some((version) => VERSION_PREVIEW_TYPES.includes((version.type ?? '').toLowerCase()))) {
-    throw new LegacyServiceUnavailableError(
-      `${action} prints preview URLs built from site settings this service does not hold (${CARCH_VERSION_PREVIEW_EXCEPTION})`,
-      'auto',
-      CARCH_SITE_SETTINGS_REASON,
-    );
-  }
 }
 
 /** Registers the contract's carch page and write operations and cperm's crumbs read; raw responses are registered by `./raw.ts`. */
@@ -1163,9 +1146,8 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
     const model = await getHistory(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid') });
     const site = await siteOf(request, ctx, actor);
-    // rc.deletable's parentid read (hist.cfm:96) fails before the version rows print their previews (hist.cfm:177-182).
-    const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), ctx.domain.config.purgeDrafts);
-    haltVersionPreviews('cArch.hist', model.items);
+    const customIcons = await customIconsOf(ctx, actor, rcText(rc, 'siteid'));
+    const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), customIcons, ctx.domain.config.purgeDrafts);
     const items = model.items.map((item) => ({ ...item, parentid: model.parents.get(item.contenthistid ?? '') ?? '' }));
     return viewModel({ ...rc, ...screen, items, historyTotal: model.historyTotal });
   });
@@ -1191,8 +1173,8 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
       const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
       const model = await getAudit(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid'), contentHistId: request.params.contenthistid });
       const site = await siteOf(request, ctx, actor);
-      const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), ctx.domain.config.purgeDrafts);
-      haltVersionPreviews('cArch.audit', model.trail);
+      const customIcons = await customIconsOf(ctx, actor, rcText(rc, 'siteid'));
+      const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), customIcons, ctx.domain.config.purgeDrafts);
       const items = model.trail.map((version) => {
         const changeset = model.changesets.get(version.changesetid ?? '');
         return { ...version, changesetname: changeset?.name ?? '', changesetpublishdate: changeset?.publishdate ?? '' };

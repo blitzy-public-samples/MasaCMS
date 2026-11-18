@@ -1,9 +1,9 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import {
   CanonicalEncodingError,
-  MIGRATION_PATH_PREFIX,
   encodeRow,
   formatCanonicalTimestamp,
+  postApply,
   type ApplyRequest,
   type ApplyResponse,
   type CanonicalColumn,
@@ -58,7 +58,6 @@ export interface DirectResult {
   byService: Record<string, number>;
 }
 
-const APPLY_PATH = `${MIGRATION_PATH_PREFIX}/apply`;
 const APPLY_ORIGIN = 'backfill';
 const AUDIT_TABLE = 'audit_entry';
 const GENESIS_HASH = Buffer.alloc(32);
@@ -312,7 +311,7 @@ export async function runDirect(dataset: Dataset, options: DirectOptions): Promi
   for (const [index, { batch, json }] of planned.entries()) {
     let response: ServiceResponse<ApplyResponse>;
     try {
-      response = await client.request<ApplyResponse>({ service: batch.service, method: 'POST', path: APPLY_PATH, json, userToken: null });
+      response = await postApply(client, batch.service, json);
     } catch (err) {
       throw printable(new Error(`direct: ${describeBatch(batch)} failed: ${failureText(err)}`, { cause: err }));
     }

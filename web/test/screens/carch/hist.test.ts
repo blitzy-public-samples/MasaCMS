@@ -1,15 +1,15 @@
 // cArch.hist page suite (carch/hist.cfm) over the recorded strategies-content history of About Us on tenant-a.
 import * as cheerio from 'cheerio';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
 import { dateKeyFor, formatDateField } from '@/lib/dates';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
-import { toString } from '@/lib/html';
+import { encodeJs, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { histScreen } from '@/screens/carch/hist';
 import { carchJs } from '@/screens/carch/partials/js';
 import { anonymousRequest, siteAdminRequest } from '../../helpers/admin-request';
-import { useTestEnv } from '../../helpers/env';
+import { stubOracleUrlSettings, useTestEnv } from '../../helpers/env';
 import { domModel } from '../../helpers/dom-model';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
@@ -29,9 +29,8 @@ const HISTORY_ROUTE = routeKey('GET', 'strategies-content', CARCH_PATHS.hist);
 const CSRF_QUERY = `&csrf_token=${FIXED_CSRF.token}&csrf_token_expires=${FIXED_CSRF.expires}`;
 
 const fixtureRc = (): Struct => structuredClone(carchHistData.rc);
-const fixtureVersions = (): Struct[] => fixtureRc()['items'] as Struct[];
-const previewUrlOf = (contentHistId: string): unknown =>
-  fixtureVersions().find((item) => item['contentHistID'] === contentHistId)?.['previewURL'];
+/** `rc.contentBean.getURL(complete=1, queryString='previewid=<id>')` of About Us on `localhost` under the oracle's URL settings. */
+const previewHref = (contentHistId: string): string => `http://localhost:8080/about-us/?previewid=${contentHistId}`;
 
 function lockedRc(stats: Struct, rc: Struct = {}): Struct {
   const base = fixtureRc();
@@ -62,10 +61,12 @@ async function renderView(rc: Struct = fixtureRc(), req: AdminRequest = histRequ
 
 let restore: () => void;
 beforeEach(() => {
+  stubOracleUrlSettings();
   restore = useTestEnv();
 });
 afterEach(() => {
   restore();
+  vi.unstubAllEnvs();
 });
 
 describe('cArch.hist', () => {
@@ -95,6 +96,7 @@ describe('cArch.hist', () => {
     expect(menuLinks.find((href) => href.includes('action=deleteall'))).toContain(CSRF_QUERY);
     expect(menuLinks.some((href) => href.startsWith(`./?muraAction=cPerm.main&contentid=${CONTENT_ID}`))).toBe(true);
     expect(crumbs.toArray().map((li) => $(li).text().trim())).toEqual(['Home', 'About Us']);
+    expect(crumbs.find('a > i').toArray().map((i) => $(i).attr('class'))).toEqual(['mi-file', 'mi-file']);
     expect(crumbs.last().find('strong a').text()).toBe('About Us');
     expect(crumbs.find('a').toArray().map((a) => $(a).attr('href'))).toEqual([
       `/admin/?muraAction=cArch.list&siteid=${SITE}&topid=${ROOT_ID}&moduleid=${SITE_MANAGER}&activeTab=0`,
@@ -176,7 +178,7 @@ describe('cArch.hist', () => {
       contentHistId,
     ]);
     expect(row.find('td.title a').attr('href')).toBe(editHref);
-    expect(row.find('li.preview a').attr('href')).toBe(previewUrlOf(contentHistId));
+    expect(row.find('li.preview a').attr('href')).toBe(previewHref(contentHistId));
     expect(row.find('li.audit-trail a').attr('href')).toBe(
       `./?muraAction=cArch.audit&contentid=${CONTENT_ID}&contenthistid=${contentHistId}&type=Page` +
         `&parentid=${ROOT_ID}&topid=${ROOT_ID}&siteid=${SITE}&moduleid=${SITE_MANAGER}&compactDisplay=false`,
@@ -258,10 +260,25 @@ describe('cArch.hist', () => {
     expect($('div.mura-header h1').text()).toBe('Version History');
     expect($('div.nav-module-specific, ul.breadcrumb')).toHaveLength(0);
     expect(preview.attr('href')).toBe('#');
-    expect(preview.attr('onclick')).toContain("frontEndProxy.post({cmd:'setLocation',location:encodeURIComponent('");
+    expect(preview.attr('onclick')).toBe(
+      `frontEndProxy.post({cmd:'setLocation',location:encodeURIComponent('${encodeJs(previewHref(DRAFT))}')});return false;`,
+    );
     expect($(`tr[data-contenthistid="${DRAFT}"] li.edit a`).attr('href')).toMatch(/&return=hist&compactDisplay=true$/);
     expect(body).toContain("frontEndProxy.post({cmd:'setWidth',width:'standard'});");
     expect(csrfContexts(ctx.gateway)).toEqual([`${DRAFT}delete`, `${ARCHIVED}delete`]);
+  });
+
+  it('renders the version table of a Page history, each version previewed at the URL legacy prints', async () => {
+    const page = await renderScreenPage(histScreen, histContext(histRequest(), { status: 200, body: carchHistData }));
+
+    if (page.kind !== 'document') throw new Error(`cArch.hist redirected to ${page.location}`);
+    const $ = cheerio.load(page.html);
+    expect((carchHistData.rc['contentBean'] as Struct)['type']).toBe('Page');
+    expect(
+      $('table.mura-table-grid tbody tr')
+        .toArray()
+        .map((tr) => [$(tr).attr('data-contenthistid'), $(tr).find('li.preview a').attr('href')]),
+    ).toEqual([DRAFT, ACTIVE, ARCHIVED].map((contentHistId) => [contentHistId, previewHref(contentHistId)]));
   });
 
   it('renders inside the admin shell with the Site Manager script', async () => {

@@ -613,6 +613,19 @@ describe('createOwnersClient', () => {
     expect(calls).toEqual([{ service: 'people', method: 'POST', path: '/internal/v1/migration/apply', json: APPLY_REQUEST, userToken: null }]);
   });
 
+  it('apply re-sends a batch its owner committed with its events left to the sweep and keeps that commit write position', async () => {
+    const duplicate: ApplyResponse = { ...APPLY_ANSWER, duplicate: true, applied: 0 };
+    const { owners, calls } = routedClient({
+      'people POST /internal/v1/migration/apply': [
+        { status: 503, headers: { 'x-opt2-unpublished-events': '1', 'x-opt2-write-position': 'people=123' }, body: { apiversion: 'v1', method: 'invalid' } },
+        { body: duplicate },
+      ],
+    });
+
+    await expect(owners.apply('people', APPLY_REQUEST)).resolves.toEqual({ ...duplicate, writePositions: new Map([['people', '123']]) });
+    expect(calls).toEqual([1, 2].map(() => ({ service: 'people', method: 'POST', path: '/internal/v1/migration/apply', json: APPLY_REQUEST, userToken: null })));
+  });
+
   it.each<[string, string | undefined]>([
     ['the first page', undefined],
     ['a given cursor', 'k0'],
@@ -828,6 +841,15 @@ describe('createOwnersClient', () => {
       path: '/internal/v1/migration/apply',
       status: 500,
       body: { error: 'internal' },
+      call: (owners) => owners.apply('people', APPLY_REQUEST),
+    },
+    {
+      name: 'apply answering a 503 that names no unpublished events',
+      owner: 'people',
+      method: 'POST',
+      path: '/internal/v1/migration/apply',
+      status: 503,
+      body: { apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } },
       call: (owners) => owners.apply('people', APPLY_REQUEST),
     },
     {

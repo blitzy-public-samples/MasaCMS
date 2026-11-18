@@ -6,6 +6,7 @@ import {
   MIGRATION_PATH_PREFIX,
   WRITE_POSITION_HEADER_LC,
   parseWritePosition,
+  postApply,
   type ApplyRequest,
   type ApplyResponse,
   type ChangesResponse,
@@ -160,7 +161,7 @@ export interface CancelAdoptedTasksResult {
 
 /** Endpoints of the data owners, each called with the client's own invocation identity and never a user token. */
 export interface OwnersClient {
-  /** Applies one batch; a repeated `batchId` answers `duplicate: true`. */
+  /** Applies one batch, re-sent once when the owner committed it with its events left to the sweep; a repeated `batchId` answers `duplicate: true`. */
   apply(owner: DataOwner, req: ApplyRequest): Promise<ApplyResult>;
   /** One export page. */
   export(owner: DataOwner, params: ExportParams): Promise<ExportResponse>;
@@ -317,7 +318,8 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
 
   return {
     async apply(owner, req) {
-      const response = await call<ApplyResponse>(owner, 'POST', APPLY_PATH, { json: req });
+      const response = await postApply(client, owner, req);
+      if (response.status < 200 || response.status > 299) throw failure(owner, 'POST', APPLY_PATH, response);
       return { ...response.body, writePositions: writePositionsOf(response.headers) };
     },
 

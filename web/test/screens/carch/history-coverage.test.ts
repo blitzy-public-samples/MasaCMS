@@ -1,7 +1,7 @@
 // cArch.hist of carch/hist.cfm and cArch.audit of carch/audit.cfm: the strategies-content read and its outcomes, each
 // version's status, dates, preview, delete, file version, notes and change set cells, and the node lock state.
 import * as cheerio from 'cheerio';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ServicePath } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
@@ -14,7 +14,7 @@ import {
   unservedEditorRequest,
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
-import { useTestEnv } from '../../helpers/env';
+import { stubOracleUrlSettings, useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeReply } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext } from '../../helpers/screen-context';
 
@@ -22,6 +22,8 @@ const SITE = 'default';
 const ROOT = '00000000000000000000000000000000001';
 const END = '00000000000000000000000000000000END';
 const SITE_MANAGER = '00000000000000000000000000000000000';
+const FORMS = '00000000000000000000000000000000004';
+const FORM = '15714695-7491-46E1-B581F6F8E87A1BB8';
 const ACTIVE = '6300ED69-1320-5CC3-F922E3012E2C6BAE';
 const OLDER = '6300ED69-1320-5CC3-F922E3012E2C0002';
 const OTHER_USER = 'B0000000-0000-0000-0000000000000002';
@@ -69,14 +71,19 @@ const version = (contentHistId: string, overrides: Struct = {}): Struct => ({
   minorVersion: '0',
   lastUpdate: '2026-11-13 10:30:00',
   lastUpdateBy: 'Admin User',
-  previewURL: `http://localhost/?previewid=${contentHistId}`,
   ...overrides,
 });
 
 const ACTIVE_VERSION = version(ACTIVE, { active: 1 });
 
 const CRUMBS = [
-  { contentid: ROOT, siteid: SITE, moduleid: SITE_MANAGER, type: 'Page', menutitle: 'Home', restricted: 0 },
+  { contentid: ROOT, siteid: SITE, moduleid: SITE_MANAGER, type: 'Page', menutitle: 'Home', restricted: 0, iconclass: 'mi-file' },
+];
+
+/** A Form's crumbs under the Forms module, node first, each with the icon class strategies-content resolves. */
+const FORM_CRUMBS = [
+  { contentid: FORM, siteid: SITE, moduleid: FORMS, type: 'Form', menutitle: 'Contact Us', restricted: 0, iconclass: 'mi-toggle-on' },
+  { contentid: FORMS, siteid: SITE, moduleid: FORMS, type: 'Module', menutitle: 'Forms', restricted: 0, iconclass: 'mi-cog' },
 ];
 
 /** A history page, the route of its screen model, that model's `rc` and the messages its own reads fail with. */
@@ -85,7 +92,6 @@ interface HistoryPage {
   readonly path: ServicePath;
   readonly model: (rc?: Struct) => Struct;
   readonly badDate: string;
-  readonly noPreview: string;
   readonly rejected: string;
   readonly deniedLoad: string;
 }
@@ -106,7 +112,6 @@ const PAGES: ReadonlyArray<readonly [string, HistoryPage]> = [
         ...rc,
       }),
       badDate: "returned lastUpdate 'soon', which is not a date",
-      noPreview: 'returned no items.previewURL',
       rejected: 'rejected carch.hist with HTTP 404',
       deniedLoad: 'was denied; the controller step redirects first',
     },
@@ -128,7 +133,6 @@ const PAGES: ReadonlyArray<readonly [string, HistoryPage]> = [
         ...rc,
       }),
       badDate: 'The value soon cannot be converted to a date.',
-      noPreview: `has no previewURL for version ${ACTIVE}`,
       rejected: 'answered the carch.audit read with HTTP 404',
       deniedLoad: 'answered the carch.audit read with a redirect to ./',
     },
@@ -186,10 +190,12 @@ async function renderModel(page: HistoryPage, rc: Struct, req: AdminRequest = ho
 
 let restore: () => void;
 beforeEach(() => {
+  stubOracleUrlSettings();
   restore = useTestEnv();
 });
 afterEach(() => {
   restore();
+  vi.unstubAllEnvs();
 });
 
 describe.each(PAGES)('%s', (_name, page) => {
@@ -221,6 +227,19 @@ describe.each(PAGES)('%s', (_name, page) => {
     const { $ } = await renderModel(page, { items: [version(OLDER, overrides)] });
 
     expect($('td.status').text()).toBe(label);
+  });
+
+  it.each<[string, Struct[], string[]]>([
+    ['Home', CRUMBS, ['<i class="mi-file"></i>Home']],
+    ['a Form under the Forms module', FORM_CRUMBS, ['<i class="mi-cog"></i>Forms', '<i class="mi-toggle-on"></i>Contact Us']],
+  ])('prints the breadcrumb of %s with the icon class before each crumb title', async (_name, crumbdata, icons) => {
+    const { $ } = await renderModel(page, { crumbdata });
+
+    expect(
+      $('ul.breadcrumb li a')
+        .toArray()
+        .map((a) => ($(a).html() ?? '').trim()),
+    ).toEqual(icons);
   });
 
   it('prints the last update with the session date mask and the short time', async () => {
@@ -265,17 +284,34 @@ describe.each(PAGES)('%s', (_name, page) => {
   });
 
   it("previews a Variation at the bean's remote URL", async () => {
-    const items = [version(ACTIVE, { active: 1, type: 'Variation', previewURL: undefined })];
+    const items = [version(ACTIVE, { active: 1, type: 'Variation' })];
     const { $ } = await renderModel(page, { items });
 
     expect($('li.preview a').attr('href')).toBe(`https://remote.example/home?previewid=${ACTIVE}`);
   });
 
-  it('fails when the model omits the preview URL of a Page version', async () => {
-    const items = [version(ACTIVE, { active: 1, previewURL: undefined })];
-    const ctx = pageContext(page, homeRequest(item), ok(page.model({ items })));
+  it.each<[string, string | undefined]>([
+    ['Page', `http://localhost:8080/?previewid=${ACTIVE}`],
+    ['folder', `http://localhost:8080/?previewid=${ACTIVE}`],
+    ['CALENDAR', `http://localhost:8080/?previewid=${ACTIVE}`],
+    ['Gallery', `http://localhost:8080/?previewid=${ACTIVE}`],
+    ['Link', `http://localhost:8080/?previewid=${ACTIVE}`],
+    ['File', `http://localhost:8080/?previewid=${ACTIVE}`],
+    ['Component', undefined],
+    ['Form', undefined],
+    ['Module', undefined],
+  ])("links a %s version's Preview as legacy does (href %j)", async (type, href) => {
+    const { $ } = await renderModel(page, { items: [version(ACTIVE, { active: 1, type })] });
 
-    await expect(renderPage(page, ctx)).rejects.toThrow(page.noPreview);
+    expect($('li.preview a').attr('href')).toBe(href);
+  });
+
+  it("builds the Preview from the active bean's filename on the session site's request host", async () => {
+    const contentBean = homeBean({ filename: 'news/update' });
+    const req = homeRequest(item, { httpHost: 'localhost:9090', site: { record: { useSSL: 1 } } });
+    const { $ } = await renderModel(page, { contentBean, items: [version(OLDER)] }, req);
+
+    expect($('li.preview a').attr('href')).toBe(`https://localhost:8080/news/update/?previewid=${OLDER}`);
   });
 
   it('adds the file version column for a File whose stats carry a major version', async () => {
@@ -394,6 +430,19 @@ describe('cArch.hist model', () => {
 describe('cArch.audit model', () => {
   const [, page] = PAGES[1] ?? [];
   if (page === undefined) throw new TypeError('cArch.audit page is not defined');
+
+  it('needs the session site programs-sites did not serve only for a version it previews', async () => {
+    const unserved = (items: Struct[]): ScreenContext => {
+      const ctx = pageContext(page, homeRequest('audit', {}, unservedEditorRequest), ok(page.model({ items })));
+      ctx.req = { ...ctx.req, site: undefined };
+      return ctx;
+    };
+
+    expect(await renderPage(page, unserved([version(ACTIVE, { active: 1, type: 'Component' })]))).not.toContain('li class="preview"');
+    await expect(renderPage(page, unserved([ACTIVE_VERSION]))).rejects.toThrow(
+      new TypeError(`programs-sites served no site ${SITE} for carch.audit`),
+    );
+  });
 
   it.each<[string, Struct, string]>([
     ['siteLocking', { siteLocking: undefined }, 'strategies-content carch.audit model has no siteLocking'],

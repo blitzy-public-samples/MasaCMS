@@ -16,6 +16,7 @@ export interface RequestContextStore {
   readonly writePositions: Map<string, string>; // owner -> commit xid8 as a decimal string
   signal?: AbortSignal; // aborts once the client disconnects; set only for a request that opted in to abandonment
   unpublishedEvents?: string[]; // committed outbox event ids whose in-request flush was incomplete
+  flushBy?: number; // epoch ms (system time) by which in-request outbox flushes end, so the request answers inside its caller's timeout
 }
 
 /** The process-wide request context store. */
@@ -44,7 +45,7 @@ export class RequestAbortedError extends Error {
   }
 }
 
-/** The request committed outbox events whose publish was incomplete, so it is abandoned without an answer and the sweep publishes them. */
+/** The request committed outbox events whose publish was incomplete, so its success answer is withheld and the sweep publishes them. */
 export class UnpublishedEventsError extends Error {
   override readonly name: string = 'UnpublishedEventsError';
 

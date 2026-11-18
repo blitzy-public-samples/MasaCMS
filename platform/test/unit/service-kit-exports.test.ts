@@ -93,6 +93,8 @@ const VALUE_EXPORTS = {
       'LEGACY_POST_LIMIT_BYTES',
       'SERVICE_MAX_HEADER_SIZE',
       'UNMATCHED_ROUTE',
+      'UNPUBLISHED_EVENTS_HEADER',
+      'FLUSH_ANSWER_MARGIN_MS',
     ],
   ],
   './event-scope.js': [eventScope, ['recordEventScope']],

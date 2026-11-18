@@ -772,7 +772,7 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
         '503':
-          $ref: '#/components/responses/Unavailable'
+          $ref: '#/components/responses/ApplyUnavailable'
   /internal/v1/migration/export:
     get:
       operationId: migrationExport
@@ -1395,6 +1395,11 @@ components:
       schema:
         type: string
         pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+    XOpt2UnpublishedEvents:
+      description: Count of the events of a committed batch left to the outbox sweep because their in-request publish was incomplete; a re-send of the same batch id answers `duplicate`.
+      schema:
+        type: integer
+        minimum: 1
   parameters:
     FixtureSiteId:
       name: siteid
@@ -1851,6 +1856,23 @@ components:
           $ref: '#/components/headers/StrictTransportSecurity'
         ETag:
           $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+    ApplyUnavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, or for a batch committed with its events left to the outbox sweep, which carries X-Opt2-Unpublished-Events and its write position; a re-send of the same batch id answers `duplicate`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+        X-Opt2-Unpublished-Events:
+          $ref: '#/components/headers/XOpt2UnpublishedEvents'
       content:
         application/json;charset=utf-8:
           schema:

@@ -59,6 +59,8 @@ export interface LegacySettings {
   readonly indexFileInURLS: boolean;
   /** `legacyIndexFileLocation`: index-file URL stems sit under `<siteAssetPath>/<siteid>`. */
   readonly legacyIndexFileLocation: boolean;
+  /** configBean `hashURLS`: content URLs carry the filename and query string after `/#`. */
+  readonly hashURLS: boolean;
   /** `keepMetaKeywords`: the content editor shows the meta keywords field. */
   readonly keepMetaKeywords: boolean;
   /** `formpolls`: the Form editor shows the poll presentation checkbox. */
@@ -212,6 +214,7 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   indexFileInURLS: { key: 'indexfileinurls', template: 'true', fallback: true, apply: cfBoolean },
   // Not a configBean property; contentServer reads it with defaultValue=false.
   legacyIndexFileLocation: { key: 'legacyindexfilelocation', fallback: false, apply: cfBoolean },
+  hashURLS: { key: 'hashurls', template: 'false', fallback: false, apply: cfBoolean },
   // Not a configBean property; the content editor reads it with defaultValue=false.
   keepMetaKeywords: { key: 'keepmetakeywords', fallback: false, apply: cfBoolean },
   // Not a configBean property; the Form panels read it with defaultValue=false.

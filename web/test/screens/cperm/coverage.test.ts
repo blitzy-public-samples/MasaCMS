@@ -489,14 +489,14 @@ describe('cperm.main page', () => {
 describe('cperm.main over the provider-recorded Page answers', () => {
   // strategies-content's recorded answers for tenant-a's About Us Page, pinned by cperm-crumbs.table.test.ts.
   const PAGE_CRUMBS = loadFixture('strategies-content/cperm-crumbs-page.json');
-  const PAGE_HISTORY = loadFixture<FakeReply>('strategies-content/cperm-history-page-halted.json');
+  const PAGE_HISTORY = loadFixture<FakeReply>('strategies-content/cperm-history-page.json');
   const PAGE_SITE = TENANT_A.siteId;
   const PAGE = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
   const PAGE_HOME = '00000000000000000000000000000000001';
   const PAGE_CHAIN = 'F1B2C3D4-0011-4A5B-8C7D9E0F1A2B3C4D';
   const pagePath = (tail: string): ServicePath => `/v1/sites/${PAGE_SITE}/content/${PAGE}/${tail}`;
 
-  it('renders the Page and its breadcrumb from the recorded crumbs without reading its halted history', async () => {
+  it('renders the Page and its breadcrumb from the recorded crumbs without reading its history', async () => {
     const chains = [CHAINS[0], { chainID: PAGE_CHAIN, name: 'Board' }];
     const gateway = fakeGatewayClient({
       [routeKey('GET', 'identity', permissionsPath(PAGE))]: {

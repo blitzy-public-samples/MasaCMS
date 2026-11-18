@@ -24,6 +24,7 @@ import {
 } from '@opt2/platform/testing';
 import {
   GateClosedError,
+  UNPUBLISHED_EVENTS_HEADER,
   WRITE_POSITION_HEADER_LC,
   encodeKey,
   encodeRow,
@@ -643,11 +644,18 @@ describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => 
     await pushRows(await outboxRows(site));
 
     publisher.failNext();
-    // The unpublished row withholds the answer: the request is abandoned while its write stays committed.
-    await expect(
-      migrationPost('apply', tsettingsBatch(`site-changed-${site.siteId}-${name}`, tsettingsRow(site.siteId, values), { op, origin: 'migration-feed' })),
-    ).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+    // The unpublished row turns the committed apply into the legacy 503 carrying its unpublished count and write position.
+    const unflushed = await migrationPost(
+      'apply',
+      tsettingsBatch(`site-changed-${site.siteId}-${name}`, tsettingsRow(site.siteId, values), { op, origin: 'migration-feed' }),
+    );
+    expect(unflushed.statusCode, unflushed.body).toBe(503);
+    expect(unflushed.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(unflushed.headers[UNPUBLISHED_EVENTS_HEADER.toLowerCase()]).toBe('1');
     const pending = (await outboxRows(site)).at(-1) as OutboxRow;
+    const position = parseWritePosition(unflushed.headers[WRITE_POSITION_HEADER_LC] as string | undefined).get(SERVICE);
+    expect(position).toMatch(/^[0-9]+$/);
+    expect(String(BigInt(position as string) % 4294967296n)).toBe(pending.xmin);
     expect(pending.envelope.aggregateVersion).toBe(Number(registered.aggregate_version));
     expect(pending.published_at).toBeNull();
     expect(await registryRow(site.siteId)).toMatchObject(registered);

@@ -40,9 +40,10 @@ import {
   startSpan,
   startTracing,
 } from '../../src/tracing/index.js';
-import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
+import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
 import { currentRequestContext, recordUnpublishedEvents, throwIfRequestAborted } from '../../src/service-kit/context.js';
 import {
+  FLUSH_ANSWER_MARGIN_MS,
   LEGACY_MAX_POST_CONTENT_LENGTH,
   LEGACY_POST_LIMIT_BYTES,
   SERVICE_MAX_HEADER_SIZE,
@@ -58,8 +59,10 @@ import {
   recordOutcomeReason,
   sendLegacyResponse,
   UNMATCHED_ROUTE,
+  UNPUBLISHED_EVENTS_HEADER,
   type CreateServiceOptions,
   type LegacyParamsOptions,
+  type Opt2RouteOutboxConfig,
   type RequestLogScope,
 } from '../../src/service-kit/create-service.js';
 import { EnvValidationError, loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
@@ -2056,12 +2059,14 @@ describe('abandoned requests', () => {
 describe('requests whose outbox publish was incomplete', () => {
   const EVENT_IDS = ['0f7c6a52-0c8e-4d8e-9a43-000000000001', '0f7c6a52-0c8e-4d8e-9a43-000000000002'];
   const ABANDONED = 'request abandoned: outbox publish of its committed events incomplete';
+  const UNAVAILABLE = 'request answered 503: outbox publish of its committed events incomplete';
+  const UNPUBLISHED_ERROR = { type: 'UnpublishedEventsError', message: 'Outbox publish of 2 committed event(s) incomplete before the answer; left to the sweep' };
   const REQUEST = { method: 'POST', url: '/notes', headers: { ...AUTHENTICATED, 'x-request-id': 'req-unpublished' } } as const;
 
-  /** A service whose POST /notes records EVENT_IDS as unpublished, then answers through `answer`, and whose GET /plain records nothing. */
-  async function notesService(answer: (reply: FastifyReply) => unknown = (reply) => reply.send({ ok: true })) {
+  /** A service whose POST /notes, with `outbox` as its `opt2Outbox`, records EVENT_IDS as unpublished, then answers through `answer`, and whose GET /plain records nothing. */
+  async function notesService(answer: (reply: FastifyReply) => unknown = (reply) => reply.send({ ok: true }), outbox?: Opt2RouteOutboxConfig) {
     const { app, lines } = await build();
-    app.post('/notes', { config: { opt2: { requires: ['s2'] } } }, async (_request, reply) => {
+    app.post('/notes', { config: { opt2: { requires: ['s2'] }, ...(outbox === undefined ? {} : { opt2Outbox: outbox }) } }, async (_request, reply) => {
       recordUnpublishedEvents(EVENT_IDS);
       return answer(reply);
     });
@@ -2070,9 +2075,16 @@ describe('requests whose outbox publish was incomplete', () => {
   }
 
   const abandonedLines = (lines: LogLine[]): LogLine[] => lines.filter((line) => line.message === ABANDONED);
+  const unavailableLines = (lines: LogLine[]): LogLine[] => lines.filter((line) => line.message === UNAVAILABLE);
+  const LEGACY_503_BODY = { apiversion: 'v1', method: 'save', error: { code: 'server_error', message: 'Unhandled Exception' } };
 
-  it.each([200, 201, 302])('abandons a %i answer without sending it and logs one WARNING with the request id', async (status) => {
-    const { app, lines } = await notesService((reply) => reply.code(status).send({ ok: true }));
+  it.each<[number, Opt2RouteOutboxConfig | undefined]>([
+    [200, undefined],
+    [201, undefined],
+    [302, undefined],
+    [200, { incompleteFlush: 'withhold' }],
+  ])('abandons a %i answer under opt2Outbox %o without sending it and logs one WARNING with the request id', async (status, outbox) => {
+    const { app, lines } = await notesService((reply) => reply.code(status).send({ ok: true }), outbox);
 
     await expect(app.inject(REQUEST)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
 
@@ -2089,36 +2101,69 @@ describe('requests whose outbox publish was incomplete', () => {
       httpMethod: 'POST',
       tenantId: TENANT_A_ID,
       userId: USER_ID,
-      error: { type: 'UnpublishedEventsError', message: 'Outbox publish of 2 committed event(s) incomplete before the answer; left to the sweep' },
+      error: UNPUBLISHED_ERROR,
     });
     expect(abandoned?.latencyMs).toEqual(expect.any(Number));
+    expect(unavailableLines(lines)).toStrictEqual([]);
     expect(completedLines(lines)).toStrictEqual([]);
     expect(lines.filter((line) => line.severity === 'ERROR')).toStrictEqual([]);
   });
 
-  it.each([
-    { label: 'a 400 the handler sends', answer: (reply: FastifyReply) => reply.code(400).send({ ok: false }), status: 400 },
-    {
-      label: 'the legacy 503 of an unavailable dependency',
-      answer: () => {
-        throw new LegacyServiceUnavailableError();
+  it.each([200, 201, 302])('answers a %i of a route set to unavailable with the legacy 503 and the unpublished count, one WARNING and its completion line', async (status) => {
+    const { app, lines } = await notesService((reply) => reply.code(status).send({ ok: true }), { incompleteFlush: 'unavailable' });
+
+    const res = await app.inject({ ...REQUEST, url: '/notes?method=save' });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(res.json()).toStrictEqual(LEGACY_503_BODY);
+    expect(res.headers[UNPUBLISHED_EVENTS_HEADER.toLowerCase()]).toBe(String(EVENT_IDS.length));
+    expect(res.headers.generator).toEqual(expect.any(String));
+    const warnings = unavailableLines(lines);
+    expect(warnings).toHaveLength(1);
+    expect(validateLogRecord(warnings[0]).errors).toStrictEqual([]);
+    expect(warnings[0]).toMatchObject({
+      severity: 'WARNING',
+      requestId: 'req-unpublished',
+      route: '/notes',
+      httpMethod: 'POST',
+      tenantId: TENANT_A_ID,
+      userId: USER_ID,
+      error: UNPUBLISHED_ERROR,
+    });
+    expect(warnings[0]?.latencyMs).toEqual(expect.any(Number));
+    expect(abandonedLines(lines)).toStrictEqual([]);
+    expect(completedLines(lines)).toMatchObject([{ requestId: 'req-unpublished', route: '/notes', httpMethod: 'POST', statusCode: 503 }]);
+    expect(lines.filter((line) => line.severity === 'ERROR')).toStrictEqual([]);
+  });
+
+  it.each(
+    [
+      { label: 'a 400 the handler sends', answer: (reply: FastifyReply) => reply.code(400).send({ ok: false }), status: 400 },
+      {
+        label: 'the legacy 503 of an unavailable dependency',
+        answer: () => {
+          throw new LegacyServiceUnavailableError();
+        },
+        status: 503,
       },
-      status: 503,
-    },
-    {
-      label: 'the 500 of an unhandled error',
-      answer: () => {
-        throw new Error('failed after its commit');
+      {
+        label: 'the 500 of an unhandled error',
+        answer: () => {
+          throw new Error('failed after its commit');
+        },
+        status: 500,
       },
-      status: 500,
-    },
-  ])('passes $label unchanged', async ({ answer, status }) => {
-    const { app, lines } = await notesService(answer);
+    ].flatMap((answerCase) => [undefined, { incompleteFlush: 'unavailable' } as const].map((outbox) => ({ ...answerCase, outbox }))),
+  )('passes $label unchanged under opt2Outbox $outbox', async ({ answer, status, outbox }) => {
+    const { app, lines } = await notesService(answer, outbox);
 
     const res = await app.inject(REQUEST);
 
     expect(res.statusCode).toBe(status);
+    expect(res.headers[UNPUBLISHED_EVENTS_HEADER.toLowerCase()]).toBeUndefined();
     expect(abandonedLines(lines)).toStrictEqual([]);
+    expect(unavailableLines(lines)).toStrictEqual([]);
     expect(completedLines(lines)).toMatchObject([{ requestId: 'req-unpublished', route: '/notes', statusCode: status }]);
   });
 
@@ -2151,6 +2196,53 @@ describe('requests whose outbox publish was incomplete', () => {
     expect(after.status).toBe(200);
     expect(await after.json()).toStrictEqual({ ok: true });
     expect(abandonedLines(lines)).toMatchObject([{ requestId: 'req-unpublished' }]);
+  });
+
+  /** A service whose POST /flush-by, with `outbox` as its `opt2Outbox`, answers its request context's flushBy, or null. */
+  async function flushByService(outbox?: Opt2RouteOutboxConfig) {
+    const { app } = await build();
+    app.post('/flush-by', { config: { opt2: { requires: ['s2'] }, ...(outbox === undefined ? {} : { opt2Outbox: outbox }) } }, async () => ({
+      flushBy: currentRequestContext()?.flushBy ?? null,
+    }));
+    return app;
+  }
+
+  it('bounds the flushes of a route set to unavailable by its arrival plus SERVICE_CALL_TIMEOUT_MS less FLUSH_ANSWER_MARGIN_MS', async () => {
+    const app = await flushByService({ incompleteFlush: 'unavailable' });
+    const before = Date.now();
+
+    const res = await app.inject({ method: 'POST', url: '/flush-by', headers: AUTHENTICATED });
+
+    const { flushBy } = res.json<{ flushBy: number }>();
+    expect(flushBy).toBeGreaterThanOrEqual(before + SERVICE_CALL_TIMEOUT_MS - FLUSH_ANSWER_MARGIN_MS);
+    expect(flushBy).toBeLessThanOrEqual(Date.now() + SERVICE_CALL_TIMEOUT_MS - FLUSH_ANSWER_MARGIN_MS);
+  });
+
+  it.each<[string, Opt2RouteOutboxConfig | undefined]>([
+    ['withhold', { incompleteFlush: 'withhold' }],
+    ['no opt2Outbox', undefined],
+  ])('leaves the flushes of a route under %s unbounded by the request', async (_label, outbox) => {
+    const app = await flushByService(outbox);
+
+    const res = await app.inject({ method: 'POST', url: '/flush-by', headers: AUTHENTICATED });
+
+    expect(res.json()).toStrictEqual({ flushBy: null });
+  });
+
+  it('delivers the 503 of a route set to unavailable on a real listener, which keeps serving other requests', async () => {
+    const { app, lines } = await notesService(undefined, { incompleteFlush: 'unavailable' });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+
+    const res = await fetch(`http://127.0.0.1:${String(port)}/notes?method=save`, { method: 'POST', headers: REQUEST.headers });
+    const after = await fetch(`http://127.0.0.1:${String(port)}/plain`, { headers: AUTHENTICATED });
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get(UNPUBLISHED_EVENTS_HEADER)).toBe(String(EVENT_IDS.length));
+    expect(await res.json()).toStrictEqual(LEGACY_503_BODY);
+    expect(after.status).toBe(200);
+    expect(unavailableLines(lines)).toMatchObject([{ requestId: 'req-unpublished' }]);
+    expect(abandonedLines(lines)).toStrictEqual([]);
   });
 });
 

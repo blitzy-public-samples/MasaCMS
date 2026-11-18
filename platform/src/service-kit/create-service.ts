@@ -44,7 +44,7 @@ import {
 import { createLogger, fastifyLoggerOptions, serializeError, type LogFields, type Logger } from '../logging/index.js';
 import { DatabaseUnavailableError, createPool, type TenantDb } from '../tenancy/index.js';
 import { shutdownTracing } from '../tracing/index.js';
-import { createServiceClient, type ServiceClient } from './client.js';
+import { createServiceClient, SERVICE_CALL_TIMEOUT_MS, type ServiceClient } from './client.js';
 import { systemClock, type Clock } from './clock.js';
 import {
   newRequestContext,
@@ -144,6 +144,21 @@ export interface Opt2RouteLogConfig {
   successLevel?: 'debug' | 'info';
 }
 
+/** Route `config.opt2Outbox`: the answer of a request whose committed outbox events were not all published. */
+export interface Opt2RouteOutboxConfig {
+  /**
+   * `withhold` (default) closes the socket unanswered; `unavailable` answers the legacy 503 with {@link UNPUBLISHED_EVENTS_HEADER},
+   * for an idempotent route whose caller re-sends it, and bounds the flush by the caller's SERVICE_CALL_TIMEOUT_MS.
+   */
+  incompleteFlush?: 'withhold' | 'unavailable';
+}
+
+/** Header of the 503 a route set to `incompleteFlush: 'unavailable'` answers: the count of its committed events left to the outbox sweep. */
+export const UNPUBLISHED_EVENTS_HEADER = 'X-Opt2-Unpublished-Events';
+
+/** Time kept, inside the caller's SERVICE_CALL_TIMEOUT_MS, for a route set to `incompleteFlush: 'unavailable'` to answer after its flush. */
+export const FLUSH_ANSWER_MARGIN_MS = 1_000;
+
 declare module 'fastify' {
   interface FastifyInstance {
     opt2: Opt2Runtime;
@@ -153,6 +168,7 @@ declare module 'fastify' {
   }
   interface FastifyContextConfig {
     opt2Log?: Opt2RouteLogConfig;
+    opt2Outbox?: Opt2RouteOutboxConfig;
   }
 }
 
@@ -866,6 +882,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     const rpcMetadata = getRPCMetadata(context.active());
     if (rpcMetadata?.type === RPCType.HTTP && request.routeOptions.url !== undefined) rpcMetadata.route = request.routeOptions.url;
     const store = newRequestContext({ requestId: request.id, clock });
+    // System time, not the injected clock: the caller's timeout runs on real time.
+    if (request.routeOptions.config.opt2Outbox?.incompleteFlush === 'unavailable') store.flushBy = Date.now() + SERVICE_CALL_TIMEOUT_MS - FLUSH_ANSWER_MARGIN_MS;
     stateOf(request)[CONTEXT] = store;
     // Fastify's request.signal also aborts once a body is consumed; only a response closing unended means the client left.
     const disconnect = new AbortController();
@@ -955,7 +973,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
-    if (error instanceof UnpublishedEventsError) {
+    if (error instanceof UnpublishedEventsError && request.routeOptions.config.opt2Outbox?.incompleteFlush !== 'unavailable') {
       const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
       request.log.warn(
         { route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request), error: serializeError(error) },
@@ -977,6 +995,16 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     if (error instanceof AuthDenial) {
       recordOutcomeReason(request, error.reason);
       return sendLegacyResponse(reply, renderAuthDenial(error, request));
+    }
+    // The rows stay committed and the sweep publishes their events; the caller re-sends the request, which its route answers idempotently.
+    if (error instanceof UnpublishedEventsError) {
+      const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
+      request.log.warn(
+        { route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request), error: serializeError(error) },
+        'request answered 503: outbox publish of its committed events incomplete',
+      );
+      reply.header(UNPUBLISHED_EVENTS_HEADER, String(error.eventIds.length));
+      return sendLegacyResponse(reply, unavailableResponseFor(surfaceOf(request), { method, params }));
     }
     // A database outage is a failure, so it logs at ERROR; its surface is always 'auto'.
     if (error instanceof DatabaseUnavailableError) {

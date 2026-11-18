@@ -1,9 +1,10 @@
-/** cperm's crumbs read of `routes/v1/carch.ts` through `app.inject` over a throwaway `content` schema holding a stored Page history. */
+/** cperm's crumbs read and the history read of `routes/v1/carch.ts` through `app.inject` over a throwaway `content` schema holding a stored Page history. */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance, type FastifyRequest, type ServiceRequest } from '@opt2/platform/service-kit';
@@ -24,7 +25,7 @@ import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/conte
 import { createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
-import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, registerCarchRoutes } from '../../src/routes/v1/carch.js';
+import { registerCarchRoutes } from '../../src/routes/v1/carch.js';
 import { DEPLOYMENT_SETTINGS, SITE_CONFIG_FLAGS_PATH, siteConfigFlagsAnswer } from '../helpers/app.js';
 
 type Row = Record<string, unknown>;
@@ -158,13 +159,24 @@ describe.skipIf(!(await pgAvailable()))('cperm crumbs of a node whose stored his
     identityCalls.length = 0;
   });
 
-  it('halts the history read of the stored Page versions with the legacy 503 naming its exceptions entry', async () => {
+  it('serves the history of the stored Page versions with their parents, its crumbs with their icon classes and no preview URL', async () => {
     const res = await get(`/v1/sites/${SITE}/content/${NODE}/history`);
-    expect(res.statusCode, res.body).toBe(503);
-    expect(routeErrors).toEqual([
-      expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON, message: expect.stringContaining(`(${CARCH_VERSION_PREVIEW_EXCEPTION})`) }),
+    expect(res.statusCode, res.body).toBe(200);
+    const { rc } = res.json() as { rc: Row & { items: Row[]; crumbdata: Row[] } };
+    expect(rc.items.map((item) => [item.contenthistid, item.active, item.parentid])).toEqual([
+      [OLDER_HIST, 0, HOME],
+      [NODE_HIST, 1, HOME],
     ]);
-    expect({ status: res.statusCode, body: res.json() }).toEqual(webFixture('cperm-history-page-halted.json'));
+    expect(rc.items.filter((item) => Object.keys(item).some((key) => key.toLowerCase() === 'previewurl'))).toEqual([]);
+    expect(rc.crumbdata.map((crumb) => [crumb.contentid, crumb.iconclass])).toEqual([
+      [NODE, 'mi-star'],
+      [HOME, 'mi-file'],
+    ]);
+    expect([routeErrors, identityCalls.map((req) => `${req.service} ${req.method} ${req.path}`)]).toEqual([[], [`identity GET ${ADMIN_STATE_PATH}`]]);
+    // before() defaults rc.contentHistID to a new UUID on every request, so the recorded answer leaves it out.
+    const { contentHistID, ...recorded } = rc;
+    expect(isCfUuid(String(contentHistID))).toBe(true);
+    expect({ status: res.statusCode, body: { rc: recorded } }).toEqual(webFixture('cperm-history-page.json'));
   });
 
   it('answers the same node’s crumbs node first, its active row holding the title, chain assignment and icon class', async () => {

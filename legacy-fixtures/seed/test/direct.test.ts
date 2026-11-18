@@ -18,7 +18,7 @@ import { readDataset } from '../src/writer.js';
 
 type DirectRequest = Parameters<DirectClient['request']>[0];
 type DecodedRow = Record<string, CanonicalValue>;
-type Answer = { status: number; body?: unknown } | Error | undefined;
+type Answer = { status: number; headers?: Record<string, string>; body?: unknown } | Error | undefined;
 
 interface Sent {
   request: DirectRequest;
@@ -78,7 +78,7 @@ function recordingClient(answer?: (req: DirectRequest, index: number) => Answer)
       if (given instanceof Error) return Promise.reject(given);
       const body = req.json as ApplyRequest;
       const applied: ApplyResponse = { batchId: body.batchId, duplicate: false, applied: body.rows.length, skipped: 0 };
-      return Promise.resolve({ status: given?.status ?? 200, headers: {}, body: (given === undefined ? applied : given.body) as T });
+      return Promise.resolve({ status: given?.status ?? 200, headers: given?.headers ?? {}, body: (given === undefined ? applied : given.body) as T });
     },
   };
   return { client, requests };
@@ -450,6 +450,15 @@ describe('audit chain', () => {
 });
 
 describe('failures', () => {
+  it('re-sends once a batch its owner committed with its events left to the sweep, then seeds the rest', async () => {
+    const pending = { status: 503, headers: { 'x-opt2-unpublished-events': '1' }, body: { error: { code: 'server_error', message: 'Unhandled Exception' } } };
+    const { client, requests } = recordingClient((_req, index) => (index === 0 ? pending : undefined));
+    expect(await run(directArgs(out), env, { client, log: quiet })).toBe(0);
+    expect(requests).toHaveLength(sent.length + 1);
+    expect(requests[1]?.json).toBe(requests[0]?.json);
+    expect(JSON.stringify(requests.slice(1)) === JSON.stringify(sent.map(({ request }) => request))).toBe(true);
+  });
+
   it('exits 1 when an owner answers 500', async () => {
     const stderr = captureStderr();
     const { client, requests } = recordingClient((_req, index) =>

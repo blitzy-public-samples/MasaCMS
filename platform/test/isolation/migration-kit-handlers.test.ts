@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { recordedRoutes } from '../../src/auth/hooks.js';
 import { LOCAL_USER_TOKEN, Roles } from '../../src/auth/index.js';
 import { inboxSql } from '../../src/events/index.js';
-import { REDACTED, createLogger, type Logger } from '../../src/logging/index.js';
+import { REDACTED, createLogger, validateLogRecord, type Logger } from '../../src/logging/index.js';
 import { decodeRow, encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
 import { migrationKitSql } from '../../src/migration-kit/ddl.js';
 import { GATE_WAIT_MS, createMigrationAuthority, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
@@ -41,7 +41,8 @@ import {
 } from '../../src/migration-kit/repository.js';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '../../src/migration-kit/write-position.js';
 import { OutboxPayloadError, outboxSql } from '../../src/outbox/index.js';
-import { createService } from '../../src/service-kit/create-service.js';
+import { recordUnpublishedEvents } from '../../src/service-kit/context.js';
+import { UNPUBLISHED_EVENTS_HEADER, createService } from '../../src/service-kit/create-service.js';
 import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
 import { rlsSql, tenantIdForSite, tenantRegistrySql, withMetadata, type TenantDb } from '../../src/tenancy/index.js';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, seedRegistry } from '../../src/testing/fixtures.js';
@@ -313,6 +314,9 @@ function bindPrograms(site: string, ...programIds: number[]): void {
 /** Item names on which the shared state emitter fails: with its topic contract's rejection, or with any other error. */
 const UNCONTRACTED_NAME = 'Uncontracted';
 const EMITTER_FAILURE_NAME = 'Emitter failure';
+/** Item name whose state event the shared emitter records as committed but unpublished, as an incomplete in-request flush does. */
+const UNPUBLISHED_NAME = 'Unpublished';
+const UNPUBLISHED_EVENT_ID = '0f7c6a52-0c8e-4d8e-9a43-0000000000aa';
 const ITEM_TOPIC = 'mk.item.changed.v1';
 const UNCONTRACTED_ERROR = '/itemId must match format "cfUuid"';
 
@@ -355,14 +359,17 @@ describe('registerMigrationHandlers registration', () => {
     );
   });
 
-  it('logs the successful requests of the polled /changes alone at debug', async () => {
+  it.each([
+    ['logs the successful requests of the polled /changes alone at debug', 'opt2Log', 'changes', { successLevel: 'debug' }],
+    ['answers an incomplete outbox flush of /apply alone with the legacy 503', 'opt2Outbox', 'apply', { incompleteFlush: 'unavailable' }],
+  ] as const)('%s', async (_label, key, only, value) => {
     const app = await freshApp();
-    const logConfigs: unknown[][] = [];
+    const routeConfigs: unknown[][] = [];
     app.addHook('onRoute', (route) => {
-      if (route.url.startsWith(MIGRATION_PATH_PREFIX)) logConfigs.push([route.method, route.url, route.config?.opt2Log]);
+      if (route.url.startsWith(MIGRATION_PATH_PREFIX)) routeConfigs.push([route.method, route.url, route.config?.[key]]);
     });
     registerMigrationHandlers(app, { ...BASE_OPTIONS, repository, db: idleDb });
-    expect(logConfigs).toEqual(
+    expect(routeConfigs).toEqual(
       [
         ['POST', 'apply'],
         ['GET', 'export'],
@@ -371,7 +378,7 @@ describe('registerMigrationHandlers registration', () => {
         ['GET', 'watermark'],
         ['POST', 'watermark'],
         ['POST', 'gate'],
-      ].map(([method, name]) => [method, `${MIGRATION_PATH_PREFIX}/${name as string}`, name === 'changes' ? { successLevel: 'debug' } : undefined]),
+      ].map(([method, name]) => [method, `${MIGRATION_PATH_PREFIX}/${name as string}`, name === only ? value : undefined]),
     );
   });
 
@@ -481,6 +488,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
         const name = change.after?.name;
         if (name === UNCONTRACTED_NAME) return Promise.reject(new OutboxPayloadError(ITEM_TOPIC, [UNCONTRACTED_ERROR]));
         if (name === EMITTER_FAILURE_NAME) return Promise.reject(new Error('state emitter unavailable'));
+        if (name === UNPUBLISHED_NAME) recordUnpublishedEvents([UNPUBLISHED_EVENT_ID]);
         return Promise.resolve();
       },
       operationStatus: (_db, ids) => {
@@ -709,6 +717,46 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect(res.statusCode, res.body).toBe(500);
     expect(await stored(site, 'item', 'item_id')).toEqual([]);
     expect(await batches(site)).toEqual([]);
+  });
+
+  it('answers a committed batch whose state events were not all published with the legacy 503, its write position and the unpublished count, and its re-send as a duplicate', async () => {
+    const site = freshSite();
+    const batch = {
+      batchId: `${site}-unpublished`,
+      origin: 'backfill',
+      legacyTable: 'tItems',
+      siteId: site,
+      columns: ITEM_LEGACY,
+      rows: rowsOf(ITEM_LEGACY, [['upsert', item('i1', site, UNPUBLISHED_NAME, 1)]]),
+    };
+    logLines.length = 0;
+
+    const res = await post('/apply', batch);
+
+    expect(res.statusCode, res.body).toBe(503);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(res.headers[UNPUBLISHED_EVENTS_HEADER.toLowerCase()]).toBe('1');
+    const [write] = await changelog(site);
+    expect(res.headers[WRITE_POSITION_HEADER_LC]).toBe(`${OWNER}=${write?.xid}`);
+    expect(await batches(site)).toEqual([{ batch_id: batch.batchId, legacy_table: 'tItems', origin: 'backfill', row_count: 1 }]);
+    const warnings = logLines.filter((line) => line.message === 'request answered 503: outbox publish of its committed events incomplete');
+    expect(warnings).toMatchObject([
+      {
+        severity: 'WARNING',
+        route: `${MIGRATION_PATH_PREFIX}/apply`,
+        httpMethod: 'POST',
+        error: { type: 'UnpublishedEventsError', message: 'Outbox publish of 1 committed event(s) incomplete before the answer; left to the sweep' },
+      },
+    ]);
+    expect(validateLogRecord(warnings[0]).errors).toEqual([]);
+    expect(logLines.filter((line) => String(line.message).startsWith('request abandoned'))).toEqual([]);
+
+    const repeat = await post('/apply', batch);
+
+    expect(repeat.statusCode, repeat.body).toBe(200);
+    expect(repeat.json()).toEqual({ batchId: batch.batchId, duplicate: true, applied: 0, skipped: 0 });
+    expect(repeat.headers[UNPUBLISHED_EVENTS_HEADER.toLowerCase()]).toBeUndefined();
+    expect(await stored(site, 'item', 'item_id')).toMatchObject([{ item_id: 'i1', name: UNPUBLISHED_NAME, qty: 1 }]);
   });
 
   it('answers a repeated batchId as a duplicate without applying its rows or its watermark', async () => {

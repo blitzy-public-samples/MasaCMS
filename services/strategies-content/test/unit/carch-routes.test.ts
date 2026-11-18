@@ -19,7 +19,7 @@ import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/conte
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
-import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
+import { carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
 import {
   DEPLOYMENT_SETTINGS,
   SEEDED_SITE_FLAGS,
@@ -837,41 +837,49 @@ describe('carch.hist and carch.audit', () => {
     expect(paramsOfFirst(VERSION_PARENTS)).toEqual([[HIST, HIST.toLowerCase(), OLDER_HIST, OLDER_HIST.toLowerCase()]]);
   });
 
-  it('halts a history whose later version alone is a Page with the legacy 503 naming its exceptions entry', async () => {
+  it('serves a history whose later version alone is a Page, each row with its version’s parent and no preview URL', async () => {
     t.db.respond(HISTORY_TOTAL, [{ total: 2 }]);
     t.db.respond(HISTORY_ROWS, [versionRow({ type: 'Component' }), versionRow({ contenthistid: OLDER_HIST, type: 'Page' })]);
-    const res = await call('GET', HISTORY_URL);
-    expect(res.statusCode, res.body).toBe(503);
-    expect(routeErrors).toEqual([expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON, message: expect.stringContaining(`(${CARCH_VERSION_PREVIEW_EXCEPTION})`) })]);
+    t.db.respond(VERSION_PARENTS, [{ contenthistid: HIST, parentid: OTHER_PARENT }, { contenthistid: OLDER_HIST, parentid: LEGACY_ADMIN_SENTINEL_ID }]);
+    const rc = await rcOf(HISTORY_URL);
+    expect(rc.items).toEqual([
+      expect.objectContaining({ contenthistid: HIST, type: 'Component', parentid: OTHER_PARENT }),
+      expect.objectContaining({ contenthistid: OLDER_HIST, type: 'Page', parentid: LEGACY_ADMIN_SENTINEL_ID }),
+    ]);
+    expect([withPreviewUrl(rc), ran(WRITE)]).toEqual([[], false]);
   });
 
-  describe.each(VERSION_LISTS)('%s preview links', (screen, url, listVersions) => {
-    it.each(['Page', 'folder', 'CALENDAR', 'Gallery', 'Link', 'File'])(
-      'halts a list holding a %s version with the legacy 503 naming its exceptions entry, emitting no model',
+  describe.each(VERSION_LISTS)('%s preview links', (_screen, url, listVersions) => {
+    it.each(['Page', 'folder', 'CALENDAR', 'Gallery', 'Link', 'File', 'Component', 'Form', 'Module', 'Variation', 'variation', ''])(
+      'serves a %j version without a preview URL, which web builds',
       async (type) => {
         listVersions([versionRow({ type })]);
-        const res = await call('GET', url);
-        expect(res.statusCode, res.body).toBe(503);
-        expect(res.body).not.toContain(HIST);
-        expect(routeErrors).toEqual([
-          expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON, message: `${screen.replace('carch', 'cArch')} prints preview URLs built from site settings this service does not hold (${CARCH_VERSION_PREVIEW_EXCEPTION})` }),
-        ]);
-        expect([CARCH_VERSION_PREVIEW_EXCEPTION, CARCH_SITE_SETTINGS_REASON]).toEqual(['EX-CARCH-VERSION-PREVIEW', 'carch-site-settings']);
-        expect(ran(WRITE)).toBe(false);
+        const rc = await rcOf(url);
+        expect(rc.items).toEqual([expect.objectContaining({ contenthistid: HIST, type })]);
+        expect(withPreviewUrl(rc)).toEqual([]);
       },
     );
+  });
 
-    it.each(['Component', 'Form', 'Module', 'Variation', 'variation', ''])('serves a %j version without a preview URL', async (type) => {
-      listVersions([versionRow({ type })]);
-      const rc = await rcOf(url);
-      expect(rc.items).toEqual([expect.objectContaining({ contenthistid: HIST, type })]);
-      expect(withPreviewUrl(rc)).toEqual([]);
-    });
-
-    it('fails as legacy does on an ajax request, whose rc.deletable parentid read precedes a Page version’s preview', async () => {
-      listVersions([versionRow({ type: 'Page' })]);
-      expect((await call('GET', `${url}?ajaxrequest=true`)).statusCode).toBe(500);
-      expect(routeErrors).toEqual([expect.objectContaining({ message: 'Element PARENTID is undefined in RC.' })]);
+  describe.each(SCREENS)('%s crumbdata', (_screen, urlOf) => {
+    it.each([
+      [
+        'a Form under the Forms module',
+        [crumb(NODE, { type: 'Form', moduleid: FORMS, parentid: FORMS, menutitle: 'Contact Us' }), crumb(FORMS, { type: 'Module', moduleid: FORMS, menutitle: 'Forms' })],
+        ['mi-toggle-on', 'mi-cog'],
+      ],
+      [
+        'a Page of a custom-icon subtype under a Folder',
+        [crumb(NODE, { parentid: CHILD, subtype: 'Landing' }), crumb(CHILD, { type: 'Folder', menutitle: 'Home' })],
+        ['mi-star', 'mi-folder-open-o'],
+      ],
+    ])('gives each crumb of %s its extendManager icon class, read in the token tenant', async (_name, rows, icons) => {
+      t.db.respond(CRUMBS, (params) => rows.filter((row) => (params[0] as string[]).includes(String(row.contentid))));
+      t.db.respond(SUBTYPES, [{ siteid: SITE, type: 'Page', subtype: 'Landing', iconclass: 'icon-star' }]);
+      const rc = await rcOf(urlOf(NODE));
+      expect((rc.crumbdata as Json[]).map((row) => [row.contentid, row.iconclass])).toEqual(rows.map((row, at) => [row.contentid, icons[at]]));
+      const subtypeReads = t.db.statements.filter((statement) => SUBTYPES.test(statement.sql));
+      expect(subtypeReads.map((statement) => [statement.tenantId, statement.params])).toEqual([[TENANT_A.tenantId, expect.arrayContaining([SITE])]]);
     });
   });
 
@@ -1003,12 +1011,12 @@ describe('cperm crumbs', () => {
     expect([calls, ran(ACTIVE), ran(HISTORY_TOTAL), ran(HISTORY_ROWS)]).toEqual([[], false, false, false]);
   });
 
-  it('serves the crumbs of a node whose Page history the history read halts, reading no version', async () => {
+  it('serves the crumbs of a node whose Page history the history read serves, reading no version', async () => {
     t.db.respond(CRUMBS, [crumb(NODE, { title: 'About' })]);
     t.db.respond(HISTORY_TOTAL, [{ total: 2 }]);
     t.db.respond(HISTORY_ROWS, [versionRow(), versionRow({ contenthistid: OLDER_HIST, active: 0 })]);
-    expect((await call('GET', `/v1/sites/${SITE}/content/${NODE}/history`)).statusCode).toBe(503);
-    expect(routeErrors).toEqual([expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON })]);
+    expect((await call('GET', `/v1/sites/${SITE}/content/${NODE}/history`)).statusCode).toBe(200);
+    expect(routeErrors).toEqual([]);
     t.db.clear();
     calls.length = 0;
     const res = await call('GET', CRUMBS_URL);

@@ -1,7 +1,7 @@
-// settingsBean and configBean path getters of a site, as an admin request sees them (server-only).
+// settingsBean and configBean path getters of a site, and its content URLs, as an admin request sees them (server-only).
 import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { legacySettings } from './env';
-import type { AdminRequest, SiteData } from './request-context';
+import { urlEncodedFormat, type AdminRequest, type SiteData } from './request-context';
 import { adminPath } from './urls';
 
 /** settingsBean values the path getters read; NULL columns keep the bean defaults. */
@@ -144,4 +144,70 @@ export function sitePaths(ctx: PathRequest, site: SiteBean): SitePaths {
     adminPath: siteAdminPath,
     themeAssetPath: (layout, complete) => themeDirectory[layout](complete),
   };
+}
+
+/** ACF `HTMLEditFormat`: drops CR and escapes `&`, `<`, `>` and `"`. */
+function htmlEditFormat(s: string): string {
+  return s
+    .replaceAll('\r', '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+/**
+ * contentServer `getURLStem(siteid, filename)` (`contentServer.cfc` 946-1001) under the site's renderer, which turns
+ * `siteIDInURLS` and `indexFileInURLS` off for a remote site (`contentRenderer.cfc` 684-695).
+ */
+export function urlStem(site: Pick<SiteBean, 'siteId' | 'isRemote'>, filename: string): string {
+  const { siteIDInURLS, indexFileInURLS, hashURLS, legacyIndexFileLocation, siteAssetPath } = legacySettings();
+  const remote = site.siteId !== '' && site.isRemote;
+  const siteIdInUrls = !remote && siteIDInURLS;
+  const indexFileInUrls = !remote && indexFileInURLS;
+  let path = filename;
+  if (path !== '') {
+    if (!path.startsWith('/')) path = `/${path}`;
+    if (!hashURLS && !path.endsWith('/')) path = `${path}/`;
+  }
+  const prefix = hashURLS ? '/#' : '';
+  const { siteId } = site;
+  if (!siteIdInUrls) {
+    if (path === '') return '/';
+    return indexFileInUrls ? `/index.cfm${prefix}${path}` : `${prefix}${path}`;
+  }
+  if (!indexFileInUrls) return path === '' ? `/${siteId}/` : `/${siteId}${prefix}${path}`;
+  if (legacyIndexFileLocation) {
+    return path === '' ? `${siteAssetPath}/${siteId}/` : `${siteAssetPath}/${siteId}/index.cfm${prefix}${path}`;
+  }
+  return path === '' ? `/index.cfm/${siteId}/` : `/index.cfm/${siteId}${prefix}${path}`;
+}
+
+/** The hash-URL query string `_/<name>/<value>…` (`contentRendererUtility.cfc` 1601-1613). */
+function hashQueryString(querystring: string): string {
+  let out = '_';
+  for (const pair of cfListToArray(cfListToArray(querystring, '?')[0] ?? '', '&')) {
+    const parts = cfListToArray(pair, '=');
+    const [name] = parts;
+    // Legacy reads qq[1] of the empty array, which throws.
+    if (name === undefined) throw new RangeError(`The element at position 1 of the list "${pair}" cannot be found.`);
+    out += `/${urlEncodedFormat(name)}/${parts.length === 2 ? parts[1] : 'true'}`;
+  }
+  return out;
+}
+
+/**
+ * contentRendererUtility `createHREF(filename, querystring, complete=1)` (`contentRendererUtility.cfc` 1563-1660) of
+ * a content of `site`, HTML-edit-formatted as legacy returns it; the content type only changes export HTML output.
+ */
+export function createHref(ctx: PathRequest, site: SiteBean, filename: string, querystring = ''): string {
+  const { hashURLS } = legacySettings();
+  let query = querystring;
+  if (query !== '') {
+    if (hashURLS) query = hashQueryString(query);
+    else if (!query.startsWith('?')) query = `?${query}`;
+  }
+  if (hashURLS && query !== '' && !filename.endsWith('/')) query = `/${query}`;
+  const begin = sitePaths(ctx, site).webPath();
+  return htmlEditFormat(hashURLS ? begin + urlStem(site, filename + query) : begin + urlStem(site, filename) + query);
 }

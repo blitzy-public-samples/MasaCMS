@@ -341,11 +341,11 @@ describe('cperm.module gate and data reach', () => {
 describe('cperm.module over the provider-recorded Page answers', () => {
   // strategies-content's recorded answers for tenant-a's About Us Page, pinned by cperm-crumbs.table.test.ts.
   const PAGE_CRUMBS = loadFixture('strategies-content/cperm-crumbs-page.json');
-  const PAGE_HISTORY = loadFixture<FakeReply>('strategies-content/cperm-history-page-halted.json');
+  const PAGE_HISTORY = loadFixture<FakeReply>('strategies-content/cperm-history-page.json');
   const PAGE = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
   const historyPath = `/v1/sites/${SITE}/content/${PAGE}/history` as const;
 
-  it('heads the Page with its recorded title without reading its halted history', async () => {
+  it('heads the Page with its recorded title without reading its history', async () => {
     const routes: FakeRouteTable = {
       [grantsRoute(PAGE)]: { status: 200, body: { ...cpermModuleUsersAnswer, moduleId: PAGE, siteId: SITE } },
       [titleRoute(SITE, PAGE)]: { status: 200, body: PAGE_CRUMBS },

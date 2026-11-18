@@ -4,7 +4,8 @@ import { isCompactDisplay } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
-import { sessionSiteModulePerm, type AdminRequest, type RequestContext } from '@/lib/request-context';
+import { sessionSiteModulePerm, type AdminRequest, type RequestContext, type SiteData } from '@/lib/request-context';
+import { createHref, siteBeanOf } from '@/lib/site-paths';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, ScreenContext } from '../registry';
@@ -82,8 +83,6 @@ export interface HistVersion {
   /** `lastUpdate`; null when NULL or blank. */
   readonly lastUpdate: Date | null;
   readonly lastUpdateBy: string;
-  /** `rc.contentBean.getURL(complete=1, queryString='previewid=<contentHistID>')`, for non-variation previews. */
-  readonly previewUrl?: string;
 }
 
 /** What `cArch.hist` renders: the controller's and view's values, with the site flags and the user's access. */
@@ -166,7 +165,6 @@ function contentOf(bean: CarchStruct, stats: CarchStats): HistContent {
 
 /** One `rc.items` row. */
 function versionOf(row: CarchStruct): HistVersion {
-  const previewUrl = structValue(row, 'previewURL');
   return {
     contentHistId: structText(row, 'contentHistID'),
     contentId: structText(row, 'contentID'),
@@ -186,7 +184,6 @@ function versionOf(row: CarchStruct): HistVersion {
     minorVersion: structText(row, 'minorVersion'),
     lastUpdate: dateAt(row, 'lastUpdate'),
     lastUpdateBy: structText(row, 'lastUpdateBy'),
-    ...(typeof previewUrl === 'string' ? { previewUrl } : {}),
   };
 }
 
@@ -198,11 +195,14 @@ function lockedByOf(rc: CarchStruct): StatusLockUser | undefined {
   return { fname: structText(user, 'fname'), lname: structText(user, 'lname'), email: structText(user, 'email') };
 }
 
-/** The session site's `hasChangesets`; throws when programs-sites served the user no session site. */
-function hasChangesetsOf(req: AdminRequest): boolean {
+/** The session site's data; throws when programs-sites served the user no session site. */
+function sessionSiteOf(req: AdminRequest): SiteData {
   if (req.site === undefined) throw new TypeError(`programs-sites served no site ${req.session.siteid} for carch.hist`);
-  return req.site.hasChangesets;
+  return req.site;
 }
+
+/** The session site's `hasChangesets`. */
+const hasChangesetsOf = (req: AdminRequest): boolean => sessionSiteOf(req).hasChangesets;
 
 /**
  * The history model as the view reads it: `rc.contentBean`, `rc.items`, `crumbdata`, `rc.perm`, `rc.deletable`,
@@ -384,11 +384,12 @@ function draftPromptAttrs(out: CfOutput, version: HistVersion): void {
   out.value(version.contentHistId);
 }
 
-/** The Preview URL: the variation's remote URL, else the content URL strategies-content built for the version. */
+/** The Preview URL: the variation's remote URL, else `rc.contentBean.getURL(complete=1, queryString='previewid=<id>')`. */
 function previewUrlOf(m: RowScope, version: HistVersion): string {
-  if (cfEq(version.type, 'Variation')) return `${m.data.content.remoteUrl}?previewid=${version.contentHistId}`;
-  if (version.previewUrl === undefined) throw new TypeError(`${OPERATION} returned no items.previewURL`);
-  return version.previewUrl;
+  const { content } = m.data;
+  if (cfEq(version.type, 'Variation')) return `${content.remoteUrl}?previewid=${version.contentHistId}`;
+  const { req } = m.ctx;
+  return createHref(req, siteBeanOf(sessionSiteOf(req)), content.filename, `previewid=${version.contentHistId}`);
 }
 
 /** The Delete Version link and its CSRF tokens, parameters separated by `&amp;`. */

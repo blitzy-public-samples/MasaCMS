@@ -167,10 +167,10 @@ describe('legacySettingsEnvSchema', () => {
     'FMSHOWSITEFILES', 'FMSHOWAPPLICATIONROOT', 'MODE', 'DBTYPE', 'PORT', 'HTMLEDITORTYPE', 'FILEDELIM', 'SITEIDINURLS',
     'INDEXFILEINURLS', 'LEGACYINDEXFILELOCATION', 'KEEPMETAKEYWORDS', 'FORMPOLLS', 'PROXYSERVER', 'PROXYUSER',
     'SHOWUSAGETABS', 'FILEASSETPATH', 'COREPATH', 'PLUGINSPATH', 'EXPIREPASSWORDS', 'STRONGPASSWORDS', 'WEBROOT',
-    'APPRELOADKEY', 'JAVAENABLED', 'INDEXFILEINAPI', 'SITEDIR', 'ASSETPATH', 'FILEDIR', 'S3ASSETS',
+    'APPRELOADKEY', 'JAVAENABLED', 'INDEXFILEINAPI', 'SITEDIR', 'ASSETPATH', 'FILEDIR', 'S3ASSETS', 'HASHURLS',
   ].map((key) => `MURA_${key}`);
 
-  it('declares the 42 MURA_<KEY> variables web reads', () => {
+  it('declares the 43 MURA_<KEY> variables web reads', () => {
     expect(Object.keys(legacySettingsEnvSchema.in.shape).sort()).toEqual([...VARIABLES].sort());
   });
 
@@ -215,6 +215,7 @@ describe('legacySettings', () => {
         ['indexFileInAPI', 'indexfileinurls', 'true', true],
         ['siteIDInURLS', 'siteidinurls', 'false', false],
         ['indexFileInURLS', 'indexfileinurls', 'true', true],
+        ['hashURLS', 'hashurls', 'false', false],
         ['serverPort', 'port', '${cgi.SERVER_PORT}', ''],
         ['appReloadKey', 'appreloadkey', 'appreload', 'appreload'],
         ['javaEnabled', 'javaenabled', 'true', true],
@@ -351,6 +352,9 @@ describe('legacySettings', () => {
     [{ MURA_SITEIDINURLS: 'maybe' }, 'siteIDInURLS', true],
     [{ MURA_INDEXFILEINURLS: 'false' }, 'indexFileInURLS', false],
     [{ MURA_INDEXFILEINURLS: 'no' }, 'indexFileInURLS', false],
+    [{ MURA_HASHURLS: 'true' }, 'hashURLS', true],
+    [{ MURA_HASHURLS: 'yes' }, 'hashURLS', true],
+    [{ MURA_HASHURLS: 'maybe' }, 'hashURLS', false],
     [{ MURA_ASSETPATH: '/assets/' }, 'assetPath', '/assets'],
     [{ MURA_SITEDIR: 'tenants' }, 'assetPath', '/tenants'],
     [{ MURA_SITEDIR: '' }, 'assetPath', ''],

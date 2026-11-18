@@ -178,3 +178,5 @@ export type {
   GateRequest,
   WatermarkInput,
 } from './handlers.js';
+export { postApply } from './apply-client.js';
+export { UNPUBLISHED_EVENTS_HEADER } from '../service-kit/index.js';

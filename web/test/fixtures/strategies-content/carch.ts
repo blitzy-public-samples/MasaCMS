@@ -909,7 +909,6 @@ const ABOUT_US_ACTIVE_VERSION = {
   lastUpdate: '2026-06-30 09:15:00',
   lastUpdateBy: 'Admin User',
   lastUpdateByID: USER_IDS.admin,
-  previewURL: `${WEB_PATH}/about-us/?previewid=${CONTENT_HIST_IDS.aboutUs}`,
 };
 
 const ABOUT_US_DRAFT_VERSION = {
@@ -921,7 +920,6 @@ const ABOUT_US_DRAFT_VERSION = {
   lastUpdate: '2026-10-29 14:05:00',
   lastUpdateBy: 'Quinn Editor',
   lastUpdateByID: USER_IDS.qaEditor,
-  previewURL: `${WEB_PATH}/about-us/?previewid=${CONTENT_HIST_IDS.aboutUsDraft}`,
 };
 
 const ABOUT_US_ARCHIVED_VERSION = {
@@ -936,7 +934,6 @@ const ABOUT_US_ARCHIVED_VERSION = {
   lastUpdate: '2026-05-12 10:00:00',
   lastUpdateBy: 'Tessa Admin',
   lastUpdateByID: USER_IDS.tenantASiteAdmin,
-  previewURL: `${WEB_PATH}/about-us/?previewid=${CONTENT_HIST_IDS.aboutUsArchived}`,
 };
 
 const ABOUT_US_VERSIONS = [ABOUT_US_DRAFT_VERSION, ABOUT_US_ACTIVE_VERSION, ABOUT_US_ARCHIVED_VERSION];

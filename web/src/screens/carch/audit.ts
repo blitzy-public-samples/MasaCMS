@@ -13,6 +13,7 @@ import { legacySettings } from '@/lib/env';
 import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
 import { sessionSiteModulePerm, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
+import { createHref, siteBeanOf } from '@/lib/site-paths';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, ScreenContext } from '../registry';
@@ -83,8 +84,6 @@ export interface AuditVersion {
   readonly minorVersion: string;
   readonly lastUpdate: string;
   readonly lastUpdateBy: string;
-  /** `rc.contentBean.getURL(complete=1, queryString='previewid=<contentHistId>')`; undefined when omitted. */
-  readonly previewUrl: string | undefined;
 }
 
 /** What `cArch.audit` renders, parsed once from the strategies-content screen model. */
@@ -182,7 +181,6 @@ function versionOf(item: CarchStruct): AuditVersion {
     minorVersion: structText(item, 'minorVersion'),
     lastUpdate: structText(item, 'lastUpdate'),
     lastUpdateBy: structText(item, 'lastUpdateBy'),
-    previewUrl: structValue(item, 'previewURL') === undefined ? undefined : structText(item, 'previewURL'),
   };
 }
 
@@ -296,13 +294,14 @@ function deleteUrl(ctx: ScreenContext, version: AuditVersion): string {
   return url + ctx.csrf.render(`${version.contentHistId}delete`, 'url').value;
 }
 
-/** `previewURL`: the bean's remote URL for a Variation, else the content URL the model built for the version. */
-function previewUrl(content: AuditContent, version: AuditVersion): string {
+/**
+ * `previewURL`: the bean's remote URL for a Variation, else `rc.contentBean.getURL(complete=1,
+ * queryString='previewid=<id>')` on the session site; throws when programs-sites served the user no session site.
+ */
+function previewUrl(req: AdminRequest, content: AuditContent, version: AuditVersion): string {
   if (cfEq(version.type, 'Variation')) return `${content.remoteUrl}?previewid=${version.contentHistId}`;
-  if (version.previewUrl === undefined) {
-    throw new TypeError(`${SERVICE} carch.audit model has no previewURL for version ${version.contentHistId}`);
-  }
-  return version.previewUrl;
+  if (req.site === undefined) throw new TypeError(`programs-sites served no site ${req.session.siteid} for carch.audit`);
+  return createHref(req, siteBeanOf(req.site), content.filename, `previewid=${version.contentHistId}`);
 }
 
 /** The `dsp_status.cfm` input of this view, which defines no `showApprovalStatus`. */
@@ -459,7 +458,7 @@ function actionsCell(
     out.text('</a>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t\t\t\n\t \t\t\t\t\t\t');
   }
   if (PREVIEW_TYPES.has(version.type.toLowerCase())) {
-    const url = previewUrl(data.content, version);
+    const url = previewUrl(ctx.req, data.content, version);
     if (compact) {
       out.text(
         '\n\t\t\t\t\t\t\t\t\t\t<li class="preview"><a href="#" onclick="frontEndProxy.post(' +

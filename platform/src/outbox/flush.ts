@@ -253,7 +253,8 @@ export function publishPass(runtime: OutboxRuntime, stallMs: number, deadline?: 
 
 /**
  * Commit callback publishing and stamping the rows `eventIds` names after their keys' earlier unpublished rows, in a fresh tenant transaction.
- * Bounded by FLUSH_DEADLINE_MS: rows whose locks or publishes are not confirmed in time are left to the sweep and logged at WARNING; other failures log ERROR.
+ * Bounded by FLUSH_DEADLINE_MS, or by the request's `flushBy` when that comes first: rows whose locks or publishes are not confirmed in time
+ * are left to the sweep and logged at WARNING, and with no time left none is attempted and all count as skipped; other failures log ERROR.
  * Inside a request, every line it writes carries the request's `requestId`.
  * Never throws: on error nothing is stamped, every id counts as failed and the rows are left to the sweep, as are rows behind a held row.
  */
@@ -265,14 +266,20 @@ export async function flushAfterCommit(
   if (eventIds.length === 0) {
     return { published: 0, failed: 0, skipped: 0 };
   }
-  const requestId = currentRequestContext()?.requestId;
+  const store = currentRequestContext();
+  const requestId = store?.requestId;
   const rt = requestId === undefined ? runtime : { ...runtime, logger: runtime.logger.child({ requestId }) };
   const { schema } = rt.db;
-  const signal = AbortSignal.timeout(FLUSH_DEADLINE_MS);
-  const bound = `FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms)`;
+  const budgetMs = store?.flushBy === undefined ? FLUSH_DEADLINE_MS : Math.min(FLUSH_DEADLINE_MS, store.flushBy - Date.now());
+  if (budgetMs <= 0) {
+    rt.logger.warn({ tenantId }, `outbox flush not attempted: the request's answer deadline has passed; events ${eventIds.join(',')} left to the sweep`);
+    return { published: 0, failed: 0, skipped: eventIds.length };
+  }
+  const signal = AbortSignal.timeout(budgetMs);
+  const bound = budgetMs < FLUSH_DEADLINE_MS ? `the request's answer deadline (${budgetMs} ms)` : `FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms)`;
   try {
     return await rt.db.withTenant(tenantId, async (tx) => {
-      await tx.query(SET_LOCK_TIMEOUT_SQL, [`${FLUSH_DEADLINE_MS}ms`]);
+      await tx.query(SET_LOCK_TIMEOUT_SQL, [`${budgetMs}ms`]);
       const { rows, blocked } = await dropBlockedRows(tx, schema, await selectPublishable(tx, schema, { eventIds }));
       const summary = await publishLockedRows(tx, rt, rows, {
         signal,

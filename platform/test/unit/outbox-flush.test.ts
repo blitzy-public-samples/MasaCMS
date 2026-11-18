@@ -588,6 +588,72 @@ describe('flushAfterCommit', () => {
     expect(validateLogRecord(lines[0]).errors).toStrictEqual([]);
   });
 
+  describe("bounded by the request's flushBy", () => {
+    const REQUEST_ID = 'req-flush-by';
+
+    /** Runs the flush in a request context whose flushBy is `offsetMs` from now. */
+    function flushWithin(runtime: OutboxRuntime, offsetMs: number): Promise<unknown> {
+      const store = { ...newRequestContext({ requestId: REQUEST_ID }), flushBy: Date.now() + offsetMs };
+      return runWithRequestContext(store, () => flushAfterCommit(runtime, TENANT_A, ids));
+    }
+
+    it.each([-1_000, 0])('publishes nothing once flushBy has passed (%i ms), counting every id as skipped with one WARNING', async (offsetMs) => {
+      const { db, tenants } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')]);
+      const { runtime, publish, lines } = runtimeWith(db);
+
+      await expect(flushWithin(runtime, offsetMs)).resolves.toStrictEqual({ published: 0, failed: 0, skipped: 2 });
+
+      expect(tenants).toEqual([]);
+      expect(publish).not.toHaveBeenCalled();
+      expect(lines).toMatchObject([
+        {
+          severity: 'WARNING',
+          requestId: REQUEST_ID,
+          tenantId: TENANT_A,
+          message: `outbox flush not attempted: the request's answer deadline has passed; events ${ids.join(',')} left to the sweep`,
+        },
+      ]);
+      expect(validateLogRecord(lines[0]).errors).toStrictEqual([]);
+    });
+
+    it('ends at a flushBy earlier than FLUSH_DEADLINE_MS, bounding the lock wait and the publishes by it', async () => {
+      const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L'), dbRow('3', 'K')]);
+      const { runtime, lines } = runtimeWith(db, [], [...ids, eventId(3)]);
+      const started = performance.now();
+
+      await expect(flushWithin(runtime, 400)).resolves.toStrictEqual({ published: 0, failed: 2, skipped: 1 });
+
+      const elapsed = performance.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(300);
+      expect(elapsed).toBeLessThan(FLUSH_DEADLINE_MS - 1_000);
+      const [lockTimeout] = statements;
+      expect(lockTimeout).toMatchObject({ sql: LOCK_TIMEOUT_SQL, values: [expect.stringMatching(/^\d+ms$/)] });
+      const budgetMs = Number.parseInt(String(lockTimeout?.values?.[0]), 10);
+      expect(budgetMs).toBeGreaterThan(0);
+      expect(budgetMs).toBeLessThanOrEqual(400);
+      expect(lines).toMatchObject(
+        ids.map((id) => ({
+          severity: 'WARNING',
+          requestId: REQUEST_ID,
+          message: `outbox publish not confirmed within the request's answer deadline (${String(budgetMs)} ms); left to the sweep`,
+          eventId: id,
+          error: TIMED_OUT,
+        })),
+      );
+    });
+
+    it('keeps FLUSH_DEADLINE_MS for a flushBy later than it', async () => {
+      const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')]);
+      const { runtime, lines } = runtimeWith(db);
+
+      await expect(flushWithin(runtime, 60_000)).resolves.toStrictEqual({ published: 2, failed: 0, skipped: 0 });
+
+      expect(statements[0]).toEqual({ tenantId: TENANT_A, sql: LOCK_TIMEOUT_SQL, values: [`${FLUSH_DEADLINE_MS}ms`] });
+      expect(lines).toEqual([]);
+    });
+  });
+
+
   describe('registered by writeOutbox', () => {
     const NOTE: OutboxWriteInput = { topic: TOPIC, kind: 'state', aggregateType: 'note', aggregateId: 'K', aggregateVersion: 1, payload: { noteId: 'K' } };
     const REQUEST_ID = 'req-flush';
@@ -667,6 +733,16 @@ describe('flushAfterCommit', () => {
       expect(publish).toHaveBeenCalledTimes(1);
       expect(store.unpublishedEvents).toBeUndefined();
       expect(lines).toEqual([]);
+    });
+
+    it("records the written id, publishing nothing, when the request's flushBy has passed before its commit", async () => {
+      const { runtime, publish } = runtimeWith(fakeDb([dbRow('1', 'K')]).db);
+      const store = { ...newRequestContext({ requestId: REQUEST_ID }), flushBy: Date.now() - 1 };
+
+      const written = await runWithRequestContext(store, () => commitNote(runtime));
+
+      expect(publish).not.toHaveBeenCalled();
+      expect(store.unpublishedEvents).toStrictEqual([written]);
     });
   });
 });

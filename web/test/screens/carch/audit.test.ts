@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { TENANT_A } from '@opt2/platform/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { encodeJs } from '@/lib/html';
 import { auditScreen, type AuditData } from '@/screens/carch/audit';
 import { draftPromptJs } from '@/screens/carch/partials/draft-prompt-js';
 import { carchJs } from '@/screens/carch/partials/js';
@@ -17,7 +18,7 @@ import {
   siteAdminRequest,
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
-import { useTestEnv } from '../../helpers/env';
+import { stubOracleUrlSettings, useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeReply, type RecordedRequest } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
 import { CARCH_PATHS, CONTENT_HIST_IDS, CONTENT_IDS, carchAuditData } from '../../fixtures/strategies-content/carch';
@@ -138,12 +139,17 @@ const deleteHref = (contentHistId: string): string =>
   `&type=Page&parentid=${ROOT}&topid=${ROOT}&siteid=${SITE}&startrow=1&moduleid=${SITE_MANAGER}` +
   `&compactDisplay=false&csrf_token=${tokenFor(`${contentHistId}delete`)}&csrf_token_expires=${FIXED_CSRF.expires}`;
 
+/** `rc.contentBean.getURL(complete=1, queryString='previewid=<id>')` of About Us on `localhost` under the oracle's URL settings. */
+const previewHref = (contentHistId: string): string => `http://localhost:8080/about-us/?previewid=${contentHistId}`;
+
 let restore: () => void;
 beforeEach(() => {
+  stubOracleUrlSettings();
   restore = useTestEnv();
 });
 afterEach(() => {
   restore();
+  vi.unstubAllEnvs();
 });
 
 describe('cArch.audit', () => {
@@ -171,6 +177,11 @@ describe('cArch.audit', () => {
         .toArray()
         .map((li) => $(li).text().trim()),
     ).toEqual(['Home', 'About Us']);
+    expect(
+      $('.mura-header ul.breadcrumb li a > i')
+        .toArray()
+        .map((i) => $(i).attr('class')),
+    ).toEqual(['mi-file', 'mi-file']);
     expect($('.mura-header ul.breadcrumb strong').text().trim()).toBe('About Us');
   });
 
@@ -179,6 +190,9 @@ describe('cArch.audit', () => {
 
     expect($('.mura-header h1').text()).toBe('Audit Trail');
     expect($('.mura-header .nav-module-specific, .mura-header ul.breadcrumb')).toHaveLength(0);
+    expect($(`tbody a[data-contenthistid="${DRAFT}"]`).first().closest('tr').find('li.preview a').attr('onclick')).toBe(
+      `frontEndProxy.post({cmd:'setLocation',location:encodeURIComponent('${encodeJs(previewHref(DRAFT))}')});return false;`,
+    );
     expect(tokenRequests(ctx)[0]).toEqual([`${DRAFT}delete`, `${ARCHIVED}delete`]);
     expect(html).toContain("frontEndProxy.post({cmd:'setWidth',width:'standard'});");
   });
@@ -214,6 +228,7 @@ describe('cArch.audit', () => {
           notes: row.find('td.notes span').attr('data-content'),
           status: row.find('td.status').text(),
           user: row.find('td.user').text(),
+          preview: row.find('li.preview a').attr('href'),
         };
       });
 
@@ -224,6 +239,7 @@ describe('cArch.audit', () => {
         notes: item.notes,
         status: STATUSES[index],
         user: item.lastUpdateBy,
+        preview: previewHref(String(item.contentHistID)),
       })),
     );
   });

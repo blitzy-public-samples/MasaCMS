@@ -1,7 +1,16 @@
-// Unit tests for the site path getters against core/mura/settings/settingsBean.cfc and core/mura/configBean.cfc.
+// Unit tests for the site path getters and content URLs against core/mura/settings/settingsBean.cfc,
+// core/mura/configBean.cfc, core/mura/content/contentServer.cfc and core/mura/content/contentRendererUtility.cfc.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLegacySettingsForTests } from '@/lib/env';
-import { siteBeanOf, sitePaths, type PathRequest, type SiteBean, type ThemeLayout } from '@/lib/site-paths';
+import {
+  createHref,
+  siteBeanOf,
+  sitePaths,
+  urlStem,
+  type PathRequest,
+  type SiteBean,
+  type ThemeLayout,
+} from '@/lib/site-paths';
 import { adminS2Request } from '../helpers/admin-request';
 
 /** A local site on `www.example.com` with one alias, its own pools and theme `MyTheme`. */
@@ -153,5 +162,64 @@ describe('remote sites', () => {
     expect(paths.rootPath(true)).toBe(complete);
     expect(paths.assetPath(true)).toBe(`${complete}/sites/default`);
     expect(paths.themeAssetPath('webRoot', false)).toBe(`${relative}/themes/MyTheme`);
+  });
+});
+
+describe('urlStem', () => {
+  const SITE_ID_ON = { MURA_SITEIDINURLS: 'true' };
+  const LEGACY_LOCATION = { ...SITE_ID_ON, MURA_LEGACYINDEXFILELOCATION: 'true' };
+  const BOTH_OFF = { MURA_SITEIDINURLS: 'false', MURA_INDEXFILEINURLS: 'false' };
+  it.each<[string, Record<string, string>, Partial<SiteBean>, string, string]>([
+    ['the template flags, a page', {}, {}, 'about-us', '/index.cfm/about-us/'],
+    ['the template flags, the home page', {}, {}, '', '/'],
+    ['siteIDInURLS on, a page', SITE_ID_ON, {}, 'about-us', '/index.cfm/default/about-us/'],
+    ['siteIDInURLS on, the home page', SITE_ID_ON, {}, '', '/index.cfm/default/'],
+    ['siteIDInURLS on and indexFileInURLS off, a page', { ...SITE_ID_ON, MURA_INDEXFILEINURLS: 'false' }, {}, 'news/update', '/default/news/update/'],
+    ['siteIDInURLS on and indexFileInURLS off, the home page', { ...SITE_ID_ON, MURA_INDEXFILEINURLS: 'false' }, {}, '', '/default/'],
+    ['both flags off, a page with its slashes', BOTH_OFF, {}, '/about-us/', '/about-us/'],
+    ['legacyIndexFileLocation, a page', LEGACY_LOCATION, {}, 'about-us', '/sites/default/index.cfm/about-us/'],
+    ['legacyIndexFileLocation, the home page', LEGACY_LOCATION, {}, '', '/sites/default/'],
+    ['legacyIndexFileLocation under another site directory', { ...LEGACY_LOCATION, MURA_SITEDIR: 'content' }, {}, 'about-us', '/content/default/index.cfm/about-us/'],
+    ['hashURLS, a page without a trailing slash', { ...BOTH_OFF, MURA_HASHURLS: 'true' }, {}, 'about-us', '/#/about-us'],
+    ['hashURLS with siteIDInURLS and the index file', { ...SITE_ID_ON, MURA_HASHURLS: 'true' }, {}, 'about-us', '/index.cfm/default/#/about-us'],
+    ['a remote site, whose renderer turns both flags off', SITE_ID_ON, REMOTE, 'about-us', '/about-us/'],
+    ['a remote site, the home page', SITE_ID_ON, REMOTE, '', '/'],
+  ])('builds the stem for %s', (_, vars, site, filename, expected) => {
+    useSettings(vars);
+    expect(urlStem({ ...SITE, ...site }, filename)).toBe(expected);
+  });
+});
+
+describe('createHref', () => {
+  const BOTH_OFF = { MURA_SITEIDINURLS: 'false', MURA_INDEXFILEINURLS: 'false' };
+  const HASH = { ...BOTH_OFF, MURA_HASHURLS: 'true' };
+  const ID = '6300ED69-1320-5CC3-F922E3012E2C6BAE';
+  const PREVIEW = `previewid=${ID}`;
+  it.each<[string, Record<string, string>, Partial<SiteBean>, PathRequest, string, string, string]>([
+    ['the template flags', {}, {}, ON_PRIMARY, 'about-us', PREVIEW, `http://www.example.com:8080/cms/index.cfm/about-us/?previewid=${ID}`],
+    ['the home page on the oracle flags', BOTH_OFF, {}, ON_PRIMARY, '', PREVIEW, `http://www.example.com:8080/cms/?previewid=${ID}`],
+    ['siteIDInURLS on', { MURA_SITEIDINURLS: 'true' }, {}, ON_PRIMARY, 'about-us', PREVIEW, `http://www.example.com:8080/cms/index.cfm/default/about-us/?previewid=${ID}`],
+    ['a query string already starting with ?', BOTH_OFF, {}, ON_PRIMARY, 'about-us', `?${PREVIEW}`, `http://www.example.com:8080/cms/about-us/?previewid=${ID}`],
+    ['no query string', BOTH_OFF, {}, ON_PRIMARY, 'about-us', '', 'http://www.example.com:8080/cms/about-us/'],
+    ['hashURLS, a page', HASH, {}, ON_PRIMARY, 'about-us', PREVIEW, `http://www.example.com:8080/cms/#/about-us/_/previewid/${ID}`],
+    ['hashURLS, a filename ending in /', HASH, {}, ON_PRIMARY, 'news/', PREVIEW, `http://www.example.com:8080/cms/#/news/_/previewid/${ID}`],
+    ['hashURLS, the home page', HASH, {}, ON_PRIMARY, '', PREVIEW, `http://www.example.com:8080/cms/#/_/previewid/${ID}`],
+    ['hashURLS, a bare and an encoded name', HASH, {}, ON_PRIMARY, 'about-us', '?a b=1&showMeta', 'http://www.example.com:8080/cms/#/about-us/_/a%20b/1/showMeta/true'],
+    ['a remote site on its port and context', { MURA_SITEIDINURLS: 'true' }, REMOTE, ON_PRIMARY, 'about-us', PREVIEW, `http://www.example.com:8443/r/about-us/?previewid=${ID}`],
+    ['an SSL site', BOTH_OFF, { useSSL: true }, ON_PRIMARY, 'about-us', PREVIEW, `https://www.example.com:8080/cms/about-us/?previewid=${ID}`],
+    ['an HTTPS request', BOTH_OFF, {}, { ...ON_PRIMARY, https: true }, 'about-us', PREVIEW, `https://www.example.com:8080/cms/about-us/?previewid=${ID}`],
+    ['the preview alias the request came in on', BOTH_OFF, {}, ON_ALIAS, 'about-us', PREVIEW, `http://alias.example.com:8080/cms/about-us/?previewid=${ID}`],
+    ['the site domain for a host the site does not hold', BOTH_OFF, {}, { ...ON_ALIAS, httpHost: 'other.example.com' }, 'about-us', PREVIEW, `http://www.example.com:8080/cms/about-us/?previewid=${ID}`],
+    ['HTMLEditFormat over the whole URL', BOTH_OFF, {}, ON_PRIMARY, 'a&b"<c>', 'x=1&y=2', 'http://www.example.com:8080/cms/a&amp;b&quot;&lt;c&gt;/?x=1&amp;y=2'],
+  ])('builds the complete URL with %s', (_, vars, site, request, filename, querystring, expected) => {
+    useSettings(vars);
+    expect(createHref(request, { ...SITE, ...site }, filename, querystring)).toBe(expected);
+  });
+
+  it('fails as legacy does on a hash-URL pair without a name', () => {
+    useSettings(HASH);
+    expect(() => createHref(ON_PRIMARY, SITE, 'about-us', 'a=1&==')).toThrow(
+      new RangeError('The element at position 1 of the list "==" cannot be found.'),
+    );
   });
 });
