@@ -127,7 +127,9 @@ export async function loadCchainEdit(ctx: ScreenContext): Promise<CchainEditData
   });
   const data = chainEditData(okBody(response, 'strategies-content', 'getApprovalChain').rc);
   await ctx.csrf.prefetch([data.chain.chainId]);
-  return data;
+  // `$.getBean` stamps a new bean with `rc.siteid`, which `loadBy` keeps for a chain not yet stored.
+  if (!data.chain.isNew || data.chain.siteId !== '') return data;
+  return { ...data, chain: { ...data.chain, siteId: siteid } };
 }
 
 /** `utility.displayErrors`: every message but `siteID`'s, unencoded and in struct order, spaced as ACF emits them. */

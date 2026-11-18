@@ -325,7 +325,7 @@ describe('renderCchainEdit', () => {
   });
 
   it('gives cchain.update an empty secondary menu', async () => {
-    expect(await render('update')).toContain('<div class="nav-module-specific btn-group"></div>');
+    expect(await render('update')).toContain('<div class="nav-module-specific btn-group">\n\t\t\n\t</div>');
   });
 
   it.each<[string, boolean, string[]]>([

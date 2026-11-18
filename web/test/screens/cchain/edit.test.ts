@@ -343,7 +343,17 @@ describe('cchain.edit new chain', () => {
     expect(data.chain).toMatchObject({ chainId: id, isNew: true });
     expect(valuesOf($, `${ACTIONS} > input[type="hidden"][name="chainID"]`)).toEqual([id]);
     expect(csrfContexts(ctx)).toEqual([{ contexts: [id] }]);
-    expect($(`${ACTIONS} > button`).eq(0).attr('onclick')).toBe(deleteOnclick(id, FRESH.chain.siteID));
+  });
+
+  it.each<[string, string, ChainModel, string]>([
+    ["the request's site for a new bean the service leaves without one", '', FRESH, SITE],
+    ["a stored chain's own site", SAVED_ID, { ...SAVED, chain: { ...SAVED.chain, siteID: 'umbrella' } }, 'umbrella'],
+  ])('posts and deletes under %s', async (_, chainid, saved, site) => {
+    const { data, $ } = await renderEdit(chainid, saved);
+
+    expect(data.chain.siteId).toBe(site);
+    expect(valuesOf($, `${ACTIONS} > input[type="hidden"][name="siteid"]`)).toEqual([site]);
+    expect($(`${ACTIONS} > button`).eq(0).attr('onclick')).toBe(deleteOnclick(data.chain.chainId, site));
   });
 
   it('shows only the back link', async () => {

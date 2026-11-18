@@ -6,6 +6,7 @@ import {
   cfLsDateFormat,
   cfLsTimeFormat,
   cfToBoolean,
+  cfUuid,
 } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
 import { isCompactDisplay } from '@/lib/cfml';
@@ -196,12 +197,14 @@ function pendingData(view: PendingViewModel, site: SiteData | undefined): Cchain
 }
 
 /**
- * The chain `rc.chainid` of site `rc.siteid` with its pending requests per group, from strategies-content; gateway
- * unavailability propagates.
+ * The chain `rc.chainid` of site `rc.siteid` with its pending requests per group, from strategies-content; an empty id
+ * reads a fresh CF UUID, the id `loadBy` leaves a new bean, and `rc` stays unchanged. Gateway unavailability
+ * propagates.
  * @throws GatewayDenialError When strategies-content answers 401 or 403.
  */
 export async function loadCchainPending(ctx: ScreenContext): Promise<CchainPendingData> {
-  const params = { siteid: ctx.req.rc.siteid ?? '', chainid: ctx.req.rc.chainid ?? '' };
+  const chainid = ctx.req.rc.chainid ?? '';
+  const params = { siteid: ctx.req.rc.siteid ?? '', chainid: chainid === '' ? cfUuid() : chainid };
   const response = await ctx.gateway.strategiesContent.call('get', PENDING_PATH, { params });
   return pendingData(okBody(response, SERVICE, OPERATION), ctx.req.site);
 }
@@ -449,7 +452,9 @@ export function renderCchainPending(ctx: ScreenContext, data: CchainPendingData)
   const body = html`
 \t<div class="mura-header">
 \t\t<h1>${label(rb, 'approvalchains')}</h1>
-\t\t${menu}
+\t\t
+\t${menu}
+
 \t</div>
 \t<!-- /.mura-header -->
 \t<div class="block block-constrain">

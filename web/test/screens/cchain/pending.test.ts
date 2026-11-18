@@ -1,5 +1,5 @@
 // cchain.pending loader, markup and registry entry against cchain/pending.cfm (77-192) and dspZoom.
-import { cfLsDateFormat, cfLsTimeFormat } from '@opt2/platform/legacy-compat';
+import { cfLsDateFormat, cfLsTimeFormat, cfUuid } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,15 @@ import { makeScreenContext, renderScreenPage } from '../../helpers/screen-contex
 
 // The screen context reads only the registry's shell hooks, so the circuit barrels stay unloaded.
 vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
+
+// A spy over the real generator: strategies-content is routed by chain id, so a drawn id is routed as it is drawn.
+vi.mock('@opt2/platform/legacy-compat', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/legacy-compat')>();
+  return { ...actual, cfUuid: vi.fn(actual.cfUuid) };
+});
+
+const { cfUuid: drawCfUuid } =
+  await vi.importActual<typeof import('@opt2/platform/legacy-compat')>('@opt2/platform/legacy-compat');
 
 type PendingModel = typeof cchainPendingData;
 type Wire = Readonly<Record<string, unknown>>;
@@ -158,6 +167,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.mocked(cfUuid).mockReset();
   restore();
 });
 
@@ -168,6 +178,37 @@ describe('loadCchainPending', () => {
     await expect(loadCchainPending(ctx)).resolves.toEqual(LOADED);
     expect(ctx.req.action).toBe('core:cchain.pending');
     expect(ctx.gateway.calls).toEqual([{ service: 'strategies-content', method: 'GET', path: PENDING_PATH }]);
+  });
+
+  it('reads an empty chain id as a fresh CF UUID and links that new chain to its edit form', async () => {
+    const gateway = fakeGatewayClient({});
+    const drawn: string[] = [];
+    vi.mocked(cfUuid).mockImplementation(() => {
+      const id = drawCfUuid();
+      drawn.push(id);
+      // strategies-content answers the new bean `loadBy` leaves for an unknown id, without members.
+      const chain = { chainID: id, siteID: '', name: '', description: '', isNew: true, errors: {} };
+      gateway.setRoute(routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/approval-chains/${id}/pending`), {
+        status: 200,
+        body: model({ chainid: id, chain, members: [] }),
+      });
+      return id;
+    });
+    const ctx = makeScreenContext({ req: pendingRequest({ chainid: '' }), gateway });
+
+    const data = await loadCchainPending(ctx);
+    const $ = cheerio.load(toString(renderCchainPending(ctx, data).body), null, false);
+
+    expect(drawn).toHaveLength(1);
+    const id = drawn[0] ?? '';
+    expect(id).toMatch(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/);
+    expect(ctx.gateway.calls).toEqual([
+      { service: 'strategies-content', method: 'GET', path: `/v1/sites/${SITE}/approval-chains/${id}/pending` },
+    ]);
+    expect(ctx.req.rc.chainid).toBe('');
+    expect($('div.mura-header .nav-module-specific a.btn[title="View Edit Form"]').attr('href')).toBe(
+      `./?muraAction=cchain.edit&siteid=${SITE}&chainID=${id}`,
+    );
   });
 });
 

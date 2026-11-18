@@ -19,7 +19,7 @@ function menuLink(rb: RbLookup, key: string, icon: string, href: string): SafeHt
   return html`<a class="btn" title="${label}" href="${raw(href)}"><i class="${icon}"></i> ${label}</a>`;
 }
 
-/** Renders the approval-chain secondary menu for the current cchain action; `chain` is required for pending/edit. */
+/** Renders the cchain action's approval-chain secondary menu, spaced as ACF emits it; `chain` is for pending/edit. */
 export function renderCchainSecondaryMenu(req: AdminRequest, rb: RbLookup, chain?: CchainMenuChain): SafeHtml {
   const siteid = encodeUrl(req.rc.siteid ?? '');
   const backLink = (): SafeHtml =>
@@ -30,43 +30,36 @@ export function renderCchainSecondaryMenu(req: AdminRequest, rb: RbLookup, chain
       `./?muraAction=cchain.list&siteid=${siteid}`,
     );
 
-  let links: SafeHtml[] = [];
+  let links: SafeHtml | null = null;
   switch (listLastDot(req.action)) {
     case 'pending':
-      links = [
-        backLink(),
-        menuLink(
-          rb,
-          'approvalchains.vieweditform',
-          'mi-pencil',
-          `./?muraAction=cchain.edit&siteid=${siteid}&chainID=${encodeHtml(chain?.chainId)}`,
-        ),
-      ];
+      links = html`\n\t\t\t\t${backLink()}\n\t\t\t\t${menuLink(
+        rb,
+        'approvalchains.vieweditform',
+        'mi-pencil',
+        `./?muraAction=cchain.edit&siteid=${siteid}&chainID=${encodeHtml(chain?.chainId)}`,
+      )}\n\t\t\t`;
       break;
     case 'list':
-      links = [
-        menuLink(
-          rb,
-          'approvalchains.addapprovalchain',
-          'mi-plus-circle',
-          `./?muraAction=cchain.edit&chainID=&siteid=${siteid}`,
-        ),
-      ];
+      links = html`\n\t\t\t\t${menuLink(
+        rb,
+        'approvalchains.addapprovalchain',
+        'mi-plus-circle',
+        `./?muraAction=cchain.edit&chainID=&siteid=${siteid}`,
+      )}\n\t\t\t`;
       break;
     case 'edit':
-      links = [backLink()];
+      links = html`\n\t\t\t\t${backLink()}\n\t\t\t\t`;
       // Legacy interpolates this chain id without encoding, unlike the pending case's edit link.
       if (chain !== undefined && !chain.isNew) {
-        links.push(
-          menuLink(
-            rb,
-            'approvalchains.pendingrequests',
-            'mi-reorder',
-            `./?muraAction=cchain.pending&siteid=${siteid}&chainID=${chain.chainId}`,
-          ),
-        );
+        links = html`${links}\n\t\t\t\t\t${menuLink(
+          rb,
+          'approvalchains.pendingrequests',
+          'mi-reorder',
+          `./?muraAction=cchain.pending&siteid=${siteid}&chainID=${chain.chainId}`,
+        )}\n\t\t\t\t`;
       }
       break;
   }
-  return html`<div class="nav-module-specific btn-group">${links}</div>`;
+  return html`<div class="nav-module-specific btn-group">\n\t\t${links}\n\t</div>`;
 }

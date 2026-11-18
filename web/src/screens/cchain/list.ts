@@ -169,7 +169,9 @@ ${renderCchainJs()}
 <div class="mura-header">
 \t<h1>${rb('approvalchains')}</h1>
 
+\t
 \t${renderCchainSecondaryMenu(ctx.req, ctx.rb)}
+
 
 </div> <!-- /.mura-header -->
 <div class="block block-constrain">

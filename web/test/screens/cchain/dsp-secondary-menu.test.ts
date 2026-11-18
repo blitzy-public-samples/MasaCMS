@@ -14,6 +14,22 @@ const CHAIN_ID = 'D1000000-0000-0000-0000000000000001&x=<1>';
 const SAVED: CchainMenuChain = { chainId: CHAIN_ID, isNew: false };
 const UNSAVED: CchainMenuChain = { chainId: CHAIN_ID, isNew: true };
 
+// The en_US links of a default-site chain, as captured from the legacy server.
+const EN_CHAIN: CchainMenuChain = { chainId: '38FCADA2-A78D-A943-792E8D179E67E888', isNew: false };
+const EN_BACK =
+  '<a class="btn" title="Back to Approval Chains" href="./?muraAction=cchain.list&siteid=default">' +
+  '<i class="mi-arrow-circle-left"></i> Back to Approval Chains</a>';
+const EN_ADD =
+  '<a class="btn" title="Add Approval Chain" href="./?muraAction=cchain.edit&chainID=&siteid=default">' +
+  '<i class="mi-plus-circle"></i> Add Approval Chain</a>';
+const EN_VIEW_EDIT =
+  `<a class="btn" title="View Edit Form" href="./?muraAction=cchain.edit&siteid=default&chainID=${EN_CHAIN.chainId}">` +
+  '<i class="mi-pencil"></i> View Edit Form</a>';
+const EN_PENDING =
+  '<a class="btn" title="Pending Requests" ' +
+  `href="./?muraAction=cchain.pending&siteid=default&chainID=${EN_CHAIN.chainId}">` +
+  '<i class="mi-reorder"></i> Pending Requests</a>';
+
 /** Answers markup that legacy emits unencoded for every key. */
 const marked: RbLookup = {
   locale: 'en_US',
@@ -43,6 +59,9 @@ function legacyMenu(item: string, rb: RbLookup, siteId: string, chain?: CchainMe
     .replaceAll('#chain.getChainID()#', () => chain?.chainId ?? '');
 }
 
+/** Markup with the line-break and tab runs between tags dropped, as {@link legacyMenu} drops the source's. */
+const tagsOnly = (markup: string): string => markup.replace(/>[\n\t]+</g, '><');
+
 /** The port's menu markup on `cChain.<item>` for `siteId`. */
 function portMenu(item: string, rb: RbLookup, siteId: string, chain?: CchainMenuChain): string {
   const req = makeAdminRequest({ circuit: 'cChain', item, rc: { siteid: siteId } }, 'admin');
@@ -60,25 +79,20 @@ describe('renderCchainSecondaryMenu', () => {
     ['an action without a case', 'update', undefined],
     ['a mixed-case action', 'Pending', SAVED],
   ])('matches the legacy menu on %s', (_, item, chain) => {
-    expect(portMenu(item, marked, SITE_ID, chain)).toBe(legacyMenu(item.toLowerCase(), marked, SITE_ID, chain));
+    expect(tagsOnly(portMenu(item, marked, SITE_ID, chain))).toBe(
+      legacyMenu(item.toLowerCase(), marked, SITE_ID, chain),
+    );
   });
 
-  it.each([
-    [
-      'list',
-      undefined,
-      '<a class="btn" title="Add Approval Chain" href="./?muraAction=cchain.edit&chainID=&siteid=default">' +
-        '<i class="mi-plus-circle"></i> Add Approval Chain</a>',
-    ],
-    [
-      'edit',
-      UNSAVED,
-      '<a class="btn" title="Back to Approval Chains" href="./?muraAction=cchain.list&siteid=default">' +
-        '<i class="mi-arrow-circle-left"></i> Back to Approval Chains</a>',
-    ],
-  ])('renders the en_US %s menu the legacy server emits', (item, chain, link) => {
+  it.each<[string, string, CchainMenuChain | undefined, string]>([
+    ['list', 'list', undefined, `\n\t\t\t\t${EN_ADD}\n\t\t\t`],
+    ['edit of a new chain', 'edit', { ...EN_CHAIN, isNew: true }, `\n\t\t\t\t${EN_BACK}\n\t\t\t\t`],
+    ['edit of a saved chain', 'edit', EN_CHAIN, `\n\t\t\t\t${EN_BACK}\n\t\t\t\t\n\t\t\t\t\t${EN_PENDING}\n\t\t\t\t`],
+    ['pending', 'pending', EN_CHAIN, `\n\t\t\t\t${EN_BACK}\n\t\t\t\t${EN_VIEW_EDIT}\n\t\t\t`],
+    ['update', 'update', EN_CHAIN, ''],
+  ])('renders the en_US %s menu byte for byte as the legacy server emits it', (_, item, chain, links) => {
     expect(portMenu(item, rbFor('en_US'), 'default', chain)).toBe(
-      `<div class="nav-module-specific btn-group">${link}</div>`,
+      `<div class="nav-module-specific btn-group">\n\t\t${links}\n\t</div>`,
     );
   });
 

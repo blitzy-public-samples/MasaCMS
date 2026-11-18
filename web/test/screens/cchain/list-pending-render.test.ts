@@ -543,3 +543,31 @@ describe('renderCchainPending', () => {
     expect(() => render(pendingData([{ groupName: 'Editors', requests: [request(extra)] }]))).toThrow(RangeError);
   });
 });
+
+describe('cchain list and pending headers', () => {
+  // Raw bytes as captured from legacy ACF, which spaces the menu links.
+  it.each<[string, () => { readonly body: SafeHtml }, string]>([
+    [
+      'list',
+      () => renderCchainList(contextFor(listRequest(), gatewayFor(LIST_PATH, ok({}))), { chains: [] }),
+      '<div class="mura-header">\n\t<h1>Approval Chains</h1>\n\n\t\n' +
+        '\t<div class="nav-module-specific btn-group">\n\t\t\n\t\t\t\t' +
+        `<a class="btn" title="Add Approval Chain" href="./?muraAction=cchain.edit&chainID=&siteid=${SITE}">` +
+        '<i class="mi-plus-circle"></i> Add Approval Chain</a>\n\t\t\t\n\t</div>\n\n\n</div> <!-- /.mura-header -->',
+    ],
+    [
+      'pending',
+      () => renderCchainPending(contextFor(pendingRequest(), gatewayFor(PENDING_PATH, ok({}))), pendingData([])),
+      '<div class="mura-header">\n\t\t<h1>Approval Chains</h1>\n\t\t\n' +
+        '\t<div class="nav-module-specific btn-group">\n\t\t\n\t\t\t\t' +
+        `<a class="btn" title="Back to Approval Chains" href="./?muraAction=cchain.list&siteid=${SITE}">` +
+        '<i class="mi-arrow-circle-left"></i> Back to Approval Chains</a>\n\t\t\t\t' +
+        `<a class="btn" title="View Edit Form" href="./?muraAction=cchain.edit&siteid=${SITE}&chainID=${CHAIN_A}">` +
+        '<i class="mi-pencil"></i> View Edit Form</a>\n\t\t\t\n\t</div>\n\n\t</div>\n\t<!-- /.mura-header -->',
+    ],
+  ])('emits the %s header whitespace as legacy does', (_label, render, expected) => {
+    const markup = toString(render().body);
+
+    expect(markup.match(/<div class="mura-header">[\s\S]*?<!-- \/\.mura-header -->/)?.[0]).toBe(expected);
+  });
+});
