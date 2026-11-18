@@ -1,4 +1,4 @@
-/** The person domain as the cusers, ceditprofile and JSON API saves compose it, over fixture actors and the fixture registry, without PostgreSQL; per-function cases are in person-domain.test.ts. */
+/** The person domain as the cusers and ceditprofile saves compose it, over fixture actors and the fixture registry, without PostgreSQL; per-function cases are in person-domain.test.ts. */
 import { describe, expect, it } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite } from '@opt2/platform/tenancy';

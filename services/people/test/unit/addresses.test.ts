@@ -9,7 +9,6 @@ import {
   applyAddressInput,
   createAddress,
   insertAddressInTx,
-  saveAddress,
   setPrimaryAddress,
   updateAddress,
   type AddressActor,
@@ -259,7 +258,6 @@ describe('address saves of a user an open roster operation keeps closed', () => 
   it.each<[string, Save, (address: AddressRow) => Row]>([
     ['createAddress', createAddress, (address) => ({ userid: address.userid, city: 'Bergen' })],
     ['updateAddress', updateAddress, (address) => ({ userid: address.userid, addressid: address.addressid, city: 'Bergen' })],
-    ['saveAddress', saveAddress, (address) => ({ addressid: address.addressid, city: 'Bergen' })],
   ])('%s waits out the fence, then answers the legacy 503 having written nothing', async (_name, save, params) => {
     const owner = personRow();
     const stored = addressRow({ userid: owner.userid, siteid: TENANT_A.siteId });

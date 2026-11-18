@@ -59,8 +59,6 @@
       "scenario": "GS-PE-02",
       "routeKey": "admin:cusers.update{type=2,action=update}",
       "appliesTo": [
-        "api:user.save",
-        "rest:user.save",
         "admin:ceditprofile.update"
       ],
       "difference": "Legacy `userBean.set` picks the user pool site from the posted `switchToPublic`, `switchToPrivate` or `isPublic` (core/mura/user/userBean.cfc:227-239; the admin user form posts `isPublic`, admin/core/views/cusers/edituser.cfm:495-527), and `userDAO.update` writes it as `SiteID` (core/mura/user/userDAO.cfc:404-455). A save whose choice resolves to a pool site other than the stored one therefore moves the user's `tusers` row, account and person columns alike, to the other pool. The target keeps those rows under each pool's tenant, and identity answers the legacy-shaped 503 before writing anything, so the save is refused with no change on either side.",
@@ -239,12 +237,10 @@
       "id": "EX-GROUP-USER-RECORD",
       "scenario": "GS-ID-10",
       "routeKey": "api:group.findone",
-      "appliesTo": [
-        "api:group.save"
-      ],
-      "difference": "A JSON API group findOne or save reaches a user record in cases the caller's session and the stored rows decide. Both load the group bean by `userid` (core/mura/client/api/json/v1/jsonApiUtility.cfc:2349-2363,2010), and `userManager.read` and `userDAO.read` load any `tusers` row by id (core/mura/user/userManager.cfc:154-170; core/mura/user/userDAO.cfc:92-121), so an id naming a stored user loads that user: findOne answers its person columns `subType` and `GroupName`, and any other column a `fields` list names (jsonApiUtility.cfc:2376), and a save rewrites them. A save also writes a user record when an admin or S2 caller's direct `save` posts a `type` of 2 or `user` (the entity route sets type 1, jsonApiUtility.cfc:1209-1210), or when no posted type survives, as for a caller neither admin nor S2, whose `type` legacy deletes (jsonApiUtility.cfc:1917-1919), so a new bean keeps userBean's default type 2 (core/mura/user/userBean.cfc:91). Identity holds no person columns, so it answers each case with the legacy-shaped 503 naming this entry before writing anything, and the call is refused.",
+      "appliesTo": [],
+      "difference": "A JSON API group findOne reaches a user record in cases the stored rows decide. It loads the group bean by `userid` (core/mura/client/api/json/v1/jsonApiUtility.cfc:2349-2363), and `userManager.read` and `userDAO.read` load any `tusers` row by id (core/mura/user/userManager.cfc:154-170; core/mura/user/userDAO.cfc:92-121), so an id naming a stored user loads that user, and findOne answers its person columns `subType` and `GroupName`, and any other column a `fields` list names (jsonApiUtility.cfc:2376). Identity holds no person columns, so it answers the case with the legacy-shaped 503 naming this entry, and the read is refused.",
       "decision": "preserve",
-      "reason": "Whether a call reaches a user record turns on the caller's session flags and the stored rows, so no request-decidable variant can keep it on legacy, and halting `api:group.findone` and `api:group.save` would send every group read and save there. The target fails closed until identity reads and writes person columns through people's contract, and the entry then closes. `rest:group.findone` and `rest:group.save` need no entry: in REST mode legacy raises its sessionless 500 before loading the bean (jsonApiUtility.cfc:1905,2293), and identity answers the same 500.",
+      "reason": "Whether a findOne reaches a user record turns on the stored rows, so no request-decidable variant can keep it on legacy, and halting `api:group.findone` would send every group read there. The target fails closed until identity reads person columns through people's contract, and the entry then closes. `rest:group.findone` needs no entry: in REST mode legacy raises its sessionless 500 before loading the bean (jsonApiUtility.cfc:2293), and identity answers the same 500. The group save is withheld (`opt2/decision-list.json#api:group.save`) and served by legacy, so identity builds none.",
       "status": "open",
       "evidence": {
         "golden": "harness/golden/sets/GS-ID-10.json",
@@ -780,15 +776,11 @@
       "appliesTo": [
         "admin:cusers.update{type=2,action=update}",
         "admin:cusers.update{type=2,action=add}",
-        "admin:ceditprofile.update",
-        "api:user.save",
-        "rest:user.save",
-        "api:address.save",
-        "rest:address.save"
+        "admin:ceditprofile.update"
       ],
       "difference": "Legacy binds every user and address text column as `cf_sql_varchar` or `cf_sql_longvarchar` (core/mura/user/userDAO.cfc:300-355 create, 404-500 update with `company` at 439, 749-808 address update and create with `city` at 757), and its application datasource sets no Unicode string option (core/appcfc/applicationSettings.cfm:496-507), so ACF's SQL Server driver sends the values in the database code page, Windows-1252 under SQL_Latin1_General_CP1_CI_AS, although the columns are nvarchar (core/setup/db/mssql.sql:444-464 with `city` at 451, 467-505 with `Company` at 476). Each UTF-16 code unit outside that code page is stored as `?`: on the oracle, `cUsers.updateAddress` stored the city `Zürich 日本 ✓` as `Zürich ?? ?` and Edit Profile stored the company `Émoji 😀 Co ✓` as `Émoji ?? Co ?`, the emoji's two code units each becoming `?`. people stores person and address text exactly as posted (`insertPerson`, `updatePerson`, `insertAddress` and `updateAddress` in services/people/src/repo/repository.ts) and answers it back. The reverse projector binds nvarchar columns as `NVarChar` (migration/src/reverse/apply-legacy.ts:305-337, nvarchar at 315-319), so a target write reaches legacy as exact Unicode, which legacy pages then show. A later legacy save of the same user or address, such as a withheld `{photo}` or `{extdata}` variant inside a write window, rewrites every text column through the binding above, and the window import sends the substituted values back to people as `legacy-window` writes (migration/src/windows/import.ts:470-488), which the projector skips (migration/src/reverse/operations.ts:17-18; platform/src/migration-kit/handlers.ts:86); backfill likewise imports the `?` legacy stores.",
       "decision": "preserve",
-      "reason": "The substitution follows from legacy's parameter binding, not from the request, and the target can reproduce it: people is to replace each UTF-16 code unit outside Windows-1252 with `?` before storing, as legacy does, and the reverse projector then writes the same text. Halting these carried writes would take them out of `grp:identity.credential`, so the entry stays open as the record until people applies the substitution, and then closes.",
+      "reason": "The substitution follows from legacy's parameter binding, not from the request, and the target can reproduce it: people is to replace each UTF-16 code unit outside Windows-1252 with `?` before storing, as legacy does, and the reverse projector then writes the same text. Halting the carried `cusers` writes would take them out of `grp:identity.credential`, so the entry stays open as the record until people applies the substitution, and then closes.",
       "status": "open",
       "evidence": {
         "golden": "harness/golden/sets/GS-PE-02.json",

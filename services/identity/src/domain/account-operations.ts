@@ -562,14 +562,20 @@ function findRecorded(deps: AccountOperationDeps, tenantId: string, operationId:
   return withTenant(deps.db, tenantId, (tx) => deps.repo.findAccountOperation(tx, operationId));
 }
 
-/** Whether the stored account `userId` is absent from `tenantId` but held in another registered tenant. */
-async function heldInOtherTenant(deps: AccountOperationDeps, userId: string, tenantId: string): Promise<boolean> {
+/**
+ * Whether a tenant other than `tenantId` holds `userId`, which legacy keys once across sites and groups [legacy: core/setup/db/mssql.sql:871-875]:
+ * for an update, an account absent from `tenantId` but stored in another registered tenant; for a create, an account (pending included)
+ * of another tenant the registry has known, or a group of any of them.
+ */
+async function heldInOtherTenant(deps: AccountOperationDeps, userId: string, tenantId: string, kind: AccountOperationKind): Promise<boolean> {
   const { db, repo } = deps;
-  const holds = async (candidate: string): Promise<boolean> =>
-    (await withTenant(db, candidate, (tx) => repo.findAccountById(tx, userId, { includePending: true }))) !== null;
-  if (await holds(tenantId)) return false;
-  for (const other of await registeredTenantIds(db)) {
-    if (other !== tenantId && (await holds(other))) return true;
+  const create = kind === 'create';
+  const account = (tx: TenantTx): Promise<UserAccountRow | null> => repo.findAccountById(tx, userId, { includePending: true });
+  const holds = (candidate: string): Promise<boolean> =>
+    withTenant(db, candidate, async (tx) => (candidate !== tenantId && (await account(tx)) !== null) || (create && (await repo.findGroupsByIds(tx, [userId])).length > 0));
+  if (!create && (await withTenant(db, tenantId, account)) !== null) return false;
+  for (const candidate of create ? new Set([tenantId, ...(await knownTenantIds(db))]) : await registeredTenantIds(db)) {
+    if (await holds(candidate)) return true;
   }
   return false;
 }
@@ -779,15 +785,16 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
   const password = javaTrim(change.password);
   const errors = await validateAccount(deps, { userId, siteId, username, password });
   if (Object.keys(errors).length > 0) return { outcome: 'invalid', errors };
-  // One transaction binds one tenant, and people's person rows would have to move with the account, so a pool switch halts.
-  if (kind === 'update' && (await heldInOtherTenant(deps, userId, tenantId))) throw new AccountSaveHaltedError(userId);
+  // One transaction binds one tenant, and people's person rows would have to move with the account, so a pool switch halts; a create may not take an id another tenant holds.
+  if (await heldInOtherTenant(deps, userId, tenantId, kind)) throw kind === 'update' ? new AccountSaveHaltedError(userId) : new LegacyApiError('badRequest');
 
   const credential = await credentialChange(deps, kind, password);
   const memberships = membershipChange(kind, change);
   const units = [...ACCOUNT_OPERATION_UNITS];
   await registerOperation(db, { operationId, kind: OPERATION_KIND, units });
+  let result: PrepareResult;
   try {
-    return await withGatedTenant(db, tenantId, async (tx): Promise<PrepareResult> => {
+    result = await withGatedTenant(db, tenantId, async (tx): Promise<PrepareResult> => {
       await fenceUser(tx, userId, true, performance.now() + USER_CLOSED_WAIT_MS - waited, () => userClosed(userId, username));
       const ctx: WriteContext = { operationId };
       // An operation that committed after the wait above keeps the user closed; its account is not this change's before-image.
@@ -832,6 +839,12 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
     await endOperation(db, operationId);
     throw isUniqueViolation(err) ? userClosed(userId, username) : err;
   }
+  // Each create checks again once its reservation committed, so of two racing creates of one id the later committer always sees the other and withdraws.
+  if (kind === 'create' && (await heldInOtherTenant(deps, userId, tenantId, kind))) {
+    await abortAccountOperation(deps, operationId, { userId });
+    throw new LegacyApiError('badRequest');
+  }
+  return result;
 }
 
 /** Applies a prepared change in one identity transaction whose events stay held until finish [legacy: core/mura/user/userDAO.cfc:300-355,404-480,502-616,873-893]. */

@@ -237,7 +237,9 @@ const CHAR = /<char\s+code\s*=\s*(?:'([0-9A-Fa-f]{1,2})'|"([0-9A-Fa-f]{1,2})")\s
 const ENTITY = /&(?:(amp|lt|gt|apos|quot)|#([0-9]+)|#x([0-9A-Fa-f]+));|&/g;
 const NAMED_ENTITIES = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['apos', "'"], ['quot', '"']]);
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-const COUNT = /^\d+$/;
+// ACF reads a rowCount of -0 as 0 rows and refuses one above 100000 (captured).
+const COUNT = /^-?\d+$/;
+const MAX_DECLARED_ROWS = 100_000;
 const ISO_DATE_TIME = /^(\d{1,4})-(\d{1,2})-(\d{1,2})T(\d{1,2}):(\d{1,2}):(\d{1,2})(?:([+-])(\d{1,2}):?(\d{2}))?$/;
 
 /** Parses a packet as ACF's wddx2cfml reads it, struct keys in packet casing; malformed input throws Error('Invalid WDDX packet'). */
@@ -279,6 +281,42 @@ function parseDateTime(text: string): Date {
   at.setUTCHours(hour, minute, second, 0);
   const offsetMinutes = (Number(m[8]) * 60 + Number(m[9])) * (m[7] === '-' ? -1 : 1);
   return new Date(at.getTime() - offsetMinutes * 60_000);
+}
+
+/** Rows of a parsed recordset, each built on first read, so padding costs no memory until a caller reads it. */
+function lazyRows(columns: readonly string[], cells: readonly (readonly WddxValue[])[], length: number): Record<string, WddxValue>[] {
+  const built = new Map<number, Record<string, WddxValue>>();
+  const index = (key: string | symbol): number | undefined => {
+    if (typeof key !== 'string') return undefined;
+    const r = Number(key);
+    return String(r) === key && Number.isInteger(r) && r >= 0 && r < length ? r : undefined;
+  };
+  const row = (r: number): Record<string, WddxValue> => {
+    let record = built.get(r);
+    if (record === undefined) {
+      record = Object.fromEntries(columns.map((column, c): [string, WddxValue] => [column, cells[c]?.[r] ?? null]));
+      built.set(r, record);
+    }
+    return record;
+  };
+  return new Proxy<Record<string, WddxValue>[]>([], {
+    get(target, key, receiver) {
+      const r = index(key);
+      if (r !== undefined) return row(r);
+      return key === 'length' ? length : Reflect.get(target, key, receiver);
+    },
+    has: (target, key) => index(key) !== undefined || Reflect.has(target, key),
+    ownKeys: () => [...Array.from({ length }, (_, r) => String(r)), 'length'],
+    getOwnPropertyDescriptor(target, key) {
+      const r = index(key);
+      if (r !== undefined) return { value: row(r), writable: false, enumerable: true, configurable: true };
+      return key === 'length' ? { value: length, writable: true, enumerable: false, configurable: false } : Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+    preventExtensions: () => false,
+  });
 }
 
 /** Recursive-descent reader for the elements cfwddx writes; whitespace between elements is ignored, as ACF ignores it. */
@@ -342,7 +380,8 @@ class PacketReader {
 
   private recordset(tag: StartTag): WddxQuery {
     const count = this.attribute(tag, 'rowCount');
-    if (!COUNT.test(count)) invalidPacket();
+    const rowCount = Number(count);
+    if (!COUNT.test(count) || rowCount < 0 || rowCount > MAX_DECLARED_ROWS) invalidPacket();
     const declared = this.attribute(tag, 'fieldNames');
     const columns = declared === '' ? [] : declared.split(',');
     const fields = this.children(tag, () => {
@@ -351,12 +390,12 @@ class PacketReader {
     });
     // Each declared column needs a field and each field a declared column, matched case-insensitively (captured).
     if (fields.length !== columns.length) invalidPacket();
-    const cells = columns.map((column) => (fields.find(([name]) => name === column.toUpperCase()) ?? invalidPacket())[1]);
-    // A field shorter than rowCount reads as NULL cells (captured).
-    const rows = Array.from({ length: Number(count) }, (_, r) =>
-      Object.fromEntries(columns.map((column, c): [string, WddxValue] => [column, cells[c]?.[r] ?? null])),
-    );
-    return { kind: 'query', columns, rows };
+    const byName = new Map<string, WddxValue[]>();
+    for (const [name, field] of fields) if (!byName.has(name)) byName.set(name, field);
+    const cells = columns.map((column) => byName.get(column.toUpperCase()) ?? invalidPacket());
+    // The query has max(rowCount, longest field) rows, a shorter field reading as NULL cells (captured).
+    const length = cells.reduce((n, field) => Math.max(n, field.length), Math.max(rowCount, 0));
+    return { kind: 'query', columns, rows: lazyRows(columns, cells, length) };
   }
 
   private stringContent(): string {

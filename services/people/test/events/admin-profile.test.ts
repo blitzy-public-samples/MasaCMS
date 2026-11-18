@@ -271,6 +271,32 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     expect(await storedPerson(userId)).toEqual({ fname: 'Kai', jobtitle: 'Analyst' });
   });
 
+  // tenant-b sorts after tenant-a in the registry, so an id-only read across sites would end on its person.
+  it('reads and saves only the person of the tenant of the account identity answers, past a same-id person of a later-registered tenant', async () => {
+    const { userId } = await seedUser(TENANT_A.siteId, 0);
+    await db.withTenant(TENANT_B.tenantId, (tx) =>
+      repo.insertPerson(tx, {
+        userid: userId, groupname: '', fname: 'Vic', lname: 'Tim', email: 'vic@example.com', company: 'Other', jobtitle: 'Victim',
+        mobilephone: '', website: '', subtype: 'Default', contactform: '', lastupdateby: 'Vic Tim', lastupdatebyid: userId,
+        siteid: TENANT_B.siteId, subscribe: 1, notes: '', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '',
+        imservice: '', tags: '',
+      }),
+    );
+    const victim = await storedPerson(userId, TENANT_B.tenantId);
+    const headers = await headersFor(userId);
+
+    const read = await send('GET', '/v1/profile', headers);
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({ user: { UserID: userId, SiteID: TENANT_A.siteId, Fname: 'Pat', Company: 'Acme' }, addresses: [{ city: 'Oslo' }] });
+
+    const res = await send('POST', '/v1/profile:update', { ...headers, ...FORM }, profileForm({ fname: 'Kai', lname: 'Lee', email: 'kai@example.com', jobtitle: 'Analyst' }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ written: true, redirect: { action: 'home.redirect', params: {} }, errors: {} });
+    expect(await storedPerson(userId)).toEqual({ fname: 'Kai', jobtitle: 'Analyst' });
+    expect(await storedPerson(userId, TENANT_B.tenantId)).toEqual(victim);
+    expect(victim).toEqual({ fname: 'Vic', jobtitle: 'Victim' });
+  });
+
   it('re-renders the posted values with legacy\'s errors and writes nothing', async () => {
     const { userId } = await seedUser(TENANT_A.siteId, 0);
     const before = await storedPerson(userId);

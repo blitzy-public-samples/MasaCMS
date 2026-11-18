@@ -1,4 +1,4 @@
-/** People JSON API `user` and `address` value sets against Masa userDAO.read/readAddress, getFilteredValues and the save return struct. */
+/** People JSON API `user` and `address` value sets against Masa userDAO.read/readAddress and getFilteredValues. */
 import { describe, expect, it } from 'vitest';
 import { cfToNumber, legacyQuery } from '@opt2/platform/legacy-compat';
 import { fixedClock } from '@opt2/platform/service-kit';
@@ -10,12 +10,9 @@ import {
   addressBeanValues,
   expansionTargets,
   filteredEntityValues,
-  overlayRequestValues,
-  saveResponse,
   userBeanValues,
   type EntityExtendData,
   type FilteredValuesOptions,
-  type SaveOutcome,
   type UserEntitySource,
 } from '../../src/domain/user-entity.js';
 import type { AccountView } from '../../src/legacy/identity-client.js';
@@ -534,85 +531,5 @@ describe('expansionTargets (expandEntity hasOne relations)', () => {
 
   it('follows no relation of a user', () => {
     expect(expansionTargets(userBeanValues(userSource(), CLOCK), { entityName: 'user', expandLinks: 'all' })).toStrictEqual([]);
-  });
-});
-
-describe('saveResponse (the save return struct)', () => {
-  it.each<SaveOutcome>([
-    { saveErrors: false, errors: {} },
-    { saveErrors: '', errors: {} },
-    { saveErrors: true, errors: { email: 'Please enter a valid email address.' } },
-  ])('copies the filtered values, then saveerrors and errors, from %j', (outcome) => {
-    const filtered = Object.freeze({ id: USER_ID, fname: 'Ada', saveerrors: 'read by fields' });
-
-    expect(saveResponse(filtered, outcome)).toStrictEqual({ id: USER_ID, fname: 'Ada', saveerrors: outcome.saveErrors, errors: outcome.errors });
-  });
-});
-
-describe('overlayRequestValues (posted values re-applied after a failed save)', () => {
-  const failed = { saveErrors: false, errors: { email: 'Please enter a valid email address.' } } as const;
-
-  it.each([
-    [false, failed.errors, true],
-    ['', failed.errors, true],
-    ['no', failed.errors, true],
-    [true, failed.errors, false],
-    ['yes', failed.errors, false],
-    [false, {}, false],
-    ['', {}, false],
-  ])('with saveErrors %j and errors %j overlays: %s', (saveErrors, errors, overlays) => {
-    const values = userBeanValues(userSource(), CLOCK);
-    const result = overlayRequestValues(values, new Map([['fname', 'Grace']]), { entityName: 'user', saveErrors, errors });
-
-    expect(result.fname).toBe(overlays ? 'Grace' : 'Ada');
-    if (!overlays) expect(result).toBe(values);
-  });
-
-  it('sets only the keys the re-read user holds, through the userBean setters and under the bean spelling', () => {
-    const values = userBeanValues(userSource({ extend: { data: { favoriteColor: 'teal' }, extendSetId: '' } }), CLOCK);
-    const input = new Map<string, unknown>([
-      ['fname', '  Grace '],
-      ['favoritecolor', 'navy'],
-      ['lastupdateby', 'x'.repeat(60)],
-      ['keepprivate', 'sometimes'],
-      ['siteid', 'other-site'],
-      ['nosuchkey', 'ignored'],
-    ]);
-    const result = overlayRequestValues(values, input, { entityName: 'user', ...failed });
-
-    expect(result).toMatchObject({ fname: 'Grace', favoriteColor: 'navy', lastupdateby: 'x'.repeat(50), siteid: 'other-site' });
-    expect(cfToNumber(result.keepprivate)).toBe(1);
-    expect(Object.hasOwn(result, 'favoritecolor')).toBe(false);
-    expect(Object.hasOwn(result, 'nosuchkey')).toBe(false);
-    expect(values.fname).toBe('Ada');
-  });
-
-  it('sets only the keys the re-read address holds, through the addressBean setters', () => {
-    const values = addressBeanValues({ address: addressRow(), extend: NO_EXTEND });
-    const input = new Map<string, unknown>([
-      ['city', ' Paris '],
-      ['isprimary', 'yes'],
-      ['longitude', '2.3522'],
-      ['latitude', 48.8566],
-      ['siteid', 'DEFAULT'],
-      ['subtype', 'Office'],
-      ['type', ' '],
-      ['nosuchkey', 'ignored'],
-    ]);
-    const result = overlayRequestValues(values, input, { entityName: 'address', ...failed });
-
-    expect(result).toMatchObject({ city: 'Paris', siteid: 'default', subtype: 'Office', type: 'Address' });
-    expect(numerics(result, ADDRESS_NUMERIC_KEYS)).toStrictEqual({ isprimary: 1, longitude: 2.3522, latitude: 48.8566 });
-    expect(Object.hasOwn(result, 'nosuchkey')).toBe(false);
-    expect(values.city).toBe('London');
-  });
-
-  it.each([
-    ['not a struct', {}],
-    [{ city: 'Required' }, { city: 'Required' }],
-  ])('setErrors takes a posted errors value %j only as a struct', (posted, expected) => {
-    const values = addressBeanValues({ address: addressRow(), extend: NO_EXTEND });
-
-    expect(overlayRequestValues(values, new Map([['errors', posted]]), { entityName: 'address', ...failed }).errors).toStrictEqual(expected);
   });
 });

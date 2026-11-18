@@ -67,7 +67,6 @@ const ACTOR = { userId: 'ACTOR-0000-0000-0000000000000000001', fname: 'Ada', lna
 const instant = (): Promise<void> => Promise.resolve();
 // Category ids fill the char(35) key, as Masa's UUIDs do, so stored values come back unpadded.
 const CAT = { one: cfUuid(), two: cfUuid(), three: cfUuid() };
-const PHOTO = cfUuid();
 
 /** How the identity double answers one operation's steps. */
 interface DoubleBehaviour {
@@ -388,66 +387,22 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
   it('generates the user id, and skips the primary address of a user restored from the trash', async () => {
     const identity = identityDouble(accounts);
     const params = { siteid: SITE, type: '2', fname: 'Tor', lname: 'Ash', email: 'tor@example.com', username: 'tor', ispublic: '0', frommuratrash: '1' };
-    const result = await runRosterOperation(depsFor(identity.client), rosterInput('json-save', params));
+    const result = await runRosterOperation(depsFor(identity.client), rosterInput('admin-add', params));
     if (!result.ok) throw new Error('expected success');
     expect(result.userId).toMatch(CF_UUID);
     expect(identity.prepared[0]?.account).not.toHaveProperty('Password');
     expect(await snapshot(result.userId)).toMatchObject({ fname: 'Tor', cities: [] });
   });
 
-  it('updates a stored user without touching created, and re-logs the saving session in at commit', async () => {
+  it('updates a stored user without touching created', async () => {
     const { userId, addressId } = await seedUser();
     const identity = identityDouble(accounts);
-    const input = rosterInput('json-save', updateParams(userId, addressId, { primaryaddressid: addressId }), { sessionReloginId: 'SESSION-1' });
+    const input = rosterInput('admin-update', updateParams(userId, addressId, { primaryaddressid: addressId }));
     const result = await runRosterOperation(depsFor(identity.client), input);
     expect(result).toMatchObject({ ok: true, userId, values: { fname: 'Robin', lname: 'Lee', groupid: 'GROUP-1', isnew: 0, errors: {} } });
     expect(await snapshot(userId)).toMatchObject({ ...NEW, rowVersion: '2', created: NOW, lastupdate: LATER });
     expect(identity.prepared[0]).toMatchObject({ kind: 'update', updateGroups: true, groupIds: ['GROUP-1'] });
-    expect(identity.commits[0]).toEqual({
-      sessionEffects: { reloginSessionId: 'SESSION-1', person: { fname: 'Robin', lname: 'Lee', email: 'robin@example.com', company: 'Acme', subtype: 'Default' } },
-    });
-  });
-
-  it("answers the user as committed: the people rows its commit read, with the account and memberships of identity's commit answer", async () => {
-    const { userId, addressId } = await seedUser();
-    const identity = identityDouble(accounts);
-    const result = await runRosterOperation(depsFor(identity.client), rosterInput('json-save', updateParams(userId, addressId)));
-    if (!result.ok || 'voided' in result) throw new Error('expected a committed save');
-    expect(result.committed).toMatchObject({
-      tenantId: A,
-      person: { userid: userId, fname: 'Robin', email: 'robin@example.com' },
-      account: accounts.get(userId),
-      groupIds: ['GROUP-1'],
-      categoryIds: [CAT.two],
-    });
-    expect(result.committed.addresses.map((row) => row.city)).toEqual(['Bergen']);
-    expect(identity.calls.slice(-2)).toEqual(['commit', 'finish']);
-  });
-
-  it.each<[string, RosterKind, Record<string, unknown>, string[][], string]>([
-    ['a JSON API save of a photo', 'json-save', { photofileid: PHOTO }, [[PHOTO]], 'png'],
-    ['a JSON API save without a photo', 'json-save', {}, [], ''],
-    ['an admin update of a photo', 'admin-update', { photofileid: PHOTO }, [], ''],
-    ['a profile update of a photo', 'profile-update', { photofileid: PHOTO }, [], ''],
-  ])("answers %s with the committed photo's extension, looked up under the intent before prepare", async (_label, kind, photo, lookedUp, photoFileExt) => {
-    const { userId, addressId } = await seedUser();
-    const identity = identityDouble(accounts);
-    const lookups: { ids: unknown[]; timeoutMs: number | undefined; identityCalls: string[]; state: RosterState | undefined }[] = [];
-    const photoFileExts: NonNullable<RosterDeps['photoFileExts']> = async (ids, options) => {
-      lookups.push({ ids: [...ids], timeoutMs: options?.timeoutMs, identityCalls: [...identity.calls], state: (await operationOf(userId))?.state });
-      return new Map([[PHOTO, 'png']]);
-    };
-    const input = rosterInput(kind, updateParams(userId, addressId, photo), { claims: claims({ sub: userId }) });
-    const result = await runRosterOperation(depsFor(identity.client, {}, { photoFileExts }), input);
-    if (!result.ok || 'voided' in result) throw new Error('expected a committed save');
-    expect(result.committed.photoFileExt).toBe(photoFileExt);
-    expect(lookups.map(({ ids }) => ids)).toEqual(lookedUp);
-    for (const lookup of lookups) {
-      expect(lookup).toMatchObject({ state: 'started', identityCalls: expect.not.arrayContaining(['prepare']) as unknown });
-      expect(lookup.timeoutMs).toBeGreaterThan(0);
-      expect(lookup.timeoutMs).toBeLessThanOrEqual(REQUEST_BUDGET_MS);
-    }
-    expect(identity.calls.slice(-2)).toEqual(['commit', 'finish']);
+    expect(identity.commits).toEqual([undefined]);
   });
 
   it('saves the session user\'s own profile without its account-level keys or memberships', async () => {
@@ -834,18 +789,12 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
       close: () => Promise.resolve(),
     };
     const store = newRequestContext();
-    const input = rosterInput('json-save', updateParams(userId, addressId), { sessionReloginId: 'SESSION-1' });
+    const input = rosterInput('admin-update', updateParams(userId, addressId));
     const result = await runWithRequestContext(store, () => runRosterOperation(depsFor(createIdentityClient(service)), input));
-    // The replayed commit's answer is the committed account; people's rows come from its own commit.
-    expect(result).toMatchObject({
-      ok: true,
-      userId,
-      committed: { tenantId: A, person: { fname: 'Robin' }, account: { userId, username: 'robin' }, groupIds: ['GROUP-1'], categoryIds: [CAT.two] },
-    });
+    expect(result).toMatchObject({ ok: true, userId, values: { fname: 'Robin' } });
     const commits = requests.filter((sent) => sent.path.endsWith(':commit'));
     expect(commits).toHaveLength(2);
     expect(commits[1]?.json).toEqual(commits[0]?.json);
-    expect(commits[0]?.json).toMatchObject({ sessionEffects: { reloginSessionId: 'SESSION-1' } });
     expect(store.writePositions.get('identity')).toBe('9001');
     expect(store.writePositions.get('people')).toEqual(expect.any(String));
     expect(await operationOf(userId)).toMatchObject({ state: 'done', error: 'finish-pending', identity_xid: '9001' });
@@ -1241,15 +1190,6 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.findByKey(tx, 'trash', { objectid: trashed }))).toMatchObject({ objectlabel: 'Trashed', deleteddate: NOW });
   });
 
-  it('creates the user a JSON API save names when no person holds its id', async () => {
-    const userId = cfUuid();
-    const identity = identityDouble(accounts);
-    const params = { userid: userId, siteid: SITE, type: '2', fname: 'Mo', email: 'mo@example.com', username: 'mo', ispublic: '0' };
-    expect(await runRosterOperation(depsFor(identity.client), rosterInput('json-save', params))).toMatchObject({ ok: true, userId });
-    expect(identity.prepared[0]).toMatchObject({ kind: 'create' });
-    expect(await snapshot(userId)).toMatchObject({ fname: 'Mo', rowVersion: '1' });
-  });
-
   // Last: the user subtype's definitions take part in every later save of the site.
   it('validates and saves extended attributes, and restores them with the before-image', async () => {
     await inTenant(async (tx) => {
@@ -1268,7 +1208,7 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     expect(await stored()).toEqual([]);
 
     const saved = await runRosterOperation(depsFor(identityDouble(accounts).client), rosterInput('admin-update', extended('42')));
-    expect(saved).toMatchObject({ ok: true, committed: { extend: { data: { shoesize: '42' } } } });
+    expect(saved).toMatchObject({ ok: true });
     expect(await stored()).toEqual(['42']);
 
     const failing = identityDouble(accounts, { commit: 'error' });

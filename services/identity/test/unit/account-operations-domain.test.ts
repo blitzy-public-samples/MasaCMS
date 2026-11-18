@@ -683,6 +683,58 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(await registered(lost.operationId)).toBe(false);
     });
 
+    // Umbrella, the holder's other tenant, sorts last in the registry.
+    it.each([
+      ['an active account of another tenant', UMBRELLA, 'active'],
+      ['a pending account of another tenant', UMBRELLA, 'pending'],
+      ['a group of another tenant', UMBRELLA, 'group'],
+      ['a group of the destination tenant', SITE_A, 'group'],
+    ] as const)('rejects a create of an id %s holds as badRequest, recording nothing and leaving the holder as stored', async (_label, site, holder) => {
+      const userId = next('A');
+      const read = (tx: TenantTx): Promise<unknown> => (holder === 'group' ? repo.findGroup(tx, userId) : repo.findAccountById(tx, userId, { includePending: true }));
+      await gated(site, async (tx) => {
+        if (holder === 'group') await repo.insertGroup(tx, groupInput({ userid: userId, groupname: uname('holders'), siteid: site }), null);
+        else await repo.insertAccount(tx, { userid: userId, username: uname('holder'), type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: site, remoteid: '', tablist: '', opt2_state: holder });
+      });
+      const before = await gated(site, read);
+      const prepare = input('create', userId, { groupIds: [EDITORS] });
+
+      await expect(prepareAccountOperation(deps(), prepare)).rejects.toMatchObject({ name: 'LegacyApiError', type: 'badRequest' });
+
+      for (const tenant of [SITE_A, UMBRELLA]) {
+        expect(await operationOf(prepare.operationId, tenant)).toBeNull();
+        expect(await eventsOf(prepare.operationId, tenant)).toEqual([]);
+        expect(await changelogCount(prepare.operationId, tenant)).toBe(0);
+      }
+      expect(await registered(prepare.operationId)).toBe(false);
+      expect(before).not.toBeNull();
+      expect(await gated(site, read)).toEqual(before);
+      expect(await accountOf(userId)).toBeNull();
+    });
+
+    it('lets at most one of two concurrent creates of one id in two tenants prepare, withdrawing the other as badRequest', async () => {
+      const userId = next('A');
+      const left = input('create', userId, {});
+      const right = input('create', userId, { isPublic: 1 }, { siteId: UMBRELLA });
+
+      const results = await racePrepares(userId, left, right);
+
+      const won = [left, right].filter((_prepare, index) => results[index]?.status === 'fulfilled');
+      expect(won.length).toBeLessThanOrEqual(1);
+      for (const result of results) {
+        if (result.status === 'fulfilled') expect(result.value.outcome).toBe('prepared');
+        else expect(result.reason).toMatchObject({ name: 'LegacyApiError', type: 'badRequest' });
+      }
+      const accounts = [await accountOf(userId, SITE_A), await accountOf(userId, UMBRELLA)].filter((account) => account !== null);
+      expect(accounts).toHaveLength(won.length);
+      for (const [prepare, site] of [[left, SITE_A], [right, UMBRELLA]] as const) {
+        const state = (await operationOf(prepare.operationId, site))?.state;
+        expect(await registered(prepare.operationId)).toBe(won.includes(prepare));
+        expect(won.includes(prepare) ? ['prepared'] : [undefined, 'aborted']).toContain(state);
+      }
+      for (const prepare of won) await abortAccountOperation(deps(), prepare.operationId);
+    });
+
     it('answers the legacy 503 after USER_CLOSED_WAIT_MS queued behind a fenced reader, recording and registering nothing', async () => {
       const username = uname('readheld');
       const userId = await seedUser(username);

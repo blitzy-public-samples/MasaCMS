@@ -619,7 +619,7 @@ describe('halting', () => {
     registry(w, [A, A.toUpperCase(), B], deleted);
     const since = ago(w, HALT_AFTER_MS + 1_000);
     const haltedAt = ago(w, 1_000);
-    const later = rosterOperationRow({ tenant_id: B, state: 'halted', kind: 'json-save', user_id: 'SHORT-USER-ID'.padEnd(35), started_at: ago(w, 2_000), identity_unreachable_since: since, halted_at: haltedAt });
+    const later = rosterOperationRow({ tenant_id: B, state: 'halted', kind: 'profile-update', user_id: 'SHORT-USER-ID'.padEnd(35), started_at: ago(w, 2_000), identity_unreachable_since: since, halted_at: haltedAt });
     const resolved = rosterOperationRow({ tenant_id: A, state: 'rolled-back', started_at: ago(w, 5_000), halted_at: haltedAt });
     const stored = [later, resolved, rosterOperationRow({ tenant_id: A, state: 'people-committed' }), rosterOperationRow({ tenant_id: B, state: 'rolled-back' })];
     w.db.respond(isHaltedSelect, haltedPage(stored));
@@ -656,7 +656,7 @@ describe('halting', () => {
         operationId: later.operation_id,
         tenantId: B,
         userId: 'SHORT-USER-ID',
-        kind: 'json-save',
+        kind: 'profile-update',
         state: 'halted',
         startedAt: later.started_at,
         updatedAt: later.updated_at,

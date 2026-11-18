@@ -1,14 +1,12 @@
 // The value structs Masa's JSON API returns for its `user` and `address` entities: userDAO.read and readAddress with
-// getAllValues (userBean.cfc, addressBean.cfc, beanExtendable.cfc), then jsonApiUtility getFilteredValues and the save
-// return struct. Pure; @opt2/platform/legacy-compat's createApiSerializer turns the results into legacy JSON.
+// getAllValues (userBean.cfc, addressBean.cfc, beanExtendable.cfc), then jsonApiUtility getFilteredValues. Pure;
+// @opt2/platform/legacy-compat's createApiSerializer turns the results into legacy JSON.
 import {
   cfEq,
-  cfIsBoolean,
   cfIsNumeric,
   cfListAppend,
   cfListToArray,
   cfNumberString,
-  cfToBoolean,
   cfToNumber,
   javaTrim,
   legacyQuery,
@@ -490,50 +488,4 @@ export function filteredEntityValues(values: Readonly<Record<string, unknown>>, 
     put(target.name, opts.expansions[target.name]);
   }
   return vals;
-}
-
-/** What the saved bean reports: its `saveErrors` flag and `errors` struct. */
-export interface SaveOutcome {
-  saveErrors: unknown;
-  errors: Readonly<Record<string, unknown>>;
-}
-
-/** The save re-applies the posted values when it failed and `saveErrors` is not true (jsonApiUtility.cfc:2047). */
-function overlaysRequestValues({ saveErrors, errors }: SaveOutcome): boolean {
-  return !(cfIsBoolean(saveErrors) && cfToBoolean(saveErrors)) && Object.keys(errors).length > 0;
-}
-
-/**
- * jsonApiUtility.cfc:2047-2056: after a failed save without `saveErrors`, each posted value whose key the re-read bean
- * holds, set through the bean's setters; otherwise the values unchanged. `input` is keyed by lower-cased name.
- */
-export function overlayRequestValues(values: UserValues, input: ReadonlyMap<string, unknown>, outcome: SaveOutcome & { entityName: 'user' }): UserValues;
-export function overlayRequestValues(
-  values: AddressValues,
-  input: ReadonlyMap<string, unknown>,
-  outcome: SaveOutcome & { entityName: 'address' },
-): AddressValues;
-export function overlayRequestValues(
-  values: UserValues | AddressValues,
-  input: ReadonlyMap<string, unknown>,
-  outcome: SaveOutcome & { entityName: PeopleApiEntity },
-): UserValues | AddressValues {
-  if (!overlaysRequestValues(outcome)) return values;
-  // CFML struct keys match case-insensitively; a posted key updates the bean's own spelling.
-  const spellings = new Map(Object.keys(values).map((key) => [key.toLowerCase(), key]));
-  const posted: Array<[string, unknown]> = [];
-  for (const [key, value] of input) {
-    const spelling = spellings.get(key.toLowerCase());
-    if (spelling !== undefined) posted.push([spelling, value]);
-  }
-  return outcome.entityName === 'user' ? applyUserInput(values as UserValues, new Map(posted)) : applyAddressInput(values as AddressValues, posted);
-}
-
-/** The save return struct (jsonApiUtility.cfc:2060-2063): the re-read entity's filtered values, then `saveerrors` and `errors`. */
-export function saveResponse(values: Readonly<Record<string, unknown>>, { saveErrors, errors }: SaveOutcome): Record<string, unknown> {
-  const response: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(values)) define(response, key, value);
-  define(response, 'saveerrors', saveErrors);
-  define(response, 'errors', errors);
-  return response;
 }

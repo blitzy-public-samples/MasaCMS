@@ -18,9 +18,7 @@ import { discardOperation, releaseOperation } from '@opt2/platform/outbox';
 import { ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import { knownTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { PeopleEvents } from '../events/publish.js';
-import type { ContentClient } from '../legacy/content-client.js';
 import type {
-  AccountCommitRequest,
   AccountOperationState,
   AccountPrepareRequest,
   AccountView,
@@ -62,7 +60,6 @@ import {
 import {
   applyAddressInput,
   insertAddressInTx,
-  listAddresses,
   primaryAddressFor,
   resolveAddressPoolSite,
   setPrimaryAddress,
@@ -131,8 +128,8 @@ export const PEOPLE_OPERATION_UNITS: readonly PeopleUnit[] = Object.freeze([
 /** Identity units a roster operation writes; identity registers them in its own schema at prepare. */
 export const IDENTITY_OPERATION_UNITS = Object.freeze(['identity.user_account', 'identity.credential', 'identity.login_state', 'identity.membership'] as const);
 
-/** The carried entry points that run the protocol: `cusers.update` Add and Update, JSON API `user` save and `ceditprofile.update`. */
-export type RosterKind = 'admin-add' | 'admin-update' | 'json-save' | 'profile-update';
+/** The carried entry points that run the protocol: `cusers.update` Add and Update, and `ceditprofile.update`. */
+export type RosterKind = 'admin-add' | 'admin-update' | 'profile-update';
 
 /** One Type=2 save without a photo. */
 export interface RosterInput {
@@ -147,32 +144,13 @@ export interface RosterInput {
   /** File parts of the request, field name to client file name. */
   postedFiles: Map<string, string>;
   requestId: string;
-  /** The saving user's own identity session, logged in again at finish as the JSON API self-save does. */
-  sessionReloginId?: string;
 }
 
-/** The user as the operation committed it: people's rows read in its commit, identity's account and memberships from its commit answer. */
-export interface CommittedUser {
-  /** The tenant holding the person. */
-  tenantId: string;
-  person: PersonRow;
-  account: AccountView;
-  /** Membership group ids, in identity's `readMembershipIDs` order. */
-  groupIds: string[];
-  /** Interest category ids, in `readInterestGroupIDs` order. */
-  categoryIds: string[];
-  addresses: AddressRow[];
-  extend: EntityExtendData;
-  /** The committed photo's `tfiles.fileExt`, looked up under the operation for a JSON API save; '' otherwise. */
-  photoFileExt: string;
-}
-
-/** A save committed on both sides: the saved bean's values and the user as committed. */
+/** A save committed on both sides: the saved bean's values. */
 export interface CommittedSave {
   ok: true;
   userId: string;
   values: UserValues;
-  committed: CommittedUser;
 }
 
 /** An admin action `restrictAdminInput` voided: nothing written, the route re-routes with these values. */
@@ -238,8 +216,6 @@ export interface RosterDeps {
   locale?: string;
   /** Wait between closed-user and identity-state polls; defaults to a timer. */
   sleep?: Sleep;
-  /** strategies-content's photo lookup; without it a committed `photoFileExt` is ''. */
-  photoFileExts?: ContentClient['photoFileExts'];
 }
 
 /** Options of `awaitPersonOpen`; `selfOperationId` names the caller's own operation, which does not close the user to it. */
@@ -575,8 +551,6 @@ interface ShapedSave {
   /** The posted address an update re-saves; '' for none. */
   addressId: string;
   addressPoolSite?: string;
-  /** The `tfiles.fileExt` of `person.photofileid`, from `shapeUnderIntent`. */
-  photoFileExt: string;
 }
 
 /** The action `restrictAdminInput` voided: no write, the route re-routes with these values. */
@@ -611,7 +585,7 @@ async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string
 /** The user a save writes, from the request alone: the session user, the posted `userid`, or a new id for a create. */
 interface SaveTarget {
   userId: string;
-  /** Create, or update a stored user; a JSON API save of a user no person row holds turns into a create. */
+  /** Create, or update a stored user. */
   operation: ShapedSave['operation'];
 }
 
@@ -624,7 +598,7 @@ function saveTarget(input: RosterInput): SaveTarget {
 }
 
 /** Under the intent: the controller restrictions, the bean values, the pool and S2 rules and people's validation, reading only. */
-async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarget, budget: Budget): Promise<Omit<ShapedSave, 'photoFileExt'> | VoidedSave> {
+async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarget, budget: Budget): Promise<ShapedSave | VoidedSave> {
   const { claims, tenantId } = input;
   let params = input.params;
   let voided = false;
@@ -636,18 +610,14 @@ async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarge
     voided = cfEq(restricted.action, 'invalid');
   }
 
-  let { userId, operation } = target;
+  const { operation } = target;
+  let { userId } = target;
   let stored: StoredUser | null = null;
   if (operation === 'update') {
     // A profile save writes no memberships (updateGroups=false), so it reads none.
     stored = await loadStoredUser(deps, tenantId, userId, input.kind !== 'profile-update', budget);
-    if (stored === null) {
-      // userManager.save creates a user no tusers row holds; the admin and profile updates read a stored one.
-      if (input.kind !== 'json-save') throw personUnknown(userId);
-      operation = 'create';
-    } else {
-      userId = stored.person.userid;
-    }
+    if (stored === null) throw personUnknown(userId);
+    userId = stored.person.userid;
   }
   if (input.kind === 'profile-update' && stored !== null) {
     params = restrictProfileInput(params, { userId, siteId: stored.account.siteId });
@@ -751,12 +721,6 @@ async function recordIntent(deps: RosterDeps, input: RosterInput, userId: string
   }
 }
 
-/** The `tfiles.fileExt` `userDAO.read` joins for the photo a JSON API save commits; '' for no photo and for the other kinds. */
-async function committedPhotoExt(deps: RosterDeps, input: RosterInput, fileId: string | null, budget: Budget): Promise<string> {
-  if (input.kind !== 'json-save' || deps.photoFileExts === undefined || fileId === null || fileId === '') return '';
-  return (await deps.photoFileExts([fileId], callOptions(budget, 'shape'))).get(fileId) ?? '';
-}
-
 /** Shapes the save under its intent and records the payload; a failed or voided save closes the operation `rolled-back`. */
 async function shapeUnderIntent(
   deps: RosterDeps,
@@ -770,11 +734,8 @@ async function shapeUnderIntent(
     guarded('shape', () => closeOperation(deps, input.tenantId, operationId, { state: 'rolled-back', error }, write));
   let shaped: ShapedSave | VoidedSave;
   try {
-    const save = await shapeSave(deps, input, target, budget);
-    if ('voided' in save) {
-      shaped = save;
-    } else {
-      shaped = { ...save, photoFileExt: await committedPhotoExt(deps, input, save.person.photofileid, budget) };
+    shaped = await shapeSave(deps, input, target, budget);
+    if (!('voided' in shaped)) {
       const payload = payloadOf(shaped);
       await guarded('shape', () => withTenant(deps.db, input.tenantId, (tx) => deps.repo.setRosterOperationState(tx, operationId, { state: 'started', payload }, write)));
     }
@@ -849,18 +810,6 @@ async function fenceMovedAddress(repo: PeopleRepository, tx: TenantTx, shaped: S
   if (open !== undefined) throw new PersonClosedSignal(open.user_id.replace(/ +$/, ''), open.operation_id);
 }
 
-/** People's part of the committed user. */
-type CommittedRows = Pick<CommittedUser, 'person' | 'categoryIds' | 'addresses' | 'extend'>;
-
-/** The person's rows as `userDAO.read` reloads them after the save, read in the people commit's transaction. */
-async function committedRows(repo: PeopleRepository, tx: TenantTx, person: PersonRow, config: ExtendConfig): Promise<CommittedRows> {
-  const categoryIds = (await repo.listInterests(tx, person.userid)).map((row) => row.categoryid);
-  const addresses = await listAddresses(repo, tx, person.userid);
-  // getAllValues builds the bean's extended data for its site, Type 2 and subtype (beanExtendable.cfc:139-151).
-  const extend = await extendSetData(repo, tx, person.userid, { siteId: person.siteid ?? '', type: '2', subtype: person.subtype ?? '' }, config);
-  return { person, categoryIds, addresses, extend };
-}
-
 /** Step 3: people's writes of `userManager.update`/`create` in one fenced, gated transaction, the held person event and state `people-committed`; fence waits draw on `budget`. */
 async function commitPeople(
   deps: RosterDeps,
@@ -869,7 +818,7 @@ async function commitPeople(
   operationId: string,
   budget: Budget,
   write: WriteContext,
-): Promise<{ operation: RosterOperationRow; person: PersonRow; audit: { lastupdateby: string; lastupdatebyid: string }; rows: CommittedRows }> {
+): Promise<{ operation: RosterOperationRow; audit: { lastupdateby: string; lastupdatebyid: string } }> {
   const { repo } = deps;
   const { userId, values } = shaped;
   const audit = lastUpdateInfo(auditActorFor(input.claims, input.acting), { userid: userId, fname: values.fname, lname: values.lname });
@@ -904,7 +853,7 @@ async function commitPeople(
     await deps.events.publishPersonChanged(tx, person, { operationId });
     const operation = await repo.setRosterOperationState(tx, operationId, { state: 'people-committed', beforeImage: JSON.stringify(before) }, write);
     if (operation === null) throw new Error(`Roster operation ${operationId} is missing from its tenant`);
-    return { operation, person, audit, rows: await committedRows(repo, tx, person, config) };
+    return { operation, audit };
   };
   return runPersonsOpen(deps.db, input.tenantId, commit, reserving(budget, IDENTITY_CALL_RESERVE_MS));
 }
@@ -926,13 +875,6 @@ async function identityState(deps: RosterDeps, userId: string, operationId: stri
     }
     await budget.pause(CLOSED_POLL_MS);
   }
-}
-
-/** The commit body: the saving user's own session, logged in again from the saved person at finish. */
-function commitRequest(input: RosterInput, person: PersonRow): AccountCommitRequest | undefined {
-  if (input.sessionReloginId === undefined) return undefined;
-  const { fname, lname, email, company, subtype } = person;
-  return { sessionEffects: { reloginSessionId: input.sessionReloginId, person: { fname, lname, email, company, subtype } } };
 }
 
 /** Step 5 after `done`: identity's `:finish`, then the operation leaves `finish-pending` and its registration ends; on a failure recovery owes the finish. */
@@ -978,8 +920,8 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
   assertNoPhoto(input.params);
   const { tenantId, claims } = input;
   const target = saveTarget(input);
-  // No stored person has a wider id, so the admin and profile updates refuse it as they refuse an unknown person, before any intent.
-  if (target.operation === 'update' && input.kind !== 'json-save' && target.userId.length > ID_WIDTH) throw personUnknown(target.userId);
+  // No stored person has a wider id, so an update refuses it as it refuses an unknown person, before any intent.
+  if (target.operation === 'update' && target.userId.length > ID_WIDTH) throw personUnknown(target.userId);
   const base: WriteContext = { origin: 'target', actorUserId: claims.sub, requestId: input.requestId };
 
   const operationId = (await recordIntent(deps, input, target.userId, base)).operation_id;
@@ -1032,11 +974,10 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
     throw asUnavailable(err, 'people-commit');
   }
 
-  const commitBody = commitRequest(input, committed.person);
   let commit: CommitOutcome;
   try {
     await deps.faults.at('after-people-commit');
-    commit = await deps.identity.commit(userId, operationId, commitBody, callOptions(budget, 'identity-commit'));
+    commit = await deps.identity.commit(userId, operationId, undefined, callOptions(budget, 'identity-commit'));
   } catch (err) {
     // Unreachable past the budget, the operation stays `people-committed` and the user closed until recovery.
     const state = await guarded('identity-commit', () => identityState(deps, userId, operationId, budget, err));
@@ -1049,7 +990,7 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
       throw asUnavailable(err, 'identity-commit');
     }
     // A committed operation's commit answers its recorded position again; unanswered, recovery reverts both sides.
-    commit = await guarded('identity-commit', () => deps.identity.commit(userId, operationId, commitBody, callOptions(budget, 'identity-commit')));
+    commit = await guarded('identity-commit', () => deps.identity.commit(userId, operationId, undefined, callOptions(budget, 'identity-commit')));
   }
   // A failure past identity's commit leaves `people-committed` with identity committed, which recovery reverts on both sides.
   await guarded('after-identity-commit', () => deps.faults.at('after-identity-commit'));
@@ -1062,7 +1003,7 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
   );
   await finishOperation(deps, tenantId, userId, operationId, budget, write);
   const values = { ...shaped.values, ...committed.audit, isnew: 0, errors: {} };
-  return { ok: true, userId, values, committed: { tenantId, ...committed.rows, account: commit.account, groupIds: commit.groupIds, photoFileExt: shaped.photoFileExt } };
+  return { ok: true, userId, values };
 }
 
 /** `row` with its timestamp columns, which JSON carries as ISO text, back as Dates. */

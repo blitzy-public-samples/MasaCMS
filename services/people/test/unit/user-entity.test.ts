@@ -9,8 +9,6 @@ import {
   addressBeanValues,
   addressesQuery,
   filteredEntityValues,
-  overlayRequestValues,
-  saveResponse,
   userBeanValues,
   type EntityExtendData,
   type FilteredValuesOptions,
@@ -47,11 +45,6 @@ const SHARED_ADDRESS_CITY_PASSWORD = `{"apiversion":"v1","data":{"city":"","addr
 const OWN_USER = `{"apiversion":"v1","data":{"mobilephone":"555-0100","lname":"Editor","email":"qa_editor@example.com","contactform":"0","lastupdate":"2026-11-13T21:38:37","keepprivate":0,"userid":"${QA_EDITOR}","username":"qa_editor","id":"${QA_EDITOR}","lastupdatebyid":"${ADMIN}","type":"user","subtype":"Default","categoryid":"${INTEREST_CATEGORY}","fname":"QA","company":"Acme","tablist":"Basic","newfile":"","ispublic":0,"imservice":"","isnew":0,"jobtitle":"","website":"","lastlogin":"2026-11-13T02:44:51","tags":"alpha,beta","s2":0,"links":{"all":"http://localhost:21480/index.cfm/_api/json/v1/default/user","permissions":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}/permissions","properties":"http://localhost:21480/index.cfm/_api/json/v1/default/user/properties","edit":"http://localhost:21480/admin/?muraAction=cusers.edituser&siteid=default&userid=${QA_EDITOR}","self":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}","entities":"http://localhost:21480/index.cfm/_api/json/v1/default"},"notes":"","created":"2026-11-13T02:44:29","groupname":"","perm":0,"description":"","addressid":"","imname":"","passwordcreated":"2026-11-13T02:44:29","photofileid":"","interests":"","siteid":"default","primaryaddressid":"","subscribe":0,"remoteid":"R-1","groupid":"${EDITOR_GROUP}","inactive":0,"photofileext":"","lastupdateby":"Admin User","entityname":"user"},"method":"findOne"}`;
 const OWN_USER_COMPANY_CATEGORY = `{"apiversion":"v1","data":{"categoryid":"${INTEREST_CATEGORY}","userid":"${QA_EDITOR}","id":"${QA_EDITOR}","siteid":"default","isnew":0,"type":"user","entityname":"user","company":"Acme"},"method":"findOne"}`;
 const OWN_ADDRESS = `{"apiversion":"v1","data":{"zip":"","longitude":-73.98,"phone":"","links":{"all":"http://localhost:21480/index.cfm/_api/json/v1/default/address","site":"http://localhost:21480/index.cfm/_api/json/v1/default/site","permissions":"http://localhost:21480/index.cfm/_api/json/v1/default/address/${PRIMARY_ADDRESS}/permissions","properties":"http://localhost:21480/index.cfm/_api/json/v1/default/address/properties","self":"http://localhost:21480/index.cfm/_api/json/v1/default/address/${PRIMARY_ADDRESS}","entities":"http://localhost:21480/index.cfm/_api/json/v1/default","user":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}"},"state":"","country":"","addressid":"${PRIMARY_ADDRESS}","userid":"${QA_EDITOR}","addressname":"Primary","addressemail":"","id":"${PRIMARY_ADDRESS}","address1":"12 Main St","type":"Address","address2":"","subtype":"Default","addressurl":"","extendsetid":"","siteid":"default","city":"New York","hours":"","isprimary":1,"fax":"","isnew":0,"addressnotes":"","latitude":40.7128,"entityname":"address"},"method":"findOne"}`;
-
-// POST /index.cfm/_api/json/v1/default/user/<qa_editor> on the own oracle: a duplicate username (403), then a valid save (200).
-const OWN_SAVE_FAILED = `{"apiversion":"v1","data":{"mobilephone":"","errors":{"username":"The username 'admin' that you entered is being used by another user."},"lname":"Editor","email":"qa_editor@example.com","contactform":"","lastupdate":"2026-11-13T02:44:29","keepprivate":0,"userid":"${QA_EDITOR}","username":"admin","id":"${QA_EDITOR}","lastupdatebyid":"${ADMIN}","type":"user","subtype":"Default","categoryid":"","fname":"Changed","company":"","tablist":"","newfile":"","ispublic":0,"imservice":"","isnew":0,"jobtitle":"","website":"","lastlogin":"2026-11-13T02:44:51","tags":"","s2":0,"links":{"all":"http://localhost:21480/index.cfm/_api/json/v1/default/user","permissions":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}/permissions","properties":"http://localhost:21480/index.cfm/_api/json/v1/default/user/properties","self":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}","entities":"http://localhost:21480/index.cfm/_api/json/v1/default"},"notes":"","created":"2026-11-13T02:44:29","groupname":"","perm":0,"description":"","addressid":"","imname":"","passwordcreated":"2026-11-13T02:44:29","photofileid":"","saveerrors":"","interests":"","siteid":"default","primaryaddressid":"","subscribe":1,"remoteid":"","groupid":"${EDITOR_GROUP}","inactive":0,"photofileext":"","lastupdateby":"Admin User","entityname":"user"},"method":"save"}`;
-const OWN_SAVE_OK = `{"apiversion":"v1","data":{"mobilephone":"","errors":{},"lname":"Editor","email":"qa_editor@example.com","contactform":"","lastupdate":"2026-11-13T21:38:37","keepprivate":0,"userid":"${QA_EDITOR}","username":"qa_editor","id":"${QA_EDITOR}","lastupdatebyid":"${ADMIN}","type":"user","subtype":"Default","categoryid":"","fname":"QA","company":"","tablist":"","newfile":"","ispublic":0,"imservice":"","isnew":0,"jobtitle":"","website":"","lastlogin":"2026-11-13T02:44:51","tags":"","s2":0,"links":{"all":"http://localhost:21480/index.cfm/_api/json/v1/default/user","permissions":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}/permissions","properties":"http://localhost:21480/index.cfm/_api/json/v1/default/user/properties","self":"http://localhost:21480/index.cfm/_api/json/v1/default/user/${QA_EDITOR}","entities":"http://localhost:21480/index.cfm/_api/json/v1/default"},"notes":"","created":"2026-11-13T02:44:29","groupname":"","perm":0,"description":"","addressid":"","imname":"","passwordcreated":"2026-11-13T02:44:29","photofileid":"","saveerrors":"","interests":"","siteid":"default","primaryaddressid":"","subscribe":1,"remoteid":"","groupid":"${EDITOR_GROUP}","inactive":0,"photofileext":"","lastupdateby":"Admin User","entityname":"user"},"method":"save"}`;
-const USERNAME_TAKEN = "The username 'admin' that you entered is being used by another user.";
 
 /** userBean and addressBean property types registerEntity hints on the shared serializer (userBean.cfc:78-120, addressBean.cfc:80-101). */
 const PROPERTY_TYPES: ReadonlyArray<readonly [key: string, type: 'numeric' | 'date']> = [
@@ -300,40 +293,5 @@ describe('an address read on the legacy wire (userDAO.readAddress, getAllValues,
     const data = wire(filteredEntityValues(addressBeanValues({ address, extend }), addressOptions({})));
 
     expect(data).toMatchObject({ addressid: address.addressid, deliveryfloor: '7', extendsetid: ADDRESS_SET, city: 'Springfield', isprimary: 0 });
-  });
-});
-
-describe('the save return struct on the legacy wire (jsonApiUtility.cfc:2046-2063)', () => {
-  const posted = (username: string, fname: string): Map<string, unknown> =>
-    new Map<string, unknown>([
-      ['userid', QA_EDITOR],
-      ['siteid', 'default'],
-      ['username', username],
-      ['fname', fname],
-      ['lname', 'Editor'],
-      ['email', 'qa_editor@example.com'],
-      ['type', '2'],
-    ]);
-
-  it.each([
-    [
-      'a failed save, with the posted values over the re-read user',
-      posted('admin', '  Changed '),
-      { saveErrors: '', errors: { username: USERNAME_TAKEN } },
-      qaEditor({ account: { lastLogin: OWN_LAST_LOGIN } }),
-      OWN_SAVE_FAILED,
-    ],
-    [
-      'a saved user, re-read as stored and with an empty errors struct',
-      posted('qa_editor', 'QA'),
-      { saveErrors: '', errors: {} },
-      qaEditor({ person: { lastupdate: OWN_SAVED_AT }, account: { lastLogin: OWN_LAST_LOGIN } }),
-      OWN_SAVE_OK,
-    ],
-  ])('matches the captured body of %s', (_case, input, outcome, reread, body) => {
-    const values = overlayRequestValues(userBeanValues(reread, CLOCK), input, { entityName: 'user', ...outcome });
-    const filtered = filteredEntityValues(values, userOptions(oracleLinks(body), { expanded: true }));
-
-    expect(wire(saveResponse(filtered, outcome))).toStrictEqual(oracleData(body));
   });
 });

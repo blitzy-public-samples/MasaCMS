@@ -283,8 +283,8 @@ function requiredUserId(input: ReadonlyMap<string, unknown>): string {
   return javaTrim(userId);
 }
 
-// The `{extdata}` branches are withheld on the decision list (`admin:cusers.updateaddress{extdata}`,
-// `api:address.save{extdata}`) and routed to legacy, so a posted `extendSetID`, even empty, is refused before any write.
+// The `{extdata}` branch is withheld on the decision list (`admin:cusers.updateaddress{extdata}`) and routed to legacy,
+// so a posted `extendSetID`, even empty, is refused before any write.
 function assertNoExtendedData(input: ReadonlyMap<string, unknown>): void {
   if (input.has('extendsetid')) {
     throw new LegacyServiceUnavailableError('Address extended data is saved by legacy', 'auto', 'address-extdata-withheld');
@@ -316,9 +316,9 @@ async function lockedAddress(repo: PeopleRepository, tx: TenantTx, addressId: st
 }
 
 /** The stored address `addressId` (null for '' or none), row-locked so its owner holds still, then `posted` and that owner fenced; row locks precede roster locks. */
-async function fencedAddress(deps: AddressDeps, tx: TenantTx, addressId: string, posted: string | undefined): Promise<AddressRow | null> {
+async function fencedAddress(deps: AddressDeps, tx: TenantTx, addressId: string, posted: string): Promise<AddressRow | null> {
   const stored = addressId === '' ? null : await lockedAddress(deps.repo, tx, addressId);
-  const owners = [posted ?? '', storedOwner(stored)].filter((id) => id !== '');
+  const owners = [posted, storedOwner(stored)].filter((id) => id !== '');
   if (owners.length > 0) await deps.fence.fencePersons(tx, owners);
   return stored;
 }
@@ -394,36 +394,6 @@ export async function updateAddress(
       const current = stored === null ? newAddressValues() : storedValues(stored);
       const values = applyAddressInput(current, input, await resolveAddressPoolSite(tx, actor.tid, input));
       return updateInTx(deps, tx, values, stored !== null, actor.write);
-    },
-    { clock: deps.clock },
-  );
-}
-
-/**
- * The JSON API `address` save (jsonApiUtility.cfc:2010-2029, addressBean.cfc:258-268): the stored address with `input`
- * applied, then updateAddress when its id is stored, else createAddress. The userid check reads the merged values.
- */
-export async function saveAddress(
-  deps: AddressDeps,
-  tenantId: string,
-  input: ReadonlyMap<string, unknown>,
-  actor: AddressActor,
-): Promise<AddressSaveResult> {
-  assertNoExtendedData(input);
-  const addressId = postedText(input, 'addressid');
-  // Without a posted userid the stored owner saves.
-  const posted = input.has('userid') ? javaTrim(postedText(input, 'userid')) : undefined;
-  if (posted === '') throw new Error(USER_ID_REQUIRED);
-  return deps.fence.withPersonsOpen(
-    deps.db,
-    tenantId,
-    async (tx) => {
-      const stored = await fencedAddress(deps, tx, addressId, posted);
-      if (posted === undefined && storedOwner(stored) === '') throw new Error(USER_ID_REQUIRED);
-      const current = stored === null ? newAddressValues() : storedValues(stored);
-      const values = applyAddressInput(current, input, await resolveAddressPoolSite(tx, actor.tid, input));
-      if (stored !== null) return updateInTx(deps, tx, values, true, actor.write);
-      return createInTx(deps, tx, values, simpleText(values.addressid, 'addressid'), input, actor.write);
     },
     { clock: deps.clock },
   );

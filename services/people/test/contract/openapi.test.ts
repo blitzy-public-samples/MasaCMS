@@ -109,7 +109,6 @@ const HOME_ADDRESS = String(
 const USERNAME_TAKEN = 'The username module_user_a is already taken.';
 const ARCHIVE_UNIQUE_CONSTRAINT = 'person_archive_tenant_id_person_id_effective_from_key';
 const WATERMARK_FINISHED_AT = '2026-06-30T12:00:00.000';
-const ANONYMOUS_SESSION: UserHeadersInput = { sub: '', site: SITE_A, roles: [] };
 
 const SEED_TABLES: Readonly<Record<string, keyof TenantPeopleSeed>> = {
   person: 'persons',
@@ -404,7 +403,6 @@ function jsonApiCases(): Record<string, Case[]> {
   return cases;
 }
 
-const USER_SAVE = `userid=${MODULE_USER}&fname=Morgan&lname=Modular&username=module_user_a&${TOKEN_FIELDS}`;
 const ADVANCED_CRITERIA = 'param=1&paramField1=tusers.lname%5Evarchar&paramRelationship1=and&paramCriteria1=System&paramCondition1=Contains';
 const ADMIN_UPDATE = `userid=${MODULE_USER}&siteid=${SITE_A}&type=2&action=Update&fname=Morgan&lname=Modular&username=module_user_a&email=module_user_a@tenant-a.opt2.test&ispublic=0&${TOKEN_FIELDS}`;
 const ARCHIVE_FIELDS = `effectiveFrom=${ARCHIVE_EFFECTIVE_FROM}&${TOKEN_FIELDS}`;
@@ -741,42 +739,24 @@ const CASES: Record<string, Case[]> = {
   jsonSegmentPost: jsonApiOperation(
     'jsonSegmentPost',
     {
-      name: 'saves a tenant-a user without a photo once identity accepts the CSRF token',
-      inject: send('POST', jsonApi('json', `/${SITE_A}/user`), SA, USER_SAVE),
-      status: 200,
-      verify: legacyOk('save', (data) => expect(data).toMatchObject({ userid: MODULE_USER, lname: 'Modular', errors: {} })),
-    },
-    {
-      name: 'answers a save identity rejects with the legacy 403 carrying the errors',
-      inject: send('POST', jsonApi('json', `/${SITE_A}/user`), SA, USER_SAVE),
-      setup: rejectedUsername,
-      status: 403,
-      verify: ({ body }, ctx) => {
-        expect(record(record(body).data).errors).toMatchObject({ username: USERNAME_TAKEN });
-        expect(writesTo(ctx, 'person')).toBe(0);
-      },
-    },
-    {
-      name: 'refuses an anonymous session save with the legacy 401 authorization error',
-      inject: send('POST', jsonApi('json', `/${SITE_A}/user`), asUser(ANONYMOUS_SESSION), `userid=${SYSTEM_USER}&fname=Anon&${TOKEN_FIELDS}`),
-      status: 401,
-      verify: NO_PERMISSION,
-    },
-    {
-      name: 'rejects a save whose CSRF token identity refuses as invalidTokens, writing nothing',
-      inject: send('POST', jsonApi('json', `/${SITE_A}/user`), SA, USER_SAVE),
-      setup: (ctx) => ctx.identity.csrf.rejectAll(),
-      status: 400,
+      name: 'withholds a user save with the legacy 503, as legacy serves it',
+      inject: send('POST', jsonApi('json', `/${SITE_A}/user`), SA, `userid=${MODULE_USER}&fname=Morgan&lname=Modular&${TOKEN_FIELDS}`),
+      status: 503,
       verify: (answer, ctx) => {
-        legacyError({ code: 'invalid_request', message: 'Invalid CSRF tokens' })(answer);
+        SERVER_ERROR(answer);
         expect(writesTo(ctx, 'person')).toBe(0);
+        expect(ctx.identity.csrf.consumed()).toEqual([]);
       },
     },
     {
-      name: 'saves a tenant-a address',
+      name: 'withholds an address save with the legacy 503, as legacy serves it',
       inject: send('POST', jsonApi('json', `/${SITE_A}/address`), SA, `addressid=${HOME_ADDRESS}&userid=${SYSTEM_USER}&addressname=Home&city=Lakeview&${TOKEN_FIELDS}`),
-      status: 200,
-      verify: legacyOk('save', (data) => expect(data).toMatchObject({ addressid: HOME_ADDRESS, city: 'Lakeview' })),
+      status: 503,
+      verify: (answer, ctx) => {
+        SERVER_ERROR(answer);
+        expect(writesTo(ctx, 'user_address')).toBe(0);
+        expect(ctx.identity.csrf.consumed()).toEqual([]);
+      },
     },
   ),
   jsonItemDelete: jsonApiOperation(
@@ -800,12 +780,24 @@ const CASES: Record<string, Case[]> = {
       },
     },
   ),
-  restSegmentPost: jsonApiOperation('restSegmentPost', {
-    name: 'refuses an anonymous REST save with the legacy 401',
-    inject: send('POST', jsonApi('rest', `/${SITE_A}/user`), VISITOR, 'fname=Anon'),
-    status: 401,
-    verify: NO_PERMISSION,
-  }),
+  restSegmentPost: jsonApiOperation(
+    'restSegmentPost',
+    {
+      name: 'refuses an anonymous REST findNew with the legacy 401',
+      inject: send('POST', jsonApi('rest', `/${SITE_A}/findNew?entityname=user`), VISITOR),
+      status: 401,
+      verify: NO_PERMISSION,
+    },
+    {
+      name: 'withholds an anonymous REST user save with the legacy 503 before asking for credentials',
+      inject: send('POST', jsonApi('rest', `/${SITE_A}/user`), VISITOR, 'fname=Anon'),
+      status: 503,
+      verify: (answer, ctx) => {
+        SERVER_ERROR(answer);
+        expect(writesTo(ctx, 'person')).toBe(0);
+      },
+    },
+  ),
   getPersonArchive: [
     {
       name: "reads tenant-b's stored archive record of a former user",
@@ -1214,13 +1206,12 @@ const WIRE_OPERATIONS = OPERATIONS.filter(({ path }) => path.startsWith('/_api/'
 const routeKeysOf = ({ op }: ContractOperation): string[] => (op['x-opt2-route-keys'] as string[] | undefined) ?? [];
 const familyOf = ({ path }: ContractOperation): (typeof LEGACY_FAMILIES)[number] => path.split('/')[2] as (typeof LEGACY_FAMILIES)[number];
 const READ_OPERATIONS = /^(?:find[a-z]+|validate|~[a-z0-9_]+|http-get)$/;
-const WRITE_KEYS: readonly string[] = ['user.save', 'address.save', 'address.delete'];
 
 function foreignKeys(keys: readonly string[]): string[] {
   return keys.filter((key) => {
     const match = /^(?:api|rest):(user|address)\.([a-z0-9_~-]+)$/.exec(key);
     if (match === null) return true;
-    return !READ_OPERATIONS.test(match[2] ?? '') && !WRITE_KEYS.includes(`${match[1]}.${match[2]}`);
+    return !READ_OPERATIONS.test(match[2] ?? '');
   });
 }
 
@@ -1247,8 +1238,6 @@ function keyedRequest(base: string, body: string): RouteKeyRequest {
       return get(`${path}/properties`);
     case 'findquery':
       return get(path, FIND_QUERY[entity] ?? {});
-    case 'save':
-      return { method: 'POST', path, query: {}, headers: {} };
     case 'validate':
       return get(`${base}/validate`, { entityname: entity, data: '{}' });
     case '~pollstate':
@@ -1409,18 +1398,19 @@ describe('JSON API route keys', () => {
     expect(misfiled).toEqual([]);
   });
 
-  it('address only user and address, carry no variant, and write only by user.save and address.save', () => {
+  it('address only user and address, carry no variant, and serve only reads', () => {
     const keys = [...new Set(WIRE_OPERATIONS.flatMap(routeKeysOf))];
     expect(foreignKeys(keys)).toEqual([]);
-    expect(keys.filter((key) => /:(?:user\.(?:delete|http-delete)|group\.)/.test(key) || key.includes('{photo}'))).toEqual([]);
-    expect(foreignKeys([...keys, 'api:group.save', 'rest:user.delete', 'api:user.save{photo}'])).toEqual(['api:group.save', 'rest:user.delete', 'api:user.save{photo}']);
+    expect(keys.filter((key) => /:(?:(?:user|address)\.(?:save|delete|http-delete)|group\.)/.test(key) || key.includes('{photo}'))).toEqual([]);
+    const writes = ['api:group.save', 'api:user.save', 'rest:address.save', 'rest:user.delete', 'api:user.save{photo}'];
+    expect(foreignKeys([...keys, ...writes])).toEqual(writes);
   });
 
   it('list the withheld keys as excluded, never as served', () => {
     const problems = WIRE_OPERATIONS.flatMap((operation) => {
       const excluded = ((operation.op['x-opt2-route-keys-excluded'] as Array<{ key: string }> | undefined) ?? []).map(({ key }) => key);
       const prefix = routeKeysOf(operation)[0]?.split(':')[0] ?? '';
-      const missing = ['user.delete', 'user.save{photo}', 'address.delete'].map((body) => `${prefix}:${body}`).filter((key) => !excluded.includes(key));
+      const missing = ['user.save', 'user.save{photo}', 'user.delete', 'address.save', 'address.delete'].map((body) => `${prefix}:${body}`).filter((key) => !excluded.includes(key));
       const served = excluded.filter((key) => routeKeysOf(operation).includes(key));
       return [...missing, ...served].map((key) => `${operation.operationId} ${key}`);
     });

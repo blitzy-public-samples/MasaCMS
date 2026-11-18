@@ -1549,7 +1549,6 @@ function keyedRequest(base: string, body: string): KeyedRequest {
     'group.findpermissions': keyedGet(`${group}/${ADMIN_GROUP}/permissions`),
     'group.findproperties': keyedGet(`${group}/properties`),
     'group.findquery': keyedGet(group, { groupname: 'Admin' }),
-    'group.save': { method: 'POST', path: group, query: {} },
     'group.validate': keyedGet(`${base}/validate`, { entityname: 'group', data: '{}' }),
     oauth: keyedGet(`${base}/oauth`),
     oauth2: keyedGet(`${base}/oauth2`),
@@ -1589,32 +1588,16 @@ const SERVED_KEY_ROWS = [
   ).values(),
 ];
 
-/** Keys identity does not serve, each with a request keyed to it; the photo variant of a served key included. */
+/** Keys identity does not serve, each with a request keyed to it; the withheld group save of both families included. */
 const UNSERVED_REQUESTS: ReadonlyArray<{ key: string; baseKey: string; request: KeyedRequest }> = [
   { key: 'api:user.save', baseKey: 'api:user.save', request: { method: 'POST', path: `/_api/json/v1/${SITE_A}/user`, query: {} } },
   { key: 'api:content.findone', baseKey: 'api:content.findone', request: keyedGet(`/_api/json/v1/${SITE_A}/content/${HOME}`) },
-  {
-    key: 'api:group.save{photo}',
-    baseKey: 'api:group.save',
-    request: { method: 'POST', path: `/_api/json/v1/${SITE_A}/group`, query: {}, payload: 'groupname=Gates&type=1&newFile=photo.png' },
-  },
+  { key: 'api:group.save', baseKey: 'api:group.save', request: { method: 'POST', path: `/_api/json/v1/${SITE_A}/group`, query: {}, payload: 'groupname=Gates&type=1' } },
+  { key: 'rest:group.save', baseKey: 'rest:group.save', request: { method: 'POST', path: `/_api/rest/v1/${SITE_A}/group`, query: {}, payload: 'groupname=Gates&type=1' } },
 ];
-
-/** Headers of the s2 subject posting a form with the CSRF token of `context`. */
-const csrfForm = (context: string) => (): Promise<Headers> => withCsrfHeaders('s2', context).then((headers) => ({ ...headers, ...FORM }));
 
 /** Legacy error shapes, each on an app of its own. */
 const ERROR_CASES: ErrorCase[] = [
-  {
-    name: '400 invalidTokens for a browser-mode group save without CSRF tokens',
-    method: 'POST',
-    url: `/_api/json/v1/${SITE_A}/group`,
-    as: 's2',
-    headers: async () => FORM,
-    payload: 'groupname=Gates&type=1&ispublic=0',
-    status: 400,
-    verify: (body) => expect(body).toMatchObject({ apiversion: 'v1', method: 'save', error: { code: 'invalid_request', message: 'Invalid CSRF tokens' } }),
-  },
   {
     name: '401 invalid_token with its WWW-Authenticate challenge for a REST request with an unknown bearer token',
     method: 'GET',
@@ -1636,15 +1619,6 @@ const ERROR_CASES: ErrorCase[] = [
     as: 'editor',
     status: 403,
     verify: (body) => expect(body).toEqual({ apiversion: 'v1', method: 'invalid', error: { message: 'Insufficient Account Permissions', code: 'invalid_request' } }),
-  },
-  {
-    name: '403 with the validation errors in data for a group save marked as spam',
-    method: 'POST',
-    url: `/_api/json/v1/${SITE_A}/group`,
-    headers: csrfForm('new'),
-    payload: 'groupname=Spam&type=1&ispublic=0&passedProtect=false',
-    status: 403,
-    verify: (body) => expect(record(record(body).data).errors).toHaveProperty('spam'),
   },
   {
     name: '404 envelope for a JSON API key identity does not serve',
@@ -1682,16 +1656,6 @@ const ERROR_CASES: ErrorCase[] = [
     as: 's2',
     status: 500,
     verify: (body) => expect(body).toEqual(serverError('findOne')),
-  },
-  {
-    name: '503 legacy envelope for a JSON API group save while identity.group_account is legacy-authoritative',
-    setup: (db) => db.setGate('identity.group_account', 'legacy'),
-    method: 'POST',
-    url: `/_api/json/v1/${SITE_A}/group`,
-    headers: csrfForm('new'),
-    payload: 'groupname=Gates&type=1&ispublic=0',
-    status: 503,
-    verify: (body) => expect(body).toMatchObject({ apiversion: 'v1', error: { message: 'Unhandled Exception', code: 'server_error' } }),
   },
   {
     name: '503 legacy envelope for an admin group create while identity.group_account is legacy-authoritative',

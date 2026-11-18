@@ -1,12 +1,12 @@
 /** The cUsers roster writes over a throwaway `people` schema: `cUsers.update` Type=2 Add and Update and `cUsers.updateAddress` through `app.inject` with the identity double. */
 import { describe, expect, it } from 'vitest';
 import { adminUrl, cfUuid } from '@opt2/platform/legacy-compat';
-import { TENANT_A, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
 import type { PeopleEnv } from '../../src/app.js';
 import { TEST_CLOCK, testEnv, userHeaders } from '../helpers/app.js';
 import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
 import type { IdentityDouble } from '../helpers/identity-double.js';
-import { ADMIN_S2, DEFAULT_PEOPLE_SEED, S2_USER, SITE_ADMIN_A, SYSTEM_USER_A_PERSON, accountFor, seedPeople, type TestActor } from '../helpers/fixtures.js';
+import { ADMIN_S2, DEFAULT_PEOPLE_SEED, OTHER_TENANT_PERSON, S2_USER, SITE_ADMIN_A, SYSTEM_USER_A_PERSON, accountFor, seedPeople, type TestActor } from '../helpers/fixtures.js';
 import {
   CATEGORY_1,
   CATEGORY_2,
@@ -64,9 +64,9 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
     if (outcome !== undefined) throw new Error(outcome.reason);
   }
 
-  /** The rows of `table` that belong to `userId` in tenant-a. */
-  async function rowsOf(db: PeopleDb, table: PersonTable, userId: string): Promise<Record<string, unknown>[]> {
-    return db.withTenant(TENANT_A.tenantId, async (tx) => (await tx.query(`SELECT * FROM ${tx.schema}.${table} WHERE userid = $1`, [userId])).rows);
+  /** The rows of `table` that belong to `userId` in `tenantId`, tenant-a by default. */
+  async function rowsOf(db: PeopleDb, table: PersonTable, userId: string, tenantId = TENANT_A.tenantId): Promise<Record<string, unknown>[]> {
+    return db.withTenant(tenantId, async (tx) => (await tx.query(`SELECT * FROM ${tx.schema}.${table} WHERE userid = $1`, [userId])).rows);
   }
 
   /** The values of `column` over the rows of `table` that belong to `userId`, sorted. */
@@ -277,6 +277,25 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       expect(identity.account(userId)).toBeUndefined();
       expect(identity.isUserClosed(userId)).toBe(false);
       for (const table of ['person', 'user_address', 'user_interest', 'user_tag'] as const) expect(await rowsOf(db, table, userId)).toEqual([]);
+    }));
+
+  it("answers an Add posting the userid of another tenant's user with the legacy 503, writing nothing on either side and leaving that user as stored", () =>
+    onPeople(async ({ app, identity, db }) => {
+      const victim = OTHER_TENANT_PERSON.userid;
+      const account = identity.account(victim);
+      const tables = ['person', 'user_address', 'user_interest', 'user_tag'] as const;
+      const stored = await Promise.all(tables.map((table) => rowsOf(db, table, victim, TENANT_B.tenantId)));
+      expect(account).toMatchObject({ siteId: TENANT_B.siteId });
+      expect(stored[0]).toHaveLength(1);
+
+      const { status, body } = await send(app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Add'), query: userQuery(victim) });
+
+      expect(status).toBe(503);
+      expect(body).toMatchObject(LEGACY_503);
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare']);
+      expect(identity.account(victim)).toEqual(account);
+      for (const table of tables) expect(await rowsOf(db, table, victim)).toEqual([]);
+      expect(await Promise.all(tables.map((table) => rowsOf(db, table, victim, TENANT_B.tenantId)))).toEqual(stored);
     }));
 
   // The routes take MURA_EXPIREPASSWORDS from the people environment buildApp parsed.

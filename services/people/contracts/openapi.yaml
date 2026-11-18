@@ -49,11 +49,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -87,11 +89,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -127,11 +131,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -167,11 +173,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -210,11 +218,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -247,11 +257,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -286,11 +298,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -325,11 +339,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -368,11 +384,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -397,17 +415,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonSegmentPost
-      summary: Saves a user or address, or calls the method the segment names, through the JSON API.
+      summary: Calls the method the segment names through the JSON API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -434,17 +454,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonSegmentPut
-      summary: Saves a user or address, or calls the method the segment names, through the JSON API.
+      summary: Calls the method the segment names through the JSON API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -477,11 +499,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -519,11 +543,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -548,17 +574,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonItemPost
-      summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
+      summary: Calls a method with path parameters through the JSON API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -585,17 +613,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonItemPut
-      summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
+      summary: Calls a method with path parameters through the JSON API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -628,11 +658,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -671,11 +703,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -700,17 +734,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonSuffixPost
-      summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
+      summary: Calls a method with path parameters through the JSON API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -737,17 +773,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonSuffixPut
-      summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
+      summary: Calls a method with path parameters through the JSON API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -780,11 +818,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -818,11 +858,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -856,11 +898,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -896,11 +940,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -936,11 +982,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -979,11 +1027,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1016,11 +1066,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1055,11 +1107,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1094,11 +1148,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1137,11 +1193,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1166,17 +1224,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxSegmentPost
-      summary: Saves a user or address, or calls the method the segment names, through the AJAX API.
+      summary: Calls the method the segment names through the AJAX API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1203,17 +1263,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxSegmentPut
-      summary: Saves a user or address, or calls the method the segment names, through the AJAX API.
+      summary: Calls the method the segment names through the AJAX API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1246,11 +1308,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1288,11 +1352,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1317,17 +1383,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxItemPost
-      summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
+      summary: Calls a method with path parameters through the AJAX API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1354,17 +1422,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxItemPut
-      summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
+      summary: Calls a method with path parameters through the AJAX API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1397,11 +1467,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1440,11 +1512,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1469,17 +1543,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxSuffixPost
-      summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
+      summary: Calls a method with path parameters through the AJAX API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1506,17 +1582,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxSuffixPut
-      summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
+      summary: Calls a method with path parameters through the AJAX API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1549,11 +1627,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
-      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1587,11 +1667,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1623,11 +1705,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1661,11 +1745,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1699,11 +1785,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1740,11 +1828,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1775,11 +1865,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1812,11 +1904,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1849,11 +1943,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1890,11 +1986,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1917,17 +2015,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restSegmentPost
-      summary: Saves a user or address, or calls the method the segment names, through the sessionless REST API.
+      summary: Calls the method the segment names through the sessionless REST API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1952,17 +2052,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restSegmentPut
-      summary: Saves a user or address, or calls the method the segment names, through the sessionless REST API.
+      summary: Calls the method the segment names through the sessionless REST API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1993,11 +2095,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2033,11 +2137,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2060,17 +2166,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restItemPost
-      summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
+      summary: Calls a method with path parameters through the sessionless REST API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2095,17 +2203,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restItemPut
-      summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
+      summary: Calls a method with path parameters through the sessionless REST API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2136,11 +2246,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2177,11 +2289,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2204,17 +2318,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restSuffixPost
-      summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
+      summary: Calls a method with path parameters through the sessionless REST API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2239,17 +2355,19 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restSuffixPut
-      summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
+      summary: Calls a method with path parameters through the sessionless REST API; a user or address save answers the withheld 503.
       description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -2280,11 +2398,13 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
-      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the address already stores.'}
         - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
         - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the user already stores.'}
         - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
         - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -4633,7 +4753,7 @@ components:
           schema:
             $ref: '#/components/schemas/PeopleEnvelope'
     LegacyBadRequest:
-      description: 'Legacy 400: `invalidParameters`, `invalidMethodCall`, `invalidEntityCall`, `badRequest` or, on a session-mode save, `invalidTokens`.'
+      description: 'Legacy 400: `invalidParameters`, `invalidMethodCall`, `invalidEntityCall` or `badRequest`.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -4665,7 +4785,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     LegacyForbidden:
-      description: A user or address save whose `data.errors` is non-empty, including the account errors identity's prepare returns, or a `siteid` other than the token's site.
+      description: Legacy 403 for a `siteid` other than the token's site, or an entity-route result whose `data.errors` is non-empty.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -5345,7 +5465,6 @@ components:
           enum:
             - admin-add
             - admin-update
-            - json-save
             - profile-update
         state:
           type: string
@@ -6127,7 +6246,7 @@ components:
                 - $ref: '#/components/schemas/JsonApiEntityMeta'
     UserEntity:
       type: object
-      description: A user as the JSON API serializes it, with lower-cased keys and its extended attributes; a save adds `saveErrors` and `errors`.
+      description: A user as the JSON API serializes it, with lower-cased keys and its extended attributes.
       additionalProperties: true
       propertyNames:
         $ref: '#/components/schemas/SerializedUserKey'
@@ -6226,10 +6345,6 @@ components:
           description: '`getAddresses()`, only when `fields` selects it: the user''s `tuseraddresses` rows, primary first.'
           items:
             $ref: '#/components/schemas/UserAddressRow'
-        saveErrors:
-          type: boolean
-        errors:
-          $ref: '#/components/schemas/LegacyErrors'
     UserAddressRow:
       type: object
       description: One `select * from tuseraddresses` row as the JSON API serializes a query, keyed by lower-cased column; a NULL cell is ''.
@@ -6324,7 +6439,7 @@ components:
           description: '`getType()`: 2 for a user.'
     AddressEntity:
       type: object
-      description: An address as the JSON API serializes it, with lower-cased keys and its extended attributes; a save adds `saveErrors` and `errors`.
+      description: An address as the JSON API serializes it, with lower-cased keys and its extended attributes.
       additionalProperties: true
       properties:
         id:
@@ -6385,10 +6500,6 @@ components:
         entityname:
           type: string
           const: address
-        saveErrors:
-          type: boolean
-        errors:
-          $ref: '#/components/schemas/LegacyErrors'
     UserCollection:
       type: object
       description: A paged user collection as the JSON API serializes it.

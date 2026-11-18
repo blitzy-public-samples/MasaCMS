@@ -223,7 +223,7 @@ function accountUnknown(userId: string): LegacyServiceUnavailableError {
   return new LegacyServiceUnavailableError(`User ${userId} has no account under any registered site`, 'auto', 'person-unknown');
 }
 
-/** The session user's own account under any registered site and the tenant of its user-pool site, from identity and the site registry only. */
+/** The session user's own account, which identity reads under the login site of the token's signed-in session, and the tenant of its user-pool site, from identity and the site registry only. */
 async function sessionAccount(roster: RosterDeps, claims: UserClaims): Promise<{ account: AccountView; tenantId: string }> {
   const account = await roster.identity.readAccount(claims.sub);
   if (account === undefined) throw accountUnknown(claims.sub);

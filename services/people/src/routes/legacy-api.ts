@@ -1,10 +1,8 @@
 /** JSON API `user` and `address` entities people owns, served as Masa's `processRequest` serves them [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:368-1402]. */
 import { AuthDenial, Roles, assertSiteMatches, moduleRole, suppliedSiteIdsOf, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
-  LEGACY_ADMIN_SENTINEL_ID,
   LegacyApiError,
   LegacyServiceUnavailableError,
-  PHOTO_CONDITION,
   WWW_AUTHENTICATE,
   accessControlOriginDomains,
   buildEnvelope,
@@ -34,12 +32,10 @@ import {
   type LegacyJsonSerializer,
   type ScannedRouteKeyRequest,
   type SerializedLegacyResponse,
-  type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import {
   EnvValidationError,
-  csrfPreHandler,
   legacyParamsOf,
   multipartFilesOf,
   sendLegacyResponse,
@@ -50,18 +46,10 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { registryEntries, tenantIdForSite, withTenant, type TenantDb, type TenantRegistryEntry, type TenantTx } from '@opt2/platform/tenancy';
-import { listAddresses, saveAddress, type AddressDeps } from '../domain/addresses.js';
+import { listAddresses } from '../domain/addresses.js';
 import { EXTEND_CONFIG_DEFAULTS, extendSetData, extendSetsData, loadSubmittedAttributes, validateExtendedData, type ExtendSetData } from '../domain/extended-data.js';
-import { applyUserInput, newUserValues, normaliseParams, resolveUserSite, type UserValues } from '../domain/person.js';
-import {
-  PhotoBranchError,
-  observePersons,
-  runRosterOperation,
-  type CommittedUser,
-  type PersonObserver,
-  type PersonObserverDeps,
-  type RosterDeps,
-} from '../domain/roster-protocol.js';
+import { applyUserInput, newUserValues, normaliseParams, type UserValues } from '../domain/person.js';
+import { observePersons, type PersonObserver, type PersonObserverDeps, type RosterDeps } from '../domain/roster-protocol.js';
 import {
   getAdvancedSearchWindow,
   newAdvancedSearchCriteria,
@@ -76,8 +64,6 @@ import {
   addressesQuery,
   expansionTargets,
   filteredEntityValues,
-  overlayRequestValues,
-  saveResponse,
   userBeanValues,
   withExtendSetData,
   type AddressValues,
@@ -117,7 +103,6 @@ export type LegacyApiRouteDeps = {
   clock: Clock;
   roster: RosterDeps;
   search: SearchDeps;
-  addresses: AddressDeps;
   /** Defaults to the `MURA_<KEY>` variables of `process.env`. */
   legacy?: LegacyApiSettings;
 };
@@ -132,28 +117,15 @@ export function legacyApiPrefixes(context = ''): readonly string[] {
   return Object.freeze(leads.flatMap((lead) => FAMILIES.flatMap((family) => [`${lead}/_api/${family}/v1`, `${lead}/index.cfm/_api/${family}/v1`])));
 }
 
-// Anonymous callers reach `pollState`, `findPermissions` and saves, so every legacy permission rule runs in the handler,
+// Anonymous callers reach `pollState` and `findPermissions`, so every legacy permission rule runs in the handler,
 // after the API site fallback; the hooks' site check would refuse an unregistered `siteid` legacy answers itself.
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true, siteCheck: false });
 
 /** The Users module, the `moduleid` the JSON API registers `user` and `address` with (jsonApiUtility.cfc:86-92). */
 const USERS_MODULE_ROLE = moduleRole('00000000000000000000000000000000008');
 
-// Withheld variants, declared as gateway/cutover/variants.json declares them: the first match wins.
-const WITHHELD_VARIANTS: readonly VariantDeclaration[] = Object.freeze(
-  (['api', 'rest'] as const).flatMap((family): VariantDeclaration[] => [
-    { route: `${family}:user.save`, variant: 'photo', when: [PHOTO_CONDITION] },
-    { route: `${family}:user.save`, variant: 'extdata', when: [{ param: 'extendSetID', nonEmpty: true }] },
-    {
-      route: `${family}:address.save`,
-      variant: 'extdata',
-      when: [{ anyOf: [{ param: 'extendSetID', nonEmpty: true }, { param: 'extendSetID', equals: '' }] }],
-    },
-  ]),
-);
-
-/** Entity deletes the decision list withholds: they span owners or stay on legacy, so people never executes them. */
-const WITHHELD_KEYS: ReadonlySet<string> = new Set(['user.delete', 'address.delete']);
+/** Entity saves and deletes the decision list withholds: they span owners, so people never executes them. */
+const WITHHELD_KEYS: ReadonlySet<string> = new Set(['user.save', 'user.delete', 'address.save', 'address.delete']);
 
 /** Route-key error bodies and the exception types processRequest throws for them. */
 const RESOLUTION_ERRORS: ReadonlyMap<string, LegacyApiErrorType> = new Map([
@@ -165,7 +137,7 @@ const RESOLUTION_ERRORS: ReadonlyMap<string, LegacyApiErrorType> = new Map([
 
 type PeopleEntity = 'user' | 'address';
 
-type Operation = 'findAll' | 'findMany' | 'findNew' | 'findOne' | 'findPermissions' | 'findProperties' | 'findQuery' | 'save' | 'validate' | 'pollState';
+type Operation = 'findAll' | 'findMany' | 'findNew' | 'findOne' | 'findPermissions' | 'findProperties' | 'findQuery' | 'validate' | 'pollState';
 
 /** A key people serves: its entity and operation. */
 interface ServedKey {
@@ -173,7 +145,7 @@ interface ServedKey {
   operation: Operation;
 }
 
-const ENTITY_OPERATIONS: readonly Operation[] = ['findAll', 'findMany', 'findNew', 'findOne', 'findPermissions', 'findProperties', 'findQuery', 'save', 'validate'];
+const ENTITY_OPERATIONS: readonly Operation[] = ['findAll', 'findMany', 'findNew', 'findOne', 'findPermissions', 'findProperties', 'findQuery', 'validate'];
 
 /** The keys people serves, by route-key body. */
 const OPERATIONS: ReadonlyMap<string, ServedKey> = new Map<string, ServedKey>([
@@ -366,14 +338,6 @@ function setIn(struct: Struct, key: string, value: unknown): void {
   Object.defineProperty(struct, keyOf(struct, key) ?? key, { value, writable: true, enumerable: true, configurable: true });
 }
 
-/** `structDelete` of `key`, ignoring case. */
-function deleteIn(struct: Struct, key: string): void {
-  const wanted = key.toLowerCase();
-  for (const name of Object.keys(struct)) {
-    if (name.toLowerCase() === wanted) delete struct[name];
-  }
-}
-
 /** A simple value as CFML text; undefined for a missing or complex value. */
 function textOf(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
@@ -499,8 +463,6 @@ function callerOf(user: UserClaims | undefined): Caller {
 /** One resolved JSON API call: who asks, the addressed site and entity, the mode, and how legacy reports the response. */
 interface ApiCall {
   request: FastifyRequest;
-  reply: FastifyReply;
-  app: FastifyInstance;
   deps: LegacyApiRouteDeps;
   entity: PeopleEntity;
   /** The merged, resolved request params, lower-cased names, simple values. */
@@ -520,7 +482,6 @@ interface ApiCall {
   direct: boolean;
   /** `params.method` as the catch block and the envelope report it; updated as legacy updates it. */
   method: string | undefined;
-  methodCtx: ApiNameContext;
   /** `getEndPoint()` (jsonApiUtility.cfc:3337-3364). */
   endpoint: string;
   /** settingsBean `getAdminPath(complete=1)` (settingsBean.cfc:1416-1433). */
@@ -1629,144 +1590,6 @@ async function validate(call: ApiCall): Promise<EntityMeta> {
   return {};
 }
 
-// --- save ---
-
-/** The id `save` addresses: a posted primary key that is a CF UUID or the admin sentinel, else the `id` argument (jsonApiUtility.cfc:1958-1966). */
-function savedId(vals: Readonly<Struct>, pk: string, id: string): string {
-  const posted = textOf(valueOf(vals, pk));
-  return posted !== undefined && posted !== '' && (isCfUuid(posted) || posted === LEGACY_ADMIN_SENTINEL_ID) ? posted : id;
-}
-
-/** `validateCSRFTokens(context=csrfcontext)` of a session-managed save, through identity's single-use arbitration; REST is sessionless. */
-async function assertCsrf(call: ApiCall, context: string): Promise<void> {
-  if (call.restMode) return;
-  await csrfPreHandler({ contextOf: () => context }).call(call.app, call.request, call.reply);
-}
-
-/** The save's user values without the keys the caller may not set (jsonApiUtility.cfc:1913-1937). */
-function strippedUserValues(call: ApiCall): Struct {
-  const { caller } = call;
-  const vals: Struct = { ...call.params };
-  if (!(caller.adminUser || caller.superUser)) {
-    deleteIn(vals, 'isPublic');
-    deleteIn(vals, 'type');
-    if (!caller.usersModule) deleteIn(vals, 'groupID');
-  }
-  if (!caller.superUser) deleteIn(vals, 's2');
-  const groupName = textOf(valueOf(vals, 'groupname'));
-  if (groupName !== undefined && cfEq(groupName, 'admin')) deleteIn(vals, 'groupname');
-  const postedId = textOf(valueOf(vals, 'userid'));
-  if (postedId !== undefined && !cfEq(postedId, caller.userId)) deleteIn(vals, 'email');
-  return vals;
-}
-
-/** The verified user claims a write acts for; a call without them reaches no write. */
-function writerOf(call: ApiCall): UserClaims {
-  const { user } = call.caller;
-  if (user === undefined) throw new LegacyApiError('authorization');
-  return user;
-}
-
-/** The bean's `saveErrors` value: the posted one `set()` copied, else `getValue` of a key the bean does not hold, ''. */
-function saveErrorsOf(vals: Readonly<Struct>): unknown {
-  return valueOf(vals, 'saveerrors') ?? '';
-}
-
-/** The saved user `loadBy` reloads, from the values the operation committed on both sides, so no read can fail the committed save. */
-function committedUserBean(call: ApiCall, committed: CommittedUser): UserBean {
-  const { person, account, groupIds, categoryIds, extend, photoFileExt } = committed;
-  const source = { person, account, groupIds, categoryIds, extend, photoFileExt };
-  return { values: userBeanValues(source, call.deps.clock), exists: true, tenantId: committed.tenantId, addresses: committed.addresses, extendData: extend.data };
-}
-
-/** save(entityName='user') of a Type=2 user without a photo or extended data, under the roster write protocol (jsonApiUtility.cfc:1903-2074). */
-async function saveUser(call: ApiCall): Promise<UserEntity> {
-  const { request, caller, deps } = call;
-  const csrfContext = call.params.id ?? 'new';
-  const vals = strippedUserValues(call);
-  let id = savedId(vals, 'userid', csrfContext);
-  const isNew = cfEq(id, 'new');
-  if (isNew) {
-    id = cfUuid();
-    setIn(vals, 'id', id);
-    setIn(vals, 'userid', id);
-  }
-  await assertCsrf(call, csrfContext);
-  const user = writerOf(call);
-  const tenants = userTenants(tokenEntry(call));
-  const posted = textOf(valueOf(vals, 'userid'));
-  const stored = isNew ? null : await readStoredUser(call, tenants, javaTrim(posted ?? id));
-  // set(event) keeps a loaded user's id; an unknown one without a posted userid takes the id getUserID() creates.
-  const target = posted !== undefined ? javaTrim(posted) : stored !== null ? String(stored.values.userid) : cfUuid();
-  setIn(vals, 'userid', target);
-  if (!allowsAction(caller, target)) throw new LegacyApiError('authorization');
-
-  const input = normaliseParams(vals);
-  const tenantId =
-    stored?.tenantId ?? (await resolveUserSite(deps.db, user.tid, input, applyUserInput(newUserValues(deps.clock), input))).poolTenantId;
-  // A logged-in user saving their own record in json mode is logged in again (jsonApiUtility.cfc:2065-2071).
-  const relogin = call.methodCtx.restMode === false && caller.loggedIn && cfEq(caller.userId, target) && user.sid !== '';
-  const result = await runRosterOperation(deps.roster, {
-    kind: 'json-save',
-    tenantId,
-    claims: user,
-    ...(user.sid === '' ? {} : { acting: await deps.identity.actingUser(user.sid) }),
-    params: input,
-    postedFiles: new Map(multipartFilesOf(request).map((file) => [file.field, file.filename])),
-    requestId: request.id,
-    ...(relogin ? { sessionReloginId: user.sid } : {}),
-  });
-  const errors: LegacyErrors = result.ok ? {} : result.errors;
-  const saveErrors = saveErrorsOf(vals);
-  const reloaded = result.ok
-    ? committedUserBean(call, result.committed)
-    : ((await readStoredUser(call, [tenantId, ...tenants], target)) ?? (await newUserBean(call)));
-  const values = overlayRequestValues(reloaded.values, input, { saveErrors, errors, entityName: 'user' });
-  const entity = userEntity(call, { ...reloaded, values }, { expanded: true, editableCheck: false });
-  return saveResponse(entity, { saveErrors, errors }) as UserEntity;
-}
-
-/** The first of `tenants` holding person `userId`, read without a fence; the address save fences it itself. */
-async function personTenant(call: ApiCall, tenants: readonly string[], userId: string): Promise<string | undefined> {
-  for (const tenantId of tenants) {
-    if ((await withTenant(call.deps.db, tenantId, (tx) => call.deps.repository.findPerson(tx, userId))) !== null) return tenantId;
-  }
-  return undefined;
-}
-
-/** save(entityName='address') without extended data: AllowAction on the bean's user, then addressBean.save (jsonApiUtility.cfc:1903-2074; addressBean.cfc:258-268). */
-async function saveAddressEntity(call: ApiCall): Promise<AddressEntity> {
-  const { request, caller, deps } = call;
-  const csrfContext = call.params.id ?? 'new';
-  const vals: Struct = { ...call.params };
-  let id = savedId(vals, 'addressid', csrfContext);
-  const isNew = cfEq(id, 'new');
-  if (isNew) {
-    id = cfUuid();
-    setIn(vals, 'id', id);
-    setIn(vals, 'addressid', id);
-  }
-  await assertCsrf(call, csrfContext);
-  const user = writerOf(call);
-  const tenants = userTenants(tokenEntry(call));
-  const posted = textOf(valueOf(vals, 'addressid'));
-  const stored = isNew ? null : await findAddressRows(call, tenants, javaTrim(posted ?? id));
-  const target = posted !== undefined ? javaTrim(posted) : stored !== null ? stored.row.addressid : cfUuid();
-  setIn(vals, 'addressid', target);
-  const postedUserId = textOf(valueOf(vals, 'userid'));
-  const beanUserId = postedUserId !== undefined ? javaTrim(postedUserId) : (stored?.row.userid ?? '').trimEnd();
-  if (!allowsAction(caller, beanUserId)) throw new LegacyApiError('authorization');
-
-  const input = normaliseParams(vals);
-  const tenantId = stored?.tenantId ?? (beanUserId === '' ? undefined : await personTenant(call, tenants, beanUserId)) ?? tokenEntry(call).tenantId;
-  const actor: Parameters<typeof saveAddress>[3] = { tid: user.tid, write: { origin: 'target', actorUserId: user.sub, requestId: request.id } };
-  const saved = await saveAddress(deps.addresses, tenantId, input, actor);
-  const saveErrors = saveErrorsOf(vals);
-  const errors: LegacyErrors = {};
-  const reloaded = await loadAddress(call, saved.address === null ? '' : String(saved.values.addressid));
-  return saveResponse(await addressEntity(call, reloaded, { expanded: true }), { saveErrors, errors }) as AddressEntity;
-}
-
 // --- Dispatch ---
 
 /** A direct method's answer: always 200, the method as requested (jsonApiUtility.cfc:869-900). */
@@ -1795,8 +1618,6 @@ async function operationData(call: ApiCall, operation: Operation): Promise<unkno
       return findProperties(call);
     case 'findQuery':
       return findQuery(call);
-    case 'save':
-      return call.entity === 'user' ? saveUser(call) : saveAddressEntity(call);
     case 'validate':
       return validate(call);
     case 'pollState':
@@ -1877,7 +1698,6 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     const headers = clientHeadersOf(request);
     const { result: key, urlScope } = scannedRouteKey(sentRequestOf(request, headers), {
       siteExists: (siteId) => lookup(siteId) !== undefined,
-      variants: WITHHELD_VARIANTS,
       context: settings.context,
       appReloadKey: settings.appReloadKey,
       entityRemoteFunctions: { user: ['pollState'] },
@@ -1915,8 +1735,6 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     const dotted = typeof requested === 'string' && requested.includes('.');
     const call: ApiCall = {
       request,
-      reply,
-      app,
       deps,
       entity: served?.entity ?? 'user',
       params,
@@ -1929,12 +1747,11 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
       registry,
       direct: served !== undefined && !dotted && params.method !== undefined && cfEq(params.method, served.operation),
       method: params.method,
-      methodCtx,
       ...urlsOf(request, restMode ? 'rest' : 'json', apiSite),
     };
     try {
       if (failure !== undefined) throw new LegacyApiError(failure, { method: params.method, methodCtx });
-      if (key.variant === 'photo') throw new PhotoBranchError();
+      // Every variant of a key, a scan-halted one included, is served by legacy.
       if (key.variant !== undefined || served === undefined) {
         throw unavailable(`The ${key.key} branch is withheld on the decision list and served by legacy`, `${body}-withheld`);
       }

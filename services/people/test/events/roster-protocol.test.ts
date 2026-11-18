@@ -1,4 +1,4 @@
-/** The roster write protocol through people's four carried Type=2 save entry points, over a throwaway schema and the identity double. */
+/** The roster write protocol through people's three carried Type=2 save entry points, over a throwaway schema and the identity double. */
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
@@ -25,7 +25,6 @@ import {
   CSV_QUIRK_PERSONS,
   DEFAULT_PEOPLE_SEED,
   MODULE_008_ONLY_PERSON,
-  MODULE_USER_A,
   MODULE_USER_A_PERSON,
   SITE_ADMIN_A,
   SYSTEM_USER_A,
@@ -188,29 +187,6 @@ const ADMIN_UPDATE: EntryPoint = {
   expectInvalid: expectFormRerendered,
 };
 
-const JSON_SAVE: EntryPoint = {
-  kind: 'json-save',
-  actor: MODULE_USER_A,
-  creates: false,
-  writesChildren: false,
-  target: () => SYSTEM_USER_A_PERSON.userid,
-  request: (userId, values = {}) => {
-    const merged = { ...NEW, ...values };
-    return {
-      url: `/_api/json/v1/${SITE}/user`,
-      form: { ...csrf(), userid: userId, siteid: SITE, fname: merged.fname, lname: merged.lname, username: merged.username },
-    };
-  },
-  expectSaved: (answer, userId) => {
-    expect(answer.status).toBe(200);
-    expect(answer.body).toMatchObject({ apiversion: 'v1', data: { userid: userId, fname: NEW.fname, lname: NEW.lname, errors: {} } });
-  },
-  expectInvalid: (answer, errors) => {
-    expect(answer.status).toBe(403);
-    expect(answer.body).toMatchObject({ apiversion: 'v1', data: { fname: NEW.fname, errors } });
-  },
-};
-
 const PROFILE_UPDATE: EntryPoint = {
   kind: 'profile-update',
   actor: SYSTEM_USER_A,
@@ -230,7 +206,7 @@ const PROFILE_UPDATE: EntryPoint = {
 };
 
 /** Every carried entry point the protocol runs under. */
-const ENTRY_POINTS: readonly EntryPoint[] = [ADMIN_ADD, ADMIN_UPDATE, JSON_SAVE, PROFILE_UPDATE];
+const ENTRY_POINTS: readonly EntryPoint[] = [ADMIN_ADD, ADMIN_UPDATE, PROFILE_UPDATE];
 
 /** `cUsers.update`'s success: the bean was written and `route()` redirects to the user list. */
 function expectAdminSaved(answer: Answer): void {
@@ -696,11 +672,11 @@ describe.skipIf(!PG_AVAILABLE)('observers of a user in an open roster operation'
     }), 30_000);
 });
 
-describe.skipIf(!PG_AVAILABLE)('a JSON API save once its operation is done', () => {
+describe.skipIf(!PG_AVAILABLE)('a save once its operation is done', () => {
   /** Holds the save's `:finish` until `afterDone` has run, then answers it; also the number of identity requests up to the finish. */
   async function saveThroughFinish(world: World, userId: string, afterDone: () => Promise<void>): Promise<{ answer: Answer; untilFinish: number }> {
     const hold = world.identity.holdAt('finish');
-    const saved = save(world, JSON_SAVE, userId);
+    const saved = save(world, ADMIN_UPDATE, userId);
     await hold.reached;
     const untilFinish = world.identity.requests.length;
     await afterDone();
@@ -708,30 +684,28 @@ describe.skipIf(!PG_AVAILABLE)('a JSON API save once its operation is done', () 
     return { answer: await saved, untilFinish };
   }
 
-  it('answers success with the committed values while identity fails every call after its finish, calling identity no further', () =>
+  it('answers success while identity fails every call after its finish, calling identity no further', () =>
     inWorld(async (world) => {
-      const userId = JSON_SAVE.target();
+      const userId = ADMIN_UPDATE.target();
       const { answer, untilFinish } = await saveThroughFinish(world, userId, async () => {
         for (const step of ['prepare', 'commit', 'abort', 'revert', 'status', 'read', 'csrf'] as const) world.identity.failAt(step, 'unreachable', { times: Infinity });
       });
-      JSON_SAVE.expectSaved(answer, userId);
-      expect(answer.body).toMatchObject({ data: { username: NEW.username } });
+      ADMIN_UPDATE.expectSaved(answer, userId);
       expect(world.identity.requests.slice(untilFinish - 1).map((request) => request.operationId)).toEqual(['finishAccountOperation']);
       const operation = await rosterOperation(world, userId);
       expect(operation).toMatchObject({ state: 'done', error: null });
       expect(identityState(world, operation.operation_id)).toBe('finished');
-      await expectNewValues(world, JSON_SAVE, userId);
+      await expectNewValues(world, ADMIN_UPDATE, userId);
     }));
 
-  it('answers success with the committed values at once when another operation closes the user right after done', () =>
+  it('answers success at once when another operation closes the user right after done', () =>
     inWorld(async (world) => {
-      const userId = JSON_SAVE.target();
+      const userId = ADMIN_UPDATE.target();
       let closing: RosterOperationRow | undefined;
       const { answer, untilFinish } = await saveThroughFinish(world, userId, async () => {
         closing = await world.db.withTenant(TENANT, (tx) => world.repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
       });
-      JSON_SAVE.expectSaved(answer, userId);
-      expect(answer.body).toMatchObject({ data: { username: NEW.username } });
+      ADMIN_UPDATE.expectSaved(answer, userId);
       expect(answer.elapsedMs).toBeLessThan(USER_CLOSED_WAIT_MS);
       expect(world.identity.requests).toHaveLength(untilFinish);
       const operations = await rosterOperations(world, userId);

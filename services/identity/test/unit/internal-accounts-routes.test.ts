@@ -453,6 +453,24 @@ describe.skipIf(!available)('operations against PostgreSQL', () => {
     expect(await accountOf(userId)).toEqual(before);
   });
 
+  it('answers the prepare of a create of an id an account of another tenant holds with the legacy badRequest, recording nothing', async () => {
+    const userId = nextId('A');
+    const op = nextId('C');
+    const people = await headersFor('people');
+    await withGatedTenant(db(), tenantIdForSite(UMBRELLA), (tx) =>
+      repo.insertAccount(tx, { userid: userId, username: 'routes-held', type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 1, siteid: UMBRELLA, remoteid: '', tablist: '' }),
+    );
+    const before = await accountOf(userId, UMBRELLA);
+
+    const res = await send('POST', opUrl(userId, op, 'prepare'), people, prepareBody('create', 'routes-taker'));
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Bad Request' } });
+    expect((await send('GET', opUrl(userId, op), people)).json()).toEqual({ operationId: op, userId, state: 'unknown' });
+    expect(await accountOf(userId)).toBeNull();
+    expect(await accountOf(userId, UMBRELLA)).toEqual(before);
+  });
+
   it('answers a prepare on a user another open operation keeps closed with the legacy 503', async () => {
     const userId = nextId('A');
     const people = await headersFor('people');

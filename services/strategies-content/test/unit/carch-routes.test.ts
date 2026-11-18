@@ -1176,6 +1176,22 @@ describe('carch.datamanager', () => {
   it.each([
     ['a stored response', [packet()], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: { name: 'Ann' } }]],
     ['an unreadable packet', [packet({ data: 'x' })], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: null }]],
+    [
+      'a stored query packet',
+      [
+        packet({
+          data:
+            "<wddxPacket version='1.0'><header/><data><recordset rowCount='3' fieldNames='name,email'>" +
+            "<field name='name'><string>Ann</string><string>Bo</string></field><field name='email'><null/></field></recordset></data></wddxPacket>",
+        }),
+      ],
+      [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: { name: 'Ann', email: null } }],
+    ],
+    [
+      'a packet declaring a billion rows',
+      [packet({ data: "<wddxPacket version='1.0'><header/><data><recordset rowCount='1000000000' fieldNames='x'><field name='x'></field></recordset></data></wddxPacket>" })],
+      [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: null }],
+    ],
     ['a missing response', [], []],
   ] as const)('edits %s', async (_name, rows, rsData) => {
     t.db.respond(READ_RESPONSE, rows);

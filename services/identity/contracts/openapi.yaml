@@ -52,9 +52,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -86,9 +87,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -122,9 +124,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -158,9 +161,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -198,9 +202,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -225,14 +230,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonSegmentPost
-      summary: Calls the identity method the segment names, or saves a group, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls the identity method the segment names through the JSON API; a group save stays on legacy. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -259,14 +265,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonSegmentPut
-      summary: Calls the identity method the segment names, or saves a group, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls the identity method the segment names through the JSON API; a group save stays on legacy. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -298,9 +305,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -337,9 +345,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -364,14 +373,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonItemPost
-      summary: Saves one group, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls an identity method with path parameters through the JSON API; a group save stays on legacy. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -398,14 +408,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonItemPut
-      summary: Saves one group, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls an identity method with path parameters through the JSON API; a group save stays on legacy. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -437,9 +448,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -477,9 +489,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -509,9 +522,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -543,9 +557,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -577,9 +592,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -614,9 +630,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -648,9 +665,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -684,9 +702,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -720,9 +739,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -760,9 +780,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -787,14 +808,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxSegmentPost
-      summary: Calls the identity method the segment names, or saves a group, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls the identity method the segment names through the AJAX API; a group save stays on legacy. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -821,14 +843,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxSegmentPut
-      summary: Calls the identity method the segment names, or saves a group, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls the identity method the segment names through the AJAX API; a group save stays on legacy. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -860,9 +883,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -899,9 +923,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -926,14 +951,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxItemPost
-      summary: Saves one group, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls an identity method with path parameters through the AJAX API; a group save stays on legacy. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -960,14 +986,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxItemPut
-      summary: Saves one group, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Calls an identity method with path parameters through the AJAX API; a group save stays on legacy. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -999,9 +1026,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1039,9 +1067,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1071,9 +1100,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1105,9 +1135,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1139,9 +1170,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
-      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
+      x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'api:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'api:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'api:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1176,9 +1208,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1214,9 +1247,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1254,9 +1288,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1294,9 +1329,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1338,9 +1374,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1369,14 +1406,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restSegmentPost
-      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or saves a group, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Issues OAuth tokens or token info, or calls the identity method the segment names, through the sessionless REST API; a group save stays on legacy. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1407,14 +1445,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restSegmentPut
-      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or saves a group, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Issues OAuth tokens or token info, or calls the identity method the segment names, through the sessionless REST API; a group save stays on legacy. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1450,9 +1489,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1493,9 +1533,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1524,14 +1565,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restItemPost
-      summary: Issues OAuth tokens or token info, saves one group, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Issues OAuth tokens or token info, or calls an identity method with path parameters, through the sessionless REST API; a group save stays on legacy. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1562,14 +1604,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restItemPut
-      summary: Issues OAuth tokens or token info, saves one group, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
+      summary: Issues OAuth tokens or token info, or calls an identity method with path parameters, through the sessionless REST API; a group save stays on legacy. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1605,9 +1648,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1649,9 +1693,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1685,9 +1730,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1723,9 +1769,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -1761,9 +1808,10 @@ paths:
       x-opt2-transport: service
       x-opt2-public: true
       x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
-      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
+      x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
+        - {key: 'rest:group.save', reason: 'Withheld and served by legacy; the save also writes strategies-content files for the File-type extended attributes the group already stores.'}
         - {key: 'rest:group.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity and strategies-content units.'}
         - {key: 'rest:group.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity and strategies-content units.'}
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
@@ -3186,7 +3234,7 @@ paths:
       - $ref: '#/components/parameters/UserId'
     get:
       operationId: getAccount
-      summary: Reads the identity columns of a `Type=2` account in the user pools of the token's site, or of the token user's own account under any registered site or its user pools, for `userDAO.read`.
+      summary: Reads the identity columns of a `Type=2` account in the user pools of the token's site, or of the token user's own account under the login site of the token's signed-in session, for `userDAO.read`.
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3205,7 +3253,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-          description: No such account in the user pools of the token's site (for the token's own user, under any registered site), a group, or a `pending` account.
+          description: No such account in the user pools of the token's site (for the token's own user, under the login site of the token's signed-in session), a group, or a `pending` account.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit for 30 s.
@@ -4187,7 +4235,6 @@ components:
           - findQuery
           - findProperties
           - findPermissions
-          - save
           - validate
           - group.findOne
     LegacyEntityName:
@@ -4527,7 +4574,7 @@ components:
               - $ref: '#/components/schemas/OAuthTokenResponse'
               - $ref: '#/components/schemas/OAuthTokenInfoResponse'
     LegacyBadRequest:
-      description: 'Legacy 400: `invalidParameters` (also tokeninfo outside REST or for an unknown or expired token), `invalidMethodCall`, `invalidEntityCall`, `badRequest` (`validateEmail` outside a valid request) or, on a session-mode save, `invalidTokens`.'
+      description: 'Legacy 400: `invalidParameters` (also tokeninfo outside REST or for an unknown or expired token), `invalidMethodCall`, `invalidEntityCall` or `badRequest` (`validateEmail` outside a valid request).'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -4559,7 +4606,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     LegacyForbidden:
-      description: A group save whose `data.errors` is non-empty, or a `siteid` other than the token's site.
+      description: A `siteid` other than the token's site.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -5061,7 +5108,7 @@ components:
           type: boolean
     JsonApiGroup:
       type: object
-      description: A group as the JSON API serializes it; a save adds `saveErrors` and `errors`.
+      description: A group as the JSON API serializes it.
       additionalProperties: true
       properties:
         id:
@@ -5086,9 +5133,6 @@ components:
           type: object
           additionalProperties:
             type: string
-        saveErrors: {}
-        errors:
-          $ref: '#/components/schemas/LegacyErrors'
     JsonApiGroupCollection:
       type: object
       description: A paged group collection as the JSON API serializes it.

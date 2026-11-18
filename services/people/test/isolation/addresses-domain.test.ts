@@ -18,7 +18,6 @@ import {
   insertAddressInTx,
   listAddresses,
   resolveAddressPoolSite,
-  saveAddress,
   setPrimaryAddress,
   updateAddress,
   updateAddressInTx,
@@ -26,7 +25,7 @@ import {
 import { normaliseParams } from '../../src/domain/person.js';
 import { createPeopleRepository, type PeopleRepository, type PersonInput } from '../../src/repo/repository.js';
 import { PEOPLE_UNITS, type AddressRow, type PersonRow } from '../../src/repo/tables.js';
-import { ACTOR_A, CF_UUID, CLOCK, USER_ID_REQUIRED, bean, harness, rejection, type AddressSave } from '../helpers/address-saves.js';
+import { ACTOR_A, CF_UUID, CLOCK, bean, harness, rejection } from '../helpers/address-saves.js';
 
 const A = TENANT_A.tenantId;
 
@@ -286,14 +285,11 @@ describe.skipIf(!available)('addresses against PostgreSQL', () => {
       expect(fenced).toEqual([[A, person.userid]]);
     });
 
-    it.each<[string, AddressSave]>([
-      ['updateAddress', updateAddress],
-      ['saveAddress', saveAddress],
-    ])('%s moving a stored address to another person fences the posted and the stored owner together', async (_name, save) => {
+    it('updateAddress moving a stored address to another person fences the posted and the stored owner together', async () => {
       const [from, to] = [await addPerson(), await addPerson()];
       const stored = (await createAddress(harness(db, repo).deps, A, normaliseParams({ userid: from.userid, city: 'Oslo' }), ACTOR_A)).address as AddressRow;
       const { deps, fenced } = harness(db, repo);
-      const result = await save(deps, A, normaliseParams({ userid: to.userid, addressid: stored.addressid, city: 'Bergen' }), ACTOR_A);
+      const result = await updateAddress(deps, A, normaliseParams({ userid: to.userid, addressid: stored.addressid, city: 'Bergen' }), ACTOR_A);
       expect(result.address).toEqual({ ...stored, userid: to.userid, city: 'Bergen' });
       expect(fenced).toEqual([[A, to.userid, from.userid]]);
     });
@@ -340,61 +336,6 @@ describe.skipIf(!available)('addresses against PostgreSQL', () => {
       const stored = (await createAddress(deps, A, normaliseParams({ userid: person.userid, city: 'Oslo' }), ACTOR_A)).address as AddressRow;
       const stranger = cfUuid();
       await expectOwnerUnknown(updateAddress(deps, A, normaliseParams({ userid: stranger, addressid: stored.addressid, city: 'Bergen' }), ACTOR_A), stranger);
-      expect(await findAddress(stored.addressid)).toEqual(stored);
-    });
-  });
-
-  describe('saveAddress', () => {
-    it('creates an unknown id under that id', async () => {
-      const person = await addPerson();
-      const addressid = cfUuid();
-      const result = await saveAddress(harness(db, repo).deps, A, normaliseParams({ userid: person.userid, addressid, city: 'Oslo' }), ACTOR_A);
-      expect(result.address).toMatchObject({ addressid, userid: person.userid, siteid: 'tenant-a', city: 'Oslo', isprimary: 0 });
-    });
-
-    it('creates under a new id without a posted addressid', async () => {
-      const person = await addPerson();
-      const result = await saveAddress(harness(db, repo).deps, A, normaliseParams({ userid: person.userid }), ACTOR_A);
-      expect(result.address?.addressid).toMatch(CF_UUID);
-      expect(await findAddress(result.address?.addressid ?? '')).toEqual(result.address);
-    });
-
-    it('updates a stored id as its stored owner without a posted userid', async () => {
-      const person = await addPerson();
-      const stored = (await saveAddress(harness(db, repo).deps, A, normaliseParams({ userid: person.userid, city: 'Oslo', zip: '0150' }), ACTOR_A))
-        .address as AddressRow;
-      const { deps, fenced } = harness(db, repo);
-      const result = await saveAddress(deps, A, normaliseParams({ addressid: stored.addressid, city: 'Bergen' }), ACTOR_A);
-      expect(result.address).toEqual({ ...stored, city: 'Bergen' });
-      expect(fenced).toEqual([[A, person.userid]]);
-    });
-
-    it.each<[string, () => Record<string, unknown>]>([
-      ['no addressid', () => ({ city: 'Oslo' })],
-      ['an unknown addressid', () => ({ addressid: cfUuid(), city: 'Oslo' })],
-    ])('throws the USERID-required error without a posted or stored owner for %s', async (_label, params) => {
-      const { deps, fenced } = harness(db, repo);
-      const before = (await addressChanges()).length;
-      const error = await rejection(saveAddress(deps, A, normaliseParams(params()), ACTOR_A));
-      expect(Object.getPrototypeOf(error)).toBe(Error.prototype);
-      expect(error).toMatchObject({ message: USER_ID_REQUIRED });
-      expect(fenced).toEqual([]);
-      expect(await addressChanges()).toHaveLength(before);
-    });
-
-    it('answers 503 creating for an owner who is no person, writing nothing', async () => {
-      const stranger = cfUuid();
-      const before = (await addressChanges()).length;
-      await expectOwnerUnknown(saveAddress(harness(db, repo).deps, A, normaliseParams({ userid: stranger }), ACTOR_A), stranger);
-      expect(await addressChanges()).toHaveLength(before);
-    });
-
-    it('answers 503 saving a stored address for an owner who is no person, keeping the row', async () => {
-      const person = await addPerson();
-      const { deps } = harness(db, repo);
-      const stored = (await saveAddress(deps, A, normaliseParams({ userid: person.userid, city: 'Oslo' }), ACTOR_A)).address as AddressRow;
-      const stranger = cfUuid();
-      await expectOwnerUnknown(saveAddress(deps, A, normaliseParams({ userid: stranger, addressid: stored.addressid, city: 'Bergen' }), ACTOR_A), stranger);
       expect(await findAddress(stored.addressid)).toEqual(stored);
     });
   });

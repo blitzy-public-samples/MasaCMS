@@ -5,7 +5,7 @@ import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { localTimestamp } from '@opt2/platform/outbox';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { registeredTenants, registryEntryForTenant, tenantIdForSite, withTenant, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
+import { registeredTenants, registryEntryForTenant, tenantForRegisteredSite, tenantIdForSite, withTenant, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
 import { charKey, type AccountFilter, type AccountRecordRow, type IdentityRepository, type ListPage, type ListedPage, type PoolGroupRow } from '../repo/repository.js';
 import {
@@ -17,6 +17,7 @@ import {
   type StrikeOptions,
   type StrikeSettings,
 } from './strikes.js';
+import { signedInSnapshot } from './tokens.js';
 
 /** The contract's identity columns of one `Type=2` user. */
 export type AccountRecord = components['schemas']['AccountRecord'];
@@ -65,7 +66,7 @@ export interface AccountReadsDeps {
 
 /** Owner reads for people; tenants come only from `claims.tid` and the registry, never from the caller. */
 export interface AccountReads {
-  /** `getAccount`: the user's account record in the token site's user pools, the token user's own under any registered site; null for a missing user, a group or a `pending` account. */
+  /** `getAccount`: the user's account record in the token site's user pools, the token user's own under its signed-in session's login site; null for a missing user, a group or a `pending` account. */
   getAccount(db: TenantDb, claims: UserClaims, userId: string): Promise<AccountRecord | null>;
   /** `lookupAccounts`: the records `getAccount` finds among `userIds` that `where` matches, in request order. */
   lookupAccounts(db: TenantDb, claims: UserClaims, userIds: readonly string[], where?: AccountWhere): Promise<AccountRecord[]>;
@@ -373,10 +374,19 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
     );
   }
 
-  async function getAccount(db: TenantDb, claims: UserClaims, userId: string): Promise<AccountRecord | null> {
+  /** The tenants `getAccount` reads: for the token user signed in to the token's session, only the tenant of its login site; otherwise the token site's user pools. */
+  async function accountTenants(db: TenantDb, claims: UserClaims, userId: string): Promise<string[]> {
+    if (charKey(userId) !== charKey(claims.sub)) return tokenPoolTenants(db, claims);
     // `userManager.read(session.mura.userID)` finds the session user's own account whatever the site [legacy: admin/core/controllers/ceditprofile.cfc:118,127].
-    const tenants = charKey(userId) === charKey(claims.sub) ? await allSiteTenants(db) : await tokenPoolTenants(db, claims);
-    return (await readAccountsIn(db, tenants, [userId]))[0] ?? null;
+    const { snapshot } = await signedInSnapshot(db, repo, claims.sid);
+    const siteId = snapshot !== undefined && charKey(snapshot.userid) === charKey(claims.sub) ? (snapshot.siteid ?? '') : '';
+    if (siteId === '') return tokenPoolTenants(db, claims);
+    const tenant = await tenantForRegisteredSite(db, siteId);
+    return tenant === null ? [] : [tenant];
+  }
+
+  async function getAccount(db: TenantDb, claims: UserClaims, userId: string): Promise<AccountRecord | null> {
+    return (await readAccountsIn(db, await accountTenants(db, claims, userId), [userId]))[0] ?? null;
   }
 
   /** The user pool whose groups the token site lists; null when its registry entry or the pool site's settings join gives none. */

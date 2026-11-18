@@ -226,9 +226,6 @@ describe('JSON API over an in-memory registry', () => {
     ['a content findOne', 'GET', `${API}/content/00000000000000000000000000000000001`, {}, undefined],
     ['a group delete', 'DELETE', `${API}/group/${EDITOR_GROUP}`, {}, undefined],
     ['a POST overridden to DELETE', 'POST', `${API}/group/${EDITOR_GROUP}`, { 'x-http-method-override': 'DELETE' }, { groupname: 'Editor' }],
-    ['a save that uploads a photo', 'POST', `${API}/group/${EDITOR_GROUP}`, {}, { groupname: 'Editor', newFile: 'photo.png' }],
-    ['a save that removes the photo', 'POST', `${API}/group/${EDITOR_GROUP}`, {}, { groupname: 'Editor', removePhotoFile: 'true' }],
-    ['a save with extended data', 'POST', `${API}/group/${EDITOR_GROUP}`, {}, { groupname: 'Editor', extendSetID: 'X' }],
     ['an application reload', 'GET', `${API}/group/properties?appreload`, {}, undefined],
   ])('answers %s, which identity does not serve, with the legacy 404 envelope', async (_label, method, url, extra, form) => {
     const res = await send(app, method, url, { ...(await headersFor(S2)), ...extra }, form);

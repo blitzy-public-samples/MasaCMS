@@ -862,7 +862,7 @@ describe('favorites templates: public, acting for the url userID as legacy does,
   });
 });
 
-describe('JSON API user and address: AllowAccess needs the Users module, AllowAction also takes the own record', () => {
+describe('JSON API user and address: AllowAccess needs the Users module, and every save stays on legacy', () => {
   const read = (entity: string, id: string): Probe => get(`/_api/json/v1/${SITE_A}/${entity}/${id}`, false);
 
   function isFindOneRefusal(result: ProbeResult): boolean {
@@ -890,45 +890,20 @@ describe('JSON API user and address: AllowAccess needs the Users module, AllowAc
     expect(isFindOneRefusal(result), describeResult(result)).toBe(true);
   });
 
-  it('refuses an anonymous save without CSRF tokens with invalidTokens before any write', async () => {
-    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/user`, 'fname=Probe', false), await visitorCredential());
-    const { code, message } = LEGACY_ERROR_MAP.invalidTokens;
-    expect(result.res.statusCode, describeResult(result)).toBe(400);
-    expect(errorEnvelope(result.res)).toEqual({ apiversion: 'v1', method: 'save', error: { message, code } });
-    expect(writeFree(result)).toBe(true);
-  });
+  const saveForm = (userId: string): string => `userid=${userId}&addressid=${STRANGER_ID}&fname=Probe&address1=Probe&${CSRF_FIELDS}`;
 
-  it('refuses an anonymous save on the sessionless REST family with 401 and a Basic challenge before any write', async () => {
-    const result = await probe(postForm(`/_api/rest/v1/${SITE_A}/user`, 'fname=Probe', false), await visitorCredential());
-    expect(result.res.statusCode, describeResult(result)).toBe(401);
-    expect(result.res.headers['www-authenticate']).toBe('Basic');
-    expect(errorEnvelope(result.res)?.error).toEqual(AUTHORIZATION_ERROR);
-    expect(writeFree(result)).toBe(true);
-  });
-
-  it.each([
-    ['a member saving another user', 'user', MEMBER_POOLED],
-    ['a system user saving another user address', 'address', SYSTEM_USER_A],
-  ])('refuses %s with 401 after the CSRF check, before any write or identity prepare', async (_label, entity, actor) => {
-    const form = `userid=${STRANGER_ID}&addressid=${STRANGER_ID}&fname=Probe&address1=Probe&${CSRF_FIELDS}`;
-    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/${entity}`, form, false), await actorCredential(actor));
-    expect(result.res.statusCode, describeResult(result)).toBe(401);
-    expect(errorEnvelope(result.res)?.error).toEqual(AUTHORIZATION_ERROR);
-    expect({ writes: result.writes, identityCalls: result.identityCalls, published: result.published }).toEqual({
-      writes: 0,
-      identityCalls: ['POST /internal/v1/csrf/consume'],
-      published: 0,
-    });
-  });
-
-  it("lets a member's save of its own user record past AllowAction into the roster operation", async () => {
-    const form = `userid=${MEMBER_POOLED.sub}&fname=Probe&${CSRF_FIELDS}`;
-    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/user`, form, false), await actorCredential(MEMBER_POOLED));
-    expect(result.res.statusCode, describeResult(result)).not.toBe(401);
-    const operation = t.db.writes().find((statement) => statement.text.startsWith('INSERT INTO "people"."roster_operation"'));
-    expect(operation?.values[ROSTER_OPERATION_COLUMNS.indexOf('user_id')]).toBe(MEMBER_POOLED.sub);
-    const ownPrepare = (call: string): boolean => call.startsWith(`POST /internal/v1/accounts/${MEMBER_POOLED.sub}/operations/`) && call.endsWith(':prepare');
-    expect(result.identityCalls.some(ownPrepare), describeResult(result)).toBe(true);
+  it.each<[string, string, string, string, () => Promise<Credential>]>([
+    ['an anonymous save without CSRF tokens', '/_api/json/v1', 'user', 'fname=Probe', () => visitorCredential()],
+    ['an anonymous save on the sessionless REST family', '/_api/rest/v1', 'user', 'fname=Probe', () => visitorCredential()],
+    ['a member saving another user', '/_api/json/v1', 'user', saveForm(STRANGER_ID), () => actorCredential(MEMBER_POOLED)],
+    ['a system user saving another user address', '/_api/json/v1', 'address', saveForm(STRANGER_ID), () => actorCredential(SYSTEM_USER_A)],
+    ['a member saving its own user record', '/_api/json/v1', 'user', saveForm(MEMBER_POOLED.sub), () => actorCredential(MEMBER_POOLED)],
+  ])('withholds %s with the legacy 503 before any CSRF check, identity call or write', async (_label, family, entity, form, credential) => {
+    const result = await probe(postForm(`${family}/${SITE_A}/${entity}`, form, false), await credential());
+    const { code, message } = LEGACY_ERROR_MAP.server_error;
+    expect(result.res.statusCode, describeResult(result)).toBe(503);
+    expect(errorEnvelope(result.res)?.error).toEqual({ message, code });
+    expect(writeFree(result), describeResult(result)).toBe(true);
   });
 });
 

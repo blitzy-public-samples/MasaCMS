@@ -4,12 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
-import { cfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import {
   CSRF_CONSUME_PATH,
-  ServiceUnavailableError,
   createService,
   loadEnv,
   type CsrfConsumeRequest,
@@ -32,7 +30,7 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { createFaultHooks } from '../../src/domain/faults.js';
-import { REQUEST_BUDGET_MS, personFence, type RosterDeps } from '../../src/domain/roster-protocol.js';
+import type { RosterDeps } from '../../src/domain/roster-protocol.js';
 import type { SearchDeps } from '../../src/domain/search.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
 import { peoplePayloadValidators } from '../../src/events/topics.js';
@@ -46,7 +44,6 @@ import {
   SITE_ADMIN_A_PERSON,
   SYSTEM_USER_A,
   SYSTEM_USER_A_PERSON,
-  accountFor,
   accountsForSeed,
   seedPeople,
   type TestActor,
@@ -63,7 +60,7 @@ const CSRF = Object.freeze({ csrf_token: 'TOKEN', csrf_token_expires: '260630110
 const API = '/_api/json/v1/tenant-a';
 const ENDPOINT = `http://localhost${API.replace('/_api', '/index.cfm/_api')}`;
 const ETAG = /^[0-9A-F]{64}$/;
-/** A tenant-a system user without the Users module, saving only its own record. */
+/** A tenant-a system user without the Users module. */
 const SELF_SAVER: TestActor = Object.freeze({ sub: CSV_QUIRK_PERSONS[0]?.userid ?? '', site: TENANT_A.siteId, roles: [Roles.systemUser], s2: false });
 /** A tenant-a session without a signed-in user, as identity mints its token. */
 const ANONYMOUS: TestActor = Object.freeze({ sub: '', site: TENANT_A.siteId, roles: [], s2: false });
@@ -94,11 +91,10 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
   let repo: PeopleRepository;
   let identity: IdentityDouble;
   let app: FastifyInstance;
-  /** The routes' search and roster collaborators; `withPhotoLookup` sets strategies-content's photo lookup on both. */
+  /** The routes' search and roster collaborators. */
   let search: SearchDeps;
   let roster: RosterDeps;
   const consumed: CsrfConsumeRequest[] = [];
-  let csrfValid = true;
   /** The relation reads the routes made, in order. */
   const reads: string[] = [];
 
@@ -144,15 +140,14 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       clock,
       roster,
       search,
-      addresses: { db, repo, clock, fence: personFence },
       legacy: SETTINGS,
     });
     await app.ready();
-    // Identity's CSRF consume, the only service call the routes make through the app's client.
+    // Identity's CSRF consume is recorded so a withheld save can prove it consumes no token; any other client call fails.
     const request = async (req: ServiceRequest) => {
       if (req.service !== 'identity' || req.path !== CSRF_CONSUME_PATH) throw new Error(`unexpected call ${req.service} ${req.path}`);
       consumed.push(req.json as CsrfConsumeRequest);
-      return { status: 200, headers: {}, body: { valid: csrfValid } };
+      return { status: 200, headers: {}, body: { valid: true } };
     };
     Object.defineProperty(app.opt2.client, 'request', { value: request, writable: true, configurable: true, enumerable: true });
   });
@@ -164,8 +159,6 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
 
   beforeEach(() => {
     consumed.length = 0;
-    identity.calls.length = 0;
-    csrfValid = true;
   });
 
   /** The gateway's invocation credential, with `actor`'s user token when one acts. */
@@ -191,26 +184,6 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
     return withTenant(db, TENANT_A.tenantId, (tx) => repo.findPerson(tx, userId));
   }
 
-  /** tenant-a's roster operations of `userId` by id, with their state and error. */
-  async function rosterOperations(userId: string): Promise<Map<string, { state: string; error: string | null }>> {
-    const { rows } = await withTenant(db, TENANT_A.tenantId, (tx) =>
-      tx.query<{ operation_id: string; state: string; error: string | null }>(`SELECT operation_id, state, error FROM ${handle.schema}.roster_operation WHERE user_id = $1`, [userId]),
-    );
-    return new Map(rows.map(({ operation_id: id, state, error }) => [id, { state, error }]));
-  }
-
-  /** Runs `fn` with `lookup` as strategies-content's photo lookup of the routes' reads and roster saves, as `registerRoutes` wires it. */
-  async function withPhotoLookup(lookup: NonNullable<RosterDeps['photoFileExts']>, fn: () => Promise<void>): Promise<void> {
-    search.photoFileExts = lookup;
-    roster.photoFileExts = lookup;
-    try {
-      await fn();
-    } finally {
-      delete search.photoFileExts;
-      delete roster.photoFileExts;
-    }
-  }
-
   /** tenant-a's stored addresses of `userId`. */
   async function storedAddresses(userId: string) {
     return withTenant(db, TENANT_A.tenantId, (tx) => repo.listAddresses(tx, userId));
@@ -219,7 +192,7 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
   describe('contract binding', () => {
     const SERVED = [
       ...['address', 'user'].flatMap((entity) =>
-        ['findall', 'findmany', 'findnew', 'findone', 'findpermissions', 'findproperties', 'findquery', 'save', 'validate'].map((op) => `${entity}.${op}`),
+        ['findall', 'findmany', 'findnew', 'findone', 'findpermissions', 'findproperties', 'findquery', 'validate'].map((op) => `${entity}.${op}`),
       ),
       'user.~pollstate',
     ];
@@ -508,199 +481,6 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
     ])('answers %s', async (_name, data, status) => {
       const res = await send('GET', `${API}?method=validate&entityname=user&data=${encodeURIComponent(data)}`, SITE_ADMIN_A);
       expect(res.status).toBe(status);
-    });
-  });
-
-  describe('user save', () => {
-    it('lets a user save their own record without the Users module, under the roster protocol', async () => {
-      const userId = SELF_SAVER.sub;
-      const before = await storedPerson(userId);
-      const res = await send('POST', `${API}/user`, SELF_SAVER, {
-        ...CSRF,
-        userid: userId,
-        siteid: TENANT_A.siteId,
-        fname: 'Cassie',
-        lname: before?.lname ?? '',
-        email: before?.email ?? '',
-        username: 'casey',
-        isPublic: '1',
-        s2: '1',
-      });
-      expect(res.status).toBe(200);
-      expect(res.body.data).toMatchObject({ userid: userId, fname: 'Cassie', saveerrors: '', errors: {} });
-      expect((await storedPerson(userId))?.fname).toBe('Cassie');
-      expect(consumed).toEqual([expect.objectContaining({ sessionId: `SESSION-${userId}`, context: 'new', token: 'TOKEN' })]);
-      expect(identity.calls).toEqual(expect.arrayContaining(['prepare', 'commit', 'finish']));
-      // The answer is built from the committed operation, so identity is not called after its finish.
-      expect(identity.calls.at(-1)).toBe('finish');
-    });
-
-    // Oracle: root start-up's Portcullis scan of url and form [legacy: core/appcfc/scriptProtect_include.cfm:4-20]; a JSON body is not scanned.
-    it.each<[string, 'form' | 'url' | 'json', string]>([
-      ['a form', 'form', '[INVALID]Cassie'],
-      ['the url', 'url', '[INVALID]Cassie'],
-      ['a JSON body', 'json', '<script>alert(1)</script>Cassie'],
-    ])('stores the fname %s carries as request start-up leaves it', async (_name, carrier, stored) => {
-      const userId = SELF_SAVER.sub;
-      const before = await storedPerson(userId);
-      const fname = '<script>alert(1)</script>Cassie';
-      const values = { ...CSRF, userid: userId, siteid: TENANT_A.siteId, lname: before?.lname ?? '', email: before?.email ?? '', username: 'casey' };
-      const url = carrier === 'url' ? `${API}/user?fname=${encodeURIComponent(fname)}` : `${API}/user`;
-      const res = await send('POST', url, SELF_SAVER, carrier === 'url' ? values : { ...values, fname }, {}, carrier === 'json');
-      expect(res.status).toBe(200);
-      expect(res.body.data).toMatchObject({ fname: stored });
-      expect((await storedPerson(userId))?.fname).toBe(stored);
-    });
-
-    it("answers a posted photo file with the extension strategies-content gives it under the operation's intent, before identity's prepare", async () => {
-      const userId = SELF_SAVER.sub;
-      const before = await storedPerson(userId);
-      const photoId = cfUuid();
-      const lookups: { ids: unknown[]; timeoutMs: number | undefined; identityCalls: string[]; open: string[] }[] = [];
-      const lookup: NonNullable<RosterDeps['photoFileExts']> = async (ids, options) => {
-        const open = await withTenant(db, TENANT_A.tenantId, (tx) => repo.findOpenRosterOperations(tx, [userId]));
-        lookups.push({ ids: [...ids], timeoutMs: options?.timeoutMs, identityCalls: [...identity.calls], open: open.map((row) => row.state) });
-        return new Map(ids.includes(photoId) ? [[photoId, 'png']] : []);
-      };
-      await withPhotoLookup(lookup, async () => {
-        const form = { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: 'Pia', lname: before?.lname ?? '', email: before?.email ?? '', photofileid: ` ${photoId} ` };
-        const res = await send('POST', `${API}/user`, SELF_SAVER, form);
-        expect(res.status).toBe(200);
-        expect(res.body.data).toMatchObject({ userid: userId, fname: 'Pia', photofileid: photoId, photofileext: 'png', errors: {} });
-        const committed = lookups.filter(({ ids }) => ids.includes(photoId));
-        expect(committed).toEqual([{ ids: [photoId], timeoutMs: expect.any(Number) as unknown, identityCalls: expect.not.arrayContaining(['prepare']) as unknown, open: ['started'] }]);
-        expect(committed[0]?.timeoutMs).toBeGreaterThan(0);
-        expect(committed[0]?.timeoutMs).toBeLessThanOrEqual(REQUEST_BUDGET_MS);
-        expect(identity.calls.at(-1)).toBe('finish');
-      });
-    });
-
-    it("answers the legacy 503 and rolls the operation back before identity's prepare when the committed photo's lookup fails", async () => {
-      const userId = SELF_SAVER.sub;
-      const before = await storedPerson(userId);
-      const operations = await rosterOperations(userId);
-      const photoId = cfUuid();
-      const lookup: NonNullable<RosterDeps['photoFileExts']> = (ids) =>
-        ids.includes(photoId) ? Promise.reject(new ServiceUnavailableError('strategies-content', new Error('down'))) : Promise.resolve(new Map());
-      await withPhotoLookup(lookup, async () => {
-        const form = { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: 'Quinn', lname: before?.lname ?? '', email: before?.email ?? '', photofileid: photoId };
-        const res = await send('POST', `${API}/user`, SELF_SAVER, form);
-        expect(res.status).toBe(503);
-        expect(await storedPerson(userId)).toEqual(before);
-        expect(identity.calls.filter((name) => ['prepare', 'commit', 'abort', 'finish'].includes(name))).toEqual([]);
-        const added = [...(await rosterOperations(userId))].filter(([id]) => !operations.has(id)).map(([, row]) => row);
-        expect(added).toEqual([{ state: 'rolled-back', error: 'shape' }]);
-      });
-    });
-
-    it('answers the photo a competing save committed ahead of the intent with that photo\'s extension', async () => {
-      const userId = SELF_SAVER.sub;
-      const before = await storedPerson(userId);
-      const photoId = cfUuid();
-      const names = { lname: before?.lname ?? '', email: before?.email ?? '' };
-      const original = identity.actingUser;
-      let rival: Awaited<ReturnType<typeof send>> | undefined;
-      // The rival save completes after the outer save's stored-user read and before its intent.
-      identity.actingUser = async (...args) => {
-        identity.actingUser = original;
-        rival = await send('POST', `${API}/user`, SELF_SAVER, { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: before?.fname ?? '', ...names, photofileid: photoId });
-        return original(...args);
-      };
-      try {
-        await withPhotoLookup(
-          (ids) => Promise.resolve(new Map(ids.includes(photoId) ? [[photoId, 'png']] : [])),
-          async () => {
-            const outer = await send('POST', `${API}/user`, SELF_SAVER, { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: 'Rae', ...names });
-            expect(rival).toMatchObject({ status: 200, body: { data: { photofileid: photoId, photofileext: 'png' } } });
-            expect(outer.status).toBe(200);
-            expect(outer.body.data).toMatchObject({ userid: userId, fname: 'Rae', photofileid: photoId, photofileext: 'png', errors: {} });
-            expect(await storedPerson(userId)).toMatchObject({ fname: 'Rae', photofileid: photoId });
-          },
-        );
-      } finally {
-        identity.actingUser = original;
-      }
-    });
-
-    it("refuses a save of another user's record without the Users module", async () => {
-      const before = await storedPerson(SITE_ADMIN_A_PERSON.userid);
-      const res = await send('POST', `${API}/user`, SYSTEM_USER_A, { ...CSRF, userid: SITE_ADMIN_A_PERSON.userid, fname: 'Mallory' });
-      expect(res.status).toBe(401);
-      expect(res.body).toMatchObject({ error: { code: 'invalid_request' } });
-      expect(await storedPerson(SITE_ADMIN_A_PERSON.userid)).toEqual(before);
-      expect(identity.calls).not.toContain('prepare');
-    });
-
-    it.each([
-      ['anonymous, without a session token', undefined, true],
-      ['a token legacy would not accept', SITE_ADMIN_A, false],
-    ])('answers invalidTokens for %s', async (_name, actor, valid) => {
-      csrfValid = valid;
-      const res = await send('POST', `${API}/user`, actor, { ...CSRF, userid: SYSTEM_USER_A_PERSON.userid, fname: 'Nobody' });
-      expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid CSRF tokens' } });
-    });
-
-    it("answers 403 with the request values when a save of another record loses its email", async () => {
-      const userId = cfUuid();
-      const res = await send('POST', `${API}/user`, SITE_ADMIN_A, { ...CSRF, userid: userId, fname: 'Pat', lname: 'Lee', email: 'pat@tenant-a.opt2.test', username: 'patlee' });
-      expect(res.status).toBe(403);
-      const data = res.body.data as Record<string, unknown>;
-      expect(data).toMatchObject({ fname: 'Pat', lname: 'Lee', email: '', saveerrors: '' });
-      expect(data.errors).toHaveProperty('email');
-      expect(await storedPerson(userId)).toBeNull();
-      expect(identity.calls).not.toContain('commit');
-    });
-
-    it('creates a user as a site administrator', async () => {
-      const prepare = identity.prepare;
-      // Identity's double lists the account its commit creates.
-      identity.prepare = (userId, operationId, change) => {
-        identity.seedAccounts([accountFor({ userid: userId, siteid: TENANT_A.siteId, email: 'new_person@tenant-a.opt2.test' })]);
-        return prepare(userId, operationId, change);
-      };
-      try {
-        const res = await send('POST', `${API}/user`, SITE_ADMIN_A, {
-          ...CSRF,
-          fname: 'New',
-          lname: 'Person',
-          email: 'new_person@tenant-a.opt2.test',
-          username: 'new_person',
-          isPublic: '0',
-        });
-        expect(res.status).toBe(200);
-        const data = res.body.data as { userid: string };
-        expect(res.body.data).toMatchObject({ fname: 'New', email: 'new_person@tenant-a.opt2.test', errors: {} });
-        expect(await storedPerson(data.userid)).toMatchObject({ lname: 'Person', email: 'new_person@tenant-a.opt2.test' });
-        expect(consumed.map((call) => call.context)).toEqual(['new']);
-      } finally {
-        identity.prepare = prepare;
-      }
-    });
-  });
-
-  describe('address save', () => {
-    it('adds an address to a user as a site administrator', async () => {
-      const res = await send('POST', `${API}/address`, SITE_ADMIN_A, { ...CSRF, userid: SYSTEM_USER_A_PERSON.userid, addressname: 'Cabin', city: 'Bergen' });
-      expect(res.status).toBe(200);
-      const data = res.body.data as { addressid: string };
-      expect(res.body.data).toMatchObject({ addressname: 'Cabin', city: 'Bergen', userid: SYSTEM_USER_A_PERSON.userid });
-      expect((await storedAddresses(SYSTEM_USER_A_PERSON.userid)).map((address) => address.addressid)).toContain(data.addressid);
-    });
-
-    it("updates the caller's own address without the Users module", async () => {
-      const res = await send('POST', `${API}/address`, SELF_SAVER, { ...CSRF, userid: SELF_SAVER.sub, addressname: 'Flat', city: 'Oslo' });
-      expect(res.status).toBe(200);
-      const { addressid } = res.body.data as { addressid: string };
-      const update = await send('PUT', `${API}/address/${addressid}`, SELF_SAVER, { ...CSRF, addressid, userid: SELF_SAVER.sub, addressname: 'Flat', city: 'Trondheim' });
-      expect(update.status).toBe(200);
-      expect(consumed.map((call) => call.context)).toEqual(['new', addressid]);
-      expect((await storedAddresses(SELF_SAVER.sub)).find((address) => address.addressid === addressid)?.city).toBe('Trondheim');
-    });
-
-    it("refuses an address of another user's record without the Users module", async () => {
-      const res = await send('POST', `${API}/address`, SELF_SAVER, { ...CSRF, userid: SITE_ADMIN_A_PERSON.userid, addressname: 'Intrusion' });
-      expect(res.status).toBe(401);
     });
   });
 });

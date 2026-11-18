@@ -18,6 +18,8 @@ import {
 const packet = (inner: string): string => `<wddxPacket version='1.0'><header/><data>${inner}</data></wddxPacket>`;
 const n = (text: string): WddxNumber => new WddxNumber(text);
 const q = (columns: string[], rows: Record<string, WddxValue>[]): WddxQuery => ({ kind: 'query', columns, rows });
+const emptyRecordset = (rowCount: string, ...names: string[]): string =>
+  `<recordset rowCount='${rowCount}' fieldNames='${names.join(',')}'>${names.map((name) => `<field name='${name}'></field>`).join('')}</recordset>`;
 const at = (...parts: [number, number, number, number, number, number, number?]): WddxDate => new WddxDate(new Date(...parts));
 
 const FORM_CREATE =
@@ -365,9 +367,45 @@ describe('wddx2cfml', () => {
       ),
       q(['A', 'B'], [{ A: '1', B: 'x' }, { A: null, B: 'y' }]),
     ],
+    [
+      'a field longer than rowCount',
+      packet(
+        "<recordset rowCount='1' fieldNames='x,y'><field name='x'><string>a</string><string>b</string><string>c</string></field>" +
+          "<field name='y'><string>p</string></field></recordset>",
+      ),
+      q(['x', 'y'], [{ x: 'a', y: 'p' }, { x: 'b', y: null }, { x: 'c', y: null }]),
+    ],
+    ['a rowCount of -0', packet(emptyRecordset('-0', 'A')), q(['A'], [])],
     ['a query without columns', packet("<recordset rowCount='1' fieldNames=''/>"), q([], [{}])],
   ])('tolerates %s', (_label, text, expected) => {
     expect(wddx2cfml(text)).toEqual(expected);
+  });
+
+  it.each<[string, string, number[], string]>([
+    ['100000 rows of two empty fields', packet(emptyRecordset('100000', 'x', 'y')), [100_000], 'y'],
+    ['two 100000-row recordsets in an array', packet(`<array length='2'>${emptyRecordset('100000', 'x').repeat(2)}</array>`), [100_000, 100_000], 'x'],
+    ['100000 rows of 1000 empty fields', packet(emptyRecordset('100000', ...Array.from({ length: 1000 }, (_, c) => `c${c}`))), [100_000], 'c999'],
+  ])('reads %s, padded with NULL cells', (_label, text, counts, column) => {
+    const value = wddx2cfml(text);
+    const queries = (Array.isArray(value) ? value : [value]) as WddxQuery[];
+    expect(queries.map(({ rows }) => rows.length)).toEqual(counts);
+    for (const { rows } of queries) expect(rows.at(-1)?.[column]).toBeNull();
+  });
+
+  it('reads parsed rows as a stable, read-only array', () => {
+    const { rows } = wddx2cfml(packet(emptyRecordset('2', 'x'))) as WddxQuery;
+    expect(rows[0]).toBe(rows[0]);
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows.map((row) => row.x)).toEqual([null, null]);
+    expect(JSON.stringify(rows)).toBe('[{"x":null},{"x":null}]');
+    expect(() => {
+      rows[0] = {};
+    }).toThrow(TypeError);
+    expect(() => rows.push({})).toThrow(TypeError);
+    expect(() => delete rows[0]).toThrow(TypeError);
+    expect(() => Object.defineProperty(rows, '2', { value: {} })).toThrow(TypeError);
+    expect(() => Object.freeze(rows)).toThrow(TypeError);
+    expect(rows).toEqual([{ x: null }, { x: null }]);
   });
 
   it('reads date-time offsets, unpadded and rolled-over fields, and local time', () => {
@@ -398,6 +436,9 @@ describe('wddx2cfml', () => {
     ['a struct member that is not a var', packet("<struct><item name='a'><string>1</string></item></struct>")],
     ['an unclosed var', packet("<struct><var name='a'><string>1</string></struct>")],
     ['a non-numeric rowCount', packet("<recordset rowCount='x' fieldNames='A'></recordset>")],
+    ['a billion declared rows', packet(emptyRecordset('1000000000', 'x'))],
+    ['a rowCount above 100000', packet(emptyRecordset('100001', 'x'))],
+    ['a negative rowCount', packet(emptyRecordset('-5', 'x'))],
     ['a declared column without a field', packet("<recordset rowCount='1' fieldNames='A,B'><field name='A'><string>1</string></field></recordset>")],
     ['a field without a declared column', packet("<recordset rowCount='1' fieldNames='A'><field name='C'><string>2</string></field></recordset>")],
     ['an unclosed header', "<wddxPacket version='1.0'><header><comment>x</comment><data><string>c</string></data></wddxPacket>"],

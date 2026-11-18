@@ -21,15 +21,7 @@ import {
   type Transport,
 } from '@opt2/platform/auth';
 import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
-import {
-  CSRF_HEADER_EXPIRES,
-  CSRF_HEADER_TOKEN,
-  LEGACY_ERROR_MAP,
-  WWW_AUTHENTICATE,
-  cfUuid,
-  generateCsrfToken,
-  legacyErrorResponse,
-} from '@opt2/platform/legacy-compat';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
   ROLE_SET,
   TENANT_A,
@@ -47,7 +39,6 @@ import {
 import { SERVICE_NAME } from '../../src/app.js';
 import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
 import { SWEEP_QUEUE, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
-import { groupRow, sessionRow } from '../helpers/rows.js';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 type Headers = Record<string, string>;
@@ -184,12 +175,6 @@ function registryAnswer(sql: string, values: readonly unknown[]): Array<Record<s
   return rows.map((row) => (pooled === undefined ? { ...row } : { ...row, pool_tenant: (row as Record<string, unknown>)[pooled] }));
 }
 
-/** The anonymous tenant-a session whose CSRF secret the group.save checks validate against. */
-const ANONYMOUS_SESSION = sessionRow({ session_id: 'S-authz-anonymous' });
-
-/** A stored Type=1 group of tenant-a's private pool, the only group the recording database answers. */
-const STORED_GROUP = groupRow({ groupname: 'Authz Stored' });
-
 /** One concrete tenant-a request; each subject's credentials are added when it is sent. */
 interface Probe {
   method: Method;
@@ -256,9 +241,9 @@ function service(allow: Row['allow'], probe: Probe, extra: Omit<Partial<Row>, 't
   return { transport: 'service', allow, probe, ...extra };
 }
 
-/** A catch-all JSON API route, probed with the withheld `group.save{extdata}` key identity answers with the legacy 404. */
+/** A catch-all JSON API route, probed with a scan-halted `group.save` key identity answers with the legacy 404 before any REST credential check. */
 function jsonApi(family: 'json' | 'ajax' | 'rest', method: Method, lead: '' | '/index.cfm'): Row {
-  const url = `${lead}/_api/${family}/v1/${SITE_A}/?method=save&entityname=group&${WITHHELD_SAVE}`;
+  const url = `${lead}/_api/${family}/v1/${SITE_A}/?method=save&entityname=group&a-b=probe&a.b=other`;
   return service('public', { method, url, siteid: SITE_A }, { siteCheck: 'handler', source: 'jsonApiUtility.cfc:398-412' });
 }
 
@@ -696,12 +681,6 @@ function observedRecord(subject: RoleSubject, headers: Headers): SubjectRecord {
 beforeAll(async () => {
   t = await buildTestApp();
   t.db.respond(/FROM "?identity"?\."?tenant_registry"?\b/, registryAnswer);
-  t.db.respond(/FROM "?identity"?\."?session"?\s/, (_sql, values) =>
-    values.includes(ANONYMOUS_SESSION.session_id) && values.includes(ANONYMOUS_SESSION.tenant_id) ? [{ ...ANONYMOUS_SESSION }] : [],
-  );
-  t.db.respond(/FROM "?identity"?\."?group_account"?\s/, (_sql, values) =>
-    values.includes(STORED_GROUP.tenant_id) && JSON.stringify(values).includes(STORED_GROUP.userid) ? [{ ...STORED_GROUP }] : [],
-  );
   await t.app.ready();
   matrix = collectRouteMatrix(t.app);
 });
@@ -798,46 +777,6 @@ describe('cUsers before() gate (cusers.cfc:90-124)', () => {
       expect(statuses.filter((status) => status === 401 || status === 403)).toEqual([]);
     },
   );
-});
-
-describe('anonymous group.save on the JSON API (jsonApiUtility.cfc:1903-2035)', () => {
-  const anonymous = (): Promise<Headers> => userCredentials({ sub: '', sid: ANONYMOUS_SESSION.session_id, site: SITE_A, roles: [] });
-  const envelope = (type: keyof typeof LEGACY_ERROR_MAP): Record<string, unknown> => {
-    const { message, code } = LEGACY_ERROR_MAP[type];
-    return { apiversion: 'v1', method: 'save', error: { message, code } };
-  };
-  const tablesWrittenSince = (from: number): string[] => t.db.writes().slice(from).map((write) => write.table);
-
-  // A new group keeps the bean type 2 once a non-admin's type is stripped, which identity refuses as EX-GROUP-USER-RECORD;
-  // a stored Type=1 group reaches allowAction, which legacy denies anonymous callers (bean.cfc:1353-1355).
-  it('answers a stored group save carrying a valid CSRF token with 401 authorization, consuming the token and writing no group', async () => {
-    const csrf = generateCsrfToken({ context: STORED_GROUP.userid, secret: ANONYMOUS_SESSION.csrf_secret, now: t.clock.now() });
-    const before = effects();
-    const res = await t.app.inject({
-      method: 'POST',
-      url: `/_api/json/v1/${SITE_A}/group/${STORED_GROUP.userid}`,
-      headers: { ...(await anonymous()), ...FORM, [CSRF_HEADER_TOKEN]: csrf.token, [CSRF_HEADER_EXPIRES]: csrf.expires },
-      payload: 'groupname=Mine',
-    });
-    expect([res.statusCode, res.json()]).toEqual([401, envelope('authorization')]);
-    expect(tablesWrittenSince(before.writes).filter((table) => table !== 'identity.csrf_claim' && table !== 'identity.changelog')).toEqual([]);
-    expect([t.repo.writes().length, t.publisher.published.length + t.publisher.raw.length]).toEqual([before.repoWrites, before.published]);
-  });
-
-  it('answers a JSON-mode save without CSRF tokens with 400 invalidTokens before authorization, with no effect', async () => {
-    const before = effects();
-    const res = await t.app.inject({ method: 'POST', url: `/_api/json/v1/${SITE_A}/group/`, headers: { ...(await anonymous()), ...FORM }, payload: 'groupname=Mine' });
-    expect([res.statusCode, res.json(), effects()]).toEqual([400, envelope('invalidTokens'), before]);
-  });
-
-  it('answers a REST save without user credentials, as the gateway forwards it, with the Basic challenge, with no effect', async () => {
-    const before = effects();
-    const gateway = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE_NAME })}`;
-    const headers = { ...FORM, [INVOCATION_HEADER]: gateway };
-    const res = await t.app.inject({ method: 'POST', url: `/_api/rest/v1/${SITE_A}/group/`, headers, payload: 'groupname=Mine' });
-    const owed = legacyErrorResponse('authorization', { method: 'Not Available', wwwAuthenticate: WWW_AUTHENTICATE.basic });
-    expect([res.statusCode, res.body, res.headers['www-authenticate'], effects()]).toEqual([401, owed.body, WWW_AUTHENTICATE.basic, before]);
-  });
 });
 
 describe("site check compares the token's site, never its tenant", () => {

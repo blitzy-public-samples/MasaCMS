@@ -55,7 +55,7 @@ type HaltedFake = {
   operationId: string;
   tenantId: string;
   userId: string;
-  kind: 'admin-add' | 'admin-update' | 'json-save' | 'profile-update';
+  kind: 'admin-add' | 'admin-update' | 'profile-update';
   state: 'started' | 'people-committed' | 'done' | 'rolled-back' | 'halted';
   startedAt: string;
   updatedAt: string;
@@ -548,7 +548,6 @@ describe('rosterHaltEntry', () => {
   it.each([
     { kind: 'admin-add', routeKey: 'admin:cusers.update{type=2,action=add}', appliesTo: undefined },
     { kind: 'admin-update', routeKey: ADMIN_UPDATE_KEY, appliesTo: undefined },
-    { kind: 'json-save', routeKey: 'api:user.save', appliesTo: ['rest:user.save'] },
     { kind: 'profile-update', routeKey: 'admin:ceditprofile.update', appliesTo: undefined },
   ] as const)('keys a halted $kind operation by the route it runs on', ({ kind, routeKey, appliesTo }) => {
     const entry = rosterHaltEntry({ ...haltedOperation(OPERATION_1.toLowerCase()), kind }, 'GS-PE-02', SHA);

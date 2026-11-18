@@ -25,7 +25,7 @@ import {
 import { createAccountReads } from '../../src/domain/account-reads.js';
 import { registerAccountReadRoutes } from '../../src/routes/internal-account-reads.js';
 import { createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { GROUP_ACCOUNT, IDENTITY_UNITS, USER_STRIKE } from '../../src/repo/tables.js';
+import { GROUP_ACCOUNT, IDENTITY_UNITS, USER_STRIKE, type LoginSnapshot } from '../../src/repo/tables.js';
 
 type ContractOperation = Record<string, unknown>;
 type Method = 'GET' | 'POST';
@@ -133,6 +133,22 @@ async function adminQuery(sql: string, params: unknown[] = []): Promise<void> {
   if (handle === undefined) throw new Error('PostgreSQL is not available');
   const { schema } = handle;
   await withMetadata(handle.app, (tx) => tx.query(sql.replaceAll('$schema', schema), params));
+}
+
+let sessionSeq = 0;
+
+/** Inserts an active session of `userId` signed in to `siteId` and answers its id. */
+async function signedIn(userId: string, siteId: string): Promise<string> {
+  sessionSeq += 1;
+  const sessionId = `S-routes-${String(sessionSeq)}`;
+  const snapshot: LoginSnapshot = {
+    userid: userId, username: null, siteid: siteId, subtype: 'Default', password: null, fname: null, lname: null, email: null,
+    remoteid: null, company: null, lastlogin: null, passwordcreated: null, roleList: '', membershipIds: userId,
+  };
+  await gated(siteId, (tx) =>
+    repo.insertSession(tx, { session_id: sessionId, csrf_secret: 'secret', mode: 'target-primary', state: 'active', user_id: userId, site_id: siteId, login_snapshot: JSON.stringify(snapshot) }),
+  );
+  return sessionId;
 }
 
 async function registerSite(site: string, privatePool: string, publicPool: string): Promise<void> {
@@ -386,11 +402,22 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     ['tenant-a', DEFAULT_USER, 'default', 'dee'],
     ['tenant-b', ACTIVE.toLowerCase(), 'tenant-a', 'ada'],
   ])("answers getAccount under a token of %s for the token user's own account %s stored under %s", async (site, userId, siteId, username) => {
-    const own = `Bearer ${await mintUserToken({ sub: userId, site, roles: [Roles.systemUser] })}`;
+    const own = `Bearer ${await mintUserToken({ sub: userId, sid: await signedIn(userId.toUpperCase(), siteId), site, roles: [Roles.systemUser] })}`;
     const res = await send('GET', `/internal/v1/accounts/${userId}`, { ...(await headersFor('people')), authorization: own });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ UserID: userId.toUpperCase(), SiteID: siteId, UserName: username });
+  });
+
+  it.each([
+    ['no session', async () => `S-routes-none-${String(++sessionSeq)}`],
+    ["another user's session", () => signedIn(DEFAULT_USER, 'default')],
+  ])("answers getAccount for the token user's own account outside the token site's pools with the legacy 404 when the token's sid names %s", async (_label, sid) => {
+    const own = `Bearer ${await mintUserToken({ sub: OTHER_TENANT, sid: await sid(), site: 'tenant-a', roles: [Roles.systemUser] })}`;
+    const res = await send('GET', `/internal/v1/accounts/${OTHER_TENANT}`, { ...(await headersFor('people')), authorization: own });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid method call' } });
   });
 
   it.each(

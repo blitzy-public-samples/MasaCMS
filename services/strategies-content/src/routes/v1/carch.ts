@@ -1045,7 +1045,10 @@ function packetModel(value: WddxValue): unknown {
   if (Array.isArray(value)) return value.map(packetModel);
   if (value === null || typeof value !== 'object') return value;
   const members = (entries: Iterable<[string, WddxValue]>): Record<string, unknown> => Object.fromEntries([...entries].map(([name, member]) => [name, packetModel(member)]));
-  return value.kind === 'struct' ? members(value.entries) : value.rows.map((row) => members(Object.entries(row)));
+  if (value.kind === 'struct') return members(value.entries);
+  // dsp_edit.cfm and dsp_response.cfm read a query packet's field as its first row's cell (captured).
+  const [first] = value.rows;
+  return members(value.columns.map((column): [string, WddxValue] => [column, first?.[column] ?? null]));
 }
 
 /** The getDraftList rows draft.cfm reads, handed to `write` batch by batch as page-model values with their crumbdata, icon classes and node verdict. */

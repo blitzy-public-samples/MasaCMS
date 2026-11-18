@@ -4,19 +4,18 @@ import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_MAP, etag, legacyHeaders } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, etag, legacyHeaders, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { issueTokens } from '../../src/domain/csrf.js';
-import { EN_GROUP_MESSAGES } from '../../src/domain/groups.js';
 import { ensureSession, sessionState } from '../../src/domain/sessions.js';
 import { identityPayloadValidators } from '../../src/events/publish.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS } from '../../src/repo/tables.js';
-import { feedHalted, feedRefused, lockdownRefused, userRecordRefused } from '../../src/routes/legacy-api.js';
+import { feedHalted, feedRefused, lockdownRefused } from '../../src/routes/legacy-api.js';
 import { validateHalted, validateRefused } from '../../src/routes/legacy-bean-validator.js';
 import { authenticateRestRequest } from '../../src/routes/oauth.js';
 import {
@@ -68,10 +67,8 @@ import {
 import { TEST_PASSWORDS } from '../helpers/rows.js';
 
 const SITE_C = 'tenant-c';
-const ENDPOINT_C = `http://${HOST}/index.cfm/_api/json/v1/${SITE_C}`;
 const SECRET = 'K0000000-0000-0000-0000000000000003';
 const SITE_MANAGER = 'm:000';
-const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const SITE_EDITOR: Caller = { sub: 'A0000000-0000-0000-0000000000000006', roles: [Roles.systemUser, SITE_MANAGER] };
 
 /** Oracle answers carrying an id the legacy bean generated, which the comparison takes from the response. */
@@ -1075,186 +1072,48 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     });
   });
 
-  describe('group save', () => {
+  describe('group save and delete, which legacy serves', () => {
     const GROUP_C = `/_api/json/v1/${SITE_C}/group`;
 
     async function groupOf(id: string): Promise<Record<string, unknown>> {
       return dataOf(await send(app, 'GET', `${GROUP_C}/${id}?fields=groupname,ispublic,s2,email,siteid`, await headersFor({ ...S2, site: SITE_C })));
     }
 
-    it('creates a group under a fresh id for S2 with the token of context new, keeping the posted visibility', async () => {
-      const caller = await inSession(S2, SITE_C, 'S2');
+    /** SITE_C's stored groups and outbox row count, and the CSRF claims of session `sid`. */
+    function storedEffects(sid: string): Promise<Record<string, unknown>> {
+      return gated(SITE_C, async (tx) => ({
+        groups: (await tx.query(`SELECT * FROM ${handle.schema}.group_account ORDER BY userid`)).rows,
+        outbox: (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.outbox`)).rows[0]?.n,
+        claims: (await tx.query(`SELECT token FROM ${handle.schema}.csrf_claim WHERE session_id = $1`, [sid])).rows,
+      }));
+    }
 
-      const res = await send(app, 'POST', GROUP_C, await headersFor(caller), { groupname: 'Reviewers', isPublic: '0', ...csrfFields('new') });
+    const SAVES: ReadonlyArray<[string, Method, () => string, () => Record<string, string>]> = [
+      ['an entity-route POST of a new group', 'POST', () => '/group', () => ({ groupname: 'Refused', isPublic: '0', ...csrfFields('new') })],
+      ['an entity-route PUT of a stored group', 'PUT', () => `/group/${ids.helpers}`, () => ({ groupname: 'Refused', ...csrfFields(ids.helpers) })],
+      ['a direct method=save naming entityname group', 'POST', () => '', () => ({ method: 'save', entityname: 'group', id: ids.helpers, groupname: 'Refused', ...csrfFields(ids.helpers) })],
+      ['a save that uploads a photo', 'POST', () => `/group/${ids.helpers}`, () => ({ groupname: 'Refused', newFile: 'photo.png', ...csrfFields(ids.helpers) })],
+      ['a save that removes the photo', 'POST', () => `/group/${ids.helpers}`, () => ({ groupname: 'Refused', removePhotoFile: 'true', ...csrfFields(ids.helpers) })],
+      ['a save with an extend set', 'POST', () => `/group/${ids.helpers}`, () => ({ groupname: 'Refused', extendSetID: 'X', ...csrfFields(ids.helpers) })],
+    ];
 
-      const data = dataOf(res);
-      expect(res.statusCode).toBe(200);
-      expect(json(res).method).toBe('save');
-      expect(data.userid).toMatch(CF_UUID);
-      expect(data).toEqual({
-        links: {
-          entities: ENDPOINT_C,
-          all: `${ENDPOINT_C}/group`,
-          properties: `${ENDPOINT_C}/group/properties`,
-          self: `${ENDPOINT_C}/group/${String(data.userid)}`,
-          permissions: `${ENDPOINT_C}/group/${String(data.userid)}/permissions`,
-        },
-        userid: data.userid,
-        groupname: 'Reviewers',
-        ispublic: 0,
-        siteid: SITE_C,
-        type: 'group',
-        subtype: 'Default',
-        remoteid: '',
-        isnew: 0,
-        id: data.userid,
-        entityname: 'group',
-        saveerrors: false,
-        errors: {},
-      });
-      expect(await groupOf(String(data.userid))).toMatchObject({ groupname: 'Reviewers', ispublic: 0, isnew: 0 });
-    });
+    it.each((['api', 'rest'] as const).flatMap((family) => SAVES.map(([label, method, path, form]) => [family, label, method, path, form] as const)))(
+      'answers %s group.save as %s with the legacy 404 envelope, consuming no CSRF token, writing no group and publishing no event',
+      async (family, _label, method, path, form) => {
+        const caller = await inSession(S2, SITE_C, 'S2');
+        const url = `/_api/${family === 'api' ? 'json' : 'rest'}/v1/${SITE_C}${path()}`;
+        const fields = form();
+        const keyed = scannedRouteKey({ method, path: url, url, query: {}, form: fields, headers: FORM_BODY }, { appReloadKey: SETTINGS.appReloadKey });
+        const before = await storedEffects(caller.sid ?? '');
 
-    // Oracle (own ACF form post): start-up's Portcullis scan filters the form scope params merge; a JSON body is no form scope.
-    it.each<[string, string, string]>([
-      ['a form', "<script>alert('xss')</script>' OR 1=1--", "[INVALID]' OR 1=1--"],
-      ['a form', '<img src=x onerror=alert(1)>', '<img src=x [INVALID]=alert(1)>'],
-      ['a JSON body', "<script>alert('xss')</script>' OR 1=1--", "<script>alert('xss')</script>' OR 1=1--"],
-      ['a JSON body', '<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>'],
-    ])('creates a group whose groupname is posted in %s as %j under the name %j', async (encoding, sent, stored) => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-      const fields = { groupname: sent, isPublic: '0', ...csrfFields('new') };
-      const asJson = encoding === 'a JSON body';
+        const res = await send(app, method, url, await headersFor(caller), fields);
 
-      const res = await app.inject({
-        method: 'POST',
-        url: GROUP_C,
-        headers: { host: HOST, ...(await headersFor(caller)), ...(asJson ? { 'content-type': 'application/json' } : FORM_BODY) },
-        payload: asJson ? JSON.stringify(fields) : new URLSearchParams(fields).toString(),
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(dataOf(res)).toMatchObject({ groupname: stored, isnew: 0, errors: {} });
-      expect(await groupOf(String(dataOf(res).userid))).toMatchObject({ groupname: stored, ispublic: 0 });
-    });
-
-    it('saves a direct call posting type group as a group', async () => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-
-      const res = await send(app, 'POST', `/_api/json/v1/${SITE_C}/save`, await headersFor(caller), {
-        entityname: 'group', id: ids.helpers, type: 'group', remoteid: 'r-0', ...csrfFields(ids.helpers),
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(json(res).method).toBe('save');
-      expect(dataOf(res)).toMatchObject({ type: 'group', remoteid: 'r-0', errors: {} });
-    });
-
-    it("strips a Users-module editor's visibility, type, S2 flag, the Admin name and another record's email before updating", async () => {
-      const caller = await inSession(USERS_EDITOR, SITE_C, `Editor;${SITE_C};0`);
-
-      const res = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, await headersFor(caller), {
-        groupname: 'admin', isPublic: '0', type: '2', s2: '1', email: 'changed@example.test', userid: ids.helpers, ...csrfFields(ids.helpers),
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', ispublic: 1, s2: 0, email: 'helpers@example.test' });
-    });
-
-    it('answers a save whose bean reports errors with 403 and the errors, writing nothing', async () => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-
-      const res = await send(app, 'POST', GROUP_C, await headersFor(caller), { groupname: 'Spam', passedProtect: 'false', ...csrfFields('new') });
-
-      const data = dataOf(res);
-      expect(res.statusCode).toBe(403);
-      expect(data).toMatchObject({ groupname: 'Spam', isnew: 1, saveerrors: false });
-      expect(data.errors).toEqual({ spam: EN_GROUP_MESSAGES['captcha.spam'] });
-      expect(await groupOf(String(data.userid))).toMatchObject({ isnew: 1 });
-    });
-
-    it('answers a save posting a value the legacy tusers column cannot store with the 500, writing nothing', async () => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-
-      const created = await send(app, 'POST', GROUP_C, await headersFor(caller), { groupname: 'Wide', email: 'e'.repeat(256), ...csrfFields('new') });
-      const updated = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, await headersFor(caller), { subtype: 's'.repeat(51), ...csrfFields(ids.helpers) });
-
-      expect([created.statusCode, updated.statusCode]).toEqual([500, 500]);
-      expect(json(created)).toEqual(legacyError('save', ERRORS.serverError));
-      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', email: 'helpers@example.test' });
-    });
-
-    it.each([
-      ['no token', {}],
-      ['the token of context new for a stored id', null],
-    ])('refuses a save with %s as invalid CSRF tokens', async (_label, tokens) => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-
-      const res = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, await headersFor(caller), { groupname: 'Renamed', ...(tokens ?? csrfFields('new')) });
-
-      expect(res.statusCode).toBe(400);
-      expect(json(res)).toEqual(legacyError('save', ERRORS.invalidTokens));
-      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers' });
-    });
-
-    it("refuses a member's save of a group as authorization", async () => {
-      const caller = await inSession(MEMBER, SITE_C, `Members;${SITE_C};1`);
-
-      const res = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, await headersFor(caller), { groupname: 'Mine', ...csrfFields(ids.helpers) });
-
-      expect(res.statusCode).toBe(401);
-      expect(json(res)).toEqual(legacyError('save', ERRORS.authorization));
-    });
-
-    it("refuses an anonymous session's save of a group under a valid token as authorization, writing nothing", async () => {
-      const sessionId = `S-legacy-api-anon-save-${nextId('S')}`;
-      const { csrfSecret } = await ensureSession({ db: handle.app, repo, clock: CLOCK }, { sessionId, mode: 'target-primary' });
-      const anonymous = await headersFor({ sub: '', sid: sessionId, site: SITE_C, roles: [] });
-      const { status, code, message } = LEGACY_ERROR_MAP.authorization;
-
-      const res = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, anonymous, { groupname: 'Anonymous', ...csrfFields(ids.helpers, csrfSecret) });
-
-      expect(res.statusCode).toBe(status);
-      expect(json(res)).toEqual({ apiversion: 'v1', method: 'save', error: { message, code } });
-      expect(message).toBe('Insufficient Account Permissions');
-      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers' });
-    });
-
-    it.each([
-      ['a direct S2 save posting type 2', S2, () => `/_api/json/v1/${SITE_C}/save`, (): Record<string, string> => ({ entityname: 'group', id: ids.helpers, type: '2', ...csrfFields(ids.helpers) }), 'group-save-user', /at userRecordRefused .*\\n\s+at save /],
-      ["a Users-module editor's new group, whose stripped type stays the new bean's 2", USERS_EDITOR, () => GROUP_C, (): Record<string, string> => ({ groupname: 'Fresh', ...csrfFields('new') }), 'group-save-user', /at userRecordRefused .*\\n\s+at save /],
-      ['an S2 save of an id naming a stored user', S2, () => `${GROUP_C}/${ids.userAccount}`, (): Record<string, string> => ({ groupname: 'Mine', ...csrfFields(ids.userAccount) }), 'group-api-user-record', /at userRecordRefused .*\\n\s+at loadedUserRefused /],
-    ])('fails closed with the legacy 503 of EX-GROUP-USER-RECORD on %s, which writes a user record', async (_label, who, url, form, reason, frames) => {
-      const caller = await inSession(who, SITE_C, who === S2 ? 'S2' : `Editor;${SITE_C};0`);
-      const captured = capturingLogger();
-      const logged = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS), captured.logger);
-      try {
-        const res = await send(logged, 'POST', url(), await headersFor(caller), form());
-
-        expect(res.statusCode).toBe(503);
-        expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', isnew: 0 });
-        // The logger redacts the message, whose entry the refusing helper names; its stack shows the helper and the refusing site.
-        expect(captured.lines.find((line) => line.includes('service unavailable'))).toMatch(frames);
-        expect(userRecordRefused('A case', reason)).toMatchObject({ message: 'A case is refused (EX-GROUP-USER-RECORD)', reason });
-      } finally {
-        await logged.opt2.shutdown();
-      }
-    });
-
-    it.each([
-      ['an entity-route save without a CSRF token', () => `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`, false],
-      ['an entity-route save from a session that has ended', () => `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`, true],
-      ['a direct save', () => `/_api/rest/v1/${SITE_C}/save`, false],
-    ])("answers %s over REST with legacy's unhandled-exception 500, before any check or write (jsonApiUtility.cfc:1905)", async (_label, url, ended) => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-      if (ended) await gated(SITE_C, (tx) => repo.updateSession(tx, caller.sid ?? '', { state: 'ended' }));
-
-      const res = await send(app, 'POST', url(), await headersFor(caller), { entityname: 'group', id: ids.helpers, groupname: 'Late', remoteid: 'r-1' });
-
-      expect(res.statusCode).toBe(500);
-      expect(json(res)).toEqual(legacyError('save', ERRORS.serverError));
-      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers' });
-    });
+        expect(keyed.result.key).toBe(`${family}:group.save`);
+        expect(res.statusCode).toBe(404);
+        expect(json(res)).toMatchObject({ apiversion: 'v1', error: ERRORS.invalidMethodCall });
+        expect(await storedEffects(caller.sid ?? '')).toEqual({ ...before, claims: [] });
+      },
+    );
 
     it('leaves a group delete under its CSRF context to legacy with the 404 envelope', async () => {
       const caller = await inSession(S2, SITE_C, 'S2');

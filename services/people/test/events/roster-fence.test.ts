@@ -9,7 +9,7 @@ import { createOutbox } from '@opt2/platform/outbox';
 import { ServiceUnavailableError, fixedClock, type Clock } from '@opt2/platform/service-kit';
 import type { TenantDb, TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createCapturingPublisher, createThrowawaySchema, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
-import { createAddress, saveAddress, updateAddress, type AddressActor, type AddressDeps } from '../../src/domain/addresses.js';
+import { createAddress, updateAddress, type AddressActor, type AddressDeps } from '../../src/domain/addresses.js';
 import { archivePerson, getPersonArchive, type ArchiveDeps } from '../../src/domain/archive.js';
 import { createFaultHooks } from '../../src/domain/faults.js';
 import type { PersonFence } from '../../src/domain/person-fence.js';
@@ -269,7 +269,6 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
   const SAVES: [string, Save, boolean][] = [
     ['createAddress', (fence, { userId }) => createAddress(addressDeps(fence), A, normaliseParams({ userid: userId, city: 'Bergen' }), ACTOR), false],
     ['updateAddress', (fence, { userId, addressId }) => updateAddress(addressDeps(fence), A, normaliseParams({ userid: userId, addressid: addressId, city: 'Bergen' }), ACTOR), false],
-    ['saveAddress', (fence, { addressId }) => saveAddress(addressDeps(fence), A, normaliseParams({ addressid: addressId, city: 'Bergen' }), ACTOR), false],
     ['archivePerson', (fence, { userId }) => archivePerson(archiveDeps(fence), { tenantId: A, input: { userId, effectiveFrom: '2026-07-01' }, actor: ARCHIVER }), false],
     ['getPersonArchive', (fence, { userId }) => getPersonArchive(archiveDeps(fence), { tenantId: A, userId }), true],
   ];
@@ -304,7 +303,6 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
     const expected: Record<string, { cities: string[]; archived: boolean }> = {
       createAddress: { cities: ['Oslo', 'Bergen'], archived: false },
       updateAddress: { cities: ['Bergen'], archived: false },
-      saveAddress: { cities: ['Bergen'], archived: false },
       archivePerson: { cities: ['Oslo'], archived: true },
       getPersonArchive: { cities: ['Oslo'], archived: true },
     };
@@ -408,19 +406,14 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
     expect(stored).toHaveLength(2);
   });
 
-  it.each<[string, 'stored' | 'posted', typeof updateAddress]>([
-    ['updateAddress', 'stored', updateAddress],
-    ['updateAddress', 'posted', updateAddress],
-    ['saveAddress', 'stored', saveAddress],
-    ['saveAddress', 'posted', saveAddress],
-  ])('%s moving an address answers the legacy 503 while its %s owner is closed, keeping the row', async (_name, closedOwner, save) => {
+  it.each<['stored' | 'posted']>([['stored'], ['posted']])('updateAddress moving an address answers the legacy 503 while its %s owner is closed, keeping the row', async (closedOwner) => {
     const from = await seedPerson();
     const to = await seedPerson();
     const closedUser = closedOwner === 'stored' ? from.userId : to.userId;
     const holder = await openOperation(closedUser);
     const stored = await inTenant((tx) => repo.findAddress(tx, from.addressId));
     const input = normaliseParams({ userid: to.userId, addressid: from.addressId, city: 'Bergen' });
-    const error = await rejection(save(addressDeps(fenceOn(instant, advancingClock(2_500))), A, input, ACTOR));
+    const error = await rejection(updateAddress(addressDeps(fenceOn(instant, advancingClock(2_500))), A, input, ACTOR));
     expect(error).toMatchObject({ message: `Roster operation ${holder.operation_id} keeps user ${closedUser} closed` });
     expect(await inTenant((tx) => repo.findAddress(tx, from.addressId))).toEqual(stored);
   });
@@ -481,7 +474,7 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
       const paused = signal();
       const release = signal();
       const ownSave = (saveRepo: PeopleRepository): Promise<unknown> =>
-        saveAddress(addressDeps(personFence, saveRepo), A, normaliseParams({ addressid: owner.addressId, city: 'Bergen' }), ACTOR);
+        updateAddress(addressDeps(personFence, saveRepo), A, normaliseParams({ addressid: owner.addressId, userid: owner.userId, city: 'Bergen' }), ACTOR);
       const rosterSave = (rosterRepo: PeopleRepository): Promise<unknown> =>
         rejection(runRosterOperation(rosterDeps(identity.client, rosterRepo), movingUpdate(saver.userId, owner.addressId)));
       let save: Promise<unknown>;
@@ -536,7 +529,7 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
       const identity = failingCommitIdentity(accounts);
       const [firstPaused, firstRelease, prepared, peopleCommitted, rosterRelease] = [signal(), signal(), signal(), signal(), signal()];
       const move = (saveRepo: PeopleRepository, userid: string, city: string) =>
-        saveAddress(addressDeps(personFence, saveRepo), A, normaliseParams({ addressid: original.addressId, userid, city }), ACTOR);
+        updateAddress(addressDeps(personFence, saveRepo), A, normaliseParams({ addressid: original.addressId, userid, city }), ACTOR);
       // The first save holds the address once its owners are fenced, before its write.
       const first = move(pausingAt('findPerson', destination.userId, firstPaused.resolve, firstRelease.promise), destination.userId, 'Independent');
       await firstPaused.promise;
@@ -574,7 +567,7 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
       const [paused, release] = [signal(), signal()];
       const order: string[] = [];
       const move = (saveRepo: PeopleRepository, userid: string, city: string) =>
-        saveAddress(addressDeps(personFence, saveRepo), A, normaliseParams({ addressid: from.addressId, userid, city }), ACTOR).then((result) => {
+        updateAddress(addressDeps(personFence, saveRepo), A, normaliseParams({ addressid: from.addressId, userid, city }), ACTOR).then((result) => {
           order.push(city);
           return result;
         });
@@ -605,7 +598,7 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
       input.params.set('primaryaddressid', owner.addressId);
       const roster = rejection(runRosterOperation({ ...rosterDeps(identity.client), faults }, input));
       await prepared.promise;
-      const save = saveAddress(
+      const save = updateAddress(
         addressDeps(personFence, pausingAt('findAddressForUpdate', saver.addressId, savePaused.resolve, saveRelease.promise)),
         A,
         normaliseParams({ addressid: saver.addressId, userid: owner.userId, city: 'Bergen' }),

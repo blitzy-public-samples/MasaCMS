@@ -16,7 +16,7 @@ import {
   type UsernameCandidateRequest,
 } from '../../src/domain/account-reads.js';
 import { createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { CREDENTIAL, GROUP_ACCOUNT, IDENTITY_UNITS, LOGIN_STATE, MEMBERSHIP, USER_ACCOUNT, USER_STRIKE } from '../../src/repo/tables.js';
+import { CREDENTIAL, GROUP_ACCOUNT, IDENTITY_UNITS, LOGIN_STATE, MEMBERSHIP, SESSION, USER_ACCOUNT, USER_STRIKE, type LoginSnapshot } from '../../src/repo/tables.js';
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const SHORT_MS = 300;
@@ -252,6 +252,54 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       expect(await reads().getAccount(handle.app, claimsFor('tenant-b'), OTHER_TENANT)).toMatchObject({ UserID: OTHER_TENANT });
       expect(await reads().getAccount(handle.app, claimsFor('unregistered'), ACTIVE)).toBeNull();
       expect(await reads().getAccount(handle.app, claimsFor('poolless'), ACTIVE)).toBeNull();
+    });
+
+    describe("the token user's own account", () => {
+      const SELF = id(81);
+      const SESSION_USER = id(82);
+      const sessions = { own: 'S-reads-own', other: 'S-reads-other', ended: 'S-reads-ended' } as const;
+
+      function ownClaims(site: string, sid: string): UserClaims {
+        return { ...claimsFor(site), sub: SELF.toLowerCase(), sid };
+      }
+
+      async function insertSession(sessionId: string, userId: string, state: 'active' | 'ended'): Promise<void> {
+        const snapshot: LoginSnapshot = {
+          userid: userId, username: 'own', siteid: 'tenant-a', subtype: 'Default', password: null, fname: 'Own', lname: 'User', email: null,
+          remoteid: null, company: null, lastlogin: null, passwordcreated: null, roleList: 'own;username;tenant-a', membershipIds: userId,
+        };
+        await gated('tenant-a', (tx) =>
+          repo.insertSession(tx, { session_id: sessionId, csrf_secret: 'secret', mode: 'target-primary', state, user_id: userId, site_id: 'tenant-a', login_snapshot: JSON.stringify(snapshot) }),
+        );
+      }
+
+      // tenant-b sorts after tenant-a, so a read keyed by id alone across every site would answer its duplicate.
+      beforeAll(async () => {
+        await gated('tenant-a', (tx) => repo.insertAccount(tx, account(SELF, 'own')));
+        await gated('tenant-b', (tx) => repo.insertAccount(tx, account(SELF, 'duplicate', { siteid: 'tenant-b' })));
+        await insertSession(sessions.own, SELF, 'active');
+        await insertSession(sessions.other, SESSION_USER, 'active');
+        await insertSession(sessions.ended, SELF, 'ended');
+      });
+
+      afterAll(async () => {
+        await gated('tenant-a', (tx) => repo.deleteAccount(tx, SELF));
+        await gated('tenant-b', (tx) => repo.deleteAccount(tx, SELF));
+        for (const sessionId of Object.values(sessions)) await gated('tenant-a', (tx) => repo.delete(tx, SESSION.table, { session_id: sessionId }));
+      });
+
+      it.each(['tenant-c', 'tenant-b'])('reads it only under its signed-in session\'s login site, under a token of %s', async (site) => {
+        expect(await reads().getAccount(handle.app, ownClaims(site, sessions.own), SELF)).toMatchObject({ UserID: SELF, SiteID: 'tenant-a', UserName: 'own' });
+      });
+
+      it.each([
+        ['no session', 'S-reads-none'],
+        ["another user's session", sessions.other],
+        ['an ended session', sessions.ended],
+      ])("reads only the token site's user pools for a token whose sid names %s", async (_label, sid) => {
+        expect(await reads().getAccount(handle.app, ownClaims('tenant-c', sid), SELF)).toBeNull();
+        expect(await reads().getAccount(handle.app, ownClaims('tenant-b', sid), SELF)).toMatchObject({ UserID: SELF, SiteID: 'tenant-b', UserName: 'duplicate' });
+      });
     });
 
     it('looks many users up across both pools in request order, leaving out the ones getAccount does not find', async () => {

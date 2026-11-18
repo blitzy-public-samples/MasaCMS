@@ -1,6 +1,6 @@
 /** People's Masa JSON API `user` and `address` routes through `buildTestApp` and `app.inject` over the recording database: wire format, route ownership and denials, address findMany batching; and the iterator page hold. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { LegacyApiError, WWW_AUTHENTICATE, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, SCAN_HALT_VARIANT, WWW_AUTHENTICATE, isCfUuid, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { ROLE_SET, TENANT_A, TENANT_B, TENANT_UMBRELLA, fixtureForSite, registryPayloads, type RoleSubject } from '@opt2/platform/testing';
 import type { AddressRow, ExtendAttributeRow, ExtendDataRow } from '../../src/repo/tables.js';
 import { iteratorPage, iteratorPageHold } from '../../src/routes/legacy-api.js';
@@ -25,16 +25,12 @@ import {
   CSRF,
   FAMILIES,
   RELOAD_KEY,
-  TOKEN,
-  TOKEN_EXPIRES,
   actorHeaders,
   apiPath,
   dataOf,
   legacyEnvelope,
   legacyError,
-  rosterSteps,
   send,
-  sessionOf,
   type InjectedResponse,
   type Method,
 } from '../helpers/legacy-api-wire.js';
@@ -196,32 +192,26 @@ describe('JSON API wire format, ownership and denials over the recording databas
       expectUntouched();
     });
 
-    // Deletes and photo saves are withheld on the decision list and stay on legacy: people answers the legacy 503, never executes them.
+    // Deletes are withheld on the decision list and stay on legacy: people answers the legacy 503, never executes them.
     it.each([
-      ['a user delete', 'DELETE', `/user/${target}`, undefined],
-      ['an address delete', 'DELETE', `/address/${target}`, undefined],
-      ['a user save setting a photo', 'POST', `/user/${target}`, { fname: 'Photo', newFile: 'portrait.jpg' }],
-      ['a user save removing the photo', 'POST', `/user/${target}`, { fname: 'Photo', removePhotoFile: 'true' }],
-    ] as const)('withholds %s with the legacy 503 before anything runs', async (_name, method, rest, form) => {
+      ['a user delete', `/user/${target}`],
+      ['an address delete', `/address/${target}`],
+    ] as const)('withholds %s with the legacy 503 before anything runs', async (_name, rest) => {
       const headers = { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF };
-      legacyError(await send(testApp.app, method, apiPath(family, rest), headers, form === undefined ? undefined : { ...form }), 'server_error', 503);
+      legacyError(await send(testApp.app, 'DELETE', apiPath(family, rest), headers), 'server_error', 503);
       expectUntouched();
     });
 
-    it('answers invalidTokens when identity rejects the token, consuming it for the id path value', async () => {
-      testApp.identity.csrf.rejectAll();
-      const res = await send(testApp.app, 'POST', apiPath(family, `/user/${target}`), { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF }, { fname: 'Nobody' });
-      legacyError(res, 'invalidTokens');
-      expect(testApp.identity.csrf.consumed()).toEqual([
-        { request: { sessionId: sessionOf(SITE_ADMIN_A), token: TOKEN, expires: TOKEN_EXPIRES, context: target }, valid: false },
-      ]);
-      expect(rosterSteps(testApp.identity)).toEqual([]);
-      expect(testApp.db.writes()).toEqual([]);
-    });
+    // Names the scan strips to one name with differing values leave the outcome to ColdFusion, so legacy serves the key.
+    it.each(['user', 'address'] as const)('withholds a scan-halted %s findOne with the legacy 503 before any person read', async (entity) => {
+      const url = apiPath(family, `/${entity}/${target}?a-b=probe&a.b=other`);
+      const [path = '', search = ''] = url.split('?');
+      const keyed = scannedRouteKey({ method: 'GET', path, url, query: Object.fromEntries(new URLSearchParams(search)), headers: {} });
+      expect(keyed.result).toMatchObject({ key: `api:${entity}.findone{${SCAN_HALT_VARIANT}}`, variant: SCAN_HALT_VARIANT });
 
-    it('answers invalidTokens without asking identity when the request carries no token', async () => {
-      legacyError(await send(testApp.app, 'POST', apiPath(family, '/address'), await actorHeaders(SITE_ADMIN_A), { userid: target }), 'invalidTokens');
+      legacyError(await send(testApp.app, 'GET', url, await actorHeaders(SITE_ADMIN_A)), 'server_error', 503);
       expectUntouched();
+      expect(testApp.db.statements().filter(({ text }) => /\bFROM\b/i.test(text) && !/\btenant_registry\b/i.test(text))).toEqual([]);
     });
 
     it('withholds a multipart save uploading a photo with the legacy 503', async () => {
@@ -293,13 +283,6 @@ describe('JSON API wire format, ownership and denials over the recording databas
       const res = await send(testApp.app, 'GET', apiPath('rest', `/user/${target}`), await anonymousHeaders());
       legacyError(res, 'authorization');
       expect(res.headers['www-authenticate']).toBe(WWW_AUTHENTICATE.basic);
-    });
-
-    it('never consumes a CSRF token or runs the roster protocol: the sessionless save of a registered site fails as legacy fails it', async () => {
-      const res = await send(testApp.app, 'POST', apiPath('rest', `/user/${target}`), { ...(await actorHeaders(SYSTEM_USER_A)), ...CSRF }, { fname: 'Rested' });
-      legacyError(res, 'server_error');
-      expect(testApp.identity.csrf.consumed()).toEqual([]);
-      expectUntouched();
     });
   });
 });

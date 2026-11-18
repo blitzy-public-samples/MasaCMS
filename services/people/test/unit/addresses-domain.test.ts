@@ -9,7 +9,6 @@ import {
   createAddress,
   primaryAddressFor,
   resolveAddressPoolSite,
-  saveAddress,
   updateAddress,
 } from '../../src/domain/addresses.js';
 import { normaliseParams } from '../../src/domain/person.js';
@@ -21,7 +20,6 @@ const A = TENANT_A.tenantId;
 const SAVES: readonly [string, AddressSave][] = [
   ['createAddress', createAddress],
   ['updateAddress', updateAddress],
-  ['saveAddress', saveAddress],
 ];
 
 /** A database and repository that fail on any use, so a refusal that never reaches them read and wrote nothing. */
@@ -171,19 +169,11 @@ describe('address save refusals', () => {
     },
   );
 
-  it('saveAddress refuses extendSetID before it looks up the stored owner', async () => {
-    const { deps } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO);
-    const error = await rejection(saveAddress(deps, A, normaliseParams({ addressid: 'A1', extendsetid: '' }), ACTOR_A));
-    expect(error).toMatchObject({ reason: 'address-extdata-withheld' });
-  });
-
   it.each<[string, AddressSave, Record<string, unknown>]>([
     ['createAddress', createAddress, {}],
     ['createAddress', createAddress, { userid: '', extendsetid: '' }],
     ['updateAddress', updateAddress, { addressid: 'A1' }],
     ['updateAddress', updateAddress, { userid: '', addressid: 'A1', extendsetid: '' }],
-    ['saveAddress', saveAddress, { userid: '' }],
-    ['saveAddress', saveAddress, { userid: ' \t', addressid: 'A1' }],
   ])('%s throws the USERID-required error for %j', async (_name, save, params) => {
     const { deps, fenced } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO);
     const error = await rejection(save(deps, A, normaliseParams(params), ACTOR_A));

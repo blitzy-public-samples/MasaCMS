@@ -332,14 +332,6 @@ describe('envelopes the routes write', () => {
     ]);
   });
 
-  it('a JSON API group save writes identity.group.changed.v1', async () => {
-    await send('s2', 'POST', `/_api/json/v1/${SITE_A}/group`, `type=1&groupname=Json%20Events&ispublic=0&siteid=${SITE_A}&${csrfFields('s2', 'new')}`);
-
-    expect(writtenEnvelopes(t)).toEqual([
-      expect.objectContaining({ eventType: 'identity.group.changed', payload: expect.objectContaining({ groupName: 'Json Events', deleted: false }) }),
-    ]);
-  });
-
   it('a roster create committed with a group holds identity.membership.changed.v1 until finish', async () => {
     const headers = await relayedCredentials('people', subjectSession('s2'), subjectNamed('s2').roles);
     const url = (action: string): string => `/internal/v1/accounts/${NEW_USER}/operations/${OPERATION_ID}:${action}`;

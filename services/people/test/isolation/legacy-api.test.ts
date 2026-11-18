@@ -1,6 +1,5 @@
-/** People's JSON API `user` and `address` reads and roster-protocol saves through `app.inject` over a throwaway `people` schema. */
+/** People's JSON API `user` and `address` reads and withheld saves through `app.inject` over a throwaway `people` schema. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import {
   ADMIN_S2,
@@ -20,18 +19,16 @@ import {
   CSRF,
   FAMILIES,
   RELOAD_KEY,
-  TOKEN,
-  TOKEN_EXPIRES,
   actorHeaders,
   apiPath,
-  csrfHeaders,
   dataOf,
   legacyEnvelope,
   legacyError,
   operationIds,
-  rosterSteps,
   send,
-  sessionOf,
+  type Family,
+  type LegacyErrorType,
+  type Method,
 } from '../helpers/legacy-api-wire.js';
 import type { DoubleGroup } from '../helpers/identity-double.js';
 import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
@@ -70,7 +67,7 @@ function seededAddresses(userId: string) {
     .sort((a, b) => (b.isprimary ?? 0) - (a.isprimary ?? 0));
 }
 
-describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () => {
+describe.skipIf(!PG_AVAILABLE)('JSON API reads and withheld saves over PostgreSQL', () => {
   let ctx: PgTestApp;
   let release: () => void = () => undefined;
   let running: Promise<unknown> | undefined;
@@ -112,22 +109,6 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
     ctx.identity.clear();
     ctx.identity.seedAccounts(...seededAccounts);
   });
-
-  /** A tenant-a person row of the throwaway schema. */
-  async function storedPerson(userId: string): Promise<Record<string, unknown> | undefined> {
-    const { rows } = await ctx.db.withTenant(TENANT_A.tenantId, (tx) =>
-      tx.query<Record<string, unknown>>(`SELECT userid, fname, lname, email FROM ${ctx.schema.schema}.person WHERE userid = $1`, [userId]),
-    );
-    return rows[0];
-  }
-
-  /** People's recorded roster operations of `userId` in tenant-a. */
-  async function rosterOperations(userId: string): Promise<Array<{ kind: string; state: string }>> {
-    const { rows } = await ctx.db.withTenant(TENANT_A.tenantId, (tx) =>
-      tx.query<{ kind: string; state: string }>(`SELECT kind, state FROM ${ctx.schema.schema}.roster_operation WHERE user_id = $1`, [userId]),
-    );
-    return rows;
-  }
 
   /** A tenant-a person stored for one case, with an identity account until the next `clear()`. */
   async function ownPerson(): Promise<PersonRow> {
@@ -398,96 +379,54 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
     });
   });
 
-  describe('user saves', () => {
-    it('creates a user as a site administrator under the roster protocol', async () => {
-      const form = { fname: 'New', lname: 'Person', email: 'new_person@tenant-a.opt2.test', username: 'new_person', isPublic: '0', groupname: 'admin' };
-      const res = await send(ctx.app, 'POST', apiPath('json', '/user'), { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF }, form);
-      const data = dataOf(res);
-      const userId = String(data.userid);
-      expect(isCfUuid(userId)).toBe(true);
-      // A posted `admin` group name is dropped, as legacy drops it.
-      expect(data).toMatchObject({ fname: 'New', lname: 'Person', email: form.email, username: 'new_person', groupname: '', errors: {} });
-      expect(data.saveerrors).toBeFalsy();
-      expect(rosterSteps(ctx.identity)).toEqual(['prepareAccountOperation', 'commitAccountOperation', 'finishAccountOperation']);
-      const [operation] = [...ctx.identity.operations.values()];
-      expect(operation).toMatchObject({ userId, kind: 'create', state: 'finished' });
-      expect(operation?.commitRequest?.sessionEffects).toBeUndefined();
-      expect(await rosterOperations(userId)).toEqual([{ kind: 'json-save', state: 'done' }]);
-      expect(await storedPerson(userId)).toMatchObject({ fname: 'New', lname: 'Person', email: form.email });
-      expect(ctx.identity.csrf.consumed().map(({ request }) => request.context)).toEqual(['new']);
-    });
+  describe('withheld saves and deletes', () => {
+    const tenants = [TENANT_A.tenantId, TENANT_UMBRELLA.tenantId];
 
-    it('updates a user addressed by the id path value, consuming the token for that id', async () => {
-      const person = await ownPerson();
-      const form = { fname: 'Cassidy', lname: person.lname ?? '', email: person.email ?? '', company: 'Updated Co' };
-      const res = await send(ctx.app, 'POST', apiPath('json', `/user/${person.userid}`), { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF }, form);
-      expect(dataOf(res)).toMatchObject({ userid: person.userid, fname: 'Cassidy', company: 'Updated Co', isnew: 0, errors: {} });
-      expect(rosterSteps(ctx.identity)).toEqual(['prepareAccountOperation', 'commitAccountOperation', 'finishAccountOperation']);
-      const [operation] = [...ctx.identity.operations.values()];
-      expect(operation).toMatchObject({ userId: person.userid, kind: 'update', state: 'finished' });
-      // An administrator saving another user is not logged in again.
-      expect(operation?.commitRequest?.sessionEffects).toBeUndefined();
-      expect(await rosterOperations(person.userid)).toEqual([{ kind: 'json-save', state: 'done' }]);
-      expect(await storedPerson(person.userid)).toMatchObject({ fname: 'Cassidy' });
-      expect(ctx.identity.csrf.consumed()).toEqual([
-        { request: { sessionId: sessionOf(SITE_ADMIN_A), token: TOKEN, expires: TOKEN_EXPIRES, context: person.userid }, valid: true },
-      ]);
-    });
-
-    it('answers 403 with the email error when a save carries no email, committing nothing', async () => {
-      const form = { fname: 'No', lname: 'Email', username: 'no_email', isPublic: '0' };
-      const res = await send(ctx.app, 'POST', apiPath('json', '/user'), { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF }, form);
-      const data = dataOf(res, 403);
-      expect(data.errors).toHaveProperty('email');
-      expect(rosterSteps(ctx.identity)).not.toContain('commitAccountOperation');
-      expect([...ctx.identity.operations.values()].filter((operation) => operation.state === 'committed' || operation.state === 'finished')).toEqual([]);
-      expect(await storedPerson(String(data.userid))).toBeUndefined();
-    });
-
-    it('lets a system user without the Users module save their own record, keeping its groups in group-name order, and logs it in again at commit', async () => {
-      const person = await ownPerson();
-      // SYSTEM_USER_A's claims, as the case's own person.
-      const self: TestActor = { ...SYSTEM_USER_A, sub: person.userid };
-      ctx.identity.seedGroups(ZULU_GROUP, ALPHA_GROUP);
-      ctx.identity.seedMemberships(person.userid, [ZULU_GROUP.UserID, ALPHA_GROUP.UserID]);
-      const form = { fname: 'Sid', lname: person.lname ?? '', email: person.email ?? '' };
-      const res = await send(ctx.app, 'POST', apiPath('json', `/user/${person.userid}`), { ...(await actorHeaders(self)), ...CSRF }, form);
-      expect(dataOf(res)).toMatchObject({ userid: person.userid, fname: 'Sid', groupid: `${ALPHA_GROUP.UserID},${ZULU_GROUP.UserID}`, errors: {} });
-      expect(await storedPerson(person.userid)).toMatchObject({ fname: 'Sid' });
-      expect(operationIds(ctx.identity)).not.toContain('listUserMemberships');
-      const [operation] = [...ctx.identity.operations.values()];
-      expect(operation?.state).toBe('finished');
-      expect(operation?.commitRequest?.sessionEffects).toMatchObject({ reloginSessionId: sessionOf(self), person: { fname: 'Sid', lname: person.lname } });
-      expect(ctx.identity.csrf.consumed().map(({ request }) => request.context)).toEqual([person.userid]);
-    });
-  });
-
-  describe('address saves', () => {
-    it('adds and updates an address, consuming the token for the id path value', async () => {
-      const person = await ownPerson();
-      const user = await actorHeaders(SITE_ADMIN_A);
-      const created = dataOf(
-        await send(ctx.app, 'POST', apiPath('json', '/address'), { ...user, ...CSRF }, { userid: person.userid, addressname: 'Cabin', city: 'Bergen' }),
+    /** The person, address and roster operation rows of the user tenants a tenant-a save reaches, which a withheld branch leaves as they are. */
+    async function userRows(): Promise<Record<string, unknown>[][]> {
+      const { schema } = ctx.schema;
+      const reads = tenants.map((tenantId) =>
+        ctx.db.withTenant(tenantId, async (tx) => [
+          ...(await tx.query<Record<string, unknown>>(`SELECT userid, fname, lname, email, row_version FROM ${schema}.person ORDER BY userid`)).rows,
+          ...(await tx.query<Record<string, unknown>>(`SELECT addressid, userid, addressname, city FROM ${schema}.user_address ORDER BY addressid`)).rows,
+          ...(await tx.query<Record<string, unknown>>(`SELECT operation_id, user_id, state FROM ${schema}.roster_operation ORDER BY operation_id`)).rows,
+        ]),
       );
-      const addressId = String(created.addressid);
-      expect(isCfUuid(addressId)).toBe(true);
-      expect(created).toMatchObject({ entityname: 'address', userid: person.userid, addressname: 'Cabin', city: 'Bergen', errors: {} });
-      const updated = await send(ctx.app, 'PUT', apiPath('json', `/address/${addressId}`), { ...user, ...csrfHeaders(`${TOKEN}-2`) }, {
-        userid: person.userid,
-        addressname: 'Cabin',
-        city: 'Tromso',
-      });
-      expect(dataOf(updated)).toMatchObject({ addressid: addressId, city: 'Tromso' });
-      expect(ctx.identity.csrf.consumed().map(({ request }) => request.context)).toEqual(['new', addressId]);
-      const read = dataOf(await send(ctx.app, 'GET', apiPath('json', `/address/${addressId}`), await actorHeaders(SITE_ADMIN_A)));
-      expect(read).toMatchObject({ addressid: addressId, city: 'Tromso', isnew: 0 });
-      expect(rosterSteps(ctx.identity)).toEqual([]);
-    });
+      return Promise.all(reads);
+    }
 
-    it("refuses an address of a user people holds no person for, such as a group's, with the legacy 503", async () => {
-      const res = await send(ctx.app, 'POST', apiPath('json', '/address'), { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF }, { userid: GROUP_ID, addressname: 'Depot' });
-      legacyError(res, 'server_error', 503);
-      expect(rosterSteps(ctx.identity)).toEqual([]);
+    type Ids = { userId: string; addressId: string };
+    const userForm = ({ userId }: Ids, extra: Record<string, string> = {}): Record<string, string> => ({ userid: userId, fname: 'Withheld', lname: 'Save', email: 'withheld@tenant-a.opt2.test', ...extra });
+    const addressForm = ({ userId, addressId }: Ids, extra: Record<string, string> = {}): Record<string, string> => ({ addressid: addressId, userid: userId, addressname: 'Withheld', city: 'Nowhere', ...extra });
+
+    it.each<[string, LegacyErrorType, number, Family, Method, (ids: Ids) => string, (ids: Ids) => Record<string, string>]>([
+      ['a user save on the entity route by POST', 'server_error', 503, 'json', 'POST', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids)],
+      ['a user save on the entity route by PUT', 'server_error', 503, 'ajax', 'PUT', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids)],
+      ['a user create on the entity route', 'server_error', 503, 'json', 'POST', () => '/user', () => ({ fname: 'New', lname: 'Person', email: 'new_person@tenant-a.opt2.test', username: 'new_person', isPublic: '0' })],
+      ['a direct method=save of a user', 'server_error', 503, 'json', 'POST', () => '?method=save&entityname=user', (ids) => userForm(ids)],
+      ['a dotted user.save, which legacy resolves to no save', 'invalidMethodCall', 400, 'ajax', 'POST', () => '?method=user.save', (ids) => userForm(ids)],
+      ['a user save setting a photo', 'server_error', 503, 'json', 'POST', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids, { newFile: 'portrait.jpg' })],
+      ['a user save removing the photo', 'server_error', 503, 'json', 'POST', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids, { removePhotoFile: 'true' })],
+      ['a user save posting an extendSetID', 'server_error', 503, 'json', 'POST', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids, { extendSetID: 'SET-1' })],
+      ['a REST user save on the entity route by PUT', 'server_error', 503, 'rest', 'PUT', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids)],
+      ['a REST user save carrying a siteid', 'server_error', 503, 'rest', 'POST', ({ userId }) => `/user/${userId}`, (ids) => userForm(ids, { siteid: TENANT_A.siteId })],
+      ['an address save on the entity route by POST', 'server_error', 503, 'json', 'POST', () => '/address', (ids) => addressForm(ids)],
+      ['an address save on the entity route by PUT', 'server_error', 503, 'ajax', 'PUT', ({ addressId }) => `/address/${addressId}`, (ids) => addressForm(ids)],
+      ['a direct method=save of an address', 'server_error', 503, 'json', 'POST', () => '?method=save&entityname=address', (ids) => addressForm(ids)],
+      ['a dotted address.save, which legacy resolves to no save', 'invalidMethodCall', 400, 'json', 'POST', () => '?method=address.save', (ids) => addressForm(ids)],
+      ['an address save posting an empty extendSetID', 'server_error', 503, 'json', 'POST', ({ addressId }) => `/address/${addressId}`, (ids) => addressForm(ids, { extendSetID: '' })],
+      ['a REST address save on the entity route by POST', 'server_error', 503, 'rest', 'POST', () => '/address', (ids) => addressForm(ids)],
+    ])('answers %s with the legacy %s %i, consuming no CSRF token, calling no identity operation and writing no row', async (_label, type, status, family, method, rest, form) => {
+      const address = await ownAddress();
+      const ids = { userId: address.userid ?? '', addressId: address.addressid };
+      const before = await userRows();
+      const calls = ctx.identity.requests.length;
+      const res = await send(ctx.app, method, apiPath(family, rest(ids)), { ...(await actorHeaders(SITE_ADMIN_A)), ...CSRF }, form(ids));
+      legacyError(res, type, status);
+      expect(ctx.identity.csrf.consumed()).toEqual([]);
+      expect(ctx.identity.requests.slice(calls)).toEqual([]);
+      expect(ctx.identity.operations.size).toBe(0);
+      expect(await userRows()).toEqual(before);
     });
 
     it('withholds an address delete, leaving the address stored', async () => {

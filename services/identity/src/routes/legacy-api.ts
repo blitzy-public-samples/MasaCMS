@@ -1,11 +1,9 @@
 /** JSON API methods and the `group` entity identity owns, served as Masa's `processRequest` serves them [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:368-1402]. */
 import { AuthDenial, Roles, assertSiteMatches, moduleRole, untilAborted, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
-  LEGACY_ADMIN_SENTINEL_ID,
   LEGACY_JSON_CONTENT_TYPE,
   LegacyApiError,
   LegacyServiceUnavailableError,
-  PHOTO_CONDITION,
   WWW_AUTHENTICATE,
   apiRequestPath,
   buildEnvelope,
@@ -36,7 +34,6 @@ import {
   type LegacyScopes,
   type ScannedRouteKeyRequest,
   type SerializedLegacyResponse,
-  type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import type { RepositoryRow } from '@opt2/platform/migration-kit';
@@ -57,23 +54,17 @@ import { registeredTenants, registryEntries, withTenant, type TenantDb } from '@
 import { EN_ACCOUNT_MESSAGES, messageFormat } from '../domain/account-operations.js';
 import { issueTokens } from '../domain/csrf.js';
 import {
-  createGroup,
   findGroupForSite,
   findPoolRows,
-  groupSaveInputFrom,
   listGroupRelationRows,
   newGroupRecord,
   readFeedGroups,
   scanFeedGroups,
-  updateGroup,
-  type GroupActor,
   type GroupDeps,
   type GroupLocation,
   type GroupRecord,
-  type GroupSaveInput,
 } from '../domain/groups.js';
 import { lockdownLogin, login, logout, type LoginDeps } from '../domain/login.js';
-import { snapshotIsS2 } from '../domain/roles.js';
 import { locateSession, sessionSnapshot, sessionTimeoutMinutes, type SessionDeps } from '../domain/sessions.js';
 import {
   isSqlExpressible,
@@ -155,14 +146,6 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public
 /** The Users module, the `moduleid` the JSON API registers `user` and `group` with (jsonApiUtility.cfc:86-91). */
 const USERS_MODULE_ROLE = moduleRole('00000000000000000000000000000000008');
 
-// Withheld variants, declared as gateway/cutover/variants.json declares them: photo first, the first match wins.
-const GROUP_SAVE_VARIANTS: readonly VariantDeclaration[] = Object.freeze(
-  (['api', 'rest'] as const).flatMap((family): VariantDeclaration[] => [
-    { route: `${family}:group.save`, variant: 'photo', when: [PHOTO_CONDITION] },
-    { route: `${family}:group.save`, variant: 'extdata', when: [{ param: 'extendSetID', nonEmpty: true }] },
-  ]),
-);
-
 /** Route-key error bodies and the exception types processRequest throws for them. */
 const RESOLUTION_ERRORS: ReadonlyMap<string, LegacyApiErrorType> = new Map([
   ['!invalidparameters', 'invalidParameters'],
@@ -189,10 +172,9 @@ type GroupOperation =
   | 'findPermissions'
   | 'findProperties'
   | 'findQuery'
-  | 'save'
   | 'validate';
 
-/** The `group` keys identity serves; `group.delete` and the photo and extended-data saves stay on legacy. */
+/** The `group` keys identity serves; `group.delete` and `group.save` stay on legacy. */
 const GROUP_OPERATIONS: ReadonlyMap<string, GroupOperation> = new Map<string, GroupOperation>([
   ['group.findall', 'findAll'],
   ['group.findmany', 'findMany'],
@@ -201,7 +183,6 @@ const GROUP_OPERATIONS: ReadonlyMap<string, GroupOperation> = new Map<string, Gr
   ['group.findpermissions', 'findPermissions'],
   ['group.findproperties', 'findProperties'],
   ['group.findquery', 'findQuery'],
-  ['group.save', 'save'],
   ['group.validate', 'validate'],
 ]);
 
@@ -2060,12 +2041,12 @@ async function locateLoadedGroup(call: ApiCall, id: string, refuseUser: (id: str
 
 const USER_RECORD_EXCEPTION = 'EX-GROUP-USER-RECORD';
 
-/** A group read or save of a user record, whose person columns are people data: the target refuses it. */
+/** A group read of a user record, whose person columns are people data: the target refuses it. */
 export function userRecordRefused(what: string, reason: string): LegacyServiceUnavailableError {
   return new LegacyServiceUnavailableError(`${what} is refused (${USER_RECORD_EXCEPTION})`, 'auto', reason);
 }
 
-/** The refusal of a group read or save whose id names a user. */
+/** The refusal of a group read whose id names a user. */
 function loadedUserRefused(user: string): LegacyServiceUnavailableError {
   return userRecordRefused(`JSON API group ${user}, which names a user,`, 'group-api-user-record');
 }
@@ -2148,72 +2129,6 @@ function findProperties(call: ApiCall): Struct {
   };
   if (call.caller.adminUser || call.caller.superUser) result.table = 'tusers';
   return result;
-}
-
-/** The acting session user of a write, from its login snapshot; a session that is gone or signed out has no actor. */
-async function actorOf(call: ApiCall): Promise<GroupActor> {
-  const { user } = call.caller;
-  const row = user === undefined || user.sid === '' ? undefined : (await locateSession(call.deps.sessions, user.sid))?.row;
-  if (user === undefined || row === undefined || row.state !== 'active' || row.user_id === null || row.login_snapshot === null) {
-    throw AuthDenial.unauthenticated('invalid-credential');
-  }
-  const snapshot = JSON.parse(row.login_snapshot) as { fname: string | null; lname: string | null; roleList: string };
-  return { userId: user.sub, fname: snapshot.fname, lname: snapshot.lname, isSuperUser: snapshotIsS2(snapshot) };
-}
-
-/** userBean `setType`: a number as is, `group` as 1, any other text as 2 (userBean.cfc:753-765). */
-function beanTypeOf(value: string): string {
-  if (cfIsNumeric(value)) return value;
-  return cfEq(value, 'group') ? '1' : '2';
-}
-
-/** save(entityName='group') of a group without a photo or extended data (jsonApiUtility.cfc:1903-2074). */
-async function save(call: ApiCall): Promise<Struct> {
-  const { request, params, caller } = call;
-  const csrfContext = params.id ?? 'new';
-  const vals: Struct = { ...params };
-  if (!(caller.adminUser || caller.superUser)) {
-    deleteIn(vals, 'isPublic');
-    deleteIn(vals, 'type');
-    if (!caller.usersModule) deleteIn(vals, 'groupID');
-  }
-  if (!caller.superUser) deleteIn(vals, 's2');
-  const groupName = textOf(valueOf(vals, 'groupname'));
-  if (groupName !== undefined && cfEq(groupName, 'admin')) deleteIn(vals, 'groupname');
-  const postedId = textOf(valueOf(vals, 'userid'));
-  if (postedId !== undefined && !cfEq(postedId, caller.userId)) deleteIn(vals, 'email');
-
-  let id = csrfContext;
-  if (postedId !== undefined && postedId !== '' && (isCfUuid(postedId) || postedId === LEGACY_ADMIN_SENTINEL_ID)) id = postedId;
-  if (cfEq(id, 'new')) {
-    id = cfUuid();
-    setIn(vals, 'id', id);
-  }
-  setIn(vals, 'userid', id);
-  if (!call.restMode && !(await validateCsrfForRoute({ csrf: call.deps.csrf }, request, csrfContext))) {
-    throw new LegacyApiError('invalidTokens');
-  }
-  const record = await loadGroup(call, id);
-  const postedType = textOf(valueOf(vals, 'type'));
-  const type = postedType === undefined ? String(record?.type ?? 2) : beanTypeOf(postedType.trim());
-  // Saving a type 2 bean creates or rewrites a user, whose person columns are people data.
-  if (!cfEq(type, '1')) throw userRecordRefused(`A JSON API group save of ${id}, which writes a user record,`, 'group-save-user');
-  if (!allowsAction(caller, id)) throw new LegacyApiError('authorization');
-  const actor = await actorOf(call);
-  let input: GroupSaveInput;
-  try {
-    input = groupSaveInputFrom(vals);
-  } catch (err) {
-    if (err instanceof TypeError) throw new LegacyApiError('invalidParameters');
-    throw err;
-  }
-  const result = record === null ? await createGroup(call.deps.groups, actor, input) : await updateGroup(call.deps.groups, actor, input);
-  const bean: UserBean = { values: result.group, isNew: record === null && !result.written ? 1 : 0 };
-  const values = filteredValues(call, bean, { configName: 'group', editableCheck: false, urlFields: urlNamesGroup(call) });
-  // The bean's saveErrors is the posted value set() copied, else its init value.
-  setIn(values, 'saveErrors', valueOf(params, 'saveerrors') ?? false);
-  setIn(values, 'errors', result.errors);
-  return values;
 }
 
 /** `urlDecode`, `isJSON` and `deserializeJSON` of a validate argument; `invalidParameters` when it is not JSON (jsonApiUtility.cfc:3705-3721). */
@@ -2637,9 +2552,6 @@ async function groupAnswer(call: ApiCall, operation: GroupOperation): Promise<Se
     case 'findQuery':
       data = await findQuery(call);
       break;
-    case 'save':
-      data = await save(call);
-      break;
     case 'validate':
       data = await validate(call);
       break;
@@ -2709,7 +2621,6 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     const headers = clientHeadersOf(request);
     const { result: key, urlScope } = scannedRouteKey(sentKeyRequestOf(request, headers), {
       siteExists: (siteId) => lookup(siteId) !== undefined,
-      variants: GROUP_SAVE_VARIANTS,
       context: settings.context,
       appReloadKey: settings.appReloadKey,
     });
@@ -2722,7 +2633,7 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
       restMode,
       hasAuthorization: restMode && headerValue(headers, 'authorization') !== undefined,
     };
-    // A key identity does not own, or a withheld variant, is no route of this service.
+    // A key identity does not own, or a scan-halted variant of one it does, is no route of this service.
     const notFound = (): FastifyReply =>
       sendLegacyResponse(reply, legacyErrorResponse('invalidMethodCall', { method: params.method, params, methodCtx, mura404: true }));
     if (key.family !== 'api' && key.family !== 'rest') return notFound();

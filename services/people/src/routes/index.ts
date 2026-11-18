@@ -2,7 +2,6 @@
 import type { Logger } from '@opt2/platform/logging';
 import type { BaseEnv, Clock, FastifyInstance, ServiceClient } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import type { AddressDeps } from '../domain/addresses.js';
 import type { ArchiveDeps } from '../domain/archive.js';
 import type { FaultHooks } from '../domain/faults.js';
 import type { FavoriteDeps } from '../domain/favorites.js';
@@ -48,8 +47,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const photoFileExts = content.photoFileExts.bind(content);
 
   const search: SearchDeps = { db, repo, identity, clock, photoFileExts };
-  const roster: RosterDeps = { db, repo, identity, events, clock, faults, photoFileExts };
-  const addresses: AddressDeps = { db, repo, clock, fence: personFence };
+  const roster: RosterDeps = { db, repo, identity, events, clock, faults };
   const archive: ArchiveDeps = { db, repo, events, clock, fence: personFence };
   const favorites: FavoriteDeps = { db, repo, clock, fence: personFence, content, identity };
   // getAdvancedSearch(session, …) reads the criteria the cUsers advanced search stored in the forwarded token's session.
@@ -59,7 +57,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerAdminDownloadRoutes(app, { search, searchCriteria });
   await registerAdminRosterRoutes(app, { roster, expirePasswords });
   await registerAdminProfileRoutes(app, { roster });
-  await registerLegacyApiRoutes(app, { db, repository: repo, identity, clock, roster, search, addresses });
+  await registerLegacyApiRoutes(app, { db, repository: repo, identity, clock, roster, search });
   await registerFixtureArchiveRoutes(app, { archive, identity });
   registerFavoriteRoutes(app, favorites);
   await registerRosterOperationRoutes(app, { db, repo });

@@ -21,7 +21,7 @@ import {
 } from '@opt2/platform/testing';
 import { createFaultHooks, type FaultHooks } from '../../src/domain/faults.js';
 import { normaliseParams } from '../../src/domain/person.js';
-import { USER_CLOSED_WAIT_MS, personFence, runRosterOperation, type RosterDeps } from '../../src/domain/roster-protocol.js';
+import { USER_CLOSED_WAIT_MS, runRosterOperation, type RosterDeps } from '../../src/domain/roster-protocol.js';
 import { getAdvancedSearch, getSearch, getSearchPage, getUsers, newAdvancedSearchCriteria, type SearchDeps, type ViewerScope } from '../../src/domain/search.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
 import { peoplePayloadValidators } from '../../src/events/topics.js';
@@ -326,7 +326,6 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       clock: liveClock,
       roster,
       search: { ...searchDeps(), photoFileExts },
-      addresses: { db, repo, clock: liveClock, fence: personFence },
       legacy: { adminSSL: false, serverPort: '', context: '', appReloadKey: 'appreload', adminDomain: '' },
     });
     await app.ready();

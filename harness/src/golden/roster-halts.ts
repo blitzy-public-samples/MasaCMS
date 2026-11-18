@@ -11,7 +11,7 @@ import { readJson } from '../lib/report.js';
 /** People `listHaltedRosterOperationsPage` route. */
 export const HALTED_ROSTER_PATH = '/internal/v2/roster-operations/halted';
 
-const ROSTER_KINDS = ['admin-add', 'admin-update', 'json-save', 'profile-update'] as const;
+const ROSTER_KINDS = ['admin-add', 'admin-update', 'profile-update'] as const;
 
 /** Kind of the carried entry point that ran a roster operation. */
 export type RosterKind = (typeof ROSTER_KINDS)[number];
@@ -22,7 +22,6 @@ const ROSTER_STATES = ['started', 'people-committed', 'done', 'rolled-back', 'ha
 export const ROSTER_ROUTE_KEYS: Readonly<Record<RosterKind, readonly [string, ...string[]]>> = Object.freeze({
   'admin-add': ['admin:cusers.update{type=2,action=add}'],
   'admin-update': ['admin:cusers.update{type=2,action=update}'],
-  'json-save': ['api:user.save', 'rest:user.save'],
   'profile-update': ['admin:ceditprofile.update'],
 });
 
