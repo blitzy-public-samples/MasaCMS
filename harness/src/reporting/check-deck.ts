@@ -1339,12 +1339,9 @@ async function renderPage(
 }
 
 /**
- * Renders the deck at `file` in headless Chromium and reports what failed to render and each slide taller than the canvas.
- * Page calls, in order: `on('pageerror')`, `on('requestfailed')`, `goto`, `waitForFunction` (reveal.js ready),
- * `evaluate` (visit every slide; `{ selector, settleMs }` argument), `waitForFunction` (all visuals rendered; a timeout is
- * tolerated), `evaluate` (collect a {@link RenderState}, showing each slide to measure it; selector argument). The browser
- * is always closed, or else killed.
- * Launch through close finish within one budget whose end is reserved for close; the step it runs out in is reported.
+ * Renders the deck at `file` in headless Chromium, or `opts.launch`; findings for page errors, failed launch, load or requests,
+ * reveal.js not ready, visuals that do not render and slides taller than the canvas. Launch through close share one budget
+ * whose end is reserved for close: the step it runs out in and a late close are reported, and a failed close is rethrown.
  */
 export async function renderDeck(file: string, opts: RenderOptions = {}): Promise<DeckFinding[]> {
   const timeoutMs = opts.timeoutMs ?? RENDER_TIMEOUT_MS;

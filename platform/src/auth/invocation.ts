@@ -114,7 +114,7 @@ export async function signLocalServiceToken(opts: {
     .sign(privateKey);
 }
 
-/** Verifies a local service token for `audience` under the key's thumbprint `kid`; token, kid and claim-shape failures are a 401 `invalid-credential`. */
+/** Verifies a local service token for `audience` under the key's thumbprint `kid` with a finite `exp`; token, kid and claim-shape failures are a 401 `invalid-credential`. */
 export async function verifyLocalServiceToken(
   token: string,
   opts: { publicKey: CryptoKey | KeyObject; audience: string },
@@ -123,6 +123,7 @@ export async function verifyLocalServiceToken(
     issuer: LOCAL_SERVICE_ISSUER,
     audience: opts.audience,
     algorithms: ['RS256'],
+    requiredClaims: ['exp'],
   }).catch((err: unknown) => {
     if (err instanceof errors.JOSEError) {
       throw AuthDenial.unauthenticated('invalid-credential');
@@ -133,6 +134,7 @@ export async function verifyLocalServiceToken(
   const { sub, roles } = payload;
   if (
     protectedHeader.kid !== kid ||
+    !Number.isFinite(payload.exp) ||
     typeof sub !== 'string' ||
     !sub.startsWith(SERVICE_SUBJECT_PREFIX) ||
     sub.length === SERVICE_SUBJECT_PREFIX.length ||

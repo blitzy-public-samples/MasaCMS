@@ -71,7 +71,6 @@ export type ToolRunner = (
   opts: { cwd: string; timeoutMs?: number },
 ) => Promise<ToolResult>;
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a hung tool would otherwise block the summary.
 /** Longest wait for an osv-scanner or gitleaks version probe. */
 export const VERSION_PROBE_TIMEOUT_MS = 60_000;
 

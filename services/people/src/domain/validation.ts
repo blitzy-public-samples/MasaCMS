@@ -35,7 +35,6 @@ export interface FileExtensionConfig {
 /** A legacy errors struct: field name to message, or to a nested struct. */
 export type LegacyErrors = { [key: string]: string | LegacyErrors };
 
-// ---------------------------------------------------------------------------------------------------------------
 // ACF struct iteration order. A CFML struct is a java.util.concurrent.ConcurrentHashMap keyed by the upper-cased
 // name, so legacy iterates (and serializes) keys in hash-bin order, not in the order they were set.
 
@@ -113,7 +112,6 @@ function errorsObject(entries: Iterable<readonly [string, string | LegacyErrors]
   return errors;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // ACF isValid('url'): mailto: through javax.mail, values holding '[' and ']' through CFURLIPV6Validator's pattern,
 // others through CFURLValidator, which parses ASCII and news: values with JDK 17's java.net.URI and the rest with
 // java.net.URL and IDNA.
@@ -683,7 +681,6 @@ function cfIsValidUrl(value: string): boolean {
   return parser.host !== null || !HOST_SCHEMES.includes(s.slice(0, s.indexOf(':')));
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // The checks.
 
 /** CFML list items over one delimiter char, empty items dropped. */

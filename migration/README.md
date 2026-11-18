@@ -251,7 +251,7 @@ Read by the service, `opt2-migrate` and `opt2-ops`, whose `--help` lists every v
 |---|---|
 | `MURA_DBHOST`, `MURA_DBPORT` (default 1433), `MURA_DATABASE`, `MURA_DBUSERNAME`, `MURA_DBPASSWORD` | Legacy SQL Server, as Masa's datasource |
 | `MURA_DBTYPE` | Optional; must be unset or name SQL Server |
-| `OPT2_MSSQL_TRUST_SERVER_CERT` | `true` (default) or `false` |
+| `OPT2_MSSQL_TRUST_SERVER_CERT` | `true` or `false`; `true` is rejected when `OPT2_ENV=cloud` (default: `true` when `OPT2_ENV=local`, `false` in the cloud). In the cloud the legacy SQL Server certificate must chain to a CA Node trusts (a private CA through `NODE_EXTRA_CA_CERTS`) and name `MURA_DBHOST` |
 | `LEGACY_ORIGIN` | Masa origin for bridge calls and reloads; locally `http://127.0.0.1:${PORT}` of ColdFusion |
 | `MURA_APPRELOADKEY` | Masa's reload parameter name, when set; default `appreload` |
 | `OPT2_BRIDGE_HMAC_KEY` | Bridge assertion key; locally from `${OPT2_STATE_DIR}/secrets/`, in the cloud the secret `legacy-bridge-hmac` |

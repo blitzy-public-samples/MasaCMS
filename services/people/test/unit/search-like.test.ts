@@ -1,9 +1,9 @@
-/** search.ts likeMatcher held to the anchored, case-insensitive regex the LIKE pattern used to compile to and to bounded time on wildcard chains, and likePrefilter to matching every value it matches. */
+/** Holds search.ts likeMatcher equal to an anchored, case-insensitive LIKE-to-regex oracle and within bounded time on wildcard chains, and likePrefilter to matching every value likeMatcher matches. */
 import { describe, expect, it } from 'vitest';
 import { likeMatcher, likePrefilter } from '../../src/domain/search.js';
 import { ilikeC } from '../helpers/search-doubles.js';
 
-/** The former LIKE-to-regex construction, the reference the matcher must agree with on every input. */
+/** The anchored, case-insensitive regex of a LIKE pattern, which likeMatcher must agree with on every input. */
 function regexOracle(pattern: string): RegExp {
   let source = '';
   for (let i = 0; i < pattern.length; i += 1) {

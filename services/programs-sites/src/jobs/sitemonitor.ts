@@ -303,7 +303,7 @@ async function runPass(
   await run('purgeDisplayWindow');
   await run('clearOldCommands');
   await run('onGlobalMonitor');
-  // legacy: contentServer.cfc:739-743 announces onSiteMonitor in getList() order (settingsGateway.cfc:86-121).
+  // legacy: contentServer.cfc:739-743 announces onSiteMonitor in getList() order (settingsGateway.cfc:86-115).
   for (const site of [...sites].sort(byOrderNo)) await run('onSiteMonitor', site.siteId);
 
   // legacy: contentServer.cfc:745 moves the cursor only after every step succeeded.
@@ -313,7 +313,7 @@ async function runPass(
   return { theTime, lastMonitored, steps };
 }
 
-// Argument-less although the Minimal Change rule bans changing an interface: that rule does not bind this refactor, and a caller's deadline would end the pass inside a write window.
+// Argument-less: a caller's deadline would end the pass inside a write window, so the pass runs to its queue deadline.
 /** Starts one pass ending at the queue deadline. */
 export type SiteMonitorPassStarter = () => Promise<SiteMonitorResult>;
 

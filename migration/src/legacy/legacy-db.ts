@@ -8,7 +8,7 @@ import type { MigrationEnv } from '../env.js';
 /** Settings the port connects with: the Masa datasource account, so unqualified Masa table names resolve as for Masa. */
 export type LegacyDbEnv = Pick<
   MigrationEnv,
-  'MURA_DBHOST' | 'MURA_DBPORT' | 'MURA_DATABASE' | 'MURA_DBUSERNAME' | 'MURA_DBPASSWORD' | 'OPT2_MSSQL_TRUST_SERVER_CERT'
+  'OPT2_ENV' | 'MURA_DBHOST' | 'MURA_DBPORT' | 'MURA_DATABASE' | 'MURA_DBUSERNAME' | 'MURA_DBPASSWORD' | 'OPT2_MSSQL_TRUST_SERVER_CERT'
 >;
 
 /** SQL Server connections to the live legacy database and its server's other databases; it executes nothing itself. */
@@ -53,7 +53,11 @@ export function createLegacyDb(
     user: env.MURA_DBUSERNAME,
     password: env.MURA_DBPASSWORD,
     // useUTC stays false: legacy datetime values are wall-clock time in the legacy server zone, which is the process TZ.
-    options: { useUTC: false, encrypt: true, trustServerCertificate: env.OPT2_MSSQL_TRUST_SERVER_CERT },
+    options: {
+      useUTC: false,
+      encrypt: true,
+      trustServerCertificate: env.OPT2_ENV === 'local' && env.OPT2_MSSQL_TRUST_SERVER_CERT !== false,
+    },
   });
 
   const database = (name: string): Promise<ConnectionPool> => {

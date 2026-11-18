@@ -76,7 +76,6 @@ const HOOK_TIMEOUT_MS = 45 * 60_000;
 const MAX_IN_FLIGHT = 8;
 const FINDINGS_SHOWN = 20;
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a stuck export would otherwise outlive the hook bound.
 /** Longest run of one package's `opt2-auth matrix` export; a fraction of the hook bound, which spans every export and the probes. */
 const MATRIX_EXPORT_TIMEOUT_MS = 5 * 60_000;
 
@@ -257,7 +256,7 @@ async function awaitVerdicts(
   packages: readonly string[],
   fromOffsets: Readonly<Record<string, number>>,
 ): Promise<ReachVerdict[]> {
-  // Rule "WIP - Minimal Change 2" bans new timeouts but does not bind this refactor; owners log after they answer.
+  // Owners log after answering, so the evidence is re-read briefly.
   const deadline = Date.now() + EVIDENCE_WAIT_MS;
   for (;;) {
     const verdicts = judge(indexRequestRecords(readCapturedLogLines({ packages, fromOffsets })));

@@ -11,6 +11,7 @@ import { createLegacyDb, MASTER_DATABASE, quoteIdent, type LegacyDbEnv } from '.
 const FAKE_SECRET = 'fake-db-secret';
 
 const env: LegacyDbEnv = {
+  OPT2_ENV: 'local',
   MURA_DBHOST: 'legacy-db.invalid',
   MURA_DBPORT: 1433,
   MURA_DATABASE: 'muradb',
@@ -118,10 +119,22 @@ describe('createLegacyDb pools', () => {
     expect(fake.created).toHaveLength(2);
   });
 
-  it.each([true, false])('sets trustServerCertificate=%s from the environment', async (trust) => {
+  it.each<[LegacyDbEnv['OPT2_ENV'], boolean | undefined, boolean]>([
+    ['local', undefined, true],
+    ['local', true, true],
+    ['local', false, false],
+    ['cloud', undefined, false],
+    ['cloud', false, false],
+    ['cloud', true, false],
+  ])('with OPT2_ENV=%s and OPT2_MSSQL_TRUST_SERVER_CERT=%s sets trustServerCertificate=%s', async (mode, trust, expected) => {
     const fake = fakePools();
-    await createLegacyDb({ ...env, OPT2_MSSQL_TRUST_SERVER_CERT: trust }, { createPool: fake.createPool, logger: fake.logger }).live();
-    expect(fake.pool(0).config.options?.trustServerCertificate).toBe(trust);
+    const db = createLegacyDb(
+      { ...env, OPT2_ENV: mode, OPT2_MSSQL_TRUST_SERVER_CERT: trust },
+      { createPool: fake.createPool, logger: fake.logger },
+    );
+    await db.live();
+    await db.database('snapshot_x');
+    expect(fake.created.map((p) => p.config.options?.trustServerCertificate)).toEqual([expected, expected]);
   });
 
   it('evicts a rejected connect, so the next call opens a new pool', async () => {

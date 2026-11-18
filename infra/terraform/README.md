@@ -109,7 +109,7 @@ Every value in `plan.tfvars` points at nothing real: hosts use the reserved `.in
 | `image_tag` | Tag of every image | `plan-only` |
 | `cloud_run_services` | Deployed services; the topology generator reads this list | The 13 runtime services |
 | `legacy_origin` | `LEGACY_ORIGIN` of `gateway` and `migration` | `https://legacy.invalid` |
-| `legacy_db_host` | `MURA_DBHOST` of `migration` | `legacy-db.invalid` |
+| `legacy_db_host` | `MURA_DBHOST` of `migration`; its SQL Server certificate must be CA-trusted and name this host, as `migration` verifies it | `legacy-db.invalid` |
 | `legacy_db_port` | `MURA_DBPORT` of `migration` (default 1433) | `1433` |
 | `legacy_db_name` | `MURA_DATABASE` of `migration` | `masa` |
 | `legacy_db_username` | `MURA_DBUSERNAME` of `migration` | `opt2-migration` |

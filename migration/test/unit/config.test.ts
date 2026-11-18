@@ -519,9 +519,9 @@ describe('migration environment', () => {
       MURA_DBHOST: '127.0.0.1',
       MURA_DBPORT: 1433,
       MURA_DATABASE: 'muradb_unit',
-      OPT2_MSSQL_TRUST_SERVER_CERT: true,
       LEGACY_ORIGIN: 'http://localhost:8080',
     });
+    expect(env.OPT2_MSSQL_TRUST_SERVER_CERT).toBeUndefined();
     expect(env.MURA_DBTYPE).toBeUndefined();
     expect(env.OPT2_REPORTS_DIR).toBeUndefined();
   });
@@ -568,6 +568,28 @@ describe('migration environment', () => {
     expect(loadMigrationEnv(withoutEmulator)).toMatchObject({ OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-unit' });
     expect(error).toBeInstanceOf(EnvValidationError);
     expect((error as EnvValidationError).issues).toEqual(['PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud']);
+  });
+
+  it.each<['local' | 'cloud', string | undefined, { trust: boolean | undefined } | { issues: string[] }]>([
+    ['local', undefined, { trust: undefined }],
+    ['local', 'true', { trust: true }],
+    ['local', 'false', { trust: false }],
+    ['cloud', undefined, { trust: undefined }],
+    ['cloud', 'false', { trust: false }],
+    ['cloud', 'true', { issues: ['OPT2_MSSQL_TRUST_SERVER_CERT: must be false or unset when OPT2_ENV=cloud'] }],
+  ])('parses OPT2_ENV=%s with OPT2_MSSQL_TRUST_SERVER_CERT=%j as %j', (mode, value, expected) => {
+    const cloud = { OPT2_ENV: 'cloud', OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: 'opt2-unit:us-central1:opt2', PG_PASSWORD: undefined };
+    const base = mode === 'local' ? ENV : { ...without('PUBSUB_EMULATOR_HOST', 'unset'), ...cloud };
+    const source = { ...base, OPT2_MSSQL_TRUST_SERVER_CERT: value };
+    let outcome: { trust: boolean | undefined } | { issues: string[] };
+    try {
+      outcome = { trust: loadMigrationEnv(source).OPT2_MSSQL_TRUST_SERVER_CERT };
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvValidationError);
+      outcome = { issues: (error as EnvValidationError).issues };
+    }
+
+    expect(outcome).toEqual(expected);
   });
 
   it.each(['OPT2_REPORTS_DIR', 'OPT2_CUTOVER_DIR'] as const)('accepts an absolute %s and rejects a relative one', (key) => {

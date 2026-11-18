@@ -1,7 +1,5 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-// Screen contexts, canned gateway routes and the job-grid reader of the reporting screen tests. Minimal Change asks
-// for helper reuse, but helpers/screen-context.ts imports the screen registry, which loads every circuit and OPT-2
-// module; these suites must run without them, so the context and the three shell routes are built here.
+// Reporting test contexts and shell routes, built here so these suites load without the full circuit registry.
 import * as cheerio from 'cheerio';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, type CsrfTokens } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';

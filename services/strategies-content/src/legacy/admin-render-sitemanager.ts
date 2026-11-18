@@ -1,10 +1,6 @@
 /**
  * Byte-exact `carch.loadsiteflat`, `carch.siteparents` and `carch.loadnewcontentmenu` fragments as ACF 2023 renders
- * them; the web admin-raw handler relays these bodies. Pure: callers pass prepared rows and persist session effects.
- *
- * ACF whitespace management, observed on 2023.0.26: CFML comments vanish; a whitespace-only text run between CFML
- * tags or expressions prints nothing outside `<cfoutput>`, and inside it (or right after `</cfoutput>`) one space
- * unless the buffer is empty or already ends in whitespace. Text holding anything else prints verbatim.
+ * them. Pure: callers pass prepared rows and persist session effects.
  */
 import {
   LEGACY_ADMIN_SENTINEL_ID,
@@ -65,7 +61,10 @@ const SPECIAL_MODULES = ['00000000000000000000000000000000003', '000000000000000
 // Java Character.isWhitespace, which ACF applies to the last character it wrote.
 const ENDS_IN_WHITESPACE = /[\t-\r\u001c-\u001f \u1680\u2000-\u2006\u2008-\u200a\u2028\u2029\u205f\u3000]$/;
 
-/** One ACF output buffer under whitespace management. */
+/**
+ * One ACF output buffer under whitespace management, as observed on 2023.0.26: CFML comments and whitespace-only text
+ * runs outside `<cfoutput>` print nothing, so the renderers skip them.
+ */
 class CfOut {
   private body = '';
 

@@ -76,7 +76,7 @@ export interface StoredObjectResult {
   contentType: string | null;
   /** True when no `content.file` row has the object's file id. */
   orphan: boolean;
-  /** False when the key already held the same SHA-256, so nothing was written. */
+  /** False when the key already held the same SHA-256, so neither the object nor its row was replaced. */
   created: boolean;
 }
 
@@ -103,7 +103,7 @@ function holdsRecorded(head: ObjectHead | null, row: FileObjectRow): head is Obj
 
 /**
  * Publishes one legacy object under `<tenantId>/<fileId><variant>.<ext>` with its `content.file_object` row, serialized per key;
- * a no-op when both already hold `sha256`. A replaced consistent version is backed up first, so recovery restores it when the
+ * neither is replaced when both already hold `sha256`. A replaced consistent version is backed up first, so recovery restores it when the
  * publication never commits. A `platform.migration` caller's write passes any `content.file` gate state.
  * @throws LegacyApiError `badRequest` when `bytes` do not hash to `sha256`; nothing is stored then.
  */

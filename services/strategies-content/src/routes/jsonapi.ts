@@ -843,7 +843,6 @@ function allowActionFor(actor: Actor): JsonApiRequestContext['allowAction'] {
  * later entity, as `request.muraCustomImageIterator` is (jsonApiUtility.cfc:3574-3586).
  */
 function requestImageSizes(sites: SitesClient): JsonApiRequestContext['customImageSizes'] {
-  // Legacy's own per-request reuse, kept for unchanged behaviour; the Minimal Change rule's caching ban does not bind this refactor.
   let read: ReturnType<SitesClient['customImageSizes']> | undefined;
   return (siteId) => (read ??= sites.customImageSizes(siteId));
 }

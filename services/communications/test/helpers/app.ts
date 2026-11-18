@@ -68,7 +68,6 @@ const STATE_DIR_PREFIX = 'opt2-communications-';
 const SURVEYS = 'surveys';
 const DEFAULT_MAILPIT_API_URL = 'http://127.0.0.1:8025';
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Environment and clock
 
 const ownedStateDirs = new Set<string>();
@@ -146,7 +145,6 @@ export async function testEnv(overrides: Readonly<Record<string, string | undefi
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date; other instants come from `fixedClock`. */
 export const TEST_CLOCK: Clock = businessClock();
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Task port
 
 /** A task the fake port deleted. */
@@ -262,7 +260,6 @@ export function createFakeTaskPort(): FakeTaskPort {
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Mail transport, delivery status and sender address
 
 /** In-memory `MailTransport` that records every accepted mail and never opens a socket. */
@@ -426,7 +423,6 @@ export function createFakeSenderAddress(map: Readonly<Record<string, string>> = 
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Service client recorder
 
 /** A canned service answer, or a function computing it from the request. */
@@ -613,7 +609,6 @@ export function createClientRecorder(handlers: readonly ClientHandler[] = []): C
 }
 
 
-// ---------------------------------------------------------------------------------------------------------------------
 // Recording database: an in-memory interpreter of the SQL the communications code and the platform issue against schema
 // `communications`, over the tables its own migrations create.
 
@@ -3053,7 +3048,6 @@ export function createRecordingDb(seed: Partial<Record<string, readonly Row[]>> 
   return db;
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
 // App builder and request headers
 
 type EventPublisher = NonNullable<BuildAppOptions['publisher']>;

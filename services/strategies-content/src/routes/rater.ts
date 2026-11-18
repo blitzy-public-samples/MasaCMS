@@ -29,7 +29,7 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ public: true, transport: 'se
 /** The getAvgRating query's columns. */
 const AVG_RATING_COLUMNS: readonly string[] = Object.freeze(['DOWNVOTES', 'THEAVG', 'THECOUNT', 'UPVOTES']);
 
-/** The form fields the template passes to raterManager.saveRate, in its order (saveRate.cfm:79-84). */
+/** The form fields the template passes to raterManager.saveRate, in its order (saveRate.cfm:78-82). */
 const RATE_FORM_FIELDS: readonly string[] = Object.freeze(['contentID', 'siteID', 'userID', 'rate']);
 
 /** Widths of the `tcontentratings` key columns: contentID and userID char(35), siteID char(25). */

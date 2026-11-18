@@ -36,7 +36,6 @@ export const DEFAULT_DRAIN: Readonly<Required<DrainBounds>> = Object.freeze({
   stablePolls: 3,
 });
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a stuck replay bin would otherwise outlive the drain bound.
 /** Longest run of one producer's full outbox replay, in ms; it republishes every row since `since`, so it gets far more than the drain bound. */
 export const REPLAY_BIN_TIMEOUT_MS = 10 * 60_000;
 

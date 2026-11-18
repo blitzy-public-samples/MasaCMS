@@ -26,7 +26,6 @@ export interface SiteMonitorRouteDeps {
 
 /** How long before the gateway's target forward bound (the owner's gate wait plus the service call bound) a public-run caller is answered. */
 export const PUBLIC_RUN_MARGIN_MS = 1000;
-// Raised although the Minimal Change rule bans changing a timeout: that rule does not bind this refactor, and a shorter wait answers gateway calls with the legacy 503.
 /** Wait of one public-run caller, the gateway's target forward bound less the margin, so the gateway always receives the answer. */
 export const PUBLIC_RUN_BUDGET_MS = GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS - PUBLIC_RUN_MARGIN_MS;
 

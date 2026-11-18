@@ -267,7 +267,7 @@ open_window() {
   SUMMARY_WINDOW_ID=$WINDOW_ID
 }
 
-# Completes the start-up window, importing what legacy start-up wrote; false when the window stays open.
+# Completes the start-up window (--forwarded); true if none, closed or import-pending, else false with resolve-window guidance.
 close_window() {
   local id=$WINDOW_ID summary state
   [[ -n $id ]] || return 0
@@ -290,7 +290,7 @@ close_window() {
   esac
 }
 
-# Closes a window left open by a failure or signal, so its unit leases never leak.
+# On exit or signal, tries to complete an open start-up window (exit 1 on failure); migration retry or resolve-window recovers it.
 on_exit() {
   local status=$?
   trap - EXIT INT TERM

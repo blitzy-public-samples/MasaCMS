@@ -112,7 +112,7 @@
 		variables.failure = {"type" = listLast(e.type, "."), "message" = e.message};
 	} catch (any e) {
 		writeLog(type="Error", file="exception", text=exceptionLogRecord(e));
-		// The exception stays in the log: it holds SQL and paths, and the target cannot reproduce Masa's debug stacktrace.
+		// The log keeps only the validated type and relative frames; the client gets the generic server_error, without Masa's debug stacktrace.
 		variables.failure = {"type" = "server_error", "message" = ""};
 	}
 

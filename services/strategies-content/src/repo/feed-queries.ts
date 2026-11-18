@@ -1,10 +1,7 @@
 /**
- * Read-only SQL of Masa collections (local content feeds), ported from `feedGateway` and the read paths of
- * `feedDAO`. Every function runs in the caller's tenant transaction, whose RLS scopes the rows; `./repository.ts`
- * re-exposes them as `repo.feeds.*` and owns every write. Remote feeds are fetched by the feed-import job, not here.
- *
- * SQL Server semantics are reproduced where results depend on them: text equality and LIKE are case-insensitive,
- * text sorts through lower(), and NULLs sort lowest.
+ * Read-only SQL of Masa local content feeds (collections), ported from `feedGateway` and `feedDAO` reads; runs in the
+ * caller's tenant transaction (RLS scopes rows). SQL Server semantics: case-insensitive text equality and LIKE, text
+ * sorts through lower(), NULLs sort lowest.
  */
 import { LegacyServiceUnavailableError, cfIsBoolean, cfIsNumeric, cfToBoolean, cfToNumber, windows1252Text } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';

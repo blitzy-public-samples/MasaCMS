@@ -64,7 +64,6 @@ export const PRECONDITION_PULL_MS = 5_000;
 /** Seconds without a message after which each replay run stops. */
 export const REPLAY_IDLE_SECONDS = 5;
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a stuck replay bin would otherwise outlive the landing bound.
 /** Longest run of one replay bin, in ms; well above its idle stop and {@link DEFAULT_LAND_TIMEOUT_MS}. */
 export const REPLAY_EXEC_TIMEOUT_MS = 120_000;
 
@@ -294,7 +293,7 @@ export function stubDlqTarget(options: StubDlqTargetOptions = {}): DlqTarget {
     throw new RangeError(`reader site ${reader.siteId} is not of tenant ${tenantId}`);
   }
   let validator: TopicValidator<StubNotePayload> | undefined;
-  // Departs from Rule "WIP - Minimal Change 2" (no caching), which does not bind this refactor: one gateway login per target, not one per read.
+  // One gateway login per target, not per projection read.
   let readerOnce: Promise<StubReader> | undefined;
   const readerFor = (deps: SeamDeps): Promise<StubReader> =>
     (readerOnce ??= reader === undefined ? defaultStubReader(tenantId, deps) : Promise.resolve(reader));

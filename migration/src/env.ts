@@ -46,12 +46,8 @@ export const migrationEnvSchema = baseEnvSchema.extend({
   MURA_DATABASE: requiredEnvString(),
   MURA_DBUSERNAME: requiredEnvString(),
   MURA_DBPASSWORD: requiredEnvString(),
-  OPT2_MSSQL_TRUST_SERVER_CERT: requiredEnvString(
-    z
-      .enum(['true', 'false'])
-      .default('true')
-      .transform((value) => value === 'true'),
-  ),
+  // Unset trusts SQL Server's self-signed certificate only when OPT2_ENV=local; the cloud verifies it.
+  OPT2_MSSQL_TRUST_SERVER_CERT: optionalEnvString(z.enum(['true', 'false']).transform((value) => value === 'true')),
   LEGACY_ORIGIN: envUrl(),
   // Masa takes appreloadkey from MURA_APPRELOADKEY when set (onApplicationStart_include.cfm:136-141), so a reload must too.
   MURA_APPRELOADKEY: optionalEnvString(),
@@ -62,6 +58,9 @@ export const migrationEnvSchema = baseEnvSchema.extend({
   // The gateway's cut-over directory, so a transition reads the versions the gateway serves.
   OPT2_CUTOVER_DIR: optionalEnvString(absolutePath()),
 }).superRefine((env, ctx) => {
+  if (env.OPT2_ENV === 'cloud' && env.OPT2_MSSQL_TRUST_SERVER_CERT === true) {
+    ctx.addIssue({ code: 'custom', path: ['OPT2_MSSQL_TRUST_SERVER_CERT'], message: 'must be false or unset when OPT2_ENV=cloud' });
+  }
   if (env.OPT2_ENV !== 'local') return;
   for (const key of LOCAL_PUBSUB_KEYS) {
     if (env[key] === undefined) ctx.addIssue({ code: 'custom', path: [key], message: 'is required when OPT2_ENV=local' });

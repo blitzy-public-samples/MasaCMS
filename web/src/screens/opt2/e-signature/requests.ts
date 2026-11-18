@@ -80,7 +80,7 @@ function mayDecodeBase64(text: string): boolean {
   return data >= 2;
 }
 
-/** Whether `id`, surrounding spaces aside, can be a Masa UserID: a ColdFusion UUID or the installed admin's id. */
+/** Whether `id`, surrounding spaces aside, can be a Masa UserID: a ColdFusion UUID or the legacy sentinel `LEGACY_ADMIN_SENTINEL_ID`. */
 function mayBeUserId(id: string): boolean {
   const trimmed = javaTrim(id);
   return isCfUuid(trimmed) || trimmed === LEGACY_ADMIN_SENTINEL_ID;

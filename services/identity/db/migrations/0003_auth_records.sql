@@ -85,7 +85,7 @@ CREATE TABLE identity.oauth_token (
   userid char(35) COLLATE identity.legacy_char_ci,
   clientid char(35) COLLATE identity.legacy_char_ci NOT NULL,
   accesscode text COLLATE identity.legacy_ci,
-  -- Serialized session document, stored byte-exact and never parsed.
+  -- Serialized session document, stored byte-exact; token-info and bearer session-restore reads parse it without rewriting it.
   data text,
   expires timestamp(3) without time zone NOT NULL,
   token char(35) COLLATE identity.legacy_char_ci NOT NULL,

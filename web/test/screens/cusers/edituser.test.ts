@@ -61,7 +61,7 @@ let restoreEnv: () => void;
 beforeEach(() => { restoreEnv = useTestEnv(); });
 afterEach(() => { restoreEnv(); });
 
-/** Legacy-shaped token of `context` (uppercase MD5), so each rendered pair names the context it was issued for. */
+/** Deterministic per-context test token (uppercase MD5 of `context`), so each rendered pair names the context it was issued for. */
 const tokenFor = (context: string): string => createHash('md5').update(context).digest('hex').toUpperCase();
 
 /** Issues a deterministic CSRF pair for each form context. */

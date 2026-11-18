@@ -13,7 +13,6 @@ export type ProcessRunner = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a hung child would otherwise block its caller.
 /** Deadline `defaultRunner` applies when `opts.timeoutMs` is omitted. */
 export const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 /** Longest wait after each escalation step past the deadline, capped at the deadline itself. */

@@ -620,16 +620,16 @@ describe.skipIf(!(await pgAvailable()))('JSON API category and contentCategoryAs
   });
 });
 
-// ---- the SQL-bounded feeds against the whole-site reads the handlers evaluated in memory before them ----
+// ---- the SQL-bounded category and assignment feeds answer the same as a reference evaluating every site row in memory ----
 
-/** tcontentcategories columns, as the category feed projected each row it read. */
+/** tcontentcategories columns, as the in-memory reference projects each row it reads. */
 const READ_CATEGORY_COLUMNS = [
   'categoryid', 'siteid', 'parentid', 'datecreated', 'lastupdate', 'lastupdateby', 'name', 'notes', 'isinterestgroup',
   'isactive', 'isopen', 'sortby', 'sortdirection', 'restrictgroups', 'path', 'remoteid', 'remotesourceurl', 'remotepubdate',
   'urltitle', 'filename', 'isfeatureable',
 ] as const;
 
-/** The id and site equality the handlers applied in memory: trailing spaces dropped, then lower-cased. */
+/** The in-memory reference's id and site equality: trailing spaces dropped, then lower-cased. */
 function sqlKey(value: unknown): string {
   return (typeof value === 'string' ? value : '').replace(/ +$/u, '').toLowerCase();
 }
@@ -654,7 +654,7 @@ function readRows(load: () => Promise<Struct[]>): BeanFeedSource<Struct> {
   };
 }
 
-/** The join index the assignment feed read whole: the category pool's categories, then the request site's, first per key. */
+/** The reference's assignment join index, read whole: the category pool's categories, then the request site's, first per key. */
 async function readIndex(domain: DomainDeps, call: JsonApiCall): Promise<Map<string, CategoryRow>> {
   const pool = await listPoolCategories(domain, { ...call.actor, tenantId: call.tenantId, siteId: call.siteId });
   const own = await withTenant(domain.db, call.tenantId, (tx) => domain.repository.categories.categoriesBySite(tx, { siteId: call.siteId }));
@@ -663,7 +663,7 @@ async function readIndex(domain: DomainDeps, call: JsonApiCall): Promise<Map<str
   return index;
 }
 
-/** A scope's rows as the handlers selected them: every row of the site, then the ids filter or category join in memory. */
+/** A scope's rows as the reference reads them: every row of the site, then the ids filter or category join in memory. */
 async function readScope(domain: DomainDeps, call: JsonApiCall, run: FeedRunner, scope: ReadScope): Promise<Struct[]> {
   const { categories, content } = domain.repository;
   if (scope.kind === 'category') {

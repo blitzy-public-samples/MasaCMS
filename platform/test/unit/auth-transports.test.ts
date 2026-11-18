@@ -5,6 +5,7 @@ import path from 'node:path';
 import { GoogleAuth, IdTokenClient, OAuth2Client, gaxios, type CredentialBody } from 'google-auth-library';
 import { CertificateFormat } from 'google-auth-library/build/src/auth/oauth2client.js';
 import {
+  CompactSign,
   SignJWT,
   calculateJwkThumbprint,
   createLocalJWKSet,
@@ -143,6 +144,14 @@ async function newSigningKey(): Promise<SigningKey> {
 /** Signs `payload` as an RS256 JWT with `key`, announcing `kid` in the header. */
 function signToken(payload: JWTPayload, key: SigningKey, kid = key.kid): Promise<string> {
   return new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' }).sign(key.privateKey);
+}
+
+/** Signs `payload` with `exp` written as the raw JSON number `rawExp`, such as `1e400`, which `SignJWT` cannot encode. */
+function signWithRawExp(payload: JWTPayload, rawExp: string, key: SigningKey): Promise<string> {
+  const claims = JSON.stringify({ ...payload, exp: undefined }).replace(/}$/, `,"exp":${rawExp}}`);
+  return new CompactSign(new TextEncoder().encode(claims))
+    .setProtectedHeader({ alg: 'RS256', kid: key.kid, typ: 'JWT' })
+    .sign(key.privateKey);
 }
 
 /** Claims of the site-scoped user token the tests present, as identity's local signer mints them. */
@@ -761,6 +770,9 @@ describe('local service tokens', () => {
       problem: 'has expired',
       token: () => signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'people', ttlSeconds: -60 }),
     },
+    { problem: 'has no expiry', token: () => signToken(serviceClaims({ exp: undefined }), issuerKey) },
+    { problem: 'has a non-numeric expiry', token: () => signToken(serviceClaims({ exp: '9999999999' }), issuerKey) },
+    { problem: 'has a non-finite expiry', token: () => signWithRawExp(serviceClaims(), '1e400', issuerKey) },
     { problem: 'is signed by another key', token: () => signToken(serviceClaims(), foreignKey) },
     {
       problem: "carries a kid other than the key's thumbprint",
@@ -1489,6 +1501,18 @@ describe('createServiceTransport', () => {
       expected: INVALID_CREDENTIAL,
     },
     {
+      problem: 'an invocation token without an expiry',
+      headers: async () => ({
+        [INVOCATION_HEADER]: `Bearer ${await signToken(serviceClaims({ exp: undefined }), issuerKey)}`,
+      }),
+      expected: INVALID_CREDENTIAL,
+    },
+    {
+      problem: 'an invocation token with a non-finite expiry',
+      headers: async () => ({ [INVOCATION_HEADER]: `Bearer ${await signWithRawExp(serviceClaims(), '1e400', issuerKey)}` }),
+      expected: INVALID_CREDENTIAL,
+    },
+    {
       problem: 'a user token for another audience',
       headers: async () => ({
         authorization: `Bearer ${await userToken({ aud: 'people' })}`,
@@ -1735,6 +1759,14 @@ describe('createLocalCloudTasksTransport', () => {
     {
       problem: "carries a kid other than the local key's thumbprint",
       token: async () => `Bearer ${await signToken(serviceClaims(TASKS_INVOKER_SUBJECT), issuerKey, 'unknown-kid-123')}`,
+    },
+    {
+      problem: 'has no expiry',
+      token: async () => `Bearer ${await signToken(serviceClaims({ ...TASKS_INVOKER_SUBJECT, exp: undefined }), issuerKey)}`,
+    },
+    {
+      problem: 'has a non-finite expiry',
+      token: async () => `Bearer ${await signWithRawExp(serviceClaims(TASKS_INVOKER_SUBJECT), '1e400', issuerKey)}`,
     },
     { problem: 'is a local user token', token: async () => `Bearer ${await userToken()}` },
     {

@@ -32,8 +32,9 @@ export const TEST_ENV_DEFAULTS: Readonly<Record<string, string>> = Object.freeze
 });
 
 /**
- * Installs the parsed web environment (`TEST_ENV_DEFAULTS` with `overrides`; an `undefined` value unsets a default)
- * and an auth runtime over the platform test keys.
+ * Installs the parsed web environment (`TEST_ENV_DEFAULTS` with `overrides`; an `undefined` value unsets a default,
+ * but an absent or `undefined` `OPT2_STATE_DIR` gets a fresh private directory) and an auth runtime over the
+ * platform test keys.
  * @returns Restore function that reinstates both and removes the state directory this call created.
  * @throws EnvValidationError when the merged variables are invalid; nothing is then installed.
  */

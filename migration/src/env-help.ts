@@ -33,7 +33,7 @@ export const MIGRATION_ENVIRONMENT_HELP = `Environment:
   MURA_DBUSERNAME               legacy database login (required)
   MURA_DBPASSWORD               password of MURA_DBUSERNAME (required)
   MURA_DBTYPE                   unset or SQL Server; any other type fails start-up (optional)
-  OPT2_MSSQL_TRUST_SERVER_CERT  true or false (default: true)
+  OPT2_MSSQL_TRUST_SERVER_CERT  true or false; true is rejected when OPT2_ENV=cloud (default: true when OPT2_ENV=local, false in the cloud)
   LEGACY_ORIGIN                 Masa origin for bridge calls and reloads (required)
   OPT2_BRIDGE_HMAC_KEY          legacy bridge assertion key (required)
   MURA_APPRELOADKEY             Masa reload parameter name (default: appreload)

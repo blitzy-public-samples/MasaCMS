@@ -1,10 +1,7 @@
 /**
- * Read-only SQL of the content tree, ported from Masa `contentGateway` (the Adobe gateway, legacy's engine) and the
- * read paths of `contentDAO`. Every function runs in the caller's tenant transaction, whose RLS scopes the rows;
- * `./repository.ts` re-exposes them as `repo.content.*` and owns every write.
- *
- * SQL Server semantics are reproduced where results depend on them: text equality, LIKE and grouping are
- * case-insensitive (SQL_Latin1_General_CP1_CI_AS), text sorts through lower(), and NULLs sort lowest.
+ * Read-only content-tree SQL ported from Masa `contentGateway` and `contentDAO`, run in the caller's RLS-scoped tenant
+ * transaction. SQL Server semantics hold: case-insensitive equality, LIKE and grouping (SQL_Latin1_General_CP1_CI_AS),
+ * lower() text sorts, NULLs lowest.
  */
 import { windows1252Text } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';

@@ -14,8 +14,8 @@ export const PUBLISH_SCHEDULED_CHANGESETS_PATH = '/internal/v1/jobs/publish-sche
 
 /** What the step runs against. */
 export interface PublishScheduledChangesetsDeps extends DomainDeps {
-  // Required, never defaulted here: the service holds no verified site settings (the registry has only ids, pools and
-  // domains), and configBean defaults such as siteIDInURLS=true differ from deployed values, so the composition root supplies them.
+  // Required: the registry holds only ids, pools and domains, and configBean defaults such as siteIDInURLS=true differ from
+  // deployed values, so the caller supplies each site's complete content-save settings.
   /** Settings of each registered site that has change sets due, which the content saves read. */
   siteFor: ScheduledPublishDeps['siteFor'];
 }

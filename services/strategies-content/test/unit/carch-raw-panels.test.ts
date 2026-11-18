@@ -89,7 +89,7 @@ let t: ContentTestApp;
 beforeAll(async () => {
   t = await buildContentApp({
     declare: (app: FastifyInstance) => {
-      // What the planned raw route does for each entry: the circuit gate on the token's site, then the entry, sent unchanged.
+      // Mirrors the raw route (src/routes/v1/raw.ts) for each entry, without its CSRF consume: the circuit gate on the token's site, then the entry's response, sent unchanged.
       for (const [action, spec] of Object.entries(carchRawActions)) {
         app.route({
           method: ['GET', 'POST'],
