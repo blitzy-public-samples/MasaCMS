@@ -23,6 +23,7 @@ import { GROUP_NAME_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/ev
 import { FAVORITE } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, userHeaders, type RecordingDb, type TestApp, type UserHeadersInput } from '../helpers/app.js';
 import {
+  ADMIN_S2,
   ARCHIVE_EFFECTIVE_FROM,
   ARCHIVE_PERSON,
   ARCHIVED_PERSON_B,
@@ -963,6 +964,14 @@ const CASES: Record<string, Case[]> = {
     },
   ],
   listUsersV2: [{ name: "pages tenant-a's system users", inject: send('GET', `/v2/users?siteid=${SITE_A}&ispublic=0`, SA), status: 200, verify: listsUser(SYSTEM_USER) }],
+  listUserFeed: [
+    {
+      name: "lists tenant-a's system users as the Connected Account feed for S2",
+      inject: send('GET', `/v1/users/feed?siteid=${SITE_A}&ispublic=0`, asUser({ ...ADMIN_S2, site: SITE_A })),
+      status: 200,
+      verify: listsUser(SYSTEM_USER),
+    },
+  ],
   searchUsersV2: [{ name: 'pages the search for Sydney', inject: send('GET', `/v2/users/search?siteid=${SITE_A}&ispublic=0&search=Sydney`, SA), status: 200, verify: listsUser(SYSTEM_USER) }],
   getAdvancedSearchV2: [{ name: 'pages the stored advanced search', inject: send('GET', `/v2/users/advanced-search?siteid=${SITE_A}&ispublic=0`, SA), status: 200, verify: listsUser(SYSTEM_USER) }],
   setAdvancedSearchV2: [

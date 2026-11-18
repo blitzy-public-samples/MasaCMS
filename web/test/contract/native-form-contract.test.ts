@@ -19,6 +19,7 @@ import { addUserAction, updateGroupAction, updateUserAction } from '@/screens/cu
 import { updateAddressAction } from '@/screens/cusers/updateaddress';
 import type { RedirectScreen, ScreenContext } from '@/screens/registry';
 import { GROUP_IDS, groupsById } from '../fixtures/identity/groups';
+import { siteListItemById } from '../fixtures/programs-sites/sites';
 import { adminS2Request } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
 import {
@@ -58,6 +59,7 @@ const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const GROUP_ROUTE = routeKey('GET', 'identity', `/v1/groups/${GROUP_IDS.defaultEditor}`);
 const USER_EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/edit');
 const INTEREST_GROUPS_ROUTE = routeKey('GET', 'strategies-content', '/v1/sites/default/private-interest-groups');
+const SITE_LIST_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites');
 const ADDRESS_EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/address');
 const ROUTE_USER = routeKey('GET', 'people', '/v1/users/route');
 
@@ -181,12 +183,16 @@ async function editGroupForm(rc: Readonly<Record<string, string>>): Promise<stri
   return toString(renderEditGroup(ctx, await loadEditGroup(ctx, NO_GROUP_SUBTYPES)).body);
 }
 
-/** The production Edit User form for `rc`, people answering `edit` and strategies-content an empty interest pool. */
+/**
+ * The production Edit User form for `rc`, people answering `edit`, programs-sites the `default` site and
+ * strategies-content an empty interest pool.
+ */
 async function editUserForm(rc: Readonly<Record<string, string>>, edit: UserEditData): Promise<string> {
   const gateway = fakeGatewayClient({
     [USER_EDIT_ROUTE]: { status: 200, body: edit },
     [CSRF_ROUTE]: issueTokens,
     [INTEREST_GROUPS_ROUTE]: { status: 200, body: { items: [] } },
+    [SITE_LIST_ROUTE]: { status: 200, body: [siteListItemById.default] },
   });
   const ctx = contextFor(adminRequest('edituser', rc), gateway);
   return toString((await renderEditUser(ctx, await loadEditUser(ctx))).body);

@@ -19,7 +19,7 @@ import { LOGIN_SESSION_KEYS, login, logout, type LoginDeps } from '../domain/log
 import { sendLoginByEmail, type LoginMailDeps } from '../domain/login-mail.js';
 import { groupListForSite, permittedGroups, type PermissionDeps } from '../domain/permissions.js';
 import { ANONYMOUS_USER_STRUCT, moduleGrantHeld, modulePermByRole, roleListHas, userStructOf, type ModuleGroupGrant } from '../domain/roles.js';
-import { ANONYMOUS_LOGIN_SNAPSHOT, locateSession, sessionAdminSite, type LocatedSession, type SessionDeps } from '../domain/sessions.js';
+import { ANONYMOUS_LOGIN_SNAPSHOT, locateSession, rebasedAdminValues, sessionAdminSite, type LocatedSession, type SessionDeps } from '../domain/sessions.js';
 import type { components } from '../generated/openapi.js';
 import { validateCsrfForRoute } from './internal-csrf.js';
 
@@ -132,7 +132,13 @@ export const ADMIN_STATE_BODY = {
   },
 } as const;
 
-/** Every key of the contract's AdminSessionState; other stored values, such as login's `blockLoginUntil`, stay internal. */
+/** The save's body: the contract's AdminSessionState with its write-only `muraBase`, which only the save reads. */
+const ADMIN_STATE_SAVE_BODY = {
+  ...ADMIN_STATE_BODY,
+  properties: { ...ADMIN_STATE_BODY.properties, muraBase: { type: 'object', additionalProperties: true } },
+} as const;
+
+/** Every key of the contract's AdminSessionState but the write-only `muraBase`; other stored values, such as login's `blockLoginUntil`, stay internal. */
 const ADMIN_STATE_KEYS = Object.keys({
   siteid: true,
   userFilesPath: true,
@@ -161,7 +167,7 @@ const ADMIN_STATE_KEYS = Object.keys({
   hasdefaultpassword: true,
   moduleTopIds: true,
   mura: true,
-} satisfies Record<keyof AdminState, true>) as ReadonlyArray<keyof AdminState>;
+} satisfies Record<Exclude<keyof AdminState, 'muraBase'>, true>) as ReadonlyArray<keyof AdminState>;
 
 /** CFML `listFirst(s, delim)`: the first non-empty item, or `''`. */
 function listFirst(s: string, delim: string): string {
@@ -478,17 +484,19 @@ export async function registerAdminSessionRoutes(app: FastifyInstance, deps: Adm
 
   app.post<{ Body: AdminState; Reply: AdminState }>(
     '/v1/sessions/current/admin-state',
-    { schema: { body: ADMIN_STATE_BODY }, config: { opt2: ADMIN_STATE_SAVE_AUTH } },
+    { schema: { body: ADMIN_STATE_SAVE_BODY }, config: { opt2: ADMIN_STATE_SAVE_AUTH } },
     async (request) => {
       const user = relayedUserOf(request.opt2Auth);
-      const values = Object.fromEntries(Object.entries(request.body).filter(([key]) => key !== 'hasdefaultpassword')) as AdminState;
+      const { muraBase, ...posted } = request.body;
+      const values = Object.fromEntries(Object.entries(posted).filter(([key]) => key !== 'hasdefaultpassword')) as AdminState;
       const located = await locateSession(sessions, user.sid);
       const merged =
         located === undefined
           ? null
           : await withTenant(sessions.db, located.tenantId, async (tx) => {
               const row = await sessions.repo.lockSession(tx, user.sid, 'update');
-              return row?.state === 'active' ? sessions.repo.mergeSessionAdminState(tx, user.sid, values) : null;
+              if (row?.state !== 'active') return null;
+              return sessions.repo.mergeSessionAdminState(tx, user.sid, rebasedAdminValues(row.admin_state, values, muraBase));
             });
       // The token names a session that no longer exists or has ended, so there is no session to store into.
       if (merged === null) throw AuthDenial.unauthenticated('invalid-credential');

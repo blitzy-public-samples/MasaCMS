@@ -22,7 +22,7 @@ import { ADDRESS_IDS, janeSmithHomeAddress } from '../../fixtures/people/address
 import { NEW_USER_ID, existingUserEditData, newUserEditData } from '../../fixtures/people/user-edit';
 import { PERSON_IDS } from '../../fixtures/people/user-list';
 import { duplicateUsernameResult, missingEmailResult } from '../../fixtures/people/validation-errors';
-import { siteUmbrella } from '../../fixtures/programs-sites/sites';
+import { SITE_LIST_BY_ORDERNO, siteUmbrella } from '../../fixtures/programs-sites/sites';
 import { INTEREST_CATEGORY_IDS, interestCategories } from '../../fixtures/strategies-content/categories';
 import { adminS2Request, editorRequest, siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, type DomControl, type DomModel } from '../../helpers/dom-model';
@@ -79,12 +79,14 @@ const interestGroupsPath = (tokenSite: string) => `/v1/sites/${tokenSite}/privat
 const NO_INTEREST_GROUPS: FakeRoute = { status: 200, body: { items: [] } };
 
 /**
- * The screen's gateway: people's edit read answering `edit`, identity's CSRF pairs, and strategies-content answering
- * the interest-group levels of the `default` and tenant-a tokens with `interests`.
+ * The screen's gateway: people's edit read answering `edit`, identity's CSRF pairs, programs-sites' site list by
+ * orderno, and strategies-content answering the interest-group levels of the `default` and tenant-a tokens with
+ * `interests`.
  */
 const routes = (edit: UserEditData, interests: FakeRoute = NO_INTEREST_GROUPS): FakeRouteTable => ({
   [routeKey('GET', 'people', '/v1/users/edit')]: { status: 200, body: edit },
   [routeKey('POST', 'identity', '/v1/csrf/tokens')]: issueTokens,
+  [routeKey('GET', 'programs-sites', '/v1/sites')]: { status: 200, body: SITE_LIST_BY_ORDERNO },
   [routeKey('GET', 'strategies-content', interestGroupsPath('default'))]: interests,
   [routeKey('GET', 'strategies-content', interestGroupsPath('tenant-a'))]: interests,
 });
@@ -326,12 +328,15 @@ describe('cusers.edituser stored user', () => {
     ]);
   });
 
-  it("offers an S2 admin every site, selecting the person's site and the session's", async () => {
+  it("offers an S2 admin every site in programs-sites' orderno order, selecting the person's site and the session's", async () => {
     const { part } = await renderPage(adminS2Request(editUserRc(JANE, 'tenant-a')), existingUserEditData);
 
     const advanced = part('#tabAdvanced');
     const selected = ['default', 'tenant-a'];
+    const [select] = named(advanced, 'siteid');
 
+    expect(existingUserEditData.sites.map(({ site }) => site)).toEqual(['Default', 'Tenant A', 'Tenant B', 'Umbrella']);
+    expect(select?.options.map(({ label }) => label)).toEqual(['Default', 'Umbrella', 'Tenant A', 'Tenant B']);
     expect(named(advanced, 'siteid')).toEqual([{
       tag: 'select',
       name: 'siteid',
@@ -339,9 +344,20 @@ describe('cusers.edituser stored user', () => {
       value: 'default',
       checked: false,
       selected,
-      options: existingUserEditData.sites.map(({ siteID, site }) => ({ value: siteID, label: site, selected: selected.includes(siteID) })),
+      options: SITE_LIST_BY_ORDERNO.map(({ siteid, site }) => ({ value: siteid, label: site, selected: selected.includes(siteid) })),
     }]);
     expect(valuesOf(advanced, ['tags', 'remoteID'])).toEqual({ tags: 'finance,remote', remoteID: 'HR-0001' });
+  });
+
+  it.each<[string, () => AdminRequest, readonly unknown[]]>([
+    ['an S2 admin by orderno', () => adminS2Request(editUserRc(JANE, 'tenant-a')), [{ sortBy: 'orderno', sortDirection: 'asc' }]],
+    ['a site admin not at all', () => siteAdmin(), []],
+    ['a caller who administers no site not at all', usersModuleEditor, []],
+  ])("reads programs-sites' site list for %s", async (_label, req, queries) => {
+    const { ctx } = await renderPage(req(), existingUserEditData);
+
+    expect(ctx.gateway.calls.filter(({ path }) => path === '/v1/sites').map(({ service, query }) => ({ service, query })))
+      .toEqual(queries.map((query) => ({ service: 'programs-sites', query })));
   });
 
   it('posts the multipart form to cUsers.update with the hidden fields and the CSRF pair of the user id', async () => {

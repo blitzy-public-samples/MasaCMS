@@ -2037,6 +2037,18 @@ describe('admin session state', () => {
       ]);
     });
 
+    it.each<[string, Parameters<typeof saveSessionWrites>[2], Record<string, unknown>]>([
+      ['with the mura writes', { muraValues: { nextN: '20', objectInstanceId: 'I2' } }, { mura: { nextN: '20', objectInstanceId: 'I2' }, muraBase: { nextN: '20' } }],
+      ['never without a mura write', { siteid: 'default' }, { siteid: 'default' }],
+    ])('sends the mura values the request read as muraBase %s', async (_label, writes, json) => {
+      const auth = await authFor(SUBJECTS.qaEditor);
+      const gateway = fakeGatewayClient(identityStore().routes, { userToken: auth.userToken });
+
+      await saveSessionWrites(gateway, auth, writes, { nextN: '20' });
+
+      expect(gateway.calls).toEqual([expect.objectContaining({ method: 'POST', path: '/v1/sessions/current/admin-state', json })]);
+    });
+
     it.each<[string, WebTestSubjectKey, Parameters<typeof saveSessionWrites>[2]]>([
       ['no writes', 'qaEditor', {}],
       ['only alerts', 'qaEditor', { alerts: { default: {} } }],

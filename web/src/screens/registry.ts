@@ -4,9 +4,11 @@ import type { Role } from '@opt2/platform/auth';
 import {
   IMAGE_UPLOAD_CONDITION,
   PHOTO_CONDITION,
+  SHARED_ID_SORT_CONDITIONS,
   cfEq,
   cfIsBoolean,
   cfToBoolean,
+  listHasSqlKey,
   type VariantCondition,
 } from '@opt2/platform/legacy-compat';
 import type { ScreenGate } from '@/lib/access-gate';
@@ -242,6 +244,7 @@ function holds(cond: VariantCondition, rc: Rc, files: readonly UploadPart[]): bo
   const value = rcValue(rc, cond.param);
   if ('equals' in cond) return value !== undefined && cfEq(value, cond.equals);
   if ('in' in cond) return value !== undefined && cond.in.some((candidate) => cfEq(value, candidate));
+  if ('listItemIn' in cond) return value !== undefined && listHasSqlKey(value, cond.listItemIn);
   if ('nonEmpty' in cond) {
     const name = cond.param.toLowerCase();
     return (value ?? '').length > 0 || files.some((f) => f.field.toLowerCase() === name && f.filename.length > 0);
@@ -318,6 +321,8 @@ export const NOT_BUILT_VARIANTS: readonly NotBuiltVariant[] = Object.freeze([
   notBuilt('carch', 'updateobjectparams', 'approved=1', truthy('approved')),
   notBuilt('carch', 'variationtargeting', 'notify', nonEmpty('notify')),
   notBuilt('carch', 'approvalaction', 'action=approve', equals('action', 'approve')),
+  // A sort reaching a content id every site shares is halted to legacy; the carried list serves every other request.
+  notBuilt('carch', 'list', 'sharedid', ...SHARED_ID_SORT_CONDITIONS),
 ]);
 
 

@@ -2487,6 +2487,9 @@ scenarios:
       admin: {login: admin, via: admin}
     seedRefs:
       - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
+      - {as: sortFolder, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Folder}, index: 1}
+      - {as: sortFirst, source: dataset, path: masa.content, where: {siteID: tenant-a, parentID: '${seed.sortFolder.contentID}'}, index: 0}
+      - {as: sortSecond, source: dataset, path: masa.content, where: {siteID: tenant-a, parentID: '${seed.sortFolder.contentID}'}, index: 1}
     steps:
       - name: list
         method: GET
@@ -2496,6 +2499,29 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cArch.loadsitemanager&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&sortBy=orderno&sortDirection=asc&startrow=1
         as: admin
+      - name: sort
+        method: POST
+        route: /admin/?muraAction=cArch.list&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=${seed.sortFolder.contentID}
+        as: admin
+        form:
+          nextN: '20'
+          sortBy: orderno
+          sortDirection: asc
+          saveSort: 'true'
+          startrow: '1'
+          orderperm: editor
+          sorted: 'true'
+          orderid: ['${seed.sortSecond.contentID}', '${seed.sortFirst.contentID}']
+      - name: sort-home
+        method: POST
+        route: /admin/?muraAction=cArch.list&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001
+        as: admin
+        form:
+          startrow: '1'
+          orderperm: editor
+          sorted: 'false'
+        expected: halted
+        exceptionId: EX-CARCH-SORT-SHARED-ID
       - name: tab
         method: POST
         route: /admin/?muraAction=cArch.siteManagerTab
@@ -2555,10 +2581,15 @@ scenarios:
           contentid: ${seed.page.contentID}
           csrf_token: ${unlock-node-tokens.csrfToken}
           csrf_token_expires: ${unlock-node-tokens.csrfExpires}
-    compare: [status, envelope, dom]
+    compare: [status, envelope, dom, rows]
+    rows:
+      - {table: tcontent, where: {contentid: '${seed.sortFolder.contentID}'}}
+      - {table: tcontent, where: {contentid: '${seed.sortFirst.contentID}'}}
+      - {table: tcontent, where: {contentid: '${seed.sortSecond.contentID}'}}
     normalisationOverrides: {}
     covers:
       - admin:carch.list
+      - admin:carch.list{sharedid}
       - admin:carch.loadsitemanager
       - admin:carch.sitemanagertab
       - admin:carch.scaffold

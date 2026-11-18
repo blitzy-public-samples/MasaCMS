@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { encodeJs, isSafeHtml, raw, toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
 import { renderCompactScripts, renderMuraInit, renderTemplateScripts } from '@/shell/inline-scripts';
 import type { ShellContext, ShellLayout } from '@/shell/types';
 import { tenantASiteAdminSession } from '../fixtures/session';
@@ -222,6 +223,7 @@ const ENCODED_MEMBER = /^\t{4}\w+:'(?:[\w,.]|\\x[0-9A-F]{2}|\\u[0-9A-F]{4})*',$/
 
 beforeEach(() => {
   useSettings();
+  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {

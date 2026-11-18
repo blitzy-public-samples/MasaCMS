@@ -659,6 +659,26 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     expect(endedRead.json()).toEqual({});
   });
 
+  it("stores of a mura saved with its muraBase only the writer's changes, so values another writer stored since its read stand", async () => {
+    const { sid } = await newSession();
+    const headers = await headersFor([], { sid });
+    const read = { alerts: { [SITE_A]: { cachenotice: false } }, editBean: { userid: 'U1' }, nextN: '20' };
+    await send('POST', '/v1/sessions/current/admin-state', headers, { mura: read });
+    // A service's save after the writer's read, as strategies-content stores carch.list's flatViewArgs before web saves.
+    await send('POST', '/v1/sessions/current/admin-state', headers, { mura: { ...read, nextN: '30', flatViewArgs: { [SITE_A]: { tab: 0 } } } });
+
+    const saved = await send('POST', '/v1/sessions/current/admin-state', headers, {
+      mura: { alerts: { ...read.alerts, [DEFAULT]: {} }, nextN: '20', objectInstanceId: 'I2' },
+      muraBase: read,
+    });
+    const stored = await send('GET', '/v1/sessions/current/admin-state', headers);
+
+    expect(saved.json()).toEqual({
+      mura: { alerts: { [SITE_A]: { cachenotice: false }, [DEFAULT]: {} }, nextN: '30', flatViewArgs: { [SITE_A]: { tab: 0 } }, objectInstanceId: 'I2' },
+    });
+    expect(stored.json()).toEqual(saved.json());
+  });
+
   it('sends the forgot-password mail with an empty site id from the forwarded host, checking no CSRF token', async () => {
     const headers = { ...(await headersFor(null)), 'x-forwarded-host': 'admin.example.test:8080' };
 

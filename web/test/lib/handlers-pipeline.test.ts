@@ -11,6 +11,7 @@ import { REDACTED, SEVERITY_BY_LEVEL, validateLogRecord } from '@opt2/platform/l
 import type { ScreenGate } from '@/lib/access-gate';
 import { GatewayDenialError, GatewayUnavailableError, setServiceClientForTests, type StreamedResponse } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
+import { setSessionMuraValue } from '@/lib/request-context';
 import { adminRbFor, rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { createWebLogger, logRequest, setWebLoggerForTests, type RequestLogFields } from '@/lib/telemetry';
 import type {
@@ -340,6 +341,20 @@ describe('page mode', () => {
     expect(response.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate');
     expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
     expect(await response.text()).toMatch(/^<!DOCTYPE[\s\S]*TOKEN-listcontext/);
+  });
+
+  it("saves the screen's mura writes against the mura values the set-up read, as their muraBase", async () => {
+    fake.setRoute(ADMIN_STATE, { status: 200, body: { mura: { nextN: '20' } } });
+    probe.inspect = async (ctx) => {
+      setSessionMuraValue(ctx.req, 'objectInstanceId', 'I2');
+    };
+
+    const response = await handleAdminPage(await getRequest('/admin/cusers/list?muraAction=cusers.list'), LIST);
+
+    expect(response.status).toBe(200);
+    expect(savedStates().map(({ json }) => json)).toEqual([
+      expect.objectContaining({ mura: expect.objectContaining({ nextN: '20', objectInstanceId: 'I2' }), muraBase: { nextN: '20' } }),
+    ]);
   });
 
   it('reads a url-encoded page POST body as the form scope, with no file parts', async () => {

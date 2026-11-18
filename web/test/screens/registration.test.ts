@@ -110,6 +110,7 @@ describe('carch barrel', () => {
     'admin:carch.edit',
     'admin:carch.flipimage',
     'admin:carch.imagedetails',
+    'admin:carch.list{sharedid}',
     'admin:carch.loadsiteflat',
     'admin:carch.multifileupload',
     'admin:carch.multifileupload{upload=image}',

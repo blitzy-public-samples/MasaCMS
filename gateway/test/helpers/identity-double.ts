@@ -127,7 +127,7 @@ export interface IdentityDouble extends HttpDouble {
   /** `claimCsrfToken` calls, in arrival order. */
   readonly claimAttempts: ClaimAttempt[];
   /** `importSessionAdminState` bodies with their session, in arrival order. */
-  readonly adminStateImports: Array<{ sessionId: string; values: Schemas['AdminSessionState'] }>;
+  readonly adminStateImports: Array<{ sessionId: string; values: Schemas['AdminSessionState']; muraBases?: Schemas['AdminSessionStateImport']['muraBases'] }>;
   /** Maps an `Authorization` value of a REST request to the session identity authenticates it into. */
   restSession(authorization: string, session: Omit<IdentitySessionSpec, 'state' | 'epoch' | 'mode'>): void;
   /** Admin site of every session adopted from now on. */
@@ -217,14 +217,62 @@ function assignStruct(struct: Readonly<Record<string, unknown>>, values: Readonl
   return assigned;
 }
 
+/** Whether `value` is a struct: an object that is neither null nor an array. */
+function isStruct(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The key of `struct` equal to `name` ignoring case. */
+function keyOf(struct: Readonly<Record<string, unknown>>, name: string): string | undefined {
+  return Object.keys(struct).find((key) => key.toLowerCase() === name.toLowerCase());
+}
+
+/** Whether two JSON values are equal, struct keys matched ignoring case at every depth. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (isStruct(a) && isStruct(b)) {
+    return Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([key, item]) => {
+      const match = keyOf(b, key);
+      return match !== undefined && sameValue(item, b[match]);
+    });
+  }
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Identity's merge of legacy's changes against `base` into `current`: changed, added and removed keys, stored spelling kept. */
+function rebased(current: unknown, base: Readonly<Record<string, unknown>>, legacy: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const merged: Record<string, unknown> = isStruct(current) ? { ...current } : {};
+  for (const [name, value] of Object.entries(legacy)) {
+    const baseKey = keyOf(base, name);
+    const prior = baseKey === undefined ? undefined : base[baseKey];
+    if (baseKey !== undefined && sameValue(value, prior)) continue;
+    const key = keyOf(merged, name) ?? name;
+    merged[key] = isStruct(value) && (baseKey === undefined || isStruct(prior)) ? rebased(merged[key], isStruct(prior) ? prior : {}, value) : value;
+  }
+  for (const name of Object.keys(base)) {
+    const key = keyOf(merged, name);
+    if (key !== undefined && keyOf(legacy, name) === undefined) delete merged[key];
+  }
+  return merged;
+}
+
 /**
  * Imports admin values into an active session as identity does: each key replaces the stored one, `mura`'s keys are
- * assigned one by one, `hasdefaultpassword` is dropped, and the admin site follows an imported `siteid`.
+ * assigned one by one, a struct with a base as only its changes against it, `hasdefaultpassword` is dropped, and the
+ * admin site follows an imported `siteid`.
  */
-function importAdminState(session: IdentitySession, values: Schemas['AdminSessionState']): Schemas['AdminSessionState'] {
-  const { hasdefaultpassword: _dropped, mura, ...given } = values;
+function importAdminState(session: IdentitySession, body: Schemas['AdminSessionStateImport']): Schemas['AdminSessionState'] {
+  const { hasdefaultpassword: _dropped, mura, ...given } = body.values;
   const merged: Schemas['AdminSessionState'] = { ...session.adminState, ...given };
-  if (mura !== undefined) merged.mura = assignStruct(session.adminState.mura ?? {}, mura);
+  if (mura !== undefined) {
+    const stored = session.adminState.mura ?? {};
+    const bases = body.muraBases ?? {};
+    const imported = Object.entries(mura).map(([name, value]) => {
+      const base = bases[name];
+      const storedKey = keyOf(stored, name);
+      return [name, isStruct(value) && isStruct(base) ? rebased(storedKey === undefined ? undefined : stored[storedKey], base, value) : value];
+    });
+    merged.mura = assignStruct(stored, Object.fromEntries(imported));
+  }
   session.adminState = merged;
   if (typeof given.siteid === 'string') session.adminSite = given.siteid;
   return merged;
@@ -479,10 +527,10 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
         return;
       }
       case 'importAdminState': {
-        const values = json<Schemas['AdminSessionState']>(req);
-        adminStateImports.push({ sessionId: sid, values });
+        const body = json<Schemas['AdminSessionStateImport']>(req);
+        adminStateImports.push({ sessionId: sid, values: body.values, ...(body.muraBases === undefined ? {} : { muraBases: body.muraBases }) });
         const session = sessions.get(sid);
-        answer(req, res, session?.state === 'active' ? importAdminState(session, values) : {});
+        answer(req, res, session?.state === 'active' ? importAdminState(session, body) : {});
         return;
       }
       case 'snapshot': {

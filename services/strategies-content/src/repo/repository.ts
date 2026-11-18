@@ -1399,7 +1399,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
   }
 
   /** Holds the tenant's exclusive content edit lock of `kind` over `ids` until `tx` ends; ids are keyed as SQL Server compares them. */
-  function editLock(tx: TenantTx, kind: 'item' | 'site', ids: readonly string[]): Promise<void> {
+  function editLock(tx: TenantTx, kind: 'item' | 'site' | 'sort', ids: readonly string[]): Promise<void> {
     const key = ids.map((id) => id.toLowerCase().replace(/ +$/u, '')).join(':');
     return platform.read(tx, [], async () => {
       await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${schema}.${CONTENT.table}:${tx.tenantId}:${kind}:${key}`]);
@@ -1471,6 +1471,11 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     /** contentManager.deleteAll's site-wide `editingContent` cflock, held until `tx` ends. */
     lockSite(tx: TenantTx, args: { siteId: string }): Promise<void> {
       return editLock(tx, 'site', [args.siteId]);
+    },
+
+    /** list.cfm's in-view sort `editingContent#siteid#` cflock, apart from the manager's site lock, held until `tx` ends. */
+    lockSortSite(tx: TenantTx, args: { siteId: string }): Promise<void> {
+      return editLock(tx, 'sort', [args.siteId]);
     },
 
     /** Makes version `contentHistId` the active one. */

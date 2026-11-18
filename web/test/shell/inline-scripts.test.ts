@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { legacySettings, resetLegacySettingsForTests } from '@/lib/env';
 import { encodeJs, isSafeHtml, raw, toString, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { siteDataOf, type AdminRequest, type SiteData } from '@/lib/request-context';
+import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
 import { resolveFrontEndProxyLoc } from '@/shell/compact';
 import { renderHtmlHead } from '@/shell/html-head';
 import { renderCompactScripts, renderMuraInit, renderTemplateScripts } from '@/shell/inline-scripts';
@@ -163,6 +164,7 @@ function globals(markup: string): string[] {
 
 beforeEach(() => {
   useSettings();
+  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -252,6 +254,62 @@ describe('renderMuraInit', () => {
     const init = renderMuraInit(shellContext(tenantARequest()));
     expect(init).toContain(`\tindexfileinapi: ${flag}\n`);
     expect(init).toContain("\tcontext:'',\n");
+  });
+
+  describe('themepath first touch', () => {
+    const HOST_KEYS = ['assetpath', 'corepath', 'adminpath', 'rootpath'];
+
+    /** tenant-a on theme `default`, served with `columns` laid over its row. */
+    function relaid(columns: Partial<SiteData['record']>): AdminRequest {
+      const ctx = tenantARequest('default');
+      return ctx.site === undefined ? ctx : { ...ctx, site: siteDataOf({ ...ctx.site.record, ...columns }, 'en_US') };
+    }
+
+    /** The `Mura.init` members of `request()` on Host `host`. */
+    const membersOn = (host: string, request: () => AdminRequest = () => tenantARequest('default')) =>
+      initMembers(renderMuraInit(shellContext({ ...request(), httpHost: host, serverName: host })));
+    const valuesOf = (members: Array<[string, string]>, keys: readonly string[]): string[] =>
+      members.filter(([key]) => keys.includes(key)).map(([, value]) => value);
+    /** The host-following members legacy prints for tenant-a under `root`. */
+    const hostPaths = (root: string): string[] =>
+      [`${root}/sites/${siteTenantA.displayPoolID}`, `${root}/core`, `${root}/admin`, root].map(quoted);
+
+    it.each<[string, readonly string[], string]>([
+      ['localhost', ['127.0.0.1', 'tenant-a.localhost', 'example.test'], 'http://localhost'],
+      ['example.test', ['localhost'], `http://${siteTenantA.Domain}`],
+    ])('keeps the themepath of a first request on %s while the other paths follow the host', (first, later, root) => {
+      for (const host of [first, ...later]) {
+        const members = membersOn(host);
+        const hostRoot = host === 'localhost' ? 'http://localhost' : `http://${siteTenantA.Domain}`;
+
+        expect(valuesOf(members, ['themepath']), host).toEqual(Array(2).fill(quoted(`${root}/themes/default`)));
+        expect(valuesOf(members, HOST_KEYS), host).toEqual(hostPaths(hostRoot));
+      }
+    });
+
+    it.each<[string, () => AdminRequest, string, string]>([
+      ['theme', () => tenantARequest('other'), 'example.test', `http://${siteTenantA.Domain}/themes/other`],
+      ['alias', () => relaid({ domainAlias: 'example.test' }), 'example.test', 'http://example.test/themes/default'],
+      [
+        'label',
+        () => relaid({ Site: 'Tenant A renamed' }),
+        'example.test',
+        `http://${siteTenantA.Domain}/themes/default`,
+      ],
+    ])('starts afresh once the site %s changes', (_setting, changed, host, themepath) => {
+      expect(valuesOf(membersOn('localhost'), ['themepath'])[0]).toBe(quoted('http://localhost/themes/default'));
+
+      expect(valuesOf(membersOn(host, changed), ['themepath'])[0]).toBe(quoted(themepath));
+      expect(valuesOf(membersOn('localhost', changed), ['themepath'])[0]).toBe(quoted(themepath));
+    });
+
+    it('follows the host for an unserved session site', () => {
+      for (const host of ['localhost', 'example.test']) {
+        expect(valuesOf(membersOn(host, unservedEditorRequest), ['themepath'])[0], host).toBe(
+          quoted(`http://${host}/themes/`),
+        );
+      }
+    });
   });
 });
 

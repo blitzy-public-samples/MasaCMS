@@ -4,6 +4,7 @@ import {
   PHOTO_CONDITION,
   SAVEFORM_CONDITION,
   SESSION_MANAGED_CONDITION,
+  SHARED_ID_SORT_CONDITIONS,
   STARTUP_SITE_CONDITION,
   type RouteKeyOptions,
   type RouteKeyRequest,
@@ -26,6 +27,7 @@ const CONTENT_SERVER = 'core/mura/content/contentServer.cfc';
 const ADMIN_APP = 'admin/Application.cfc';
 const FW1 = 'admin/framework.cfc';
 const CUSERS = 'admin/core/controllers/cusers.cfc';
+const CARCH_LIST = 'admin/core/views/carch/list.cfm';
 const USER_MANAGER = 'core/mura/user/userManager.cfc';
 const FILE_DAO = 'core/mura/content/file/fileDAO.cfc';
 const EVENTS_HANDLER = 'core/mura/Handler/standardEventsHandler.cfc';
@@ -164,6 +166,7 @@ export const routeKeyCaseVariants: readonly VariantDeclaration[] = deepFreeze([
     eq('action', 'Update'),
     nonEmpty('extendSetID'),
   ),
+  variant('admin:carch.list', 'sharedid', ...SHARED_ID_SORT_CONDITIONS),
   variant('admin:cusers.update', 'type=1,action=delete', eq('type', '1'), eq('action', 'Delete')),
   variant('admin:cusers.update', 'type=1,extdata', eq('type', '1'), nonEmpty('extendSetID')),
   variant('admin:cusers.update', 'type=2,action=add', eq('type', '2'), eq('action', 'Add')),
@@ -514,6 +517,33 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
     `${FILE_DAO}:174-179`,
     request('POST', '/admin/', { query: { muraAction: 'cArch.update' }, files: [['newfile', 'clip.flv']] }),
     'admin:carch.update{upload=image}',
+  ),
+  conflict(
+    'admin-carch-list-sort-of-home-is-shared-id-variant',
+    `${CARCH_LIST}:590-615`,
+    request('POST', '/admin/', {
+      query: { muraAction: 'cArch.list', siteid: 'tenant-a', topid: '00000000000000000000000000000000001' },
+      form: { orderperm: 'editor', sorted: 'true', orderid: `${ID},${ID.toLowerCase()}` },
+    }),
+    'admin:carch.list{sharedid}',
+  ),
+  conflict(
+    'admin-carch-list-orderid-list-item-is-shared-id-variant',
+    `${CARCH_LIST}:604-611`,
+    request('POST', '/admin/', {
+      query: { muraAction: 'cArch.list', siteid: 'tenant-a', topid: ID },
+      form: { orderperm: 'editor', orderid: `${ID},00000000000000000000000000000000099 ` },
+    }),
+    'admin:carch.list{sharedid}',
+  ),
+  conflict(
+    'admin-carch-list-folder-sort-has-no-variant',
+    `${CARCH_LIST}:590-615`,
+    request('POST', '/admin/', {
+      query: { muraAction: 'cArch.list', siteid: 'tenant-a', topid: ID },
+      form: { orderperm: 'editor', sorted: 'true', orderid: ID },
+    }),
+    'admin:carch.list',
   ),
   conflict(
     'admin-ceditprofile-update-photo-variant',

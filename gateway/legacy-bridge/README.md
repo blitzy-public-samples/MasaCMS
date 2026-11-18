@@ -128,7 +128,7 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
 | `markUsed` | POST | — | `{tokens:[{token, usedAt}]}` | `{applied, serverTime}` |
 | `usedSince` | GET | `since` | — | `{tokens:[{token, usedAt}], serverTime}` |
 | `carry` | POST | — | `{values:[{name, value, revision}]}` | `{applied:[<name>], serverTime}` |
-| `export` | GET | — | — | `{values:[{name, value}], serverTime}` |
+| `export` | GET | — | — | `{values:[{name, value, base?}], serverTime}` |
 | `end` | POST | — | — | `{ended:true, serverTime}` |
 
 - **`describe`** is read-only. Every value comes from `session.mura`, as `userUtility.setUserStruct` sets it (`core/mura/user/userUtility.cfc:749-805`), and from `session.siteid`. Full shape:
@@ -176,6 +176,7 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
   - `applied` lists the names installed. The gateway sends it before each legacy-bound admin request of a session whose identity admin state holds a shared value (`gateway/src/session/carry.ts`).
 - **`export`** reads the shared values legacy holds, without a write.
   - It lists `{name, value}` for each shared name present in the session whose `serializeJSON` differs from the `json` `session.opt2Carried` records for it, or that `carry` never installed.
+  - A struct value whose recorded `json` is a struct also carries it as `base`, the struct `carry` installed. For a `mura` value identity then stores only legacy's changes against `base`: changed, added and removed keys at every depth, matched ignoring case, applied under the locked session row to the value it holds now, so a target write since the carry stands. Without `base`, and for top-level values, the exported value replaces the stored one.
   - A simple value is sent as a JSON string, so a numeric-looking id such as `topID` keeps its digits; the gateway stores `__fw1NextPreserveKey` as an integer. Struct keys keep the spelling legacy gave them: dot-notation writes such as `.tab` arrive upper-cased (`TAB`).
   - `moduleTopIds` reads `{<key>: topid}` for each module top key whose session value is a struct with `topid`, topids as strings, and is absent when there is none. Identity replaces its stored set with the one exported, so the bridge sends every top legacy holds.
   - `__fw1` is never exported. In `v0002` and `v0003` every legacy-served preserving redirect (`cusers.downloadGroupMembers`, `cusers.advancedSearchToCSV`, `cusers.removeFromGroup`, and the `cusers.update` variants legacy serves) lands on a legacy-served page, so contexts travel target to legacy only, and legacy's own contexts, which hold CFC objects, stay in legacy.

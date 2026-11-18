@@ -24,7 +24,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | controllers | base | 1 |
 | controllers | actions | 222 |
 | controllers | viewOnlyActions | 77 |
-| controllers | variants | 248 |
+| controllers | variants | 249 |
 | coreMuraActionFiles | — | 21 |
 | frontEnd | — | 27 |
 | unreachableRemote | — | 38 |
@@ -61,7 +61,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | storedProcedures | static | 0 |
 | storedProcedures | live | 0 |
 | storedProcedures | foreignKeys | 0 |
-| dispositions | carry | 806 |
+| dispositions | carry | 807 |
 | dispositions | legacy-served | 150 |
 | dispositions | decision | 170 |
 | dispositions | retired | 56 |
@@ -98,6 +98,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.import` | `admin:carch.import` | strategies-content | legacy-served (4) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.importcomponent` | `admin:carch.importcomponent` | strategies-content | legacy-served (4) | none | redirect |
 | `ctl:carch.importcontent` | `admin:carch.importcontent` | strategies-content | decision (2, withheld) (corrected; expected legacy-served) | validates `rc.contentid` | redirect |
+| `ctl:carch.list{sharedid}` | `admin:carch.list{sharedid}` | strategies-content | carry (5, legacy-write) `EX-CARCH-SORT-SHARED-ID` | none | page (text/html) |
 | `ctl:carch.list` | `admin:carch.list` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:carch.loadcategoryassignment` | `admin:carch.loadcategoryassignment` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.loadcategoryfeaturestartstop` | `admin:carch.loadcategoryfeaturestartstop` | strategies-content | carry (5) | none | fragment (text/html) |
@@ -1077,6 +1078,7 @@ Units each writing entry point reaches:
 | `ctl:carch.importcomponent` | content.approval_action, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_category_assign, content.content_object, content.content_related, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store |
 | `ctl:carch.importcontent` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.commenter, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store, identity.extend_data, identity.oauth_client, identity.redirect, legacy:tcontenteventreminders, legacy:tremotepointer |
 | `ctl:carch.list` | content.content |
+| `ctl:carch.list{sharedid}` | content.content |
 | `ctl:carch.lockfile` | content.content_stats |
 | `ctl:carch.rotateimage` | file-store |
 | `ctl:carch.savequickedit` | content.approval_action, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store, identity.extend_data, identity.redirect, legacy:tcontenteventreminders |
@@ -2009,71 +2011,71 @@ Sources of the write records, by unit, table and operation:
 | correction | `tables.serializedColumns` | — | expected tcontentobjects.Params, tformresponsepackets.Data, toauthtokens.data, ttrash.objectstring; computed tcontent.objectParams, tcontentobjects.Params, tformresponsepackets.Data, toauthtokens.data, ttrash.objectstring |
 | count-difference | `tables.withSiteId` | — | AAP 54, computed 55; siteID on 33 bootstrap, 4 migration and 18 ORM-only tables; inherited from a base component: tcontentfilemetadata (core/mura/bean/beanORMVersioned.cfc:80); live catalog 54, tables absent live: tremotepointer |
 | unmatched-write | — | `core/mura/client/api/json/v1/jsonApiUtility.cfc:215` | core/mura/client/api/json/v1/jsonApiUtility.cfc#checkSchema writes tentity-declared:*, which no tables[] entry lists |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod('$',event("muraScope")).injectMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod('$',event("muraScope")).injectMethod('mura',event("muraScope")).injectMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:178` | component reference themeRenderer.init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:132` | bean reference bean.has (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:138` | bean reference bean.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:364` | bean reference obj.setSiteID (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:367` | bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:369` | bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:372` | bean reference obj.loadBy (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:372` | bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:374` | bean reference obj.get (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:374` | bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:384` | bean reference obj.get (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:384` | bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:396` | bean reference obj.setSiteID (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:399` | bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:401` | bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:404` | bean reference obj.loadBy (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:404` | bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/beanFactory.cfc:120` | bean reference getBean(p.relatesto).getValue (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:91` | bean reference variables.parent.containsBean (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:682` | bean reference head.listener (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:684` | bean reference head.listener.onLoad (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:687` | bean reference getBean( head.listener ).onLoad (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:689` | bean reference head.listener.toString (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:151` | bean reference variables.collection.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:155` | bean reference cacheData.object.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:196` | bean reference variables.collection.put (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:219` | bean reference variables.collection.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:222` | bean reference cacheData.object.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cfobject.cfc:265` | method reference this.onMissingMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2029` | bean reference entity.registerAsEntity (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2032` | bean reference entity.checkSchema (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2036` | bean reference entity.getEntityName (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2071` | bean reference entity.isOrm (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2077` | bean reference entity.getEntityName (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2118` | component reference createObject('component','#package#.#beanName#').init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2131` | component reference beanInstance.onApplicationLoad (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2762` | bean reference variables.m.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2762` | bean reference variables.m.event().setValue (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2763` | bean reference variables.m.announceEvent (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2767` | bean reference variables.m.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2767` | bean reference variables.m.event().setValue (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2768` | bean reference variables.m.announceEvent (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/extend/extendSubType.cfc:655-661` | table reference #getBaseTable()# (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1422` | method reference arguments.event.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1454` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1495` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1541` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1581` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1661` | method reference arguments.event.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1711` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1757` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1806` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1849` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1893` | method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2868` | component reference createObject("component",componentPath).init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2870` | component reference createObject("component",componentPath).init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2877` | component reference createObject("component",componentPath).init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:3132` | component reference eventHandler.init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundle.cfc:39` | bean reference variables.javaLocale.init (also reached from 482 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundleFactory.cfc:127` | bean reference variables.parentFactory.getKeyValue (also reached from 477 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundleFactory.cfc:137` | bean reference variables.parentFactory.getKeyValue (also reached from 477 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/utils.cfc:152` | bean reference variables.thisLocale.getDisplayName (also reached from 482 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod('$',event("muraScope")).injectMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod('$',event("muraScope")).injectMethod('mura',event("muraScope")).injectMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:178` | component reference themeRenderer.init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:132` | bean reference bean.has (also reached from 738 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:138` | bean reference bean.getPrimaryKey (also reached from 738 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:364` | bean reference obj.setSiteID (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:367` | bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:369` | bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:372` | bean reference obj.loadBy (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:372` | bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:374` | bean reference obj.get (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:374` | bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:384` | bean reference obj.get (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:384` | bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:396` | bean reference obj.setSiteID (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:399` | bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:401` | bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:404` | bean reference obj.loadBy (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:404` | bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/beanFactory.cfc:120` | bean reference getBean(p.relatesto).getValue (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:91` | bean reference variables.parent.containsBean (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:682` | bean reference head.listener (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:684` | bean reference head.listener.onLoad (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:687` | bean reference getBean( head.listener ).onLoad (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:689` | bean reference head.listener.toString (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:151` | bean reference variables.collection.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:155` | bean reference cacheData.object.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:196` | bean reference variables.collection.put (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:219` | bean reference variables.collection.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:222` | bean reference cacheData.object.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/cfobject.cfc:265` | method reference this.onMissingMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2029` | bean reference entity.registerAsEntity (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2032` | bean reference entity.checkSchema (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2036` | bean reference entity.getEntityName (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2071` | bean reference entity.isOrm (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2077` | bean reference entity.getEntityName (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2118` | component reference createObject('component','#package#.#beanName#').init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2131` | component reference beanInstance.onApplicationLoad (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2762` | bean reference variables.m.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2762` | bean reference variables.m.event().setValue (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2763` | bean reference variables.m.announceEvent (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2767` | bean reference variables.m.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2767` | bean reference variables.m.event().setValue (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2768` | bean reference variables.m.announceEvent (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/extend/extendSubType.cfc:655-661` | table reference #getBaseTable()# (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1422` | method reference arguments.event.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1454` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1495` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1541` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1581` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1661` | method reference arguments.event.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1711` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1757` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1806` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1849` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1893` | method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2868` | component reference createObject("component",componentPath).init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2870` | component reference createObject("component",componentPath).init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2877` | component reference createObject("component",componentPath).init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:3132` | component reference eventHandler.init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundle.cfc:39` | bean reference variables.javaLocale.init (also reached from 483 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundleFactory.cfc:127` | bean reference variables.parentFactory.getKeyValue (also reached from 478 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundleFactory.cfc:137` | bean reference variables.parentFactory.getKeyValue (also reached from 478 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/utils.cfc:152` | bean reference variables.thisLocale.getDisplayName (also reached from 483 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:655` | bean reference entity.getHasManyPropArray (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:657` | bean reference entity.getTable (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:657` | bean reference entity.translatePropKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
@@ -2122,7 +2124,7 @@ Sources of the write records, by unit, table and operation:
 | unresolved-call | `api:address.findall` | `core/mura/content/contentRenderer.cfc:3063` | bean reference variables.$.event (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findall` | `core/mura/content/contentRenderer.cfc:3067` | bean reference variables.$.event (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findall` | `core/mura/content/contentRenderer.cfc:3068` | bean reference variables.$.event (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/utility.cfc:490` | bean reference getPageContext().getRequest().getScheme (also reached from 314 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `api:address.findall` | `core/mura/utility.cfc:490` | bean reference getPageContext().getRequest().getScheme (also reached from 315 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:884` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:896` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:904` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
@@ -2175,14 +2177,14 @@ Sources of the write records, by unit, table and operation:
 | unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:191` | bean reference entity.getEntityName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:193` | bean reference entity.getEntityName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `api:undeclareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:194` | bean reference getBean(arguments.entityname).getDynamic (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:309` | bean reference beanInstance.getEntityDisplayName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:309` | bean reference beanInstance.pluralizeHasRefName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:316` | bean reference beanInstance.getEntityDisplayName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:316` | bean reference beanInstance.pluralizeHasRefName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2319` | method reference arguments.event.event (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2447` | method reference getExecutor().renderScript (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2573` | method reference getExecutor().renderScript (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2638` | method reference getExecutor().renderScript (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:309` | bean reference beanInstance.getEntityDisplayName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:309` | bean reference beanInstance.pluralizeHasRefName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:316` | bean reference beanInstance.getEntityDisplayName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:316` | bean reference beanInstance.pluralizeHasRefName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2319` | method reference arguments.event.event (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2447` | method reference getExecutor().renderScript (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2573` | method reference getExecutor().renderScript (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml |
+| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2638` | method reference getExecutor().renderScript (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `ctl:carch.datamanager` | `admin/core/views/carch/datamanager.cfm:136` | include reference data_manager/dsp_ormform.cfm; settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `ctl:carch.edit` | `admin/core/views/carch/edit_panels.cfm:220` | include reference form/dsp_panel_Remote.cfm (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |
 | unresolved-call | `ctl:carch.edit` | `admin/core/views/carch/form/dsp_panel_layoutobjects.cfm:239` | include reference /#application.configBean.getWebRootMap()#/#rc.siteID#/includes/display_objects/custom/admin/dsp_objectClassLabel.cfm (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |

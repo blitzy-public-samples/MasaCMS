@@ -1,4 +1,5 @@
 /** Identity sessions: cookie values, anonymous creation and reactivation, login, legacy adoption, state and hydration reads, admin-state import and logout against a throwaway `identity` schema. */
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sessionCookieStrings, sessionIdForJsessionid, type LegacyCookieConfig } from '@opt2/platform/legacy-compat';
@@ -864,6 +865,73 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: JSON.stringify({ keywords: 'old', mura: { nextN: '20' } }) });
 
       expect(await importSessionAdminState(deps(), sessionId, { keywords: 'home' })).toEqual({ keywords: 'home', mura: { nextN: '20' } });
+    });
+
+    /** flatViewArgs as carry installed it for two sites: the base of legacy's export. */
+    const CARRIED = { 'tenant-a': { tab: 0, keywords: '', filtered: false }, 'tenant-b': { tab: 0, keywords: '' } };
+    /** loadsiteflat.cfm:109-134 over the carried value: the session site's tab and yesNoFormat filtered. */
+    const SITE_FLAT = { ...CARRIED, 'tenant-a': { tab: 1, keywords: '', filtered: 'No' } };
+
+    it.each<[string, Record<string, unknown>, Record<string, unknown>, Record<string, unknown>]>([
+      [
+        "another site's keywords a target route stored since the carry",
+        { ...CARRIED, 'tenant-b': { tab: 0, keywords: 'about' } },
+        SITE_FLAT,
+        { 'tenant-a': { tab: 1, keywords: '', filtered: 'No' }, 'tenant-b': { tab: 0, keywords: 'about' } },
+      ],
+      [
+        "the session site's keywords a target route stored since the carry",
+        { ...CARRIED, 'tenant-a': { tab: 0, keywords: 'raceNx', filtered: false } },
+        SITE_FLAT,
+        { 'tenant-a': { tab: 1, keywords: 'raceNx', filtered: 'No' }, 'tenant-b': { tab: 0, keywords: '' } },
+      ],
+      [
+        "identity's spelling of keys legacy spells otherwise, and legacy's of the keys it added",
+        CARRIED,
+        { 'TENANT-A': { TAB: 1, keywords: '', filtered: false, LOCKID: '' }, 'tenant-b': CARRIED['tenant-b'], 'TENANT-C': { TAB: 1 } },
+        { 'tenant-a': { tab: 1, keywords: '', filtered: false, LOCKID: '' }, 'tenant-b': { tab: 0, keywords: '' }, 'TENANT-C': { TAB: 1 } },
+      ],
+    ])("stores only legacy's changes against a mura struct's base, keeping %s", async (_label, current, legacy, expected) => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: JSON.stringify({ mura: { nextN: '20', flatViewArgs: current } }) });
+
+      const merged = await importSessionAdminState(deps(), sessionId, { mura: { flatViewArgs: legacy } }, { flatViewArgs: CARRIED });
+
+      expect(merged).toEqual({ mura: { nextN: '20', flatViewArgs: expected } });
+      expect(JSON.parse((await stored(sessionId, SYSTEM_TENANT_ID))?.admin_state ?? 'null')).toEqual(merged);
+    });
+
+    it('removes the keys legacy deleted from the base and keeps those a target route added since', async () => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      const base = { 'tenant-a': { cachenotice: true, pluginnotice: true } };
+      await setColumns(sessionId, SYSTEM_TENANT_ID, {
+        admin_state: JSON.stringify({ mura: { alerts: { 'tenant-a': { ...base['tenant-a'], defaultpasswordnotice: false }, 'tenant-b': {} } } }),
+      });
+
+      // cdashboard.cfc:142-153 deletes a dismissed alert that is not a Masa notice.
+      const merged = await importSessionAdminState(deps(), sessionId, { mura: { alerts: { 'tenant-a': { cachenotice: true } } } }, { alerts: base });
+
+      expect(merged).toEqual({ mura: { alerts: { 'tenant-a': { cachenotice: true, defaultpasswordnotice: false }, 'tenant-b': {} } } });
+    });
+
+    it('merges onto a target write committed while the import waited for the session row', async () => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: JSON.stringify({ mura: { flatViewArgs: CARRIED } }) });
+      let importing: Promise<Record<string, unknown>> | undefined;
+
+      const whileLocked = await inTenant(SYSTEM_TENANT_ID, async (tx) => {
+        await repo.lockSession(tx, sessionId, 'update');
+        importing = importSessionAdminState(deps(), sessionId, { mura: { flatViewArgs: SITE_FLAT } }, { flatViewArgs: CARRIED });
+        const outcome = await Promise.race([importing.then(() => 'stored'), delay(300).then(() => 'waiting')]);
+        await repo.mergeSessionAdminState(tx, sessionId, { mura: { flatViewArgs: { ...CARRIED, 'tenant-b': { tab: 0, keywords: 'about' } } } });
+        return outcome;
+      });
+
+      expect(whileLocked).toBe('waiting');
+      expect(await importing).toEqual({ mura: { flatViewArgs: { 'tenant-a': { tab: 1, keywords: '', filtered: 'No' }, 'tenant-b': { tab: 0, keywords: 'about' } } } });
     });
 
     it.each<[string, () => Promise<{ sessionId: string; sessionDeps: SessionDeps }>]>([

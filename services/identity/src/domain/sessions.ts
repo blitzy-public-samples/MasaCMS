@@ -571,20 +571,68 @@ function assignStruct(struct: Readonly<Record<string, unknown>>, values: Readonl
   return assigned;
 }
 
+/** Whether `value` is a struct: an object that is neither null nor an array. */
+function isStruct(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** A struct value as a record; `{}` for anything else. */
 function recordOf(value: unknown): Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return isStruct(value) ? value : {};
+}
+
+/** The key of `struct` equal to `name` ignoring case, as CFML matches struct keys. */
+function keyOf(struct: Readonly<Record<string, unknown>>, name: string): string | undefined {
+  const lower = name.toLowerCase();
+  return Object.keys(struct).find((key) => key.toLowerCase() === lower);
+}
+
+/** Whether two JSON values are equal, struct keys matched ignoring case at every depth. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (isStruct(a) && isStruct(b)) {
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    return keys.every((key) => {
+      const match = keyOf(b, key);
+      return match !== undefined && sameValue(a[key], b[match]);
+    });
+  }
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, index) => sameValue(item, b[index]));
+  return a === b;
+}
+
+/**
+ * `current` with legacy's changes against `base` applied: keys legacy set to another value or added, and keys of `base`
+ * legacy removed, at every depth; keys match ignoring case and keep their stored spelling, new ones legacy's.
+ */
+function rebased(current: unknown, base: Readonly<Record<string, unknown>>, legacy: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...recordOf(current) };
+  for (const [name, value] of Object.entries(legacy)) {
+    const baseKey = keyOf(base, name);
+    const prior = baseKey === undefined ? undefined : base[baseKey];
+    if (baseKey !== undefined && sameValue(value, prior)) continue;
+    const key = keyOf(merged, name) ?? name;
+    // A struct legacy added or changed within merges into the stored one, so keys only the stored one holds stand.
+    merged[key] = isStruct(value) && (baseKey === undefined || isStruct(prior)) ? rebased(merged[key], recordOf(prior), value) : value;
+  }
+  for (const name of Object.keys(base)) {
+    const key = keyOf(merged, name);
+    if (key !== undefined && keyOf(legacy, name) === undefined) delete merged[key];
+  }
+  return merged;
 }
 
 /**
  * Stores admin values a legacy-served request changed: each given key replaces the stored one, except `mura`, whose keys
- * are assigned into the stored `mura` one by one; the session row stays locked throughout.
+ * are assigned into the stored `mura` one by one; a struct with a struct in `muraBases` under its key stores only legacy's
+ * changes against that base. The session row stays locked throughout, so a write since the base was carried stands.
  * @returns The stored admin state after the merge; `{}`, storing nothing, when the session is unknown, ended or expired.
  */
 export async function importSessionAdminState(
   deps: SessionDeps,
   sessionId: string,
   values: Readonly<Record<string, unknown>>,
+  muraBases: Readonly<Record<string, unknown>> = {},
 ): Promise<Record<string, unknown>> {
   const located = await locateSession(deps, sessionId);
   if (located === undefined) return {};
@@ -593,10 +641,28 @@ export async function importSessionAdminState(
     if (row === null || row.state !== 'active' || isExpired(deps, row, deps.clock.now())) return null;
     if (!Object.hasOwn(values, MURA_VALUES_KEY)) return deps.repo.mergeSessionAdminState(tx, sessionId, values);
     const stored = row.admin_state === null ? {} : (JSON.parse(row.admin_state) as Record<string, unknown>);
-    const mura = assignStruct(recordOf(stored[MURA_VALUES_KEY]), recordOf(values[MURA_VALUES_KEY]));
+    const storedMura = recordOf(stored[MURA_VALUES_KEY]);
+    const imported = Object.entries(recordOf(values[MURA_VALUES_KEY])).map(([name, value]) => {
+      const base = Object.hasOwn(muraBases, name) ? muraBases[name] : undefined;
+      if (!isStruct(value) || !isStruct(base)) return [name, value];
+      const storedKey = keyOf(storedMura, name);
+      return [name, rebased(storedKey === undefined ? undefined : storedMura[storedKey], base, value)];
+    });
+    const mura = assignStruct(storedMura, Object.fromEntries(imported));
     return deps.repo.mergeSessionAdminState(tx, sessionId, { ...values, [MURA_VALUES_KEY]: mura });
   });
   return merged ?? {};
+}
+
+/**
+ * Admin values a writer saves into a locked row: with `muraBase`, the `mura` it read, its `mura` holds only its changes
+ * against that base applied to the stored `mura`, so a value stored since that read stands; else `values` as given.
+ */
+export function rebasedAdminValues<T extends Readonly<Record<string, unknown>>>(storedState: string | null, values: T, muraBase: unknown): T {
+  const mura = values[MURA_VALUES_KEY];
+  if (!isStruct(muraBase) || !isStruct(mura)) return values;
+  const stored = storedState === null ? {} : (JSON.parse(storedState) as Record<string, unknown>);
+  return { ...values, [MURA_VALUES_KEY]: rebased(stored[MURA_VALUES_KEY], muraBase, mura) };
 }
 
 /** The admin site the session selected (`session.siteid` in its admin state); empty when none is stored or the session is unknown, ended or expired. */

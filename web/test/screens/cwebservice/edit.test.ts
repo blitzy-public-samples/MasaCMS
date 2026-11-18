@@ -2,8 +2,10 @@ import { cfUuid } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/identity';
+import { resetLegacySettingsForTests } from '@/lib/env';
 import { encodeHtml, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
 import { cwebserviceScreens } from '@/screens/cwebservice';
 import { loadEditState, renderEditView } from '@/screens/cwebservice/edit';
 import { effectiveGrantType } from '@/screens/cwebservice/list';
@@ -45,7 +47,7 @@ type LegacyErrors = components['schemas']['LegacyErrors'];
 const SITE = 'default';
 const STORED = existingClientEdit.client;
 const CSRF_PATH = '/v1/csrf/tokens';
-const USERS_PATH = '/v2/users';
+const USERS_PATH = '/v1/users/feed';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const BACK_HREF = './?muraAction=cwebservice.list&siteid=&default';
 const SSL_ALERT = {
@@ -95,7 +97,7 @@ const issueTokens: FakeRoute = (request) => {
 function editRoutes(...details: readonly OAuthClientDetail[]): FakeRouteTable {
   return {
     [routeKey('POST', 'identity', CSRF_PATH)]: issueTokens,
-    [routeKey('GET', 'people', USERS_PATH)]: { status: 200, body: tenantASystemUsersPage },
+    [routeKey('GET', 'people', USERS_PATH)]: { status: 200, body: { items: tenantASystemUsersPage.items } },
     ...Object.fromEntries(
       details.map((detail) => [
         routeKey('GET', 'identity', clientPath(detail.client.clientid)),
@@ -169,6 +171,7 @@ let restore: () => void;
 
 beforeEach(() => {
   restore = useTestEnv();
+  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -244,7 +247,28 @@ describe('cwebservice.edit of a stored client', () => {
     ]);
     const people = gateway.calls.filter(({ service }) => service === 'people');
     expect(people).toHaveLength(1);
-    expect(people[0]).toMatchObject({ path: USERS_PATH, query: { siteid: SITE, ispublic: '0' } });
+    expect(people[0]).toMatchObject({ method: 'GET', path: USERS_PATH });
+    expect(people[0]?.query).toEqual({ siteid: SITE, ispublic: '0' });
+  });
+
+  it("lists the feed's accounts in its order, leaving -- Select Account -- selected for a stored account past its cap", async () => {
+    const feed = Array.from({ length: 1000 }, (_, n) => ({
+      UserID: `0B000000-0000-0000-${String(999 - n).padStart(16, '0')}`,
+      Fname: `First ${n % 7}`,
+      Lname: `Person ${String(Math.floor(n / 2)).padStart(4, '0')}`,
+    }));
+    const client = { ...STORED, userid: '0B000000-0000-0000-0000000000001000' };
+    const routes = {
+      ...editRoutes({ client, exists: true }),
+      [routeKey('GET', 'people', USERS_PATH)]: { status: 200, body: { items: feed } },
+    };
+    const { form } = await renderEdit(editRequest(client.clientid), routes);
+
+    expect(control(form, 'userid').options).toEqual([
+      { value: '', label: '-- Select Account --', selected: false },
+      ...feed.map(({ UserID, Fname, Lname }) => ({ value: UserID, label: `${Fname} ${Lname}`, selected: false })),
+    ]);
+    expect(control(form, 'userid').selected).toEqual([]);
   });
 
   it('labels every control group, endpoints and credentials included', async () => {
@@ -315,6 +339,82 @@ describe('cwebservice.edit of a stored client', () => {
     const { page } = await renderEdit(editRequest(STORED.clientid, partial));
 
     expect(page.alerts.filter(({ className }) => className.split(' ').includes('alert-error'))).toEqual(alerts);
+  });
+});
+
+describe('cwebservice.edit endpoint first touch', () => {
+  type SitePartial = NonNullable<AdminRequestPartial['site']>;
+  /** tenant-a as seeded: domain `tenant-a.localhost` with the alias `localhost`. */
+  const TENANT_A: SitePartial = {
+    siteid: 'tenant-a',
+    domain: 'tenant-a.localhost',
+    record: { SiteID: 'tenant-a', Domain: 'tenant-a.localhost', domainAlias: 'localhost' },
+  };
+  /** `default` set up like tenant-a. */
+  const DEFAULT: SitePartial = {
+    domain: 'default.localhost',
+    record: { Domain: 'default.localhost', domainAlias: 'localhost' },
+  };
+  const endpoint = (host: string, siteid = 'tenant-a'): string => `http://${host}:21000/_api/rest/v1/${siteid}`;
+
+  beforeEach(() => {
+    vi.stubEnv('MURA_PORT', '21000');
+    vi.stubEnv('MURA_CONTEXT', undefined);
+    vi.stubEnv('MURA_INDEXFILEINAPI', 'false');
+    resetLegacySettingsForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetLegacySettingsForTests();
+  });
+
+  /** The Endpoint link text of `site` for Host `host`. */
+  async function endpointOn(host: string, site: SitePartial = TENANT_A): Promise<string> {
+    const { $ } = await renderEdit(editRequest(STORED.clientid, { site, serverName: host, httpHost: `${host}:21000` }));
+    return group($, 'Endpoint').find('a').text();
+  }
+
+  it.each<[string, readonly string[], string]>([
+    ['localhost', ['127.0.0.1', 'tenant-a.localhost', 'example.test'], endpoint('localhost')],
+    ['example.test', ['localhost'], endpoint('tenant-a.localhost')],
+  ])('keeps the endpoint of a first request on %s for every later host', async (first, later, expected) => {
+    expect(await endpointOn(first)).toBe(expected);
+    for (const host of later) expect(await endpointOn(host), host).toBe(expected);
+  });
+
+  it.each<[string, SitePartial, string, string]>([
+    [
+      'domain',
+      { ...TENANT_A, domain: 'tenant-a.example', record: { ...TENANT_A.record, Domain: 'tenant-a.example' } },
+      '127.0.0.1',
+      endpoint('tenant-a.example'),
+    ],
+    [
+      'alias',
+      { ...TENANT_A, record: { ...TENANT_A.record, domainAlias: 'example.test' } },
+      'example.test',
+      endpoint('example.test'),
+    ],
+    [
+      'label',
+      { ...TENANT_A, site: 'Tenant A renamed', record: { ...TENANT_A.record, Site: 'Tenant A renamed' } },
+      'example.test',
+      endpoint('tenant-a.localhost'),
+    ],
+  ])('builds the endpoint afresh once the site %s changes', async (_setting, changed, host, expected) => {
+    expect(await endpointOn('localhost')).toBe(endpoint('localhost'));
+
+    expect(await endpointOn(host, changed)).toBe(expected);
+    expect(await endpointOn('localhost', changed)).toBe(expected);
+  });
+
+  it("keeps each site's first endpoint apart", async () => {
+    expect(await endpointOn('localhost', DEFAULT)).toBe(endpoint('localhost', 'default'));
+    expect(await endpointOn('example.test')).toBe(endpoint('tenant-a.localhost'));
+
+    expect(await endpointOn('example.test', DEFAULT)).toBe(endpoint('localhost', 'default'));
+    expect(await endpointOn('localhost')).toBe(endpoint('tenant-a.localhost'));
   });
 });
 

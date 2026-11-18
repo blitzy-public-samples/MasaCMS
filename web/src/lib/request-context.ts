@@ -686,6 +686,8 @@ async function loadIdentitySession(
 /**
  * Persists the request's session writes, `alerts` excepted (they persist as the `muraValues` entry `alerts`) and
  * `muraValues` sent as identity's `mura`, in one identity call; sends nothing without a user token or a value to store.
+ * @param muraBase The `session.mura` values the request read from identity, sent with `mura` as its `muraBase`, so identity
+ *   stores only this request's changes and a value a service stored meanwhile stands.
  * @throws GatewayDenialError When identity answers 401 or 403.
  * @throws Error When identity answers any other non-2xx status.
  */
@@ -693,6 +695,7 @@ export async function saveSessionWrites(
   gateway: GatewayClient,
   auth: WebAuth,
   writes: Readonly<AdminSessionWrites>,
+  muraBase?: Readonly<Record<string, unknown>>,
 ): Promise<void> {
   const { paramArray, muraValues, ...values } = Object.fromEntries(
     Object.entries(writes).filter(([key]) => key !== 'alerts'),
@@ -701,6 +704,7 @@ export async function saveSessionWrites(
     ...values,
     ...(paramArray === undefined ? {} : { paramArray: [...paramArray] }),
     ...(muraValues === undefined ? {} : { mura: { ...muraValues } }),
+    ...(muraValues === undefined || muraBase === undefined ? {} : { muraBase: { ...muraBase } }),
   };
   if (auth.userToken === undefined || Object.keys(state).length === 0) return;
   okBody(await gateway.identity.saveAdminSessionState(state), 'identity', 'saveAdminSessionState');

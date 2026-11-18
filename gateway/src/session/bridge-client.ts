@@ -85,6 +85,8 @@ export interface CarryResult {
 export interface ExportedValue {
   name: string;
   value: SharedJsonValue;
+  /** For a struct value, the struct `op=carry` installed last; absent when it installed none. */
+  base?: Readonly<Record<string, unknown>>;
 }
 
 /** `op=export` answer: the shared values legacy changed since `op=carry` installed them, or that it never installed. */

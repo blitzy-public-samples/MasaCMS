@@ -610,7 +610,10 @@ function carry(ctx: OpContext): CarryResult {
   return { applied, serverTime: formatWireTime(ctx.now) };
 }
 
-/** `op=export`: each shared value but the contexts the session holds whose JSON differs from the one installed last, simple values as strings. */
+/**
+ * `op=export`: each shared value but the contexts the session holds whose JSON differs from the one installed last, simple
+ * values as strings, a struct with the struct installed last as its base.
+ */
 function exportShared(ctx: OpContext): ExportResult {
   requireMethod(ctx.req, 'GET');
   const session = requireSession(ctx);
@@ -618,8 +621,14 @@ function exportShared(ctx: OpContext): ExportResult {
   for (const name of SHARED_NAMES) {
     if (name === CONTEXTS) continue;
     const value = sharedValue(session, name);
-    if (value === undefined || value === null || session.carried.get(name)?.json === JSON.stringify(value)) continue;
-    values.push({ name, value: isSimple(value) ? String(value) : (value as ExportedValue['value']) });
+    const installed = session.carried.get(name)?.json;
+    if (value === undefined || value === null || installed === JSON.stringify(value)) continue;
+    const base: unknown = installed === undefined || installed === '' ? undefined : JSON.parse(installed);
+    values.push({
+      name,
+      value: isSimple(value) ? String(value) : (value as ExportedValue['value']),
+      ...(isRecord(value) && isRecord(base) ? { base } : {}),
+    });
   }
   return { values, serverTime: formatWireTime(ctx.now) };
 }

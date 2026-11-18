@@ -80,9 +80,9 @@ function identityDouble<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
 }
 
 /** A service app with only the registry's routes, over the recording pool unless `pool` is false. */
-async function buildRegistryApp(opts: { variations: boolean; identityUrl?: string; pool?: boolean }): Promise<FastifyInstance> {
+async function buildRegistryApp(opts: { variations: boolean; sortPermission?: string; identityUrl?: string; pool?: boolean }): Promise<FastifyInstance> {
   const urls = opts.identityUrl === undefined ? {} : { OPT2_SERVICE_URLS: JSON.stringify({ [IDENTITY_SERVICE]: opts.identityUrl }) };
-  const env = { ...loadEnv(undefined, { ...testEnv(stateDir), ...urls }), MURA_VARIATIONS: opts.variations };
+  const env = { ...loadEnv(undefined, { ...testEnv(stateDir), ...urls }), MURA_VARIATIONS: opts.variations, MURA_SORTPERMISSION: opts.sortPermission ?? '' };
   const db = createRecordingDb();
   const service = await createService({
     name: SERVICE,
@@ -172,6 +172,15 @@ describe('registerRoutes', () => {
       expect(context.domain.db).toBe(other.opt2.db);
     } finally {
       if (other !== app) await other.close();
+    }
+  });
+
+  it('builds the domain config sortPermission from MURA_SORTPERMISSION as written', async () => {
+    const other = await buildRegistryApp({ variations: false, sortPermission: 'Author' });
+    try {
+      expect((built.at(-1) as ContentRouteContext).domain.config).toEqual({ ...CONTENT_CONFIG_DEFAULTS, sortPermission: 'Author' });
+    } finally {
+      await other.close();
     }
   });
 

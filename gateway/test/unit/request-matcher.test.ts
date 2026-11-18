@@ -790,6 +790,50 @@ describe('createMatcher REST spellings under the committed v0002', () => {
   });
 });
 
+describe('createMatcher Site Manager sorts under the committed v0002', () => {
+  const HOME = '00000000000000000000000000000000001';
+  const LIST = '/admin/?muraAction=cArch.list&siteid=tenant-a&moduleid=00000000000000000000000000000000000';
+  let facts: InventoryFacts = { get: () => undefined, routes: () => [] };
+  beforeAll(async () => {
+    facts = await loadInventoryFacts(resolveGatewayPaths({}));
+  });
+  const sortMatcher = (index: RoutingIndex): Matcher =>
+    createMatcher({
+      state: { active: () => index },
+      variants: committedVariants(),
+      modes: createResponseModes(facts),
+      env: { OPT2_SERVICE_URLS: SERVICE_URLS, OPT2_STORAGE_ADAPTER: 'local', OPT2_STATE_DIR: keyedDir },
+      clock: CLOCK,
+    });
+  const sorting = (form: string): Sent => ({ method: 'POST', contentType: URLENCODED, body: form });
+
+  // Repeated orderid fields arrive comma-joined, as legacy's form scope joins them; SQL Server's `=` ignores trailing spaces.
+  it.each<[string, string, string]>([
+    ['the home page as topid', `&topid=${HOME}`, 'orderperm=editor&sorted=true&orderid=C1&orderid=C2'],
+    ['a module root as topid', '&topid=00000000000000000000000000000000003', 'orderperm=editor&sorted=false'],
+    ['a shared orderid with trailing spaces', '&topid=F1', `orderperm=author&orderid=C1&orderid=${HOME}%20%20`],
+    ['no topid, which before() takes from the session', '', 'orderperm=editor&orderid=C1'],
+  ])('serves a sort with %s on legacy as the legacy-write admin:carch.list{sharedid}', async (_label, search, form) => {
+    const v0002 = await committedIndex('v0002');
+    const outcome = await matchOf(sortMatcher(v0002), `${LIST}${search}`, sorting(form));
+    expect(outcome.result?.key).toBe('admin:carch.list{sharedid}');
+    expect(outcome.entry).toMatchObject({ route: 'admin:carch.list{sharedid}', state: 'legacy', kind: 'legacy-write', units: ['content.content'] });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    expect(v0002.entryFor('admin:carch.list')).toMatchObject({ state: 'target', kind: 'write', group: 'grp:content.approval_action' });
+  });
+
+  it.each<[string, string, string]>([
+    ['a folder sort', '&topid=F1', 'orderperm=editor&sorted=true&orderid=C1&orderid=C2'],
+    ['a home page view posting no orderperm', `&topid=${HOME}`, 'nextN=20'],
+    ['a home page sort under a read orderperm', `&topid=${HOME}`, 'orderperm=read&orderid=C1'],
+  ])('keeps %s on web as the target admin:carch.list', async (_label, search, form) => {
+    const outcome = await matchOf(sortMatcher(await committedIndex('v0002')), `${LIST}${search}`, sorting(form));
+    expect(outcome.result?.key).toBe('admin:carch.list');
+    expect(outcome.entry).toMatchObject({ route: 'admin:carch.list', state: 'target', kind: 'write' });
+    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'web', responseMode: 'page' });
+  });
+});
+
 describe('createMatcher reload requests', () => {
   const CONTENT = 'content.content';
   const TARGETING = 'content.variation_targeting';

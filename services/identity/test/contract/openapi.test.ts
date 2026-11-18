@@ -531,6 +531,21 @@ const CASES: Record<string, Case[]> = {
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ siteid: SITE_A, topID: HOME }),
     },
+    {
+      name: "stores of a mura saved with its base only the writer's changes against it",
+      method: 'POST',
+      url: '/v1/sessions/current/admin-state',
+      as: 'editor',
+      given: [
+        { name: 'stores a service write', method: 'POST', url: '/v1/sessions/current/admin-state', as: 'editor', payload: { mura: { flatViewArgs: { [SITE_A]: { tab: 0 } } } }, status: 200 },
+      ],
+      payload: { mura: { alerts: { [SITE_A]: {} } }, muraBase: {} },
+      status: 200,
+      verify: (body) => {
+        assertRequestMatchesOpenApi(DOC, { method: 'POST', path: '/v1/sessions/current/admin-state', contentType: 'application/json', body: { mura: { alerts: { [SITE_A]: {} } }, muraBase: {} } });
+        expect(record(body).mura).toEqual({ flatViewArgs: { [SITE_A]: { tab: 0 } }, alerts: { [SITE_A]: {} } });
+      },
+    },
     { name: 'refuses an admin value of the wrong type', method: 'POST', url: '/v1/sessions/current/admin-state', as: 'editor', payload: { topID: { nested: true } }, status: 400 },
     { name: 'refuses a caller without a relayed user token', method: 'POST', url: '/v1/sessions/current/admin-state', headers: forwardedByGateway, payload: { siteid: SITE_A }, status: 401 },
   ],
@@ -867,12 +882,21 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: '/internal/v1/sessions/S-s2/admin-state',
       as: 'service:gateway',
-      payload: { siteid: SITE_A, mura: { nextN: '5' } },
+      payload: { values: { siteid: SITE_A, mura: { nextN: '5' } } },
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ siteid: SITE_A, mura: { nextN: '5' } }),
     },
-    { name: 'refuses an admin value of the wrong type', method: 'POST', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:gateway', payload: { topID: { nested: true } }, status: 400 },
-    { name: 'refuses a caller other than the gateway', method: 'POST', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:web', payload: { siteid: SITE_A }, status: 403 },
+    {
+      name: "stores of a mura struct with a base only legacy's changes against it",
+      method: 'POST',
+      url: '/internal/v1/sessions/S-s2/admin-state',
+      as: 'service:gateway',
+      payload: { values: { mura: { flatViewArgs: { [SITE_A]: { tab: 1, filtered: 'No' } } } }, muraBases: { flatViewArgs: { [SITE_A]: { tab: 0, filtered: false } } } },
+      status: 200,
+      verify: (body) => expect(record(body)).toMatchObject({ mura: { flatViewArgs: { [SITE_A]: { tab: 1, filtered: 'No' } } } }),
+    },
+    { name: 'refuses an admin value of the wrong type', method: 'POST', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:gateway', payload: { values: { topID: { nested: true } } }, status: 400 },
+    { name: 'refuses a caller other than the gateway', method: 'POST', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:web', payload: { values: { siteid: SITE_A } }, status: 403 },
   ],
   getSessionSnapshot: [
     {

@@ -2323,7 +2323,7 @@ paths:
     get:
       operationId: getSiteManagerTree
       summary: Reads the Site Manager tree level under a node.
-      description: 'Runs carch `list()` and the `list.cfm` view''s own logic over the request `rc` (the declared parameters plus `params`). `params.keywords` is present only when the request URL carries `keywords` (`url.keywords`). For the content modules (`…000`, `…003`, `…004`, `…099`) the view''s in-view sort write runs when `rc.orderperm` allows it (`orderperm`, `sorted`, `orderid`, `saveSort`, `startrow`), and its `session.flatViewArgs` updates are kept by this service. `rc` holds `topid` (after the empty-result fallback), `rsTop` (the `getList` rows) and `siteConfig` (`customTagGroups`, and `scaffolding`, `dataCollection` and `hasLockableNodes` as CFML tests the flags programs-sites `lookupSiteConfigFlags` answers for the site, a null `dataCollection` as the empty string the view fails on where it tests it; its unavailability answers the legacy-shaped 503). For the content modules it also holds `sortBy` and `sortDirection` (as the view leaves them), `crumbdata` (`getCrumbList(topid)` rows with `siteid`), `copyContentID`, `copySiteID`, `copyAll` and, once copy info was saved, `copyModuleID`, `flatViewArgs` (the session site''s struct), `modulePerms` (`getPerm(<module id>)` verdicts keyed by the components and forms module ids) and `variations` (configBean `variations`). For `LEGACY` it holds `perm` (`getPerm(moduleid)`), `nextN` (`getNextN` struct), a `perm` verdict (`getPerm(contentid)`) on each `rsTop` row, `categoryCount`, `categories` (the category tree: `categoryID`, `name`, `isOpen`, `hasKids`, `children`) and, for compact display, `useLayoutManager`.'
+      description: 'Runs carch `list()` and the `list.cfm` view''s own logic over the request `rc` (the declared parameters plus `params`). `params.keywords` is present only when the request URL carries `keywords` (`url.keywords`). For the content modules (`…000`, `…003`, `…004`, `…099`) its `session.flatViewArgs` updates are kept by this service, and then the view''s in-view sort write (`list.cfm:590-634`) runs when the posted `rc.orderperm` is `editor`, or `author` while configBean `sortPermission` is `author` (compared ignoring case, with no node permission check): under the site''s sort lock, in one transaction matching content ids in the token''s tenant only, every version of the `n`th `rc.orderid` list item gets `orderno` `rc.startrow + n - 1`, every version of `topid` gets `sortBy` and `sortDirection` (`asc` when `rc.sorted` is true and `sortBy` is `orderno`), and without `orderid` an `orderno` sort numbers every version of the top''s active children 1 to N in the top''s stored sort. A `sorted` CFML cannot read as a boolean, or a `startrow` it cannot read as a number beside a non-empty `orderid`, fails as legacy does before any write; an order number outside SQL Server''s `int`, or a `sortBy` or `sortDirection` longer than its 50-character column by more than trailing spaces, fails as legacy''s statement does, keeping the updates before it. A sort write answers `X-Opt2-Write-Position`, and a closed unit gate the legacy-shaped 503. `rc` holds `topid` (after the empty-result fallback), `rsTop` (the `getList` rows) and `siteConfig` (`customTagGroups`, and `scaffolding`, `dataCollection` and `hasLockableNodes` as CFML tests the flags programs-sites `lookupSiteConfigFlags` answers for the site, a null `dataCollection` as the empty string the view fails on where it tests it; its unavailability answers the legacy-shaped 503). For the content modules it also holds `sortBy` and `sortDirection` (as the view leaves them), `crumbdata` (`getCrumbList(topid)` rows with `siteid`), `copyContentID`, `copySiteID`, `copyAll` and, once copy info was saved, `copyModuleID`, `flatViewArgs` (the session site''s struct), `modulePerms` (`getPerm(<module id>)` verdicts keyed by the components and forms module ids) and `variations` (configBean `variations`). For `LEGACY` it holds `perm` (`getPerm(moduleid)`), `nextN` (`getNextN` struct), a `perm` verdict (`getPerm(contentid)`) on each `rsTop` row, `categoryCount`, `categories` (the category tree: `categoryID`, `name`, `isOpen`, `hasKids`, `children`) and, for compact display, `useLayoutManager`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2360,13 +2360,21 @@ paths:
         - $ref: '#/components/parameters/RawParams'
       responses:
         '200':
-          $ref: '#/components/responses/AdminView'
+          description: The screen model.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminViewModel'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: 'The legacy-shaped 503: a content unit gate closed past its wait or held by legacy, which writes no content, or programs-sites or identity unavailable.'
   /v1/sites/{siteid}/content:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'

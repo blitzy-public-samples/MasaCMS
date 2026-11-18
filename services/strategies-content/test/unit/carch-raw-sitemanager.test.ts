@@ -607,6 +607,24 @@ describe('loadsitemanager', () => {
     expect(calls.filter((call) => call.service === 'programs-sites')).toEqual([expect.objectContaining({ path: SITE_CONFIG_FLAGS_PATH, json: { siteIds: [SITE] } })]);
   });
 
+  it.each([
+    ['author', true],
+    ['', false],
+  ] as const)('offers an author of the top the sort controls as configBean sortPermission %j says: %s', async (sortPermission, offered) => {
+    t.db.respond(/FROM "content"\."membership_projection"/, [{ group_id: GROUP }]);
+    t.db.respond(/FROM "content"\."group_projection"/, [{ tenant_id: TENANT_A.tenantId, group_id: GROUP, group_name: 'Editors', site_id: SITE, is_public: 0, deleted: false }]);
+    t.db.respond(/FROM "content"\."permission_projection"/, [{ tenant_id: TENANT_A.tenantId, group_id: GROUP, site_id: SITE, content_id: PAGE, type: 'Author' }]);
+    ctx.domain.config = { ...CONTENT_CONFIG_DEFAULTS, sortPermission };
+    try {
+      const { res } = await raw('loadsitemanager', { topid: PAGE, moduleid: SITE_MANAGER, sortby: '', startrow: '1' }, { roles: EDITOR_ROLES });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.body).toMatch(/^\{"perm":"author",/);
+      expect(res.body.includes('<select name=\\"sortBy\\"')).toBe(offered);
+    } finally {
+      ctx.domain.config = CONTENT_CONFIG_DEFAULTS;
+    }
+  });
+
   it('reads a later page as a SQL LIMIT/OFFSET window and looks up kids and verdicts of its printed rows alone', async () => {
     const [second, third, fourth, fifth] = [2, 3, 4, 5].map((n) => `A1000000-001${n}-4A5B-8C7D9E0F1A2B3C4D`) as [string, string, string, string];
     for (const [i, contentid] of [second, third, fourth, fifth].entries()) {

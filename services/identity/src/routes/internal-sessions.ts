@@ -36,7 +36,7 @@ const END_URL = '/internal/v1/sessions/:sid(.+)::end';
 // The adopt body carries no mode, which the gateway keeps; an adopted session is described from, and keyed by, a legacy session.
 const ADOPTED_MODE: SessionMode = 'legacy-primary';
 
-// SessionId, AdoptSessionRequest and EndSessionRequest as the contract declares them; Fastify validates them once, before the handler.
+// SessionId, AdoptSessionRequest, EndSessionRequest and AdminSessionStateImport as the contract declares them; Fastify validates them once, before the handler.
 const SESSION_PARAMS = {
   type: 'object',
   required: ['sid'],
@@ -71,6 +71,16 @@ const END_BODY = {
   additionalProperties: false,
   required: ['reason'],
   properties: { reason: { type: 'string', enum: ['logout', 'legacy-logout', 'expired'] } },
+} as const;
+
+const IMPORT_BODY = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['values'],
+  properties: {
+    values: ADMIN_STATE_BODY,
+    muraBases: { type: 'object', additionalProperties: { type: 'object', additionalProperties: true } },
+  },
 } as const;
 
 /** `Set-Cookie` values handing the browser the adopted session: `JSESSIONID` names it, `CFID` and `CFTOKEN` are fresh. */
@@ -129,12 +139,12 @@ export async function registerSessionRoutes(app: FastifyInstance, deps: SessionR
   );
 
   // The import drops the read-only `hasdefaultpassword`, which only login sets, as the user-facing save does.
-  app.post<{ Params: SessionParams; Body: Schemas['AdminSessionState']; Reply: Schemas['AdminSessionState'] }>(
+  app.post<{ Params: SessionParams; Body: Schemas['AdminSessionStateImport']; Reply: Schemas['AdminSessionState'] }>(
     '/internal/v1/sessions/:sid/admin-state',
-    { schema: { params: SESSION_PARAMS, body: ADMIN_STATE_BODY }, config: { opt2: IMPORT_AUTH } },
+    { schema: { params: SESSION_PARAMS, body: IMPORT_BODY }, config: { opt2: IMPORT_AUTH } },
     async (request) => {
-      const values = Object.fromEntries(Object.entries(request.body).filter(([key]) => key !== 'hasdefaultpassword'));
-      return adminStateOf(await importSessionAdminState(sessions, request.params.sid, values));
+      const values = Object.fromEntries(Object.entries(request.body.values).filter(([key]) => key !== 'hasdefaultpassword'));
+      return adminStateOf(await importSessionAdminState(sessions, request.params.sid, values, request.body.muraBases));
     },
   );
 

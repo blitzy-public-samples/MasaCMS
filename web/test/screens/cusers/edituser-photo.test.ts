@@ -11,6 +11,7 @@ import { toString } from '@/lib/html';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { loadEditUser, renderEditUser } from '@/screens/cusers/edituser';
 import type { ScreenContext } from '@/screens/registry';
+import { siteListItemById } from '../../fixtures/programs-sites/sites';
 import { adminS2Request, siteRecordFor } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply, type RecordedRequest } from '../../helpers/fake-gateway';
@@ -34,6 +35,7 @@ const BLOCK_END = '\n</div>\n';
 const USER_EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/edit');
 const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const POOL_SITES_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites/default/user-pool-sites');
+const SITE_LIST_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites');
 const INTEREST_GROUPS_ROUTE = routeKey('GET', 'strategies-content', '/v1/sites/default/private-interest-groups');
 
 /** The seeded person: a public user of `siteId` with a JPG photo. */
@@ -93,14 +95,15 @@ function issueTokens(request: RecordedRequest): FakeReply {
 }
 
 /**
- * A gateway answering people's edit read, identity's tokens, an empty interest-group pool and, when given,
- * programs-sites' user pool sites.
+ * A gateway answering people's edit read, identity's tokens, an empty interest-group pool, programs-sites' site list
+ * and, when given, its user pool sites.
  */
 function gatewayFor(user: PersonRecord, poolSites?: FakeReply): FakeGatewayClient {
   return fakeGatewayClient({
     [USER_EDIT_ROUTE]: { status: 200, body: userEdit(user) },
     [CSRF_ROUTE]: issueTokens,
     [INTEREST_GROUPS_ROUTE]: { status: 200, body: { items: [] } },
+    [SITE_LIST_ROUTE]: { status: 200, body: [siteListItemById.default] },
     ...(poolSites === undefined ? {} : { [POOL_SITES_ROUTE]: poolSites }),
   });
 }
@@ -127,9 +130,11 @@ async function photoTools(gateway: FakeGatewayClient): Promise<string> {
   return body.slice(start, body.indexOf(BLOCK_END, start) + BLOCK_END.length).replace(CACHE_ID, 'cacheID=<uuid>"');
 }
 
-/** The programs-sites calls the gateway received. */
+/** The programs-sites calls the gateway received, besides the site selector's site list. */
 const programsSitesCalls = (gateway: FakeGatewayClient) =>
-  gateway.calls.filter(({ service }) => service === 'programs-sites').map(({ method, path }) => `${method} ${path}`);
+  gateway.calls
+    .filter(({ service, path }) => service === 'programs-sites' && path !== '/v1/sites')
+    .map(({ method, path }) => `${method} ${path}`);
 
 let restoreEnv: () => void;
 

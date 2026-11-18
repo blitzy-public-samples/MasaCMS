@@ -288,6 +288,21 @@ describe('contentEnvSchema MURA_VARIATIONS', () => {
   });
 });
 
+describe('contentEnvSchema MURA_SORTPERMISSION', () => {
+  it.each<[string | undefined, string]>([
+    [undefined, ''],
+    ['', ''],
+    ['  ', ''],
+    ['author', 'author'],
+    ['AUTHOR', 'AUTHOR'],
+    ['editor', 'editor'],
+  ])('reads %j as the sortPermission %j', (value, expected) => {
+    const result = contentEnvSchema.safeParse(testEnv(t.stateDir, { MURA_SORTPERMISSION: value }));
+    expect(result.success).toBe(true);
+    expect(result.data?.MURA_SORTPERMISSION).toBe(expected);
+  });
+});
+
 describe('contentEnvSchema process requirements', () => {
   const OWN_URL = JSON.stringify({ [SERVICE]: 'http://127.0.0.1:8114' });
   const IDENTITY_URL = JSON.stringify({ identity: 'http://127.0.0.1:8111' });

@@ -307,6 +307,26 @@ interface LookupCase {
   readonly uploads?: readonly UploadPart[];
 }
 
+const HOME_ID = '00000000000000000000000000000000001';
+
+/** A Site Manager sort's cArch.list lookup, its POST folded into the rc with repeated `orderid` comma-joined. */
+const siteManagerSort = (label: string, fields: Rc): LookupCase => ({
+  label,
+  circuit: 'cArch',
+  action: 'list',
+  rc: {
+    siteid: 'tenant-a',
+    moduleid: '00000000000000000000000000000000000',
+    sortBy: 'orderno',
+    sortDirection: 'asc',
+    saveSort: 'true',
+    startrow: '1',
+    sorted: 'true',
+    ...fields,
+  },
+  uploads: [],
+});
+
 const REFUSED: readonly LookupCase[] = [
   {
     label: 'a forgot-password request on the login page',
@@ -354,6 +374,19 @@ const REFUSED: readonly LookupCase[] = [
     uploads: [{ field: 'newfile', filename: 'doc.pdf' }],
   },
   { label: 'an approval', circuit: 'carch', action: 'approvalaction', rc: { action: 'Approve' } },
+  siteManagerSort('a sort under a module root', {
+    orderperm: 'editor',
+    topid: '00000000000000000000000000000000003',
+    orderid: 'C1,C2',
+  }),
+  siteManagerSort('a sort under the home page', { orderperm: 'editor', topid: HOME_ID, orderid: 'C1,C2' }),
+  siteManagerSort('a folder sort with a trailing-space home id', {
+    orderperm: 'editor',
+    topid: 'F1',
+    orderid: `C1,${HOME_ID} ,C2`,
+  }),
+  siteManagerSort('a sort with an empty topid', { orderperm: 'editor', topid: '', orderid: 'C1,C2' }),
+  siteManagerSort('a sort without a topid', { orderperm: 'editor', orderid: 'C1,C2' }),
   { label: 'a change set rollback', circuit: 'cChangesets', action: 'rollback', rc: { changesetid: 'CS-1' } },
   { label: 'class extensions', circuit: 'cextend', action: 'listsubtypes', rc: {} },
   { label: 'trash', circuit: 'ctrash', action: 'list', rc: {} },
@@ -425,6 +458,15 @@ const RESOLVED: readonly ResolvedCase[] = [
     key: 'admin:carch.approvalaction',
     owner: 'strategies-content',
   },
+  ...[
+    siteManagerSort('a folder sort', { orderperm: 'editor', topid: 'F1', orderid: 'C1,C2' }),
+    siteManagerSort('a folder sort with a leading-space home id', {
+      orderperm: 'editor',
+      topid: 'F1',
+      orderid: `C1, ${HOME_ID}`,
+    }),
+    siteManagerSort('a home page list without a sort permission', { topid: HOME_ID, orderid: 'C1,C2' }),
+  ].map((lookup) => ({ ...lookup, key: 'admin:carch.list', owner: 'strategies-content' })),
   {
     label: 'a profile save',
     circuit: 'ceditprofile',
@@ -460,7 +502,7 @@ describe('findScreen', () => {
     expect(findScreen(circuit, action, rc, uploads)).toBeUndefined();
   });
 
-  it('lists the forgot-password, photo, roster delete, image upload and approval refusals', () => {
+  it('lists the forgot-password, photo, roster delete, image upload, approval and shared-id sort refusals', () => {
     expect(NOT_BUILT_VARIANTS).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ circuit: 'clogin', action: 'main', key: 'status=sendlogin' }),
@@ -470,10 +512,21 @@ describe('findScreen', () => {
         expect.objectContaining({ circuit: 'cusers', action: 'update', key: 'type=2,action=delete' }),
         expect.objectContaining({ circuit: 'carch', action: 'update', key: 'upload=image' }),
         expect.objectContaining({ circuit: 'carch', action: 'approvalaction', key: 'action=approve' }),
+        expect.objectContaining({ circuit: 'carch', action: 'list', key: 'sharedid' }),
       ]),
     );
   });
 
+
+  it('lists every withheld or halted variant of an action web registers', () => {
+    const registeredActions = new Set(DEFS.map((def) => `admin:${def.circuit}.${def.action}`));
+    const listed = new Set(NOT_BUILT_VARIANTS.map(notBuiltKey));
+    const unlisted = [...RECORDS.values()]
+      .filter((r) => r.routeKey.includes('{') && (!isCarried(r) || HALTED.has(r.routeKey)))
+      .map((r) => r.routeKey)
+      .filter((key) => registeredActions.has(key.slice(0, key.indexOf('{'))) && !listed.has(key));
+    expect(unlisted).toEqual([]);
+  });
 
   it('refuses no carried variant but the halted ones', () => {
     const refusedCarry = NOT_BUILT_VARIANTS.map(notBuiltKey).filter((key) => CARRIED.includes(key) && !HALTED.has(key));

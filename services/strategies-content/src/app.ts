@@ -38,7 +38,8 @@ const CF_BOOLEAN = /^(?:true|yes|1|false|no|0)$/i;
 const CF_TRUE = /^(?:true|yes|1)$/i;
 
 /**
- * Base variables plus configBean `variations` from `MURA_VARIATIONS`, a ColdFusion boolean that is false when unset;
+ * Base variables plus configBean `variations` from `MURA_VARIATIONS`, a ColdFusion boolean that is false when unset, and
+ * configBean `sortPermission` from `MURA_SORTPERMISSION`, kept as written and '' when unset;
  * requires this service's own name, its database and the URLs of identity and of itself, the target of its own tasks.
  */
 export const contentEnvSchema = processEnvSchema(
@@ -46,6 +47,7 @@ export const contentEnvSchema = processEnvSchema(
     MURA_VARIATIONS: optionalEnvString(z.string().regex(CF_BOOLEAN, 'must be true, yes, 1, false, no or 0')).transform(
       (value) => value !== undefined && CF_TRUE.test(value),
     ),
+    MURA_SORTPERMISSION: optionalEnvString().transform((value) => value ?? ''),
   }),
   { service: OWNER, callees: [OWNER, IDENTITY_SERVICE], database: true },
 );

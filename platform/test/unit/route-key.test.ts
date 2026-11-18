@@ -6,6 +6,7 @@ import {
   ROUTE_FAMILIES,
   SAVEFORM_CONDITION,
   SESSION_MANAGED_CONDITION,
+  SHARED_ID_SORT_CONDITIONS,
   STARTUP_SITE_CONDITION,
   SYNTHETIC_V1_PREFIXES,
   type RouteEntryPoint,
@@ -17,6 +18,7 @@ import {
   entityRemoteFunctionsFromKeys,
   fixtureDispatchPath,
   isLegacySessionManaged,
+  listHasSqlKey,
   matchRouteKey,
   normaliseRouteKey,
   routeKeyForEntryPoint,
@@ -1390,6 +1392,54 @@ describe('variants', () => {
     const declarations = [{ route: 'admin:csettings.updatesite', variant: 'v', when: [condition] }];
     const result = resultOf('POST', '/admin/?muraAction=cSettings.updateSite', { form }, { variants: declarations });
     expect(result.variant).toBe(holds ? 'v' : undefined);
+  });
+
+  const HOME = '00000000000000000000000000000000001';
+  const SHARED_SORT: readonly VariantDeclaration[] = [
+    { route: 'admin:carch.list', variant: 'sharedid', when: SHARED_ID_SORT_CONDITIONS },
+  ];
+
+  // rc.orderid joins repeated fields with `,`; listLen skips empty items and SQL Server's `=` ignores case and trailing spaces.
+  it.each<[string, string, Record<string, string>, boolean]>([
+    ['a home topid', `&topid=${HOME}`, { orderperm: 'editor' }, true],
+    ['a module-root topid with trailing spaces', '&topid=00000000000000000000000000000000003%20%20', { orderperm: 'editor' }, true],
+    ['the scaffolding module topid', '&topid=00000000000000000000000000000000016', { orderperm: 'Author' }, true],
+    ['an orderid list holding a shared id', '&topid=F1', { orderperm: 'editor', orderid: `C1,,${HOME} ,C2` }, true],
+    ['a shared id among list items in another case', '&topid=F1', { orderperm: 'EDITOR', orderid: 'c1,00000000000000000000000000000000099' }, true],
+    ['an empty topid', '&topid=', { orderperm: 'editor', orderid: 'C1' }, true],
+    ['no topid', '', { orderperm: 'editor' }, true],
+    ['a folder topid and folder orderids', '&topid=F1', { orderperm: 'editor', orderid: 'C1,C2' }, false],
+    ['a shared id with a leading space', '&topid=F1', { orderperm: 'editor', orderid: ` ${HOME}` }, false],
+    ['a shared id with a trailing tab', '&topid=F1', { orderperm: 'editor', orderid: `${HOME}\t` }, false],
+    ['a shared id inside one item', '&topid=F1', { orderperm: 'editor', orderid: `${HOME}0` }, false],
+    ['a home topid without orderperm', `&topid=${HOME}`, { orderid: 'C1' }, false],
+    ['a home topid under a read orderperm', `&topid=${HOME}`, { orderperm: 'read' }, false],
+    ['a home topid under a padded orderperm', `&topid=${HOME}`, { orderperm: 'editor ' }, false],
+  ])('decides {sharedid} on a carch.list sort with %s', (_label, search, form, sharedId) => {
+    const result = resultOf('POST', `/admin/?muraAction=cArch.list&siteid=tenant-a${search}`, { form }, { variants: SHARED_SORT });
+    expect(result.key).toBe(sharedId ? 'admin:carch.list{sharedid}' : 'admin:carch.list');
+  });
+
+  it.each<[string, string, boolean]>([
+    ['a sole matching item', HOME, true],
+    ['a matching item among empty ones', `,C1,,${HOME},`, true],
+    ['an item in another case', 'c1,00000000000000000000000000000000ABC', true],
+    ['an item with trailing spaces', `${HOME}  `, true],
+    ['an item with a leading space', ` ${HOME}`, false],
+    ['an item with a trailing tab', `${HOME}\t`, false],
+    ['a longer item', `${HOME}0`, false],
+    ['an empty list', '', false],
+    ['a list of delimiters', ',,', false],
+  ])('listHasSqlKey over %s', (_label, list, found) => {
+    expect(listHasSqlKey(list, [HOME, '00000000000000000000000000000000abc'])).toBe(found);
+  });
+
+  it('reads topid as the merged rc reads it, a form value overwriting the url one', () => {
+    const url = `/admin/?muraAction=cArch.list&siteid=tenant-a&topid=${HOME}`;
+    expect(keyOf('POST', url, { form: { orderperm: 'editor', topid: 'F1' } }, { variants: SHARED_SORT })).toBe('admin:carch.list');
+    expect(keyOf('POST', '/admin/?muraAction=cArch.list&topid=F1', { form: { orderperm: 'editor', topid: HOME } }, { variants: SHARED_SORT })).toBe(
+      'admin:carch.list{sharedid}',
+    );
   });
 });
 

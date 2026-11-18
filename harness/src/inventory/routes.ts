@@ -800,7 +800,7 @@ function atomClauses(c: VariantCondition): Clause[] | null {
     }
     return out;
   }
-  if ('not' in c || 'multipartExtensionIn' in c || 'sessionManaged' in c || 'startupSiteId' in c) return null;
+  if ('not' in c || 'multipartExtensionIn' in c || 'sessionManaged' in c || 'startupSiteId' in c || 'listItemIn' in c) return null;
   if ('equals' in c) return [{ [c.param]: c.equals }];
   if ('in' in c) return c.in.map((v) => ({ [c.param]: v }));
   return [{ [c.param]: 'nonEmpty' in c ? true : CFML_TRUTHY }];
@@ -867,6 +867,7 @@ function sampleOf(when: readonly VariantCondition[]): RequestSample | null {
     }
     if ('equals' in c) params[c.param] = c.equals;
     else if ('in' in c) params[c.param] = c.in[0] ?? '';
+    else if ('listItemIn' in c) params[c.param] = c.listItemIn[0] ?? '';
     else if ('nonEmpty' in c) params[c.param] = 'sample';
     else params[c.param] = 'true';
     return true;

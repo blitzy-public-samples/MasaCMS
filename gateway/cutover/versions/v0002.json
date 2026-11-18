@@ -1111,6 +1111,18 @@
       "disposition": "carry"
     },
     {
+      "route": "admin:carch.list{sharedid}",
+      "owningService": "strategies-content",
+      "tableVersion": "v0001",
+      "state": "legacy",
+      "kind": "legacy-write",
+      "group": null,
+      "units": [
+        "content.content"
+      ],
+      "disposition": "carry"
+    },
+    {
       "route": "admin:carch.loadcategoryassignment",
       "owningService": "strategies-content",
       "tableVersion": "v0001",

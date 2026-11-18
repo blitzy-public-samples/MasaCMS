@@ -650,6 +650,13 @@
         ]
       },
       {
+        "scenario": "GS-CO-08",
+        "exceptionId": "EX-CARCH-SORT-SHARED-ID",
+        "routeKeys": [
+          "admin:carch.list{sharedid}"
+        ]
+      },
+      {
         "scenario": "GS-CO-10",
         "exceptionId": "EX-REST-SITEID-STARTUP",
         "routeKeys": [

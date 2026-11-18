@@ -1918,6 +1918,25 @@ export async function getAdvancedSearchStream(
   return { columnList: [...SEARCH_FIELD_LIST], rows: matchRows(deps, scan.matches(), ({ candidate }) => candidate) };
 }
 
+/** The userFeed iterator's first page, beanFeed's `nextN` [legacy: core/mura/bean/beanFeed.cfc:115-116, core/mura/user/userFeedBean.cfc:181, core/mura/iterator/queryIterator.cfc:145-147]. */
+export const USER_FEED_MAX_ITEMS = 1000;
+
+/** `userFeed.setSiteID(viewer.site).setIsPublic(isPublic).getIterator()`: getAdvancedSearch rows by `lname asc`, at most USER_FEED_MAX_ITEMS [legacy: core/mura/user/userFeedBean.cfc:91-182]. */
+export async function getUserFeed(
+  deps: SearchDeps,
+  viewer: ViewerScope,
+  { isPublic }: Pick<AdvancedSearchOptions, 'isPublic'>,
+  { batchSize }: StreamOptions = {},
+): Promise<Record<string, unknown>[]> {
+  const scan = await prepareAdvancedSearch(deps, viewer, newAdvancedSearchCriteria(), { isPublic }, undefined, batchSize);
+  const leading: Candidate[] = [];
+  for await (const { candidate } of scan.matches()) {
+    leading.push(candidate);
+    if (leading.length === USER_FEED_MAX_ITEMS) break;
+  }
+  return searchFieldRows(deps, leading);
+}
+
 /** `getAdvancedSearch` as the cusers page `paging` selects, holding only the rows that page can show. */
 export async function getAdvancedSearchPage(
   deps: SearchDeps,

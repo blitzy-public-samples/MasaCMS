@@ -358,8 +358,18 @@ async function photoSiteOf(ctx: ScreenContext, site: SiteData, bean: EditUserBea
 }
 
 /**
- * The view's data: `editUser()`'s bean, user type, groups and sites from people, and the view set-up's user pool,
- * subtypes and strike block; issues the form's CSRF pairs. Gateway unavailability propagates.
+ * `rc.rsSiteList` (`settingsManager.getList()`, by orderno) for the S2-only site selector; empty for other viewers.
+ * @throws GatewayDenialError When programs-sites refuses the read (401 or 403).
+ */
+async function siteList(ctx: ScreenContext): Promise<readonly EditUserSite[]> {
+  if (!ctx.req.isS2) return [];
+  const response = await ctx.gateway.programsSites.listSites({ sortBy: 'orderno', sortDirection: 'asc' });
+  return okBody(response, 'programs-sites', 'listSites').map(({ siteid, site }) => ({ siteID: siteid, site: site ?? '' }));
+}
+
+/**
+ * The view's data: `editUser()`'s bean, user type and groups from people, the site list from programs-sites, and the
+ * view set-up's user pool, subtypes and strike block; issues the form's CSRF pairs. Gateway unavailability propagates.
  * @throws GatewayDenialError When people, programs-sites or strategies-content refuses a read (401 or 403).
  * @throws LegacyServiceUnavailableError When an owner is unavailable, a photo file name is unserved, a pooled user's photo
  * site is not served by programs-sites, or the interest groups are another site's.
@@ -390,9 +400,10 @@ export async function loadEditUser(
   const exists = !edit.isNew;
   const addresses = edit.addresses.map(addressOf);
   const contexts = hasDeleteLink(rc, addresses) ? [bean.userId, addressCsrfContext(rc)] : [bean.userId];
-  const [interestCategories, webServiceTokens] = await Promise.all([
+  const [interestCategories, webServiceTokens, sites] = await Promise.all([
     sources.interestCategories(rc.siteid),
     exists ? sources.webServiceTokens(ctx, bean.userId) : Promise.resolve([]),
+    siteList(ctx),
     ctx.csrf.prefetch(contexts),
   ]);
   return {
@@ -407,7 +418,7 @@ export async function loadEditUser(
     privateGroups: edit.privateGroups,
     publicGroups: edit.publicGroups,
     subTypes: edit.subTypes.map(({ subType }) => subType),
-    sites: edit.sites,
+    sites,
     userPoolId: userPoolIdFor({ site }, rc),
     themeAssetPath: themeAssetPath(site, ctx.req.https),
     photoSite,

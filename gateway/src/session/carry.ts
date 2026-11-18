@@ -11,7 +11,7 @@ import {
   type SharedJsonValue,
 } from './bridge-client.js';
 import { liveCookies, unlessIdentityDown } from './csrf.js';
-import type { IdentityClient, SessionAdminState } from './identity-client.js';
+import type { IdentityClient, MuraBases, SessionAdminState } from './identity-client.js';
 import type { LegacyJar } from './jar.js';
 import type { SessionMode } from './mode.js';
 
@@ -79,7 +79,10 @@ export interface SessionCarry {
    * a value identity has not changed since its last install leaves legacy's own writes standing.
    */
   beforeLegacy(sessionId: string, mode: SessionMode, call?: CarryCall): Promise<void>;
-  /** Stores in identity the shared values a completed legacy-bound admin request changed in the jar's legacy session. */
+  /**
+   * Stores in identity the shared values a completed legacy-bound admin request changed in the jar's legacy session; of a
+   * `mura` struct carry installed, only legacy's changes against the installed struct.
+   */
   afterLegacy(sessionId: string, mode: SessionMode, call?: CarryCall): Promise<void>;
 }
 
@@ -164,6 +167,19 @@ function adminStatePatch(exported: readonly ExportedValue[]): SessionAdminState 
   return patch as SessionAdminState;
 }
 
+/**
+ * The bases of exported `mura` structs by `mura` key, against which identity stores only legacy's changes; undefined when
+ * none has one. Top-level values, the module tops included, are stored whole.
+ */
+function muraBasesOf(exported: readonly ExportedValue[]): MuraBases | undefined {
+  const bases: MuraBases = {};
+  for (const { name, base } of exported) {
+    const location = SHARED_SESSION_VALUES.find((shared) => shared.wire === name)?.identity;
+    if (base !== undefined && location?.startsWith(MURA_PREFIX) === true) bases[location.slice(MURA_PREFIX.length)] = base;
+  }
+  return Object.keys(bases).length === 0 ? undefined : bases;
+}
+
 /** Creates the carry over identity's stored admin state, the bridge's `op=carry` and `op=export`, and the jar. */
 export function createSessionCarry(opts: SessionCarryOptions): SessionCarry {
   const { identity, bridge, jar } = opts;
@@ -214,8 +230,9 @@ export function createSessionCarry(opts: SessionCarryOptions): SessionCarry {
       if (exported === undefined) return;
       const patch = adminStatePatch(exported.body.values);
       if (Object.keys(patch).length === 0) return;
+      const bases = muraBasesOf(exported.body.values);
       // In legacy-primary legacy alone holds the session, so identity's absence leaves identity as it is.
-      await unlessIdentityDown(mode, () => identity.importAdminState(sessionId, patch));
+      await unlessIdentityDown(mode, () => identity.importAdminState(sessionId, patch, bases));
     },
   };
 }

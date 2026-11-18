@@ -111,6 +111,7 @@ export interface RouteKeyResult {
 export type VariantCondition =
   | { param: string; equals: string }
   | { param: string; in: readonly string[] }
+  | { param: string; listItemIn: readonly string[] }
   | { param: string; nonEmpty: true }
   | { param: string; truthy: true }
   | { multipartExtensionIn: readonly string[] }
@@ -151,6 +152,44 @@ export const SESSION_MANAGED_CONDITION: VariantCondition = Object.freeze<Variant
  * (event.cfc:86-97). Legacy then builds the site's renderer in onRequestStart (onRequestStart_include.cfm:331).
  */
 export const STARTUP_SITE_CONDITION: VariantCondition = Object.freeze<VariantCondition>({ startupSiteId: true });
+
+/**
+ * Content ids every site holds: its home page and module roots (settingsDAO.cfc:535-822), and the ORM scaffolding
+ * module that the 7.1 database update adds to each site (dbUpdates/7.1.cfm:29-67).
+ */
+export const SHARED_CONTENT_IDS: readonly string[] = Object.freeze([
+  '00000000000000000000000000000000000',
+  '00000000000000000000000000000000001',
+  '00000000000000000000000000000000003',
+  '00000000000000000000000000000000004',
+  '00000000000000000000000000000000005',
+  '00000000000000000000000000000000008',
+  '00000000000000000000000000000000009',
+  '00000000000000000000000000000000010',
+  '00000000000000000000000000000000011',
+  '00000000000000000000000000000000012',
+  '00000000000000000000000000000000014',
+  '00000000000000000000000000000000015',
+  '00000000000000000000000000000000016',
+  '00000000000000000000000000000000099',
+]);
+
+// `author` counts in legacy only under an `author` sort permission, a config value; `in` is its request-decidable superset.
+/**
+ * Site Manager sort whose `contentid`-only updates reach a shared content id (list.cfm:590-624): the posted
+ * `orderperm` allows a sort, and `topid` or an `orderid` item names a shared id, or `topid` is empty, which
+ * before() fills from the session (carch.cfc:103-104).
+ */
+export const SHARED_ID_SORT_CONDITIONS: readonly VariantCondition[] = Object.freeze<VariantCondition[]>([
+  Object.freeze<VariantCondition>({ param: 'orderperm', in: Object.freeze(['editor', 'author']) }),
+  Object.freeze<VariantCondition>({
+    anyOf: Object.freeze<VariantCondition[]>([
+      Object.freeze<VariantCondition>({ param: 'topid', listItemIn: SHARED_CONTENT_IDS }),
+      Object.freeze<VariantCondition>({ param: 'orderid', listItemIn: SHARED_CONTENT_IDS }),
+      Object.freeze<VariantCondition>({ not: Object.freeze<VariantCondition>({ param: 'topid', nonEmpty: true }) }),
+    ]),
+  }),
+]);
 
 /** Gateway-set header naming, comma-separated and in any case, the REST credential params its exchange consumed. */
 export const REST_CONSUMED_PARAMS_HEADER = 'X-Opt2-Consumed-Params';
@@ -1071,6 +1110,23 @@ function startupSiteIdOf(req: RouteKeyRequest): boolean {
   return (str(event, 'siteid') ?? '').length > 0;
 }
 
+/** `s` without its trailing U+0020 spaces, scanned once so a long run costs linear time. */
+function withoutTrailingSpaces(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 0x20) end--;
+  return s.slice(0, end);
+}
+
+/** SQL Server's default `=` on varchar keys: case-insensitive, trailing spaces ignored, leading ones significant. */
+function sqlKeyEq(a: string, b: string): boolean {
+  return withoutTrailingSpaces(a).toLowerCase() === withoutTrailingSpaces(b).toLowerCase();
+}
+
+/** Whether a non-empty item of the CFML `,` list equals one of `keys` as SQL Server's `=` compares varchar keys. */
+export function listHasSqlKey(list: string, keys: readonly string[]): boolean {
+  return listToArray(list).some((item) => keys.some((key) => sqlKeyEq(item, key)));
+}
+
 /** Evaluates a variant condition over the family's merged params, multipart parts, legacy session management and start-up site. */
 function holds(
   cond: VariantCondition,
@@ -1094,6 +1150,8 @@ function holds(
   const value = paramValue(params, name);
   if ('equals' in cond) return value !== undefined && cfEq(value, cond.equals);
   if ('in' in cond) return value !== undefined && cond.in.some((v) => cfEq(value, v));
+  // listLen/listGetAt items, each compared as `where contentid='<item>'` compares it (list.cfm:605-608).
+  if ('listItemIn' in cond) return value !== undefined && listHasSqlKey(value, cond.listItemIn);
   if ('nonEmpty' in cond) {
     return (value ?? '').length > 0 || files.some((f) => f.field.toLowerCase() === name && f.filename.length > 0);
   }

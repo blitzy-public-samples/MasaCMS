@@ -67,6 +67,48 @@ export function siteBeanOf(site: SiteData): SiteBean {
   };
 }
 
+/** Values one site bean kept from their first computation, valid while the site's served record reads `fingerprint`. */
+interface FirstTouchEntry {
+  readonly fingerprint: string;
+  readonly values: Map<string, string>;
+}
+
+// Bundling may load this module once per layer, so the store lives on globalThis.
+const FIRST_TOUCH = Symbol.for('opt2.web.siteFirstTouch');
+
+/** The process-wide first-touch store, one entry per site id. */
+function firstTouchStore(): Map<string, FirstTouchEntry> {
+  const slots = globalThis as typeof globalThis & { [FIRST_TOUCH]?: Map<string, FirstTouchEntry> };
+  slots[FIRST_TOUCH] ??= new Map();
+  return slots[FIRST_TOUCH];
+}
+
+/**
+ * `name` of `site` as this process first computed it; a changed record of any site forgets all values, as setSites
+ * rebuilds every bean (unseen rebuilds: EX-SITE-FIRST-TOUCH). It mirrors legacy's cache: Minimal Change does not apply.
+ */
+export function siteFirstTouch(site: SiteData, name: string, compute: () => string): string {
+  const store = firstTouchStore();
+  const fingerprint = JSON.stringify(site.record);
+  let entry = store.get(site.siteid);
+  if (entry?.fingerprint !== fingerprint) {
+    if (entry !== undefined) store.clear();
+    entry = { fingerprint, values: new Map() };
+    store.set(site.siteid, entry);
+  }
+  let value = entry.values.get(name);
+  if (value === undefined) {
+    value = compute();
+    entry.values.set(name, value);
+  }
+  return value;
+}
+
+/** Forgets every first-touch value, as a rebuild of every site bean does. */
+export function resetSiteFirstTouchForTests(): void {
+  firstTouchStore().clear();
+}
+
 /** The getters of `site` for `ctx` (`settingsBean.cfc` 743-849, 1395-1530; `configBean.cfc` 517-528, 1855-1914). */
 export function sitePaths(ctx: PathRequest, site: SiteBean): SitePaths {
   const settings = legacySettings();

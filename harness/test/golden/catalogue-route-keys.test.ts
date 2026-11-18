@@ -153,6 +153,8 @@ describe('golden catalogue covers', () => {
     ['GS-CO-05', 'reads', 'api:content.findrelatedcontent'],
     ['GS-CO-05', 'reads', 'api:content.findversionhistory'],
     ['GS-CO-07', 'uploader-post-image', 'admin:carch.multifileupload{upload=image}'],
+    ['GS-CO-08', 'sort', 'admin:carch.list'],
+    ['GS-CO-08', 'sort-home', 'admin:carch.list{sharedid}'],
     ['GS-CO-09', 'pending-version', 'api:content.findversionhistory'],
     ['GS-CO-09', 'chain-edit', 'admin:cchain.edit'],
     ['GS-CO-09', 'approve', 'admin:carch.approvalaction{action=approve}'],

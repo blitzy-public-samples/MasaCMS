@@ -74,6 +74,7 @@ describe('CONTENT_CONFIG_DEFAULTS', () => {
     ['FMAllowedExtensions', 'fmAllowedExtensions', CONTENT_CONFIG_DEFAULTS.fmAllowedExtensions],
     ['FMPublicAllowedExtensions', 'fmPublicAllowedExtensions', CONTENT_CONFIG_DEFAULTS.fmPublicAllowedExtensions],
     ['strictExtendedData', 'strictExtendedData', CONTENT_CONFIG_DEFAULTS.strictExtendedData],
+    ['sortPermission', 'sortPermission', CONTENT_CONFIG_DEFAULTS.sortPermission],
   ])('%s equals the configBean.cfc default (%s)', (legacyName, _field, value) => {
     expect(String(value)).toBe(configBeanDefault(legacyName));
   });
@@ -87,6 +88,7 @@ describe('CONTENT_CONFIG_DEFAULTS', () => {
       fmAllowedExtensions: EXTENSIONS,
       fmPublicAllowedExtensions: EXTENSIONS,
       strictExtendedData: true,
+      sortPermission: '',
     });
     expect(Object.isFrozen(CONTENT_CONFIG_DEFAULTS)).toBe(true);
   });

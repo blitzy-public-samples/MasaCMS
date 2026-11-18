@@ -1190,7 +1190,11 @@ describe("the gateway's identity and migration calls against their producer cont
     identityResults.state = await identity.state(CONSUMER_SESSION);
     identityResults.adminSite = await identity.adminSite(CONSUMER_SESSION);
     identityResults.adminState = await identity.adminState(CONSUMER_SESSION);
-    identityResults.importAdminState = await identity.importAdminState(CONSUMER_SESSION, { siteid: 'tenant-a', mura: { nextN: '5' } });
+    identityResults.importAdminState = await identity.importAdminState(
+      CONSUMER_SESSION,
+      { siteid: 'tenant-a', mura: { nextN: '5', flatViewArgs: { 'tenant-a': { tab: 1, filtered: 'No' } } } },
+      { flatViewArgs: { 'tenant-a': { tab: 0, filtered: false } } },
+    );
     identityResults.snapshot = await identity.snapshot(CONSUMER_SESSION);
     identityResults.claim = await identity.claim({ sessionId: CONSUMER_SESSION, token: CSRF_TOKEN, expires: '260630130000000', context: 'contract' });
     identityResults.settle = await identity.settle({ sessionId: CONSUMER_SESSION, consumed: [CSRF_TOKEN], released: [] });

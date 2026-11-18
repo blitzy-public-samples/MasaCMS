@@ -1350,7 +1350,7 @@ function conditionAlternatives(c: VariantCondition): Predicates[] | null {
     const alternatives = c.anyOf.map(conditionAlternatives);
     return alternatives.some((a) => a === null) ? null : alternatives.flatMap((a) => a ?? []);
   }
-  if ('not' in c || 'multipartExtensionIn' in c || 'sessionManaged' in c || 'startupSiteId' in c) return null;
+  if ('not' in c || 'multipartExtensionIn' in c || 'sessionManaged' in c || 'startupSiteId' in c || 'listItemIn' in c) return null;
   if ('equals' in c) return [{ [c.param]: c.equals }];
   if ('in' in c) return c.in.map((v) => ({ [c.param]: v }));
   return [{ [c.param]: 'nonEmpty' in c ? true : CFML_TRUTHY }];
@@ -1425,6 +1425,8 @@ function satisfyingRequest(when: readonly VariantCondition[]): {
       params[c.param] = c.equals;
     } else if ('in' in c) {
       params[c.param] = c.in[0] ?? '';
+    } else if ('listItemIn' in c) {
+      params[c.param] = c.listItemIn[0] ?? '';
     } else {
       params[c.param] = 'nonEmpty' in c ? params[c.param] || 'x' : 'true';
     }

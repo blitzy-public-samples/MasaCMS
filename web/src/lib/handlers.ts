@@ -261,6 +261,8 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         mode: input.mode,
         now,
       });
+      // Read before the screen runs: its `mura` writes replace this object, which is the base identity stores them against.
+      const storedMura = req.session.muraValues;
       context = {
         locale: req.session.locale,
         acceptEncoding: context.acceptEncoding,
@@ -284,7 +286,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
           ? { answer: answers.redirect(decision.location, req.pendingSetCookies, context) }
           : await dispatch.run(ctx, context);
       // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
-      await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes });
+      await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes }, storedMura);
       return outcome.answer;
     } catch (error) {
       if (outcome !== undefined) answers.abandon(outcome.answer);

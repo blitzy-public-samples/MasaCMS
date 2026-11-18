@@ -72,6 +72,7 @@ import {
   saveCopyInfo,
   saveQuickEdit,
   siteManagerTab,
+  sortSiteManagerLevel,
   unlockFile,
   unlockNode,
   updateObjectParams,
@@ -669,7 +670,7 @@ async function renderBaseOf(request: FastifyRequest, ctx: ContentRouteContext, a
       privateUserPoolId: pools?.privateUserPoolId ?? site.siteId,
       extranet: false,
     },
-    config: { sortPermission: '', adminDir: '/admin', context: site.urls.context },
+    config: { sortPermission: ctx.domain.config.sortPermission, adminDir: '/admin', context: site.urls.context },
   };
 }
 
@@ -887,6 +888,7 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   if (rcHas(url, 'keywords')) saves.keywords = rcText(url, 'keywords');
   if (muraChanged) saves.mura = mura;
   if (Object.keys(saves).length > 0) await saveSession(request, saves);
+  await inViewSort(request, ctx, actor, rc, first);
   const clipboard = sessionStateOf(state);
   rcSet(rc, 'copyContentID', clipboard.copyContentId);
   rcSet(rc, 'copySiteID', clipboard.copySiteId);
@@ -901,6 +903,35 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   rcSet(rc, 'variations', ctx.domain.config.variations);
   if (!rcHas(url, 'activeTab')) rcSet(rc, 'activeTab', rcGet(flat.args, 'tab'));
   return viewModel(rc);
+}
+
+/** list.cfm's in-view sort (list.cfm:590-634) when `rc.orderperm` allows it, keeping the `rc.sortDirection` it writes; `top` is the stored `rsTop` row. */
+async function inViewSort(
+  request: FastifyRequest,
+  ctx: ContentRouteContext,
+  actor: Actor,
+  rc: Rc,
+  top: { sortby: string | null; sortdirection: string | null } | undefined,
+): Promise<void> {
+  const perm = rcText(rc, 'orderperm');
+  if (!rcHas(rc, 'orderperm') || !(cfEq(perm, 'editor') || (cfEq(perm, 'author') && cfEq(ctx.domain.config.sortPermission, 'author')))) return;
+  const sorted = rcFlag(rc, 'sorted');
+  const orderIds = rcHas(rc, 'orderid') ? cfListToArray(rcText(rc, 'orderid')) : undefined;
+  // Legacy's order loop alone does arithmetic on `rc.startrow`, so only a non-empty `orderid` list fails on a non-number.
+  const startRow = orderIds !== undefined && orderIds.length > 0 ? cfToNumber(rcGet(rc, 'startrow')) : 1;
+  const sortDirection = await sortSiteManagerLevel(ctx.domain, actor, {
+    siteId: rcText(rc, 'siteid'),
+    topId: rcText(rc, 'topid'),
+    sortBy: rcText(rc, 'sortBy'),
+    sortDirection: rcText(rc, 'sortDirection'),
+    sorted,
+    orderIds,
+    startRow,
+    storedSortBy: top?.sortby ?? '',
+    storedSortDirection: top?.sortdirection ?? '',
+    requestId: request.id,
+  });
+  if (sortDirection !== rcText(rc, 'sortDirection')) rcSet(rc, 'sortDirection', sortDirection);
 }
 
 /** `contentManager.getList(rc)` (contentManager.cfc:147-243) with list()'s empty-result fallback to the module's top. */

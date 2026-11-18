@@ -1,6 +1,8 @@
-// The cUsers list, search and advanced-search loaders and the Web Service Connected Account choices over people's
-// page-only `items`: the rows shown, the iterator's page index and the download button stay those of the whole result.
+// The cUsers list, search and advanced-search loaders over people's page-only `items`: the rows shown, the iterator's
+// page index and the download button stay those of the whole result. The Web Service Connected Account choices read the
+// user feed.
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { components } from '@/generated/clients/people';
 import { createCsrfRenderer } from '@/lib/csrf';
@@ -25,6 +27,7 @@ const SEARCH_ROUTE = routeKey('GET', 'people', '/v2/users/search');
 const ADVANCED_ROUTE = routeKey('GET', 'people', '/v2/users/advanced-search');
 const ADVANCED_STORE_ROUTE = routeKey('POST', 'people', '/v2/users/advanced-search');
 const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
+const FEED_ROUTE = routeKey('GET', 'people', '/v1/users/feed');
 
 let restoreEnv: () => void;
 
@@ -133,15 +136,10 @@ describe('cUsers.advancedSearchToCSV', () => {
 });
 
 describe('cwebservice.edit Connected Account choices', () => {
-  it('collects every page of the system users, a page of 1000 per call', async () => {
-    const people = Array.from({ length: 1500 }, (_, index) => row(index + 1));
-    const answerPage = (request: RecordedRequest): FakeReply => {
-      const page = Number(request.query.startrow);
-      const perPage = Number(request.query.recordsperpage);
-      const items = people.slice((page - 1) * perPage, page * perPage);
-      return { status: 200, body: { items, nextn: nextn(people.length, perPage, page), listUnassignedUsers: [] } };
-    };
-    const gateway = fakeGatewayClient({ [LIST_ROUTE]: answerPage, [CSRF_ROUTE]: issueTokens });
+  it("renders a new client's accounts for an S2 admin from one feed call, all 1000 in the feed's order", async () => {
+    // The feed's cap of the pool by last name, so `Person 10` precedes `Person 2`.
+    const feed = Array.from({ length: 1000 }, (_, index) => row(index + 1)).sort((a, b) => String(a.Lname).localeCompare(String(b.Lname)));
+    const gateway = fakeGatewayClient({ [FEED_ROUTE]: { status: 200, body: { items: feed } }, [CSRF_ROUTE]: issueTokens });
     const req = adminS2Request({ circuit: 'cwebservice', item: 'edit', rc: { siteid: 'default' } });
     const state = {
       clientid: 'CC000000-0000-0000-0000000000000001',
@@ -154,12 +152,16 @@ describe('cwebservice.edit Connected Account choices', () => {
       redirecturl: '',
       exists: false,
     };
-    const body = toString((await renderEditView(contextFor(req, gateway), state)).body);
-    const listCalls = gateway.calls.filter((call) => call.service === 'people');
-    expect(listCalls.map((call) => call.query)).toEqual([
-      { siteid: 'default', ispublic: '0', startrow: '1', recordsperpage: '1000' },
-      { siteid: 'default', ispublic: '0', startrow: '2', recordsperpage: '1000' },
+    const $ = cheerio.load(toString((await renderEditView(contextFor(req, gateway), state)).body));
+    expect(gateway.calls.filter((call) => call.service === 'people')).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/v1/users/feed', query: { siteid: 'default', ispublic: '0' } }),
     ]);
-    expect(people.every((person) => body.includes(person.UserID))).toBe(true);
+    const options = $('select[name="userid"] option')
+      .map((_, option) => ({ value: $(option).attr('value'), label: $(option).text(), selected: $(option).is('[selected]') }))
+      .get();
+    expect(options).toEqual([
+      { value: '', label: '-- Select Account --', selected: false },
+      ...feed.map(({ UserID, Fname, Lname }) => ({ value: UserID, label: `${Fname} ${Lname}`, selected: false })),
+    ]);
   });
 });

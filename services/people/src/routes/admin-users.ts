@@ -42,6 +42,7 @@ import {
   getSearchPage,
   getSearchStream,
   getUnassignedUsersStream,
+  getUserFeed,
   getUsersPage,
   getUsersStream,
   newAdvancedSearchCriteria,
@@ -89,6 +90,7 @@ type RouteRedirect = Schemas['RouteRedirect'];
 type CurrentUserQuery = operations['readCurrentUser']['parameters']['query'];
 type PoolUser = Schemas['PoolUser'];
 type PoolUserQuery = operations['readPoolUser']['parameters']['query'];
+type UserFeedQuery = NonNullable<operations['listUserFeed']['parameters']['query']>;
 
 /** What the cUsers reads use; `photoFileExts` is strategies-content's photo lookup, without which every `photoFileExt` is ''. */
 export type AdminUserRouteDeps = {
@@ -136,6 +138,18 @@ const CURRENT_USER_QUERY = {
     endpoint: { type: 'string', minLength: 1 },
     adminpath: { type: 'string', minLength: 1 },
     groupids: { type: 'string' },
+  },
+} as const;
+
+// The cWebService gate admits S2 only [legacy: admin/core/controllers/cwebservice.cfc:82-88]; the hooks hold `siteid` to the token's site.
+const USER_FEED_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([Roles.s2]) });
+
+// The listUserFeed query as the contract declares it; Fastify validates it once, before the handler.
+const USER_FEED_QUERY = {
+  type: 'object',
+  properties: {
+    siteid: { type: 'string', minLength: 1 },
+    ispublic: { type: 'string', enum: ['0', '1'], default: '1' },
   },
 } as const;
 
@@ -1025,6 +1039,19 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
       const sanitize = ctx.routeid === '' && ctx.returnurl !== '' ? await hrefSanitizer(deps.db, claims) : (href: string) => href;
       return { redirect: routeRedirect(ctx, sanitize) };
     }),
+  );
+
+  // The Connected Account choices of `cwebservice.edit` [legacy: admin/core/views/cwebservice/edit.cfm:68].
+  app.get<{ Querystring: UserFeedQuery }>(
+    '/v1/users/feed',
+    { schema: { querystring: USER_FEED_QUERY }, config: { opt2: USER_FEED_AUTH } },
+    async (request): Promise<Schemas['UserFeed']> => {
+      const claims = request.opt2Auth.user;
+      if (claims === undefined || claims.sub === '') throw AuthDenial.unauthenticated('missing-credential');
+      abandonOnDisconnect(request);
+      const rows = await getUserFeed(search, viewerScopeFor(claims), { isPublic: request.query.ispublic }, { batchSize: LOOKUP_MAX_IDS });
+      return { items: rows.map(userListRow) };
+    },
   );
 
   // The user read of identity's JSON API `findCurrentUser`, in the JSON API's serialization [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:2268-2290]

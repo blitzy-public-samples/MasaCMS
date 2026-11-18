@@ -17,6 +17,7 @@ import {
 } from '@/screens/cusers/edituser';
 import { USER_BEAN_RC_KEY, updateUserAction } from '@/screens/cusers/update';
 import type { ScreenContext } from '@/screens/registry';
+import { siteListItemById } from '../../fixtures/programs-sites/sites';
 import { adminS2Request, editorRequest, siteAdminRequest, unservedEditorRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
@@ -41,6 +42,9 @@ const NO_INTEREST_GROUPS: FakeReply = { status: 200, body: { items: [] } };
 const INTEREST_ROUTES = Object.fromEntries(
   ['default', 'tenant-a'].map((site) => [routeKey('GET', 'strategies-content', `/v1/sites/${site}/private-interest-groups`), NO_INTEREST_GROUPS]),
 );
+// The oracle registers only `default`, so programs-sites lists that one site.
+const SITE_LIST_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites');
+const SITE_LIST_ROUTES = { [SITE_LIST_ROUTE]: { status: 200, body: [siteListItemById.default] } };
 
 // The form region (`mura-header` to `</form>`) of the legacy ACF 2023 server's cUsers.editUser for the admin on
 // `default`, its CSRF pair replaced by FIXED_CSRF: a new user with address fields in the URL, and qa_editor.
@@ -126,7 +130,7 @@ const editUserRequest = (rc: Readonly<Record<string, string>>, partial: Paramete
 /** A screen context for `req` over a gateway answering people's edit read with `edit`, or with `reply`. */
 function contextFor(req: AdminRequest, edit: UserEditData | FakeReply): ScreenContext & { gateway: FakeGatewayClient } {
   const reply: FakeReply = 'status' in edit ? edit : { status: 200, body: edit };
-  return makeScreenContext({ req, gateway: fakeGatewayClient({ [EDIT_ROUTE]: reply, ...INTEREST_ROUTES }), now: NOW });
+  return makeScreenContext({ req, gateway: fakeGatewayClient({ [EDIT_ROUTE]: reply, ...INTEREST_ROUTES, ...SITE_LIST_ROUTES }), now: NOW });
 }
 
 /** The form body the registered screen loads and renders, optionally with `sources` in place of the unserved ones. */
@@ -287,11 +291,12 @@ describe('cUsers.editUser policy branches', () => {
     ["a stored user, selecting its own site and the session's", true, ['default', 'tenant-a']],
     ["a new user, selecting the session's site only", false, ['default']],
   ])('offers the S2 site select for %s', async (_label, stored, selected) => {
-    const sites = [{ siteID: 'default', site: 'Default' }, { siteID: 'tenant-a', site: 'Tenant <A>' }];
+    const sites = [siteListItemById.default, { ...siteListItemById['tenant-a'], site: 'Tenant <A>' }];
     const edit = stored
-      ? editData({ user: { ...EDITOR, SiteID: 'tenant-a' }, sites })
-      : { ...NEW_USER, user: { ...NEW_USER.user, SiteID: 'tenant-a' }, sites };
+      ? editData({ user: { ...EDITOR, SiteID: 'tenant-a' } })
+      : { ...NEW_USER, user: { ...NEW_USER.user, SiteID: 'tenant-a' } };
     const ctx = contextFor(editUserRequest({ userid: stored ? EDITOR_ID : '' }), edit);
+    ctx.gateway.setRoute(SITE_LIST_ROUTE, { status: 200, body: sites });
 
     const body = await formOf(ctx);
 

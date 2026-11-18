@@ -123,7 +123,7 @@ async function commentSiteFor(request: FastifyRequest, ctx: ContentRouteContext,
 // The comment views read only the labels, the site's URL settings and session.locale; the session and site values they
 // never read keep legacy's initial ones.
 /** The render context of the comment views for `actor`. */
-function viewContext(actor: Actor, settings: SiteContentSettings): AdminRenderContext {
+function viewContext(ctx: ContentRouteContext, actor: Actor, settings: SiteContentSettings): AdminRenderContext {
   return {
     labels: COMMENT_VIEW_LABELS,
     session: {
@@ -148,7 +148,7 @@ function viewContext(actor: Actor, settings: SiteContentSettings): AdminRenderCo
       privateUserPoolId: actor.siteId,
       extranet: false,
     },
-    config: { sortPermission: '', adminDir: '/admin', context: '' },
+    config: { sortPermission: ctx.domain.config.sortPermission, adminDir: '/admin', context: '' },
     csrf: () => {
       throw new Error('The ccomments views render no CSRF token');
     },
@@ -190,7 +190,7 @@ async function loadCommentsFragment(request: FastifyRequest, ctx: ContentRouteCo
   const page = await loadComments(ctx.domain, actor, legacyParamsOf(request), session);
   const categories = await categoryTree(ctx, actor);
   const settings = await siteSettingsOf(request, ctx, actor);
-  return renderLoadComments({ ...page, categories }, viewContext(actor, settings));
+  return renderLoadComments({ ...page, categories }, viewContext(ctx, actor, settings));
 }
 
 // isEditor (ccomments.cfc:292-295) is not computed: loadcommentspage.cfm never prints it, and the circuit gate already
@@ -202,7 +202,7 @@ async function loadCommentsPageFragment(request: FastifyRequest, ctx: ContentRou
   // A commenter's user photo (tusers.photoFileID) is people's data, out of this service's reach, so avatars are Gravatars.
   const rows = page.rows.map((row) => ({ ...row, remoteUser: null }));
   const model = { commentId: page.commentId, upperId: page.upperId, lowerId: page.lowerId, rows, now: page.now };
-  return renderLoadCommentsPage(model, viewContext(actor, settings));
+  return renderLoadCommentsPage(model, viewContext(ctx, actor, settings));
 }
 
 /**

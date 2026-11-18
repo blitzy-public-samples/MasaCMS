@@ -3,8 +3,7 @@ import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-comp
 import { okBody } from '@/lib/gateway-client';
 import { relayField } from '@/lib/request-context';
 import type { PageRedirect, Rc, ScreenContext, SubmitResult } from '../registry';
-import { loadEditState, renderEditView, type WebServiceEditState, type WebServiceErrors } from './edit';
-import { effectiveGrantType } from './list';
+import { clientState, loadEditState, renderEditView } from './edit';
 
 const OPERATION = 'saveOAuthClient';
 
@@ -38,26 +37,9 @@ function rcField(rc: Rc, name: string): string | undefined {
   return key === undefined ? undefined : rc[key];
 }
 
-/** The bean after `loadBy(clientid=rc.clientid).set(rc).validate()`, as the edit view renders it. */
-function beanState(rc: Rc, siteid: string, exists: boolean, errors: WebServiceErrors): WebServiceEditState {
-  const field = (name: string): string => rcField(rc, name) ?? '';
-  return {
-    clientid: field('clientid'),
-    clientsecret: field('clientsecret'),
-    siteid,
-    name: field('name'),
-    description: field('description'),
-    granttype: effectiveGrantType(rcField(rc, 'granttype')),
-    userid: field('userid'),
-    redirecturl: field('redirecturl'),
-    exists,
-    errors,
-  };
-}
-
 /**
  * Identity validates the client, then saves it only under a valid CSRF token for `rc.clientid`; no errors redirect to
- * the list, errors re-render the edit form.
+ * the list, errors re-render the edit form with the bean identity answers, its `save()`-generated secret included.
  * @throws GatewayUnavailableError When identity is unavailable; the handler answers the legacy 503.
  * @throws GatewayDenialError When identity answers 401 or 403; any other non-2xx answer throws `Error`.
  */
@@ -71,9 +53,9 @@ export async function submitSave(ctx: ScreenContext): Promise<SubmitResult> {
     params: { clientId: rcField(rc, 'clientid') ?? '' },
     form,
   });
-  const { errors } = okBody(response, 'identity', OPERATION);
+  const { client, errors } = okBody(response, 'identity', OPERATION);
   if (Object.keys(errors).length === 0) return LIST_REDIRECT;
   // A save with errors writes nothing, so a read now tells whether `loadBy` found a stored client.
   const { exists } = await loadEditState(ctx);
-  return { kind: 'render', view: await renderEditView(ctx, beanState(rc, siteid, exists, errors)) };
+  return { kind: 'render', view: await renderEditView(ctx, { ...clientState(client, exists), errors }) };
 }

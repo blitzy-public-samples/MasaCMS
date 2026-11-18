@@ -58943,6 +58943,2077 @@
               "disposition": "carry",
               "dispositionReason": "single owner strategies-content among the migrated services",
               "dispositionStep": 5,
+              "exceptionRef": "EX-CARCH-SORT-SHARED-ID",
+              "expected": {
+                "disposition": "carry",
+                "owningService": "strategies-content",
+                "ref": "AAP 0.3.2"
+              },
+              "fileStoreWrite": false,
+              "haltedBy": "EX-CARCH-SORT-SHARED-ID",
+              "id": "ctl:carch.list{sharedid}",
+              "layout": "request",
+              "legacyWrite": true,
+              "order": 1,
+              "ownerBasis": "table-ownership",
+              "owners": [
+                "strategies-content"
+              ],
+              "owningService": "strategies-content",
+              "precedence": 1,
+              "predicate": {
+                "variant": "sharedid",
+                "when": [
+                  {
+                    "in": [
+                      "editor",
+                      "author"
+                    ],
+                    "param": "orderperm"
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "listItemIn": [
+                          "00000000000000000000000000000000000",
+                          "00000000000000000000000000000000001",
+                          "00000000000000000000000000000000003",
+                          "00000000000000000000000000000000004",
+                          "00000000000000000000000000000000005",
+                          "00000000000000000000000000000000008",
+                          "00000000000000000000000000000000009",
+                          "00000000000000000000000000000000010",
+                          "00000000000000000000000000000000011",
+                          "00000000000000000000000000000000012",
+                          "00000000000000000000000000000000014",
+                          "00000000000000000000000000000000015",
+                          "00000000000000000000000000000000016",
+                          "00000000000000000000000000000000099"
+                        ],
+                        "param": "topid"
+                      },
+                      {
+                        "listItemIn": [
+                          "00000000000000000000000000000000000",
+                          "00000000000000000000000000000000001",
+                          "00000000000000000000000000000000003",
+                          "00000000000000000000000000000000004",
+                          "00000000000000000000000000000000005",
+                          "00000000000000000000000000000000008",
+                          "00000000000000000000000000000000009",
+                          "00000000000000000000000000000000010",
+                          "00000000000000000000000000000000011",
+                          "00000000000000000000000000000000012",
+                          "00000000000000000000000000000000014",
+                          "00000000000000000000000000000000015",
+                          "00000000000000000000000000000000016",
+                          "00000000000000000000000000000000099"
+                        ],
+                        "param": "orderid"
+                      },
+                      {
+                        "not": {
+                          "nonEmpty": true,
+                          "param": "topid"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "protocol": null,
+              "redirectTarget": null,
+              "requiredRole": {
+                "classification": {
+                  "anyOf": [
+                    "s2",
+                    "site-admin",
+                    "m:000"
+                  ]
+                },
+                "gate": "!variables.permUtility.getModulePerm('00000000000000000000000000000000000',arguments.rc.siteid)",
+                "override": null,
+                "pattern": "P4",
+                "source": {
+                  "lines": [
+                    17,
+                    19
+                  ],
+                  "path": "admin/core/controllers/carch.cfc"
+                },
+                "unclassified": false
+              },
+              "responseMode": "page",
+              "routeKey": "admin:carch.list{sharedid}",
+              "sessionEffects": "none",
+              "source": {
+                "lines": [
+                  214,
+                  228
+                ],
+                "path": "admin/core/controllers/carch.cfc"
+              },
+              "unresolvedCalls": [
+                {
+                  "call": "beanInstance.getEntityDisplayName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      309,
+                      309
+                    ],
+                    "path": "admin/core/views/carch/dsp_secondary_menu.cfm"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "dsp_secondary_menu.(template)"
+                  ]
+                },
+                {
+                  "call": "beanInstance.pluralizeHasRefName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      309,
+                      309
+                    ],
+                    "path": "admin/core/views/carch/dsp_secondary_menu.cfm"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "dsp_secondary_menu.(template)"
+                  ]
+                },
+                {
+                  "call": "beanInstance.getEntityDisplayName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      316,
+                      316
+                    ],
+                    "path": "admin/core/views/carch/dsp_secondary_menu.cfm"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "dsp_secondary_menu.(template)"
+                  ]
+                },
+                {
+                  "call": "beanInstance.pluralizeHasRefName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      316,
+                      316
+                    ],
+                    "path": "admin/core/views/carch/dsp_secondary_menu.cfm"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "dsp_secondary_menu.(template)"
+                  ]
+                },
+                {
+                  "call": "themeRenderer.injectMethod",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      177,
+                      177
+                    ],
+                    "path": "core/mura/MasaScope.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.getExtendSetByName",
+                    "extendSubType.getExtendSetBean",
+                    "extendSubType.getContentRenderer",
+                    "MasaScope.getContentRenderer"
+                  ]
+                },
+                {
+                  "call": "themeRenderer.injectMethod('$',event(\"muraScope\")).injectMethod",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      177,
+                      177
+                    ],
+                    "path": "core/mura/MasaScope.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.getExtendSetByName",
+                    "extendSubType.getExtendSetBean",
+                    "extendSubType.getContentRenderer",
+                    "MasaScope.getContentRenderer"
+                  ]
+                },
+                {
+                  "call": "themeRenderer.injectMethod('$',event(\"muraScope\")).injectMethod('mura',event(\"muraScope\")).injectMethod",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      177,
+                      177
+                    ],
+                    "path": "core/mura/MasaScope.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.getExtendSetByName",
+                    "extendSubType.getExtendSetBean",
+                    "extendSubType.getContentRenderer",
+                    "MasaScope.getContentRenderer"
+                  ]
+                },
+                {
+                  "call": "themeRenderer.init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      178,
+                      178
+                    ],
+                    "path": "core/mura/MasaScope.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.getExtendSetByName",
+                    "extendSubType.getExtendSetBean",
+                    "extendSubType.getContentRenderer",
+                    "MasaScope.getContentRenderer"
+                  ]
+                },
+                {
+                  "call": "bean.has",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      132,
+                      132
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "bean.OnMissingMethod"
+                  ]
+                },
+                {
+                  "call": "bean.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      138,
+                      138
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "bean.OnMissingMethod"
+                  ]
+                },
+                {
+                  "call": "obj.setSiteID",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      364,
+                      364
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      367,
+                      367
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      369,
+                      369
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.loadBy",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      372,
+                      372
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.loadBy(argumentCollection=loadArgs).set",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      372,
+                      372
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.get",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      374,
+                      374
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      374,
+                      374
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.get",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      384,
+                      384
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      384,
+                      384
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.setSiteID",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      396,
+                      396
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      399,
+                      399
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.getPrimaryKey",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      401,
+                      401
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.loadBy",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      404,
+                      404
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "obj.loadBy(argumentCollection=loadArgs).set",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      404,
+                      404
+                    ],
+                    "path": "core/mura/bean/bean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.addParam",
+                    "categoryBean.loadBy",
+                    "categoryManager.read",
+                    "categoryDAO.read",
+                    "bean.set"
+                  ]
+                },
+                {
+                  "call": "getBean(p.relatesto).getValue",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      120,
+                      120
+                    ],
+                    "path": "core/mura/bean/beanFactory.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean"
+                  ]
+                },
+                {
+                  "call": "variables.parent.containsBean",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      91,
+                      91
+                    ],
+                    "path": "core/mura/bean/ioc.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.containsBean",
+                    "ioc.containsBean"
+                  ]
+                },
+                {
+                  "call": "head.listener",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      682,
+                      682
+                    ],
+                    "path": "core/mura/bean/ioc.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "ioc.addAlias",
+                    "ioc.discoverBeans",
+                    "ioc.onLoadEvent"
+                  ]
+                },
+                {
+                  "call": "head.listener.onLoad",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      684,
+                      684
+                    ],
+                    "path": "core/mura/bean/ioc.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "ioc.addAlias",
+                    "ioc.discoverBeans",
+                    "ioc.onLoadEvent"
+                  ]
+                },
+                {
+                  "call": "getBean( head.listener ).onLoad",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      687,
+                      687
+                    ],
+                    "path": "core/mura/bean/ioc.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "ioc.addAlias",
+                    "ioc.discoverBeans",
+                    "ioc.onLoadEvent"
+                  ]
+                },
+                {
+                  "call": "head.listener.toString",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      689,
+                      689
+                    ],
+                    "path": "core/mura/bean/ioc.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "ioc.addAlias",
+                    "ioc.discoverBeans",
+                    "ioc.onLoadEvent"
+                  ]
+                },
+                {
+                  "call": "variables.collection.get",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      151,
+                      151
+                    ],
+                    "path": "core/mura/cache/cacheAbstract.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "permission.queryPermFilter",
+                    "contentGatewayAdobe.getCrumblist",
+                    "cacheSimple.get",
+                    "cacheAbstract.get"
+                  ]
+                },
+                {
+                  "call": "cacheData.object.get",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      155,
+                      155
+                    ],
+                    "path": "core/mura/cache/cacheAbstract.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "permission.queryPermFilter",
+                    "contentGatewayAdobe.getCrumblist",
+                    "cacheSimple.get",
+                    "cacheAbstract.get"
+                  ]
+                },
+                {
+                  "call": "variables.collection.put",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      196,
+                      196
+                    ],
+                    "path": "core/mura/cache/cacheAbstract.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "permission.queryPermFilter",
+                    "contentGatewayAdobe.getCrumblist",
+                    "cacheSimple.get",
+                    "cacheSimple.set",
+                    "cacheAbstract.set"
+                  ]
+                },
+                {
+                  "call": "variables.collection.get",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      219,
+                      219
+                    ],
+                    "path": "core/mura/cache/cacheAbstract.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "permission.queryPermFilter",
+                    "contentGatewayAdobe.getCrumblist",
+                    "cacheAbstract.has"
+                  ]
+                },
+                {
+                  "call": "cacheData.object.get",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      222,
+                      222
+                    ],
+                    "path": "core/mura/cache/cacheAbstract.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "permission.queryPermFilter",
+                    "contentGatewayAdobe.getCrumblist",
+                    "cacheAbstract.has"
+                  ]
+                },
+                {
+                  "call": "this.onMissingMethod",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      265,
+                      265
+                    ],
+                    "path": "core/mura/cfobject.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "beanORM.validate",
+                    "bean.validate",
+                    "beanValidator.validate",
+                    "beanValidator.getConditionsMeetFlag",
+                    "cfobject.invokeMethod"
+                  ]
+                },
+                {
+                  "call": "entity.registerAsEntity",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2029,
+                      2029
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean"
+                  ]
+                },
+                {
+                  "call": "entity.checkSchema",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2032,
+                      2032
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean"
+                  ]
+                },
+                {
+                  "call": "entity.getEntityName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2036,
+                      2036
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean"
+                  ]
+                },
+                {
+                  "call": "entity.isOrm",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2071,
+                      2071
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean"
+                  ]
+                },
+                {
+                  "call": "entity.getEntityName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2077,
+                      2077
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean"
+                  ]
+                },
+                {
+                  "call": "createObject('component','#package#.#beanName#').init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2118,
+                      2118
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerHandlerDir"
+                  ]
+                },
+                {
+                  "call": "beanInstance.onApplicationLoad",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2131,
+                      2131
+                    ],
+                    "path": "core/mura/configBean.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerHandlerDir"
+                  ]
+                },
+                {
+                  "call": "variables.m.event",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2762,
+                      2762
+                    ],
+                    "path": "core/mura/content/contentRenderer.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "queryParam.init",
+                    "queryParam.setCriteria",
+                    "contentRenderer.setDynamicContent"
+                  ]
+                },
+                {
+                  "call": "variables.m.event().setValue",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2762,
+                      2762
+                    ],
+                    "path": "core/mura/content/contentRenderer.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "queryParam.init",
+                    "queryParam.setCriteria",
+                    "contentRenderer.setDynamicContent"
+                  ]
+                },
+                {
+                  "call": "variables.m.announceEvent",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2763,
+                      2763
+                    ],
+                    "path": "core/mura/content/contentRenderer.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "queryParam.init",
+                    "queryParam.setCriteria",
+                    "contentRenderer.setDynamicContent"
+                  ]
+                },
+                {
+                  "call": "variables.m.event",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2767,
+                      2767
+                    ],
+                    "path": "core/mura/content/contentRenderer.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "queryParam.init",
+                    "queryParam.setCriteria",
+                    "contentRenderer.setDynamicContent"
+                  ]
+                },
+                {
+                  "call": "variables.m.event().setValue",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2767,
+                      2767
+                    ],
+                    "path": "core/mura/content/contentRenderer.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "queryParam.init",
+                    "queryParam.setCriteria",
+                    "contentRenderer.setDynamicContent"
+                  ]
+                },
+                {
+                  "call": "variables.m.announceEvent",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2768,
+                      2768
+                    ],
+                    "path": "core/mura/content/contentRenderer.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "feedBean.getQuery",
+                    "feedManager.getFeed",
+                    "feedGateway.getFeed",
+                    "queryParam.init",
+                    "queryParam.setCriteria",
+                    "contentRenderer.setDynamicContent"
+                  ]
+                },
+                {
+                  "call": "#getBaseTable()#",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      655,
+                      661
+                    ],
+                    "path": "core/mura/extend/extendSubType.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.save"
+                  ]
+                },
+                {
+                  "call": "arguments.event.event",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1422,
+                      1422
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1454,
+                      1454
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1495,
+                      1495
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1541,
+                      1541
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1581,
+                      1581
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript"
+                  ]
+                },
+                {
+                  "call": "arguments.event.event",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1661,
+                      1661
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1711,
+                      1711
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1757,
+                      1757
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1806,
+                      1806
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1849,
+                      1849
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().executeScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      1893,
+                      1893
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScripts"
+                  ]
+                },
+                {
+                  "call": "arguments.event.event",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2319,
+                      2319
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "js.(template)",
+                    "pluginManager.renderScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().renderScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2447,
+                      2447
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "js.(template)",
+                    "pluginManager.renderScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().renderScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2573,
+                      2573
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "js.(template)",
+                    "pluginManager.renderScripts"
+                  ]
+                },
+                {
+                  "call": "getExecutor().renderScript",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2638,
+                      2638
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "js.(template)",
+                    "pluginManager.renderScripts"
+                  ]
+                },
+                {
+                  "call": "createObject(\"component\",componentPath).init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2868,
+                      2868
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript",
+                    "pluginManager.getComponent"
+                  ]
+                },
+                {
+                  "call": "createObject(\"component\",componentPath).init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2870,
+                      2870
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript",
+                    "pluginManager.getComponent"
+                  ]
+                },
+                {
+                  "call": "createObject(\"component\",componentPath).init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      2877,
+                      2877
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save",
+                    "pluginManager.announceEvent",
+                    "pluginManager.executeScript",
+                    "pluginManager.getComponent"
+                  ]
+                },
+                {
+                  "call": "eventHandler.init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      3132,
+                      3132
+                    ],
+                    "path": "core/mura/plugin/pluginManager.cfc"
+                  },
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerHandlerDir",
+                    "pluginManager.addEventHandler",
+                    "pluginManager.getEventHandlerFromPath"
+                  ]
+                },
+                {
+                  "call": "variables.javaLocale.init",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      39,
+                      39
+                    ],
+                    "path": "core/mura/resourceBundle/resourceBundle.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "resourceBundleFactory.getResourceBundle",
+                    "resourceBundle.init"
+                  ]
+                },
+                {
+                  "call": "variables.parentFactory.getKeyValue",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      127,
+                      127
+                    ],
+                    "path": "core/mura/resourceBundle/resourceBundleFactory.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "resourceBundleFactory.getKeyValue"
+                  ]
+                },
+                {
+                  "call": "variables.parentFactory.getKeyValue",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      137,
+                      137
+                    ],
+                    "path": "core/mura/resourceBundle/resourceBundleFactory.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "resourceBundleFactory.getKeyValue"
+                  ]
+                },
+                {
+                  "call": "variables.thisLocale.getDisplayName",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      152,
+                      152
+                    ],
+                    "path": "core/mura/resourceBundle/utils.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "resourceBundleFactory.getResourceBundle",
+                    "resourceBundle.init",
+                    "utils.init",
+                    "utils.loadLocale"
+                  ]
+                },
+                {
+                  "call": "getPageContext().getRequest().getScheme",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      490,
+                      490
+                    ],
+                    "path": "core/mura/utility.cfc"
+                  },
+                  "via": [
+                    "list.(template)",
+                    "dsp_secondary_menu.(template)",
+                    "utility.isHTTPS",
+                    "utility.getRequestProtocol"
+                  ]
+                }
+              ],
+              "withheld": false,
+              "writeSet": [
+                {
+                  "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderid') || switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\")) && isdefined('rc.orderid')",
+                  "legacyTable": "tcontent",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      608,
+                      608
+                    ],
+                    "path": "admin/core/views/carch/list.cfm"
+                  },
+                  "unit": "content.content",
+                  "via": [
+                    "list.(template)"
+                  ]
+                },
+                {
+                  "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' || switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\"))",
+                  "legacyTable": "tcontent",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      614,
+                      614
+                    ],
+                    "path": "admin/core/views/carch/list.cfm"
+                  },
+                  "unit": "content.content",
+                  "via": [
+                    "list.(template)"
+                  ]
+                },
+                {
+                  "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\")) && rc.sortBy eq 'orderno' and not isdefined('rc.orderid') || switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && rc.sortBy eq 'orderno' and not isdefined('rc.orderid')",
+                  "legacyTable": "tcontent",
+                  "op": "update",
+                  "override": null,
+                  "source": {
+                    "lines": [
+                      621,
+                      621
+                    ],
+                    "path": "admin/core/views/carch/list.cfm"
+                  },
+                  "unit": "content.content",
+                  "via": [
+                    "list.(template)"
+                  ]
+                }
+              ]
+            },
+            {
+              "conditionalWrites": [
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextendattributes",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      423,
+                      441
+                    ],
+                    "path": "core/mura/extend/extendAttribute.cfc"
+                  },
+                  "unit": "content.extend_attribute",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendAttribute.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextendattributes",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      1943,
+                      1957
+                    ],
+                    "path": "core/mura/extend/extendManager.cfc"
+                  },
+                  "unit": "content.extend_attribute",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextendattributes",
+                  "op": "update",
+                  "source": {
+                    "lines": [
+                      398,
+                      415
+                    ],
+                    "path": "core/mura/extend/extendAttribute.cfc"
+                  },
+                  "unit": "content.extend_attribute",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendAttribute.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextendrcsets",
+                  "op": "save",
+                  "source": {
+                    "lines": [
+                      1967,
+                      1967
+                    ],
+                    "path": "core/mura/extend/extendManager.cfc"
+                  },
+                  "unit": "content.extend_rc_set",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "beanORM.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextendsets",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      356,
+                      365
+                    ],
+                    "path": "core/mura/extend/extendSet.cfc"
+                  },
+                  "unit": "content.extend_set",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSet.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextendsets",
+                  "op": "update",
+                  "source": {
+                    "lines": [
+                      342,
+                      350
+                    ],
+                    "path": "core/mura/extend/extendSet.cfc"
+                  },
+                  "unit": "content.extend_set",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSet.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextend",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      668,
+                      686
+                    ],
+                    "path": "core/mura/extend/extendSubType.cfc"
+                  },
+                  "unit": "content.extend_subtype",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextend",
+                  "op": "save",
+                  "source": {
+                    "lines": [
+                      1897,
+                      1913
+                    ],
+                    "path": "core/mura/extend/extendManager.cfc"
+                  },
+                  "unit": "content.extend_subtype",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tclassextend",
+                  "op": "update",
+                  "source": {
+                    "lines": [
+                      633,
+                      649
+                    ],
+                    "path": "core/mura/extend/extendSubType.cfc"
+                  },
+                  "unit": "content.extend_subtype",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "extendSubType.save"
+                  ]
+                },
+                {
+                  "guard": "environment.ts asserts no broadcasting/peers (AAP 0.5.4)",
+                  "kind": "cluster-broadcast",
+                  "legacyTable": "tclustercommands",
+                  "op": "delete",
+                  "source": {
+                    "lines": [
+                      233,
+                      234
+                    ],
+                    "path": "core/mura/cluster/clusterManager.cfc"
+                  },
+                  "unit": "legacy:tclustercommands",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean",
+                    "clusterManager.reload"
+                  ]
+                },
+                {
+                  "guard": "environment.ts asserts no broadcasting/peers (AAP 0.5.4)",
+                  "kind": "cluster-broadcast",
+                  "legacyTable": "tclustercommands",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      211,
+                      217
+                    ],
+                    "path": "core/mura/cluster/clusterManager.cfc"
+                  },
+                  "unit": "legacy:tclustercommands",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean",
+                    "clusterManager.reload",
+                    "clusterManager.broadcastCommand"
+                  ]
+                },
+                {
+                  "guard": "environment.ts asserts no broadcasting/peers (AAP 0.5.4)",
+                  "kind": "cluster-broadcast",
+                  "legacyTable": "tclusterpeers",
+                  "op": "delete",
+                  "source": {
+                    "lines": [
+                      237,
+                      237
+                    ],
+                    "path": "core/mura/cluster/clusterManager.cfc"
+                  },
+                  "unit": "legacy:tclusterpeers",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean",
+                    "clusterManager.reload"
+                  ]
+                },
+                {
+                  "guard": "environment.ts asserts no broadcasting/peers (AAP 0.5.4)",
+                  "kind": "cluster-broadcast",
+                  "legacyTable": "tclusterpeers",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      246,
+                      246
+                    ],
+                    "path": "core/mura/cluster/clusterManager.cfc"
+                  },
+                  "unit": "legacy:tclusterpeers",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean",
+                    "clusterManager.reload",
+                    "clusterManager.touchInstance"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tentity",
+                  "op": "save",
+                  "source": {
+                    "lines": [
+                      19,
+                      19
+                    ],
+                    "path": "core/mura/bean/beanEntity.cfc"
+                  },
+                  "unit": "legacy:tentity",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean",
+                    "beanEntity.save",
+                    "beanORM.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tentity",
+                  "op": "save",
+                  "source": {
+                    "lines": [
+                      160,
+                      160
+                    ],
+                    "path": "core/mura/bean/beanFactory.cfc"
+                  },
+                  "unit": "legacy:tentity",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "configBean.registerBeanDir",
+                    "configBean.registerBean",
+                    "beanFactory.declareBean",
+                    "beanEntity.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "trazunasettings",
+                  "op": "save",
+                  "source": {
+                    "lines": [
+                      2016,
+                      2018
+                    ],
+                    "path": "core/mura/extend/extendManager.cfc"
+                  },
+                  "unit": "legacy:trazunasettings",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "timagesizes",
+                  "op": "insert",
+                  "source": {
+                    "lines": [
+                      201,
+                      207
+                    ],
+                    "path": "core/mura/settings/settingsImageSizeBean.cfc"
+                  },
+                  "unit": "programs_sites.image_size",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "settingsImageSizeBean.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "timagesizes",
+                  "op": "update",
+                  "source": {
+                    "lines": [
+                      190,
+                      195
+                    ],
+                    "path": "core/mura/settings/settingsImageSizeBean.cfc"
+                  },
+                  "unit": "programs_sites.image_size",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML",
+                    "settingsImageSizeBean.save"
+                  ]
+                },
+                {
+                  "guard": "loads a site missing from the registry, which start-up fills and the projector refreshes after every site change",
+                  "kind": "site-load",
+                  "legacyTable": "tsettings",
+                  "op": "update",
+                  "source": {
+                    "lines": [
+                      2016,
+                      2018
+                    ],
+                    "path": "core/mura/extend/extendManager.cfc"
+                  },
+                  "unit": "programs_sites.site",
+                  "via": [
+                    "carch.list",
+                    "contentManager.getList",
+                    "settingsManager.getSite",
+                    "settingsManager.setSites",
+                    "extendManager.loadConfigXML"
+                  ]
+                }
+              ],
+              "contentType": "text/html",
+              "correction": null,
+              "csrfContext": null,
+              "csrfValidation": "none",
+              "decisionListGap": false,
+              "decisionListRef": null,
+              "disposition": "carry",
+              "dispositionReason": "single owner strategies-content among the migrated services",
+              "dispositionStep": 5,
               "exceptionRef": null,
               "expected": {
                 "disposition": "carry",
@@ -58954,7 +61025,7 @@
               "id": "ctl:carch.list",
               "layout": "request",
               "legacyWrite": false,
-              "order": 1,
+              "order": 2,
               "ownerBasis": "table-ownership",
               "owners": [
                 "strategies-content"
@@ -475673,12 +477744,12 @@
       "actions": 222,
       "base": 1,
       "circuits": 25,
-      "variants": 248,
+      "variants": 249,
       "viewOnlyActions": 77
     },
     "coreMuraActionFiles": 21,
     "dispositions": {
-      "carry": 806,
+      "carry": 807,
       "decision": 170,
       "legacy-served": 150,
       "retired": 56
@@ -480150,7 +482221,7 @@
       }
     },
     {
-      "detail": "component reference themeRenderer.injectMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference themeRenderer.injectMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480162,7 +482233,7 @@
       }
     },
     {
-      "detail": "component reference themeRenderer.injectMethod('$',event(\"muraScope\")).injectMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference themeRenderer.injectMethod('$',event(\"muraScope\")).injectMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480174,7 +482245,7 @@
       }
     },
     {
-      "detail": "component reference themeRenderer.injectMethod('$',event(\"muraScope\")).injectMethod('mura',event(\"muraScope\")).injectMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference themeRenderer.injectMethod('$',event(\"muraScope\")).injectMethod('mura',event(\"muraScope\")).injectMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480186,7 +482257,7 @@
       }
     },
     {
-      "detail": "component reference themeRenderer.init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference themeRenderer.init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480198,7 +482269,7 @@
       }
     },
     {
-      "detail": "bean reference bean.has (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference bean.has (also reached from 738 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480210,7 +482281,7 @@
       }
     },
     {
-      "detail": "bean reference bean.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference bean.getPrimaryKey (also reached from 738 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480222,7 +482293,7 @@
       }
     },
     {
-      "detail": "bean reference obj.setSiteID (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.setSiteID (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480234,7 +482305,7 @@
       }
     },
     {
-      "detail": "bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480246,7 +482317,7 @@
       }
     },
     {
-      "detail": "bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480258,7 +482329,7 @@
       }
     },
     {
-      "detail": "bean reference obj.loadBy (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.loadBy (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480270,7 +482341,7 @@
       }
     },
     {
-      "detail": "bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480282,7 +482353,7 @@
       }
     },
     {
-      "detail": "bean reference obj.get (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.get (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480294,7 +482365,7 @@
       }
     },
     {
-      "detail": "bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480306,7 +482377,7 @@
       }
     },
     {
-      "detail": "bean reference obj.get (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.get (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480318,7 +482389,7 @@
       }
     },
     {
-      "detail": "bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480330,7 +482401,7 @@
       }
     },
     {
-      "detail": "bean reference obj.setSiteID (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.setSiteID (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480342,7 +482413,7 @@
       }
     },
     {
-      "detail": "bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480354,7 +482425,7 @@
       }
     },
     {
-      "detail": "bean reference obj.getPrimaryKey (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.getPrimaryKey (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480366,7 +482437,7 @@
       }
     },
     {
-      "detail": "bean reference obj.loadBy (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.loadBy (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480378,7 +482449,7 @@
       }
     },
     {
-      "detail": "bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 737 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480390,7 +482461,7 @@
       }
     },
     {
-      "detail": "bean reference getBean(p.relatesto).getValue (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference getBean(p.relatesto).getValue (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480402,7 +482473,7 @@
       }
     },
     {
-      "detail": "bean reference variables.parent.containsBean (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.parent.containsBean (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480414,7 +482485,7 @@
       }
     },
     {
-      "detail": "bean reference head.listener (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference head.listener (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480426,7 +482497,7 @@
       }
     },
     {
-      "detail": "bean reference head.listener.onLoad (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference head.listener.onLoad (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480438,7 +482509,7 @@
       }
     },
     {
-      "detail": "bean reference getBean( head.listener ).onLoad (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference getBean( head.listener ).onLoad (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480450,7 +482521,7 @@
       }
     },
     {
-      "detail": "bean reference head.listener.toString (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference head.listener.toString (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480462,7 +482533,7 @@
       }
     },
     {
-      "detail": "bean reference variables.collection.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.collection.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480474,7 +482545,7 @@
       }
     },
     {
-      "detail": "bean reference cacheData.object.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference cacheData.object.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480486,7 +482557,7 @@
       }
     },
     {
-      "detail": "bean reference variables.collection.put (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.collection.put (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480498,7 +482569,7 @@
       }
     },
     {
-      "detail": "bean reference variables.collection.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.collection.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480510,7 +482581,7 @@
       }
     },
     {
-      "detail": "bean reference cacheData.object.get (also reached from 425 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference cacheData.object.get (also reached from 426 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480522,7 +482593,7 @@
       }
     },
     {
-      "detail": "method reference this.onMissingMethod (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference this.onMissingMethod (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480534,7 +482605,7 @@
       }
     },
     {
-      "detail": "bean reference entity.registerAsEntity (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference entity.registerAsEntity (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480546,7 +482617,7 @@
       }
     },
     {
-      "detail": "bean reference entity.checkSchema (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference entity.checkSchema (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480558,7 +482629,7 @@
       }
     },
     {
-      "detail": "bean reference entity.getEntityName (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference entity.getEntityName (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480570,7 +482641,7 @@
       }
     },
     {
-      "detail": "bean reference entity.isOrm (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference entity.isOrm (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480582,7 +482653,7 @@
       }
     },
     {
-      "detail": "bean reference entity.getEntityName (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference entity.getEntityName (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480594,7 +482665,7 @@
       }
     },
     {
-      "detail": "component reference createObject('component','#package#.#beanName#').init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference createObject('component','#package#.#beanName#').init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480606,7 +482677,7 @@
       }
     },
     {
-      "detail": "component reference beanInstance.onApplicationLoad (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference beanInstance.onApplicationLoad (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480618,7 +482689,7 @@
       }
     },
     {
-      "detail": "bean reference variables.m.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.m.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480630,7 +482701,7 @@
       }
     },
     {
-      "detail": "bean reference variables.m.event().setValue (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.m.event().setValue (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480642,7 +482713,7 @@
       }
     },
     {
-      "detail": "bean reference variables.m.announceEvent (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.m.announceEvent (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480654,7 +482725,7 @@
       }
     },
     {
-      "detail": "bean reference variables.m.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.m.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480666,7 +482737,7 @@
       }
     },
     {
-      "detail": "bean reference variables.m.event().setValue (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.m.event().setValue (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480678,7 +482749,7 @@
       }
     },
     {
-      "detail": "bean reference variables.m.announceEvent (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.m.announceEvent (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480690,7 +482761,7 @@
       }
     },
     {
-      "detail": "table reference #getBaseTable()# (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "table reference #getBaseTable()# (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480702,7 +482773,7 @@
       }
     },
     {
-      "detail": "method reference arguments.event.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference arguments.event.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480714,7 +482785,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480726,7 +482797,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480738,7 +482809,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480750,7 +482821,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480762,7 +482833,7 @@
       }
     },
     {
-      "detail": "method reference arguments.event.event (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference arguments.event.event (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480774,7 +482845,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480786,7 +482857,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480798,7 +482869,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480810,7 +482881,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480822,7 +482893,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().executeScript (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().executeScript (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480834,7 +482905,7 @@
       }
     },
     {
-      "detail": "component reference createObject(\"component\",componentPath).init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference createObject(\"component\",componentPath).init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480846,7 +482917,7 @@
       }
     },
     {
-      "detail": "component reference createObject(\"component\",componentPath).init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference createObject(\"component\",componentPath).init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480858,7 +482929,7 @@
       }
     },
     {
-      "detail": "component reference createObject(\"component\",componentPath).init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference createObject(\"component\",componentPath).init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480870,7 +482941,7 @@
       }
     },
     {
-      "detail": "component reference eventHandler.init (also reached from 733 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "component reference eventHandler.init (also reached from 734 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480882,7 +482953,7 @@
       }
     },
     {
-      "detail": "bean reference variables.javaLocale.init (also reached from 482 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.javaLocale.init (also reached from 483 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480894,7 +482965,7 @@
       }
     },
     {
-      "detail": "bean reference variables.parentFactory.getKeyValue (also reached from 477 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.parentFactory.getKeyValue (also reached from 478 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480906,7 +482977,7 @@
       }
     },
     {
-      "detail": "bean reference variables.parentFactory.getKeyValue (also reached from 477 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.parentFactory.getKeyValue (also reached from 478 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -480918,7 +482989,7 @@
       }
     },
     {
-      "detail": "bean reference variables.thisLocale.getDisplayName (also reached from 482 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference variables.thisLocale.getDisplayName (also reached from 483 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.delete",
       "kind": "unresolved-call",
       "source": {
@@ -481506,7 +483577,7 @@
       }
     },
     {
-      "detail": "bean reference getPageContext().getRequest().getScheme (also reached from 314 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference getPageContext().getRequest().getScheme (also reached from 315 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "api:address.findall",
       "kind": "unresolved-call",
       "source": {
@@ -482142,7 +484213,7 @@
       }
     },
     {
-      "detail": "bean reference beanInstance.getEntityDisplayName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference beanInstance.getEntityDisplayName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482154,7 +484225,7 @@
       }
     },
     {
-      "detail": "bean reference beanInstance.pluralizeHasRefName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference beanInstance.pluralizeHasRefName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482166,7 +484237,7 @@
       }
     },
     {
-      "detail": "bean reference beanInstance.getEntityDisplayName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference beanInstance.getEntityDisplayName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482178,7 +484249,7 @@
       }
     },
     {
-      "detail": "bean reference beanInstance.pluralizeHasRefName (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "bean reference beanInstance.pluralizeHasRefName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482190,7 +484261,7 @@
       }
     },
     {
-      "detail": "method reference arguments.event.event (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference arguments.event.event (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482202,7 +484273,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().renderScript (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().renderScript (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482214,7 +484285,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().renderScript (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().renderScript (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -482226,7 +484297,7 @@
       }
     },
     {
-      "detail": "method reference getExecutor().renderScript (also reached from 33 more); settle it in harness/inventory/writer-overrides.yaml",
+      "detail": "method reference getExecutor().renderScript (also reached from 34 more); settle it in harness/inventory/writer-overrides.yaml",
       "id": "ctl:carch.audit",
       "kind": "unresolved-call",
       "source": {
@@ -1804797,6 +1806868,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1805621,6 +1807693,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1806410,6 +1808483,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1808460,6 +1810534,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1809250,6 +1811325,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1810054,6 +1812130,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1814484,6 +1816561,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1816121,6 +1818199,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1816910,6 +1818989,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1818088,6 +1820168,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1818941,6 +1821022,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1819955,6 +1822037,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1820744,6 +1822827,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1823649,7 +1825733,7 @@
       "writers": [
         {
           "component": "admin/core/views/carch/list.cfm",
-          "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\")) && isdefined('rc.orderid')",
+          "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderid') || switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\")) && isdefined('rc.orderid')",
           "keyScope": [
             "table"
           ],
@@ -1823657,7 +1825741,8 @@
           "op": "update",
           "override": null,
           "routeKeys": [
-            "admin:carch.list"
+            "admin:carch.list",
+            "admin:carch.list{sharedid}"
           ],
           "sessionEffects": "none",
           "source": {
@@ -1823671,7 +1825756,7 @@
         },
         {
           "component": "admin/core/views/carch/list.cfm",
-          "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\"))",
+          "condition": "switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' || switch(rc.moduleid) case '00000000000000000000000000000000099', '00000000000000000000000000000000003', '00000000000000000000000000000000004', '00000000000000000000000000000000000' && isdefined('rc.orderperm') and (rc.orderperm eq 'editor' or (rc.orderperm eq 'author' and application.configBean.getSortPermission() eq \"author\"))",
           "keyScope": [
             "table"
           ],
@@ -1823679,7 +1825764,8 @@
           "op": "update",
           "override": null,
           "routeKeys": [
-            "admin:carch.list"
+            "admin:carch.list",
+            "admin:carch.list{sharedid}"
           ],
           "sessionEffects": "none",
           "source": {
@@ -1823701,7 +1825787,8 @@
           "op": "update",
           "override": null,
           "routeKeys": [
-            "admin:carch.list"
+            "admin:carch.list",
+            "admin:carch.list{sharedid}"
           ],
           "sessionEffects": "none",
           "source": {
@@ -1844119,6 +1846206,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1844908,6 +1846996,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1849433,6 +1851522,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1850222,6 +1852312,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1857269,6 +1859360,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",
@@ -1862916,6 +1865008,7 @@
             "admin:carch.importcomponent",
             "admin:carch.importcontent",
             "admin:carch.list",
+            "admin:carch.list{sharedid}",
             "admin:carch.loadcategoryassignment",
             "admin:carch.loadclass",
             "admin:carch.loadclassconfigurator",

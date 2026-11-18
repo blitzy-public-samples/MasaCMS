@@ -1854,7 +1854,7 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: saveAdminSessionState
-      summary: Stores each given admin session value in the token's session, replacing that key whole; absent keys keep their stored value.
+      summary: Stores each given admin session value in the token's session, replacing that key whole, except a `mura` given with `muraBase`, of which only its changes against that base are stored; absent keys keep their stored value.
       tags: [sessions]
       x-opt2-transport: service
       x-opt2-public: true
@@ -2801,7 +2801,7 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: importSessionAdminState
-      summary: Stores the admin session-scope values a legacy-served request changed, from the bridge's `op=export`; each given key replaces the stored one, except `mura`, whose keys are merged into the stored `mura` one by one. An unknown, ended or expired session stores nothing and answers `{}`.
+      summary: Stores the admin session-scope values a legacy-served request changed, from the bridge's `op=export`; each given key replaces the stored one, except `mura`, whose keys are merged into the stored `mura` one by one, a value with a base as only its changes against that base. The merge runs under the locked session row. An unknown, ended or expired session stores nothing and answers `{}`.
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2812,7 +2812,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AdminSessionState'
+              $ref: '#/components/schemas/AdminSessionStateImport'
       responses:
         '200':
           description: The stored values after the merge.
@@ -5367,6 +5367,26 @@ components:
           type: object
           description: '`session.mura` values set since the last login (e.g. `errors`, `objectInstanceId`) under their legacy names; they overlay the login snapshot''s user struct.'
           additionalProperties: true
+        muraBase:
+          type: object
+          writeOnly: true
+          description: 'saveAdminSessionState only (importSessionAdminState refuses it): the `mura` the writer read. Identity then applies only the writer''s changes to `mura` against it to the `mura` stored now, under the locked session row, so a value stored since that read stands: keys set to another value or added, and keys of the base removed, at every depth, keys matched ignoring case and kept in their stored spelling.'
+          additionalProperties: true
+    AdminSessionStateImport:
+      type: object
+      description: The admin session-scope values a legacy-served request changed, with the bases of its changed `mura` structs.
+      additionalProperties: false
+      required:
+        - values
+      properties:
+        values:
+          $ref: '#/components/schemas/AdminSessionState'
+        muraBases:
+          type: object
+          description: 'By `mura` key, the struct `op=carry` installed and legacy then changed. Identity applies only legacy''s changes against it to the value it stores now: keys legacy set to another value or added, and keys of the base legacy removed, at every depth, keys matched ignoring case and kept in their stored spelling. A struct `mura` value without a base, and any other value, replaces the stored one.'
+          additionalProperties:
+            type: object
+            additionalProperties: true
     LoginRequest:
       type: object
       description: The admin login form, or the MFA challenge form when `attemptChallenge` is true.

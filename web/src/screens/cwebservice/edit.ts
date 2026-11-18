@@ -7,7 +7,7 @@ import { okBody } from '@/lib/gateway-client';
 import { attr, encodeHtml, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
 import { relayFields, type AdminRequest } from '@/lib/request-context';
 // site-paths holds the settingsBean path getters the shell's `Mura.init` uses; the endpoint must match that root path.
-import { siteBeanOf, sitePaths } from '@/lib/site-paths';
+import { siteBeanOf, siteFirstTouch, sitePaths } from '@/lib/site-paths';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageScreen, ScreenContext } from '../registry';
@@ -16,14 +16,11 @@ import { effectiveGrantType } from './list';
 /** Field name to legacy validation message, in the order identity reports them. */
 export type WebServiceErrors = IdentityComponents['schemas']['LegacyErrors'];
 
-/** A stored client as identity reads it for the form, its secret included. */
-type StoredClient = IdentityComponents['schemas']['OAuthClient'];
+/** A client as identity reads or saves it for the form, its secret included. */
+type FormClient = IdentityComponents['schemas']['OAuthClient'];
 
-/** A system user of the site's private pool, as people lists it. */
+/** A system user of the site's private pool, as people's user feed lists it. */
 type ConnectedAccount = PeopleComponents['schemas']['UserListRow'];
-
-/** Accounts asked of people per `listUsersV2` page while the form collects every one. */
-const ACCOUNTS_PER_PAGE = 1000;
 
 /** The oauthClient bean the form renders. */
 export interface WebServiceEditState {
@@ -84,8 +81,8 @@ function newClientState(clientid: string, siteid: string): WebServiceEditState {
   };
 }
 
-/** The bean of a stored client. */
-function storedClientState(client: StoredClient): WebServiceEditState {
+/** The bean identity answers for `client`, stored when `exists`. */
+export function clientState(client: FormClient, exists: boolean): WebServiceEditState {
   return {
     clientid: client.clientid,
     clientsecret: client.clientsecret ?? '',
@@ -95,7 +92,7 @@ function storedClientState(client: StoredClient): WebServiceEditState {
     granttype: effectiveGrantType(client.granttype),
     userid: client.userid ?? '',
     redirecturl: client.redirecturl ?? '',
-    exists: true,
+    exists,
   };
 }
 
@@ -115,36 +112,28 @@ export async function loadEditState(ctx: ScreenContext): Promise<WebServiceEditS
   // The contract rejects a client id that is not a CF UUID, which therefore names no stored client.
   if (!response.ok && (response.status === 400 || response.status === 404)) return newClientState(clientid, siteid);
   const { client, exists } = okBody(response, 'identity', 'getOAuthClient');
-  return exists ? storedClientState(client) : newClientState(clientid, siteid);
+  return exists ? clientState(client, true) : newClientState(clientid, siteid);
 }
 
 /**
- * The Connected Account choices: `userFeed` of `rc.siteid` with `isPublic=0`, by last name.
- * @throws GatewayDenialError When people refuses the list (401 or 403).
+ * The Connected Account choices: `userFeed` of `rc.siteid` with `isPublic=0`, by last name, the first 1000 rows (`nextN`) its iterator shows.
+ * @throws GatewayDenialError When people refuses the feed (401 or 403).
  */
 async function loadAccounts(ctx: ScreenContext): Promise<readonly ConnectedAccount[]> {
   const siteid = ctx.req.rc.siteid ?? '';
-  const accounts: ConnectedAccount[] = [];
-  // people answers one page per call, and its `startrow` names the page, as the cusers user iterator reads it.
-  for (let page = 1, pages = 1; page <= pages; page += 1) {
-    const response = await ctx.gateway.people.call('get', '/v2/users', {
-      query: {
-        ...relayFields(ctx.req, { siteid: siteid || undefined }),
-        ispublic: '0',
-        startrow: String(page),
-        recordsperpage: String(ACCOUNTS_PER_PAGE),
-      },
-    });
-    const { items, nextn } = okBody(response, 'people', 'listUsersV2');
-    accounts.push(...items);
-    pages = nextn.numberofpages;
-  }
-  return accounts;
+  const response = await ctx.gateway.people.call('get', '/v1/users/feed', {
+    query: { ...relayFields(ctx.req, { siteid: siteid || undefined }), ispublic: '0' },
+  });
+  return okBody(response, 'people', 'listUserFeed').items;
 }
 
 /** `settingsBean.getResourcePath(complete=1)` of the request's site, else of the request host as the shell takes it. */
 function completeResourcePath(req: AdminRequest): string {
-  if (req.site !== undefined) return sitePaths(req, siteBeanOf(req.site)).rootPath(true);
+  if (req.site !== undefined) {
+    const site = siteBeanOf(req.site);
+    // jsonApiUtility's init builds the endpoint once, on the first request that asks the site bean for its API.
+    return siteFirstTouch(req.site, 'restRootPath', () => sitePaths(req, site).rootPath(true));
+  }
   const { serverPort, context } = legacySettings();
   return `${req.https ? 'https' : 'http'}://${req.serverName}${serverPort}${context}`;
 }

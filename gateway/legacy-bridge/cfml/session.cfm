@@ -296,6 +296,7 @@ try {
 		case "export":
 			// Reads each shared value the session holds whose JSON differs from the one op=carry installed last, or that
 			// op=carry never installed; simple values go out as strings, so a numeric-looking id keeps its digits.
+			// A struct carries as base the struct op=carry installed last, so identity stores only legacy's changes against it.
 			requireMethod("GET");
 			requireSession();
 			exported = [];
@@ -312,7 +313,15 @@ try {
 					&& compare(session.opt2Carried[name].json, serializeJSON(held.value)) == 0) {
 					continue;
 				}
-				arrayAppend(exported, {"name": name, "value": isSimpleValue(held.value) ? javacast("string", held.value) : held.value});
+				item = {"name": name, "value": isSimpleValue(held.value) ? javacast("string", held.value) : held.value};
+				if (isStruct(held.value) && structKeyExists(session, "opt2Carried") && structKeyExists(session.opt2Carried, name)
+					&& len(session.opt2Carried[name].json)) {
+					base = deserializeJSON(session.opt2Carried[name].json);
+					if (isStruct(base)) {
+						item["base"] = base;
+					}
+				}
+				arrayAppend(exported, item);
 			}
 			body = {"values": exported};
 			break;

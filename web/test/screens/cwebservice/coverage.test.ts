@@ -7,6 +7,7 @@ import { resetLegacySettingsForTests } from '@/lib/env';
 import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
 import {
   CWEBSERVICE_RC_DEFAULTS,
   applyCwebserviceDefaults,
@@ -56,35 +57,13 @@ const LIST_REDIRECT = { kind: 'redirect', action: 'cwebservice.list', append: 's
 const URL_TOKENS = `&${CSRF_FIELD_TOKEN}=${FIXED_CSRF.token}&${CSRF_FIELD_EXPIRES}=${FIXED_CSRF.expires}`;
 
 const clientPath = (clientid: string): ServicePath => `/v1/oauth-clients/${clientid}`;
-const USERS_ROUTE = routeKey('GET', 'people', '/v2/users');
+const USERS_ROUTE = routeKey('GET', 'people', '/v1/users/feed');
 
-/** People's private-pool accounts as one `listUsersV2` page. */
+/** People's private-pool accounts as its user feed lists them. */
 const ACCOUNTS: readonly UserListRow[] = [
   { UserID: USER_IDS.admin, Fname: 'Admin', Lname: 'User' },
   { UserID: USER_IDS.qaEditor, Fname: ' QA ', Lname: null },
 ];
-
-/** `listUsersV2` answering the 1000-row page `startrow` names over `rows`. */
-function usersPage(rows: readonly UserListRow[]): FakeRoute {
-  return (request) => {
-    const page = Number(request.query.startrow);
-    const numberofpages = Math.max(1, Math.ceil(rows.length / 1000));
-    const items = rows.slice((page - 1) * 1000, page * 1000);
-    const nextn = {
-      totalrecords: rows.length,
-      recordsperpage: 1000,
-      numberofpages,
-      currentpagenumber: page,
-      firstpage: 1,
-      lastpage: numberofpages,
-      next: page < numberofpages ? page * 1000 + 1 : 1,
-      previous: Math.max(1, (page - 2) * 1000 + 1),
-      through: Math.min(rows.length, page * 1000),
-      startrow: (page - 1) * 1000 + 1,
-    };
-    return { status: 200, body: { items, nextn, listUnassignedUsers: [] } };
-  };
-}
 
 /** The S2 admin on `cwebservice.<item>` of `default` with `rc`. */
 const adminOn = (item: string, rc: Readonly<Record<string, string>> = {}): AdminRequest =>
@@ -97,7 +76,10 @@ function contextFor(
 ): ScreenContext & {
   gateway: FakeGatewayClient;
 } {
-  return makeScreenContext({ req, gateway: fakeGatewayClient({ [USERS_ROUTE]: usersPage(ACCOUNTS), ...routes }) });
+  return makeScreenContext({
+    req,
+    gateway: fakeGatewayClient({ [USERS_ROUTE]: { status: 200, body: { items: ACCOUNTS } }, ...routes }),
+  });
 }
 
 function pageOf(action: string): PageScreen<unknown> {
@@ -128,6 +110,7 @@ beforeEach(() => {
   for (const name of ['MURA_PORT', 'MURA_CONTEXT', 'MURA_INDEXFILEINURLS']) vi.stubEnv(name, undefined);
   vi.stubEnv('MURA_INDEXFILEINAPI', 'false');
   resetLegacySettingsForTests();
+  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -450,9 +433,11 @@ describe('cwebservice.save', () => {
     [CSRF_FIELD_TOKEN]: 'T',
     [CSRF_FIELD_EXPIRES]: 'E',
   };
+  // identity answers the bean after `loadBy(clientid=rc.clientid).set(rc)`: FORM laid over the stored client.
+  const { [CSRF_FIELD_TOKEN]: _token, [CSRF_FIELD_EXPIRES]: _expires, ...posted } = FORM;
   const saved = (errors: Readonly<Record<string, string>>): FakeReply => ({
     status: 200,
-    body: { written: Object.keys(errors).length === 0, client: existingClientEdit.client, errors },
+    body: { written: Object.keys(errors).length === 0, client: { ...existingClientEdit.client, ...posted }, errors },
   });
   const saveRoutes = (reply: FakeReply) => ({
     [routeKey('PUT', 'identity', clientPath(STORED))]: reply,
@@ -517,6 +502,30 @@ describe('cwebservice.save', () => {
       'people GET',
       'identity POST',
     ]);
+  });
+
+  it("re-renders the endpoint the site's first rendered form built, whatever the save's host", async () => {
+    const aliased = { site: { domain: 'default.localhost', record: { domainAlias: 'localhost' } } } as const;
+    const endpointOf = (markup: string): string | undefined =>
+      fragmentModel(markup).links.find(({ text }) => text.endsWith('/_api/rest/v1/default'))?.text;
+    const edit = adminS2Request({ circuit: 'cwebservice', item: 'edit', rc: { clientid: STORED }, ...aliased });
+    expect(endpointOf(toString((await renderEditView(contextFor(edit), STORED_STATE)).body))).toBe(
+      'http://localhost/_api/rest/v1/default',
+    );
+
+    const save = adminS2Request({
+      circuit: 'cwebservice',
+      item: 'save',
+      rc: FORM,
+      ...aliased,
+      serverName: 'example.test',
+      httpHost: 'example.test',
+    });
+    const outcome = await submitSave(contextFor(save, saveRoutes(saved(saveErrors))));
+
+    expect(outcome.kind).toBe('render');
+    if (outcome.kind !== 'render') return;
+    expect(endpointOf(toString(outcome.view.body))).toBe('http://localhost/_api/rest/v1/default');
   });
 
   it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i', async (status) => {

@@ -43,6 +43,7 @@ const ADMIN_MODES: Readonly<Record<string, ResponseMode>> = {
   'admin:cusers.download': 'download',
   'admin:cperm.update': 'redirect',
   'admin:cusers.update': 'redirect',
+  'admin:carch.list': 'page',
 };
 
 function targetEntry(route: string, owningService: OwningService): CutoverEntry {
@@ -146,6 +147,21 @@ describe('matcher precedence', () => {
     expect(outcome.entry).toStrictEqual(index.entryFor(USERS_UPDATE_ROSTER.route));
     expect(outcome.entry?.owningService).toBe('people');
     expect(outcome.destination).toMatchObject({ kind: 'target', service: 'web', isWeb: true, responseMode: 'redirect' });
+  });
+
+  it('routes a Site Manager sort of a shared content id by its committed legacy-write variant, a folder sort by the target base', async () => {
+    const v0002 = await committedIndex('v0002');
+    const sort = (topid: string): RequestInit => adminPost('cArch.list', { siteid: 'tenant-a', topid, orderperm: 'editor', sorted: 'true', orderid: 'C1' });
+
+    const shared = await matchOf(sort('00000000000000000000000000000000001'), v0002);
+    expect(shared.result?.key).toBe('admin:carch.list{sharedid}');
+    expect(shared.entry).toMatchObject({ route: 'admin:carch.list{sharedid}', state: 'legacy', kind: 'legacy-write' });
+    expect(shared.destination).toStrictEqual({ kind: 'legacy' });
+
+    const folder = await matchOf(sort('F1'), v0002);
+    expect(folder.result?.key).toBe('admin:carch.list');
+    expect(folder.entry).toMatchObject({ route: 'admin:carch.list', state: 'target', kind: 'write' });
+    expect(folder.destination).toMatchObject({ kind: 'target', service: 'web', responseMode: 'page' });
   });
 
   it('variant key never falls back to its base key', async () => {

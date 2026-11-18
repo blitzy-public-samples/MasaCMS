@@ -446,7 +446,7 @@ describe('route() URL helpers [legacy: core/mura/utility.cfc:1326-1469]', () => 
 describe('registration', () => {
   const OPERATIONS = [
     'listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'getUserEdit', 'getAddressEdit', 'routeUser', 'readCurrentUser',
-    'readPoolUser', 'listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2',
+    'readPoolUser', 'listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'listUserFeed',
   ];
 
   it('registers exactly the contract operations of these reads, with their transport and roles', () => {
@@ -502,6 +502,42 @@ describe('the cUsers gate', () => {
     '/v2/users/search?siteid=unknown-site&ispublic=0&search=',
   ])('answers the legacy 503 for a token tenant the registry does not hold: %s', async (url) => {
     expect((await call('GET', url, await headersFor(S2, 'unknown-site'))).status).toBe(503);
+  });
+});
+
+describe("cwebservice.edit's Connected Account feed [legacy: admin/core/views/cwebservice/edit.cfm:68]", () => {
+  it.each([
+    ['anonymous', async () => ({ [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'web', audience: 'people' })}` }), 401],
+    ['a site admin', () => headersFor(SITE_ADMIN), 403],
+    ['the Users and Site Manager module grants', () => headersFor([USERS_MODULE, SITE_MANAGER_MODULE, Roles.systemUser]), 403],
+  ])('refuses %s, as the cWebService gate admits S2 only, before any read', async (_case, headers, status) => {
+    expect((await call('GET', '/v1/users/feed?ispublic=0', await headers())).status).toBe(status);
+    expect(tenantsRead).toEqual([]);
+  });
+
+  it('refuses another site than the token’s', async () => {
+    expect((await call('GET', `/v1/users/feed?siteid=${OTHER}&ispublic=0`, await headersFor(S2))).status).toBe(403);
+    expect(tenantsRead).toEqual([]);
+  });
+
+  it.each<[query: string, users: string[]]>([
+    ['ispublic=0', [ROOT, JANE]],
+    ['ispublic=1', [MEMBER]],
+    ['', [MEMBER]],
+  ])('lists the pool of %j by last name in full user rows, S2 people included', async (query, users) => {
+    const { status, body } = await call('GET', `/v1/users/feed?siteid=${SITE}&${query}`, await headersFor(S2));
+    expect(status).toBe(200);
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(users);
+    expect(Object.keys(body?.items[0] ?? {})).toEqual(expect.arrayContaining(['UserID', 'Fname', 'Lname', 'photoFileExt']));
+  });
+
+  it('refuses an ispublic other than 0 or 1 before any read', async () => {
+    expect((await call('GET', '/v1/users/feed?ispublic=yes', await headersFor(S2))).status).toBe(400);
+    expect(tenantsRead).toEqual([]);
+  });
+
+  it('answers the legacy 503 for a token tenant the registry does not hold', async () => {
+    expect((await call('GET', '/v1/users/feed?ispublic=0', await headersFor(S2, 'unknown-site'))).status).toBe(503);
   });
 });
 
@@ -927,6 +963,17 @@ describe('/v1 user lists over a pool larger than one identity lookup', () => {
     expect(idsOf(body?.items)).toEqual(idsOf(collected.rows));
     expect(body?.items).toEqual((await poolCall('/v2/users/advanced-search?ispublic=0&recordsperpage=2500')).body?.items);
     expect(body?.nextn).toMatchObject({ totalrecords: POOL });
+  });
+
+  it("lists the feed's first 1000 people by last name alone, ties in getAdvancedSearch's order, from one 1000-person read", async () => {
+    const { body } = await poolCall('/v1/users/feed?ispublic=0');
+    const collected = idsOf((await getAdvancedSearch(oracle, VIEWER, newAdvancedSearchCriteria(), { siteid: SITE, isPublic: '0' })).rows);
+    expect(idsOf(body?.items)).toEqual(collected.slice(0, 1000));
+    expect(sizes('readAccounts')).toEqual([1000]);
+    // Persons n and n + 1250 share a last name, and a first-name tie-break would reorder some of those pairs.
+    const byName = idsOf((await getUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows).slice(0, 1000);
+    expect(new Set(idsOf(body?.items))).toEqual(new Set(byName));
+    expect(idsOf(body?.items)).not.toEqual(byName);
   });
 
   /** A GET of `url` on a real socket: the status, each body chunk as it arrived, and whether the body ended complete. */

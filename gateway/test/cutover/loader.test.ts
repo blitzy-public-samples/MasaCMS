@@ -341,6 +341,12 @@ describe('schema failures', () => {
       '/variants/0/when/0',
     ],
     [
+      'a listItemIn condition with no values',
+      { sourceSha: SHA, variants: [{ route: 'admin:carch.list', variant: 'sharedid', when: [{ param: 'topid', listItemIn: [] }] }] },
+      (file) => loadVariants({ ...paths, variantsFile: file }),
+      '/variants/0/when/0',
+    ],
+    [
       'a group id outside the schema pattern',
       { ...GROUPS, groups: [{ ...GROUPS.groups[0], id: 'grp:Bad' }] },
       (file) => loadGroups({ ...paths, groupsFile: file }),

@@ -40,8 +40,8 @@ import { registerRawRoutes } from './v1/raw.js';
 
 // app.ts parses this environment and imports this registry, so the type is stated here structurally rather than
 // imported from app.ts; the environment app.ts loads with its content schema is assignable to it.
-/** The parsed service environment: the base variables plus configBean `variations` from `MURA_VARIATIONS`. */
-type ContentEnv = BaseEnv & { MURA_VARIATIONS: boolean };
+/** The parsed service environment: the base variables plus configBean `variations` and `sortPermission` from `MURA_VARIATIONS` and `MURA_SORTPERMISSION`. */
+type ContentEnv = BaseEnv & { MURA_VARIATIONS: boolean; MURA_SORTPERMISSION: string };
 
 /** Runtime dependencies `app.ts` passes to the route registry; `db` defaults to the service pool `app.opt2.db`. */
 export interface RouteDeps {
@@ -110,7 +110,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const { env, repository, storage, taskPort, clock } = deps;
   const db = deps.db ?? app.opt2.db;
   if (db === undefined) throw new Error('strategies-content routes need a tenant database: pass RouteDeps.db or create the service with a pool');
-  const domain: DomainDeps = { db, repository, clock, config: { ...CONTENT_CONFIG_DEFAULTS, variations: env.MURA_VARIATIONS } };
+  const domain: DomainDeps = {
+    db,
+    repository,
+    clock,
+    config: { ...CONTENT_CONFIG_DEFAULTS, variations: env.MURA_VARIATIONS, sortPermission: env.MURA_SORTPERMISSION },
+  };
 
   const actors = new WeakMap<FastifyRequest, Promise<Actor>>();
   const actorFor = (request: FastifyRequest): Promise<Actor> => {

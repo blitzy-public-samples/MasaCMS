@@ -3106,6 +3106,34 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/users/feed:
+    get:
+      operationId: listUserFeed
+      summary: Lists the site's people as `userFeed.setSiteID(siteid).setIsPublic(ispublic).getIterator()` iterates them, as the `cwebservice.edit` Connected Account select shows them.
+      description: The cWebService gate admits S2 only; S2 people are listed, as for every S2 viewer.
+      tags: [users]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/FeedIsPublicQuery'
+      responses:
+        '200':
+          description: At most 1000 people of the pool, by last name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserFeed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/profile:
     get:
       operationId: getProfile
@@ -4282,6 +4310,15 @@ components:
         examples:
           - '0'
           - '1'
+    FeedIsPublicQuery:
+      name: ispublic
+      in: query
+      required: false
+      description: The feed's `isPublic`, `0` for the private pool's system users and `1` for the public pool's members.
+      schema:
+        type: string
+        enum: ['0', '1']
+        default: '1'
     UnassignedQuery:
       name: unassigned
       in: query
@@ -6712,6 +6749,18 @@ components:
           description: Ids of the page's people without a group membership, which the screen marks.
           items:
             $ref: '#/components/schemas/CfUuid'
+    UserFeed:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: The feed's rows in the full user field list with `photoFileExt`, by last name, the first 1000 rows (`nextN`) the userFeed iterator shows.
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/UserListRow'
     AdvancedSearchCriteria:
       type: object
       description: The advanced-search form; `param` lists the row numbers whose `paramField<N>`, `paramRelationship<N>`, `paramCriteria<N>` and `paramCondition<N>` fields are read, and names match ignoring case.

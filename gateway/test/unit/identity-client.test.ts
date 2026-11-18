@@ -1,4 +1,4 @@
-// The identity client on the wire: the admin-site and admin-state reads' and the admin-state import's paths, credentials and status mapping.
+// The identity client on the wire: the admin-site and admin-state reads' and the admin-state import's paths, bodies, credentials and status mapping.
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
   IDENTITY_SERVICE,
@@ -9,7 +9,7 @@ import {
   type ServiceClient,
 } from '@opt2/platform/service-kit';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createIdentityClient, type IdentityClient } from '../../src/session/identity-client.js';
+import { createIdentityClient, type IdentityClient, type MuraBases } from '../../src/session/identity-client.js';
 import { sendJson, startHttpDouble, type HttpDouble } from '../helpers/http-double.js';
 
 const GATEWAY_CREDENTIAL = 'Bearer gateway-invocation-credential';
@@ -42,20 +42,43 @@ const ADMIN_STATE = { siteid: 'tenant-a', mura: { flatViewArgs: { 'tenant-a': { 
 /** The values a legacy request changed, as the carry imports them. */
 const IMPORTED = { siteid: 'tenant-b', mura: { nextN: '5' } };
 
+/** The base of an exported flat view struct: the struct carry installed, which legacy then changed. */
+const MURA_BASES = { flatViewArgs: { 'tenant-a': { tab: 0 } } };
+
 describe.each<{
   op: 'adminSite' | 'adminState' | 'importAdminState';
+  label: string;
   method: 'GET' | 'POST';
   segment: string;
+  muraBases?: MuraBases;
   sent: unknown;
   answer: unknown;
   result: unknown;
 }>([
-  { op: 'adminSite', method: 'GET', segment: 'admin-site', sent: undefined, answer: { siteId: 'tenant-a' }, result: 'tenant-a' },
-  { op: 'adminState', method: 'GET', segment: 'admin-state', sent: undefined, answer: ADMIN_STATE, result: ADMIN_STATE },
-  { op: 'importAdminState', method: 'POST', segment: 'admin-state', sent: IMPORTED, answer: { ...ADMIN_STATE, ...IMPORTED }, result: { ...ADMIN_STATE, ...IMPORTED } },
-])('createIdentityClient $op', ({ op, method, segment, sent, answer, result }) => {
+  { op: 'adminSite', label: '', method: 'GET', segment: 'admin-site', sent: undefined, answer: { siteId: 'tenant-a' }, result: 'tenant-a' },
+  { op: 'adminState', label: '', method: 'GET', segment: 'admin-state', sent: undefined, answer: ADMIN_STATE, result: ADMIN_STATE },
+  {
+    op: 'importAdminState',
+    label: 'without bases',
+    method: 'POST',
+    segment: 'admin-state',
+    sent: { values: IMPORTED },
+    answer: { ...ADMIN_STATE, ...IMPORTED },
+    result: { ...ADMIN_STATE, ...IMPORTED },
+  },
+  {
+    op: 'importAdminState',
+    label: 'with mura bases',
+    method: 'POST',
+    segment: 'admin-state',
+    muraBases: MURA_BASES,
+    sent: { values: IMPORTED, muraBases: MURA_BASES },
+    answer: { ...ADMIN_STATE, ...IMPORTED },
+    result: { ...ADMIN_STATE, ...IMPORTED },
+  },
+])('createIdentityClient $op $label', ({ op, method, segment, muraBases, sent, answer, result }) => {
   const invoke = (identity: IdentityClient, sessionId: string): Promise<unknown> =>
-    op === 'importAdminState' ? identity.importAdminState(sessionId, IMPORTED) : identity[op](sessionId);
+    op === 'importAdminState' ? identity.importAdminState(sessionId, IMPORTED, muraBases) : identity[op](sessionId);
 
   it(`sends ${method} to the encoded session's ${segment} with the gateway credential and no user token`, async () => {
     const { identity, double: received } = await identityAnswering(200, answer);

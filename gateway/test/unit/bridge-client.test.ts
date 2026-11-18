@@ -173,7 +173,13 @@ const OP_CASES: OpCase[] = [
     query: { op: 'export' },
     body: undefined,
     sub: '',
-    answer: { values: [{ name: 'siteid', value: 'tenant-a' }], serverTime: SERVER_TIME },
+    answer: {
+      values: [
+        { name: 'siteid', value: 'tenant-a' },
+        { name: 'flatViewArgs', value: { default: { tab: 1, sortby: 'lastupdate', FILTERED: 'No' } }, base: FLAT_VIEW_ARGS.value },
+      ],
+      serverTime: SERVER_TIME,
+    },
     invoke: (client) => client.export(COOKIES, CALL),
   },
   {
@@ -760,19 +766,21 @@ describe('createBridgeClient against the legacy origin double', () => {
     expect(s.session.values).not.toHaveProperty('keywords');
   });
 
-  it('export lists the shared values legacy changed after carry installed them, simple values as strings', async () => {
+  it('export lists the shared values legacy changed after carry installed them, simple values as strings, a carried struct with its installed base', async () => {
     const s = tenantSession();
     const client = bridge();
     await client.carry(s.cookies, [...CARRIED, { name: 'siteid', value: 'tenant-a', revision: 'R1' }, { name: 'keywords', value: 'home', revision: 'R1' }], callOf(s));
-    // Legacy's own writes: carch.siteManagerTab's dot-notation tab (carch.cfc:521) and list.cfm's nextN (list.cfm:460).
+    // Legacy's own writes: carch.siteManagerTab's dot-notation tab (carch.cfc:521), list.cfm's nextN (list.cfm:460) and
+    // cDashboard.dismissAlert's alerts, which carry never installed (cdashboard.cfc:142-153).
     s.session.values = { ...s.session.values, flatViewArgs: { default: { tab: 1, sortby: 'lastupdate', TAB: '2' } } };
-    s.session.user = { ...s.session.user, nextN: 30 };
+    s.session.user = { ...s.session.user, nextN: 30, alerts: { default: { cachenotice: false } } };
 
     const exported = await client.export(s.cookies, callOf(s));
 
     expect(exported.body.values).toEqual([
-      { name: 'flatViewArgs', value: { default: { tab: 1, sortby: 'lastupdate', TAB: '2' } } },
+      { name: 'flatViewArgs', value: { default: { tab: 1, sortby: 'lastupdate', TAB: '2' } }, base: FLAT_VIEW_ARGS.value },
       { name: 'mura.nextN', value: '30' },
+      { name: 'mura.alerts', value: { default: { cachenotice: false } } },
     ]);
   });
 

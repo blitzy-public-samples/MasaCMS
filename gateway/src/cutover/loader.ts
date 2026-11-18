@@ -82,6 +82,7 @@ const VARIANT_CONDITION = {
   oneOf: [
     paramCondition('equals', { type: 'string' }),
     paramCondition('in', { type: 'array', minItems: 1, items: { type: 'string' } }),
+    paramCondition('listItemIn', { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } }),
     paramCondition('nonEmpty', { const: true }),
     paramCondition('truthy', { const: true }),
     keywordCondition('multipartExtensionIn', { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } }),

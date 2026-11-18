@@ -1,6 +1,7 @@
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { components } from '@/generated/clients/identity';
 import { GatewayUnavailableError, isUnavailable } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
@@ -8,7 +9,7 @@ import { cwebserviceScreens } from '@/screens/cwebservice';
 import { submitSave } from '@/screens/cwebservice/save';
 import type { PageControllerRedirect, PageScreen, ScreenContext, SubmitResult } from '@/screens/registry';
 import { CSRF_CWEBSERVICE } from '../../fixtures/identity/csrf';
-import { OAUTH_CLIENT_IDS, existingClientEdit, saveErrors } from '../../fixtures/identity/oauth-clients';
+import { OAUTH_CLIENT_IDS, existingClientEdit, newClientEdit, saveErrors } from '../../fixtures/identity/oauth-clients';
 import { PERSON_IDS, tenantASystemUsersPage } from '../../fixtures/people/user-list';
 import { adminS2Request } from '../../helpers/admin-request';
 import { domModel, fragmentModel, type DomModel } from '../../helpers/dom-model';
@@ -29,7 +30,7 @@ const CLIENT_ID = OAUTH_CLIENT_IDS.clientCredentials;
 const CLIENT_PATH = `/v1/oauth-clients/${CLIENT_ID}` as const;
 const SAVE_ROUTE = routeKey('PUT', 'identity', CLIENT_PATH);
 const CLIENT_ROUTE = routeKey('GET', 'identity', CLIENT_PATH);
-const USERS_ROUTE = routeKey('GET', 'people', '/v2/users');
+const USERS_ROUTE = routeKey('GET', 'people', '/v1/users/feed');
 const CSRF_PATH = '/v1/csrf/tokens';
 
 const FORM = Object.freeze({
@@ -47,9 +48,30 @@ const FORM = Object.freeze({
 
 const LIST_REDIRECT: SubmitResult = { kind: 'redirect', action: 'cwebservice.list', append: 'siteid', path: './' };
 
-/** identity `saveOAuthClient` answering `errors`, saved only when `written`. */
-function saveAnswer(errors: Readonly<Record<string, string>>, written = Object.keys(errors).length === 0): FakeReply {
-  return { status: 200, body: { written, client: existingClientEdit.client, errors } };
+type OAuthClient = components['schemas']['OAuthClient'];
+
+/** A 64-hex secret as `hash(encrypt(clientid, generateSecretKey('AES')))` yields one, assembled at run time. */
+const GENERATED_SECRET = Array.from({ length: 64 }, (_, i) => (i % 16).toString(16).toUpperCase()).join('');
+
+/** identity's bean after `loadBy(clientid=rc.clientid).set(rc)` of FORM over the stored client. */
+const POSTED_CLIENT: OAuthClient = Object.freeze({
+  ...existingClientEdit.client,
+  siteid: FORM.siteid,
+  name: FORM.name,
+  description: FORM.description,
+  granttype: FORM.granttype,
+  userid: FORM.userid,
+  redirecturl: FORM.redirecturl,
+  clientsecret: FORM.clientsecret,
+});
+
+/** identity `saveOAuthClient` answering `errors` and the bean `client`, saved only when `written`. */
+function saveAnswer(
+  errors: Readonly<Record<string, string>>,
+  written = Object.keys(errors).length === 0,
+  client: OAuthClient = POSTED_CLIENT,
+): FakeReply {
+  return { status: 200, body: { written, client, errors } };
 }
 
 /** Routes of a save whose `errors` re-render the form, the stored-client read answering `clientRead`. */
@@ -57,7 +79,7 @@ function rerenderRoutes(clientRead: FakeReply): FakeRouteTable {
   return {
     [SAVE_ROUTE]: saveAnswer(saveErrors),
     [CLIENT_ROUTE]: clientRead,
-    [USERS_ROUTE]: { status: 200, body: tenantASystemUsersPage },
+    [USERS_ROUTE]: { status: 200, body: { items: tenantASystemUsersPage.items } },
   };
 }
 
@@ -185,6 +207,33 @@ describe('cwebservice.save', () => {
     expect(ctx.gateway.calls.filter(({ method }) => method === 'PUT')).toHaveLength(1);
   });
 
+  // `oauthClientBean.save()` sets an empty secret before its validation refuses the save; a rejected token skips save().
+  it.each([
+    { token: 'a valid CSRF token', secret: GENERATED_SECRET },
+    { token: 'a rejected CSRF token', secret: '' },
+  ])("re-renders an unnamed new client's hidden secret as identity answers it under $token", async ({ secret }) => {
+    const posted = { ...FORM, name: '', clientsecret: '' };
+    const client: OAuthClient = { ...POSTED_CLIENT, name: '', clientsecret: secret };
+    const ctx = contextFor(saveRequest(posted), {
+      [SAVE_ROUTE]: saveAnswer(saveErrors, false, client),
+      [CLIENT_ROUTE]: { status: 404 },
+      [USERS_ROUTE]: { status: 200, body: { items: tenantASystemUsersPage.items } },
+    });
+
+    const page = await renderScreenPage(saveScreen(), ctx);
+
+    if (page.kind !== 'document') throw new Error(`cwebservice.save redirected to ${page.location}`);
+    const form = modelOf(page.html, 'form[name="form1"]');
+    const hidden = Object.fromEntries(
+      form.controls.filter(({ type }) => type === 'hidden').map(({ name, value }) => [name, value]),
+    );
+    expect(modelOf(page.html, '.mura-header').headings).toEqual(['Add Web Service']);
+    expect(hidden).toMatchObject({ siteid: FORM.siteid, clientid: CLIENT_ID, clientsecret: secret });
+    expect(form.controls.find(({ name }) => name === 'name')?.value).toBe('');
+    const put = ctx.gateway.calls.find(({ method }) => method === 'PUT');
+    expect(put?.form).toMatchObject({ name: '', clientsecret: '' });
+  });
+
   it('reads a plain rc in any case and relays its fields under identity names', async () => {
     const rc = {
       SiteID: FORM.siteid,
@@ -211,13 +260,14 @@ describe('cwebservice.save', () => {
     ]);
   });
 
-  it('re-renders a plain rc without client fields as an unsaved client with empty values', async () => {
+  it("re-renders a plain rc without client fields as identity's unsaved bean with the before() defaults", async () => {
     const rc = { siteid: FORM.siteid, name: FORM.name };
+    const defaulted: OAuthClient = { ...newClientEdit.client, clientid: '', siteid: FORM.siteid, name: FORM.name };
     const ctx = contextFor(
       { ...saveRequest(), rc },
       {
-        [routeKey('PUT', 'identity', '/v1/oauth-clients/')]: saveAnswer(saveErrors),
-        [USERS_ROUTE]: { status: 200, body: tenantASystemUsersPage },
+        [routeKey('PUT', 'identity', '/v1/oauth-clients/')]: saveAnswer(saveErrors, false, defaulted),
+        [USERS_ROUTE]: { status: 200, body: { items: tenantASystemUsersPage.items } },
       },
     );
 
@@ -235,8 +285,9 @@ describe('cwebservice.save', () => {
     });
     expect(view.headings).toEqual(['Add Web Service']);
     expect(view.alerts).toContainEqual({ text: saveErrors.name, className: 'alert alert-error' });
+    expect(control('name')?.value).toBe(FORM.name);
     expect(control('description')?.value).toBe('');
-    expect(control('granttype')?.selected).toEqual(['client_credentials']);
+    expect(control('granttype')?.selected).toEqual(['basic']);
     expect(control('userid')?.selected).toEqual([]);
     expect(control('redirectURL')?.value).toBe('');
     expect(view.controls.filter(({ type }) => type === 'hidden').map(({ name, value }) => [name, value])).toEqual([

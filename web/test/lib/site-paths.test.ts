@@ -2,16 +2,19 @@
 // core/mura/configBean.cfc, core/mura/content/contentServer.cfc and core/mura/content/contentRendererUtility.cfc.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLegacySettingsForTests } from '@/lib/env';
+import { siteDataOf, type SiteData } from '@/lib/request-context';
 import {
   createHref,
+  resetSiteFirstTouchForTests,
   siteBeanOf,
+  siteFirstTouch,
   sitePaths,
   urlStem,
   type PathRequest,
   type SiteBean,
   type ThemeLayout,
 } from '@/lib/site-paths';
-import { adminS2Request } from '../helpers/admin-request';
+import { adminS2Request, siteRecordFor } from '../helpers/admin-request';
 
 /** A local site on `www.example.com` with one alias, its own pools and theme `MyTheme`. */
 const SITE: SiteBean = {
@@ -162,6 +165,64 @@ describe('remote sites', () => {
     expect(paths.rootPath(true)).toBe(complete);
     expect(paths.assetPath(true)).toBe(`${complete}/sites/default`);
     expect(paths.themeAssetPath('webRoot', false)).toBe(`${relative}/themes/MyTheme`);
+  });
+});
+
+describe('siteFirstTouch', () => {
+  /** The site data programs-sites serves for `siteId`'s row with `columns` laid over it. */
+  const served = (siteId: string, columns: Partial<SiteData['record']> = {}): SiteData =>
+    siteDataOf({ ...siteRecordFor(siteId), ...columns }, 'en_US');
+  const DEFAULT = served('default');
+  const TENANT_A = served('tenant-a');
+
+  beforeEach(() => resetSiteFirstTouchForTests());
+
+  it("keeps each value's first computation per site while its record is unchanged", () => {
+    const compute = vi.fn(() => 'first');
+    expect(siteFirstTouch(DEFAULT, 'a', compute)).toBe('first');
+    expect(siteFirstTouch(served('default'), 'a', () => 'again')).toBe('first');
+    expect(compute).toHaveBeenCalledOnce();
+    expect(siteFirstTouch(DEFAULT, 'b', () => 'b')).toBe('b');
+    expect(siteFirstTouch(TENANT_A, 'a', () => 'other site')).toBe('other site');
+    expect(siteFirstTouch(DEFAULT, 'a', () => 'unused')).toBe('first');
+  });
+
+  it.each<[string, Partial<SiteData['record']>]>([
+    ['Site label', { Site: 'Renamed' }],
+    ['siteLocale', { siteLocale: 'de_DE' }],
+    ['useSSL', { useSSL: 1 }],
+  ])('starts afresh once the %s column changes, and again once it changes back', (_column, columns) => {
+    expect(siteFirstTouch(DEFAULT, 'a', () => 'first')).toBe('first');
+    expect(siteFirstTouch(served('default', columns), 'a', () => 'changed')).toBe('changed');
+    expect(siteFirstTouch(served('default', columns), 'a', () => 'unused')).toBe('changed');
+    expect(siteFirstTouch(DEFAULT, 'a', () => 'restored')).toBe('restored');
+  });
+
+  it("forgets every site's values once another site's record changes", () => {
+    const renamed = served('tenant-a', { Site: 'Renamed' });
+    expect(siteFirstTouch(DEFAULT, 'a', () => 'default')).toBe('default');
+    expect(siteFirstTouch(TENANT_A, 'a', () => 'tenant-a')).toBe('tenant-a');
+
+    expect(siteFirstTouch(renamed, 'a', () => 'renamed')).toBe('renamed');
+    expect(siteFirstTouch(DEFAULT, 'a', () => 'rebuilt')).toBe('rebuilt');
+    expect(siteFirstTouch(renamed, 'a', () => 'unused')).toBe('renamed');
+  });
+
+  it('forgets every value on reset', () => {
+    siteFirstTouch(DEFAULT, 'a', () => 'first');
+    siteFirstTouch(TENANT_A, 'a', () => 'first');
+    resetSiteFirstTouchForTests();
+
+    expect(siteFirstTouch(DEFAULT, 'a', () => 'reset')).toBe('reset');
+    expect(siteFirstTouch(TENANT_A, 'a', () => 'reset')).toBe('reset');
+  });
+
+  it('shares its values with another instance of the module', async () => {
+    siteFirstTouch(DEFAULT, 'a', () => 'first');
+    vi.resetModules();
+    const other = await import('@/lib/site-paths');
+
+    expect(other.siteFirstTouch(DEFAULT, 'a', () => 'second')).toBe('first');
   });
 });
 

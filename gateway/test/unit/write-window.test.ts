@@ -298,6 +298,32 @@ describe('legacy-write dispatch through the gateway', () => {
     expect(gw.targets['strategies-content']?.requests).toEqual([]);
   });
 
+  it("under v0002 serves a Site Manager sort of the home page on legacy inside a table-wide window, since legacy's contentid-only updates reach every site's row", async () => {
+    gateway = await buildTestGateway({ version: 'v0002', services: ['strategies-content'] });
+    const gw = gateway;
+    const url = '/admin/?muraAction=cArch.list&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001';
+
+    const res = await gw.app.inject({
+      method: 'POST',
+      url,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-request-id': 'req-sort' },
+      payload: 'startrow=1&orderperm=editor&sorted=true&orderid=C1&orderid=C2',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(gw.legacy.requests.map((req) => [req.method, req.url])).toContainEqual(['POST', url]);
+    expect(gw.migration.windows).toEqual([
+      expect.objectContaining({
+        routeKey: 'admin:carch.list{sharedid}',
+        units: [CONTENT_UNIT],
+        scope: { table: true },
+        requestId: 'req-sort',
+        completion: { forwarded: true, legacyStatus: 200 },
+      }),
+    ]);
+    expect(gw.targets['strategies-content']?.requests).toEqual([]);
+  });
+
   it('under v0002 keeps a sessionless REST variation-targeting save on strategies-content, outside any window', async () => {
     gateway = await buildTestGateway({ version: 'v0002', services: ['strategies-content'] });
     const gw = gateway;

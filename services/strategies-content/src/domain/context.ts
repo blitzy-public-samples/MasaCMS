@@ -18,13 +18,15 @@ export interface ContentConfig {
   /** Comma list of the extensions public (front-end) uploads accept. */
   fmPublicAllowedExtensions: string;
   strictExtendedData: boolean;
+  /** configBean `getSortPermission()` (configBean.cfc:145): `author` lets authors sort, as compared with CFML `eq`. */
+  sortPermission: string;
 }
 
 // configBean.cfc:226 and :227 hold the same list.
 const FM_DEFAULT_EXTENSIONS =
   '7z,aiff,asf,avi,bmp,csv,doc,docx,eps,fla,flv,gif,gz,gzip,ics,jpeg,jpg,json,key,keynote,mid,mov,mp3,mp4,mpc,mpeg,mpg,numbers,ods,odt,pages,pdf,png,ppt,pptx,ppsx,pxd,qt,ram,rar,rm,rmi,rmvb,rtf,sdc,sitd,swf,sxc,sxw,svg,tar,tgz,tif,tiff,txt,vsd,wav,wma,wmv,xls,xlsx,xml,zip,m4v,less';
 
-/** configBean defaults (configBean.cfc:155-227); `variations` is read with `defaultValue=false` (contentServer.cfc:649). */
+/** configBean defaults (configBean.cfc:145-227); `variations` is read with `defaultValue=false` (contentServer.cfc:649). */
 export const CONTENT_CONFIG_DEFAULTS: Readonly<ContentConfig> = Object.freeze({
   purgeDrafts: true,
   maxArchivedVersions: 0,
@@ -33,6 +35,7 @@ export const CONTENT_CONFIG_DEFAULTS: Readonly<ContentConfig> = Object.freeze({
   fmAllowedExtensions: FM_DEFAULT_EXTENSIONS,
   fmPublicAllowedExtensions: FM_DEFAULT_EXTENSIONS,
   strictExtendedData: true,
+  sortPermission: '',
 });
 
 /** What every domain operation runs against. */

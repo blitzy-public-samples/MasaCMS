@@ -3,6 +3,7 @@ import { cfEq } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import {
+  ContentQueryError,
   HISTORY_MAX_PAGE,
   ROOT_PARENT_ID,
   type ApprovalListRow,
@@ -611,6 +612,74 @@ export async function getKidsCounts(
       type: args.menuType ?? 'default',
     }),
   );
+}
+
+/** The request values list.cfm's in-view sort write reads, resolved by the caller. */
+export interface SiteManagerSortInput {
+  siteId: string;
+  topId: string;
+  /** `rc.sortBy` and `rc.sortDirection` as the view leaves them before the write. */
+  sortBy: string;
+  sortDirection: string;
+  /** `rc.sorted` as CFML reads it. */
+  sorted: boolean;
+  /** The `rc.orderid` list items in order; undefined when the request has no `orderid`. */
+  orderIds: readonly string[] | undefined;
+  /** `rc.startrow` as a number, the order number of the first `orderIds` item. */
+  startRow: number;
+  /** The level top's stored `sortBy` and `sortDirection` (`rc.rsTop`), read before the write. */
+  storedSortBy: string;
+  storedSortDirection: string;
+  requestId?: string;
+}
+
+/** The range of SQL Server's `int`, which `tcontent.orderno` holds. */
+const INT_RANGE = { min: -2147483648, max: 2147483647 } as const;
+/** The width of `tcontent.sortBy` and `tcontent.sortDirection` (nvarchar(50)). */
+const SORT_COLUMN_WIDTH = 50;
+
+/** `value` as SQL Server stores it in an nvarchar(`width`) column: cut to `width` when only spaces follow, undefined where it refuses it. */
+function storedNvarchar(value: string, width: number): string | undefined {
+  if (value.length <= width) return value;
+  return /^ *$/u.test(value.slice(width)) ? value.slice(0, width) : undefined;
+}
+
+/**
+ * list.cfm's in-view sort write [admin/core/views/carch/list.cfm:590-634] under its site lock, in one gated transaction of the token tenant.
+ * A statement SQL Server would refuse ends the write as legacy's does: the updates before it commit, then its error is raised.
+ * @returns the `rc.sortDirection` written: `asc` for a `sorted` `orderno` sort.
+ */
+export async function sortSiteManagerLevel(deps: DomainDeps, actor: Actor, input: SiteManagerSortInput): Promise<string> {
+  const sortDirection = input.sorted && cfEq(input.sortBy, 'orderno') ? 'asc' : input.sortDirection;
+  const ctx = writeContextFor(actor, input.requestId);
+  const { content } = deps.repository;
+  const refused = await withGatedTenant(deps.db, actor.tenantId, async (tx): Promise<ContentQueryError | undefined> => {
+    await content.lockSortSite(tx, { siteId: input.siteId });
+    for (const [i, contentId] of (input.orderIds ?? []).entries()) {
+      // SQL Server stores the integer part of the order number legacy writes as a literal.
+      const orderno = Math.trunc(input.startRow + i);
+      if (orderno < INT_RANGE.min || orderno > INT_RANGE.max) return new ContentQueryError('Arithmetic overflow error converting expression to data type int.');
+      await content.updateVersions(tx, { contentId }, { orderno }, ctx);
+    }
+    const sortby = storedNvarchar(input.sortBy, SORT_COLUMN_WIDTH);
+    const sortdirection = storedNvarchar(sortDirection, SORT_COLUMN_WIDTH);
+    if (sortby === undefined || sortdirection === undefined) return new ContentQueryError('String or binary data would be truncated.');
+    await content.updateVersions(tx, { contentId: input.topId }, { sortby, sortdirection }, ctx);
+    if (cfEq(input.sortBy, 'orderno') && input.orderIds === undefined) {
+      const children = await content.nest(tx, {
+        parentId: input.topId,
+        siteId: input.siteId,
+        sortBy: input.storedSortBy,
+        sortDirection: input.storedSortDirection,
+      });
+      for (const [i, child] of children.entries()) {
+        await content.updateVersions(tx, { contentId: child.contentid ?? '' }, { orderno: i + 1 }, ctx);
+      }
+    }
+    return undefined;
+  });
+  if (refused !== undefined) throw refused;
+  return sortDirection;
 }
 
 // ---- drafts, approvals and the dashboard counts ----

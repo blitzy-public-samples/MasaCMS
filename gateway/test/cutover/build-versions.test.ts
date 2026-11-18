@@ -141,11 +141,14 @@ describe('committed inputs', () => {
     const listed = withheld.filter((key) => ctx.inventoryKeys.has(key));
     expect(listed.length).toBeGreaterThan(0);
     for (const key of listed) expect(entryOf(v0002, key)?.state).toBe('legacy');
-    for (const key of ['admin:carch.update{upload=image}', 'api:file.save{upload=image}', 'rest:file.save{upload=image}', 'admin:carch.edit']) {
+    for (const key of ['admin:carch.update{upload=image}', 'api:file.save{upload=image}', 'rest:file.save{upload=image}', 'admin:carch.edit', 'admin:carch.list{sharedid}']) {
       expect(entryOf(v0002, key)).toMatchObject({ kind: 'legacy-write', state: 'legacy' });
     }
     // A halted whole write key leaves its group, which still moves.
     expect(entryOf(v0002, 'admin:carch.edit')?.group).toBeNull();
+    // A halted write variant leaves its base in the group.
+    expect(entryOf(v0002, 'admin:carch.list{sharedid}')).toMatchObject({ group: null, units: ['content.content'] });
+    expect(entryOf(v0002, 'admin:carch.list')).toMatchObject({ kind: 'write', state: 'target', group: 'grp:content.approval_action' });
     expect(v0002.groupAuthority['grp:content.approval_action']).toBe('target');
   });
 

@@ -204,7 +204,7 @@ describe('auth denials', () => {
     ['GET', '/internal/v1/sessions/S-denied/state', undefined],
     ['GET', '/internal/v1/sessions/S-denied/admin-site', undefined],
     ['GET', '/internal/v1/sessions/S-denied/admin-state', undefined],
-    ['POST', '/internal/v1/sessions/S-denied/admin-state', { siteid: SITE }],
+    ['POST', '/internal/v1/sessions/S-denied/admin-state', { values: { siteid: SITE } }],
     ['GET', '/internal/v1/sessions/S-denied/snapshot', undefined],
     ['POST', '/internal/v1/sessions/S-denied:end', { reason: 'logout' }],
   ])('refuse %s %s to callers other than the gateway, with or without a user token', async (method, url, payload) => {
@@ -247,9 +247,12 @@ describe('request validation', () => {
 
   it.each<[string, unknown]>([
     ['no body', undefined],
-    ['a key the contract does not name', { blockLoginUntil: '2026-06-30T12:30:00.000' }],
-    ['a top-level value of the wrong type', { topID: { nested: true } }],
-    ['mura that is not an object', { mura: 'nextN' }],
+    ['no values', { muraBases: {} }],
+    ['the values outside values', { siteid: SITE }],
+    ['a key the contract does not name', { values: { blockLoginUntil: '2026-06-30T12:30:00.000' } }],
+    ['a top-level value of the wrong type', { values: { topID: { nested: true } } }],
+    ['mura that is not an object', { values: { mura: 'nextN' } }],
+    ['a base that is not an object', { values: { mura: { flatViewArgs: {} } }, muraBases: { flatViewArgs: 'tab' } }],
   ])('answers an admin-state import with %s with the legacy 400', async (_label, payload) => {
     const res = await send('POST', '/internal/v1/sessions/S-1/admin-state', await headersFor('gateway'), payload);
 
@@ -434,10 +437,12 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { siteid: 'default', keywords: '', mura: { objectInstanceId: 'I1', nextN: '20' } }));
 
     const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), {
-      siteid: SITE,
-      keywords: 'home',
-      hasdefaultpassword: true,
-      mura: { nextN: '5', alerts: { [SITE]: { cachenotice: false } } },
+      values: {
+        siteid: SITE,
+        keywords: 'home',
+        hasdefaultpassword: true,
+        mura: { nextN: '5', alerts: { [SITE]: { cachenotice: false } } },
+      },
     });
 
     const expected = { siteid: SITE, keywords: 'home', mura: { objectInstanceId: 'I1', nextN: '5', alerts: { [SITE]: { cachenotice: false } } } };
@@ -447,10 +452,28 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: SITE });
   });
 
+  it("stores of a mura struct with a base only legacy's changes against it, keeping what the session stored since", async () => {
+    if (handle === undefined) throw new Error('PostgreSQL is not available');
+    const sid = nextSessionId();
+    await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
+    const carried = { [SITE]: { tab: 0, filtered: false }, 'tenant-b': { tab: 0, keywords: '' } };
+    // A target route stored tenant-b's keywords after the carry; loadsiteflat.cfm:109-134 then set the session site's arguments.
+    await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { mura: { flatViewArgs: { ...carried, 'tenant-b': { tab: 0, keywords: 'about' } } } }));
+
+    const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), {
+      values: { mura: { flatViewArgs: { ...carried, [SITE]: { tab: 1, filtered: 'No' } } } },
+      muraBases: { flatViewArgs: carried },
+    });
+
+    const expected = { mura: { flatViewArgs: { [SITE]: { tab: 1, filtered: 'No' }, 'tenant-b': { tab: 0, keywords: 'about' } } } };
+    expect([res.statusCode, res.json()]).toEqual([200, expected]);
+    expect((await gateway('admin-state', sid)).json()).toEqual(expected);
+  });
+
   it('imports nothing into an unknown session and answers {}', async () => {
     const sid = 'S-never-imported';
 
-    const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), { siteid: SITE });
+    const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), { values: { siteid: SITE } });
 
     expect([res.statusCode, res.json()]).toEqual([200, {}]);
     expect((await gateway('admin-state', sid)).json()).toEqual({});

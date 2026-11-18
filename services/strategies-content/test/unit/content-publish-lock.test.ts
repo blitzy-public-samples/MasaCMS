@@ -1,8 +1,8 @@
-/** contentManager.add's item and deleteAll's site `editingContent` locks, over a throwaway `content` schema. */
+/** contentManager.add's item, deleteAll's site and list.cfm's sort `editingContent` locks, over a throwaway `content` schema. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable } from '@opt2/platform/testing';
 import type { TenantTx } from '@opt2/platform/tenancy';
-import { deleteAll, publish, saveContent, saveContentInTx, type ContentInput } from '../../src/domain/content.js';
+import { deleteAll, publish, saveContent, saveContentInTx, sortSiteManagerLevel, type ContentInput } from '../../src/domain/content.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 const WAIT_MS = 10_000;
@@ -140,5 +140,37 @@ describe.skipIf(!(await pgAvailable()))('domain/content edit locks', () => {
       ['Kept', 0, 1],
       ['Kept Again', 1, 1],
     ]);
+  });
+
+  it("an in-view sort waits on its site's sort lock under any spelling of the site id, which deleteAll's site lock is not", async () => {
+    const folder = (await save({ parentid: HOME, type: 'Folder', title: 'Sorted', approved: 1 })).bean.contentId();
+    const sortOf = async () => (await fx.rows('content', 'lower(rtrim(contentid)) = lower($1)', [folder])).map((r) => [r.sortby, r.sortdirection]);
+    const input = {
+      siteId: SITE_ID, topId: folder, sortBy: 'title', sortDirection: 'asc', sorted: false,
+      orderIds: undefined, startRow: 1, storedSortBy: 'orderno', storedSortDirection: 'asc',
+    };
+    const site = hold((tx) => fx.repo.content.lockSite(tx, { siteId: SITE_ID }));
+    try {
+      await site.held;
+      expect(await within(sortSiteManagerLevel(fx.deps, ADMIN, input), 'a sort beside the site lock')).toBe('asc');
+    } finally {
+      site.release();
+    }
+    await site.done;
+    const sort = hold((tx) => fx.repo.content.lockSortSite(tx, { siteId: `${SITE_ID.toUpperCase()} ` }));
+    let waited = false;
+    let second: Promise<unknown> = Promise.resolve();
+    try {
+      const holder = await sort.held;
+      let settled = false;
+      second = sortSiteManagerLevel(fx.deps, ADMIN, { ...input, sortDirection: 'desc' }).catch((err: unknown) => err);
+      void second.then(() => (settled = true));
+      waited = await waitsOn(holder, () => settled);
+      expect(await sortOf()).toEqual([['title', 'asc']]);
+    } finally {
+      sort.release();
+    }
+    await sort.done;
+    expect([await second, waited, await sortOf()]).toEqual(['desc', true, [['title', 'desc']]]);
   });
 });
