@@ -561,6 +561,44 @@ export async function sessionAdminState(deps: SessionDeps, sessionId: string): P
   return JSON.parse(row.admin_state) as Record<string, unknown>;
 }
 
+/** `struct` with each `values` key assigned as CFML assigns struct keys: a key equal ignoring case keeps its stored name. */
+function assignStruct(struct: Readonly<Record<string, unknown>>, values: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const assigned: Record<string, unknown> = { ...struct };
+  for (const [name, value] of Object.entries(values)) {
+    const lower = name.toLowerCase();
+    assigned[Object.keys(assigned).find((key) => key.toLowerCase() === lower) ?? name] = value;
+  }
+  return assigned;
+}
+
+/** A struct value as a record; `{}` for anything else. */
+function recordOf(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * Stores admin values a legacy-served request changed: each given key replaces the stored one, except `mura`, whose keys
+ * are assigned into the stored `mura` one by one; the session row stays locked throughout.
+ * @returns The stored admin state after the merge; `{}`, storing nothing, when the session is unknown, ended or expired.
+ */
+export async function importSessionAdminState(
+  deps: SessionDeps,
+  sessionId: string,
+  values: Readonly<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  const located = await locateSession(deps, sessionId);
+  if (located === undefined) return {};
+  const merged = await withTenant(deps.db, located.tenantId, async (tx) => {
+    const row = await deps.repo.lockSession(tx, sessionId, 'update');
+    if (row === null || row.state !== 'active' || isExpired(deps, row, deps.clock.now())) return null;
+    if (!Object.hasOwn(values, MURA_VALUES_KEY)) return deps.repo.mergeSessionAdminState(tx, sessionId, values);
+    const stored = row.admin_state === null ? {} : (JSON.parse(row.admin_state) as Record<string, unknown>);
+    const mura = assignStruct(recordOf(stored[MURA_VALUES_KEY]), recordOf(values[MURA_VALUES_KEY]));
+    return deps.repo.mergeSessionAdminState(tx, sessionId, { ...values, [MURA_VALUES_KEY]: mura });
+  });
+  return merged ?? {};
+}
+
 /** The admin site the session selected (`session.siteid` in its admin state); empty when none is stored or the session is unknown, ended or expired. */
 export async function sessionAdminSite(deps: SessionDeps, sessionId: string): Promise<string> {
   const { siteid } = await sessionAdminState(deps, sessionId);

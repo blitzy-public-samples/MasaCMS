@@ -119,7 +119,7 @@ export interface DispatcherDeps {
   sites?: Pick<SiteRegistry, 'siteExists' | 'bindToDomain'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
-  /** Installs the session values target routes keep in the legacy session of a legacy-bound admin request. */
+  /** Installs identity's shared session values in the legacy session of a legacy-bound admin request, and imports legacy's changes after it. */
   carry: SessionCarry;
   csrf: CsrfContinuity;
   invalidation: Invalidation;
@@ -815,8 +815,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     };
 
     /**
-     * Legacy can no longer commit: once it completed, claims settle from its final ledger before its last byte leaves;
-     * a request it never received releases its window and claims. The row goes either way.
+     * Legacy can no longer commit: once it completed, claims settle from its final ledger and the shared session values
+     * it changed reach identity before its last byte leaves; a request it never received releases its window and
+     * claims. The row goes either way.
      */
     const onSettled = async (settlement: LegacySettlement): Promise<void> => {
       if (settlement === 'not-sent') {
@@ -824,6 +825,12 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         await guarded(request, 'edge CSRF release after an unsent legacy request failed', () => ex.settleCsrf());
       } else {
         await guarded(request, 'edge CSRF settlement after legacy failed', () => ex.settleCsrf());
+        // A login or logout changes the session through adoption or invalidation, so its values are not imported.
+        if (session !== undefined && result.family === 'admin' && effect !== 'login' && effect !== 'logout') {
+          await guarded(request, 'edge import of shared session values after legacy failed', () =>
+            deps.carry.afterLegacy(session, mode, { userAgent }),
+          );
+        }
         completed = true;
         // beforeSend may have run already, as it does at legacy's headers in stream mode; the login is then adopted here.
         if (afterHeaders !== undefined) await adoptLogin();

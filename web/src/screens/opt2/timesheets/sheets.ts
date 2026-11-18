@@ -9,6 +9,8 @@ import {
   opt2ScreenUrl,
   opt2View,
   pageHeader,
+  pagination,
+  readPage,
   type GridCell,
   type Label,
   type Opt2Params,
@@ -54,10 +56,14 @@ function pageIndexOf(rc: Rc): number {
  */
 export async function loadSheets(ctx: ScreenContext): Promise<SheetsData> {
   const { rc } = ctx.req;
-  const pageIndex = pageIndexOf(rc);
-  const response = await ctx.gateway.timesheets.call('get', '/v1/timesheets/sheets', {
-    query: { asOf: asOfOf(rc), pageIndex, itemsPerPage: SHEETS_PER_PAGE },
-  });
+  const { answer: response, page: pageIndex } = await readPage(
+    pageIndexOf(rc),
+    (index) =>
+      ctx.gateway.timesheets.call('get', '/v1/timesheets/sheets', {
+        query: { asOf: asOfOf(rc), pageIndex: index, itemsPerPage: SHEETS_PER_PAGE },
+      }),
+    (answer) => (answer.ok ? Math.ceil(answer.body.total / SHEETS_PER_PAGE) : undefined),
+  );
   const read = readOf(response, 'listSheets');
   return read.body === undefined ? { alert: read.alert } : { list: read.body, pageIndex };
 }
@@ -74,28 +80,22 @@ function sheetRow(ctx: ScreenContext, sheet: Timesheet, params: Opt2Params): Gri
   ];
 }
 
-/** Previous and next page links around the current page; absent when every sheet fits on one page. */
-function pager(ctx: ScreenContext, params: Opt2Params, pageIndex: number, total: number): SafeHtml | null {
-  const pages = Math.ceil(total / SHEETS_PER_PAGE);
-  if (pages <= 1) return null;
-  const link = (index: number, label: Label): SafeHtml => {
-    const href = opt2ScreenUrl(TIMESHEETS, SHEETS_SCREEN, { ...params, pageIndex: index });
-    return html`<li><a${attr('href', href)}>${label}</a></li>`;
-  };
-  const previous = pageIndex > 1 ? link(pageIndex - 1, 'Previous') : null;
-  const current = html`<li class="active"><span>Page ${pageIndex} of ${pages}</span></li>`;
-  const next = pageIndex < pages ? link(pageIndex + 1, opt2Label(ctx, 'Next')) : null;
-  return html`<ul class="pagination">${previous}${current}${next}</ul>`;
-}
-
 /** The sheet list body, with `alert` under its header when given; for a refused read, its alert instead of the list. */
 export function sheetsBody(ctx: ScreenContext, data: SheetsData, alert?: SafeHtml): SafeHtml {
   const header = pageHeader('Timesheets');
   if (data.list === undefined) return html`${header}${alert}${data.alert}`;
   const params = carriedParams(ctx.req.rc);
   const rows = data.list.items.map((sheet) => sheetRow(ctx, sheet, params));
-  const table = gridTable(headersOf(ctx), rows, 'No timesheets.');
-  const content = html`${table}${pager(ctx, params, data.pageIndex, data.list.total)}`;
+  const table = gridTable(headersOf(ctx), rows, 'No timesheets.', {
+    columnClasses: [undefined, 'hidden-xs hidden-sm', 'hidden-xs'],
+  });
+  const pager = pagination(ctx, {
+    page: data.pageIndex,
+    totalRecords: data.list.total,
+    recordsPerPage: SHEETS_PER_PAGE,
+    href: (pageIndex) => opt2ScreenUrl(TIMESHEETS, SHEETS_SCREEN, { ...params, pageIndex }),
+  });
+  const content = html`${table}${pager}`;
   return html`${header}${alert}${block(content)}`;
 }
 

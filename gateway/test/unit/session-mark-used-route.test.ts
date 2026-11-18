@@ -101,6 +101,7 @@ async function markUsedApp(
     },
     usedSince: unexpected('bridge.usedSince'),
     carry: unexpected('bridge.carry'),
+    export: unexpected('bridge.export'),
     end: unexpected('bridge.end'),
   };
   const app = await createService({

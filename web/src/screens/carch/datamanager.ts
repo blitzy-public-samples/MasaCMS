@@ -23,20 +23,17 @@ import { renderDataResponses, type DataResponseRow, type DataResponsesInput } fr
 import { permOf, structOf, structText, structValue, type CarchStruct } from './model';
 import { carchJs } from './partials/js';
 import { carchSecondaryMenuCsrfContexts, renderCarchSecondaryMenu, type CarchMenuContent } from './secondary-menu';
-import { carchPageData, carchWrite, type CarchOutcome, type CarchPageModel } from './service';
+import { applySessionEffects, carchPageData, carchWrite, type CarchOutcome, type CarchPageModel } from './service';
 
 const SERVICE = 'strategies-content';
 
 /** The panel the view includes for `rc.action`. */
 type Branch = 'edit' | 'display' | 'response';
 
-/** What the view computed before its output: the page model and the session and response state it renders. */
+/** What the view computed before its output: the page model and the response state it renders. */
 export interface DataManagerData {
   readonly model: CarchPageModel;
   readonly branch: Branch;
-  /** `session.filterBy` and `session.datakeywords` as the request leaves them. */
-  readonly sessionFilterBy: string;
-  readonly sessionDataKeywords: string;
   /** `dsp_response.cfm`'s `getData` outcome; absent unless that panel runs with `rc.minute1` defined. */
   readonly results?: DataResponsesInput['results'];
 }
@@ -154,11 +151,10 @@ async function prepare(ctx: ScreenContext): Promise<Prepared> {
   ctx.req = applyCarchDefaults(ctx.req);
   ctx.req = withRc(ctx.req, missing(ctx.req.rc, { keywords: '', filterBy: '' }));
   const { rc } = ctx.req;
-  // session.filterBy and session.datakeywords have no store: identity's admin session state declares neither key, so
-  // a newSearch sets them for this request only and every other request reads their cfparam default ''.
-  const newSearch = 'newSearch' in rc;
-  const sessionFilterBy = newSearch ? rcText(rc, 'filterBy') : '';
-  const sessionDataKeywords = newSearch ? rcText(rc, 'keywords') : '';
+  // Lines 84-87: a new search keeps its filter and keywords in the session.
+  if ('newSearch' in rc) {
+    applySessionEffects(ctx.req, { filterBy: rcText(rc, 'filterBy'), datakeywords: rcText(rc, 'keywords') });
+  }
 
   // An empty contentid loads a new bean; the strategies-content path needs a value, so a fresh CF UUID stands in.
   const standIn = rcText(rc, 'contentid') === '' ? cfUuid() : undefined;
@@ -189,7 +185,7 @@ async function prepare(ctx: ScreenContext): Promise<Prepared> {
   }
 
   const branch = branchOf(rcText(ctx.req.rc, 'action'));
-  const base = { model, branch, sessionFilterBy, sessionDataKeywords };
+  const base = { model, branch };
   if (branch !== 'response' || !('minute1' in ctx.req.rc)) return { kind: 'ready', data: base };
   const rows = rowsOf(model.rc, 'rsData').map(responseRow);
   const remove = ctx.req.rc.delete;
@@ -305,8 +301,8 @@ function responsePanel(
     sortDirection: rcText(rc, 'sortDirection'),
     filterBy: rcText(rc, 'filterBy'),
     keywords: rcText(rc, 'keywords'),
-    sessionFilterBy: data.sessionFilterBy,
-    sessionDataKeywords: data.sessionDataKeywords,
+    sessionFilterBy: session.filterBy,
+    sessionDataKeywords: session.datakeywords,
     contentid: rcText(rc, 'contentid'),
     siteid: rcText(rc, 'siteid'),
     sessionSiteId: session.siteid,

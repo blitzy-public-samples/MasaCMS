@@ -71,10 +71,18 @@ function issueByContext(request: RecordedRequest): FakeReply {
 /** `listFormResponses` of the seeded Contact Us Form with `rc` overrides. */
 const model = (rc: Struct = {}): FakeReply => ({ status: 200, body: { rc: { ...carchDatamanagerData.rc, ...rc } } });
 
-/** The tenant-a site admin on the form's data manager with `rc`, over a gateway answering `read` and `routes`. */
-function contextFor(rc: Record<string, string> = {}, read: FakeReply = model(), routes: FakeRouteTable = {}): Ctx {
+/** The data manager search identity holds for the session. */
+type StoredSearch = { readonly datakeywords?: string; readonly filterBy?: string };
+
+/** The tenant-a site admin on the data manager with `rc` and `session`, over a gateway answering `read`, `routes`. */
+function contextFor(
+  rc: Readonly<Record<string, string | undefined>> = {},
+  read: FakeReply = model(),
+  routes: FakeRouteTable = {},
+  session: StoredSearch = {},
+): Ctx {
   const gateway = fakeGatewayClient({ [CSRF_TOKENS]: issueByContext, [READ]: read, ...routes });
-  const req = siteAdminRequest(SITE, { circuit: 'carch', item: 'datamanager', rc: { ...FORM_RC, ...rc } });
+  const req = siteAdminRequest(SITE, { circuit: 'carch', item: 'datamanager', rc: { ...FORM_RC, ...rc }, session });
   return makeScreenContext({ req, gateway });
 }
 
@@ -242,6 +250,57 @@ describe('cArch.datamanager responses panel', () => {
     expect($('div#manage-data .help-block-empty').text().trim()).toBe(notice);
     expect($('div#manage-data table')).toHaveLength(0);
     expect($('form[name="download"]')).toHaveLength(downloadForms);
+  });
+});
+
+describe('cArch.datamanager session search', () => {
+  const STORED = { datakeywords: 'qaxlbkw', filterBy: 'fname' };
+  /** The search values the request queued for identity. */
+  const searchWrites = ({ req }: Ctx): StoredSearch => ({
+    datakeywords: req.sessionWrites.datakeywords,
+    filterBy: req.sessionWrites.filterBy,
+  });
+
+  it.each<[string, StoredSearch, Record<string, string>, string, string | undefined, StoredSearch]>([
+    [
+      'a new search stores its keywords and filter',
+      {},
+      { newSearch: 'true', keywords: 'qaxlbkw', filterBy: 'fname' },
+      'qaxlbkw',
+      'fname',
+      STORED,
+    ],
+    [
+      'a new search without them clears the stored ones',
+      STORED,
+      { newSearch: '1' },
+      '',
+      undefined,
+      { datakeywords: '', filterBy: '' },
+    ],
+    ['a reload without parameters shows the stored ones', STORED, {}, 'qaxlbkw', 'fname', {}],
+  ])('%s', async (_case, stored, rc, keywords, filterBy, writes) => {
+    const ctx = contextFor(rc, model(), {}, stored);
+    const $ = await page(ctx);
+    expect($('form[name="download"] input[name="keywords"]').val()).toBe(keywords);
+    expect(selectedOf($, 'filterBy')).toEqual([filterBy]);
+    expect(searchWrites(ctx)).toEqual(writes);
+  });
+
+  it('filters by keywords without newSearch: the links carry them, the search controls the stored ones', async () => {
+    const ctx = contextFor(
+      { ...RANGE, newSearch: undefined, keywords: 'Avery', filterBy: 'lname' },
+      model(),
+      {},
+      STORED,
+    );
+    const $ = await page(ctx);
+    const edit = hrefParams($('div#manage-data table.mura-table-grid tbody li.edit a').first().attr('href'));
+    expect([edit.get('keywords'), edit.get('filterBy')]).toEqual(['Avery', 'lname']);
+    expect(strategiesCalls(ctx.gateway)[0]?.query).toMatchObject({ keywords: 'Avery', filterBy: 'lname' });
+    expect($('form[name="download"] input[name="keywords"]').val()).toBe('qaxlbkw');
+    expect(selectedOf($, 'filterBy')).toEqual(['fname']);
+    expect(searchWrites(ctx)).toEqual({});
   });
 });
 

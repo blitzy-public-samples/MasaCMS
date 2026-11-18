@@ -5,6 +5,7 @@ import { Roles } from '@opt2/platform/auth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
+import { GUARDED_NATIVE_SUBMIT, GUARDED_SUBMIT } from '@/screens/opt2/shared';
 import {
   FINANCE_IDS,
   financeAttachmentSignedUrls,
@@ -90,16 +91,12 @@ function detailModel(buttons: readonly string[], preparer: boolean): DomModel {
   return {
     title: '',
     headings: [
-      record.title,
+      'Finance Record',
       'Version History',
       'Attachments',
       ...(preparer ? ['Upload Attachment', 'Edit Record'] : []),
     ],
-    labels: [
-      ...SUMMARY_LABELS,
-      ...record.attachments.flatMap(() => ATTACHMENT_LABELS),
-      ...(preparer ? ['File', 'Title', 'Amount', 'Period'] : []),
-    ],
+    labels: preparer ? ['File', 'Title', 'Amount', 'Period'] : [],
     controls: [...(buttons.length > 0 ? CSRF_CONTROLS : []), ...(preparer ? [...uploadControls, ...editControls] : [])],
     buttons: [
       ...buttons,
@@ -141,9 +138,9 @@ function recordValues(record = financeRecordDetail): string[][] {
 /** `[label, value text]` of each read-only label and value row of `body`. */
 function shownValues(body: string): string[][] {
   const $ = cheerio.load(body, null, false);
-  return $('.mura-control-group:has(> label + div)')
+  return $('dl')
     .toArray()
-    .map((group) => [$(group).children('label').text(), $(group).children('div').text()]);
+    .map((pair) => [$(pair).children('dt').text(), $(pair).children('dd').text()]);
 }
 
 /** The detail body of `req` over `gateway`, with the gateway's calls. */
@@ -303,6 +300,35 @@ describe('finance record screen', () => {
     ]);
   });
 
+  it('submits the write forms once, the transitions natively for their formaction, and the downloads unguarded', async () => {
+    const { view } = await renderDetail();
+    const $ = cheerio.load(toString(view.body), null, false);
+    const onsubmitOf = (guard: { value: string }): string | undefined =>
+      cheerio.load(`<form${guard.value}></form>`, null, false)('form').attr('onsubmit');
+    const guard = onsubmitOf(GUARDED_SUBMIT);
+
+    expect(
+      $('form')
+        .toArray()
+        .map((form) => [new URL($(form).attr('action') ?? '', 'http://localhost').pathname, $(form).attr('onsubmit')]),
+    ).toEqual([
+      ['/opt2/admin-actions/finance/submit', onsubmitOf(GUARDED_NATIVE_SUBMIT)],
+      ...financeAttachments.map(() => ['/opt2/admin-actions/finance/download', undefined]),
+      ['/opt2/admin-actions/finance/upload', guard],
+      ['/opt2/admin-actions/finance/edit', guard],
+    ]);
+    expect(
+      $('input[required]')
+        .toArray()
+        .map((el) => [el.attribs.name, el.attribs['data-label']]),
+    ).toEqual([
+      ['file', 'File'],
+      ['title', 'Title'],
+      ['amount', 'Amount'],
+      ['period', 'Period'],
+    ]);
+  });
+
   it('offers each attachment as a POST button whose id and aid lead the download action to its URL', async () => {
     const { view } = await renderDetail(financeRequest(APPROVER, { id: RECORD_ID }));
     const $ = cheerio.load(toString(view.body), null, false);
@@ -350,6 +376,7 @@ describe('finance record screen', () => {
     expect($('form[enctype] > .form-actions > button.btn.mura-primary').text()).toBe('Upload');
     expect($('form[name="form1"] > .form-actions > button.btn.mura-primary').text()).toBe('Save');
     expect($('form[name="form1"]').attr('action')).toBe(`/opt2/admin-actions/finance/edit?siteid=${SITE}&id=${RECORD_ID}`);
+    expect($('[autofocus]')).toHaveLength(0);
   });
 
   it('renders inside the shell with Finance marked in the OPT-2 nav group', async () => {
@@ -359,7 +386,34 @@ describe('finance record screen', () => {
     const $ = cheerio.load(page.html);
 
     expect($(`#admin-nav-opt2 a[href="/opt2/admin/finance/records?siteid=${SITE}"]`).attr('class')).toBe('active');
-    expect($('.mura-header h1').text()).toBe(financeRecordDetail.title);
+    expect($('.mura-header h1').text()).toBe('Finance Record');
+  });
+
+  it.each([
+    ['the fixture title', financeRecordDetail.title, 0],
+    ['a 255-character title', 'Consulting services for the quarterly close '.repeat(6).slice(0, 255), 0],
+    ['a 255-character unbroken title', 'A'.repeat(255), 10],
+  ])('heads the detail with the fixed label, shows %s as the first row and each version title as a variable-width cell', async (_, title, breaks) => {
+    const versions = financeRecordDetail.versions.map((version) => ({ ...version, title }));
+    const gateway = financeGateway({
+      [RECORD_ROUTE]: { status: 200, body: { data: { ...financeRecordDetail, title, versions } } },
+    });
+    const { view } = await renderDetail(financeRequest(APPROVER, { id: RECORD_ID }), gateway);
+    const $ = cheerio.load(toString(view.body), null, false);
+    const first = $('.block-content').first().children().first();
+    const titleValues = $('dt')
+      .toArray()
+      .filter((dt) => $(dt).text() === 'Title')
+      .map((dt) => $(dt).next('dd'));
+
+    expect($('.mura-header h1').text()).toBe('Finance Record');
+    expect($('.mura-header').text()).not.toContain(title);
+    expect(first.is('dl')).toBe(true);
+    expect([first.children('dt').text(), first.children('dd').text()]).toEqual(['Title', title]);
+    expect(titleValues.map((dd) => [dd.text(), dd.find('wbr').length])).toEqual([[title, breaks]]);
+    expect($('table.mura-table-grid tbody td.var-width').toArray().map((td) => $(td).text())).toEqual(
+      versions.map(() => title),
+    );
   });
 
   it('encodes record text from the service', async () => {
@@ -368,7 +422,8 @@ describe('finance record screen', () => {
     const { view, model } = await renderDetail(undefined, gateway);
 
     expect(toString(view.body)).not.toContain('<script>');
-    expect(model.headings[0]).toBe('<script>alert(1)</script>');
+    expect(model.headings[0]).toBe('Finance Record');
+    expect(shownValues(toString(view.body))[0]).toEqual(['Title', '<script>alert(1)</script>']);
     expect(toString(view.body)).toContain('<div class="help-block-empty">No attachments.</div>');
   });
 
@@ -392,6 +447,17 @@ describe('finance record screen', () => {
     expect(model.alerts).toEqual([{ text: 'Not Found', className: 'alert alert-error' }]);
     expect(gateway.calls.filter(({ service }) => service === 'finance')).toEqual([]);
   });
+
+  it.each(['..', '../x', '../../x', 'abc', `${RECORD_ID}x`])(
+    'answers the malformed id %j as finance answers one, asking finance nothing',
+    async (id) => {
+      const { model, gateway } = await renderDetail(financeRequest(PREPARER, { id }));
+
+      expect(model.headings).toEqual(['Finance Record']);
+      expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+      expect(gateway.calls.filter(({ service }) => service === 'finance')).toEqual([]);
+    },
+  );
 
   it.each([
     [401, LOGOUT],

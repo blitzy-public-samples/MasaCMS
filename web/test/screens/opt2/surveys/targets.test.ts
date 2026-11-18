@@ -94,7 +94,7 @@ describe('surveys targets screen', () => {
 
     expect(model).toEqual<DomModel>({
       title: '',
-      headings: ['Targets: Cross-program timesheet experience', 'Current Targets'],
+      headings: ['Targets', 'Current Targets'],
       labels: [LABEL],
       controls: [
         textareaControl(''),
@@ -162,6 +162,23 @@ describe('surveys targets screen', () => {
 
     expect(model).toEqual(unreadModel([{ text: alert, className: 'alert alert-error' }]));
   });
+
+  it.each(['..', '../x', '../../x', 'abc'])(
+    'answers the malformed survey id %j as surveys answers one, asking it nothing, on the screen and its post',
+    async (surveyid) => {
+      const gateway = surveysGateway();
+      const alert = [{ text: 'Invalid parameters', className: 'alert alert-error' }];
+
+      const screen = await bodyModel('targets', managerRequest({ surveyid }), gateway);
+      const post = renderedModel(
+        await surveysAction('bulk-target').submit(contextFor(managerRequest(bulkRc('tenant-b', { surveyid })), gateway)),
+      );
+
+      expect(screen).toEqual(unreadModel(alert));
+      expect(post).toEqual(unreadModel(alert));
+      expect(gateway.calls).toEqual([]);
+    },
+  );
 
   it.each([TARGETS_ROUTE, SURVEY_ROUTE])('answers a 403 on %s with the no-access redirect', async (route) => {
     const gateway = surveysGateway({ [route]: { status: 403 } });

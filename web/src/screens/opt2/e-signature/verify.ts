@@ -10,6 +10,7 @@ import {
   VERIFY_ACTION,
   VERIFY_SCREEN,
   actionUrl,
+  isRequestId,
   readOf,
   requestIdOf,
   requestLinks,
@@ -39,13 +40,13 @@ const TITLE = 'Verify Audit Chain';
 const COPY_ROWS = 12;
 
 /**
- * The service's verdict on request `rc.id`'s stored chain, its audit entries and the copy form's CSRF pair.
+ * The verdict on request `rc.id`'s stored chain, its audit entries and the copy form's CSRF pair; bad ids ask nothing.
  * @throws GatewayUnavailableError When e-signature or identity is unavailable.
  * @throws GatewayDenialError When e-signature answers 401 or 403.
  */
 export async function loadVerify(ctx: ScreenContext): Promise<VerifyData> {
   const id = requestIdOf(ctx.req.rc);
-  if (id === '') return MISSING_ID;
+  if (!isRequestId(id)) return MISSING_ID;
   const facade = ctx.gateway.eSignature;
   const [verdict, chain] = await Promise.all([
     facade.call('get', '/v1/esignature/requests/{id}/verify', { params: { id } }),

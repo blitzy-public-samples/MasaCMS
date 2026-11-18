@@ -6,6 +6,7 @@ import {
   block,
   controlGroup,
   gridTable,
+  isMalformedId,
   opt2ActionUrl,
   opt2Label,
   opt2View,
@@ -15,7 +16,6 @@ import {
   type Opt2Write,
 } from '../shared';
 import {
-  NO_SURVEY,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
@@ -23,7 +23,9 @@ import {
   siteIdOf,
   surveyHeader,
   surveyIdOf,
+  surveyTitleRow,
   unreadHeader,
+  unreadSurveyId,
   type Survey,
   type Unread,
 } from './common';
@@ -36,7 +38,8 @@ export type TargetsData = { surveyId: string; survey: Survey; targets: SurveyTar
 
 /** Survey `surveyId` (`getSurvey`), its targets (`listSurveyTargets`) and the CSRF pair of its id context. */
 async function loadTargets(ctx: ScreenContext, surveyId: string): Promise<TargetsData> {
-  if (surveyId === '') return NO_SURVEY;
+  const unread = unreadSurveyId(surveyId);
+  if (unread !== undefined) return unread;
   const request = { params: { surveyId }, query: { siteid: siteIdOf(ctx) } };
   const [surveyRes, targetsRes] = await Promise.all([
     ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', request),
@@ -86,9 +89,11 @@ function renderTargets(ctx: ScreenContext, data: TargetsData, text: string, aler
     [opt2Label(ctx, 'Site'), opt2Label(ctx, 'Group'), 'Added'],
     targets.map((target) => [target.siteId, target.groupName ?? 'All users', dateTimeText(target.created)]),
     'This survey has no targets.',
+    { columnClasses: [undefined, undefined, 'hidden-xs'] },
   );
   // The form ends its block, as legacy action rows do: the next heading carries no top margin.
-  return html`${surveyHeader(ctx, survey, 'targets')}${alert}${block(form)}${block(
+  const opening = block(html`${surveyTitleRow(ctx, survey)}${form}`);
+  return html`${surveyHeader(ctx, survey, 'targets')}${alert}${opening}${block(
     html`<h2>Current Targets</h2><p class="help-block">Total targets: ${targets.length}</p>${grid}`,
   )}`;
 }
@@ -118,10 +123,14 @@ export const bulkTargetAction: Opt2ActionDefinition = {
   action: 'bulk-target',
   roles: SURVEYS_ROLES,
   service: 'surveys',
-  submit(ctx) {
+  async submit(ctx) {
     const surveyId = surveyIdOf(ctx);
     const siteid = siteIdOf(ctx);
     const text = ctx.req.rc['targets'] ?? '';
+    // The targets read refuses a malformed id itself, with the invalid-parameters alert; nothing is written.
+    if (isMalformedId(surveyId)) {
+      return { kind: 'render', view: opt2View(SURVEYS_MODULE, await targetsBody(ctx, surveyId), 'targets') };
+    }
     const write: Opt2Write = {
       service: 'surveys',
       call: (gateway, headers) =>

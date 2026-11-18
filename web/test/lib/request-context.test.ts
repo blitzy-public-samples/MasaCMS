@@ -24,6 +24,7 @@ import {
   restoreFlashContext,
   saveSessionWrites,
   sessionSiteModulePerm,
+  setLayoutAlerts,
   setSessionMuraValue,
   withSessionMuraValue,
   type AdminMode,
@@ -1016,7 +1017,7 @@ describe('buildAdminRequest', () => {
       expect(request.session).toMatchObject({
         siteid: 'default',
         mura: { isLoggedIn: false, userID: '' },
-        alerts: { default: {} },
+        alerts: {},
         s2IsPrivate: false,
       });
       expect(request.site).toBeUndefined();
@@ -1362,7 +1363,6 @@ describe('buildAdminRequest', () => {
         locale: 'en_US',
         rb: 'en_US',
         dateKeyFormat: 'MM/DD/YYYY',
-        alerts: { default: {} },
         moduleid: USERS_MODULE,
         frontEndProxyLoc: 'https://www.example.test',
       });
@@ -1704,12 +1704,16 @@ describe('admin session state', () => {
     };
   }
 
-  /** One request over `store`, its session writes then persisted as the request pipeline persists them. */
+  /**
+   * One request over `store`, its session writes then persisted as the request pipeline persists them; with `layout`,
+   * its answer renders the full layout first.
+   */
   async function roundTrip(
     store: ReturnType<typeof identityStore>,
-    call: Call,
+    call: Call & { readonly layout?: boolean },
   ): Promise<{ request: AdminRequest; gateway: FakeGatewayClient }> {
     const built = await build({ ...call, routes: { ...call.routes, ...store.routes } });
+    if (call.layout === true) setLayoutAlerts(built.request);
     const auth = await authFor(SUBJECTS[call.subject ?? 'admin'], call.claims);
     await saveSessionWrites(built.gateway, auth, built.request.sessionWrites);
     return built;
@@ -1721,17 +1725,78 @@ describe('admin session state', () => {
   it('keeps the site a request switched to on the next request without a siteid', async () => {
     const store = identityStore();
 
-    const first = await roundTrip(store, { target: '/admin/?muraAction=cusers.list&siteid=tenant-a' });
-    const second = await roundTrip(store, { target: '/admin/?muraAction=cusers.list' });
+    const first = await roundTrip(store, { target: '/admin/?muraAction=cusers.list&siteid=tenant-a', layout: true });
+    const second = await roundTrip(store, { target: '/admin/?muraAction=cusers.list', layout: true });
 
     const switched = { siteid: 'tenant-a', userFilesPath: '/sites/tenant-a/assets/', topID: HOME_ID };
-    expect(saves(first.gateway)).toEqual([expect.objectContaining(switched)]);
+    expect(saves(first.gateway)).toEqual([
+      expect.objectContaining({ ...switched, mura: { alerts: { 'tenant-a': {} } } }),
+    ]);
     expect(saves(first.gateway)[0]).not.toHaveProperty('alerts');
     expect(second.request.session).toMatchObject(switched);
     expect(second.request.rc.siteid).toBe('tenant-a');
-    expect(second.request.sessionWrites).toEqual({ alerts: { 'tenant-a': {} } });
+    expect(second.request.sessionWrites).toEqual({});
     expect(saves(second.gateway)).toEqual([]);
   });
+
+  it("persists the layout's site entry as session.mura alerts beside legacy's own entries, its dismissals kept as legacy stored them", async () => {
+    const legacyAlerts = { default: { cachenotice: false, feedimportfailed: { type: 'error', text: 'Feed failed' } } };
+    const store = identityStore({ siteid: 'default', mura: { objectInstanceId: 'I1', alerts: legacyAlerts } });
+
+    const first = await roundTrip(store, { target: '/admin/?muraAction=cusers.list&siteid=tenant-a', layout: true });
+    const second = await roundTrip(store, { target: '/admin/?muraAction=cusers.list', layout: true });
+
+    const alerts = { ...legacyAlerts, 'tenant-a': {} };
+    expect(saves(first.gateway)).toEqual([expect.objectContaining({ mura: { objectInstanceId: 'I1', alerts } })]);
+    expect(store.state()).toMatchObject({ mura: { objectInstanceId: 'I1', alerts } });
+    const read = {
+      default: { cachenotice: { type: '', text: '' }, feedimportfailed: { type: 'error', text: 'Feed failed' } },
+      'tenant-a': {},
+    };
+    expect(first.request.session.alerts).toEqual(read);
+    expect(first.request.session.mura).toMatchObject({ alerts });
+    expect(second.request.session.alerts).toEqual(read);
+    expect(saves(second.gateway)).toEqual([]);
+  });
+
+  it('reads a notice legacy dismissed for the session site, as cdashboard.dismissAlert stores it, as dismissed', async () => {
+    const store = identityStore({ siteid: 'tenant-a', mura: { alerts: { 'tenant-a': { cachenotice: false, defaultpasswordnotice: false } } } });
+
+    const { request } = await roundTrip(store, { target: '/admin/?muraAction=cusers.list', layout: true });
+
+    expect(request.session.alerts).toEqual({
+      'tenant-a': { cachenotice: { type: '', text: '' }, defaultpasswordnotice: { type: '', text: '' } },
+    });
+    expect(request.sessionWrites).not.toHaveProperty('muraValues');
+  });
+
+  it.each<[string, WebTestSubjectKey, string]>([
+    ['a user who does not administer the session site', 'qaEditor', 'cusers.list'],
+    ['the login page', 'admin', 'clogin.main'],
+  ])('adds no layout site entry to session.mura alerts for %s', async (_label, subject, muraAction) => {
+    const store = identityStore({ siteid: 'default' });
+
+    const { request } = await roundTrip(store, { subject, target: `/admin/?muraAction=${muraAction}`, layout: true });
+
+    expect(request.session.alerts).toEqual({});
+    expect(request.sessionWrites).not.toHaveProperty('muraValues');
+    expect(store.state()).not.toHaveProperty('mura');
+  });
+
+  it.each<AdminMode>(['page', 'redirect', 'raw', 'opt2'])(
+    'keeps the layout site entry request-local in %s mode for an answer that renders no layout',
+    async (mode) => {
+      const store = identityStore({ siteid: 'default' });
+
+      const { request } = await roundTrip(store, { mode, target: '/admin/?muraAction=carch.sitemanagertab&tab=1' });
+
+      expect(request.session.alerts).toEqual({ default: {} });
+      expect(request.session.mura).not.toHaveProperty('alerts');
+      expect(request.sessionWrites).not.toHaveProperty('muraValues');
+      expect(store.state()).not.toHaveProperty('mura');
+    },
+  );
+
 
   it.each<[string, string, 'rb' | 'moduleid' | 'frontEndProxyLoc', string]>([
     ['the resource bundle', 'rb=pt_BR', 'rb', 'pt_BR'],
@@ -1751,6 +1816,21 @@ describe('admin session state', () => {
     expect(store.state()[key]).toBe(value);
     expect(request.session[key]).toBe(value);
     expect(request.sessionWrites).not.toHaveProperty(key);
+  });
+
+  it('stores the data manager search a screen wrote and reads it on the next request, empty before any', async () => {
+    const store = identityStore();
+    const search = { datakeywords: 'qaxlbkw', filterBy: 'fname' };
+
+    const first = await build({ target: '/admin/?muraAction=carch.datamanager', routes: store.routes });
+    await saveSessionWrites(first.gateway, await authFor(SUBJECTS.admin), search);
+    const { request } = await roundTrip(store, { target: '/admin/?muraAction=carch.datamanager' });
+
+    expect(first.request.session).toMatchObject({ datakeywords: '', filterBy: '' });
+    expect(saves(first.gateway)).toEqual([search]);
+    expect(request.session).toMatchObject(search);
+    expect(request.sessionWrites).not.toHaveProperty('datakeywords');
+    expect(request.sessionWrites).not.toHaveProperty('filterBy');
   });
 
   it('restores the advanced search on the next request', async () => {

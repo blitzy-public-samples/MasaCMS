@@ -370,10 +370,13 @@ export function makeAdminRequest(
       ...change,
       moduleid: CONTENT_MODULE_ID,
       keywords: '',
+      datakeywords: '',
+      filterBy: '',
       rb: DEFAULT_LOCALE,
       locale: site?.javaLocale ?? DEFAULT_LOCALE,
       dashboardSpan: dashboardSpanFor(TEMPLATE_SESSION_HISTORY),
-      // The set-up adds the session site's alert map on every request (admin/Application.cfc 405-406).
+      // The session site's layout alert map (template.cfm:262-265); the set-up adds it for site admins and S2 users, and
+      // the layout renders no alerts for anyone else.
       alerts: { [change.siteid]: {} },
       paramArray: [],
       paramCount: 0,

@@ -228,7 +228,7 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
           updatedAt: new Date(),
         }),
       },
-      carry: { beforeLegacy: async () => undefined },
+      carry: { beforeLegacy: async () => undefined, afterLegacy: async () => undefined },
       csrf: { beforeLegacy: async () => undefined, afterLegacy: async () => undefined },
       invalidation: {
         afterTargetLogout: async () => undefined,

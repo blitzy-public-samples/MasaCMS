@@ -9,7 +9,7 @@ This README is the normative contract. The pages in [`cfml/`](cfml/) implement i
 | File | Role |
 |---|---|
 | `cfml/Application.cfc` | Guard (allow-list, assertion, reload-key strip) and the helpers the pages share |
-| `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, carried values, end |
+| `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, shared values (carry and export), end |
 | `cfml/jobs.cfm` | Site-monitor steps, cursor, cache purge |
 | `cfml/scheduler.cfm` | ACF scheduled-task control |
 | `cfml/site.cfm` | In-memory site registry list and rebuild |
@@ -119,7 +119,7 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
 
 - The request carries only the legacy session cookies `CFID`, `CFTOKEN` and `JSESSIONID`, from the gateway jar or the browser, so ColdFusion attaches that session. No other cookie is sent: Masa's remember-me cookies (`userid`, `userHash`) would log the user in through `loginManager.rememberMe` (`core/appcfc/onRequestStart_include.cfm:223-227`), which writes `LastLogin`.
 - The assertion's `sid` must equal `session.sessionid`, else 409 `sessionMismatch`. The exceptions are `describe`, from which the gateway learns the id, and a `hydrate` sent without session cookies, for which ColdFusion creates a new session.
-- No session op runs a query of its own or writes the database.
+- No session op writes the database, and the only read one makes is `carry`'s `userDAO.read(userid)` of the stored user whose failed update a carried context rebuilds.
 
 | Op | Method | Parameters | Body | Response |
 |---|---|---|---|---|
@@ -128,6 +128,7 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
 | `markUsed` | POST | — | `{tokens:[{token, usedAt}]}` | `{applied, serverTime}` |
 | `usedSince` | GET | `since` | — | `{tokens:[{token, usedAt}], serverTime}` |
 | `carry` | POST | — | `{values:[{name, value, revision}]}` | `{applied:[<name>], serverTime}` |
+| `export` | GET | — | — | `{values:[{name, value}], serverTime}` |
 | `end` | POST | — | — | `{ended:true, serverTime}` |
 
 - **`describe`** is read-only. Every value comes from `session.mura`, as `userUtility.setUserStruct` sets it (`core/mura/user/userUtility.cfc:749-805`), and from `session.siteid`. Full shape:
@@ -144,14 +145,41 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
     1. `setUserStruct(user, memberships, membershipIds)`.
     2. Set `session.mura.csrfsecretkey` to `csrfSecretKey` and replace `session.mura.csrfusedtokens` with `usedTokens` (token → datetime). This must follow step 1, because `setUserStruct` replaces `session.mura` and mints a new secret (`userUtility.cfc:761-763`).
     3. `structDelete(session, 'siteArray')`, as `loginByQuery` does (`userUtility.cfc:339`).
+    4. `structDelete(session, 'opt2Carried')`. `setUserStruct` replaced the `session.mura` values `carry` installed, so the next `carry` installs every value identity holds again.
   - It never runs the `LastLogin` update (`userUtility.cfc:367-370`), the login announcements (`:228-233`, `:292-298`), `cflogin` or any query.
   - For a new session the gateway absorbs ColdFusion's `Set-Cookie` headers into `gateway.legacy_jar`.
 - **`markUsed`** adds each token to `session.mura.csrfusedtokens`. A token already present keeps its earlier timestamp. `applied` is the number of tokens newly added.
 - **`usedSince`** returns the ledger entries with `usedAt >= since`, compared to the millisecond. Ledger semantics are legacy's (`core/mura/user/sessionUserFacade.cfc:206-235`): a token validates once, and legacy purges entries older than 3 h at its next validation. The bridge never purges.
-- **`carry`** installs session values target routes keep in identity, which legacy-served admin views read from the session scope.
-  - `name` must be one of the carried keys, today only `flatViewArgs`: carch.list's `session.flatViewArgs` (`admin/core/views/carch/list.cfm:492-584`), which `carch.loadSiteFlat` reads without a default (`admin/core/views/carch/loadsiteflat.cfm:109`). `value` must be an object and `revision` a non-empty string; otherwise 400 and nothing is set.
-  - Each value becomes the top-level `session[name]` only when its `revision` differs from the one recorded for that name in `session.opt2CarriedRevisions` by the last install, which then records it. An unchanged revision leaves legacy's own later writes to the key standing.
-  - `applied` lists the names installed. The gateway sends it before each legacy-bound admin request of a session whose identity admin state holds a value (`gateway/src/session/carry.ts`).
+- **Shared values.** Session values that target-served and legacy-served admin screens both read or write. Identity holds them in the session's admin state (AAP 0.4.2); `carry` installs them in the legacy session and `export` reads legacy's changes back.
+
+| Wire name | Legacy session | Identity admin state | Legacy writer and reader |
+|---|---|---|---|
+| `flatViewArgs` | `session.flatViewArgs` | `mura.flatViewArgs` | `carch.list` defaults (`admin/core/views/carch/list.cfm:492-584`), `carch.siteManagerTab` (`admin/core/controllers/carch.cfc:516-523`); `carch.loadSiteFlat` reads it without a default (`admin/core/views/carch/loadsiteflat.cfm:109`) |
+| `mura.nextN` | `session.mura.nextN` | `mura.nextN` | Modify View rows (`list.cfm:459-460`, `carch.cfc:46`); `carch.loadSiteManager` pages the tree with it |
+| `mura.alerts` | `session.mura.alerts` | `mura.alerts` | The layout's site entry (`admin/common/layouts/template.cfm:262-265`), `cdashboard.dismissAlert` (`admin/core/controllers/cdashboard.cfc:142-153`) |
+| `siteid`, `userFilesPath`, `topID`, `openSectionList` | same top-level keys | same top-level keys | The admin site switch (`admin/Application.cfc:384-397`) |
+| `keywords` | `session.keywords` | `keywords` | `carch.search` (`carch.cfc:490`), `carch.list` (`list.cfm:585`); the header search box (`admin/common/layouts/includes/header.cfm:164`) |
+| `datakeywords`, `filterBy` | same top-level keys | same top-level keys | A form data manager new search (`admin/core/views/carch/datamanager.cfm:79-86`); its response panel (`admin/core/views/carch/data_manager/dsp_response.cfm:135-138`) |
+| `__fw1NextPreserveKey` | `session.__fw1NextPreserveKey` | `nextPreserveKey` (integer) | FW/1's preserve-key counter, which every preserving redirect on either side advances (`admin/framework.cfc:1432-1456`) |
+| `__fw1` | `session['__fw1<key>']`, one per preserve key | `flash` | FW/1's preserved contexts: target post-actions (`cusers.update`, `cusers.updateaddress`, the `ccomments` actions) save them, and their legacy-served landings (`cusers.edituser`, `cusers.editgroup`, `ccomments.default`) restore them by `fw1pk` (`admin/framework.cfc:1554-1580`) |
+| `moduleid` | `session.moduleid` | `moduleid` | Any admin request's `rc.moduleid` (`admin/Application.cfc:419-421`) and carch `before()`'s module switch (`admin/core/controllers/carch.cfc:79-88`); the Site Manager tabs and the carch screens read it |
+| `moduleTopIds` | `session['m<moduleid>'].topid` and `session['<moduleid>'].topid` | `moduleTopIds` | carch `before()` (`carch.cfc:90-107`) and the empty-tree reset of `carch.list` and `carch.loadSiteManager` (`carch.cfc:216-240`); `carch.update` reads the reset's key (`carch.cfc:409`) |
+| `mura.objectInstanceId` | `session.mura.objectInstanceId` | `mura.objectInstanceId` | carch `before()` (`carch.cfc:73-75`); the compact-display close page reads and clears it (`admin/core/views/carch/dsp_close_compact_display.cfm:140-155`) |
+
+- **`carry`** installs shared values identity holds in the legacy session.
+  - `name` must be a shared wire name, `value` any JSON value but `null`, and `revision` a non-empty string. Every entry is checked first; one invalid entry answers 400 and sets nothing.
+  - A top-level name sets `session[name]`; a `mura.<key>` name sets `session.mura[key]`.
+  - `moduleTopIds` takes a struct of top ids by session key and sets `session[key] = {topid}` for each module top key: `m<moduleid>` and `<moduleid>` over the module ids carch `before()` accepts (`00000000000000000000000000000000000`, `…003`, `…004`, `…099` and the 36-character `000000000000000000000000000000000099`). Other keys are ignored; a value that is not a struct answers 400.
+  - `__fw1` takes identity's contexts by preserve key: positive integer keys, each a struct of simple values whose `userBean`, when present, is JSON; anything else answers 400. Each context that differs from the one installed last becomes `session['__fw1<key>']`, and `session['__fw1<key - 10>']` is purged, as FW/1's key allocation purges it. The gateway sends only the contexts FW/1 has not purged under the shared counter, those from `nextPreserveKey - 10` on.
+  - A context's `userBean` is a target save result (people `UpdateResult` or identity `GroupWriteResult`). It is installed as the user bean legacy's failed `userManager.update` or `create` leaves (`core/mura/user/userManager.cfc:404-450,563-582`): `userDAO.read(userid)` for `action=Update` with a user id, else a new `user` bean; `set` from the context's other entries; `setS2(0)` unless the session is S2, then `setIsPublic(0)` for an S2 bean; a new bean's posted or new `userID`; and `setErrors` with the result's `errors`. Nothing is validated or saved, so the bridge still writes nothing.
+  - A value is installed only when its `revision` differs from the one `session.opt2Carried[name]` records, which then becomes `{revision, json}`, `json` being `serializeJSON` of the value as `export` reads it back after the write (for `__fw1`, of the contexts carried). An unchanged revision leaves legacy's own later writes standing.
+  - `applied` lists the names installed. The gateway sends it before each legacy-bound admin request of a session whose identity admin state holds a shared value (`gateway/src/session/carry.ts`).
+- **`export`** reads the shared values legacy holds, without a write.
+  - It lists `{name, value}` for each shared name present in the session whose `serializeJSON` differs from the `json` `session.opt2Carried` records for it, or that `carry` never installed.
+  - A simple value is sent as a JSON string, so a numeric-looking id such as `topID` keeps its digits; the gateway stores `__fw1NextPreserveKey` as an integer. Struct keys keep the spelling legacy gave them: dot-notation writes such as `.tab` arrive upper-cased (`TAB`).
+  - `moduleTopIds` reads `{<key>: topid}` for each module top key whose session value is a struct with `topid`, topids as strings, and is absent when there is none. Identity replaces its stored set with the one exported, so the bridge sends every top legacy holds.
+  - `__fw1` is never exported. In `v0002` and `v0003` every legacy-served preserving redirect (`cusers.downloadGroupMembers`, `cusers.advancedSearchToCSV`, `cusers.removeFromGroup`, and the `cusers.update` variants legacy serves) lands on a legacy-served page, so contexts travel target to legacy only, and legacy's own contexts, which hold CFC objects, stay in legacy.
+  - The gateway calls it after each legacy-bound admin request other than a login or logout and stores what it lists in identity (`importSessionAdminState`).
 - **`end`** calls `setUserStruct()` with no user (logged-out defaults, no database), then `sessionInvalidate()`.
 
 ### `jobs.cfm?job=…`
@@ -291,7 +319,7 @@ The rendered server definition, `harness/repro/server.json.template`, also sets 
 
 | Endpoint | Caller | When |
 |---|---|---|
-| `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, logout |
+| `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, shared values around legacy admin requests, logout |
 | `jobs.cfm` | The migration service on behalf of `services/programs-sites/src/jobs/dispatch.ts`; the reverse projector (`purgeCache`) | Legacy site-monitor steps, cursor hand-off, cache purge |
 | `scheduler.cfm` | `migration/src/scheduler/` and `opt2-ops` | `up.sh`, transitions, drain and resume, `down.sh` |
 | `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`) | After a `tsettings` batch; gateway start and every second after |

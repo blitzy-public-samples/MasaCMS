@@ -7,6 +7,8 @@ import {
   alertBox,
   block,
   gridTable,
+  invalidParametersAlert,
+  isMalformedId,
   opt2ActionUrl,
   opt2Label,
   opt2ScreenUrl,
@@ -63,7 +65,7 @@ function dayHeadersOf(ctx: ScreenContext): readonly Label[] {
 
 /**
  * The sheet `rc.timesheetid` as of `rc.asOf`, with the CSRF pair of every day that has an allowed action fetched;
- * the alert of a 400 or 404 answer, or a not-found alert asking nothing without a sheet id.
+ * the alert of a 400 or 404 answer, or, asking nothing, the not-found or invalid-parameters one of a missing or bad id.
  * @throws GatewayUnavailableError When timesheets or identity is unavailable.
  * @throws GatewayDenialError When timesheets answers 401 or 403; any other non-2xx answer throws `Error`.
  */
@@ -72,6 +74,7 @@ export async function loadSheet(ctx: ScreenContext): Promise<SheetData> {
   const id = rc.timesheetid ?? '';
   // The service routes `/sheets/` as `/sheets`, so an empty id would read the sheet list instead of a sheet.
   if (id === '') return NO_SHEET_ID;
+  if (isMalformedId(id)) return { alert: invalidParametersAlert() };
   const response = await ctx.gateway.timesheets.call('get', '/v1/timesheets/sheets/{id}', {
     params: { id },
     query: { asOf: asOfOf(rc) },
@@ -120,6 +123,7 @@ export function sheetBody(ctx: ScreenContext, data: SheetData, alert?: SafeHtml)
       ],
     ],
     '',
+    { columnClasses: [undefined, undefined, 'hidden-xs', undefined, 'hidden-xs'] },
   );
   const days = gridTable(
     dayHeadersOf(ctx),
@@ -131,6 +135,7 @@ export function sheetBody(ctx: ScreenContext, data: SheetData, alert?: SafeHtml)
       dayActions(ctx, sheet, day, actionUrl),
     ]),
     'This timesheet has no days.',
+    { columnClasses: [undefined, 'hidden-xs', undefined, 'hidden-xs'] },
   );
   return html`${header}${alert}${block(html`${summary}${days}`)}`;
 }

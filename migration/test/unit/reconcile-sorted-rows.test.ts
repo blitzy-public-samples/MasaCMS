@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { CanonicalColumn, CanonicalValue } from '@opt2/platform/migration-kit';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { compareCanonicalRows, type CanonicalRow } from '../../src/extract/index.js';
+import { compareCanonicalRows, type CanonicalRow, type KeyValue } from '../../src/extract/index.js';
 import { toUnitRow, unitRowSorter, type UnitTableShape } from '../../src/reconcile/legacy-side.js';
 import { UnitRowSorter } from '../../src/reconcile/sorted-rows.js';
 
@@ -132,6 +132,34 @@ describe('UnitRowSorter', () => {
       const sorter = await sortedOf(shape, rows, sortRunBytes);
       if (sortRunBytes === 1) expect(await leftovers()).toHaveLength(1);
       expect(await readAll(sorter)).toEqual(expected);
+    }
+    expect(await leftovers()).toEqual([]);
+  });
+
+  it.each<[string, Shape, { values: Values; legacyProgramId?: number }[]]>([
+    ['a keyed row', KEYED, [{ values: content(10, 'a') }, { values: content(9, 'b') }, { values: content(1, 'c') }]],
+    [
+      'a folded key with its program',
+      FOLDED,
+      [
+        { values: { timesheet_id: '7', status: 'DRAFT', legacy_program_id: '2' }, legacyProgramId: 2 },
+        { values: { timesheet_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, legacyProgramId: 1 },
+      ],
+    ],
+    ['a binary key', BINARY_KEY, [{ values: { hash: Buffer.from('ff00', 'hex'), name: 'b' } }, { values: { hash: Buffer.from('00ff', 'hex'), name: 'a' } }]],
+    ['a keyless row', KEYLESS, [{ values: { MLID: 'L', Email: 'b@example.com' } }, { values: { MLID: 'L', Email: 'a@example.com' } }]],
+  ])('hands the builder the key values of %s, spilled or in memory', async (_case, shape, input) => {
+    const rows = input.map(({ values, legacyProgramId }) => ({ tenantId: A, row: toUnitRow(shape, values, legacyProgramId) }));
+    const expected = expectedOrder(rows).map(({ row }) => row.keyValues);
+
+    for (const sortRunBytes of [1, undefined]) {
+      const sorter = new UnitRowSorter<readonly KeyValue[]>(shape, (_encoding, _programId, _payload, keyValues) => keyValues, { sortRunBytes, spillDir });
+      for (const { tenantId, row } of rows) await sorter.add(tenantId, row);
+      await sorter.sort();
+      if (sortRunBytes === 1) expect(await leftovers()).toHaveLength(1);
+      const read: (readonly KeyValue[])[] = [];
+      for await (const keyValues of sorter.rows(A)) read.push(keyValues);
+      expect(read).toEqual(expected);
     }
     expect(await leftovers()).toEqual([]);
   });

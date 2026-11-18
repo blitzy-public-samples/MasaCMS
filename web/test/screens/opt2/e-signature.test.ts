@@ -74,9 +74,9 @@ function eSignatureCalls(gateway: FakeGatewayClient) {
 function auditEntries(markup: string): string[][] {
   const $ = load(markup, null, false);
   const entries: string[][] = [[]];
-  for (const child of $('div.block-content').children('div.mura-control-group, hr').toArray()) {
+  for (const child of $('div.block-content').children('dl, hr').toArray()) {
     if ($(child).is('hr')) entries.push([]);
-    else entries.at(-1)?.push($(child).children('div').text());
+    else entries.at(-1)?.push($(child).children('dd').text());
   }
   return entries;
 }

@@ -21,6 +21,7 @@ import {
   SIGN_ACTION,
   SIGNER_ROLES,
   actionUrl,
+  isRequestId,
   readOf,
   requestIdOf,
   requestLinks,
@@ -58,13 +59,13 @@ function signable(ctx: ScreenContext, detail: SignatureRequestDetail): boolean {
 }
 
 /**
- * Request `rc.id` with its signature, with the sign form's CSRF pair issued when it is signable.
+ * Request `rc.id` with its signature, with the sign form's CSRF pair issued when it is signable; a bad id asks nothing.
  * @throws GatewayUnavailableError When e-signature or identity is unavailable.
  * @throws GatewayDenialError When e-signature answers 401 or 403.
  */
 export async function loadRequest(ctx: ScreenContext): Promise<RequestData> {
   const id = requestIdOf(ctx.req.rc);
-  if (id === '') return MISSING_ID;
+  if (!isRequestId(id)) return MISSING_ID;
   const response = await ctx.gateway.eSignature.call('get', '/v1/esignature/requests/{id}', { params: { id } });
   const read = readOf(response, 'getSignatureRequest');
   // The sign form carries the pair of the request id, the context its sign write belongs to.
@@ -87,14 +88,19 @@ function summaryRows(ctx: ScreenContext, detail: SignatureRequestDetail): SafeHt
 // BLITZY [A11Y]: legacy admin.css leaves the Sign button no focus change and 3.96:1 contrast; kept, legacy CSS only.
 /** The typed-name form, posted to the sign action with the request's CSRF pair. */
 function signForm(ctx: ScreenContext, id: string, typedName: string): SafeHtml {
-  const field = controlGroup('Typed Name', textInput('typedName', typedName, { maxlength: 255, required: true }));
+  const field = controlGroup(
+    'Typed Name',
+    textInput('typedName', typedName, { maxlength: 255, required: true, label: 'Typed Name' }),
+  );
   return postForm(actionUrl(ctx, SIGN_ACTION, { id }), field, 'Sign', { hidden: ctx.csrf.render(id, 'form') });
 }
 
 /** The signature row of a SIGNED request; nothing while it is PENDING. */
 function signatureTable(signature: SignatureRequestDetail['signature']): SafeHtml | null {
   if (signature === null) return null;
-  return gridTable(SIGNATURE_HEADERS, [[signature.typed_name, signature.signer_user_id, signature.signed_at]], '');
+  return gridTable(SIGNATURE_HEADERS, [[signature.typed_name, signature.signer_user_id, signature.signed_at]], '', {
+    columnClasses: [undefined, 'hidden-xs'],
+  });
 }
 
 /** The request body: header, any alert, the request, its signature and, when signable, the typed-name form. */

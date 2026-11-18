@@ -10,9 +10,11 @@ import {
   countStartupRows,
   recoverStartupGuard,
   runStartupGuardSequence,
+  STARTUP_CONTENT_IDS_SQL,
   STARTUP_COUNT_SQL,
   STARTUP_PREDICATE_WHERE,
   StartupGuardFrozenError,
+  startupContentIds,
   type StartupGuardSteps,
 } from '../../src/legacy/startup-guard.js';
 import { createFakeLegacyDb, type FakeLegacyDb, type Row } from '../helpers/fake-legacy-db.js';
@@ -85,6 +87,27 @@ describe('start-up predicate', () => {
 
   it('counts unqualified tcontent rows with that predicate', () => {
     expect(STARTUP_COUNT_SQL).toBe(`select count(*) as n from tcontent where ${STARTUP_PREDICATE_WHERE}`);
+  });
+
+  it('selects the distinct content ids of unqualified tcontent rows with that predicate', () => {
+    expect(STARTUP_CONTENT_IDS_SQL).toBe(`select distinct ContentID as contentId from tcontent where ${STARTUP_PREDICATE_WHERE}`);
+  });
+});
+
+describe('startupContentIds on the fake legacy database', () => {
+  const report = startupMatchRow();
+  const reportId = String(report.ContentID);
+  const notes = startupMatchRow({ Filename: 'notes.txt' });
+
+  it.each<[string, Row[], string[]]>([
+    ['no matching row', [contentRow(), startupMatchRow({ Body: 'report.pdf' })], []],
+    ['one matching content', [contentRow(), report], [reportId]],
+    ['one content matching in two sites', [report, startupMatchRow({ SiteID: 'tenant-b', ContentID: reportId })], [reportId]],
+    ['two matching contents', [report, notes], [reportId, String(notes.ContentID)].sort()],
+  ])('returns the content ids of %s', async (_label, rows, expected) => {
+    const db = contentDb(rows);
+
+    expect((await startupContentIds(await db.live())).sort()).toEqual(expected);
   });
 });
 

@@ -1,5 +1,6 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { Role } from '@opt2/platform/auth';
+import { LEGACY_ADMIN_SENTINEL_ID, isCfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
@@ -7,6 +8,7 @@ import {
   block,
   canUse,
   controlGroup,
+  focusesFirst,
   formActions,
   gridTable,
   hiddenField,
@@ -15,10 +17,15 @@ import {
   opt2ScreenUrl,
   opt2View,
   pageHeader,
+  pagination,
   postForm,
+  readPage,
+  refusedFields,
   textInput,
+  type FieldRule,
   type GridCell,
   type Label,
+  type Opt2Refusal,
 } from '../shared';
 import {
   AUDIT_SCREEN,
@@ -32,7 +39,6 @@ import {
   actionUrl,
   link,
   pageIndexOf,
-  pagination,
   readOf,
   requestStateBadge,
   screenUrl,
@@ -57,16 +63,66 @@ export type CreateRequestField = Exclude<keyof ESignatureSchemas['CreateRequestI
 /** New-request form values by property name, kept when a rejected create re-renders the form. */
 export type CreateRequestValues = Readonly<Partial<Record<CreateRequestField, string>>>;
 
-/** One control per posted `CreateRequestInput` property, in contract order; every one is required. */
+const DOCUMENT_NAME_MAX_LENGTH = 255;
+const BASE64_CHAR = /^[A-Za-z0-9+/]$/;
+
+/** Whether e-signature's ColdFusion decoder may decode `text` to a byte; skipping any whitespace errs to accept. */
+function mayDecodeBase64(text: string): boolean {
+  let data = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text.charAt(i);
+    if (char === '=' || char.charCodeAt(0) <= 0x20 || /\s/.test(char)) continue;
+    if (!BASE64_CHAR.test(char)) return false;
+    data += 1;
+    // Text ending on a data character must end on a whole 4-character group.
+    if (i === text.length - 1 && data % 4 !== 0) return false;
+  }
+  return data >= 2;
+}
+
+/** Whether `id`, surrounding spaces aside, can be a Masa UserID: a ColdFusion UUID or the installed admin's id. */
+function mayBeUserId(id: string): boolean {
+  const trimmed = javaTrim(id);
+  return isCfUuid(trimmed) || trimmed === LEGACY_ADMIN_SENTINEL_ID;
+}
+
+/** One control per posted `CreateRequestInput` property, in contract order, each required, with its rule and hint. */
 const CREATE_CONTROLS: ReadonlyArray<{
   readonly name: CreateRequestField;
   readonly label: string;
   readonly maxlength?: number;
+  readonly refuses: FieldRule;
+  readonly hint?: string;
 }> = Object.freeze([
-  { name: 'documentName', label: 'Document Name', maxlength: 255 },
-  { name: 'documentBase64', label: 'Document (Base64)' },
-  { name: 'signerUserId', label: 'Signer User ID' },
+  {
+    name: 'documentName',
+    label: 'Document Name',
+    maxlength: DOCUMENT_NAME_MAX_LENGTH,
+    refuses: (value) => {
+      if (value === '') return 'Enter a document name.';
+      return value.length > DOCUMENT_NAME_MAX_LENGTH ? `Enter at most ${DOCUMENT_NAME_MAX_LENGTH} characters.` : undefined;
+    },
+  },
+  {
+    name: 'documentBase64',
+    label: 'Document (Base64)',
+    refuses: (value) => (mayDecodeBase64(value) ? undefined : 'Enter Base64 text that decodes to at least one byte.'),
+  },
+  {
+    name: 'signerUserId',
+    label: 'Signer User ID',
+    refuses: (value) => {
+      if (value === '') return "Enter the signer's UserID.";
+      return mayBeUserId(value) ? undefined : 'Enter a UserID of 35 characters: 8-4-4-16 hexadecimal digits.';
+    },
+    hint: "The UserID of a user of this site's user pool.",
+  },
 ]);
+
+/** e-signature's create rules, by posted property. */
+const CREATE_RULES: Readonly<Record<string, FieldRule>> = Object.freeze(
+  Object.fromEntries(CREATE_CONTROLS.map(({ name, refuses }) => [name, refuses])),
+);
 
 /** The posted `CreateRequestInput` properties, in contract order. */
 export const CREATE_REQUEST_FIELDS: readonly CreateRequestField[] = Object.freeze(
@@ -80,9 +136,10 @@ const CREATE_CSRF_CONTEXT = '';
 /** One page of the tenant's signature requests; `null` for a reader without the signer role, which the list refuses. */
 export type RequestsData = Read<ESignatureSchemas['SignatureRequestList']> | null;
 
-/** Extras of a re-rendered request list: the create action's alert and the posted new-request values. */
+/** Extras of a re-rendered request list: the create action's alert and refusal, and the posted new-request values. */
 export interface RequestsBodyOptions {
   readonly alert?: SafeHtml;
+  readonly refusal?: Opt2Refusal;
   readonly values?: CreateRequestValues;
 }
 
@@ -92,17 +149,19 @@ function headers(ctx: ScreenContext): Label[] {
 }
 
 /**
- * The `rc.pageIndex` page of the tenant's signature requests for a signer, with the new-request form's CSRF pair for a
- * creator; nothing is asked for any other reader.
+ * The `rc.pageIndex` page of the tenant's signature requests for a signer, page 1 when it is past the last, with the
+ * new-request form's CSRF pair for a creator; nothing is asked for any other reader.
  * @throws GatewayUnavailableError When e-signature or identity is unavailable.
  * @throws GatewayDenialError When e-signature answers 401 or 403.
  */
 export async function loadRequests(ctx: ScreenContext): Promise<RequestsData> {
   if (!canUse(ctx.req, LIST_ROLES)) return null;
-  const [response] = await Promise.all([
-    ctx.gateway.eSignature.call('get', '/v1/esignature/requests', {
-      query: { pageIndex: pageIndexOf(ctx.req.rc) },
-    }),
+  const [{ answer: response }] = await Promise.all([
+    readPage(
+      pageIndexOf(ctx.req.rc),
+      (pageIndex) => ctx.gateway.eSignature.call('get', '/v1/esignature/requests', { query: { pageIndex } }),
+      (answer) => (answer.ok ? answer.body.totalpages : undefined),
+    ),
     canUse(ctx.req, CREATE_ROLES) ? ctx.csrf.prefetch([CREATE_CSRF_CONTEXT]) : undefined,
   ]);
   return readOf(response, 'listSignatureRequests');
@@ -123,7 +182,7 @@ function requestRow(ctx: ScreenContext, request: SignatureRequest): GridCell[] {
 
 /** GET form opening the request whose id is entered on the screen of the button pressed, on the session site. */
 function lookupForm(ctx: ScreenContext): SafeHtml {
-  const field = controlGroup('Request ID', textInput('id', '', { required: true, id: 'requestId' }));
+  const field = controlGroup('Request ID', textInput('id', '', { required: true, id: 'requestId', label: 'Request ID' }));
   const buttons = REQUEST_PAGES.map(({ screen, label }, index) => ({
     label,
     primary: index === 0,
@@ -135,33 +194,52 @@ function lookupForm(ctx: ScreenContext): SafeHtml {
   )}</form>`;
 }
 
-/** The new-request form, posted to the create action with its CSRF pair and holding `values`. */
-function createForm(ctx: ScreenContext, values: CreateRequestValues): SafeHtml {
-  const fields = CREATE_CONTROLS.map(({ name, label, maxlength }) =>
-    controlGroup(label, textInput(name, values[name] ?? '', { maxlength, required: true })),
+/** The new-request form, posted with its CSRF pair and holding `values`, after a refused create's alert, marked. */
+function createForm(ctx: ScreenContext, values: CreateRequestValues, opts: RequestsBodyOptions): SafeHtml {
+  const errors = refusedFields(CREATE_RULES, values, opts.refusal);
+  const focusFirst = focusesFirst(opts.refusal, errors);
+  const fields = CREATE_CONTROLS.map(({ name, label, maxlength, hint }, index) =>
+    controlGroup(
+      label,
+      textInput(name, values[name] ?? '', {
+        maxlength,
+        required: true,
+        label,
+        error: errors[name],
+        hint,
+        focus: focusFirst && index === 0,
+      }),
+    ),
   );
   const form = postForm(actionUrl(ctx, CREATE_REQUEST_ACTION), html`${fields}`, 'Create', {
     hidden: ctx.csrf.render(CREATE_CSRF_CONTEXT),
   });
-  return block(html`<h2>New Signature Request</h2>${form}`);
+  return block(html`<h2>New Signature Request</h2>${opts.alert}${form}`);
 }
 
 /**
- * The landing body: header and any alert, then the requests with their paging and, for a creator, the new-request
- * form; the service's alert in their place; or the request lookup form for a reader without the signer role.
+ * The landing body: header, the requests with their paging and, for a creator, `alert` and the new-request form (else
+ * `alert` follows the header); the service's alert in their place; or the lookup form for a reader without signer.
  */
 export function requestsBody(ctx: ScreenContext, data: RequestsData, opts: RequestsBodyOptions = {}): SafeHtml {
-  const header = html`${pageHeader('Signature Requests')}${opts.alert}`;
-  if (data === null) return html`${header}${block(lookupForm(ctx))}`;
-  if (data.body === undefined) return html`${header}${data.alert}`;
+  const header = pageHeader('Signature Requests');
+  if (data === null) return html`${header}${opts.alert}${block(lookupForm(ctx))}`;
+  if (data.body === undefined) return html`${header}${opts.alert}${data.alert}`;
   // The contract's paged-list base types `items` as unknown[], which this list's schema narrows.
   const requests: readonly SignatureRequest[] = data.body.items;
   const rows = requests.map((request) => requestRow(ctx, request));
   const list = block(
-    html`${gridTable(headers(ctx), rows, 'There are no signature requests.')}${pagination(ctx, REQUESTS_SCREEN, data.body)}`,
+    html`${gridTable(headers(ctx), rows, 'There are no signature requests.', {
+      columnClasses: [undefined, undefined, 'hidden-xs', 'hidden-xs hidden-sm'],
+    })}${pagination(ctx, {
+      page: data.body.pageindex,
+      totalRecords: data.body.totalitems,
+      recordsPerPage: data.body.itemsperpage,
+      href: (pageIndex) => screenUrl(ctx, REQUESTS_SCREEN, { pageIndex }),
+    })}`,
   );
-  const form = canUse(ctx.req, CREATE_ROLES) ? createForm(ctx, opts.values ?? {}) : null;
-  return html`${header}${list}${form}`;
+  if (!canUse(ctx.req, CREATE_ROLES)) return html`${header}${opts.alert}${list}`;
+  return html`${header}${list}${createForm(ctx, opts.values ?? {}, opts)}`;
 }
 
 /** `/opt2/admin/e-signature/requests`: the OPT-2 nav entry; the request list for signers, the lookup for auditors. */
@@ -170,8 +248,8 @@ export function renderRequests(ctx: ScreenContext, data: RequestsData): ShellVie
 }
 
 /**
- * Reads the requests and renders the landing below `alert`, the new-request form holding `values`, as a rejected
- * create re-renders it.
+ * Reads the requests and renders the landing with `alert` before the new-request form holding `values`, as a
+ * rejected create re-renders it.
  * @throws GatewayUnavailableError When e-signature or identity is unavailable.
  * @throws GatewayDenialError When e-signature answers 401 or 403.
  */
@@ -179,8 +257,9 @@ export async function renderRequestsView(
   ctx: ScreenContext,
   alert?: SafeHtml,
   values?: CreateRequestValues,
+  refusal?: Opt2Refusal,
 ): Promise<ShellView> {
-  return opt2View(ESIGNATURE, requestsBody(ctx, await loadRequests(ctx), { alert, values }), REQUESTS_SCREEN);
+  return opt2View(ESIGNATURE, requestsBody(ctx, await loadRequests(ctx), { alert, values, refusal }), REQUESTS_SCREEN);
 }
 
 /**

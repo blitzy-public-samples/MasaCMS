@@ -1,4 +1,4 @@
-// Tests the write-window client alone: scope derivation, the open and complete calls, and the open call's longer bound.
+// Tests the write-window client alone: scope derivation, the open and complete calls, and their longer bounds.
 import { LegacyServiceUnavailableError, normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import {
   createServiceClient,
@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { InventoryFacts, RouteFacts } from '../../src/cutover/types.js';
 import { isLegacyUnavailable } from '../../src/dispatcher/fail-closed.js';
 import {
+  WINDOW_COMPLETE_TIMEOUT_MS,
+  WINDOW_GATEWAY_LEASE_MS,
   WINDOW_OPEN_BUDGET_MS,
   WINDOW_OPEN_TIMEOUT_MS,
   WindowOpenError,
@@ -151,6 +153,7 @@ describe('complete', () => {
         path: '/internal/v1/windows/W%2F1%202:complete',
         json: { forwarded: true, legacyStatus: 302 },
         userToken: null,
+        timeoutMs: WINDOW_COMPLETE_TIMEOUT_MS,
       },
     ]);
   });
@@ -164,7 +167,7 @@ describe('with the platform service client', () => {
     double = undefined;
   });
 
-  it('lets open outlast the client bound while complete stays held to it', async () => {
+  it('lets open and complete outlast the client bound', async () => {
     double = await startHttpDouble((req, res) => {
       setTimeout(() => {
         if (req.path === '/internal/v1/windows') sendJson(res, 201, { windowId: 'W1', state: 'open', phase: 'executing' });
@@ -180,9 +183,10 @@ describe('with the platform service client', () => {
     try {
       const windows = createWriteWindowClient({ client, facts: FACTS });
       await expect(windows.open(OPEN)).resolves.toEqual({ windowId: 'W1' });
-      await expect(windows.complete('W1', { forwarded: false })).resolves.toEqual({ state: 'unknown' });
+      await expect(windows.complete('W1', { forwarded: false })).resolves.toEqual({ state: 'closed' });
       expect(JSON.parse(double.requests[0]?.body.toString('utf8') ?? '')).toEqual(OPEN);
       expect(double.requests[0]?.headers.authorization).toBeUndefined();
+      expect([WINDOW_GATEWAY_LEASE_MS, WINDOW_COMPLETE_TIMEOUT_MS]).toEqual([120_000, 160_000]);
     } finally {
       await client.close();
     }

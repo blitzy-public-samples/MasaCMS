@@ -60,8 +60,6 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'mura-primary',
   'mura-actions',
   'form-actions',
-  // The list's Previous/Next, as admin/core/views/cusers/inc/dsp_nextn.cfm pages a list.
-  'pagination',
   // Responsive column hiding, as admin/core/views/cusers/inc/dsp_users_list.cfm hides list columns; hidden-md is
   // the same admin.css utility one breakpoint up.
   'hidden-xs',
@@ -73,6 +71,15 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'label-info',
   'label-inverse',
   'label-important',
+  // The numbered pager, as admin/core/views/cusers/inc/dsp_nextn.cfm and carch/search.cfm page a list.
+  'pagination',
+  'mura-layout-row',
+  'clearfix',
+  'search-showing',
+  'pull-right',
+  'active',
+  'mi-angle-left',
+  'mi-angle-right',
 ]);
 const LEGACY_CLASS_FAMILIES: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];
 

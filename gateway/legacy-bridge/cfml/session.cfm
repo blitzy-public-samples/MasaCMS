@@ -1,6 +1,6 @@
 <cfscript>
 // Legacy bridge session ops: describe, hydrate and end the attached ColdFusion session, read or extend its CSRF used-token
-// ledger, and carry into it the session values target routes keep.
+// ledger, and carry into it or export from it the session values target and legacy routes share.
 
 // Raises 400 badRequest unless the request uses the op's HTTP method.
 function requireMethod(required string method) {
@@ -46,13 +46,112 @@ function ledgerEntries(required struct ledger, numeric sinceMs = 0) {
 	return entries;
 }
 
+// The key of a shared name in its scope: "mura.<key>" names a session.mura key, any other name a top-level session key.
+function sharedKey(required string name) {
+	return left(arguments.name, 5) == "mura." ? mid(arguments.name, 6, len(arguments.name) - 5) : arguments.name;
+}
+
+// {exists, value} of a shared name in the attached session; "moduleTopIds" assembles {<key>: topid} over the module top keys.
+function readShared(required string name) {
+	if (arguments.name == "moduleTopIds") {
+		var tops = {};
+		for (var topKey in variables.moduleTopKeys) {
+			if (structKeyExists(session, topKey) && isStruct(session[topKey]) && structKeyExists(session[topKey], "topid")) {
+				tops[topKey] = javacast("string", session[topKey].topid);
+			}
+		}
+		return structIsEmpty(tops) ? {"exists": false} : {"exists": true, "value": tops};
+	}
+	var key = sharedKey(arguments.name);
+	var scope = left(arguments.name, 5) == "mura." ? session.mura : session;
+	return structKeyExists(scope, key) ? {"exists": true, "value": scope[key]} : {"exists": false};
+}
+
+// Sets a shared name in the attached session; "moduleTopIds" sets session[<key>] = {topid} for each module top key given.
+function writeShared(required string name, required any value) {
+	if (arguments.name == "moduleTopIds") {
+		for (var key in arguments.value) {
+			if (arrayFindNoCase(variables.moduleTopKeys, key) && isSimpleValue(arguments.value[key])) {
+				session[key] = {topid = arguments.value[key]};
+			}
+		}
+	} else if (left(arguments.name, 5) == "mura.") {
+		session.mura[sharedKey(arguments.name)] = arguments.value;
+	} else {
+		session[arguments.name] = arguments.value;
+	}
+}
+
+// True for FW/1 preserved contexts by preserve key: positive integer keys, each a struct of simple values whose userBean,
+// when present, is JSON.
+function isContexts(required any value) {
+	if (!isStruct(arguments.value)) return false;
+	for (var key in arguments.value) {
+		var context = arguments.value[key];
+		if (!isValid("integer", key) || key < 1 || !isStruct(context)
+			|| (structKeyExists(context, "userBean") && (!isSimpleValue(context.userBean) || !isJSON(context.userBean)))) return false;
+		for (var entry in context) {
+			if (!isSimpleValue(context[entry])) return false;
+		}
+	}
+	return true;
+}
+
+// True when two contexts of simple values hold the same keys and values.
+function sameContext(required struct a, required struct b) {
+	if (structCount(arguments.a) != structCount(arguments.b)) return false;
+	for (var key in arguments.a) {
+		if (!structKeyExists(arguments.b, key) || compare(arguments.a[key], arguments.b[key]) != 0) return false;
+	}
+	return true;
+}
+
+// The user bean legacy's failed userManager.update or create leaves (core/mura/user/userManager.cfc:404-450, 563-582):
+// the stored user, or a new one, set from the posted values under the S2 rule, holding the target save's errors; no write.
+function failedSaveBean(required struct posted, required struct result) {
+	var data = structCopy(arguments.posted);
+	structDelete(data, "userBean");
+	var userId = structKeyExists(data, "userID") ? data.userID : "";
+	var updating = len(userId) && structKeyExists(data, "action") && data.action == "Update";
+	var bean = updating ? application.serviceFactory.getBean("userDAO").read(userId) : application.serviceFactory.getBean("user");
+	bean.set(data);
+	if (!application.permUtility.isS2()) bean.setS2(0);
+	if (bean.getS2()) bean.setIsPublic(0);
+	if (!updating) bean.setUserID(len(userId) ? userId : createUUID());
+	bean.setErrors(structKeyExists(arguments.result, "errors") && isStruct(arguments.result.errors) ? arguments.result.errors : {});
+	return bean;
+}
+
+// Installs each carried context that differs from the one installed last as session["__fw1<key>"], its userBean (a target
+// save result) as the user bean legacy's failed save leaves, and purges the context ten keys earlier, as FW/1's key
+// allocation does (admin/framework.cfc:1432-1456).
+function installContexts(required struct contexts, required struct previous) {
+	for (var key in arguments.contexts) {
+		var context = arguments.contexts[key];
+		if (structKeyExists(arguments.previous, key) && sameContext(arguments.previous[key], context)) continue;
+		var restored = structCopy(context);
+		if (structKeyExists(restored, "userBean")) restored.userBean = failedSaveBean(context, deserializeJSON(context.userBean));
+		session["__fw1" & key] = restored;
+		structDelete(session, "__fw1" & (key - 10));
+	}
+}
+
 app = request.opt2BridgeApp;
 op = url.op;
 body = {};
 // The session.mura keys userUtility.setUserStruct sets for a logged-in user, in describe's wire spelling.
 userKeys = ["userID", "username", "siteID", "subtype", "password", "fname", "lname", "email", "remoteID", "company", "lastlogin", "passwordCreated"];
-// The top-level session keys op=carry may set: values target routes keep that legacy-served admin views read.
-carriedKeys = ["flatViewArgs"];
+// The session values target and legacy admin routes share, which op=carry sets and op=export reads; "__fw1" stands for the
+// FW/1 preserved contexts session["__fw1<key>"], which op=carry installs and op=export never reads, and "moduleTopIds"
+// for the module tops session[<key>].topid.
+sharedNames = ["flatViewArgs", "mura.nextN", "mura.alerts", "siteid", "userFilesPath", "topID", "openSectionList", "keywords", "datakeywords", "filterBy", "__fw1NextPreserveKey", "__fw1", "moduleid", "moduleTopIds", "mura.objectInstanceId"];
+// The session keys holding a module's Site Manager top: before()'s "m<moduleid>" and the empty-tree reset's "<moduleid>", over
+// the module ids carch before() accepts (admin/core/controllers/carch.cfc:79-107, 216-240).
+moduleTopKeys = [];
+for (moduleId in ["00000000000000000000000000000000000", "00000000000000000000000000000000003", "00000000000000000000000000000000004", "00000000000000000000000000000000099", "000000000000000000000000000000000099"]) {
+	arrayAppend(moduleTopKeys, "m" & moduleId);
+	arrayAppend(moduleTopKeys, moduleId);
+}
 
 try {
 	switch (op) {
@@ -123,6 +222,8 @@ try {
 			session.mura.csrfsecretkey = secret;
 			session.mura.csrfusedtokens = ledger;
 			structDelete(session, "siteArray");
+			// setUserStruct replaced the session.mura values op=carry installed, so the next carry installs every value again.
+			structDelete(session, "opt2Carried");
 			body = {"sessionId": session.sessionid, "hydrated": true};
 			break;
 
@@ -154,8 +255,8 @@ try {
 			break;
 
 		case "carry":
-			// Sets each value as its top-level session key unless its revision is the one installed last, so legacy's own
-			// writes to it stand until a target route changes it again.
+			// Sets each shared value unless its revision is the one installed last, so legacy's own writes to it stand until
+			// identity's value changes again; the installed value's JSON is recorded for op=export.
 			requireMethod("POST");
 			requireSession();
 			input = app.readJsonBody();
@@ -164,22 +265,56 @@ try {
 				app.raise(400, "badRequest", "values must be an array");
 			}
 			for (entry in values) {
-				if (!isStruct(entry) || !structKeyExists(entry, "name") || !isSimpleValue(entry.name) || !arrayFind(carriedKeys, entry.name)
-					|| !structKeyExists(entry, "value") || !isStruct(entry.value)
-					|| !structKeyExists(entry, "revision") || !isSimpleValue(entry.revision) || !len(entry.revision)) {
-					app.raise(400, "badRequest", "values entries need a carried name, a struct value and a revision");
+				if (!isStruct(entry) || !structKeyExists(entry, "name") || !isSimpleValue(entry.name) || !arrayFind(sharedNames, entry.name)
+					|| !structKeyExists(entry, "value") || isNull(entry.value)
+					|| !structKeyExists(entry, "revision") || !isSimpleValue(entry.revision) || !len(entry.revision)
+					|| (entry.name == "__fw1" && !isContexts(entry.value)) || (entry.name == "moduleTopIds" && !isStruct(entry.value))) {
+					app.raise(400, "badRequest", "values entries need a shared name, a value and a revision");
 				}
 			}
-			param name="session.opt2CarriedRevisions" default={};
+			param name="session.opt2Carried" default={};
 			applied = [];
 			for (entry in values) {
-				if (!structKeyExists(session.opt2CarriedRevisions, entry.name) || compare(session.opt2CarriedRevisions[entry.name], entry.revision) != 0) {
-					session[entry.name] = entry.value;
-					session.opt2CarriedRevisions[entry.name] = entry.revision;
+				carried = structKeyExists(session.opt2Carried, entry.name) ? session.opt2Carried[entry.name] : {};
+				if (!structKeyExists(carried, "revision") || compare(carried.revision, entry.revision) != 0) {
+					if (entry.name == "__fw1") {
+						installContexts(entry.value, structKeyExists(carried, "json") ? deserializeJSON(carried.json) : {});
+						json = serializeJSON(entry.value);
+					} else {
+						writeShared(entry.name, entry.value);
+						// The value as op=export reads it back, so an unchanged value is never exported.
+						held = readShared(entry.name);
+						json = held.exists ? serializeJSON(held.value) : "";
+					}
+					session.opt2Carried[entry.name] = {"revision": entry.revision, "json": json};
 					arrayAppend(applied, entry.name);
 				}
 			}
 			body = {"applied": applied};
+			break;
+
+		case "export":
+			// Reads each shared value the session holds whose JSON differs from the one op=carry installed last, or that
+			// op=carry never installed; simple values go out as strings, so a numeric-looking id keeps its digits.
+			requireMethod("GET");
+			requireSession();
+			exported = [];
+			for (name in sharedNames) {
+				// No legacy-served preserving redirect lands on a target-served page, so contexts travel target to legacy only.
+				if (name == "__fw1") {
+					continue;
+				}
+				held = readShared(name);
+				if (!held.exists || isNull(held.value)) {
+					continue;
+				}
+				if (structKeyExists(session, "opt2Carried") && structKeyExists(session.opt2Carried, name)
+					&& compare(session.opt2Carried[name].json, serializeJSON(held.value)) == 0) {
+					continue;
+				}
+				arrayAppend(exported, {"name": name, "value": isSimpleValue(held.value) ? javacast("string", held.value) : held.value});
+			}
+			body = {"values": exported};
 			break;
 
 		case "end":

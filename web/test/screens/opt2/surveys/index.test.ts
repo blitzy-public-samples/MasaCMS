@@ -24,6 +24,9 @@ const LEGACY_CLASSES = new Set([
   'block-content',
   'mura-table-grid',
   'var-width',
+  // Responsive grid columns, as admin/core/views/cusers/inc/dsp_users_list.cfm hides secondary columns.
+  'hidden-xs',
+  'hidden-sm',
   'help-block',
   'help-block-empty',
   'mura-control-group',
@@ -51,6 +54,15 @@ const LEGACY_CLASSES = new Set([
   'label-info',
   'label-inverse',
   'label-important',
+  // The numbered pager, as admin/core/views/cusers/inc/dsp_nextn.cfm and carch/search.cfm page a list.
+  'pagination',
+  'mura-layout-row',
+  'clearfix',
+  'search-showing',
+  'pull-right',
+  'active',
+  'mi-angle-left',
+  'mi-angle-right',
 ]);
 
 let restoreEnv: () => void;

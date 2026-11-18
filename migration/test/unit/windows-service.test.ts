@@ -1,5 +1,5 @@
 // Unit tests for the window service over a throwaway `migration` schema: uncertain closes, the open deadline, cross-instance claims,
-// log safety and `windows.json` written from the window rows.
+// the start-up guard's reload import, log safety and `windows.json` written from the window rows.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,11 +17,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { loadConfig } from '../../src/config.js';
 import type { MigrationContext } from '../../src/context.js';
+import { STARTUP_CONTENT_IDS_SQL, STARTUP_COUNT_SQL } from '../../src/legacy/index.js';
 import { GateConflict, OwnerCallError, type DataOwner, type OwnersClient } from '../../src/owners/index.js';
 import { loadUnitCatalog } from '../../src/owners/units.js';
 import { readSourceSha } from '../../src/reports/index.js';
 import { ProjectionTimeoutError, type Projector } from '../../src/reverse/index.js';
-import { WindowImportError, type ImportResult } from '../../src/windows/import.js';
+import { WindowImportError, type ImportInput, type ImportResult } from '../../src/windows/import.js';
 import { acquireLeases, leasesOf } from '../../src/windows/leases.js';
 import {
   WindowRefusedError,
@@ -39,6 +40,12 @@ vi.mock('../../src/windows/import.js', async (importOriginal) => ({
   importWindow: imports.importWindow,
 }));
 
+const reloads = vi.hoisted(() => ({ sendReloadRequest: vi.fn() }));
+vi.mock('../../src/windows/reload.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/windows/reload.js')>()),
+  sendReloadRequest: reloads.sendReloadRequest,
+}));
+
 const CONFIG = loadConfig();
 const CATALOG = loadUnitCatalog(CONFIG.paths.tableOwnership);
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
@@ -47,6 +54,10 @@ const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
 const TABLE_VERSION = 'v0002';
 const FINANCE = 'finance.record';
 const SURVEYS = 'surveys.survey';
+// The only unit `tcontent` feeds, the start-up guard's table.
+const CONTENT = 'content.content';
+const CONTENT_ID = cfUuid();
+const OTHER_CONTENT_ID = cfUuid();
 const ROUTE_KEY = 'admin:cusers.update';
 const NO_IMPORT: ImportResult = { rowsImported: 0, perOwner: {}, objectsTransferred: 0, objectsRemoved: [], touchedContent: false, writePositions: new Map() };
 // The longest single call of a claimed operation: a claim is fenced once it outlasts no more than this.
@@ -208,6 +219,23 @@ function manualClock(start = Date.now()): Clock & { advance(ms: number): void } 
   };
 }
 
+/** Live legacy pool answering the start-up count with `count` and the content-id read with `ids` until `convert` runs. */
+function startupLegacy(ids: readonly string[], count: number): { legacy: MigrationContext['legacy']; convert(): void } {
+  let converted = false;
+  const query = (text: string): Promise<{ recordset: unknown[] }> => {
+    if (text === STARTUP_COUNT_SQL) return Promise.resolve({ recordset: [{ n: converted ? 0 : count }] });
+    if (text === STARTUP_CONTENT_IDS_SQL) return Promise.resolve({ recordset: (converted ? [] : ids).map((contentId) => ({ contentId })) });
+    return Promise.reject(new Error(`unexpected legacy statement: ${text}`));
+  };
+  const pool = { request: () => ({ query }) };
+  return {
+    legacy: { live: () => Promise.resolve(pool) } as unknown as MigrationContext['legacy'],
+    convert() {
+      converted = true;
+    },
+  };
+}
+
 const pg = await pgAvailable();
 
 describe.skipIf(!pg)('window service against PostgreSQL', () => {
@@ -229,6 +257,8 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
   beforeEach(async () => {
     imports.importWindow.mockReset();
     imports.importWindow.mockResolvedValue(NO_IMPORT);
+    reloads.sendReloadRequest.mockReset();
+    reloads.sendReloadRequest.mockResolvedValue({ status: 200 });
     await db.withMetadata(async (tx) => {
       await tx.query(`DELETE FROM ${tx.schema}.write_window`);
       await tx.query(`DELETE FROM ${tx.schema}.unit_lease`);
@@ -252,6 +282,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       sleep?: WindowServiceOptions['sleep'];
       clock?: Clock;
       db?: TenantDb;
+      legacy?: MigrationContext['legacy'];
     } = {},
   ): Harness {
     const logger = capturingLogger();
@@ -261,7 +292,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       clock: opts.clock ?? systemClock,
       logger,
       db: opts.db ?? db,
-      legacy: { live: () => Promise.reject(new Error('no legacy database in this suite')) },
+      legacy: opts.legacy ?? { live: () => Promise.reject(new Error('no legacy database in this suite')) },
       bridge: {},
       catalog: CATALOG,
       owners: owners.owners,
@@ -629,6 +660,59 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     expect(error).toMatchObject({ windowId, state: 'open', action });
     expect(imports.importWindow).not.toHaveBeenCalled();
     expect(await rowOf(windowId)).toMatchObject({ state: 'open', claimed_by: 'live-instance' });
+  });
+
+  /** Units and scope of every import after the window's own: the start-up guard reload's. */
+  const reloadImports = (): Pick<ImportInput, 'units' | 'scope'>[] =>
+    imports.importWindow.mock.calls.slice(1).map((call) => {
+      const { units, scope } = call[1] as ImportInput;
+      return { units, scope };
+    });
+
+  /** Opens and completes a window on the start-up table's unit whose own import touched `tcontent`, over `legacy`. */
+  async function completeGuarded(legacy: MigrationContext['legacy'], gateway: GatewayDouble): Promise<{ windowId: string; state: string }> {
+    imports.importWindow.mockResolvedValueOnce({ ...NO_IMPORT, touchedContent: true });
+    const { service } = instance(ownersDouble(), gateway, { legacy });
+    const { windowId } = await service.open(openRequest([CONTENT]));
+    const { state } = await service.complete(windowId, { forwarded: true, legacyStatus: 200 });
+    return { windowId, state };
+  }
+
+  it.each([
+    ['one content', [CONTENT_ID], 1, [{ units: [CONTENT], scope: { keys: { contentid: CONTENT_ID } } }]],
+    ['several contents', [CONTENT_ID, OTHER_CONTENT_ID], 2, [{ units: [CONTENT], scope: { table: true } }]],
+    ['no content once its leases are held', [], 1, []],
+  ])('imports only the start-up table’s units after a guard reload matching %s', async (_label, ids, count, expected) => {
+    const live = startupLegacy(ids, count);
+    reloads.sendReloadRequest.mockImplementation(() => {
+      live.convert();
+      return Promise.resolve({ status: 200 });
+    });
+    const gateway = gatewayDouble();
+
+    const { windowId, state } = await completeGuarded(live.legacy, gateway);
+
+    expect(state).toBe('closed');
+    expect(reloads.sendReloadRequest).toHaveBeenCalledTimes(1);
+    expect(reloadImports()).toEqual(expected);
+    expect(gateway.frozen.size).toBe(0);
+    expect(await heldUnits(windowId)).toEqual([]);
+  });
+
+  it('imports the matched content after a guard reload whose transport failed, and keeps the freeze for a retry', async () => {
+    const live = startupLegacy([CONTENT_ID], 1);
+    reloads.sendReloadRequest.mockImplementation(() => {
+      live.convert();
+      return Promise.reject(new Error('reload connection reset'));
+    });
+    const gateway = gatewayDouble();
+
+    const { windowId, state } = await completeGuarded(live.legacy, gateway);
+
+    expect(state).toBe('import-pending');
+    expect(reloadImports()).toEqual([{ units: [CONTENT], scope: { keys: { contentid: CONTENT_ID } } }]);
+    expect(gateway.frozen.size).toBeGreaterThan(0);
+    expect(await rowOf(windowId)).toMatchObject({ state: 'import-pending' });
   });
 
   it.each([

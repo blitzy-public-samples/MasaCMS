@@ -1,5 +1,6 @@
 // The App Router adapters of the admin and synthetic-module trees: segment config and delegation to their handler.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { handleAdminAction, handleAdminPage, handleAdminRaw, handleOpt2Action, handleOpt2Page } from '@/lib/handlers';
 import * as adminPage from '../../app/admin/[circuit]/[action]/route';
 import * as adminActions from '../../app/admin-actions/[circuit]/[action]/route';
@@ -61,9 +62,33 @@ describe('opt2/admin-actions route', () => {
     expect(opt2Actions.runtime).toBe('nodejs');
   });
 
-  it('exports POST alone, so Next answers GET and HEAD 405 without running a synthetic write', () => {
-    expect(ROUTE_METHODS.filter((method) => method in opt2Actions)).toEqual(['POST']);
+  it('exports every route method, so Next answers none of them itself', () => {
+    expect(ROUTE_METHODS.filter((method) => method in opt2Actions)).toEqual([...ROUTE_METHODS]);
   });
+
+  it.each([
+    { method: 'GET', body: LEGACY_ERROR_PAGE_HTML },
+    { method: 'PUT', body: LEGACY_ERROR_PAGE_HTML },
+    { method: 'PATCH', body: LEGACY_ERROR_PAGE_HTML },
+    { method: 'DELETE', body: LEGACY_ERROR_PAGE_HTML },
+    { method: 'OPTIONS', body: LEGACY_ERROR_PAGE_HTML },
+    { method: 'HEAD', body: null },
+  ] as const)(
+    '$method answers 405 with Allow: POST and the legacy error page without running an action',
+    async ({ method, body }) => {
+      const request = new Request(`${WEB_TEST_ORIGIN}/opt2/admin-actions/finance/submit?siteid=tenant-a`, { method });
+
+      const response = await opt2Actions[method](request);
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get('allow')).toBe('POST');
+      expect(response.headers.get('generator')).toBe('Masa CMS 7.6.1');
+      expect(response.headers.get('strict-transport-security')).toBe('max-age=1200');
+      expect(response.headers.get('content-type')).toBe('text/html;charset=UTF-8');
+      expect(response.body === null ? null : await response.text()).toBe(body);
+      expect(opt2Handler).not.toHaveBeenCalled();
+    },
+  );
 
   it('POST returns handleOpt2Action response for the request and awaited params', async () => {
     const request = new Request(`${WEB_TEST_ORIGIN}/opt2/admin-actions/communications/send`, { method: 'POST' });

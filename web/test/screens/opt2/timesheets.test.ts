@@ -38,6 +38,9 @@ const LEGACY_CLASS_NAMES: ReadonlySet<string> = new Set([
   'btn',
   'alert',
   'var-width',
+  // Responsive grid columns, as admin/core/views/cusers/inc/dsp_users_list.cfm hides secondary columns.
+  'hidden-xs',
+  'hidden-sm',
   'help-block-empty',
   'mura-control-group',
   'mura-primary',
@@ -51,6 +54,13 @@ const LEGACY_CLASS_NAMES: ReadonlySet<string> = new Set([
   'label-info',
   'label-inverse',
   'label-important',
+  // The numbered pager, as admin/core/views/cusers/inc/dsp_nextn.cfm and carch/search.cfm page a list.
+  'mura-layout-row',
+  'clearfix',
+  'search-showing',
+  'pull-right',
+  'mi-angle-left',
+  'mi-angle-right',
 ]);
 const LEGACY_CLASS_PATTERNS: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];
 
@@ -249,7 +259,7 @@ describe('timesheets labels', () => {
         headers: [['Period', 'Person', fr('Due Date'), fr('Status'), 'Overdue']],
         flags: [timesheetSheets.map(({ overdue }) => flag(overdue))],
         buttons: [],
-        links: ['Previous', fr('Next')],
+        links: ['', '1', '2', '3', ''],
       }),
     },
     {

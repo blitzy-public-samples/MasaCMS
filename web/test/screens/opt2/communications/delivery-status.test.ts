@@ -112,12 +112,17 @@ describe('communications delivery-status screen', () => {
     ]);
   });
 
-  it('encodes the requested id into the service path', async () => {
-    const ctx = screenContext(senderRequest({ rc: { messageId: '../templates?x=1' } }));
-    await loadDeliveryStatus(ctx);
+  it.each(['..', '../x', '../../x', '../templates?x=1', 'abc'])(
+    'answers the malformed id %j with the invalid-parameters alert, asking communications nothing',
+    async (messageId) => {
+      const ctx = screenContext(senderRequest({ rc: { messageId } }));
+      const model = bodyModel(deliveryStatusBody(ctx, await loadDeliveryStatus(ctx)));
 
-    expect(communicationsCalls(ctx.gateway)[0]?.path).toBe('/v1/messages/..%2Ftemplates%3Fx%3D1');
-  });
+      expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+      expect(model.headings).toEqual(['Delivery Status']);
+      expect(communicationsCalls(ctx.gateway)).toEqual([]);
+    },
+  );
 
   it.each([
     { status: 401, error: GatewayDenialError },

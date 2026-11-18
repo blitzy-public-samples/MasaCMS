@@ -4,6 +4,7 @@ import { cfEq, cfIsNumeric, cfLsDateFormat, cfLsTimeFormat, cfToBoolean } from '
 import { parseLegacyDate } from '@/lib/dates';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import {
+  assignContext,
   forwardedPostedUrlScope,
   forwardedUrlScope,
   relayContext,
@@ -261,6 +262,13 @@ function applyContentSessionWrites(req: AdminRequest, url: ReadonlyMap<string, s
   return reset;
 }
 
+/** `req` with list.cfm 575-577's `rc.activeTab`: the session flat-view tab unless the URL scope names activeTab. */
+function withActiveTab(req: AdminRequest, model: CarchPageModel, url: ReadonlyMap<string, string>): AdminRequest {
+  if (url.has('activetab')) return req;
+  const tab = requiredText(requiredStruct(model.rc, 'flatViewArgs', 'RC'), 'tab', 'session.flatViewArgs');
+  return { ...req, rc: assignContext(req.rc, { activeTab: tab }) };
+}
+
 /** `./?muraAction=cArch.list&siteid=…` of the Site Manager root, the view's `cflocation` without crumbs. */
 const rootListLocation = (siteId: string): string =>
   `./?muraAction=cArch.list&siteid=${encodeUrl(siteId)}&moduleid=${CONTENT_MODULE_ID}&topid=${ROOT_CONTENT_ID}`;
@@ -300,6 +308,7 @@ async function runList(ctx: ScreenContext): Promise<ListOutcome> {
     return { kind: 'page', data: { listCase, model, url, startRowReset: false } };
   }
   const startRowReset = applyContentSessionWrites(req, url);
+  ctx.req = withActiveTab(ctx.req, model, url);
   if (lacksCrumbs(model)) return { kind: 'location', location: rootListLocation(rcText(req.rc, 'siteid')) };
   return { kind: 'page', data: { listCase, model, url, startRowReset } };
 }
@@ -797,7 +806,7 @@ function contentBody(ctx: ScreenContext, data: ListData): string {
   const modulePerm = (module: string): boolean => sessionSiteModulePerm(req, module);
   const scaffolding = (): boolean =>
     requiredFlag(siteConfig, 'scaffolding', 'siteConfig') && modulePerm(SCAFFOLD_MODULE_ID);
-  const activeTab = data.url.has('activetab') ? rcText(rc, 'activeTab') : flat('tab');
+  const activeTab = rcText(rc, 'activeTab');
 
   const o = new CfOut();
   o.t("\n\t\t\t<script>\n\t\t\t\tsiteID='", sessionSiteId, "';\n\t\t\t\t");

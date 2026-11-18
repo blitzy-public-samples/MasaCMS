@@ -17,7 +17,7 @@ import {
   type ExportJob,
   type ExportsData,
 } from '@/screens/opt2/reporting/exports';
-import { noAccessUrl, OPT2_LABEL_KEYS, type Opt2LabelName } from '@/screens/opt2/shared';
+import { GUARDED_SUBMIT, noAccessUrl, OPT2_LABEL_KEYS, type Opt2LabelName } from '@/screens/opt2/shared';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
 import { REPORTING_IDS, exportDefinitionSummaries, exportJobs } from '../../../fixtures/opt2/reporting';
 import {
@@ -108,11 +108,11 @@ function listModel(jobs: readonly ExportJob[]): DomModel {
   return {
     title: '',
     headings: ['Export Jobs'],
-    labels: ['Definition', 'Format', 'As Of'],
+    labels: ['Definition', 'Format', 'As Of (yyyy-mm-dd)'],
     controls: [
       DEFINITION_CONTROL,
       FORMAT_CONTROL,
-      control({ name: 'asOf', type: 'date' }),
+      control({ name: 'asOf' }),
       control({ name: 'csrf_token', type: 'hidden', value: CSRF_PAIR.token }),
       control({ name: 'csrf_token_expires', type: 'hidden', value: CSRF_PAIR.expires }),
       ...done.map((job) => control({ name: 'jobId', type: 'hidden', value: job.job_id })),
@@ -231,6 +231,22 @@ describe('reporting/exports', () => {
       expect(list?.query).toEqual({ page: String(expected), pageSize: String(PAGE_SIZE) });
     });
 
+    it('reads page 1 after a page past the last', async () => {
+      const gateway = listGateway();
+      gateway.setRoute(LIST_ROUTE, (request) => ({
+        status: 200,
+        body: { data: request.query['page'] === '1' ? exportJobs : [], total: 120 },
+      }));
+
+      const data = await loadExports(contextFor(exporterRequest({ page: '9999' }), gateway));
+
+      expect(data).toEqual({ ...LISTED, total: 120, page: 1 });
+      const pages = gateway.calls
+        .filter((call) => call.service === 'reporting' && call.path === LIST_PATH)
+        .map((call) => call.query?.['page']);
+      expect(pages).toEqual(['9999', '1']);
+    });
+
     it.each(
       [
         { route: LIST_ROUTE, operation: 'listExports' },
@@ -287,12 +303,15 @@ describe('reporting/exports', () => {
       const downloads = $('table.mura-table-grid > tbody > tr > td:last-child > form').toArray().map((el) => ({
         action: $(el).attr('action'),
         method: $(el).attr('method'),
+        onsubmit: $(el).attr('onsubmit'),
         fields: $(el).find('input').toArray().map((input) => [$(input).attr('name'), $(input).attr('value')]),
       }));
+      // A download answers a file and leaves the page, so it submits natively, without the legacy spinner.
       expect(downloads).toEqual(
         DONE_JOBS.map((job) => ({
           action: '/opt2/admin-actions/reporting/download?siteid=tenant-a',
           method: 'post',
+          onsubmit: undefined,
           fields: [['jobId', job.job_id]],
         })),
       );
@@ -304,6 +323,7 @@ describe('reporting/exports', () => {
 
       expect($('form[name="form1"]').attr('action')).toBe('/opt2/admin-actions/reporting/queue?siteid=tenant-a');
       expect($('form[name="form1"]').attr('method')).toBe('post');
+      expect(`<form onsubmit="${$('form[name="form1"]').attr('onsubmit')}">`).toBe(`<form${GUARDED_SUBMIT.value}>`);
       expect($('form[name="form1"] input[type="hidden"]').toArray().map((el) => $(el).attr('name'))).toEqual([
         'csrf_token',
         'csrf_token_expires',
@@ -329,7 +349,7 @@ describe('reporting/exports', () => {
       ];
 
       expect($('.block-content .block')).toHaveLength(0);
-      expect($('form[name="form1"] + table.mura-table-grid + ul.pagination')).toHaveLength(1);
+      expect($('form[name="form1"] + table.mura-table-grid + div.mura-layout-row > ul.pagination.pull-right')).toHaveLength(1);
       for (const [index, expected] of columns.entries()) {
         const cells = $(`table.mura-table-grid tr > :nth-child(${index + 1})`).toArray();
         expect(cells.map((cell) => $(cell).attr('class'))).toEqual(Array(exportJobs.length + 1).fill(expected));
@@ -344,23 +364,21 @@ describe('reporting/exports', () => {
     });
 
     it.each([
-      { page: 1, total: 120, links: [{ href: '/opt2/admin/reporting/exports?siteid=tenant-a&page=2', text: 'Next' }] },
-      {
-        page: 2,
-        total: 120,
-        links: [
-          { href: '/opt2/admin/reporting/exports?siteid=tenant-a&page=1', text: 'Previous' },
-          { href: '/opt2/admin/reporting/exports?siteid=tenant-a&page=3', text: 'Next' },
-        ],
-      },
-      { page: 3, total: 120, links: [{ href: '/opt2/admin/reporting/exports?siteid=tenant-a&page=2', text: 'Previous' }] },
-      { page: 2, total: 100, links: [{ href: '/opt2/admin/reporting/exports?siteid=tenant-a&page=1', text: 'Previous' }] },
+      { page: 1, total: 120, links: [['#', '1'], [2, '2'], [3, '3'], [2, '']] },
+      { page: 2, total: 120, links: [[1, ''], [1, '1'], ['#', '2'], [3, '3'], [3, '']] },
+      { page: 3, total: 120, links: [[2, ''], [1, '1'], [2, '2'], ['#', '3']] },
+      { page: 2, total: 100, links: [[1, ''], [1, '1'], ['#', '2']] },
       { page: 1, total: 50, links: [] },
-    ])('links page $page of $total jobs to its neighbours', async ({ page, total, links }) => {
+    ])('links page $page of $total jobs to every page of the window', async ({ page, total, links }) => {
       const body = await renderedBody({ ...LISTED, total, page });
 
-      expect(fragmentModel(body).links).toEqual(links);
-      expect(body.includes('<ul class="pagination">')).toBe(links.length > 0);
+      expect(fragmentModel(body).links).toEqual(
+        links.map(([to, text]) => ({
+          href: to === '#' ? '#' : `/opt2/admin/reporting/exports?siteid=tenant-a&page=${to}`,
+          text,
+        })),
+      );
+      expect(body.includes('<ul class="pagination pull-right">')).toBe(links.length > 0);
     });
 
     it('carries session.siteid, URL-encoded, on every form action and page link', async () => {
@@ -376,9 +394,12 @@ describe('reporting/exports', () => {
 
       const targets = [
         ...$('form').toArray().map((el) => $(el).attr('action')),
-        ...$('a').toArray().map((el) => $(el).attr('href')),
+        ...$('a')
+          .toArray()
+          .map((el) => $(el).attr('href'))
+          .filter((href) => href !== '#'),
       ];
-      expect(targets).toHaveLength(1 + DONE_JOBS.length + 2);
+      expect(targets).toHaveLength(1 + DONE_JOBS.length + 4);
       for (const target of targets) expect(target).toMatch(/\?siteid=tenant\+b%26c(&page=[13])?$/);
     });
 
@@ -406,7 +427,6 @@ describe('reporting/exports', () => {
       { slot: 'job created header', name: 'Created', read: (body) => header(body, 3) },
       { slot: 'Download header', name: 'Download', read: (body) => header(body, 7) },
       { slot: 'Download button', name: 'Download', read: download },
-      { slot: 'Next link', name: 'Next', read: (body) => fragmentModel(body).links[0]?.text },
     ])('renders the $slot label from the fr bundle', async ({ name, read }) => {
       const ctx = { ...contextFor(exporterRequest(), listGateway()), rb: fr };
       await ctx.csrf.prefetch(['']);
@@ -414,6 +434,15 @@ describe('reporting/exports', () => {
       const body = toString(exportsBody(ctx, { ...LISTED, total: 120 }));
 
       expect(read(body)).toBe(fr.rbKey(OPT2_LABEL_KEYS[name]));
+    });
+
+    it('words the pager record range from the fr bundle', async () => {
+      const ctx = { ...contextFor(exporterRequest(), listGateway()), rb: fr };
+      await ctx.csrf.prefetch(['']);
+
+      const body = toString(exportsBody(ctx, { ...LISTED, total: 120, page: 1 }));
+
+      expect(cheerio.load(body, null, false)('p.search-showing').text()).toBe('Affichage des résultats 1-50 sur 120');
     });
   });
 

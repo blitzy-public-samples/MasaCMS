@@ -7,6 +7,8 @@ import type { Rc, ScreenContext } from '../../registry';
 import {
   alertBox,
   errorMessage,
+  invalidParametersAlert,
+  isMalformedId,
   opt2ActionUrl,
   opt2Label,
   opt2ScreenUrl,
@@ -42,11 +44,13 @@ export type Read<T> =
   | { readonly body: T; readonly alert?: undefined }
   | { readonly body?: undefined; readonly alert: SafeHtml };
 
-/** The read of a screen reached without a request id, worded as the service answers an invalid id. */
-export const MISSING_ID: Read<never> = Object.freeze({ alert: alertBox('Invalid parameters') });
+/** The read of a screen reached without a request id or with a malformed one, worded as the service answers it. */
+export const MISSING_ID: Read<never> = Object.freeze({ alert: invalidParametersAlert() });
 
-/** Paging fields of a contract list. */
-type Paged = Pick<ESignatureSchemas['FixtureList'], 'pageindex' | 'totalpages'>;
+/** Whether request id `id` is one the screens ask e-signature about: present and well formed. */
+export function isRequestId(id: string): boolean {
+  return id !== '' && !isMalformedId(id);
+}
 
 /** `rc.id`, the request a screen or action is about; '' when absent. */
 export function requestIdOf(rc: Rc): string {
@@ -103,15 +107,6 @@ export function requestLinks(ctx: ScreenContext, id: string | undefined, current
   if (id === undefined) return [list];
   const others = REQUEST_PAGES.filter((page) => page.screen !== current);
   return [list, ...others.map((page) => ({ label: page.label, href: screenUrl(ctx, page.screen, { id }) }))];
-}
-
-/** Previous and Next links of a paged list on `screen`; nothing when it has one page. */
-export function pagination(ctx: ScreenContext, screen: string, page: Paged, params: Opt2Params = {}): SafeHtml | null {
-  const pageLink = (label: Label, pageIndex: number): SafeHtml =>
-    html`<li>${link(screenUrl(ctx, screen, { ...params, pageIndex }), label)}</li>`;
-  const previous = page.pageindex > 1 ? pageLink('Previous', page.pageindex - 1) : null;
-  const next = page.pageindex < page.totalpages ? pageLink(opt2Label(ctx, 'Next'), page.pageindex + 1) : null;
-  return previous === null && next === null ? null : html`<ul class="pagination">${previous}${next}</ul>`;
 }
 
 /**

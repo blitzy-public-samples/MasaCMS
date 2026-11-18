@@ -98,7 +98,7 @@ const PARAM_CRITERION = {
 } as const;
 
 // The contract's AdminSessionState; the save drops its read-only `hasdefaultpassword`, which only login sets.
-const ADMIN_STATE_BODY = {
+export const ADMIN_STATE_BODY = {
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -108,6 +108,8 @@ const ADMIN_STATE_BODY = {
     openSectionList: TEXT,
     moduleid: TEXT,
     keywords: TEXT,
+    datakeywords: TEXT,
+    filterBy: TEXT,
     rb: TEXT,
     locale: TEXT,
     dateKeyFormat: TEXT,
@@ -138,6 +140,8 @@ const ADMIN_STATE_KEYS = Object.keys({
   openSectionList: true,
   moduleid: true,
   keywords: true,
+  datakeywords: true,
+  filterBy: true,
   rb: true,
   locale: true,
   dateKeyFormat: true,

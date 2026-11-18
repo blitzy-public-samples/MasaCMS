@@ -2,6 +2,7 @@
 import { cfEq, javaTrim } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeHtmlAttr, html, raw, type SafeHtml } from '@/lib/html';
+import { setLayoutAlerts } from '@/lib/request-context';
 import { adminAssetUrl } from '@/lib/urls';
 import { renderAlerts } from './alerts';
 import { renderDialog } from './dialog';
@@ -129,8 +130,12 @@ ${renderDialog()}
 `;
 }
 
-/** The full admin layout around `sc.view`; body `id` and `class` hold the text legacy emits unencoded. */
+/**
+ * The full admin layout around `sc.view`, adding the session site's alert entry to `sc.ctx` as legacy's layout does;
+ * body `id` and `class` hold the text legacy emits unencoded.
+ */
 export function renderTemplate(sc: ShellContext): AdminDocument {
+  setLayoutAlerts(sc.ctx);
   const { preamble, htmlAttrs } = htmlOpener(sc.ctx.session.locale, sc.ctx.isMSIE);
   return {
     layout: 'template',

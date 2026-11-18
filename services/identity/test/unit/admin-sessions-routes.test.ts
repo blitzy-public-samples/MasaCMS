@@ -641,7 +641,7 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
   it('stores admin values whole by key, drops the read-only default-password flag, refuses undeclared keys and an ended session', async () => {
     const { sid } = await newSession();
     const headers = await headersFor([], { sid });
-    const first = { siteid: SITE_A, paramArray: [{ Field: 'tusers.lname', Relationship: 'Contains', Criteria: 'Ada', Condition: 'AND' }], mura: { errors: { a: 1 } } };
+    const first = { siteid: SITE_A, paramArray: [{ Field: 'tusers.lname', Relationship: 'Contains', Criteria: 'Ada', Condition: 'AND' }], datakeywords: 'qaxlbkw', filterBy: 'fname', mura: { errors: { a: 1 } } };
 
     const saved = await send('POST', '/v1/sessions/current/admin-state', headers, { ...first, hasdefaultpassword: true });
     const merged = await send('POST', '/v1/sessions/current/admin-state', headers, { mura: { objectInstanceId: 'x' }, dashboardSpan: 30 });

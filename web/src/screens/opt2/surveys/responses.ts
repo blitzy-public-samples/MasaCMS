@@ -2,20 +2,21 @@
 import type { components } from '@/generated/clients/surveys';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { block, gridTable, opt2Label, opt2View } from '../shared';
+import { block, gridTable, opt2Label, opt2View, pagination, readPage } from '../shared';
 import {
-  NO_SURVEY,
   PAGE_SIZE,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
   pageIndexOf,
-  pager,
   readOf,
   siteIdOf,
   surveyHeader,
   surveyIdOf,
+  surveyTitleRow,
+  surveysUrl,
   unreadHeader,
+  unreadSurveyId,
   type Survey,
   type Unread,
 } from './common';
@@ -41,18 +42,26 @@ export type ResponsesData =
   | { survey: Survey; responses: SurveyResponse[]; total: number; pageIndex: number }
   | Unread;
 
-/** The survey (`getSurvey`) and page `rc.pageIndex` of its responses (`listSurveyResponses`). */
+/**
+ * The survey (`getSurvey`) and page `rc.pageIndex` of its responses (`listSurveyResponses`), page 1 when it is past the
+ * last.
+ */
 async function loadResponses(ctx: ScreenContext): Promise<ResponsesData> {
   const surveyId = surveyIdOf(ctx);
-  if (surveyId === '') return NO_SURVEY;
-  const pageIndex = pageIndexOf(ctx);
+  const unread = unreadSurveyId(surveyId);
+  if (unread !== undefined) return unread;
   const siteid = siteIdOf(ctx);
-  const [surveyRes, pageRes] = await Promise.all([
+  const [surveyRes, { answer: pageRes, page: pageIndex }] = await Promise.all([
     ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', { params: { surveyId }, query: { siteid } }),
-    ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}/responses', {
-      params: { surveyId },
-      query: { siteid, pageIndex, itemsPerPage: PAGE_SIZE },
-    }),
+    readPage(
+      pageIndexOf(ctx),
+      (page) =>
+        ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}/responses', {
+          params: { surveyId },
+          query: { siteid, pageIndex: page, itemsPerPage: PAGE_SIZE },
+        }),
+      (answer) => (answer.ok ? Math.ceil(answer.body.total / PAGE_SIZE) : undefined),
+    ),
   ]);
   const survey = readOf(surveyRes, 'getSurvey');
   if ('unread' in survey) return survey;
@@ -84,8 +93,15 @@ function responseGrid(ctx: ScreenContext, responses: readonly SurveyResponse[]):
 function renderResponses(ctx: ScreenContext, data: ResponsesData): SafeHtml {
   if ('unread' in data) return html`${unreadHeader(ctx, 'responses')}${data.unread}`;
   const { survey } = data;
-  const paging = pager(ctx, 'responses', { surveyid: survey.surveyId }, data.pageIndex, data.total);
-  return html`${surveyHeader(ctx, survey, 'responses')}${block(html`${responseGrid(ctx, data.responses)}${paging}`)}`;
+  const paging = pagination(ctx, {
+    page: data.pageIndex,
+    totalRecords: data.total,
+    recordsPerPage: PAGE_SIZE,
+    href: (pageIndex) => surveysUrl(ctx, 'responses', { surveyid: survey.surveyId, pageIndex }),
+  });
+  return html`${surveyHeader(ctx, survey, 'responses')}${block(
+    html`${surveyTitleRow(ctx, survey)}${responseGrid(ctx, data.responses)}${paging}`,
+  )}`;
 }
 
 /** `/opt2/admin/surveys/responses?surveyid=…`: single- and multi-site responses of the survey. */

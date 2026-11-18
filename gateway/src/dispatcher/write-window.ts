@@ -15,8 +15,14 @@ type Schemas = components['schemas'];
 /** Migration's open budget: leases, gate closing and projection await. */
 export const WINDOW_OPEN_BUDGET_MS = 30_000;
 
+/** Migration's gateway lease of a window (`windows.gatewayLeaseMs`), which also bounds the window's recovery restart. */
+export const WINDOW_GATEWAY_LEASE_MS = 120_000;
+
 /** Bound of the open call: migration's budget plus the platform call bound for transport. */
 export const WINDOW_OPEN_TIMEOUT_MS = WINDOW_OPEN_BUDGET_MS + SERVICE_CALL_TIMEOUT_MS;
+
+/** Bound of the complete call, as migration's own client sets it: one open budget of claim wait, the gateway lease and the call bound. */
+export const WINDOW_COMPLETE_TIMEOUT_MS = WINDOW_OPEN_BUDGET_MS + WINDOW_GATEWAY_LEASE_MS + SERVICE_CALL_TIMEOUT_MS;
 
 /** Callee name of the migration service in the service client's URL map. */
 export const MIGRATION_SERVICE = 'migration';
@@ -154,6 +160,7 @@ export function createWriteWindowClient({ client, facts }: { client: ServiceClie
           path: WINDOW_OPERATIONS.complete.replace('{windowId}', encodeURIComponent(windowId)),
           json: input,
           userToken: null,
+          timeoutMs: WINDOW_COMPLETE_TIMEOUT_MS,
         });
       } catch {
         // Legacy has committed or never ran either way; migration's lease handling settles a window whose answer is lost.

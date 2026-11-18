@@ -267,7 +267,8 @@ describe('csettings.list page', () => {
     expect(model.alerts.filter(({ className }) => className === 'alert alert-error')).toEqual([
       { text: span.trim().replace(' <br> ', ' '), className: 'alert alert-error' },
     ]);
-    expect(req.sessionWrites.muraValues).toEqual({ errors: '' });
+    // The layout's session-site alert entry (template.cfm:262-265) is the request's other session.mura write.
+    expect(req.sessionWrites.muraValues).toEqual({ errors: '', alerts: { [SITE_IDS.default]: {} } });
   });
 
   it('shows no error alert without session errors', async () => {

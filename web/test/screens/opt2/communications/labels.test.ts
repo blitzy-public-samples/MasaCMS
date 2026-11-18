@@ -40,7 +40,7 @@ const LABEL_CASES: ReadonlyArray<{
     headers: [[fr('Name'), fr('Subject'), fr('Created'), fr('Last Update'), fr('Actions')]],
     labels: [fr('Name'), fr('Subject'), 'Text Body', 'HTML Body'],
     states: [],
-    pagerLinks: [fr('Next')],
+    pagerLinks: ['2', ''],
   },
   {
     name: 'sends',

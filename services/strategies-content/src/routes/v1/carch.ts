@@ -343,6 +343,8 @@ interface StoredAdminState {
   openSectionList?: string;
   moduleid?: string;
   keywords?: string;
+  datakeywords?: string;
+  filterBy?: string;
   rb?: string;
   locale?: string;
   dateKeyFormat?: string;
@@ -801,15 +803,15 @@ function pageParams(request: FastifyRequest, path: Readonly<Record<string, strin
   return rc;
 }
 
-/** list.cfm's `session.flatViewArgs[session.siteid]` defaults and request updates (list.cfm:494-584); returns the struct and whether it changed. */
-function flatViewArgsFor(state: StoredAdminState, rc: Rc, url: Rc, sessionSiteId: string): { all: Record<string, Record<string, unknown>>; changed: boolean } {
+/** list.cfm's `session.flatViewArgs[session.siteid]` defaults and request updates (list.cfm:494-584), keys matched as CFML does; returns the struct, the site's arguments and whether it changed. */
+function flatViewArgsFor(state: StoredAdminState, rc: Rc, url: Rc, sessionSiteId: string): { all: Record<string, Record<string, unknown>>; args: Record<string, unknown>; changed: boolean } {
   const all = flatViewArgsOf(state);
   const before = JSON.stringify(all);
-  const args = (all[sessionSiteId] ??= {});
+  const args = (all[rcKey(all, sessionSiteId) ?? sessionSiteId] ??= {});
   if (rcHas(rc, 'refreshFlatview')) {
-    args.report = rcGet(rc, 'report');
-    if (rcHas(rc, 'reportSortBy')) args.sortby = rcGet(rc, 'reportSortBy');
-    if (rcHas(rc, 'reportSortDirection')) args.direction = rcGet(rc, 'reportSortDirection');
+    rcSet(args, 'report', rcGet(rc, 'report'));
+    if (rcHas(rc, 'reportSortBy')) rcSet(args, 'sortby', rcGet(rc, 'reportSortBy'));
+    if (rcHas(rc, 'reportSortDirection')) rcSet(args, 'direction', rcGet(rc, 'reportSortDirection'));
   }
   const defaults: ReadonlyArray<readonly [string, unknown]> = [
     ['moduleid', rcGet(rc, 'moduleid')],
@@ -826,14 +828,14 @@ function flatViewArgsFor(state: StoredAdminState, rc: Rc, url: Rc, sessionSiteId
     ['keywords', ''],
     ['tab', 0],
   ];
-  for (const [name, value] of defaults) if (!rcHas(args, name)) args[name] = value;
-  if (!rcHas(args, 'filtered') || !cfIsBoolean(rcGet(args, 'filtered'))) args.filtered = false;
+  for (const [name, value] of defaults) rcParam(args, name, value);
+  if (!rcHas(args, 'filtered') || !cfIsBoolean(rcGet(args, 'filtered'))) rcSet(args, 'filtered', false);
   if (rcHas(url, 'keywords')) {
-    if (rcText(args, 'keywords') !== rcText(url, 'keywords')) args.page = 1;
-    args.keywords = rcGet(url, 'keywords');
-    args.report = '';
+    if (rcText(args, 'keywords') !== rcText(url, 'keywords')) rcSet(args, 'page', 1);
+    rcSet(args, 'keywords', rcGet(url, 'keywords'));
+    rcSet(args, 'report', '');
   }
-  return { all, changed: JSON.stringify(all) !== before };
+  return { all, args, changed: JSON.stringify(all) !== before };
 }
 
 /** carch.list (carch.cfc:214-228) with list.cfm's content-module reads; the rc the Site Manager screen renders from. */
@@ -865,7 +867,7 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   let muraChanged = false;
   rcSet(rc, 'crumbdata', await getCrumbList(ctx.domain, actor, { contentId: topId, siteId }));
   if (cfIsNumeric(rcGet(rc, 'nextN')) && cfToNumber(rcGet(rc, 'nextN')) > 0) {
-    mura.nextN = rcGet(rc, 'nextN');
+    rcSet(mura, 'nextN', rcGet(rc, 'nextN'));
     muraChanged = true;
     rcSet(rc, 'startrow', 1);
   }
@@ -879,7 +881,7 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   }
   const flat = flatViewArgsFor(state, rc, url, sessionSiteId);
   if (flat.changed) {
-    mura.flatViewArgs = flat.all;
+    rcSet(mura, 'flatViewArgs', flat.all);
     muraChanged = true;
   }
   if (rcHas(url, 'keywords')) saves.keywords = rcText(url, 'keywords');
@@ -891,13 +893,13 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   rcSet(rc, 'copyAll', clipboard.copyAll);
   const copyModuleId = muraValue(state, 'copyModuleID');
   if (copyModuleId !== undefined) rcSet(rc, 'copyModuleID', copyModuleId);
-  rcSet(rc, 'flatViewArgs', flat.all[sessionSiteId] ?? {});
+  rcSet(rc, 'flatViewArgs', flat.args);
   rcSet(rc, 'modulePerms', {
     [COMPONENTS_MODULE]: await getPerm(ctx.domain, actor, COMPONENTS_MODULE, sessionSiteId),
     [FORMS_MODULE]: await getPerm(ctx.domain, actor, FORMS_MODULE, sessionSiteId),
   });
   rcSet(rc, 'variations', ctx.domain.config.variations);
-  if (!rcHas(url, 'activeTab')) rcSet(rc, 'activeTab', rcGet(flat.all[sessionSiteId] ?? {}, 'tab'));
+  if (!rcHas(url, 'activeTab')) rcSet(rc, 'activeTab', rcGet(flat.args, 'tab'));
   return viewModel(rc);
 }
 
@@ -1230,7 +1232,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
       locale: state.locale ?? 'en_US',
       requestId: request.id,
     });
-    if (rcHas(rc, 'newSearch')) await saveSession(request, { mura: { ...(state.mura ?? {}), filterBy: rcGet(result.rc, 'filterBy'), datakeywords: rcGet(result.rc, 'keywords') } });
+    if (rcHas(rc, 'newSearch')) await saveSession(request, { filterBy: rcText(result.rc, 'filterBy'), datakeywords: rcText(result.rc, 'keywords') });
     return {
       saved: result.outcome !== 'none',
       errors: {},

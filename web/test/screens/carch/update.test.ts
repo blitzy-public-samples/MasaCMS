@@ -606,7 +606,9 @@ describe('carch.update rejected save', () => {
       contentID: ROOT_CONTENT_ID,
     });
     expect(ctx.req.session.mura.editBean).toEqual(bean);
-    expect(ctx.req.sessionWrites.muraValues).toEqual({ editBean: bean });
+    // Only the full layout adds the session site's alert entry (template.cfm:262-265).
+    const layoutAlerts = compact === 'false' ? { alerts: { [SITE]: {} } } : {};
+    expect(ctx.req.sessionWrites.muraValues).toEqual({ editBean: bean, ...layoutAlerts });
     // The same editor the edit view renders for the request the update left, inside the layout's document.
     const view = await renderEditView(makeScreenContext({ req: ctx.req, gateway: fakeGatewayClient() }), { rc: data });
     const { body, ...answered } = answer;

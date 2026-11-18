@@ -12,12 +12,19 @@ import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { esignatureScreens } from '@/screens/opt2/e-signature';
 import { CREATE_REQUEST_FIELDS, renderRequestsView } from '@/screens/opt2/e-signature/requests';
-import { alertBox } from '@/screens/opt2/shared';
+import { alertBox, GUARDED_SUBMIT } from '@/screens/opt2/shared';
 import type { Opt2ScreenDefinition, ScreenContext } from '@/screens/registry';
 import { adminS2Request, anonymousRequest, makeAdminRequest, opt2RoleRequest } from '../../../helpers/admin-request';
 import { fragmentModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../../helpers/fake-gateway';
+import {
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+  type FakeRouteTable,
+  type RecordedRequest,
+} from '../../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../../helpers/screen-context';
 import { SUBJECTS } from '../../../helpers/tokens';
 import {
@@ -42,7 +49,16 @@ const REQUESTS_PATH = '/v1/esignature/requests';
 const CREATE_ACTION_URL = `/opt2/admin-actions/e-signature/create-request?siteid=${SITE}`;
 const ADMIN_CSS = readFileSync(new URL('../../../../../admin/assets/css/admin.css', import.meta.url), 'utf8');
 const FR = rbFor('fr');
-const FIRST_OF_TWO_PAGES = { ...auditChain, items: auditChain.items?.slice(0, 1), totalpages: 2 };
+const FIRST_OF_TWO_PAGES = {
+  ...auditChain,
+  items: auditChain.items?.slice(0, 1),
+  endindex: 1,
+  itemsperpage: 1,
+  totalpages: 2,
+};
+
+/** A request list answer of three full pages, page 1 or the one `pageindex` names. */
+const threePages = (pageindex = 1) => ({ ...signatureRequestList, pageindex, totalitems: 150, totalpages: 3 });
 
 /** The DOM text of French admin-bundle label `key`, which the screens write unencoded. */
 function fr(key: string): string {
@@ -60,7 +76,7 @@ function screenOf(slug: string): Opt2ScreenDefinition {
 }
 
 /** A screen context for `req` over the fixture answers, with `routes` laid over them. */
-function contextOf(req: AdminRequest, routes: Readonly<Record<string, FakeReply>> = {}): ScreenContext & {
+function contextOf(req: AdminRequest, routes: FakeRouteTable = {}): ScreenContext & {
   gateway: FakeGatewayClient;
 } {
   return makeScreenContext({ req, gateway: fakeGatewayClient({ ...eSignatureAnswers, ...routes }) });
@@ -70,7 +86,7 @@ function contextOf(req: AdminRequest, routes: Readonly<Record<string, FakeReply>
 function contextFor(
   roles: readonly Role[],
   rc: Rc = {},
-  routes: Readonly<Record<string, FakeReply>> = {},
+  routes: FakeRouteTable = {},
   sub: string = ESIGNATURE_IDS.signer,
 ) {
   const [first = SIGNER] = roles;
@@ -172,7 +188,7 @@ describe('e-signature screen markup', () => {
 
   it('keeps every hash as the service returned it and computes none', async () => {
     const $ = cheerio.load(await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID })), null, false);
-    const values = $('div.mura-control-group > div').toArray().map((el) => $(el).text());
+    const values = $('dl > dd').toArray().map((el) => $(el).text());
     for (const entry of auditChain.items ?? []) {
       expect(values).toEqual(expect.arrayContaining([entry.prev_hash, entry.entry_hash, entry.detail, entry.at]));
     }
@@ -185,15 +201,15 @@ describe('e-signature screen markup', () => {
     expect($('div.block-constrain')).toHaveLength(1);
     expect(content.find('.block')).toHaveLength(0);
     const entries: string[][] = [[]];
-    for (const child of content.children('div.mura-control-group, hr').toArray()) {
+    for (const child of content.children('dl, hr').toArray()) {
       if ($(child).is('hr')) entries.push([]);
-      else entries.at(-1)?.push($(child).children('label').text());
+      else entries.at(-1)?.push($(child).children('dt').text());
     }
     expect(entries).toEqual(
       (auditChain.items ?? []).map(() => ['Sequence', 'Action', 'Actor', 'Detail', 'At', 'Previous Hash', 'Hash']),
     );
     expect($('table')).toHaveLength(0);
-    expect($('label[for]')).toHaveLength(0);
+    expect($('label')).toHaveLength(0);
   });
 
   it.each<[string, readonly Role[], Rc, Readonly<Record<string, FakeReply>>, string[]]>([
@@ -218,13 +234,13 @@ describe('e-signature screen markup', () => {
       [AUDITOR],
       { id: SIGNED_ID },
       { [key('GET', `${REQUESTS_PATH}/${SIGNED_ID}/audit`)]: { status: 200, body: FIRST_OF_TWO_PAGES } },
-      ['Sequence', fr('approvalchains.action'), 'Actor', 'Detail', 'At', 'Previous Hash', 'Hash', fr('sitemanager.next')],
+      ['Sequence', fr('approvalchains.action'), 'Actor', 'Detail', 'At', 'Previous Hash', 'Hash', 'Affichage des résultats 1-1 sur 2'],
     ],
   ])('%s takes its catalogued labels from the French admin bundle', async (slug, roles, rc, routes, expected) => {
     const req = opt2RoleRequest(roles[0] ?? SIGNER, { rc, user: { roles: [Roles.systemUser, ...roles] } });
     const ctx = makeScreenContext({ req, gateway: fakeGatewayClient({ ...eSignatureAnswers, ...routes }), rb: FR });
     const $ = cheerio.load(await bodyOf(slug, ctx), null, false);
-    expect($('label, th, ul.pagination a').toArray().map((el) => $(el).text())).toEqual(expected);
+    expect($('dt, label, th, p.search-showing').toArray().map((el) => $(el).text())).toEqual(expected);
   });
 
   it('shows an empty audit chain with the empty-list message', async () => {
@@ -232,7 +248,7 @@ describe('e-signature screen markup', () => {
     const routes = { [key('GET', `${REQUESTS_PATH}/${SIGNED_ID}/audit`)]: { status: 200, body: empty } };
     const $ = cheerio.load(await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID }, routes)), null, false);
     expect($('div.help-block-empty').text()).toBe('There are no audit entries for this request.');
-    expect($('div.mura-control-group')).toHaveLength(0);
+    expect($('dl')).toHaveLength(0);
   });
 });
 
@@ -242,7 +258,7 @@ describe('e-signature service calls', () => {
     ['page 2', { pageIndex: '2' }, '2'],
     ['a page that is not a whole number from 1', { pageIndex: 'x' }, '1'],
   ])('lists requests for %s', async (_case, rc, pageIndex) => {
-    const ctx = contextFor([SIGNER], rc);
+    const ctx = contextFor([SIGNER], rc, { [key('GET', REQUESTS_PATH)]: { status: 200, body: threePages() } });
     await bodyOf('requests', ctx);
     expect(eSignatureCalls(ctx.gateway)).toEqual([
       { service: 'e-signature', method: 'GET', path: REQUESTS_PATH, query: { pageIndex } },
@@ -262,11 +278,33 @@ describe('e-signature service calls', () => {
   });
 
   it('pages the audit chain of request rc.id', async () => {
-    const ctx = contextFor([AUDITOR], { id: SIGNED_ID, pageIndex: '3' });
-    await bodyOf('audit', ctx);
+    const chain = { ...auditChain, pageindex: 3, totalitems: 150, totalpages: 3 };
+    const routes = { [key('GET', `${REQUESTS_PATH}/${SIGNED_ID}/audit`)]: { status: 200, body: chain } };
+    const ctx = contextFor([AUDITOR], { id: SIGNED_ID, pageIndex: '3' }, routes);
+    const $ = cheerio.load(await bodyOf('audit', ctx), null, false);
     expect(eSignatureCalls(ctx.gateway)).toEqual([
       { service: 'e-signature', method: 'GET', path: `${REQUESTS_PATH}/${SIGNED_ID}/audit`, query: { pageIndex: '3' } },
     ]);
+    expect($('ul.pagination a').first().attr('href')).toBe(
+      `/opt2/admin/e-signature/audit?siteid=${SITE}&id=${SIGNED_ID}&pageIndex=2`,
+    );
+  });
+
+  it('shows page 1 of the audit chain for a page past the last', async () => {
+    const audit = `${REQUESTS_PATH}/${SIGNED_ID}/audit`;
+    const routes = {
+      [key('GET', audit)]: (request: RecordedRequest) =>
+        request.query['pageIndex'] === '1'
+          ? { status: 200, body: { ...auditChain, itemsperpage: 1, totalpages: 2 } }
+          : { status: 200, body: { ...auditChain, items: [], pageindex: 9, itemsperpage: 1, totalpages: 2 } },
+    };
+    const ctx = contextFor([AUDITOR], { id: SIGNED_ID, pageIndex: '9' }, routes);
+    const markup = await bodyOf('audit', ctx);
+    const $ = cheerio.load(markup, null, false);
+    expect(eSignatureCalls(ctx.gateway).map(({ query }) => query)).toEqual([{ pageIndex: '9' }, { pageIndex: '1' }]);
+    for (const entry of auditChain.items ?? []) expect(markup).toContain(entry.entry_hash);
+    expect($('div.help-block-empty')).toHaveLength(0);
+    expect($('ul.pagination li.active').text()).toBe('1');
   });
 
   it('verifies the stored chain and starts the copy form from the stored entries', async () => {
@@ -295,7 +333,12 @@ describe('e-signature service calls', () => {
     const ctx = contextFor([AUDITOR]);
     const form = cheerio.load(await bodyOf('requests', ctx), null, false)('form');
     expect(ctx.gateway.calls).toEqual([]);
-    expect([form.attr('method'), form.attr('action')]).toEqual(['get', '/opt2/admin/e-signature/request']);
+    // A read: the lookup submits natively, without the write forms' legacy submitForm guard.
+    expect([form.attr('method'), form.attr('action'), form.attr('onsubmit')]).toEqual([
+      'get',
+      '/opt2/admin/e-signature/request',
+      undefined,
+    ]);
     expect(form.find('input[type="hidden"]').toArray().map((el) => [el.attribs.name, el.attribs.value])).toEqual([
       ['siteid', SITE],
     ]);
@@ -323,18 +366,25 @@ describe('e-signature service calls', () => {
     expect(csrfContexts(ctx.gateway)).toEqual(['']);
     const form = $('form');
     expect([form.attr('method'), form.attr('action')]).toEqual(['post', CREATE_ACTION_URL]);
+    expect(`<form onsubmit="${form.attr('onsubmit')}">`).toBe(`<form${GUARDED_SUBMIT.value}>`);
     const inputs = form.find('input:not([type="hidden"])').toArray();
-    expect(inputs.map((el) => [el.attribs.name, el.attribs.type, el.attribs.required])).toEqual(
-      CREATE_REQUEST_FIELDS.map((name) => [name, 'text', 'true']),
-    );
+    // data-label holds markup, which legacy validateForm writes into its alert.
+    const dataLabel = (el: (typeof inputs)[number]) => cheerio.load(el.attribs['data-label'] ?? '', null, false).text();
+    expect(inputs.map((el) => [el.attribs.name, el.attribs.type, el.attribs.required, dataLabel(el)])).toEqual([
+      ['documentName', 'text', 'true', 'Document Name'],
+      ['documentBase64', 'text', 'true', 'Document (Base64)'],
+      ['signerUserId', 'text', 'true', 'Signer User ID'],
+    ]);
+    expect(inputs.map((el) => el.attribs.name)).toEqual(CREATE_REQUEST_FIELDS);
     expect(form.find('input[type="hidden"]').toArray().map((el) => [el.attribs.name, el.attribs.value])).toEqual([
       ['csrf_token', FIXED_CSRF.token],
       ['csrf_token_expires', FIXED_CSRF.expires],
     ]);
     expect(form.find('button[type="submit"]').text()).toBe('Create');
+    expect(form.find('[autofocus]')).toHaveLength(0);
   });
 
-  it('re-renders the list below the create alert with the posted new-request values', async () => {
+  it('re-renders the list with the create alert just before the new-request form holding the posted values', async () => {
     const ctx = contextFor([SIGNER]);
     const values = { documentName: 'tenant-a-nda.pdf', documentBase64: 'JVBERi0=', signerUserId: ESIGNATURE_IDS.signer };
     const view = await renderRequestsView(ctx, alertBox('Invalid parameters'), values);
@@ -344,9 +394,16 @@ describe('e-signature service calls', () => {
     expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
     expect(model.tables).toHaveLength(1);
     const $ = cheerio.load(markup, null, false);
-    expect($('div.mura-header').next().is('div.alert.alert-error')).toBe(true);
+    expect($('form[name="form1"]').prev().is('div.alert.alert-error')).toBe(true);
+    expect($('table.mura-table-grid').closest('.block-constrain').next().find('form[name="form1"]')).toHaveLength(1);
     for (const [name, value] of Object.entries(values)) expect($(`input[name="${name}"]`).attr('value')).toBe(value);
     expect(eSignatureCalls(ctx.gateway)).toHaveLength(1);
+  });
+
+  it('keeps the create alert under the header for a reader without the new-request form', async () => {
+    const ctx = contextFor([AUDITOR]);
+    const $ = cheerio.load(toString((await renderRequestsView(ctx, alertBox('Invalid parameters'))).body), null, false);
+    expect($('div.mura-header').next().is('div.alert.alert-error')).toBe(true);
   });
 
   it('lists no requests with the empty-list message', async () => {
@@ -366,14 +423,43 @@ describe('e-signature service calls', () => {
     expect(model.links.map((link) => link.text)).toEqual(['Signature Requests']);
   });
 
-  it('pages the request list with Previous and Next', async () => {
-    const list = { ...signatureRequestList, pageindex: 2, totalpages: 3 };
-    const ctx = contextFor([SIGNER], { pageIndex: '2' }, { [key('GET', REQUESTS_PATH)]: { status: 200, body: list } });
-    const links = cheerio.load(await bodyOf('requests', ctx), null, false)('ul.pagination a');
-    expect(links.toArray().map((el) => [el.attribs.href, cheerio.load(el).text()])).toEqual([
-      [`/opt2/admin/e-signature/requests?siteid=${SITE}&pageIndex=1`, 'Previous'],
-      [`/opt2/admin/e-signature/requests?siteid=${SITE}&pageIndex=3`, 'Next'],
+  it.each(['request', 'audit', 'verify'].flatMap((slug) => ['..', '../x', '../../x', 'abc'].map((id) => [slug, id])))(
+    '%s for the malformed id %j answers as e-signature does, asking it nothing',
+    async (slug, id) => {
+      const ctx = contextFor([AUDITOR], { id });
+      const model = fragmentModel(await bodyOf(slug, ctx));
+      expect(eSignatureCalls(ctx.gateway)).toEqual([]);
+      expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+      expect(model.links.map((link) => link.text)).toEqual(['Signature Requests']);
+    },
+  );
+
+  it('pages the request list with the numbered legacy pager', async () => {
+    const ctx = contextFor([SIGNER], { pageIndex: '2' }, { [key('GET', REQUESTS_PATH)]: { status: 200, body: threePages(2) } });
+    const $ = cheerio.load(await bodyOf('requests', ctx), null, false);
+    const page = (index: number): string => `/opt2/admin/e-signature/requests?siteid=${SITE}&pageIndex=${index}`;
+    expect($('ul.pagination.pull-right a').toArray().map((el) => [el.attribs.href, $(el).text()])).toEqual([
+      [page(1), ''],
+      [page(1), '1'],
+      ['#', '2'],
+      [page(3), '3'],
+      [page(3), ''],
     ]);
+    expect($('p.search-showing').text()).toBe('Showing 51-100 of 150 Results');
+  });
+
+  it('shows page 1 of the request list for a page past the last', async () => {
+    const routes = {
+      [key('GET', REQUESTS_PATH)]: (request: RecordedRequest) => ({
+        status: 200,
+        body: request.query['pageIndex'] === '1' ? threePages() : { ...threePages(9999), items: [] },
+      }),
+    };
+    const ctx = contextFor([SIGNER], { pageIndex: '9999' }, routes);
+    const $ = cheerio.load(await bodyOf('requests', ctx), null, false);
+    expect(eSignatureCalls(ctx.gateway).map(({ query }) => query)).toEqual([{ pageIndex: '9999' }, { pageIndex: '1' }]);
+    expect($('table.mura-table-grid tbody tr')).toHaveLength(signatureRequestList.items?.length ?? 0);
+    expect($('ul.pagination li.active').text()).toBe('1');
   });
 });
 
@@ -434,9 +520,9 @@ describe('e-signature roles', () => {
 
   it('shows the request fields as read-only label and value rows', async () => {
     const $ = cheerio.load(await bodyOf('request', contextFor([AUDITOR], { id: SIGNED_ID })), null, false);
-    const rows = $('div.mura-control-group')
+    const rows = $('dl')
       .toArray()
-      .map((el) => [$(el).children('label').text(), $(el).children('div').text()]);
+      .map((el) => [$(el).children('dt').text(), $(el).children('dd').text()]);
     expect(rows).toEqual([
       ['Document', signedRequestDetail.document_name],
       ['State', 'Signed'],
@@ -445,8 +531,8 @@ describe('e-signature roles', () => {
       ['Created By', signedRequestDetail.createdbyid],
       ['Document SHA-256', signedRequestDetail.document_sha256],
     ]);
-    expect($('div.mura-control-group .label').attr('class')).toBe('label label-success');
-    expect($('div.mura-control-group label[for]')).toHaveLength(0);
+    expect($('dd .label').attr('class')).toBe('label label-success');
+    expect($('label')).toHaveLength(0);
   });
 
   it.each<[401 | 403, string]>([

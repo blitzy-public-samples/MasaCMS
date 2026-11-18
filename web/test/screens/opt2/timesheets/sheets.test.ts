@@ -144,20 +144,40 @@ describe('timesheets sheet list', () => {
   });
 
   it.each([
-    { pageIndex: '1', total: 120, page: 'Page 1 of 3', links: [['Next', '2']] },
-    { pageIndex: '2', total: 120, page: 'Page 2 of 3', links: [['Previous', '1'], ['Next', '3']] },
-    { pageIndex: '3', total: 101, page: 'Page 3 of 3', links: [['Previous', '2']] },
-  ])('pages through $total sheets from page $pageIndex', async ({ pageIndex, total, page, links }) => {
+    { pageIndex: '1', total: 120, range: '1-50 of 120', links: [['#', '1'], ['2', '2'], ['3', '3'], ['2', '']] },
+    {
+      pageIndex: '2',
+      total: 120,
+      range: '51-100 of 120',
+      links: [['1', ''], ['1', '1'], ['#', '2'], ['3', '3'], ['3', '']],
+    },
+    { pageIndex: '3', total: 101, range: '101-101 of 101', links: [['2', ''], ['1', '1'], ['2', '2'], ['#', '3']] },
+  ])('pages through $total sheets from page $pageIndex', async ({ pageIndex, total, range, links }) => {
     const gateway = fakeGatewayClient({ [SHEETS_ROUTE]: listOf(total) });
     const ctx = makeScreenContext({ req: employeeRequest({ pageIndex }), gateway });
 
     const markup = toString(sheetsBody(ctx, await loadSheets(ctx)));
     const model = fragmentModel(markup);
 
-    expect(markup).toContain(`<li class="active"><span>${page}</span></li>`);
+    expect(markup).toContain(`<p class="clearfix search-showing">Showing ${range} Results</p>`);
+    expect(markup).toContain(`<li class="active"><a href="#">${pageIndex}</a></li>`);
     expect(model.links.slice(timesheetSheets.length)).toEqual(
-      links.map(([text, index]) => ({ href: `/opt2/admin/timesheets/sheets?siteid=${SITE}&pageIndex=${index}`, text })),
+      links.map(([index, text]) => ({
+        href: index === '#' ? '#' : `/opt2/admin/timesheets/sheets?siteid=${SITE}&pageIndex=${index}`,
+        text,
+      })),
     );
+  });
+
+  it('shows page 1 for a page past the last, reading it after the out-of-range page', async () => {
+    const gateway = fakeGatewayClient({ [SHEETS_ROUTE]: listOf(120) });
+    const ctx = makeScreenContext({ req: employeeRequest({ pageIndex: '9999' }), gateway });
+
+    const markup = toString(sheetsBody(ctx, await loadSheets(ctx)));
+
+    expect(timesheetsCalls(gateway).map(({ query }) => query?.pageIndex)).toEqual(['9999', '1']);
+    expect(markup).toContain('<li class="active"><a href="#">1</a></li>');
+    expect(markup).toContain('Showing 1-50 of 120 Results');
   });
 
   it('shows no pager when every sheet fits on one page, and the empty message without sheets', async () => {

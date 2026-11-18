@@ -187,6 +187,24 @@ describe('reporting actions', () => {
       expect(body).not.toContain('alert(1)');
     });
 
+    it('posts a typed as-of date unchanged and re-renders it in the legacy-styled text input on refusal', async () => {
+      const gateway = gatewayWith({ [QUEUE_ROUTE]: createExportInvalid });
+      const typed = { ...POSTED, asOf: '06/30/2026' };
+
+      const body = renderedBody(await submitQueue(contextFor(exporterPost('queue', { ...typed, ...POSTED_CSRF }), gateway)));
+      const $ = cheerio.load(body, null, false);
+
+      expect(gateway.calls.find(({ method, path }) => method === 'POST' && path === LIST_PATH)?.json).toEqual(typed);
+      expect($('label[for="asOf"]').text()).toBe('As Of (yyyy-mm-dd)');
+      expect($('label[for="asOf"] + #asOf').attr()).toEqual({
+        name: 'asOf',
+        id: 'asOf',
+        type: 'text',
+        value: typed.asOf,
+        maxlength: '10',
+      });
+    });
+
     it.each([
       { status: 401, type: GatewayDenialError },
       { status: 503, type: GatewayUnavailableError },
@@ -224,6 +242,19 @@ describe('reporting actions', () => {
       expect(model.controls.slice(0, 3).map(({ value }) => value)).toEqual(['', '', '']);
       expect(jobValues(body)).toHaveLength(exportJobs.length);
     });
+
+    it.each(['..', '../x', '../../x', 'abc'])(
+      're-renders the list for the malformed job id %j with the invalid-parameters alert, issuing no URL',
+      async (jobId) => {
+        const gateway = gatewayWith({});
+
+        const body = renderedBody(await submitDownload(contextFor(exporterPost('download', { jobId }), gateway)));
+
+        expect(fragmentModel(body).alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+        expect(jobValues(body)).toHaveLength(exportJobs.length);
+        expect(gateway.calls.filter(({ path }) => path.includes('download-url'))).toEqual([]);
+      },
+    );
 
     it('asks for an empty job id when none is posted', async () => {
       const gateway = gatewayWith({});

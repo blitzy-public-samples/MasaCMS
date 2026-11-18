@@ -10,7 +10,14 @@ import { alertBox, noAccessUrl, opt2ScreenUrl } from '@/screens/opt2/shared';
 import { surveysScreens } from '@/screens/opt2/surveys';
 import { scheduleAction, scheduleBody } from '@/screens/opt2/surveys/schedule';
 import { bulkTargetAction, targetsBody } from '@/screens/opt2/surveys/targets';
-import { SURVEY_IDS, surveyResponses, surveyTargets, surveys, surveysAnswers } from '../../fixtures/opt2/surveys';
+import {
+  SURVEY_IDS,
+  multiSiteSurvey,
+  surveyResponses,
+  surveyTargets,
+  surveys,
+  surveysAnswers,
+} from '../../fixtures/opt2/surveys';
 import { opt2RoleRequest } from '../../helpers/admin-request';
 import { fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
@@ -81,6 +88,35 @@ describe('surveys screens in the shell', () => {
   );
 });
 
+describe('survey screen headers', () => {
+  const SURVEY_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}` as const);
+  const LONG_TITLE = 'Cross-program timesheet experience survey '.repeat(7).slice(0, 255);
+  const LABELS = { schedule: 'Schedule', targets: 'Targets', responses: 'Responses' } as const;
+
+  it.each(
+    (['schedule', 'targets', 'responses'] as const).flatMap((screen) => [
+      { screen, kind: 'fixture', title: multiSiteSurvey.title, breaks: 0 },
+      { screen, kind: '255-character', title: LONG_TITLE, breaks: 0 },
+      { screen, kind: '255-character unbroken', title: 'A'.repeat(255), breaks: 10 },
+    ]),
+  )('heads $screen with its fixed label and opens its block with the $kind title', async ({ screen, title, breaks }) => {
+    const def = surveysScreens.find((candidate) => candidate.screen === screen);
+    if (def === undefined) throw new TypeError(`surveys/${screen} is not registered`);
+    const ctx = ctxFor(managerRequest({ surveyid: MULTI }), {
+      [SURVEY_ROUTE]: { status: 200, body: { data: { ...multiSiteSurvey, title } } },
+    });
+
+    const $ = load(String((await def.render(ctx, await def.load(ctx))).body), null, false);
+    const opening = $('.block-content').first().children().first();
+
+    expect($('.mura-header h1').text()).toBe(LABELS[screen]);
+    expect($('.mura-header').text()).not.toContain(title);
+    expect(opening.is('dl')).toBe(true);
+    expect([opening.children('dt').text(), opening.children('dd').text()]).toEqual(['Title', title]);
+    expect(opening.children('dd').find('wbr')).toHaveLength(breaks);
+  });
+});
+
 // Surveys definitions carry no web gate: the service's answer to the token decides access.
 describe('surveys access', () => {
   it.each(surveysScreens.map((def) => ({ screen: def.screen, def })))(
@@ -129,7 +165,7 @@ describe('surveys actions', () => {
 
     const model = renderedModel(await bulkTargetAction.submit(ctx));
 
-    expect(model.headings).toEqual(['Targets: Cross-program timesheet experience', 'Current Targets']);
+    expect(model.headings).toEqual(['Targets', 'Current Targets']);
     expect(model.alerts).toEqual([{ text: alert, className: 'alert alert-error' }]);
     expect(model.controls.find(({ name }) => name === 'targets')?.value).toBe(text);
     expect(model.tables[0]?.rows).toHaveLength(surveyTargets.length);
@@ -178,6 +214,8 @@ describe('surveys body helpers', () => {
 describe('surveys labels', () => {
   // The unlabelled row-actions toggle, then the menu links.
   const rowLinks = ['', fr('email.schedule'), 'Targets', 'Responses'];
+  /** The pager link texts on page 1 of 10: the numbers, then the next-page arrow. */
+  const pagerLinks = [...Array.from({ length: 10 }, (_, index) => String(index + 1)), ''];
 
   it.each([
     {
@@ -186,7 +224,7 @@ describe('surveys labels', () => {
       routes: { [routeKey('GET', 'surveys', '/v1/surveys')]: { status: 200, body: { data: surveys, total: 500 } } },
       headers: ['', fr('params.title'), fr('email.status'), 'Launch', 'Reminders', fr('params.created')],
       labels: [],
-      links: [...rowLinks, ...rowLinks, fr('sitemanager.next')],
+      links: [...rowLinks, ...rowLinks, ...pagerLinks],
     },
     {
       screen: 'responses',
@@ -199,7 +237,7 @@ describe('surveys labels', () => {
       },
       headers: ['Submitted', 'Respondent Site', 'Respondent', fr('formbuilder.matrix.answers')],
       labels: [],
-      links: ['Surveys', fr('email.schedule'), 'Targets', fr('sitemanager.next')],
+      links: ['Surveys', fr('email.schedule'), 'Targets', ...pagerLinks],
     },
   ])('renders the $screen labels from the French admin bundle', async ({ screen, rc, routes, ...expected }) => {
     const def = surveysScreens.find((candidate) => candidate.screen === screen);

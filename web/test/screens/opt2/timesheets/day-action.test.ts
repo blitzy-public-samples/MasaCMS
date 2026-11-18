@@ -141,17 +141,51 @@ describe('timesheets day-action', () => {
     expect(fragmentModel(renderedBody(result)).alerts).toEqual([{ text: message, className: 'alert alert-error' }]);
   });
 
-  it.each([
-    { what: 'an action name it does not know', dayid: TIMESHEET_IDS.dayDraft, dayaction: 'approve' },
-    { what: 'an empty day id', dayid: '', dayaction: 'submit' },
-  ])('leaves $what to the service and shows its 404', async ({ dayid, dayaction }) => {
-    const req = actionRequest(Roles.timesheetsEmployee, { dayid, dayaction });
+  it('leaves an empty day id to the service and shows its 404', async () => {
+    const req = actionRequest(Roles.timesheetsEmployee, { dayid: '', dayaction: 'submit' });
 
     const { result, gateway } = await submit(req, timesheetsAnswersByRole.employee);
 
-    expect(timesheetsCalls(gateway)[0]).toBe(`POST /v1/timesheets/days/${dayid}/${dayaction}`);
+    expect(timesheetsCalls(gateway)[0]).toBe('POST /v1/timesheets/days//submit');
     expect(fragmentModel(renderedBody(result)).alerts).toEqual([{ text: 'Not Found', className: 'alert alert-error' }]);
   });
+
+  it.each([
+    { what: 'an action name it does not know', fields: { dayaction: 'approve' }, alert: 'Not Found' },
+    ...['..', '.', '../../sheets', 'submit/..'].map((dayaction) => ({
+      what: `the action ${JSON.stringify(dayaction)}`,
+      fields: { dayaction },
+      alert: 'Not Found',
+    })),
+    ...['..', '../x', '../../x', 'abc'].map((dayid) => ({
+      what: `the day id ${JSON.stringify(dayid)}`,
+      fields: { dayid, dayaction: 'submit' },
+      alert: 'Invalid parameters',
+    })),
+  ])('re-renders the sheet for $what with its alert, writing nothing', async ({ fields, alert }) => {
+    const req = actionRequest(Roles.timesheetsEmployee, { dayid: TIMESHEET_IDS.dayDraft, ...fields });
+
+    const { result, gateway } = await submit(req, timesheetsAnswersByRole.employee);
+
+    const model = fragmentModel(renderedBody(result));
+    expect(model.alerts).toEqual([{ text: alert, className: 'alert alert-error' }]);
+    expect(model.headings).toEqual(['Timesheet']);
+    expect(timesheetsCalls(gateway)).toEqual([`GET /v1/timesheets/sheets/${TIMESHEET_IDS.sheetReturned}`]);
+  });
+
+  it.each(['..', '../x', '../../x', 'abc'])(
+    'answers the sheet id %j with the sheet read refusal alone, asking timesheets nothing',
+    async (timesheetid) => {
+      const req = actionRequest(Roles.timesheetsEmployee, { timesheetid, dayid: TIMESHEET_IDS.dayDraft, dayaction: 'submit' });
+
+      const { result, gateway } = await submit(req, timesheetsAnswersByRole.employee);
+
+      expect(fragmentModel(renderedBody(result)).alerts).toEqual([
+        { text: 'Invalid parameters', className: 'alert alert-error' },
+      ]);
+      expect(timesheetsCalls(gateway)).toEqual([]);
+    },
+  );
 
   it('returns to the sheet list without a sheet id, on success and on a rejection', async () => {
     const legal = actionRequest(Roles.timesheetsPrimaryApprover, {

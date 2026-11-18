@@ -1,7 +1,7 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { components } from '@/generated/clients/reporting';
 import type { Opt2ActionDefinition, ScreenContext, SubmitResult } from '../../registry';
-import { opt2Gate, submitToService } from '../shared';
+import { invalidParametersAlert, isMalformedId, opt2Gate, opt2View, submitToService } from '../shared';
 import { EXPORTER_ROLES, exportsBack, exportsBody, loadExports, type QueuePosted } from './exports';
 
 type ExportFormat = components['schemas']['ExportFormat'];
@@ -31,10 +31,14 @@ export async function submitQueue(ctx: ScreenContext): Promise<SubmitResult> {
 
 /**
  * Sends the browser to a fresh signed URL of the posted job's output, never reading the bytes itself; reporting's 404,
- * or its 409 for a job not done, re-renders the list with its alert.
+ * or its 409 for a job not done, re-renders the list with its alert, as a malformed job id does without asking.
  */
 export async function submitDownload(ctx: ScreenContext): Promise<SubmitResult> {
   const id = ctx.req.rc.jobId ?? '';
+  if (isMalformedId(id)) {
+    const body = exportsBody(ctx, await loadExports(ctx), { alert: invalidParametersAlert() });
+    return { kind: 'render', view: opt2View('reporting', body, exportsBack(ctx).screen) };
+  }
   let signedUrl: string | undefined;
   const result = await submitToService(
     ctx,

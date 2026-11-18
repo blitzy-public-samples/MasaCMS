@@ -14,6 +14,15 @@ export async function countStartupRows(scope: { request(): Request }): Promise<n
   return Number(row.n);
 }
 
+/** Selects the distinct content ids of the rows Masa's start-up would rewrite. */
+export const STARTUP_CONTENT_IDS_SQL = `select distinct ContentID as contentId from tcontent where ${STARTUP_PREDICATE_WHERE}`;
+
+/** Distinct `ContentID` values of the matching rows, read through `scope`. */
+export async function startupContentIds(scope: { request(): Request }): Promise<string[]> {
+  const result = await scope.request().query<{ contentId: string }>(STARTUP_CONTENT_IDS_SQL);
+  return result.recordset.map((row) => row.contentId);
+}
+
 /** Caller-supplied actions of the guard sequence; each owns its own budget. */
 export interface StartupGuardSteps<C = void, W = void> {
   /** Freezes every legacy-bound entry at the gateway and waits for their in-flight requests. */

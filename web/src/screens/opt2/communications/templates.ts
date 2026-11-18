@@ -8,7 +8,9 @@ import {
   gridTable,
   opt2Label,
   opt2View,
+  pagination,
   postForm,
+  readPage,
   submitToService,
   textarea,
   textInput,
@@ -22,7 +24,6 @@ import {
   actionUrl,
   buttonLink,
   moduleHeader,
-  pager,
   postedFields,
   requestedPage,
   screenUrl,
@@ -45,10 +46,14 @@ export interface TemplatesData {
 
 const EMPTY_FORM: TemplateForm = Object.freeze({ name: '', subject: '', bodyText: '', bodyHtml: '' });
 
-/** The requested page of templates (`listTemplates`), with the form's CSRF pair fetched. */
+/** The requested page of templates (`listTemplates`), page 1 past the last, with the form's CSRF pair fetched. */
 export async function loadTemplates(ctx: ScreenContext): Promise<TemplatesData> {
-  const [response] = await Promise.all([
-    ctx.gateway.communications.call('get', '/v1/templates', { query: { pageIndex: requestedPage(ctx) } }),
+  const [{ answer: response }] = await Promise.all([
+    readPage(
+      requestedPage(ctx),
+      (pageIndex) => ctx.gateway.communications.call('get', '/v1/templates', { query: { pageIndex } }),
+      (answer) => (answer.ok ? answer.body.data.totalpages : undefined),
+    ),
     ctx.csrf.tokens(CSRF_CONTEXT),
   ]);
   const page = okBody(response, SERVICE, 'listTemplates').data;
@@ -72,18 +77,31 @@ export function templatesBody(
   const headers = (['Name', 'Subject', 'Created', 'Last Update', 'Actions'] as const).map((name) =>
     opt2Label(ctx, name),
   );
-  const list = gridTable(headers, rows, 'There are no templates.');
+  const list = gridTable(headers, rows, 'There are no templates.', {
+    columnClasses: [undefined, 'var-width', 'hidden-xs hidden-sm', 'hidden-xs'],
+  });
+  const nameLabel = opt2Label(ctx, 'Name');
+  const subjectLabel = opt2Label(ctx, 'Subject');
   const fields = [
-    controlGroup(opt2Label(ctx, 'Name'), textInput('name', form.name, { maxlength: 100, required: true })),
-    controlGroup(opt2Label(ctx, 'Subject'), textInput('subject', form.subject, { maxlength: 255, required: true })),
+    controlGroup(nameLabel, textInput('name', form.name, { maxlength: 100, required: true, label: nameLabel })),
+    controlGroup(
+      subjectLabel,
+      textInput('subject', form.subject, { maxlength: 255, required: true, label: subjectLabel }),
+    ),
     controlGroup('Text Body', textarea('bodyText', form.bodyText)),
     controlGroup('HTML Body', textarea('bodyHtml', form.bodyHtml)),
   ];
   const addForm = postForm(actionUrl(ctx, 'save-template'), html`${fields}`, 'Save Template', {
     hidden: ctx.csrf.render(CSRF_CONTEXT),
   });
-  const listBlock = block(html`${list}${pager(ctx, SCREEN, data.page)}`);
-  return html`${moduleHeader(ctx, 'Templates')}${alert}${listBlock}${block(html`<h2>Add Template</h2>${addForm}`)}`;
+  const pager = pagination(ctx, {
+    page: data.page.pageindex,
+    totalRecords: data.page.totalitems,
+    recordsPerPage: data.page.itemsperpage,
+    href: (pageIndex) => screenUrl(ctx, SCREEN, { pageIndex }),
+  });
+  const listBlock = block(html`${list}${pager}`);
+  return html`${moduleHeader(ctx, 'Templates', SCREEN)}${alert}${listBlock}${block(html`<h2>Add Template</h2>${addForm}`)}`;
 }
 
 export const templatesScreen: Opt2ScreenDefinition<TemplatesData> = Object.freeze({

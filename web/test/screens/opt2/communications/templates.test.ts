@@ -1,4 +1,5 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
@@ -10,6 +11,7 @@ import {
   templatesScreen,
 } from '@/screens/opt2/communications/templates';
 import { messageTemplates, saveTemplateInvalid } from '../../../fixtures/opt2/communications';
+import { fragmentModel, type DomLink } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { routeKey } from '../../../helpers/fake-gateway';
 import { POSTED_CSRF, bodyModel, communicationsCalls, listAnswer, screenContext, senderRequest } from './context';
@@ -26,6 +28,12 @@ const POSTED_TEMPLATE = Object.freeze({
 
 /** A one-template list page `pageindex` of `totalpages`. */
 const listPage = (pageindex: number, totalpages: number) => listAnswer([messageTemplates[0]], pageindex, totalpages);
+
+const pageHref = (pageIndex: number): string => `/opt2/admin/communications/templates?siteid=tenant-a&pageIndex=${pageIndex}`;
+
+/** The pager's links: the page links and the current page's `#`. */
+const pagerLinks = (links: readonly DomLink[]): DomLink[] =>
+  links.filter((link) => link.href === '#' || link.href.includes('pageIndex='));
 
 describe('communications templates screen', () => {
   let restoreEnv: () => void;
@@ -48,14 +56,17 @@ describe('communications templates screen', () => {
     expect(ctx.gateway.calls.find((call) => call.service === 'identity')?.json).toEqual({ contexts: [''] });
   });
 
-  it('forwards a positive pageIndex and links the neighbouring pages', async () => {
+  it('forwards a positive pageIndex and links every page of the window', async () => {
     const ctx = screenContext(senderRequest({ rc: { pageIndex: '2' } }), { [LIST_ROUTE]: listPage(2, 3) });
     const model = bodyModel(templatesBody(ctx, await loadTemplates(ctx)));
 
-    expect(communicationsCalls(ctx.gateway)[0]?.query).toEqual({ pageIndex: '2' });
-    expect(model.links.filter((link) => link.text === 'Previous' || link.text === 'Next')).toEqual([
-      { text: 'Previous', href: '/opt2/admin/communications/templates?siteid=tenant-a&pageIndex=1' },
-      { text: 'Next', href: '/opt2/admin/communications/templates?siteid=tenant-a&pageIndex=3' },
+    expect(communicationsCalls(ctx.gateway).map((call) => call.query)).toEqual([{ pageIndex: '2' }]);
+    expect(pagerLinks(model.links)).toEqual([
+      { text: '', href: pageHref(1) },
+      { text: '1', href: pageHref(1) },
+      { text: '2', href: '#' },
+      { text: '3', href: pageHref(3) },
+      { text: '', href: pageHref(3) },
     ]);
   });
 
@@ -64,8 +75,32 @@ describe('communications templates screen', () => {
     const model = bodyModel(templatesBody(ctx, await loadTemplates(ctx)));
 
     expect(communicationsCalls(ctx.gateway)[0]?.query).toBeUndefined();
-    expect(model.links.filter((link) => link.text === 'Previous' || link.text === 'Next')).toEqual([
-      { text: 'Next', href: '/opt2/admin/communications/templates?siteid=tenant-a&pageIndex=2' },
+    expect(pagerLinks(model.links)).toEqual([
+      { text: '1', href: '#' },
+      { text: '2', href: pageHref(2) },
+      { text: '', href: pageHref(2) },
+    ]);
+  });
+
+  it('shows page 1 for a page past the last, reading it after the out-of-range page', async () => {
+    const ctx = screenContext(senderRequest({ rc: { pageIndex: '9999' } }), {
+      [LIST_ROUTE]: (request) => (request.query['pageIndex'] === '9999' ? listAnswer([], 9999, 3) : listPage(1, 3)),
+    });
+    const markup = toString(templatesBody(ctx, await loadTemplates(ctx)));
+
+    expect(communicationsCalls(ctx.gateway).map((call) => call.query)).toEqual([{ pageIndex: '9999' }, { pageIndex: '1' }]);
+    expect(fragmentModel(markup).tables[0]?.rows).toHaveLength(1);
+    expect(markup).toContain('<li class="active"><a href="#">1</a></li>');
+    expect(markup).toContain('<p class="clearfix search-showing">Showing 1-50 of 150 Results</p>');
+  });
+
+  it('marks Templates as the active header button', async () => {
+    const ctx = screenContext();
+    const $ = cheerio.load(toString(templatesBody(ctx, await loadTemplates(ctx))), null, false);
+
+    expect($('.mura-header .nav-module-specific a').toArray().map((el) => [$(el).text(), $(el).attr('class')])).toEqual([
+      ['Templates', 'btn active'],
+      ['Sends', 'btn'],
     ]);
   });
 

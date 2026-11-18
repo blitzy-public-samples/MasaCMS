@@ -1,4 +1,4 @@
-/** Identity sessions: cookie values, anonymous creation and reactivation, login, legacy adoption, state and hydration reads and logout against a throwaway `identity` schema. */
+/** Identity sessions: cookie values, anonymous creation and reactivation, login, legacy adoption, state and hydration reads, admin-state import and logout against a throwaway `identity` schema. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sessionCookieStrings, sessionIdForJsessionid, type LegacyCookieConfig } from '@opt2/platform/legacy-compat';
@@ -15,6 +15,7 @@ import {
   applyRelogin,
   endSession,
   ensureSession,
+  importSessionAdminState,
   locateSession,
   newSessionTokens,
   sessionCookies,
@@ -824,6 +825,75 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       expect(await endSession(deps(), sessionId)).toEqual({ epoch: 2 });
       expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(ended);
       expect(await endSession(deps(), 'S-unknown')).toEqual({ epoch: 0 });
+    });
+  });
+
+  describe('importSessionAdminState', () => {
+    const IMPORTED = {
+      siteid: 'tenant-a',
+      topID: '00000000000000000000000000000000001',
+      mura: { nextN: '5', flatViewArgs: { 'tenant-a': { TAB: '1' } }, alerts: { 'tenant-a': { cachenotice: false } } },
+    };
+
+    it.each<[string, Record<string, unknown> | null, Record<string, unknown>]>([
+      [
+        'over stored values: given keys replace theirs, mura keys are assigned one by one and keep their stored spelling',
+        { siteid: 'default', keywords: 'kept', mura: { objectInstanceId: 'I1', NEXTN: '20', flatViewArgs: { default: { tab: 0 } } } },
+        {
+          siteid: 'tenant-a',
+          topID: IMPORTED.topID,
+          keywords: 'kept',
+          mura: { objectInstanceId: 'I1', NEXTN: '5', flatViewArgs: { 'tenant-a': { TAB: '1' } }, alerts: { 'tenant-a': { cachenotice: false } } },
+        },
+      ],
+      ['into a session that stored none', null, IMPORTED],
+    ])('stores the values a legacy request changed %s', async (_label, before, expected) => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: before === null ? null : JSON.stringify(before) });
+
+      const merged = await importSessionAdminState(deps(), sessionId, IMPORTED);
+
+      expect(merged).toEqual(expected);
+      expect(JSON.parse((await stored(sessionId, SYSTEM_TENANT_ID))?.admin_state ?? 'null')).toEqual(expected);
+    });
+
+    it('replaces the stored values without mura when the import carries none', async () => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: JSON.stringify({ keywords: 'old', mura: { nextN: '20' } }) });
+
+      expect(await importSessionAdminState(deps(), sessionId, { keywords: 'home' })).toEqual({ keywords: 'home', mura: { nextN: '20' } });
+    });
+
+    it.each<[string, () => Promise<{ sessionId: string; sessionDeps: SessionDeps }>]>([
+      ['an unknown', async () => ({ sessionId: 'S-never-stored', sessionDeps: deps() })],
+      [
+        'an ended',
+        async () => {
+          const sessionId = nextSessionId();
+          await login(sessionId);
+          await endSession(deps(), sessionId);
+          return { sessionId, sessionDeps: deps() };
+        },
+      ],
+      [
+        'an expired',
+        async () => {
+          const sessionId = nextSessionId();
+          const idleSince = new Date(now.getTime() - 31 * 60_000 - SESSION_ACTIVITY_INTERVAL_MS);
+          await inTenant(SYSTEM_TENANT_ID, (tx) =>
+            repo.insertSession(tx, { session_id: sessionId, csrf_secret: LEGACY_SECRET, mode: 'target-primary', state: 'active', epoch: 1, last_active_at: idleSince }),
+          );
+          return { sessionId, sessionDeps: { ...deps(), sessionTimeoutMinutes: 30 } };
+        },
+      ],
+    ])('stores nothing and answers {} for %s session', async (_label, arrange) => {
+      const { sessionId, sessionDeps } = await arrange();
+      const before = await stored(sessionId, SYSTEM_TENANT_ID);
+
+      expect(await importSessionAdminState(sessionDeps, sessionId, IMPORTED)).toEqual({});
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(before);
     });
   });
 

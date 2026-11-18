@@ -22,6 +22,7 @@ import {
   recoverStartupGuard,
   restartLegacy,
   runStartupGuardSequence,
+  startupContentIds,
   type StartupGuardSteps,
 } from '../legacy/index.js';
 import { GateConflict, OwnerCallError, type DataOwner, type OwnersClient } from '../owners/index.js';
@@ -1163,7 +1164,10 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     return result;
   }
 
-  /** Leases and gates every content unit under this window, sends Masa's reload request and imports the content units. */
+  /**
+   * Leases and gates every content unit under this window, sends Masa's reload request and imports the start-up table's
+   * units: keyed by content id when one content matched, whole when several did, not at all when none did.
+   */
   async function reloadInWindow(record: WindowRecord): Promise<void> {
     const contents = contentUnits(ctx.catalog);
     assertClaim();
@@ -1172,13 +1176,18 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     const targetContents = contents.filter((unit) => authority.isTargetAuthoritative(unit));
     const closed = new Set(closedUnits(record));
     await closeGates(record, targetContents.filter((unit) => !closed.has(unit)), 'importing');
+    // Start-up rewrites only the matching rows of its table, so only that table's units can change.
+    const fed = new Set(ctx.catalog.unitsForLegacyTable(ctx.config.startupGuard.table).map((target) => target.unit));
+    const startupUnits = targetContents.filter((unit) => fed.has(unit));
+    const contentIds = startupUnits.length > 0 ? await startupContentIds(await ctx.legacy.live()) : [];
     assertClaim();
-    // Legacy may have re-initialised before a transport failure, so the content units are imported either way.
+    // Legacy may have re-initialised before a transport failure, so the matched rows are imported either way.
     const sent = await sendReloadRequest(ctx).then(
       () => undefined,
       (error: unknown) => error ?? new Error('Reload request failed'),
     );
-    if (targetContents.length > 0) await importOnce(record, targetContents, { table: true });
+    const [only, ...more] = contentIds;
+    if (only !== undefined) await importOnce(record, startupUnits, more.length === 0 ? { keys: { contentid: only } } : { table: true });
     if (sent !== undefined) throw sent;
   }
 

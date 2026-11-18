@@ -308,6 +308,23 @@ describe('cArch.list content modules', () => {
     expect(body).toContain(`jQuery(document).ready(function(){\n\t\t\t\t\t\n\t\t\t\t\t\t${call}\n`);
   });
 
+  it.each<[string, AdminRequestPartial, unknown, string]>([
+    ['the stored flat-view tab without a URL activeTab', {}, '1', '1'],
+    [
+      'the URL activeTab over the stored flat-view tab',
+      { currentUrl: './?muraAction=cArch.list&activeTab=0', rc: { activeTab: '0' } },
+      '1',
+      '0',
+    ],
+    ['the flat-view tab default when the session stores none', {}, 0, '0'],
+  ])('prints %s as the layout head activetab', async (_case, partial, tab, printed) => {
+    const flatViewArgs = { ...(carchListData.rc.flatViewArgs as object), tab };
+    const req = siteAdminRequest(TENANT, { ...LIST, ...partial });
+    const { html } = await page(listContext(req, ok(variant(carchListData, { flatViewArgs }))));
+
+    expect(html).toContain(`\n\tvar activetab=${printed};\n`);
+  });
+
   it('closes the body with the draft prompt script', async () => {
     const ctx = listContext(siteAdminRequest(TENANT, LIST));
     const body = (await view(ctx)).body.value;

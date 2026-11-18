@@ -126,6 +126,8 @@ export interface IdentityDouble extends HttpDouble {
   readonly calls: Record<IdentityOperationId, number>;
   /** `claimCsrfToken` calls, in arrival order. */
   readonly claimAttempts: ClaimAttempt[];
+  /** `importSessionAdminState` bodies with their session, in arrival order. */
+  readonly adminStateImports: Array<{ sessionId: string; values: Schemas['AdminSessionState'] }>;
   /** Maps an `Authorization` value of a REST request to the session identity authenticates it into. */
   restSession(authorization: string, session: Omit<IdentitySessionSpec, 'state' | 'epoch' | 'mode'>): void;
   /** Admin site of every session adopted from now on. */
@@ -205,6 +207,29 @@ function rolesOn(session: IdentitySession, siteId: string): string[] {
   return typeof session.roles === 'function' ? session.roles(siteId) : session.roles;
 }
 
+/** `struct` with each `values` key assigned as CFML assigns struct keys: a key equal ignoring case keeps its stored name. */
+function assignStruct(struct: Readonly<Record<string, unknown>>, values: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const assigned: Record<string, unknown> = { ...struct };
+  for (const [name, value] of Object.entries(values)) {
+    const lower = name.toLowerCase();
+    assigned[Object.keys(assigned).find((key) => key.toLowerCase() === lower) ?? name] = value;
+  }
+  return assigned;
+}
+
+/**
+ * Imports admin values into an active session as identity does: each key replaces the stored one, `mura`'s keys are
+ * assigned one by one, `hasdefaultpassword` is dropped, and the admin site follows an imported `siteid`.
+ */
+function importAdminState(session: IdentitySession, values: Schemas['AdminSessionState']): Schemas['AdminSessionState'] {
+  const { hasdefaultpassword: _dropped, mura, ...given } = values;
+  const merged: Schemas['AdminSessionState'] = { ...session.adminState, ...given };
+  if (mura !== undefined) merged.mura = assignStruct(session.adminState.mura ?? {}, mura);
+  session.adminState = merged;
+  if (typeof given.siteid === 'string') session.adminSite = given.siteid;
+  return merged;
+}
+
 /** Starts the identity double holding `opts.sessions`; by default only the gateway's invocation credential is accepted. */
 export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Promise<IdentityDouble> {
   const requireInvocation = opts.requireInvocation ?? true;
@@ -213,6 +238,7 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
   const minted: MintedToken[] = [];
   const authentications: Schemas['AuthenticateRequest'][] = [];
   const claimAttempts: ClaimAttempt[] = [];
+  const adminStateImports: IdentityDouble['adminStateImports'] = [];
   const calls = Object.fromEntries(ROUTES.map((route) => [route.id, 0])) as Record<IdentityOperationId, number>;
   const failures = new Map<IdentityOperationId, IdentityFailure[]>();
   const restSessions = new Map<string, string>();
@@ -452,6 +478,13 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
         answer(req, res, session?.state === 'active' ? session.adminState : {});
         return;
       }
+      case 'importAdminState': {
+        const values = json<Schemas['AdminSessionState']>(req);
+        adminStateImports.push({ sessionId: sid, values });
+        const session = sessions.get(sid);
+        answer(req, res, session?.state === 'active' ? importAdminState(session, values) : {});
+        return;
+      }
       case 'snapshot': {
         const snapshot = sessionSnapshot(sessions.get(sid));
         // Identity's not-found handler answers the legacy 404 envelope.
@@ -502,6 +535,7 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
     authentications,
     calls,
     claimAttempts,
+    adminStateImports,
     restSession(authorization, session) {
       restSessions.set(authorization, session.sessionId);
       setSession({ ...session, state: 'active', epoch: 1, mode: 'target-primary' });

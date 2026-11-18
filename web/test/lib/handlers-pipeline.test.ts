@@ -746,6 +746,83 @@ describe('raw mode', () => {
   });
 });
 
+describe("the layout's session-site alert entry", () => {
+  const LAYOUT_ALERTS = { alerts: { default: {} } };
+  const SHEETS = { module: 'timesheets', screen: 'sheets' } as const;
+  const DAY_ACTION = { module: 'timesheets', action: 'day-action' } as const;
+  const SITES = { circuit: 'csettings', action: 'list' } as const;
+  const LOADDIFF = { circuit: 'carch', action: 'loaddiff' } as const;
+
+  it.each<[string, () => Promise<Response>, number, typeof LAYOUT_ALERTS | undefined]>([
+    [
+      'a page in the full layout',
+      async () => handleAdminPage(await getRequest('/admin/cusers/list'), LIST),
+      200,
+      LAYOUT_ALERTS,
+    ],
+    [
+      'a page in the compact layout',
+      async () => handleAdminPage(await getRequest('/admin/cusers/list?compactDisplay=true'), LIST),
+      200,
+      undefined,
+    ],
+    [
+      "a page controller's redirect",
+      async () => {
+        probe.redirect = { kind: 'location', location: './' };
+        return handleAdminPage(await getRequest('/admin/csettings/list?siteid=default'), SITES);
+      },
+      302,
+      undefined,
+    ],
+    [
+      "a post action's redirect",
+      async () => {
+        probe.submit = { kind: 'location', location: './' };
+        return handleAdminAction(await getRequest('/admin-actions/cusers/update'), UPDATE);
+      },
+      302,
+      undefined,
+    ],
+    [
+      'a post action re-rendered inside the layout',
+      async () => {
+        probe.submit = { kind: 'render', view: { body: html`<p id="error">invalid</p>` } };
+        return handleAdminAction(await getRequest('/admin-actions/cusers/update'), UPDATE);
+      },
+      200,
+      LAYOUT_ALERTS,
+    ],
+    [
+      'a raw fragment',
+      async () => handleAdminRaw(await getRequest('/admin-raw/carch/loaddiff'), LOADDIFF),
+      200,
+      undefined,
+    ],
+    [
+      'a synthetic screen',
+      async () => handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), SHEETS),
+      200,
+      LAYOUT_ALERTS,
+    ],
+    [
+      "a synthetic post action's redirect",
+      async () => {
+        probe.submit = { kind: 'location', location: '/opt2/admin/timesheets/sheets' };
+        const request = await postRequest('/opt2/admin-actions/timesheets/day-action', 'id=1', FORM);
+        return handleOpt2Action(request, DAY_ACTION);
+      },
+      302,
+      undefined,
+    ],
+  ])('is saved as session.mura alerts only by an answer in the full layout: %s', async (_case, send, status, mura) => {
+    const response = await send();
+
+    expect(response.status).toBe(status);
+    expect(savedStates().map(({ json }) => (json as { mura?: unknown }).mura)).toEqual([mura]);
+  });
+});
+
 describe('streamed download', () => {
   let producer: PassThrough;
 

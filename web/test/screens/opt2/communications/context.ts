@@ -47,13 +47,14 @@ export function senderRequest(
   return opt2RoleRequest(role, partial);
 }
 
-/** A 200 list answer holding `items`, its `pageindex` and `totalpages` as given for the pager. */
+/** A 200 list answer holding `items`, its `pageindex` and `totalpages` as given, counting full pages when several. */
 export function listAnswer(
   items: readonly unknown[],
   pageindex = 1,
   totalpages = items.length === 0 ? 0 : 1,
 ): FakeReply {
-  const counts = { startindex: 1, endindex: items.length, itemsperpage: 50, totalitems: items.length };
+  const totalitems = totalpages > 1 ? totalpages * 50 : items.length;
+  const counts = { startindex: 1, endindex: items.length, itemsperpage: 50, totalitems };
   return { status: 200, body: { data: { items, ...counts, totalpages, pageindex } } };
 }
 

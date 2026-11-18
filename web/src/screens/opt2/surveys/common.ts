@@ -2,15 +2,19 @@
 import { Roles, type Role } from '@opt2/platform/auth';
 import type { components } from '@/generated/clients/surveys';
 import { okBody, type GatewayResponse } from '@/lib/gateway-client';
-import { attr, html, type SafeHtml } from '@/lib/html';
+import type { SafeHtml } from '@/lib/html';
 import type { Opt2Module, ScreenContext } from '../../registry';
 import {
   alertBox,
   errorMessage,
+  invalidParametersAlert,
+  isMalformedId,
   opt2Label,
   opt2ScreenUrl,
   pageHeader,
   stateBadgeOf,
+  valueRows,
+  wrappable,
   type HeaderLink,
   type Label,
   type Opt2Params,
@@ -69,6 +73,15 @@ const UNREAD_STATUSES: ReadonlySet<number> = new Set([400, 404]);
 /** The unread state of a request naming no survey; `/v1/surveys/{surveyId}` has no empty-id form, so none is sent. */
 export const NO_SURVEY: Unread = Object.freeze({ unread: alertBox('No survey selected.', 'info') });
 
+/** The unread state of a request naming a malformed survey id, which is not sent either. */
+export const MALFORMED_SURVEY: Unread = Object.freeze({ unread: invalidParametersAlert() });
+
+/** Why survey `surveyId` is not read: none named, or a malformed id; undefined when it may name a survey. */
+export function unreadSurveyId(surveyId: string): Unread | undefined {
+  if (surveyId === '') return NO_SURVEY;
+  return isMalformedId(surveyId) ? MALFORMED_SURVEY : undefined;
+}
+
 /** The session site, sent as `siteid` on every surveys call. */
 export function siteIdOf(ctx: ScreenContext): string {
   return ctx.req.session.siteid;
@@ -112,7 +125,7 @@ export function unreadHeader(ctx: ScreenContext, current: SurveyScreen): SafeHtm
   return pageHeader(screenLabel(ctx, current), [listLink(ctx)]);
 }
 
-/** Header of survey screen `current`: its label and the survey title, linking the list and the other screens. */
+/** Header of survey screen `current`: its fixed label, linking the list and the other screens. */
 export function surveyHeader(ctx: ScreenContext, survey: Survey, current: SurveyScreen): SafeHtml {
   const links: HeaderLink[] = [listLink(ctx)];
   for (const screen of SURVEY_SCREENS) {
@@ -120,27 +133,15 @@ export function surveyHeader(ctx: ScreenContext, survey: Survey, current: Survey
       links.push({ label: screenLabel(ctx, screen), href: surveysUrl(ctx, screen, { surveyid: survey.surveyId }) });
     }
   }
-  return pageHeader(html`${screenLabel(ctx, current)}${`: ${survey.title}`}`, links);
+  return pageHeader(screenLabel(ctx, current), links);
+}
+
+/** The survey title as the read-only row that opens each survey screen's block. */
+export function surveyTitleRow(ctx: ScreenContext, survey: Survey): SafeHtml {
+  return valueRows([[opt2Label(ctx, 'Title'), wrappable(survey.title)]]);
 }
 
 /** A service `LocalTimestamp` to the second, as `yyyy-mm-dd hh:mm:ss`; `''` for null. */
 export function dateTimeText(value: string | null): string {
   return value === null ? '' : `${value.slice(0, 10)} ${value.slice(11, 19)}`;
-}
-
-/** Previous and next links of page `pageIndex` of `total` rows, with `params` kept; null for a single page. */
-export function pager(
-  ctx: ScreenContext,
-  screen: string,
-  params: Opt2Params,
-  pageIndex: number,
-  total: number,
-): SafeHtml | null {
-  const pages = Math.ceil(total / PAGE_SIZE);
-  if (pages <= 1) return null;
-  const link = (label: Label, page: number): SafeHtml =>
-    html`<a class="btn"${attr('href', surveysUrl(ctx, screen, { ...params, pageIndex: page }))}>${label}</a>`;
-  return html`<div class="btn-group">${pageIndex > 1 ? link('Previous', pageIndex - 1) : null}${
-    pageIndex < pages ? link(opt2Label(ctx, 'Next'), pageIndex + 1) : null
-  }</div><p>Page ${pageIndex} of ${pages}</p>`;
 }

@@ -13,6 +13,8 @@ import {
   opt2ScreenUrl,
   opt2View,
   pageHeader,
+  pagination,
+  readPage,
   select,
   submitButton,
   type GridCell,
@@ -94,16 +96,22 @@ const isState = (value: string): value is FinanceState => (FINANCE_STATES as rea
 
 /**
  * One page of the session site's records, filtered by `rc.state` when it names a state, and the rollup totals as of
- * `rc.asOf` when given; `rc.page` selects the page.
+ * `rc.asOf` when given; `rc.page` selects the page, page 1 when it is past the last.
  * @throws GatewayDenialError When finance refuses either read (401 or 403); handlers answer the access gate's redirect.
  */
 async function loadRecords(ctx: ScreenContext): Promise<RecordsData> {
   const { rc } = ctx.req;
   const state = rc.state !== undefined && isState(rc.state) ? rc.state : undefined;
-  const page = rc.page !== undefined && PAGE_NUMBER.test(rc.page) ? Number(rc.page) : 1;
   const asOf = rc.asOf || undefined;
-  const [records, rollups] = await Promise.all([
-    ctx.gateway.finance.call('get', '/v1/finance/records', { query: { state, page, pageSize: RECORDS_PAGE_SIZE } }),
+  const [{ answer: records, page }, rollups] = await Promise.all([
+    readPage(
+      rc.page !== undefined && PAGE_NUMBER.test(rc.page) ? Number(rc.page) : 1,
+      (target) =>
+        ctx.gateway.finance.call('get', '/v1/finance/records', {
+          query: { state, page: target, pageSize: RECORDS_PAGE_SIZE },
+        }),
+      (answer) => (answer.ok ? Math.ceil(answer.body.total / RECORDS_PAGE_SIZE) : undefined),
+    ),
     ctx.gateway.finance.call('get', '/v1/finance/rollups', { query: { asOf } }),
   ]);
   return {
@@ -125,17 +133,6 @@ function filterForm(ctx: ScreenContext, { state, asOf }: RecordsData): SafeHtml 
   const filterRow = html`<div class="mura-control-group">${filter}</div>`;
   const hidden = html`${hiddenField('siteid', sessionSite(ctx))}${asOf === undefined ? null : hiddenField('asOf', asOf)}`;
   return html`<form method="get"${attr('action', opt2ScreenUrl(FINANCE_MODULE, 'records'))}>${stateSelect}${filterRow}${hidden}</form>`;
-}
-
-/** Previous and next page links of the list; null when every record fits the first page. */
-function pager(ctx: ScreenContext, { state, asOf, page }: RecordsData, total: number): SafeHtml | null {
-  const pages = Math.ceil(total / RECORDS_PAGE_SIZE);
-  if (page === 1 && pages <= 1) return null;
-  const link = (label: Label, target: number): SafeHtml =>
-    html`<li><a${attr('href', recordsUrl(ctx, { state, asOf, page: target }))}>${label}</a></li>`;
-  return html`<ul class="pagination">${page > 1 ? link('Previous', page - 1) : null}${
-    page < pages ? link(opt2Label(ctx, 'Next'), page + 1) : null
-  }</ul>`;
 }
 
 function recordRow(ctx: ScreenContext, record: FinanceRecord): GridCell[] {
@@ -164,19 +161,26 @@ function rollupRow(ctx: ScreenContext, rollup: FinanceRollup): GridCell[] {
  * refused shows its alert in place of that table.
  */
 function renderRecords(ctx: ScreenContext, data: RecordsData): SafeHtml {
-  const { result, rollups } = data;
+  const { result, rollups, state, asOf, page } = data;
   const records = result.ok
     ? html`${gridTable(
         headers(ctx),
         result.body.data.map((record) => recordRow(ctx, record)),
         'There are currently no finance records.',
-      )}${pager(ctx, data, result.body.total)}`
+        { columnClasses: [undefined, undefined, undefined, undefined, 'hidden-xs', 'hidden-xs'] },
+      )}${pagination(ctx, {
+        page,
+        totalRecords: result.body.total,
+        recordsPerPage: RECORDS_PAGE_SIZE,
+        href: (target) => recordsUrl(ctx, { state, asOf, page: target }),
+      })}`
     : result.alert;
   const totals = rollups.ok
     ? gridTable(
         rollupHeaders(ctx),
         rollups.body.data.map((rollup) => rollupRow(ctx, rollup)),
         'There are currently no rollup totals.',
+        { columnClasses: [undefined, undefined, undefined, undefined, 'hidden-xs'] },
       )
     : rollups.alert;
   return html`${pageHeader('Finance Records')}${block(

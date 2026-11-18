@@ -2799,6 +2799,35 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: importSessionAdminState
+      summary: Stores the admin session-scope values a legacy-served request changed, from the bridge's `op=export`; each given key replaces the stored one, except `mura`, whose keys are merged into the stored `mura` one by one. An unknown, ended or expired session stores nothing and answers `{}`.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSessionState'
+      responses:
+        '200':
+          description: The stored values after the merge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSessionState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/sessions/{sid}/snapshot:
     parameters:
       - $ref: '#/components/parameters/SessionId'
@@ -5261,6 +5290,12 @@ components:
           type: string
         keywords:
           type: string
+        datakeywords:
+          type: string
+          description: '`session.datakeywords`, the form data manager''s keyword search (carch datamanager.cfm).'
+        filterBy:
+          type: string
+          description: '`session.filterBy`, the field the form data manager''s keyword search filters (carch datamanager.cfm).'
         rb:
           type: string
           description: Resource bundle locale of the admin labels.

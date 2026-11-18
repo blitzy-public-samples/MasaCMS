@@ -1,14 +1,16 @@
-// Carry of the session values target routes keep in identity into the legacy session of legacy-bound admin requests.
+// The session values legacy-bound admin requests share with target routes: identity's carried in before, legacy's imported after.
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { jsessionidForSessionId } from '@opt2/platform/legacy-compat';
 import { IDENTITY_SERVICE, ServiceUnavailableError, fixedClock } from '@opt2/platform/service-kit';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BridgeCallOptions, CarriedValue, LegacyCookies } from '../../src/session/bridge-client.js';
-import { CARRIED_SESSION_KEYS, createSessionCarry } from '../../src/session/carry.js';
+import type { BridgeCallOptions, CarriedValue, CarryResult, ExportedValue, LegacyCookies } from '../../src/session/bridge-client.js';
+import { SHARED_SESSION_VALUES, createSessionCarry } from '../../src/session/carry.js';
 import type { SessionAdminState } from '../../src/session/identity-client.js';
 import type { JarCookies, JarRow } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
 import { buildTestGateway, type TestGateway } from '../helpers/app.js';
+import { SHARED_NAMES, sharedValue, type CarriedUserBean } from '../helpers/legacy-origin.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 0);
 const SESSION_ID = 'identity-session-carry';
@@ -47,8 +49,20 @@ interface Seam {
   carry: ReturnType<typeof createSessionCarry>;
 }
 
-/** A carry over a jar holding `row`, identity answering `state` (or failing with it) and a bridge failing with `bridgeError` when set. */
-function seam(opts: { row?: JarRow; state?: SessionAdminState | Error; bridgeError?: Error } = {}): Seam {
+interface SeamOptions {
+  row?: JarRow;
+  /** identity's stored admin state, or the error its reads fail with. */
+  state?: SessionAdminState | Error;
+  /** The error every bridge op fails with. */
+  bridgeError?: Error;
+  /** What `op=export` lists. */
+  exported?: ExportedValue[];
+  /** The error identity's import fails with. */
+  importError?: Error;
+}
+
+/** A carry over a jar holding `row`, an identity and a bridge that record their calls and answer as `opts` says. */
+function seam(opts: SeamOptions = {}): Seam {
   const calls: Call[] = [];
   const row = Object.hasOwn(opts, 'row') ? opts.row : jarRow();
   const carry = createSessionCarry({
@@ -58,12 +72,22 @@ function seam(opts: { row?: JarRow; state?: SessionAdminState | Error; bridgeErr
         if (opts.state instanceof Error) throw opts.state;
         return opts.state ?? {};
       },
+      async importAdminState(sessionId, values) {
+        calls.push(['identity.importAdminState', sessionId, values]);
+        if (opts.importError !== undefined) throw opts.importError;
+        return values;
+      },
     },
     bridge: {
       async carry(cookies: LegacyCookies, values: CarriedValue[], call: BridgeCallOptions) {
         calls.push(['bridge.carry', cookies, values, call]);
         if (opts.bridgeError !== undefined) throw opts.bridgeError;
         return { body: { applied: values.map(({ name }) => name), serverTime: '' }, setCookies: [] };
+      },
+      async export(cookies: LegacyCookies, call: BridgeCallOptions) {
+        calls.push(['bridge.export', cookies, call]);
+        if (opts.bridgeError !== undefined) throw opts.bridgeError;
+        return { body: { values: opts.exported ?? [], serverTime: '' }, setCookies: [] };
       },
     },
     jar: { get: async () => row },
@@ -72,34 +96,100 @@ function seam(opts: { row?: JarRow; state?: SessionAdminState | Error; bridgeErr
   return { calls, carry };
 }
 
+/** session.cfm's `sharedNames` list, read from the bridge page itself. */
+function bridgeSharedNames(): string[] {
+  const page = readFileSync(new URL('../../legacy-bridge/cfml/session.cfm', import.meta.url), 'utf8');
+  const list = /^sharedNames = \[(.*)\];$/m.exec(page)?.[1];
+  if (list === undefined) throw new Error('session.cfm declares no sharedNames');
+  return [...list.matchAll(/"([^"]+)"/g)].map((match) => match[1] ?? '');
+}
+
 /** The bridge's answer when the cookies no longer attach the named legacy session. */
 function sessionMismatch(): ServiceUnavailableError {
   return new ServiceUnavailableError('legacy-bridge', Object.assign(new Error('mismatch'), { status: 409, error: 'sessionMismatch' }));
 }
 
 describe('createSessionCarry', () => {
-  it('carries only carch.list flatViewArgs, the value strategies-content keeps under mura', () => {
-    expect(CARRIED_SESSION_KEYS).toEqual(['flatViewArgs']);
+  it('shares the values session.cfm lists: the flat view, rows, alerts and object instance under mura; the site, its paths, the search keywords, the FW/1 counter and contexts and the module and its tops at the top', () => {
+    expect(SHARED_SESSION_VALUES).toEqual([
+      { wire: 'flatViewArgs', identity: 'mura.flatViewArgs' },
+      { wire: 'mura.nextN', identity: 'mura.nextN' },
+      { wire: 'mura.alerts', identity: 'mura.alerts' },
+      { wire: 'siteid', identity: 'siteid' },
+      { wire: 'userFilesPath', identity: 'userFilesPath' },
+      { wire: 'topID', identity: 'topID' },
+      { wire: 'openSectionList', identity: 'openSectionList' },
+      { wire: 'keywords', identity: 'keywords' },
+      { wire: 'datakeywords', identity: 'datakeywords' },
+      { wire: 'filterBy', identity: 'filterBy' },
+      { wire: '__fw1NextPreserveKey', identity: 'nextPreserveKey' },
+      { wire: '__fw1', identity: 'flash' },
+      { wire: 'moduleid', identity: 'moduleid' },
+      { wire: 'moduleTopIds', identity: 'moduleTopIds' },
+      { wire: 'mura.objectInstanceId', identity: 'mura.objectInstanceId' },
+    ]);
+    expect(SHARED_SESSION_VALUES.map(({ wire }) => wire)).toEqual(bridgeSharedNames());
+    expect(SHARED_NAMES).toEqual(bridgeSharedNames());
   });
 
-  it('installs the stored flatViewArgs with the live jar cookies, the legacy session id, the user agent and its SHA-256 revision', async () => {
+  it('installs every stored shared value with the live jar cookies, the legacy session id, the user agent and its SHA-256 revision', async () => {
     const expired: JarCookies = { JSESSIONID: { name: 'JSESSIONID', value: 'gone', attributes: 'path=/;expires=Thu, 01-Jan-1970 00:00:00 GMT' } };
+    const alerts = { 'tenant-a': { cachenotice: false } };
     const { calls, carry } = seam({
       row: jarRow({ cookies: { ...LIVE, ...expired } }),
-      state: { siteid: 'tenant-a', mura: { FlatViewArgs: FLAT_VIEW_ARGS, nextN: '20' } },
+      state: { siteid: 'tenant-a', keywords: 'home', rb: 'en', mura: { FlatViewArgs: FLAT_VIEW_ARGS, NEXTN: '20', alerts, objectInstanceId: 'I1' } },
     });
 
     await carry.beforeLegacy(SESSION_ID, 'target-primary', { userAgent: USER_AGENT });
 
+    const carried = (name: string, value: unknown) => ({ name, value, revision: revisionOf(value) });
     expect(calls).toEqual([
       ['identity.adminState', SESSION_ID],
       [
         'bridge.carry',
         LIVE,
-        [{ name: 'flatViewArgs', value: FLAT_VIEW_ARGS, revision: revisionOf(FLAT_VIEW_ARGS) }],
+        [
+          carried('flatViewArgs', FLAT_VIEW_ARGS),
+          carried('mura.nextN', '20'),
+          carried('mura.alerts', alerts),
+          carried('siteid', 'tenant-a'),
+          carried('keywords', 'home'),
+          carried('mura.objectInstanceId', 'I1'),
+        ],
         { legacySessionId: LEGACY_SESSION_ID, userAgent: USER_AGENT },
       ],
     ]);
+  });
+
+  it.each<[string, SessionAdminState, SessionAdminState['flash'] | undefined]>([
+    ['the contexts from ten keys before the counter on', { nextPreserveKey: 13, flash: { '2': { a: '2' }, '3': { a: '3' }, '12': { a: '12' }, x: { a: 'x' } } }, { '3': { a: '3' }, '12': { a: '12' } }],
+    ['no contexts once FW/1 has purged them all', { nextPreserveKey: 13, flash: { '1': { a: '1' } } }, undefined],
+    ['every context while no counter is stored', { flash: { '1': { siteid: 'default' } } }, { '1': { siteid: 'default' } }],
+  ])('carries the FW/1 counter and, of the preserved contexts, %s', async (_label, state, contexts) => {
+    const { calls, carry } = seam({ state });
+
+    await carry.beforeLegacy(SESSION_ID, 'target-primary');
+
+    const carried = (name: string, value: unknown) => ({ name, value, revision: revisionOf(value) });
+    const expected = [
+      ...(state.nextPreserveKey === undefined ? [] : [carried('__fw1NextPreserveKey', state.nextPreserveKey)]),
+      ...(contexts === undefined ? [] : [carried('__fw1', contexts)]),
+    ];
+    expect(calls.find(([op]) => op === 'bridge.carry')?.[2]).toEqual(expected);
+  });
+
+  it.each<[string, unknown]>([
+    ['a string', 'tenant-a'],
+    ['a number', 5],
+    ['a boolean', false],
+    ['an array', [FLAT_VIEW_ARGS]],
+    ['a struct', FLAT_VIEW_ARGS],
+  ])('carries a stored value that is %s as it is', async (_label, value) => {
+    const { calls, carry } = seam({ state: { mura: { flatViewArgs: value } } });
+
+    await carry.beforeLegacy(SESSION_ID, 'target-primary');
+
+    expect(calls[1]?.[2]).toEqual([{ name: 'flatViewArgs', value, revision: revisionOf(value) }]);
   });
 
   it('sends the same revision for an unchanged value and a new one once a target route changed it', async () => {
@@ -117,10 +207,8 @@ describe('createSessionCarry', () => {
 
   it.each<[string, SessionAdminState]>([
     ['no admin state', {}],
-    ['no session.mura values', { siteid: 'tenant-a' }],
-    ['session.mura without flatViewArgs', { mura: { nextN: '20' } }],
-    ['flatViewArgs that is not a struct', { mura: { flatViewArgs: 'tenant-a' } }],
-    ['flatViewArgs that is an array', { mura: { flatViewArgs: [FLAT_VIEW_ARGS] } }],
+    ['only values no legacy-served view reads', { rb: 'en', dashboardSpan: 30, mura: { editBean: { errors: {} } } }],
+    ['a shared mura value that is null', { mura: { nextN: null } }],
   ])('calls no bridge op when identity holds %s', async (_label, state) => {
     const { calls, carry } = seam({ state });
 
@@ -167,6 +255,89 @@ describe('createSessionCarry', () => {
 
     if (tolerated) await expect(outcome).resolves.toBeUndefined();
     else await expect(outcome).rejects.toBe(error);
+  });
+
+  it('imports what legacy changed: top-level values as strings, mura values and the flat view under mura', async () => {
+    const tab = { 'tenant-a': { TAB: '1', sortby: 'lastupdate' } };
+    const alerts = { 'tenant-a': { cachenotice: false } };
+    const { calls, carry } = seam({
+      exported: [
+        { name: 'flatViewArgs', value: tab },
+        { name: 'mura.nextN', value: '5' },
+        { name: 'mura.alerts', value: alerts },
+        { name: 'siteid', value: 'tenant-a' },
+        { name: 'userFilesPath', value: '/sites/tenant-a/assets/' },
+        { name: 'topID', value: 1 },
+        { name: 'openSectionList', value: '' },
+        { name: 'keywords', value: true },
+        { name: '__fw1NextPreserveKey', value: '13' },
+        { name: 'moduleid', value: '00000000000000000000000000000000000' },
+        { name: 'moduleTopIds', value: { m00000000000000000000000000000000000: '00000000000000000000000000000000001', '00000000000000000000000000000000004': 1 } },
+        { name: 'mura.objectInstanceId', value: '' },
+      ],
+    });
+
+    await carry.afterLegacy(SESSION_ID, 'target-primary', { userAgent: USER_AGENT });
+
+    expect(calls).toEqual([
+      ['bridge.export', LIVE, { legacySessionId: LEGACY_SESSION_ID, userAgent: USER_AGENT }],
+      [
+        'identity.importAdminState',
+        SESSION_ID,
+        {
+          siteid: 'tenant-a',
+          userFilesPath: '/sites/tenant-a/assets/',
+          topID: '1',
+          openSectionList: '',
+          keywords: 'true',
+          nextPreserveKey: 13,
+          moduleid: '00000000000000000000000000000000000',
+          moduleTopIds: { m00000000000000000000000000000000000: '00000000000000000000000000000000001', '00000000000000000000000000000000004': '1' },
+          mura: { flatViewArgs: tab, nextN: '5', alerts, objectInstanceId: '' },
+        },
+      ],
+    ]);
+  });
+
+  it.each<[string, ExportedValue[]]>([
+    ['nothing', []],
+    ['only a name no shared value has', [{ name: 'mura.editBean', value: 'B1' }]],
+    ['only a top-level value that is not simple', [{ name: 'keywords', value: { home: true } }]],
+    ['only a preserve-key counter that is not a positive integer', [{ name: '__fw1NextPreserveKey', value: '1.5' }, { name: '__fw1NextPreserveKey', value: '0' }]],
+    ['only preserved contexts, which travel target to legacy only', [{ name: '__fw1', value: { '1': { siteid: 'default' } } }]],
+    ['only module tops that are no struct of simple values', [{ name: 'moduleTopIds', value: { m1: { topid: '1' } } }, { name: 'moduleTopIds', value: {} }]],
+  ])('imports nothing when legacy exports %s', async (_label, exported) => {
+    const { calls, carry } = seam({ exported });
+
+    await carry.afterLegacy(SESSION_ID, 'target-primary');
+
+    expect(calls.map(([op]) => op)).toEqual(['bridge.export']);
+  });
+
+  it.each<[string, JarRow | undefined]>([
+    ['no jar', undefined],
+    ['a jar without a legacy session id', jarRow({ legacySessionId: null })],
+    ['a jar whose cookies are all deleted', jarRow({ cookies: { CFID: { name: 'CFID', value: '', attributes: 'path=/;' } } })],
+  ])('exports nothing for a session with %s', async (_label, row) => {
+    const { calls, carry } = seam({ row, exported: [{ name: 'siteid', value: 'tenant-a' }] });
+
+    await carry.afterLegacy(SESSION_ID, 'target-primary');
+
+    expect(calls).toEqual([]);
+  });
+
+  it.each<[string, SessionMode, SeamOptions, boolean]>([
+    ['a session mismatch in legacy-primary', 'legacy-primary', { bridgeError: sessionMismatch() }, true],
+    ['a session mismatch in target-primary', 'target-primary', { bridgeError: sessionMismatch() }, false],
+    ['an unavailable identity in legacy-primary', 'legacy-primary', { importError: new ServiceUnavailableError(IDENTITY_SERVICE, new Error('refused')) }, true],
+    ['an unavailable identity in target-primary', 'target-primary', { importError: new ServiceUnavailableError(IDENTITY_SERVICE, new Error('refused')) }, false],
+  ])('settles an import that meets %s, tolerating it only in legacy-primary', async (_label, mode, failure, tolerated) => {
+    const { carry } = seam({ ...failure, exported: [{ name: 'siteid', value: 'tenant-a' }] });
+
+    const outcome = carry.afterLegacy(SESSION_ID, mode);
+
+    if (tolerated) await expect(outcome).resolves.toBeUndefined();
+    else await expect(outcome).rejects.toBe(failure.bridgeError ?? failure.importError);
   });
 });
 
@@ -229,8 +400,9 @@ describe('carch.loadSiteFlat after a target-served carch.list at the committed v
       payload: FORM,
     });
 
-  it('renders the flat view in the legacy session hydrated for the session, holding the flatViewArgs carch.list stored', async () => {
+  it('renders the flat view in the legacy session hydrated for the session, holding the flatViewArgs carch.list stored, and imports its write', async () => {
     const { app, identity, legacy } = await start({ siteid: 'tenant-a', mura: { flatViewArgs: FLAT_VIEW_ARGS } });
+    const written = { ...FLAT_VIEW_ARGS, 'tenant-a': { sortBy: 'lastupdate', tab: 1 } };
 
     const first = await loadSiteFlat(app);
     const second = await loadSiteFlat(app);
@@ -238,24 +410,322 @@ describe('carch.loadSiteFlat after a target-served carch.list at the committed v
     expect([first.statusCode, first.body]).toEqual([200, '<div class="btn-group" id="flatViewArgs">']);
     expect(second.statusCode).toBe(200);
     expect(identity.calls.adminState).toBe(2);
-    const ops = legacy.bridgeCalls.map(({ op, status, body }) => [op, status, op === 'carry' ? body : undefined]);
-    expect(ops.filter(([op]) => op === 'carry')).toEqual([
+    const ops = legacy.bridgeCalls.map(({ op, status, body }) => [op, status, op === 'carry' || op === 'export' ? body : undefined]);
+    expect(ops.filter(([op]) => op === 'carry' || op === 'export')).toEqual([
+      ['carry', 200, { applied: ['flatViewArgs', 'siteid'], serverTime: expect.any(String) }],
+      ['export', 200, { values: [{ name: 'flatViewArgs', value: written }], serverTime: expect.any(String) }],
+      // identity now holds loadSiteFlat's write, which legacy already holds as well.
       ['carry', 200, { applied: ['flatViewArgs'], serverTime: expect.any(String) }],
-      ['carry', 200, { applied: [], serverTime: expect.any(String) }],
+      ['export', 200, { values: [], serverTime: expect.any(String) }],
     ]);
+    expect(identity.adminStateImports).toEqual([{ sessionId: GATEWAY_SESSION, values: { mura: { flatViewArgs: written } } }]);
     const hydrated = legacy.bridgeCalls.find((call) => call.op === 'hydrate')?.legacySessionId ?? '';
-    expect(legacy.bridgeCalls.filter((call) => call.op === 'carry').map((call) => call.legacySessionId)).toEqual([hydrated, hydrated]);
-    // The unchanged revision left loadSiteFlat's own write to the session site's entry standing.
-    expect(legacy.sessions.get(hydrated)?.values.flatViewArgs).toEqual({ ...FLAT_VIEW_ARGS, 'tenant-a': { sortBy: 'lastupdate', tab: 1 } });
+    expect(legacy.bridgeCalls.filter((call) => call.op === 'carry' || call.op === 'export').map((call) => call.legacySessionId)).toEqual([
+      hydrated,
+      hydrated,
+      hydrated,
+      hydrated,
+    ]);
+    expect(legacy.sessions.get(hydrated)?.values.flatViewArgs).toEqual(written);
   });
 
-  it('carries nothing while identity holds no flatViewArgs for the session', async () => {
+  it('carries no flatViewArgs while identity holds none for the session, so loadSiteFlat fails as on legacy', async () => {
     const { app, identity, legacy } = await start({ siteid: 'tenant-a' });
 
     const res = await loadSiteFlat(app);
 
     expect([res.statusCode, res.body]).toEqual([500, UNDEFINED_ELEMENT]);
     expect(identity.calls.adminState).toBe(1);
-    expect(legacy.bridgeCalls.map(({ op }) => op)).not.toContain('carry');
+    const carried = legacy.bridgeCalls.filter(({ op }) => op === 'carry').map(({ body }) => body);
+    expect(carried).toEqual([{ applied: ['siteid'], serverTime: expect.any(String) }]);
+    expect(identity.adminStateImports).toEqual([]);
+  });
+});
+
+describe('shared session values across target-served and legacy-served admin requests at the committed v0002 (target-primary)', () => {
+  const GATEWAY_SESSION = 'E5F6A7B8-C9D0-E1F2-A3B4C5D6E7F8A9B0';
+  const TARGET_COOKIE = `CFID=T-CFID-7301; CFTOKEN=T-CFTOKEN-7301; JSESSIONID=${jsessionidForSessionId(GATEWAY_SESSION)}`;
+  const USER_ID = 'USER-CARRY-0002';
+  const DISMISS = '/admin/?muraAction=cDashboard.dismissAlert&alertid=cachenotice&siteid=tenant-a';
+  const EDIT = '/admin/?muraAction=cArch.hist&siteid=tenant-b';
+  const SITE_MANAGER_TAB = '/admin/?muraAction=cArch.siteManagerTab&tab=1';
+
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  /** A gateway at v0002 whose identity session stored `adminState`, and whose legacy writes the session as these admin actions do. */
+  async function start(adminState: SessionAdminState): Promise<TestGateway> {
+    gateway = await buildTestGateway({
+      version: 'v0002',
+      identity: {
+        sessions: [
+          {
+            sessionId: GATEWAY_SESSION,
+            userId: USER_ID,
+            epoch: 3,
+            state: 'active',
+            mode: 'target-primary',
+            adminState,
+            snapshot: {
+              sessionId: GATEWAY_SESSION,
+              epoch: 3,
+              loginSnapshot: { user: { userID: USER_ID, username: 'admin', siteID: 'default', membershipIds: USER_ID }, roles: ['S2'] },
+              csrfSecretKey: 'CSRF-SECRET-CARRY-2',
+              usedTokens: [],
+            },
+          },
+        ],
+      },
+    });
+    gateway.legacy.setResponse((req, attached) => {
+      if (attached === undefined) return {};
+      if (req.url.startsWith(DISMISS)) {
+        // cdashboard.cfc:142-153 marks a Masa notice dismissed in session.mura.alerts[rc.siteid].
+        const alerts = (sharedValue(attached, 'mura.alerts') ?? {}) as Record<string, Record<string, unknown>>;
+        attached.user = { ...attached.user, alerts: { ...alerts, 'tenant-a': { ...alerts['tenant-a'], cachenotice: false } } };
+        return { body: '' };
+      }
+      if (req.url.startsWith(EDIT)) {
+        // admin/Application.cfc:384-391 switches the session site to a registered rc.siteid.
+        attached.siteId = 'tenant-b';
+        attached.values = { ...attached.values, userFilesPath: '/sites/tenant-b/assets/', topID: '00000000000000000000000000000000001', openSectionList: '' };
+        return { body: '<h1>History</h1>' };
+      }
+      if (req.url.startsWith(SITE_MANAGER_TAB)) {
+        // carch.cfc:516-523 creates the site entry and sets its tab in dot notation, which ACF upper-cases.
+        attached.values = { ...attached.values, flatViewArgs: { 'tenant-b': { TAB: '1' } } };
+        return { body: '' };
+      }
+      return {};
+    });
+    return gateway;
+  }
+
+  const get = (app: TestGateway['app'], url: string) =>
+    app.inject({ method: 'GET', url, headers: { cookie: TARGET_COOKIE, 'user-agent': USER_AGENT } });
+
+  it('imports into identity what legacy-served admin actions change, keeping the values identity carried in', async () => {
+    const { app, identity, legacy } = await start({
+      siteid: 'tenant-a',
+      keywords: 'zzzznotfound',
+      mura: { nextN: '5', alerts: { 'tenant-a': {} } },
+    });
+
+    for (const url of [DISMISS, EDIT, SITE_MANAGER_TAB]) expect((await get(app, url)).statusCode).toBe(200);
+
+    expect(identity.adminStateImports.map(({ values }) => values)).toEqual([
+      { mura: { alerts: { 'tenant-a': { cachenotice: false } } } },
+      { siteid: 'tenant-b', userFilesPath: '/sites/tenant-b/assets/', topID: '00000000000000000000000000000000001', openSectionList: '' },
+      { mura: { flatViewArgs: { 'tenant-b': { TAB: '1' } } } },
+    ]);
+    expect(identity.sessions.get(GATEWAY_SESSION)).toMatchObject({
+      adminSite: 'tenant-b',
+      adminState: {
+        siteid: 'tenant-b',
+        keywords: 'zzzznotfound',
+        topID: '00000000000000000000000000000000001',
+        mura: { nextN: '5', alerts: { 'tenant-a': { cachenotice: false } }, flatViewArgs: { 'tenant-b': { TAB: '1' } } },
+      },
+    });
+    const hydrated = legacy.bridgeCalls.find((call) => call.op === 'hydrate')?.legacySessionId ?? '';
+    const session = legacy.sessions.get(hydrated);
+    expect(session === undefined ? undefined : sharedValue(session, 'mura.nextN')).toBe('5');
+    expect(session === undefined ? undefined : sharedValue(session, 'keywords')).toBe('zzzznotfound');
+  });
+});
+
+describe('FW/1 preserved contexts of target post-actions on legacy-served landings at the committed v0002 (target-primary)', () => {
+  const GATEWAY_SESSION = 'F6A7B8C9-D0E1-F2A3-B4C5D6E7F8A9B0C1';
+  const TARGET_COOKIE = `CFID=T-CFID-7401; CFTOKEN=T-CFTOKEN-7401; JSESSIONID=${jsessionidForSessionId(GATEWAY_SESSION)}`;
+  const USER_ID = 'USER-CARRY-0003';
+  const EDITED_USER = '3BEC10FC-F5B5-5517-7E7F2072657EFB68';
+  const REMOVE_FROM_GROUP = '/admin/?muraAction=cUsers.removeFromGroup&userid=U1&groupid=G1&siteid=default';
+  const UPDATE = '/admin/?muraAction=cUsers.update&userid=' + EDITED_USER + '&routeid=';
+  const FORM = 'type=2&action=Update&siteid=default&fname=QA&lname=Editor&usernameNoCache=admin';
+  const ERRORS = { username: "The username 'admin' that you entered is being used by another user." };
+
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  /** A gateway at v0002 whose web saves the failed update's flash context in identity as web's saveFlashContext does. */
+  async function start(): Promise<TestGateway> {
+    gateway = await buildTestGateway({
+      version: 'v0002',
+      identity: {
+        sessions: [
+          {
+            sessionId: GATEWAY_SESSION,
+            userId: USER_ID,
+            epoch: 3,
+            state: 'active',
+            mode: 'target-primary',
+            adminState: { siteid: 'default' },
+            snapshot: {
+              sessionId: GATEWAY_SESSION,
+              epoch: 3,
+              loginSnapshot: { user: { userID: USER_ID, username: 'admin', siteID: 'default', membershipIds: USER_ID }, roles: ['S2'] },
+              csrfSecretKey: 'CSRF-SECRET-CARRY-3',
+              usedTokens: [],
+            },
+          },
+        ],
+      },
+    });
+    const { identity, web, legacy } = gateway;
+    web.setResponse(() => {
+      const session = identity.sessions.get(GATEWAY_SESSION);
+      if (session === undefined) return { status: 500 };
+      const key = session.adminState.nextPreserveKey ?? 1;
+      const result = { written: false, errors: ERRORS, userBean: { UserID: EDITED_USER, Type: 2, SiteID: 'default' } };
+      const context = { muraAction: 'cUsers.update', userid: EDITED_USER, routeid: '', ...Object.fromEntries(new URLSearchParams(FORM)), userBean: JSON.stringify(result) };
+      session.adminState = { ...session.adminState, flash: { ...session.adminState.flash, [String(key)]: context }, nextPreserveKey: key + 1 };
+      return { status: 302, headers: { location: `./?muraAction=cUsers.edituser&fw1pk=${String(key)}` }, body: '' };
+    });
+    legacy.setResponse((req, attached) => {
+      if (attached === undefined || !req.url.startsWith(REMOVE_FROM_GROUP)) return {};
+      // framework.cfc:1432-1456 allocates the next key, and saveFlashContext stores the context under it.
+      const key = Number(attached.values.__fw1NextPreserveKey ?? 1);
+      attached.values = { ...attached.values, __fw1NextPreserveKey: key + 1, [`__fw1${String(key)}`]: { groupid: 'G1', siteid: 'default' } };
+      return { status: 302, headers: { location: `./?muraAction=cUsers.editGroupMembers&fw1pk=${String(key)}` }, body: '' };
+    });
+    return gateway;
+  }
+
+  const request = (app: TestGateway['app'], method: 'GET' | 'POST', url: string, payload?: string) =>
+    app.inject({
+      method,
+      url,
+      headers: { cookie: TARGET_COOKIE, 'user-agent': USER_AGENT, ...(payload === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' }) },
+      payload,
+    });
+
+  it('allocates target and legacy keys from one counter and installs the target context, its userBean as a bean, for the landing', async () => {
+    const { app, identity, legacy, web } = await start();
+
+    const legacySave = await request(app, 'GET', REMOVE_FROM_GROUP);
+    const targetSave = await request(app, 'POST', UPDATE, FORM);
+    const landing = await request(app, 'GET', '/admin/?muraAction=cUsers.edituser&fw1pk=2');
+
+    expect([legacySave.statusCode, legacySave.headers.location]).toEqual([302, './?muraAction=cUsers.editGroupMembers&fw1pk=1']);
+    expect([targetSave.statusCode, targetSave.headers.location]).toEqual([302, './?muraAction=cUsers.edituser&fw1pk=2']);
+    expect(web.requests).toHaveLength(1);
+    expect(landing.statusCode).toBe(200);
+    const hydrated = legacy.bridgeCalls.find((call) => call.op === 'hydrate')?.legacySessionId ?? '';
+    const values = legacy.sessions.get(hydrated)?.values ?? {};
+    expect(values.__fw1NextPreserveKey).toBe(3);
+    expect(values.__fw11).toEqual({ groupid: 'G1', siteid: 'default' });
+    expect(values.__fw12).toMatchObject({ userid: EDITED_USER, action: 'Update', usernameNoCache: 'admin' });
+    expect((values.__fw12 as Record<string, unknown>).userBean).toEqual({
+      posted: { muraAction: 'cUsers.update', userid: EDITED_USER, routeid: '', ...Object.fromEntries(new URLSearchParams(FORM)) },
+      errors: ERRORS,
+    } satisfies CarriedUserBean);
+    const carried = legacy.bridgeCalls.filter(({ op }) => op === 'carry').map(({ body }) => (body as CarryResult).applied);
+    expect(carried).toEqual([['siteid'], ['__fw1NextPreserveKey', '__fw1']]);
+    expect(identity.adminStateImports.map(({ values: imported }) => imported)).toEqual([{ nextPreserveKey: 2 }]);
+  });
+});
+
+describe('carch module, module tops and object instance across target-served and legacy-served admin requests at the committed v0002 (target-primary)', () => {
+  const GATEWAY_SESSION = 'A7B8C9D0-E1F2-A3B4-C5D6E7F8A9B0C1D2';
+  const TARGET_COOKIE = `CFID=T-CFID-7501; CFTOKEN=T-CFTOKEN-7501; JSESSIONID=${jsessionidForSessionId(GATEWAY_SESSION)}`;
+  const USER_ID = 'USER-CARRY-0004';
+  const SITE = '00000000000000000000000000000000000';
+  const FORMS = '00000000000000000000000000000000004';
+  const SITE_TOGGLE = `/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&moduleid=${SITE}`;
+  const HISTORY = '/admin/?muraAction=cArch.hist&siteid=tenant-a';
+  /** What a target-served Forms-module carch.list stored (web carch controller, strategies-content carch before()). */
+  const FORMS_TOPS = { [`m${SITE}`]: '00000000000000000000000000000000001', [`m${FORMS}`]: FORMS };
+
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  /** A gateway at v0002 whose legacy writes the module values as admin/Application.cfc:419-421 and carch before() do. */
+  async function start(): Promise<TestGateway> {
+    gateway = await buildTestGateway({
+      version: 'v0002',
+      identity: {
+        sessions: [
+          {
+            sessionId: GATEWAY_SESSION,
+            userId: USER_ID,
+            epoch: 3,
+            state: 'active',
+            mode: 'target-primary',
+            adminState: { siteid: 'tenant-a', moduleid: FORMS, moduleTopIds: FORMS_TOPS, mura: { objectInstanceId: 'I1' } },
+            snapshot: {
+              sessionId: GATEWAY_SESSION,
+              epoch: 3,
+              loginSnapshot: { user: { userID: USER_ID, username: 'admin', siteID: 'default', membershipIds: USER_ID }, roles: ['S2'] },
+              csrfSecretKey: 'CSRF-SECRET-CARRY-4',
+              usedTokens: [],
+            },
+          },
+        ],
+      },
+    });
+    gateway.legacy.setResponse((req, attached) => {
+      if (attached === undefined || !req.url.startsWith(SITE_TOGGLE)) return {};
+      // Application.cfc:419-421 takes rc.moduleid; before() adds the missing module defaults and keeps the Site top.
+      attached.values = {
+        ...attached.values,
+        moduleid: SITE,
+        [`m${SITE}`]: { TOPID: '00000000000000000000000000000000001' },
+        m00000000000000000000000000000000003: { TOPID: '00000000000000000000000000000000003' },
+        m00000000000000000000000000000000099: { TOPID: '00000000000000000000000000000000099' },
+      };
+      attached.user = { ...attached.user, objectInstanceId: '' };
+      return { body: '{"html":""}' };
+    });
+    return gateway;
+  }
+
+  const get = (app: TestGateway['app'], url: string) =>
+    app.inject({ method: 'GET', url, headers: { cookie: TARGET_COOKIE, 'user-agent': USER_AGENT } });
+
+  it('installs the module, its tops and the object instance, imports the Site toggle in full, and exports nothing a later carry reinstalled', async () => {
+    const { app, identity, legacy } = await start();
+
+    expect((await get(app, SITE_TOGGLE)).statusCode).toBe(200);
+    expect((await get(app, HISTORY)).statusCode).toBe(200);
+
+    const allTops = {
+      [`m${SITE}`]: '00000000000000000000000000000000001',
+      m00000000000000000000000000000000003: '00000000000000000000000000000000003',
+      [`m${FORMS}`]: FORMS,
+      m00000000000000000000000000000000099: '00000000000000000000000000000000099',
+    };
+    const ops = legacy.bridgeCalls.filter(({ op }) => op === 'carry' || op === 'export').map(({ op, body }) => [op, body]);
+    expect(ops).toEqual([
+      ['carry', { applied: ['siteid', 'moduleid', 'moduleTopIds', 'mura.objectInstanceId'], serverTime: expect.any(String) }],
+      [
+        'export',
+        {
+          values: [
+            { name: 'moduleid', value: SITE },
+            { name: 'moduleTopIds', value: allTops },
+            { name: 'mura.objectInstanceId', value: '' },
+          ],
+          serverTime: expect.any(String),
+        },
+      ],
+      ['carry', { applied: ['moduleid', 'moduleTopIds', 'mura.objectInstanceId'], serverTime: expect.any(String) }],
+      ['export', { values: [], serverTime: expect.any(String) }],
+    ]);
+    expect(identity.adminStateImports.map(({ values }) => values)).toEqual([
+      { moduleid: SITE, moduleTopIds: allTops, mura: { objectInstanceId: '' } },
+    ]);
+    expect(identity.sessions.get(GATEWAY_SESSION)?.adminState).toMatchObject({ moduleid: SITE, moduleTopIds: allTops, mura: { objectInstanceId: '' } });
   });
 });

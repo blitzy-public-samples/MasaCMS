@@ -1,4 +1,4 @@
-/** The `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, admin-site, admin-state and hydration reads and ending. */
+/** The `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `importSessionAdminState`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, admin-site, admin-state and hydration reads, admin-state import and ending. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -192,8 +192,8 @@ describe('route declarations', () => {
           requires: operation['x-opt2-requires'],
         })),
     );
-    expect(expected).toHaveLength(6);
-    expect(declared.filter((route) => route.method !== 'HEAD')).toHaveLength(6);
+    expect(expected).toHaveLength(7);
+    expect(declared.filter((route) => route.method !== 'HEAD')).toHaveLength(7);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
   });
 });
@@ -204,6 +204,7 @@ describe('auth denials', () => {
     ['GET', '/internal/v1/sessions/S-denied/state', undefined],
     ['GET', '/internal/v1/sessions/S-denied/admin-site', undefined],
     ['GET', '/internal/v1/sessions/S-denied/admin-state', undefined],
+    ['POST', '/internal/v1/sessions/S-denied/admin-state', { siteid: SITE }],
     ['GET', '/internal/v1/sessions/S-denied/snapshot', undefined],
     ['POST', '/internal/v1/sessions/S-denied:end', { reason: 'logout' }],
   ])('refuse %s %s to callers other than the gateway, with or without a user token', async (method, url, payload) => {
@@ -239,6 +240,18 @@ describe('request validation', () => {
     ['a reason the contract does not name', { reason: 'timeout' }],
   ])('answers an end with %s with the legacy 400', async (_label, payload) => {
     const res = await send('POST', '/internal/v1/sessions/S-1:end', await headersFor('gateway'), payload);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
+  });
+
+  it.each<[string, unknown]>([
+    ['no body', undefined],
+    ['a key the contract does not name', { blockLoginUntil: '2026-06-30T12:30:00.000' }],
+    ['a top-level value of the wrong type', { topID: { nested: true } }],
+    ['mura that is not an object', { mura: 'nextN' }],
+  ])('answers an admin-state import with %s with the legacy 400', async (_label, payload) => {
+    const res = await send('POST', '/internal/v1/sessions/S-1/admin-state', await headersFor('gateway'), payload);
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
@@ -412,6 +425,35 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual(expected);
+  });
+
+  it('imports the values a legacy request changed, merging mura key by key and dropping the login-set default-password flag', async () => {
+    if (handle === undefined) throw new Error('PostgreSQL is not available');
+    const sid = nextSessionId();
+    await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
+    await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { siteid: 'default', keywords: '', mura: { objectInstanceId: 'I1', nextN: '20' } }));
+
+    const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), {
+      siteid: SITE,
+      keywords: 'home',
+      hasdefaultpassword: true,
+      mura: { nextN: '5', alerts: { [SITE]: { cachenotice: false } } },
+    });
+
+    const expected = { siteid: SITE, keywords: 'home', mura: { objectInstanceId: 'I1', nextN: '5', alerts: { [SITE]: { cachenotice: false } } } };
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect((await gateway('admin-state', sid)).json()).toEqual(expected);
+    expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: SITE });
+  });
+
+  it('imports nothing into an unknown session and answers {}', async () => {
+    const sid = 'S-never-imported';
+
+    const res = await send('POST', `/internal/v1/sessions/${sid}/admin-state`, await headersFor('gateway'), { siteid: SITE });
+
+    expect([res.statusCode, res.json()]).toEqual([200, {}]);
+    expect((await gateway('admin-state', sid)).json()).toEqual({});
   });
 
   it.each<['state' | 'admin-site' | 'admin-state' | 'snapshot' | 'end', (sid: string) => unknown]>([

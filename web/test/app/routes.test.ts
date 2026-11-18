@@ -220,12 +220,24 @@ function install(routes: FakeRouteTable): void {
   for (const [key, route] of Object.entries(routes)) gateway.setRoute(key, route);
 }
 
+/** The opt2/admin-actions exports that take the request alone, by method. */
+const OPT2_ACTION_EXPORTS = new Map<string, (request: Request) => Response>([
+  ['GET', opt2Actions.GET],
+  ['HEAD', opt2Actions.HEAD],
+  ['PUT', opt2Actions.PUT],
+  ['PATCH', opt2Actions.PATCH],
+  ['DELETE', opt2Actions.DELETE],
+  ['OPTIONS', opt2Actions.OPTIONS],
+]);
+
 /** `request` answered by the route module its web path names, through the export of its method. */
 async function serve(request: Request): Promise<Response> {
   const [tree = '', first = '', second = '', third = ''] = new URL(request.url).pathname.split('/').slice(1);
   if (tree === 'opt2' && first === 'admin-actions') {
-    if (request.method !== 'POST') throw new TypeError('opt2/admin-actions exports POST only');
-    return opt2Actions.POST(request, routeParams({ module: second, action: third }));
+    if (request.method === 'POST') return opt2Actions.POST(request, routeParams({ module: second, action: third }));
+    const handler = OPT2_ACTION_EXPORTS.get(request.method);
+    if (handler === undefined) throw new TypeError(`opt2/admin-actions exports no ${request.method}`);
+    return handler(request);
   }
   const route = tree === 'admin' ? adminPage : tree === 'admin-actions' ? adminActions : tree === 'admin-raw' ? adminRaw : undefined;
   if (route === undefined) throw new TypeError(`No route module serves ${request.url}`);

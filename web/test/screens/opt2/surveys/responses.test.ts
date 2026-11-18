@@ -73,7 +73,7 @@ describe('surveys responses screen', () => {
 
     expect(fragmentModel(html)).toEqual<DomModel>({
       title: '',
-      headings: [`Responses: ${title}`],
+      headings: ['Responses'],
       labels: [],
       controls: [],
       buttons: [],
@@ -81,6 +81,9 @@ describe('surveys responses screen', () => {
       tables: [{ headers: HEADERS, rows: [[row.submitted, row.site, row.respondent, answers]] }],
       alerts: [],
     });
+    const opening = load(html, null, false)('.block-content').first().children().first();
+    expect(opening.is('dl')).toBe(true);
+    expect([opening.children('dt').text(), opening.children('dd').text()]).toEqual(['Title', title]);
     expect(surveysCalls(gateway).map(({ method, path, query }) => ({ method, path, query }))).toEqual([
       { method: 'GET', path: `/v1/surveys/${surveyId}`, query: { siteid: SITE } },
       {
@@ -99,7 +102,7 @@ describe('surveys responses screen', () => {
 
     expect(html).toContain('<div class="help-block-empty">This survey has no responses.</div>');
     expect(html).not.toContain('<table');
-    expect(html).not.toContain('Previous');
+    expect(html).not.toContain('pagination');
   });
 
   it.each([
@@ -181,9 +184,35 @@ describe('surveys responses screen', () => {
     const href = (page: number): string =>
       `&#x2f;opt2&#x2f;admin&#x2f;surveys&#x2f;responses&#x3f;siteid&#x3d;${SITE}&amp;surveyid&#x3d;${MULTI}` +
       `&amp;pageIndex&#x3d;${page}`;
-    const previous = `<a class="btn" href="${href(1)}">Previous</a>`;
-    const next = `<a class="btn" href="${href(3)}">Next</a>`;
-    expect(html).toContain(`<div class="btn-group">${previous}${next}</div><p>Page 2 of 10</p>`);
+    const numbers = [3, 4, 5, 6, 7, 8, 9, 10].map((page) => `<li><a href="${href(page)}">${page}</a></li>`).join('');
+    expect(html).toContain(
+      '<div class="mura-layout-row"><p class="clearfix search-showing">Showing 51-100 of 500 Results</p>' +
+        `<ul class="pagination pull-right"><li><a href="${href(1)}" aria-label="Prev">` +
+        '<i class="mi-angle-left" aria-hidden="true"></i></a></li>' +
+        `<li><a href="${href(1)}">1</a></li><li class="active"><a href="#">2</a></li>${numbers}` +
+        `<li><a href="${href(3)}" aria-label="Next">` +
+        '<i class="mi-angle-right" aria-hidden="true"></i></a></li></ul></div>',
+    );
+  });
+
+  it('shows page 1 for a page past the last, keeping the survey', async () => {
+    const gateway = surveysGateway({
+      [RESPONSES_ROUTE]: (request) => ({
+        status: 200,
+        body: { data: request.query['pageIndex'] === '1' ? surveyResponses.multiSite : [], total: 60 },
+      }),
+    });
+
+    const html = await bodyHtml('responses', managerRequest({ surveyid: MULTI, pageIndex: '3' }), gateway);
+
+    expect(surveysCalls(gateway).map(({ path, query }) => [path, query?.pageIndex])).toEqual([
+      [`/v1/surveys/${MULTI}`, undefined],
+      [`/v1/surveys/${MULTI}/responses`, '3'],
+      [`/v1/surveys/${MULTI}/responses`, '1'],
+    ]);
+    expect(html).not.toContain('This survey has no responses.');
+    expect(html).toContain('<li class="active"><a href="#">1</a></li>');
+    expect(html).toContain('Showing 1-50 of 60 Results');
   });
 
   it.each([
@@ -207,12 +236,12 @@ describe('surveys responses screen', () => {
       alert: { text: 'No survey selected.', className: 'alert alert-info' },
       reads: 0,
     },
-    {
-      label: 'names a malformed survey id (400)',
-      rc: { surveyid: 'bad' },
+    ...['bad', '..', '../x', '../../x'].map((surveyid) => ({
+      label: `names the malformed survey id ${JSON.stringify(surveyid)}`,
+      rc: { surveyid },
       alert: { text: 'Invalid parameters', className: 'alert alert-error' },
-      reads: 2,
-    },
+      reads: 0,
+    })),
     {
       label: 'names a survey the site does not hold (404)',
       rc: { surveyid: SURVEY_IDS.tenantARespondent },

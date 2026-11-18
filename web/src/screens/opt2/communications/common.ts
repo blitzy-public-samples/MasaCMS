@@ -24,7 +24,7 @@ export type MessageDetail = Schemas['MessageDetail'];
 export type MessageState = Schemas['MessageState'];
 
 /** Paging fields of a templates or messages page. */
-export type ListPage = Pick<Schemas['FixtureList'], 'pageindex' | 'totalpages'>;
+export type ListPage = Pick<Schemas['FixtureList'], 'pageindex' | 'totalpages' | 'totalitems' | 'itemsperpage'>;
 
 export const MODULE = 'communications' satisfies Opt2Module;
 
@@ -61,11 +61,11 @@ export function actionUrl(ctx: ScreenContext, action: string): string {
   return opt2ActionUrl(MODULE, action, { siteid: ctx.req.session.siteid });
 }
 
-/** Module header titled `title`, linking the Templates and Sends screens. */
-export function moduleHeader(ctx: ScreenContext, title: string): SafeHtml {
+/** Module header titled `title`, linking the Templates and Sends screens with the `current` one marked active. */
+export function moduleHeader(ctx: ScreenContext, title: string, current?: 'templates' | 'sends'): SafeHtml {
   return pageHeader(title, [
-    { label: 'Templates', href: screenUrl(ctx, 'templates') },
-    { label: 'Sends', href: screenUrl(ctx, 'sends') },
+    { label: 'Templates', href: screenUrl(ctx, 'templates'), active: current === 'templates' },
+    { label: 'Sends', href: screenUrl(ctx, 'sends'), active: current === 'sends' },
   ]);
 }
 
@@ -78,15 +78,6 @@ export function buttonLink(label: Label, href: string): SafeHtml {
 export function requestedPage(ctx: ScreenContext): number | undefined {
   const value = ctx.req.rc['pageIndex'];
   return value !== undefined && /^[1-9][0-9]{0,8}$/.test(value) ? Number(value) : undefined;
-}
-
-/** Previous and Next links of a list `screen` with more than one page, else nothing. */
-export function pager(ctx: ScreenContext, screen: string, page: ListPage): SafeHtml | null {
-  if (page.totalpages <= 1) return null;
-  const link = (label: Label, pageIndex: number): SafeHtml => buttonLink(label, screenUrl(ctx, screen, { pageIndex }));
-  const previous = page.pageindex > 1 ? link('Previous', page.pageindex - 1) : null;
-  const next = page.pageindex < page.totalpages ? link(opt2Label(ctx, 'Next'), page.pageindex + 1) : null;
-  return html`<div class="nav-module-specific btn-group">${previous}${next}</div>`;
 }
 
 /** The posted value of each of `names`, `''` when absent. */

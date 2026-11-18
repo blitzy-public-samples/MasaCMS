@@ -171,7 +171,11 @@ describe('finance records screen', () => {
       query: { asOf: '2026-06-30' },
     });
     expect(model.controls).toEqual(filterControls('', '2026-06-30'));
-    expect(model.links.slice(financeRecords.length)).toEqual([{ href: listHref('asOf=2026-06-30&page=2'), text: 'Next' }]);
+    expect(model.links.slice(financeRecords.length)).toEqual([
+      { href: '#', text: '1' },
+      { href: listHref('asOf=2026-06-30&page=2'), text: '2' },
+      { href: listHref('asOf=2026-06-30&page=2'), text: '' },
+    ]);
   });
 
   it('renders inside the shell with Finance marked in the OPT-2 nav group', async () => {
@@ -260,18 +264,44 @@ describe('finance records screen', () => {
 
     expect(model).toStrictEqual(
       listModel(submitted, 'SUBMITTED', [
-        { href: listHref('state=SUBMITTED&page=1'), text: 'Previous' },
-        { href: listHref('state=SUBMITTED&page=3'), text: 'Next' },
+        { href: listHref('state=SUBMITTED&page=1'), text: '' },
+        { href: listHref('state=SUBMITTED&page=1'), text: '1' },
+        { href: '#', text: '2' },
+        { href: listHref('state=SUBMITTED&page=3'), text: '3' },
+        { href: listHref('state=SUBMITTED&page=3'), text: '' },
       ]),
     );
     expect(calls[0]?.query).toEqual({ state: 'SUBMITTED', page: '2', pageSize: '50' });
   });
 
-  it('offers no next page on the last one', async () => {
+  it('offers no next page on the last one, and states the record range', async () => {
     const gateway = financeGateway({ [LIST_ROUTE]: { status: 200, body: { data: financeRecords, total: 55 } } });
-    const { model } = await renderList({ page: '2' }, gateway);
+    const { view, model } = await renderList({ page: '2' }, gateway);
 
-    expect(model.links.slice(financeRecords.length)).toEqual([{ href: listHref('page=1'), text: 'Previous' }]);
+    expect(model.links.slice(financeRecords.length)).toEqual([
+      { href: listHref('page=1'), text: '' },
+      { href: listHref('page=1'), text: '1' },
+      { href: '#', text: '2' },
+    ]);
+    expect(cheerio.load(toString(view.body))('p.search-showing').text()).toBe('Showing 51-55 of 55 Results');
+  });
+
+  it('shows page 1 for a page past the last, reading it after the out-of-range page', async () => {
+    const gateway = financeGateway({
+      [LIST_ROUTE]: (request) => ({
+        status: 200,
+        body: { data: request.query['page'] === '1' ? financeRecords : [], total: 120 },
+      }),
+    });
+    const { model, calls } = await renderList({ state: 'SUBMITTED', page: '9999' }, gateway);
+
+    expect(calls.filter(({ path }) => path === '/v1/finance/records').map(({ query }) => query)).toEqual([
+      { state: 'SUBMITTED', page: '9999', pageSize: '50' },
+      { state: 'SUBMITTED', page: '1', pageSize: '50' },
+    ]);
+    expect(model.tables[0]?.rows).toHaveLength(financeRecords.length);
+    expect(model.links.slice(financeRecords.length).map(({ text }) => text)).toEqual(['1', '2', '3', '']);
+    expect(model.links[financeRecords.length]).toEqual({ href: '#', text: '1' });
   });
 
   it.each([

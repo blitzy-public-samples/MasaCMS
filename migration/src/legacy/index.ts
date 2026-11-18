@@ -40,7 +40,9 @@ export type {
 export {
   STARTUP_PREDICATE_WHERE,
   STARTUP_COUNT_SQL,
+  STARTUP_CONTENT_IDS_SQL,
   countStartupRows,
+  startupContentIds,
   runStartupGuardSequence,
   recoverStartupGuard,
   StartupGuardFrozenError,

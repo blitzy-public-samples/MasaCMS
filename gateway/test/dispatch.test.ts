@@ -169,7 +169,7 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
       check: async () => ({ state: 'active' as const, epoch: EPOCH, userId: 'U', siteId: 'default', epochChanged: false }),
     },
     hydrator: { ensureHydrated: async () => undefined },
-    carry: { beforeLegacy: async () => undefined },
+    carry: { beforeLegacy: async () => undefined, afterLegacy: async () => undefined },
     csrf: { beforeLegacy: async () => undefined, afterLegacy: async () => undefined },
     invalidation: {
       afterTargetLogout: async () => undefined,

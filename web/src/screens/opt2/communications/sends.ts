@@ -8,7 +8,9 @@ import {
   gridTable,
   opt2Label,
   opt2View,
+  pagination,
   postForm,
+  readPage,
   select,
   submitToService,
   textarea,
@@ -24,7 +26,6 @@ import {
   buttonLink,
   messageStateBadge,
   moduleHeader,
-  pager,
   postedFields,
   requestedPage,
   screenUrl,
@@ -62,10 +63,14 @@ async function loadTemplateChoices(ctx: ScreenContext): Promise<MessageTemplate[
   return [first, ...(await Promise.all(later))].flatMap((page) => page.items);
 }
 
-/** The requested page of messages (`listMessages`) and every template as a choice, with the CSRF pair. */
+/** The requested page of messages (`listMessages`), page 1 past the last, every template as a choice, the CSRF pair. */
 export async function loadSends(ctx: ScreenContext): Promise<SendsData> {
-  const [messages, templates] = await Promise.all([
-    ctx.gateway.communications.call('get', '/v1/messages', { query: { pageIndex: requestedPage(ctx) } }),
+  const [{ answer: messages }, templates] = await Promise.all([
+    readPage(
+      requestedPage(ctx),
+      (pageIndex) => ctx.gateway.communications.call('get', '/v1/messages', { query: { pageIndex } }),
+      (answer) => (answer.ok ? answer.body.data.totalpages : undefined),
+    ),
     loadTemplateChoices(ctx),
     ctx.csrf.tokens(CSRF_CONTEXT),
   ]);
@@ -94,14 +99,24 @@ export function sendsBody(ctx: ScreenContext, data: SendsData, form: SendForm, a
   const headers = (['To', 'Subject', 'Template', 'State', 'Created', 'Sent', 'Actions'] as const).map((name) =>
     opt2Label(ctx, name),
   );
-  const list = gridTable(headers, rows, 'There are no sends.');
+  const list = gridTable(headers, rows, 'There are no sends.', {
+    columnClasses: [
+      undefined,
+      'var-width',
+      'hidden-xs',
+      undefined,
+      'hidden-xs hidden-sm hidden-md',
+      'hidden-xs hidden-sm',
+    ],
+  });
   const choices = [
     { value: '', label: 'None (literal content)' },
     ...data.templates.map((template) => ({ value: template.template_id, label: template.name })),
   ];
+  const toLabel = opt2Label(ctx, 'To');
   const fields = [
     controlGroup(opt2Label(ctx, 'Template'), select('templateId', choices, form.templateId)),
-    controlGroup(opt2Label(ctx, 'To'), textInput('to', form.to, { maxlength: 255, required: true })),
+    controlGroup(toLabel, textInput('to', form.to, { maxlength: 255, required: true, label: toLabel })),
     controlGroup(opt2Label(ctx, 'From'), textInput('from', form.from, { maxlength: 255 })),
     controlGroup('Variables (JSON object)', textarea('variables', form.variables, 3)),
     controlGroup(opt2Label(ctx, 'Subject'), textInput('subject', form.subject, { maxlength: 255 })),
@@ -109,8 +124,14 @@ export function sendsBody(ctx: ScreenContext, data: SendsData, form: SendForm, a
     controlGroup('HTML Body', textarea('bodyHtml', form.bodyHtml)),
   ];
   const sendForm = postForm(actionUrl(ctx, 'send'), html`${fields}`, 'Send', { hidden: ctx.csrf.render(CSRF_CONTEXT) });
-  const listBlock = block(html`${list}${pager(ctx, SCREEN, data.page)}`);
-  return html`${moduleHeader(ctx, 'Sends')}${alert}${listBlock}${block(html`<h2>Send Message</h2>${sendForm}`)}`;
+  const pager = pagination(ctx, {
+    page: data.page.pageindex,
+    totalRecords: data.page.totalitems,
+    recordsPerPage: data.page.itemsperpage,
+    href: (pageIndex) => screenUrl(ctx, SCREEN, { pageIndex }),
+  });
+  const listBlock = block(html`${list}${pager}`);
+  return html`${moduleHeader(ctx, 'Sends', SCREEN)}${alert}${listBlock}${block(html`<h2>Send Message</h2>${sendForm}`)}`;
 }
 
 export const sendsScreen: Opt2ScreenDefinition<SendsData> = Object.freeze({

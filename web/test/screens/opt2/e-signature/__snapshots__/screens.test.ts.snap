@@ -8,22 +8,7 @@ exports[`e-signature screen markup > audit renders the audit chain 1`] = `
   "headings": [
     "Audit Chain",
   ],
-  "labels": [
-    "Sequence",
-    "Action",
-    "Actor",
-    "Detail",
-    "At",
-    "Previous Hash",
-    "Hash",
-    "Sequence",
-    "Action",
-    "Actor",
-    "Detail",
-    "At",
-    "Previous Hash",
-    "Hash",
-  ],
+  "labels": [],
   "links": [
     {
       "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
@@ -86,12 +71,6 @@ exports[`e-signature screen markup > request renders a pending request with the 
     "Signature Request",
   ],
   "labels": [
-    "Document",
-    "State",
-    "Signer",
-    "Created",
-    "Created By",
-    "Document SHA-256",
     "Typed Name",
   ],
   "links": [
@@ -121,14 +100,7 @@ exports[`e-signature screen markup > request renders a signed request with its s
   "headings": [
     "Signature Request",
   ],
-  "labels": [
-    "Document",
-    "State",
-    "Signer",
-    "Created",
-    "Created By",
-    "Document SHA-256",
-  ],
+  "labels": [],
   "links": [
     {
       "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",

@@ -1,9 +1,10 @@
-/** Gateway-facing session routes: `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `getSessionSnapshot` and `endSession`. */
+/** Gateway-facing session routes: `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `importSessionAdminState`, `getSessionSnapshot` and `endSession`. */
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import {
   adoptLegacySession,
   endSession,
+  importSessionAdminState,
   newSessionTokens,
   sessionAdminSite,
   sessionAdminState,
@@ -15,7 +16,7 @@ import {
   type SessionSnapshot,
 } from '../domain/sessions.js';
 import type { components, operations } from '../generated/openapi.js';
-import { adminStateOf } from './admin-sessions.js';
+import { ADMIN_STATE_BODY, adminStateOf } from './admin-sessions.js';
 
 type Schemas = components['schemas'];
 type SessionParams = operations['getSessionState']['parameters']['path'];
@@ -24,6 +25,9 @@ type SessionParams = operations['getSessionState']['parameters']['path'];
 export type SessionRouteDeps = { sessions: SessionDeps };
 
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('gateway')]) });
+
+// An imported `siteid` is the session's selected site (`session.siteid`), not a site the request acts on, so it is not held to a token's site.
+const IMPORT_AUTH: Opt2RouteConfig = Object.freeze({ ...ROUTE_AUTH, siteCheck: false });
 
 // The router ends a parameter name only at `(`, `-`, `.` or `/`, so `:sid::end` would declare `sid::end`;
 // the `(.+)` pattern ends the name at `sid`, and `::` is the literal colon of the contract's `{sid}:end`.
@@ -86,7 +90,7 @@ function snapshotBody(snapshot: SessionSnapshot): Schemas['SessionSnapshot'] {
   };
 }
 
-/** Registers the six session routes; only the gateway's invocation credential is accepted. */
+/** Registers the seven session routes; only the gateway's invocation credential is accepted. */
 export async function registerSessionRoutes(app: FastifyInstance, deps: SessionRouteDeps): Promise<void> {
   const { sessions } = deps;
 
@@ -122,6 +126,16 @@ export async function registerSessionRoutes(app: FastifyInstance, deps: SessionR
     '/internal/v1/sessions/:sid/admin-state',
     { schema: { params: SESSION_PARAMS }, config: { opt2: ROUTE_AUTH } },
     async (request) => adminStateOf(await sessionAdminState(sessions, request.params.sid)),
+  );
+
+  // The import drops the read-only `hasdefaultpassword`, which only login sets, as the user-facing save does.
+  app.post<{ Params: SessionParams; Body: Schemas['AdminSessionState']; Reply: Schemas['AdminSessionState'] }>(
+    '/internal/v1/sessions/:sid/admin-state',
+    { schema: { params: SESSION_PARAMS, body: ADMIN_STATE_BODY }, config: { opt2: IMPORT_AUTH } },
+    async (request) => {
+      const values = Object.fromEntries(Object.entries(request.body).filter(([key]) => key !== 'hasdefaultpassword'));
+      return adminStateOf(await importSessionAdminState(sessions, request.params.sid, values));
+    },
   );
 
   app.get<{ Params: SessionParams }>(

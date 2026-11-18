@@ -44,7 +44,7 @@ export function submitCreateRequest(ctx: ScreenContext): Promise<SubmitResult> {
         }),
     },
     { module: ESIGNATURE, screen: 'requests', params: { siteid: ctx.req.session.siteid } },
-    async (alert) => requestsBody(ctx, await loadRequests(ctx), { alert, values }),
+    async (alert, refusal) => requestsBody(ctx, await loadRequests(ctx), { alert, refusal, values }),
   );
 }
 

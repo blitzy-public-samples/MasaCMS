@@ -22,6 +22,7 @@ import { OwnerCallError, UnknownUnitError, loadUnitCatalog, type ExportParams, t
 import {
   WindowImportError,
   importWindow,
+  legacyProjector,
   toExtractScope,
   windowBatchId,
   type ImportInput,
@@ -392,6 +393,75 @@ describe('windowBatchId', () => {
   it('names the window, attempt, owner, table and sequence', () => {
     expect(windowBatchId('W1', 2, 'people', 'tusers', 3)).toBe('win:W1:a2:people:tusers:3');
     expect(windowBatchId('W1', 1, 'people', 'tusers', 3)).not.toBe(windowBatchId('W1', 2, 'people', 'tusers', 3));
+  });
+});
+
+describe('legacyProjector', () => {
+  const compare = [s('ContentID'), s('SiteID'), s('Title')];
+  const missing = (column: string): { throws: string } => ({ throws: `live legacy table tcontent has no column ${column}, which its owner maps` });
+
+  it.each<{ label: string; rows: Row[]; expected: (Row | { throws: string })[] }>([
+    {
+      label: 'maps mixed-case legacy keys, null values included, for every row of one shape',
+      rows: [
+        { contentid: 'C1', SITEID: 'tenant-a', title: null },
+        { contentid: 'C2', SITEID: 'tenant-b', title: 'Two' },
+      ],
+      expected: [
+        { ContentID: 'C1', SiteID: 'tenant-a', Title: null },
+        { ContentID: 'C2', SiteID: 'tenant-b', Title: 'Two' },
+      ],
+    },
+    {
+      label: 'prefers the exact key over an earlier case variant',
+      rows: [{ ContentID: 'C1', siteid: 'variant', SiteID: 'exact', Title: 'One' }],
+      expected: [{ ContentID: 'C1', SiteID: 'exact', Title: 'One' }],
+    },
+    {
+      label: 'raises for a first row missing a mapped column',
+      rows: [{ ContentID: 'C1', Title: 'One' }],
+      expected: [missing('SiteID')],
+    },
+    {
+      label: 'raises for a later row missing a mapped column, then projects the next row',
+      rows: [
+        { ContentID: 'C1', SiteID: 'tenant-a', Title: 'One' },
+        { ContentID: 'C2', SiteID: 'tenant-a' },
+        { ContentID: 'C3', SiteID: 'tenant-b', Title: 'Three' },
+      ],
+      expected: [{ ContentID: 'C1', SiteID: 'tenant-a', Title: 'One' }, missing('Title'), { ContentID: 'C3', SiteID: 'tenant-b', Title: 'Three' }],
+    },
+    {
+      label: 'resolves a row of another shape afresh, then the first shape again',
+      rows: [
+        { ContentID: 'C1', SiteID: 'tenant-a', Title: 'One' },
+        { contentid: 'C2', siteid: 'tenant-b', TITLE: 'Two', extra: 'x' },
+        { ContentID: 'C3', SiteID: 'tenant-a', Title: 'Three' },
+      ],
+      expected: [
+        { ContentID: 'C1', SiteID: 'tenant-a', Title: 'One' },
+        { ContentID: 'C2', SiteID: 'tenant-b', Title: 'Two' },
+        { ContentID: 'C3', SiteID: 'tenant-a', Title: 'Three' },
+      ],
+    },
+    {
+      label: 'takes the exact key a later row gains over the case variant an earlier row mapped',
+      rows: [
+        { contentid: 'C1', siteid: 'tenant-a', title: 'One' },
+        { contentid: 'stale', ContentID: 'C2', siteid: 'tenant-a', title: 'Two' },
+      ],
+      expected: [
+        { ContentID: 'C1', SiteID: 'tenant-a', Title: 'One' },
+        { ContentID: 'C2', SiteID: 'tenant-a', Title: 'Two' },
+      ],
+    },
+  ])('$label', ({ rows, expected }) => {
+    const project = legacyProjector(compare, 'tcontent');
+    rows.forEach((row, index) => {
+      const outcome = expected[index];
+      if (outcome !== undefined && 'throws' in outcome) expect(() => project(row)).toThrow(outcome.throws);
+      else expect(project(row)).toEqual(outcome);
+    });
   });
 });
 

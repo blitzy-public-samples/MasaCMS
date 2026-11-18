@@ -75,6 +75,10 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'btn',
   'alert',
   'var-width',
+  // Responsive grid columns, as admin/core/views/cusers/inc/dsp_users_list.cfm hides secondary columns.
+  'hidden-xs',
+  'hidden-sm',
+  'hidden-md',
   'help-block-empty',
   'mura-control-group',
   'mura-primary',
@@ -86,6 +90,16 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'label-info',
   'label-inverse',
   'label-important',
+  // The current header button, as admin/core/views/cemail/dsp_secondary_menu.cfm marks its own.
+  'active',
+  // The numbered pager, as admin/core/views/cusers/inc/dsp_nextn.cfm and carch/search.cfm page a list.
+  'pagination',
+  'mura-layout-row',
+  'clearfix',
+  'search-showing',
+  'pull-right',
+  'mi-angle-left',
+  'mi-angle-right',
 ]);
 
 const LEGACY_CLASS_PATTERNS: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];

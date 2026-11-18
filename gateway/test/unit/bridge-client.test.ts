@@ -105,7 +105,7 @@ const FLAT_VIEW_ARGS: CarriedValue = { name: 'flatViewArgs', value: { default: {
 const CARRIED: CarriedValue[] = [FLAT_VIEW_ARGS];
 
 interface OpCase {
-  op: 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'end';
+  op: 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'export' | 'end';
   method: 'GET' | 'POST';
   url: string;
   query: Record<string, string>;
@@ -165,6 +165,16 @@ const OP_CASES: OpCase[] = [
     sub: '',
     answer: { applied: ['flatViewArgs'], serverTime: SERVER_TIME },
     invoke: (client) => client.carry(COOKIES, CARRIED, CALL),
+  },
+  {
+    op: 'export',
+    method: 'GET',
+    url: `${SESSION_PAGE}?op=export`,
+    query: { op: 'export' },
+    body: undefined,
+    sub: '',
+    answer: { values: [{ name: 'siteid', value: 'tenant-a' }], serverTime: SERVER_TIME },
+    invoke: (client) => client.export(COOKIES, CALL),
   },
   {
     op: 'end',
@@ -564,6 +574,16 @@ const LEGACY_CASES: LegacyCase[] = [
     after: { hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER },
   },
   {
+    op: 'export',
+    method: 'GET',
+    sub: '',
+    sent: undefined,
+    invoke: (bridge, s) => bridge.export(s.cookies, callOf(s)),
+    // The session site is the only shared value the logged-in session holds that no carry installed.
+    answer: () => ({ values: [{ name: 'siteid', value: 'tenant-a' }], serverTime: SERVER_TIME }),
+    after: { hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER },
+  },
+  {
     op: 'end',
     method: 'POST',
     sub: '',
@@ -671,7 +691,7 @@ describe('createBridgeClient against the legacy origin double', () => {
     },
   );
 
-  it('runs describe, hydrate, markUsed, usedSince, carry and end on one session, each with a distinct nonce', async () => {
+  it('runs describe, hydrate, markUsed, usedSince, carry, export and end on one session, each with a distinct nonce', async () => {
     const s = tenantSession();
     const client = bridge();
 
@@ -718,6 +738,42 @@ describe('createBridgeClient against the legacy origin double', () => {
     expect(kept).toEqual({ default: { tab: 2, sortby: 'lastupdate' } });
     expect(s.session.values).toEqual({ flatViewArgs: { default: { tab: 0 } } });
     expect(refused.cause).toMatchObject({ status: 400, error: 'badRequest' });
+  });
+
+  it('carry sets simple and mura values where session.cfm sets them, and refuses a null value without setting the rest', async () => {
+    const s = tenantSession();
+    const client = bridge();
+    const values: CarriedValue[] = [
+      { name: 'siteid', value: 'default', revision: 'R1' },
+      { name: 'topID', value: '00000000000000000000000000000000001', revision: 'R1' },
+      { name: 'mura.nextN', value: 5, revision: 'R1' },
+    ];
+
+    const applied = await client.carry(s.cookies, values, callOf(s));
+    const refused = await failureOf(
+      client.carry(s.cookies, [{ name: 'keywords', value: 'home', revision: 'R2' }, { name: 'siteid', value: null as unknown as string, revision: 'R2' }], callOf(s)),
+    );
+
+    expect(applied.body.applied).toEqual(['siteid', 'topID', 'mura.nextN']);
+    expect(s.session).toMatchObject({ siteId: 'default', values: { topID: '00000000000000000000000000000000001' }, user: { nextN: 5 } });
+    expect(refused.cause).toMatchObject({ status: 400, error: 'badRequest' });
+    expect(s.session.values).not.toHaveProperty('keywords');
+  });
+
+  it('export lists the shared values legacy changed after carry installed them, simple values as strings', async () => {
+    const s = tenantSession();
+    const client = bridge();
+    await client.carry(s.cookies, [...CARRIED, { name: 'siteid', value: 'tenant-a', revision: 'R1' }, { name: 'keywords', value: 'home', revision: 'R1' }], callOf(s));
+    // Legacy's own writes: carch.siteManagerTab's dot-notation tab (carch.cfc:521) and list.cfm's nextN (list.cfm:460).
+    s.session.values = { ...s.session.values, flatViewArgs: { default: { tab: 1, sortby: 'lastupdate', TAB: '2' } } };
+    s.session.user = { ...s.session.user, nextN: 30 };
+
+    const exported = await client.export(s.cookies, callOf(s));
+
+    expect(exported.body.values).toEqual([
+      { name: 'flatViewArgs', value: { default: { tab: 1, sortby: 'lastupdate', TAB: '2' } } },
+      { name: 'mura.nextN', value: '30' },
+    ]);
   });
 
   it.each<[string, (client: BridgeClient) => Promise<BridgeResult<{ sessionId: string }>>]>([

@@ -24,7 +24,7 @@ import {
   financeTransitionLegal,
 } from '../../fixtures/opt2/finance';
 import { opt2RoleRequest } from '../../helpers/admin-request';
-import { fragmentModel, type DomModel } from '../../helpers/dom-model';
+import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeReply, type FakeRouteTable } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
@@ -63,7 +63,12 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'btn',
   'alert',
   'var-width',
+  // Responsive grid columns, as admin/core/views/cusers/inc/dsp_users_list.cfm hides secondary columns.
+  'hidden-xs',
   'help-block-empty',
+  'help-block-inline', // admin/core/views/cusers/edituser.cfm:247
+  'help-block', // admin/core/views/csettings/editsite.cfm:316
+  'has-error', // admin/assets/css/admin.css:3361
   'mura-control-group',
   'mura-primary',
   'mura-actions',
@@ -81,6 +86,14 @@ const LEGACY_CLASSES: ReadonlySet<string> = new Set([
   'label-important',
   // Negative amounts.
   'text-danger',
+  // The numbered pager, as admin/core/views/cusers/inc/dsp_nextn.cfm and carch/search.cfm page a list.
+  'mura-layout-row',
+  'clearfix',
+  'search-showing',
+  'pull-right',
+  'active',
+  'mi-angle-left',
+  'mi-angle-right',
 ]);
 
 const LEGACY_CLASS_PATTERNS: readonly RegExp[] = [/^block(-|$)/, /^btn-/, /^alert-/];
@@ -206,11 +219,14 @@ describe('finance screens', () => {
 /** The fr admin bundle's wording of catalogued label `name`. */
 const fr = (name: Opt2LabelName): string => rbFor('fr').rbKey(OPT2_LABEL_KEYS[name]);
 
-/** The label-bearing parts of a screen body: headings, labels, buttons, grid headers, options and link texts. */
-function labelsOf(model: DomModel) {
+/** The label-bearing parts of a screen body: headings, labels, value terms, buttons, grid headers, options and link texts. */
+function labelsOf(body: string) {
+  const model = fragmentModel(body);
+  const $ = load(body, null, false);
   return {
     headings: model.headings,
     labels: model.labels,
+    terms: $('dt').toArray().map((term) => $(term).text()),
     buttons: model.buttons.map(({ text }) => text),
     headers: model.tables.map(({ headers }) => headers),
     options: model.controls.flatMap(({ options }) => options.map(({ label }) => label)),
@@ -229,13 +245,14 @@ describe('finance screens in the session locale', () => {
       expected: () => ({
         headings: ['Finance Records', 'Rollup Totals'],
         labels: [fr('State')],
+        terms: [],
         buttons: [fr('Filter')],
         headers: [
           [fr('Title'), 'Period', 'Amount', fr('State'), fr('Version'), fr('Last Update')],
           ['Period', fr('State'), 'Record Count', 'Total Amount', 'Computed At'],
         ],
         options: [fr('All'), 'In Progress', 'Submitted', 'Resubmitted', fr('Approved'), fr('Rejected')],
-        links: [...financeRecords.map(({ title }) => title), 'Previous', fr('Next')],
+        links: [...financeRecords.map(({ title }) => title), '', '1', '2', '3', ''],
       }),
     },
     {
@@ -243,11 +260,11 @@ describe('finance screens in the session locale', () => {
       req: () => request(PREPARER, { id: RECORD_ID }, [PREPARER, APPROVER]),
       routes: {},
       expected: () => ({
-        headings: [financeRecordDetail.title, fr('Version History'), 'Attachments', 'Upload Attachment', 'Edit Record'],
-        labels: [
+        headings: ['Finance Record', fr('Version History'), 'Attachments', 'Upload Attachment', 'Edit Record'],
+        labels: [fr('File'), fr('Title'), 'Amount', 'Period'],
+        terms: [
           ...[fr('Title'), 'Amount', 'Period', fr('State'), fr('Version'), fr('Created'), fr('Last Update')],
           ...attachments.flatMap(() => ['File Name', fr('Content Type'), 'Size (bytes)', 'SHA-256', fr('Created')]),
-          ...[fr('File'), fr('Title'), 'Amount', 'Period'],
         ],
         buttons: [fr('Submit'), 'Resubmit', fr('Approve'), fr('Reject'), ...DOWNLOAD_BUTTONS, 'Upload', fr('Save')],
         headers: [
@@ -263,7 +280,7 @@ describe('finance screens in the session locale', () => {
     const def = screen(name);
     const view = await def.render(ctx, await def.load(ctx));
 
-    expect(labelsOf(fragmentModel(toString(view.body)))).toEqual(expected());
+    expect(labelsOf(toString(view.body))).toEqual(expected());
   });
 });
 

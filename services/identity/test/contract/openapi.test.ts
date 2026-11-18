@@ -861,6 +861,19 @@ const CASES: Record<string, Case[]> = {
     { name: "reports the session's stored admin values", method: 'GET', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:gateway', status: 200, verify: (body) => expect(record(body)).not.toHaveProperty('blockLoginUntil') },
     { name: 'refuses a caller other than the gateway', method: 'GET', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:web', status: 403 },
   ],
+  importSessionAdminState: [
+    {
+      name: 'stores the values a legacy request changed and answers the merged state',
+      method: 'POST',
+      url: '/internal/v1/sessions/S-s2/admin-state',
+      as: 'service:gateway',
+      payload: { siteid: SITE_A, mura: { nextN: '5' } },
+      status: 200,
+      verify: (body) => expect(record(body)).toMatchObject({ siteid: SITE_A, mura: { nextN: '5' } }),
+    },
+    { name: 'refuses an admin value of the wrong type', method: 'POST', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:gateway', payload: { topID: { nested: true } }, status: 400 },
+    { name: 'refuses a caller other than the gateway', method: 'POST', url: '/internal/v1/sessions/S-s2/admin-state', as: 'service:web', payload: { siteid: SITE_A }, status: 403 },
+  ],
   getSessionSnapshot: [
     {
       name: 'returns the login snapshot of the s2 session',

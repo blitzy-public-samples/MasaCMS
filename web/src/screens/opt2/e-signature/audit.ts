@@ -3,16 +3,28 @@ import { Roles, type Role } from '@opt2/platform/auth';
 import { html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { block, detailList, opt2Gate, opt2Label, opt2View, pageHeader, valueRows, type ValueRow } from '../shared';
+import {
+  block,
+  detailList,
+  opt2Gate,
+  opt2Label,
+  opt2View,
+  pageHeader,
+  pagination,
+  readPage,
+  valueRows,
+  type ValueRow,
+} from '../shared';
 import {
   AUDIT_SCREEN,
   ESIGNATURE,
   MISSING_ID,
+  isRequestId,
   pageIndexOf,
-  pagination,
   readOf,
   requestIdOf,
   requestLinks,
+  screenUrl,
   type ESignatureSchemas,
   type Read,
 } from './common';
@@ -29,18 +41,24 @@ const TITLE = 'Audit Chain';
 const EMPTY_MESSAGE = 'There are no audit entries for this request.';
 
 /**
- * The `rc.pageIndex` page of request `rc.id`'s audit entries in `seq` order.
+ * The `rc.pageIndex` page of request `rc.id`'s audit entries in `seq` order, page 1 when it is past the last; an empty
+ * or malformed id asks nothing.
  * @throws GatewayUnavailableError When e-signature is unavailable.
  * @throws GatewayDenialError When e-signature answers 401 or 403.
  */
 export async function loadAudit(ctx: ScreenContext): Promise<AuditData> {
   const { rc } = ctx.req;
   const id = requestIdOf(rc);
-  if (id === '') return MISSING_ID;
-  const response = await ctx.gateway.eSignature.call('get', '/v1/esignature/requests/{id}/audit', {
-    params: { id },
-    query: { pageIndex: pageIndexOf(rc) },
-  });
+  if (!isRequestId(id)) return MISSING_ID;
+  const { answer: response } = await readPage(
+    pageIndexOf(rc),
+    (pageIndex) =>
+      ctx.gateway.eSignature.call('get', '/v1/esignature/requests/{id}/audit', {
+        params: { id },
+        query: { pageIndex },
+      }),
+    (answer) => (answer.ok ? answer.body.totalpages : undefined),
+  );
   return readOf(response, 'getAuditChain');
 }
 
@@ -77,7 +95,12 @@ export function auditBody(ctx: ScreenContext, data: AuditData): SafeHtml {
   const entries = entryList(ctx, items);
   // Header links are the module's request links, which carry the session site the gateway mints the token for.
   return html`${pageHeader(TITLE, requestLinks(ctx, id, AUDIT_SCREEN))}${block(
-    html`${entries}${pagination(ctx, AUDIT_SCREEN, data.body, { id })}`,
+    html`${entries}${pagination(ctx, {
+      page: data.body.pageindex,
+      totalRecords: data.body.totalitems,
+      recordsPerPage: data.body.itemsperpage,
+      href: (pageIndex) => screenUrl(ctx, AUDIT_SCREEN, { id, pageIndex }),
+    })}`,
   )}`;
 }
 

@@ -2,7 +2,7 @@
 import { Roles, type Role } from '@opt2/platform/auth';
 import type { components } from '@/generated/clients/reporting';
 import { okBody } from '@/lib/gateway-client';
-import { attr, html, type SafeHtml } from '@/lib/html';
+import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import {
   actionButton,
@@ -15,7 +15,9 @@ import {
   opt2ScreenUrl,
   opt2View,
   pageHeader,
+  pagination,
   postForm,
+  readPage,
   select,
   stateBadgeOf,
   textInput,
@@ -109,14 +111,18 @@ function pageOf(value: string | undefined): number {
 }
 
 /**
- * The `rc.page` page of the tenant's export jobs and every definition, with the queue form's CSRF pair issued;
- * unavailability propagates.
+ * The `rc.page` page of the tenant's export jobs and every definition, page 1 when it is past the last, with the
+ * queue form's CSRF pair issued; unavailability propagates.
  * @throws GatewayDenialError When reporting refuses the list or the definitions (401 or 403).
  */
 export async function loadExports(ctx: ScreenContext): Promise<ExportsData> {
-  const page = pageOf(ctx.req.rc.page);
-  const [response, definitionsResponse] = await Promise.all([
-    ctx.gateway.reporting.call('get', '/v1/reporting/exports', { query: { page, pageSize: PAGE_SIZE } }),
+  const [{ answer: response, page }, definitionsResponse] = await Promise.all([
+    readPage(
+      pageOf(ctx.req.rc.page),
+      (target) =>
+        ctx.gateway.reporting.call('get', '/v1/reporting/exports', { query: { page: target, pageSize: PAGE_SIZE } }),
+      (answer) => (answer.ok ? Math.ceil(answer.body.total / PAGE_SIZE) : undefined),
+    ),
     ctx.gateway.reporting.call('get', '/v1/reporting/definitions'),
     ctx.csrf.prefetch([QUEUE_CSRF_CONTEXT]),
   ]);
@@ -158,7 +164,9 @@ function jobHeaders(ctx: ScreenContext): Label[] {
 function jobRow(ctx: ScreenContext, job: ExportJob, downloadUrl: string): GridCell[] {
   // Not an inline signed link: signed URLs expire after 900 s, so each click has the download action fetch a fresh one.
   const download =
-    job.state === 'done' ? actionButton(opt2Label(ctx, 'Download'), downloadUrl, { jobId: job.job_id }) : null;
+    job.state === 'done'
+      ? actionButton(opt2Label(ctx, 'Download'), downloadUrl, { jobId: job.job_id }, undefined, { download: true })
+      : null;
   return [
     job.job_id,
     job.format,
@@ -177,21 +185,13 @@ function jobGrid(ctx: ScreenContext, jobs: readonly ExportJob[], downloadUrl: st
   return gridTable(jobHeaders(ctx), rows, EMPTY_MESSAGE, { columnClasses: JOB_COLUMN_CLASSES });
 }
 
-/** Previous and Next links around `data.page`; nothing when every job fits on it. */
-function pagination(ctx: ScreenContext, { page, total }: ExportsData): SafeHtml | null {
-  const link = (label: Label, to: number): SafeHtml =>
-    html`<li><a${attr('href', opt2ScreenUrl('reporting', EXPORTS_SCREEN, { ...siteParams(ctx), page: to }))}>${label}</a></li>`;
-  const previous = page > 1 ? link('Previous', page - 1) : null;
-  const next = page * PAGE_SIZE < total ? link(opt2Label(ctx, 'Next'), page + 1) : null;
-  return previous === null && next === null ? null : html`<ul class="pagination">${previous}${next}</ul>`;
-}
-
 /** The queue form: definition picked by name, format and optional business date, posted with the CSRF pair. */
 function queueForm(ctx: ScreenContext, posted: QueuePosted, definitions: readonly ExportDefinitionSummary[]): SafeHtml {
   const choices = definitions.map((definition) => ({ value: definition.definition_id, label: definition.name }));
   const definition = controlGroup('Definition', select('definitionId', choices, posted.definitionId));
   const format = controlGroup(opt2Label(ctx, 'Format'), select('format', FORMAT_OPTIONS, posted.format));
-  const asOf = controlGroup('As Of', textInput('asOf', posted.asOf, { type: 'date' }));
+  // A text input, as legacy admin CSS styles no date input; reporting rejects any other format with invalidParameters.
+  const asOf = controlGroup('As Of (yyyy-mm-dd)', textInput('asOf', posted.asOf, { maxlength: 10 }));
   return postForm(actionUrl(ctx, 'queue'), html`${definition}${format}${asOf}`, 'Queue Export', {
     hidden: ctx.csrf.render(QUEUE_CSRF_CONTEXT, 'form'),
   });
@@ -202,7 +202,12 @@ export function exportsBody(ctx: ScreenContext, data: ExportsData, opts: Exports
   const downloadUrl = actionUrl(ctx, 'download');
   const jobs = jobGrid(ctx, data.jobs, downloadUrl);
   return html`${pageHeader('Export Jobs')}${opts.alert}${block(
-    html`${queueForm(ctx, opts.posted ?? EMPTY_POSTED, data.definitions)}${jobs}${pagination(ctx, data)}`,
+    html`${queueForm(ctx, opts.posted ?? EMPTY_POSTED, data.definitions)}${jobs}${pagination(ctx, {
+      page: data.page,
+      totalRecords: data.total,
+      recordsPerPage: PAGE_SIZE,
+      href: (to) => opt2ScreenUrl('reporting', EXPORTS_SCREEN, { ...siteParams(ctx), page: to }),
+    })}`,
   )}`;
 }
 

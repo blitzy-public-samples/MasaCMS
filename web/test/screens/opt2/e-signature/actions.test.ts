@@ -121,7 +121,11 @@ describe('create-request action', () => {
     const markup = renderedBody(await actionOf('create-request').submit(ctx));
     const $ = cheerio.load(markup, null, false);
     expect(fragmentModel(markup).alerts).toEqual([{ text: message, className: 'alert alert-error' }]);
-    expect($('div.mura-header').next().is('div.alert.alert-error')).toBe(true);
+    // The alert stands just before the form it refuses, under its heading, not above the list.
+    const alert = $('form[name="form1"]').prev();
+    expect(alert.is('div.alert.alert-error')).toBe(true);
+    expect(alert.prev().is('h2')).toBe(true);
+    expect($('div.mura-header').next().is('div.alert')).toBe(false);
     expect($('table.mura-table-grid')).toHaveLength(1);
     expect(CREATE_REQUEST_FIELDS.map((name) => $(`input[name="${name}"]`).attr('value'))).toEqual(
       CREATE_REQUEST_FIELDS.map((name) => posted[name]),
@@ -139,6 +143,106 @@ describe('create-request action', () => {
   ])('rejects on %s', async (_case, reply, type) => {
     const ctx = postBy(SIGNER, posted, { [createKey]: reply });
     await expect(actionOf('create-request').submit(ctx)).rejects.toBeInstanceOf(type);
+  });
+
+  /** The re-rendered list of a create of `fields` refused with `reply`. */
+  async function refusedCreate(fields: Fields, reply: FakeReply) {
+    const ctx = postBy(SIGNER, { ...posted, ...fields }, { [createKey]: reply });
+    return cheerio.load(renderedBody(await actionOf('create-request').submit(ctx)), null, false);
+  }
+
+  /** The marked fields of a create refused with `reply`: name, message, aria-describedby and autofocus, in order. */
+  async function markedFields(fields: Fields, reply: FakeReply) {
+    const $ = await refusedCreate(fields, reply);
+    expect($('[autofocus]')).toHaveLength(1);
+    return $('div.mura-control-group.has-error')
+      .toArray()
+      .map((group) => {
+        const input = $(group).find('input');
+        const message = $(group).children('p.help-block');
+        expect(input.attr('aria-invalid')).toBe('true');
+        expect(message.attr('id')).toBe(`${input.attr('id')}-error`);
+        return [input.attr('name'), message.text(), input.attr('aria-describedby'), input.attr('autofocus') !== undefined];
+      });
+  }
+
+  it.each<[string, Fields, unknown[][]]>([
+    ['an empty name', { documentName: '' }, [['documentName', 'Enter a document name.', 'documentName-error', true]]],
+    [
+      'a name over 255 characters',
+      { documentName: 'n'.repeat(256) },
+      [['documentName', 'Enter at most 255 characters.', 'documentName-error', true]],
+    ],
+    ...['not*base64', 'QQ', 'Q===', ''].map((documentBase64): [string, Fields, unknown[][]] => [
+      `the document ${JSON.stringify(documentBase64)}`,
+      { documentBase64 },
+      [['documentBase64', 'Enter Base64 text that decodes to at least one byte.', 'documentBase64-error', true]],
+    ]),
+    [
+      'the signer nobody',
+      { signerUserId: 'nobody' },
+      [
+        [
+          'signerUserId',
+          'Enter a UserID of 35 characters: 8-4-4-16 hexadecimal digits.',
+          'signerUserId-error signerUserId-hint',
+          true,
+        ],
+      ],
+    ],
+    [
+      'an empty signer and a bad document, the first focused',
+      { documentBase64: '%%', signerUserId: '' },
+      [
+        ['documentBase64', 'Enter Base64 text that decodes to at least one byte.', 'documentBase64-error', true],
+        ['signerUserId', "Enter the signer's UserID.", 'signerUserId-error signerUserId-hint', false],
+      ],
+    ],
+  ])('marks %s beside its field on the invalidParameters refusal', async (_case, fields, expected) => {
+    expect(await markedFields(fields, refusal(400, 'Invalid parameters'))).toEqual(expected);
+  });
+
+  const INVALID_VALUES: Fields = { documentName: '', signerUserId: 'nobody' };
+
+  it.each<[string, Fields, FakeReply]>([
+    [
+      'a padded name and lowercase signer id, which e-signature may accept',
+      { documentName: '  ', signerUserId: ESIGNATURE_IDS.signer.toLowerCase() },
+      refusal(400, 'Invalid parameters'),
+    ],
+    [
+      'Base64 with whitespace and padding, which e-signature may accept',
+      { documentBase64: 'JVBE\r\nRi0x LjQK==' },
+      refusal(400, 'Invalid parameters'),
+    ],
+    [
+      'the installed admin signer, which e-signature may accept',
+      { signerUserId: '00000000000000000000000000000000001' },
+      refusal(400, 'Invalid parameters'),
+    ],
+    [
+      'a signer id with surrounding spaces, which e-signature may accept',
+      { signerUserId: ` ${ESIGNATURE_IDS.signer} ` },
+      refusal(400, 'Invalid parameters'),
+    ],
+    ['a CSRF refusal, which says nothing of the values', INVALID_VALUES, refusal(400, 'Invalid CSRF tokens')],
+    ['a role refusal, which says nothing of the values', INVALID_VALUES, refusal(403, 'Insufficient Account Permissions')],
+  ])('marks no field for %s, and focuses the document name', async (_case, fields, reply) => {
+    const $ = await refusedCreate(fields, reply);
+    expect($('.has-error')).toHaveLength(0);
+    expect($('[aria-invalid]')).toHaveLength(0);
+    expect(
+      $('[autofocus]')
+        .toArray()
+        .map((el) => $(el).attr('id')),
+    ).toEqual(['documentName']);
+  });
+
+  it("explains the signer field with a standing hint of the site's user pool", async () => {
+    const ctx = postBy(SIGNER, posted, { [createKey]: refusal(400, 'Invalid parameters') });
+    const $ = cheerio.load(renderedBody(await actionOf('create-request').submit(ctx)), null, false);
+    expect($('#signerUserId-hint').text()).toBe("The UserID of a user of this site's user pool.");
+    expect($('#signerUserId-hint').is('div.help-block-inline')).toBe(true);
   });
 
   it.each<[string, 'allow' | 'noaccess' | 'login', () => AdminRequest]>([
@@ -207,6 +311,21 @@ describe('sign action', () => {
   it('fails closed when e-signature is unavailable', async () => {
     const ctx = postBy(SIGNER, { id: PENDING_ID, typedName: 'x' }, { [key('POST', `${REQUESTS_PATH}/${PENDING_ID}/sign`)]: { status: 503 } });
     await expect(actionOf('sign').submit(ctx)).rejects.toBeInstanceOf(GatewayUnavailableError);
+  });
+});
+
+describe('malformed request ids', () => {
+  it.each(
+    [
+      { action: 'sign', role: SIGNER, fields: { typedName: 'Jordan Ellis' } as Fields },
+      { action: 'verify', role: AUDITOR, fields: { entries: '[]' } as Fields },
+    ].flatMap((post) => ['..', '../x', '../../x', 'abc'].map((id) => ({ ...post, id }))),
+  )('re-renders $action for the id $id with the invalid-parameters alert, asking e-signature nothing', async (post) => {
+    const ctx = postBy(post.role, { id: post.id, ...post.fields });
+    const model = fragmentModel(renderedBody(await actionOf(post.action).submit(ctx)));
+    expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+    expect(model.links.map((link) => link.text)).toEqual(['Signature Requests']);
+    expect(eSignatureCalls(ctx.gateway)).toEqual([]);
   });
 });
 

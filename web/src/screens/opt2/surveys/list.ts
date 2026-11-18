@@ -2,7 +2,7 @@
 import { okBody } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { block, gridTable, opt2Label, opt2View, pageHeader, rowActionsMenu } from '../shared';
+import { block, gridTable, opt2Label, opt2View, pageHeader, pagination, readPage, rowActionsMenu } from '../shared';
 import {
   PAGE_SIZE,
   SURVEYS_MODULE,
@@ -10,7 +10,6 @@ import {
   SURVEY_SCREENS,
   dateTimeText,
   pageIndexOf,
-  pager,
   screenLabel,
   siteIdOf,
   surveyStatusBadge,
@@ -26,12 +25,16 @@ export interface SurveyListData {
   pageIndex: number;
 }
 
-/** Page `rc.pageIndex` of the session site's surveys (`listSurveys`). */
+/** Page `rc.pageIndex` of the session site's surveys (`listSurveys`), page 1 when it is past the last. */
 async function loadList(ctx: ScreenContext): Promise<SurveyListData> {
-  const pageIndex = pageIndexOf(ctx);
-  const res = await ctx.gateway.surveys.call('get', '/v1/surveys', {
-    query: { siteid: siteIdOf(ctx), pageIndex, itemsPerPage: PAGE_SIZE },
-  });
+  const { answer: res, page: pageIndex } = await readPage(
+    pageIndexOf(ctx),
+    (page) =>
+      ctx.gateway.surveys.call('get', '/v1/surveys', {
+        query: { siteid: siteIdOf(ctx), pageIndex: page, itemsPerPage: PAGE_SIZE },
+      }),
+    (answer) => (answer.ok ? Math.ceil(answer.body.total / PAGE_SIZE) : undefined),
+  );
   const { data, total } = okBody(res, 'surveys', 'listSurveys');
   return { surveys: data, total, pageIndex };
 }
@@ -68,9 +71,18 @@ function renderList(ctx: ScreenContext, data: SurveyListData): SafeHtml {
     ['', opt2Label(ctx, 'Title'), opt2Label(ctx, 'Status'), 'Launch', 'Reminders', opt2Label(ctx, 'Created')],
     rows,
     'There are no surveys for this site.',
-    { varWidthColumn: 1, columnClasses: ['actions'] },
+    {
+      varWidthColumn: 1,
+      columnClasses: ['actions', undefined, undefined, 'hidden-xs', 'hidden-xs', 'hidden-xs hidden-sm'],
+    },
   );
-  return html`${pageHeader('Surveys')}${block(html`${grid}${pager(ctx, 'surveys', {}, data.pageIndex, data.total)}`)}`;
+  const pager = pagination(ctx, {
+    page: data.pageIndex,
+    totalRecords: data.total,
+    recordsPerPage: PAGE_SIZE,
+    href: (pageIndex) => surveysUrl(ctx, 'surveys', { pageIndex }),
+  });
+  return html`${pageHeader('Surveys')}${block(html`${grid}${pager}`)}`;
 }
 
 /** `/opt2/admin/surveys/surveys`: the site's surveys with their schedules. */

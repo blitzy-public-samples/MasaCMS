@@ -2,8 +2,16 @@
 import { multipartRelay } from '@/lib/gateway-client';
 import type { SafeHtml } from '@/lib/html';
 import type { Opt2ActionDefinition, ScreenContext, SubmitResult } from '../../registry';
-import { submitToService, type Opt2Back, type Opt2Write } from '../shared';
-import { loadRecord, renderRecord, type EditValues } from './record';
+import {
+  invalidParametersAlert,
+  isMalformedId,
+  opt2View,
+  submitToService,
+  type Opt2Back,
+  type Opt2Rerender,
+  type Opt2Write,
+} from '../shared';
+import { loadRecord, renderRecord, type EditValues, type RecordRerender } from './record';
 import {
   FINANCE_MODULE,
   FINANCE_SERVICE,
@@ -24,11 +32,17 @@ const detailOf = (ctx: ScreenContext, id: string): Opt2Back => ({
   params: { siteid: sessionSite(ctx), id },
 });
 
-/** Re-renders the detail of `id` around a refused write's alert, with the posted edit fields when given. */
+/** Re-renders the detail of `id` around a refused write's alert, with the posted edit fields and form when given. */
 const rerenderDetail =
-  (ctx: ScreenContext, id: string, edit?: EditValues) =>
-  async (alert: SafeHtml): Promise<SafeHtml> =>
-    renderRecord(ctx, await loadRecord(ctx, id), { alert, edit });
+  (ctx: ScreenContext, id: string, posted: Pick<RecordRerender, 'edit' | 'form'> = {}): Opt2Rerender =>
+  async (alert, refusal): Promise<SafeHtml> =>
+    renderRecord(ctx, await loadRecord(ctx, id), { ...posted, alert, refusal });
+
+/** The detail of `id` under the invalid-parameters alert, for a post naming a malformed id; nothing is written. */
+async function refuseMalformedId(ctx: ScreenContext, id: string): Promise<SubmitResult> {
+  const body = renderRecord(ctx, await loadRecord(ctx, id), { alert: invalidParametersAlert() });
+  return { kind: 'render', view: opt2View(FINANCE_MODULE, body, 'record') };
+}
 
 /** The finance call of one submit; `submitToService` hands it the posted CSRF pair as headers. */
 const financeWrite = (call: Opt2Write['call']): Opt2Write => ({ service: FINANCE_SERVICE, call });
@@ -37,6 +51,7 @@ const financeWrite = (call: Opt2Write['call']): Opt2Write => ({ service: FINANCE
 function submitTransition(action: Transition['action']): (ctx: ScreenContext) => Promise<SubmitResult> {
   return (ctx) => {
     const id = requestedId(ctx);
+    if (isMalformedId(id)) return refuseMalformedId(ctx, id);
     const write = financeWrite((gateway, headers) =>
       gateway.finance.call('post', '/v1/finance/records/{id}/transitions/{action}', { params: { id, action }, headers }),
     );
@@ -47,6 +62,7 @@ function submitTransition(action: Transition['action']): (ctx: ScreenContext) =>
 /** Posts `edit` for `rc.id` with the posted title, amount and period as typed; finance validates them. */
 export async function submitEdit(ctx: ScreenContext): Promise<SubmitResult> {
   const id = requestedId(ctx);
+  if (isMalformedId(id)) return refuseMalformedId(ctx, id);
   const { rc } = ctx.req;
   const edit: EditValues = { title: rc.title ?? '', amount: rc.amount ?? '', period: rc.period ?? '' };
   const write = financeWrite((gateway, headers) =>
@@ -56,12 +72,13 @@ export async function submitEdit(ctx: ScreenContext): Promise<SubmitResult> {
       headers,
     }),
   );
-  return submitToService(ctx, write, detailOf(ctx, id), rerenderDetail(ctx, id, edit));
+  return submitToService(ctx, write, detailOf(ctx, id), rerenderDetail(ctx, id, { edit, form: 'edit' }));
 }
 
 /** Relays the posted body unchanged as an attachment of `rc.id`; finance answers a body without a file part. */
 export async function submitUpload(ctx: ScreenContext): Promise<SubmitResult> {
   const id = requestedId(ctx);
+  if (isMalformedId(id)) return refuseMalformedId(ctx, id);
   const relay = ctx.body === undefined ? undefined : multipartRelay(ctx.body);
   const write = financeWrite((gateway, headers) =>
     gateway.finance.call('post', '/v1/finance/records/{id}/attachments', {
@@ -70,7 +87,7 @@ export async function submitUpload(ctx: ScreenContext): Promise<SubmitResult> {
       headers: { ...headers, ...relay?.headers },
     }),
   );
-  return submitToService(ctx, write, detailOf(ctx, id), rerenderDetail(ctx, id));
+  return submitToService(ctx, write, detailOf(ctx, id), rerenderDetail(ctx, id, { form: 'upload' }));
 }
 
 /**
@@ -80,6 +97,7 @@ export async function submitUpload(ctx: ScreenContext): Promise<SubmitResult> {
 export async function submitDownload(ctx: ScreenContext): Promise<SubmitResult> {
   const id = requestedId(ctx);
   const aid = ctx.req.rc.aid ?? '';
+  if (isMalformedId(id) || isMalformedId(aid)) return refuseMalformedId(ctx, id);
   let signedUrl: string | undefined;
   const result = await submitToService(
     ctx,

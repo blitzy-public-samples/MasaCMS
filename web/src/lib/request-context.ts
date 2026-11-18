@@ -95,6 +95,9 @@ export interface AdminSessionState {
   readonly openSectionList: string;
   readonly moduleid: string;
   readonly keywords: string;
+  /** `session.datakeywords` and `session.filterBy`: the form data manager's keyword search. */
+  readonly datakeywords: string;
+  readonly filterBy: string;
   /** Resource bundle locale of the admin labels. */
   readonly rb: string;
   /** Java locale of dates, from the session site. */
@@ -681,8 +684,8 @@ async function loadIdentitySession(
 }
 
 /**
- * Persists the request's session writes, `alerts` excepted (identity keeps them on the user struct) and `muraValues`
- * sent as identity's `mura`, in one identity call; sends nothing without a user token or a value to store.
+ * Persists the request's session writes, `alerts` excepted (they persist as the `muraValues` entry `alerts`) and
+ * `muraValues` sent as identity's `mura`, in one identity call; sends nothing without a user token or a value to store.
  * @throws GatewayDenialError When identity answers 401 or 403.
  * @throws Error When identity answers any other non-2xx status.
  */
@@ -746,6 +749,27 @@ export function setSessionMuraValue(req: AdminRequest, name: string, value: unkn
   session.mura = next.mura;
   session.muraValues = next.muraValues;
   (req.sessionWrites as SessionWriteLog).muraValues = next.muraValues;
+}
+
+/** Whether the full layout's alert block runs (template.cfm:260-261): off the login page, for S2 or a site admin. */
+function runsLayoutAlerts(req: Pick<AdminRequest, 'action' | 'isS2' | 'isSiteAdmin' | 'user' | 'session'>): boolean {
+  return !cfEq(req.action, 'core:cLogin.main') && administersSessionSite(req);
+}
+
+/** `session.mura.alerts` with an empty session-site entry, legacy's entries and `false` dismissals kept as stored. */
+function layoutAlertsOf(session: Pick<AdminSessionState, 'siteid' | 'mura'>): Record<string, unknown> {
+  return { ...Object.fromEntries(objectEntries(sessionMuraValue(session.mura, 'alerts'))), [session.siteid]: {} };
+}
+
+/**
+ * The full layout's `session.mura.alerts[session.siteid]={}` (template.cfm:260-265) on `req`, queued for persisting,
+ * when its alert block runs and the session site has no entry.
+ */
+export function setLayoutAlerts(req: AdminRequest): void {
+  if (!runsLayoutAlerts(req)) return;
+  const site = req.session.siteid.toLowerCase();
+  if (objectEntries(sessionMuraValue(req.session.mura, 'alerts')).some(([id]) => id.toLowerCase() === site)) return;
+  setSessionMuraValue(req, 'alerts', layoutAlertsOf(req.session));
 }
 
 /** `session.mura.alerts` of the user struct, with `type` and `text` read as strings. */
@@ -948,6 +972,8 @@ function initialSession(identity: IdentitySession, sessionHistory: number): Sess
     openSectionList: stored.openSectionList ?? '',
     moduleid: stored.moduleid ?? '',
     keywords: stored.keywords ?? '',
+    datakeywords: stored.datakeywords ?? '',
+    filterBy: stored.filterBy ?? '',
     rb: stored.rb ?? '',
     locale: stored.locale ?? '',
     dateKeyFormat: stored.dateKeyFormat ?? '',
@@ -1049,8 +1075,10 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   write('localeHasDayParts', localeHasDayParts(locale));
 
   const alertSite = session.siteid.toLowerCase();
-  if (!Object.keys(session.alerts).some((id) => id.toLowerCase() === alertSite)) {
-    write('alerts', { ...session.alerts, [session.siteid]: {} });
+  const layoutAlerts = runsLayoutAlerts({ action, isS2, isSiteAdmin, user, session: { ...session, dateKey } });
+  if (layoutAlerts && !Object.keys(session.alerts).some((id) => id.toLowerCase() === alertSite)) {
+    // Request-local; setLayoutAlerts persists it when the answer renders the full layout.
+    session.alerts = alertsOf(withSessionMuraValue(session, 'alerts', layoutAlertsOf(session)).mura);
   }
   if (!cfEq(action, 'core:csettings.editSite') && (rc.get('siteid') ?? '') === '' && session.siteid !== '') {
     rc.set('siteid', session.siteid);

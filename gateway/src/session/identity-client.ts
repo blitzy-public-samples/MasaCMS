@@ -98,6 +98,7 @@ export const IDENTITY_OPERATIONS = Object.freeze({
   state: { method: 'GET', path: '/internal/v1/sessions/{sid}/state' },
   adminSite: { method: 'GET', path: '/internal/v1/sessions/{sid}/admin-site' },
   adminState: { method: 'GET', path: '/internal/v1/sessions/{sid}/admin-state' },
+  importAdminState: { method: 'POST', path: '/internal/v1/sessions/{sid}/admin-state' },
   snapshot: { method: 'GET', path: '/internal/v1/sessions/{sid}/snapshot' },
   end: { method: 'POST', path: '/internal/v1/sessions/{sid}:end' },
   claim: { method: 'POST', path: '/internal/v1/csrf/claims' },
@@ -118,6 +119,8 @@ export interface IdentityClient {
   adminSite(sessionId: string): Promise<string>;
   /** `getSessionAdminState`: the admin values the session stored; `{}` when none is stored or the session is unknown or ended. */
   adminState(sessionId: string): Promise<SessionAdminState>;
+  /** `importSessionAdminState`: stores admin values a legacy request changed, `mura` merged key by key; the merged state, `{}` for an unknown or ended session. */
+  importAdminState(sessionId: string, values: SessionAdminState): Promise<SessionAdminState>;
   /** `getSessionSnapshot`: the hydration snapshot; undefined when the session is missing or ended. */
   snapshot(sessionId: string): Promise<SessionSnapshot | undefined>;
   /** `endSession`: ends the session and bumps its epoch; ending an ended session changes nothing. */
@@ -193,6 +196,9 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
     adminSite: async (sessionId) => (await call<SessionAdminSite>(ops.adminSite, sessionPath(ops.adminSite, sessionId))).siteId,
 
     adminState: (sessionId) => call<SessionAdminState>(ops.adminState, sessionPath(ops.adminState, sessionId)),
+
+    importAdminState: (sessionId, values) =>
+      call<SessionAdminState>(ops.importAdminState, sessionPath(ops.importAdminState, sessionId), values),
 
     async snapshot(sessionId) {
       const response = await send<SessionSnapshot>(ops.snapshot, sessionPath(ops.snapshot, sessionId));

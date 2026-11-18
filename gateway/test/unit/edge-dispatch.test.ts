@@ -276,7 +276,7 @@ async function harness(
         return undefined;
       }),
     },
-    carry: { beforeLegacy: vi.fn(async () => undefined) },
+    carry: { beforeLegacy: vi.fn(async () => undefined), afterLegacy: vi.fn(async () => undefined) },
     csrf: {
       beforeLegacy: vi.fn(async () => {
         calls.push('csrf.before');
@@ -1466,6 +1466,53 @@ describe('sessions of legacy-bound requests', () => {
     );
   });
 
+  /** Facts of a legacy login, whose response logs the session in again. */
+  const LOGIN_FACTS: Record<string, RouteFacts> = {
+    'admin:clogin.login': { route: 'admin:clogin.login', csrfValidation: 'none', writeSet: [], keyScope: [], sessionEffects: ['login'] },
+  };
+
+  it.each<{ label: string; mode: SessionMode; family: RouteKeyResult['family']; route?: string; url: string; imported: boolean }>([
+    { label: 'a target-primary admin request', mode: 'target-primary', family: 'admin', url: '/admin/?muraAction=cArch.siteManagerTab&tab=1', imported: true },
+    { label: 'a legacy-primary admin request', mode: 'legacy-primary', family: 'admin', url: '/admin/?muraAction=cArch.siteManagerTab&tab=1', imported: true },
+    { label: 'a target-primary page request', mode: 'target-primary', family: 'page', url: '/tenant-a/', imported: false },
+    { label: 'a legacy-primary JSON API request', mode: 'legacy-primary', family: 'api', url: '/_api/json/v1/default/content', imported: false },
+    { label: 'an admin logout', mode: 'target-primary', family: 'admin', route: 'admin:clogin.logout', url: '/admin/?muraAction=cLogin.logout', imported: false },
+    { label: 'an admin login', mode: 'legacy-primary', family: 'admin', route: 'admin:clogin.login', url: '/admin/?muraAction=cLogin.login', imported: false },
+  ])('imports the shared values legacy changed once it completed $label only when it is an admin request but a login or logout', async (c) => {
+    const h = await harness({ ...(c.mode === 'target-primary' ? { active: indexOf('v0002', [], 'target') } : {}), facts: LOGIN_FACTS });
+    h.setScript(() => ({ destination: 'legacy', family: c.family, ...(c.route === undefined ? {} : { entry: { route: c.route, kind: 'read' as const } }) }));
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session(c.mode));
+    vi.mocked(h.deps.hydrator.ensureHydrated).mockResolvedValue(jarRow({}));
+    vi.mocked(h.deps.carry.afterLegacy).mockImplementation(async () => {
+      h.calls.push('carry.after');
+    });
+    h.legacy.setHandler((_req, res) => {
+      h.calls.push('legacy');
+      sendBytes(res, 200, 'legacy-body');
+    });
+
+    const res = await h.app.inject({ method: 'GET', url: c.url, headers: { 'user-agent': 'OPT2-browser' } });
+
+    expect([res.statusCode, res.body]).toEqual([200, 'legacy-body']);
+    expect(vi.mocked(h.deps.carry.afterLegacy).mock.calls).toEqual(c.imported ? [[SESSION_ID, c.mode, { userAgent: 'OPT2-browser' }]] : []);
+    expect(h.calls.filter((call) => ['legacy', 'csrf.after', 'carry.after'].includes(call))).toEqual(
+      c.imported ? ['legacy', 'csrf.after', 'carry.after'] : ['legacy', 'csrf.after'],
+    );
+  });
+
+  it('answers legacy own response when the import after it fails', async () => {
+    const h = await harness({ active: indexOf('v0002', [], 'target') });
+    vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session('target-primary'));
+    vi.mocked(h.deps.hydrator.ensureHydrated).mockResolvedValue(jarRow({}));
+    vi.mocked(h.deps.carry.afterLegacy).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
+    h.legacy.setHandler((_req, res) => sendBytes(res, 200, 'legacy-body', { 'x-legacy': '1' }));
+
+    const res = await h.app.inject({ method: 'GET', url: '/admin/?muraAction=cArch.siteManagerTab&tab=1' });
+
+    expect([res.statusCode, res.body, res.headers['x-legacy']]).toEqual([200, 'legacy-body', '1']);
+    expect(h.deps.carry.afterLegacy).toHaveBeenCalledTimes(1);
+  });
+
   it('carries nothing for a target-primary admin request whose session has no hydrated legacy session', async () => {
     const h = await harness({ active: indexOf('v0002', [], 'target') });
     vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session('target-primary'));
@@ -2061,6 +2108,7 @@ describe('legacy-primary legacy-bound requests while identity is unavailable', (
       state: refuse('state'),
       adminSite: refuse('adminSite'),
       adminState: refuse('adminState'),
+      importAdminState: refuse('importAdminState'),
       snapshot: refuse('snapshot'),
       end: refuse('end'),
       claim: refuse('claim'),

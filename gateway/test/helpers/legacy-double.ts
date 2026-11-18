@@ -155,6 +155,16 @@ export async function startLegacyDouble(bridgeKey: string): Promise<LegacyDouble
       sendJson(res, 200, { applied: fresh.length, serverTime: new Date().toISOString().slice(0, 23) });
       return;
     }
+    if (op === 'export' && req.method === 'GET') {
+      const session = attached(req);
+      if (session === undefined || session.sessionId !== sid) {
+        sendJson(res, 409, { error: 'sessionMismatch', message: 'assertion sid differs from the session' });
+        return;
+      }
+      // These sessions hold no shared session values.
+      sendJson(res, 200, { values: [], serverTime: new Date().toISOString().slice(0, 23) });
+      return;
+    }
     sendJson(res, 404, { error: 'notFound', message: `unsupported op ${String(op)}` });
   };
 

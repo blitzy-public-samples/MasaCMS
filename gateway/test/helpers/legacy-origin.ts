@@ -16,7 +16,15 @@ import {
   type BridgeAssertionPayload,
 } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
-import type { CarryResult, EndResult, HydrateResult, MarkUsedResult, UsedSinceResult } from '../../src/session/bridge-client.js';
+import type {
+  CarryResult,
+  EndResult,
+  ExportResult,
+  ExportedValue,
+  HydrateResult,
+  MarkUsedResult,
+  UsedSinceResult,
+} from '../../src/session/bridge-client.js';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from '../../src/session/identity-client.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from './env.js';
 import {
@@ -83,10 +91,16 @@ export interface LegacySession {
   ended: boolean;
   /** Successful `op=hydrate` calls. */
   hydrations: number;
-  /** Top-level session keys `op=carry` set, such as `flatViewArgs`. */
+  /** Top-level session keys besides `siteid`, such as `flatViewArgs`; `mura.<key>` shared values live in `user`. */
   values: Record<string, unknown>;
-  /** `session.opt2CarriedRevisions`: the revision `op=carry` installed last, by key. */
-  carriedRevisions: Map<string, string>;
+  /** `session.opt2Carried`: the revision and JSON text `op=carry` installed last, by shared name. */
+  carried: Map<string, CarriedRecord>;
+}
+
+/** One `session.opt2Carried` entry. */
+export interface CarriedRecord {
+  revision: string;
+  json: string;
 }
 
 /** A new session with its legacy `Set-Cookie` values and the `Cookie` header that attaches it. */
@@ -429,6 +443,8 @@ function hydrate(ctx: OpContext): HydrateResult {
   session.csrfSecretKey = String(secret);
   session.used.clear();
   for (const [token, at] of ledger) session.used.set(token, at);
+  // setUserStruct replaced the session.mura values op=carry installed, so the next carry installs every value again.
+  session.carried.clear();
   session.hydrations += 1;
   return { sessionId: session.legacySessionId, hydrated: true, serverTime: formatWireTime(ctx.now) };
 }
@@ -457,8 +473,105 @@ function usedSince(ctx: OpContext): UsedSinceResult {
   return { tokens: ledgerEntries(session.used, requireTime(since).getTime()), serverTime: formatWireTime(ctx.now) };
 }
 
-/** The top-level session keys `op=carry` may set. */
-const CARRIED_KEYS: ReadonlySet<string> = new Set(['flatViewArgs']);
+/** session.cfm's `sharedNames`: top-level session keys, and `mura.<key>` for `session.mura` keys. */
+export const SHARED_NAMES: readonly string[] = Object.freeze([
+  'flatViewArgs',
+  'mura.nextN',
+  'mura.alerts',
+  'siteid',
+  'userFilesPath',
+  'topID',
+  'openSectionList',
+  'keywords',
+  'datakeywords',
+  'filterBy',
+  '__fw1NextPreserveKey',
+  '__fw1',
+  'moduleid',
+  'moduleTopIds',
+  'mura.objectInstanceId',
+]);
+const MURA_PREFIX = 'mura.';
+/** session.cfm's name for the FW/1 preserved contexts `session['__fw1<key>']`, which carry installs and export skips. */
+const CONTEXTS = '__fw1';
+/** session.cfm's name for the module tops `session[<key>].topid`. */
+const MODULE_TOPS = 'moduleTopIds';
+/** session.cfm's `moduleTopKeys`: `m<moduleid>` and `<moduleid>` over the module ids carch before() accepts. */
+const MODULE_TOP_KEYS: readonly string[] = Object.freeze(
+  [
+    '00000000000000000000000000000000000',
+    '00000000000000000000000000000000003',
+    '00000000000000000000000000000000004',
+    '00000000000000000000000000000000099',
+    '000000000000000000000000000000000099',
+  ].flatMap((id) => [`m${id}`, id]),
+);
+
+/** What session.cfm's failedSaveBean builds from a carried context's userBean: the posted values and the save's errors. */
+export interface CarriedUserBean {
+  posted: Record<string, unknown>;
+  errors: unknown;
+}
+
+/** A shared name's value in the session, as session.cfm's readShared finds it; undefined when it holds none. */
+export function sharedValue(session: LegacySession, name: string): unknown {
+  if (name === MODULE_TOPS) {
+    const tops: Record<string, string> = {};
+    for (const key of MODULE_TOP_KEYS) {
+      const held = structValue(session.values, key);
+      const topId = isRecord(held) ? structValue(held, 'topid') : undefined;
+      if (topId !== undefined) tops[key] = String(topId);
+    }
+    return Object.keys(tops).length === 0 ? undefined : tops;
+  }
+  if (name.startsWith(MURA_PREFIX)) return structValue(session.user, name.slice(MURA_PREFIX.length));
+  return name === 'siteid' ? session.siteId : structValue(session.values, name);
+}
+
+/** Sets a shared name in the session, as session.cfm's writeShared does. */
+function setSharedValue(session: LegacySession, name: string, value: unknown): void {
+  if (name === MODULE_TOPS) {
+    const tops = Object.entries(value as Record<string, unknown>).filter(
+      ([key, topId]) => MODULE_TOP_KEYS.some((known) => known.toLowerCase() === key.toLowerCase()) && isSimple(topId),
+    );
+    session.values = mergeStruct(session.values, Object.fromEntries(tops.map(([key, topId]) => [key, { TOPID: topId }])));
+  } else if (name.startsWith(MURA_PREFIX)) session.user = mergeStruct(session.user, { [name.slice(MURA_PREFIX.length)]: value });
+  else if (name === 'siteid') session.siteId = String(value);
+  else session.values = mergeStruct(session.values, { [name]: value });
+}
+
+/** session.cfm's isContexts: positive integer keys, each a struct of simple values whose userBean, when present, is JSON. */
+function isContexts(value: unknown): value is Record<string, Record<string, string | number | boolean>> {
+  if (!isRecord(value)) return false;
+  return Object.entries(value).every(([key, context]) => {
+    if (!/^\d+$/.test(key) || Number(key) < 1 || !isRecord(context) || !Object.values(context).every(isSimple)) return false;
+    const userBean = structValue(context, 'userBean');
+    if (userBean === undefined) return true;
+    try {
+      JSON.parse(String(userBean));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** session.cfm's installContexts: each changed context as `__fw1<key>`, its userBean as a bean, purging the key ten earlier. */
+function installContexts(session: LegacySession, contexts: Record<string, Record<string, unknown>>, previous: Record<string, unknown>): void {
+  for (const [key, context] of Object.entries(contexts)) {
+    if (JSON.stringify(previous[key]) === JSON.stringify(context)) continue;
+    const restored: Record<string, unknown> = { ...context };
+    const userBean = structEntry(context, 'userBean');
+    if (userBean !== undefined) {
+      const posted = Object.fromEntries(Object.entries(context).filter(([name]) => name !== userBean[0]));
+      const result = JSON.parse(String(userBean[1])) as unknown;
+      restored[userBean[0]] = { posted, errors: isRecord(result) ? (structValue(result, 'errors') ?? {}) : {} } satisfies CarriedUserBean;
+    }
+    const purged = structEntry(session.values, `${CONTEXTS}${Number(key) - 10}`);
+    session.values = mergeStruct(session.values, { [`${CONTEXTS}${key}`]: restored });
+    if (purged !== undefined) delete session.values[purged[0]];
+  }
+}
 
 /** `op=carry`: after checking every entry, sets each value whose revision differs from the one installed last. */
 function carry(ctx: OpContext): CarryResult {
@@ -470,19 +583,45 @@ function carry(ctx: OpContext): CarryResult {
     const name = isRecord(entry) ? structValue(entry, 'name') : undefined;
     const value = isRecord(entry) ? structValue(entry, 'value') : undefined;
     const revision = isRecord(entry) ? structValue(entry, 'revision') : undefined;
-    if (!isSimple(name) || !CARRIED_KEYS.has(String(name)) || !isRecord(value) || !isSimple(revision) || String(revision) === '') {
-      throw badRequest('values entries need a carried name, a struct value and a revision');
+    if (
+      !isSimple(name) || !SHARED_NAMES.includes(String(name)) || value === undefined || value === null || !isSimple(revision) || String(revision) === ''
+      || (name === CONTEXTS && !isContexts(value)) || (name === MODULE_TOPS && !isRecord(value))
+    ) {
+      throw badRequest('values entries need a shared name, a value and a revision');
     }
     return { name: String(name), value, revision: String(revision) };
   });
   const applied: string[] = [];
   for (const { name, value, revision } of entries) {
-    if (session.carriedRevisions.get(name) === revision) continue;
-    session.values = mergeStruct(session.values, { [name]: value });
-    session.carriedRevisions.set(name, revision);
+    const carried = session.carried.get(name);
+    if (carried?.revision === revision) continue;
+    if (name === CONTEXTS) {
+      const previous = carried === undefined ? {} : (JSON.parse(carried.json) as Record<string, unknown>);
+      installContexts(session, value as Record<string, Record<string, unknown>>, previous);
+      session.carried.set(name, { revision, json: JSON.stringify(value) });
+    } else {
+      setSharedValue(session, name, value);
+      // The value as op=export reads it back, so an unchanged value is never exported.
+      const held = sharedValue(session, name);
+      session.carried.set(name, { revision, json: held === undefined ? '' : JSON.stringify(held) });
+    }
     applied.push(name);
   }
   return { applied, serverTime: formatWireTime(ctx.now) };
+}
+
+/** `op=export`: each shared value but the contexts the session holds whose JSON differs from the one installed last, simple values as strings. */
+function exportShared(ctx: OpContext): ExportResult {
+  requireMethod(ctx.req, 'GET');
+  const session = requireSession(ctx);
+  const values: ExportedValue[] = [];
+  for (const name of SHARED_NAMES) {
+    if (name === CONTEXTS) continue;
+    const value = sharedValue(session, name);
+    if (value === undefined || value === null || session.carried.get(name)?.json === JSON.stringify(value)) continue;
+    values.push({ name, value: isSimple(value) ? String(value) : (value as ExportedValue['value']) });
+  }
+  return { values, serverTime: formatWireTime(ctx.now) };
 }
 
 /** `op=end`: `setUserStruct()` with no user, then `sessionInvalidate()`; no database write. */
@@ -507,6 +646,7 @@ const SESSION_OPS: ReadonlyMap<string, (ctx: OpContext) => object> = new Map<str
   ['markUsed', markUsed],
   ['usedSince', usedSince],
   ['carry', carry],
+  ['export', exportShared],
   ['end', end],
 ]);
 
@@ -608,7 +748,7 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
       ended: partial.ended ?? false,
       hydrations: partial.hydrations ?? 0,
       values: partial.values ?? {},
-      carriedRevisions: partial.carriedRevisions ?? new Map<string, string>(),
+      carried: partial.carried ?? new Map<string, CarriedRecord>(),
     };
     sessions.set(legacySessionId, session);
     return {

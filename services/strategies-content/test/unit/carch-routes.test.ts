@@ -567,6 +567,20 @@ describe('carch.list', () => {
     expect([rc.activeTab, rc.flatViewArgs, saved]).toEqual([3, flatViewArgs, []]);
   });
 
+  it('reads and updates the flat view arguments under the key spellings legacy stored, adding no duplicates', async () => {
+    t.db.respond(TOP, [topRow()]);
+    const legacyArgs = {
+      TAB: '1', MODULEID: SITE_TREE, SORTBY: 'lastupdate', SORTDIRECTION: 'desc', LOCKID: '', ASSIGNMENTS: false, CATEGORYID: '', TAGS: '',
+      PAGE: 4, TYPE: '', SUBTYPE: '', REPORT: 'mydrafts', KEYWORDS: 'old', FILTERED: 'Yes',
+    };
+    identity.state = { siteid: SITE, mura: { NEXTN: '20', FLATVIEWARGS: { [SITE.toUpperCase()]: legacyArgs } } };
+    const rc = await rcOf(`${TREE_URL}?topid=${NODE}&nextN=50&keywords=new&refreshFlatview=1&report=mydrafts&reportSortBy=title`);
+    const updated = { ...legacyArgs, SORTBY: 'title', PAGE: 1, KEYWORDS: 'new', REPORT: '' };
+    expect([rc.activeTab, rc.flatViewArgs]).toEqual(['1', updated]);
+    expect(saved).toEqual([{ keywords: 'new', mura: { NEXTN: '50', FLATVIEWARGS: { [SITE.toUpperCase()]: updated } } }]);
+  });
+
+
   it('fails closed when identity refuses a session write', async () => {
     t.db.respond(TOP, [topRow()]);
     identity.saveStatus = 409;
@@ -1226,13 +1240,13 @@ describe('carch.datamanager', () => {
     expect(paramsOfFirst(FORM_VERSIONS_LOCK)).toEqual([TENANT_A.tenantId, SITE, [NODE, NODE.toLowerCase()], ['Form']]);
   });
 
-  it('deletes the filtered responses in their cursor order and stores a new search in session.mura', async () => {
+  it('deletes the filtered responses in their cursor order and stores a new search in session.filterBy and session.datakeywords', async () => {
     t.db.respond(RESPONSE_BATCH, [packet(), packet({ responseid: 'R2' })]);
     identity.state = { locale: 'en_US', mura: { nextN: 20 } };
     const body = await writeOf(DELETE_URL, { minute1: '0', hour1: '0', minute2: '59', hour2: '23', delete: 'true', newSearch: '1', keywords: 'Ann', filterBy: 'name' });
     expect(body.data).toMatchObject({ outcome: 'none', filteredDeletions: 2, keywords: 'Ann' });
     expect(body.saved).toBe(false);
-    expect(saved).toEqual([{ mura: { nextN: 20, filterBy: 'name', datakeywords: 'Ann' } }]);
+    expect(saved).toEqual([{ filterBy: 'name', datakeywords: 'Ann' }]);
     expect(consumed).toEqual([]);
     expect([ran(RESPONSES), ran(RESPONSE_CURSOR)]).toEqual([false, true]);
     const locks = t.db.statements.filter((statement) => RESPONSE_LOCK.test(statement.sql)).map((statement) => statement.params[1]);

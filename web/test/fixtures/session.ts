@@ -40,6 +40,8 @@ const SESSION_DEFAULTS = {
   topID: HOME_TOP_ID,
   openSectionList: '',
   keywords: '',
+  datakeywords: '',
+  filterBy: '',
   dashboardSpan: 30,
   paramArray: [],
   paramCount: 0,

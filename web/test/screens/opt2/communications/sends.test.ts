@@ -1,4 +1,5 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
@@ -83,12 +84,32 @@ describe('communications sends screen', () => {
   });
 
   it('forwards a positive pageIndex for the messages only', async () => {
-    const ctx = screenContext(senderRequest({ rc: { pageIndex: '3' } }));
+    const ctx = screenContext(senderRequest({ rc: { pageIndex: '3' } }), { [MESSAGES_ROUTE]: listAnswer(messages, 3, 3) });
     await loadSends(ctx);
 
     expect(communicationsCalls(ctx.gateway).map((call) => [call.path, call.query])).toEqual([
       ['/v1/messages', { pageIndex: '3' }],
       ['/v1/templates', { itemsPerPage: '1000' }],
+    ]);
+  });
+
+  it('shows page 1 for a page past the last, with Sends as the active header button', async () => {
+    const ctx = screenContext(senderRequest({ rc: { pageIndex: '9999' } }), {
+      [MESSAGES_ROUTE]: (request) =>
+        request.query['pageIndex'] === '9999' ? listAnswer([], 9999, 2) : listAnswer(messages, 1, 2),
+    });
+    const $ = cheerio.load(toString(sendsBody(ctx, await loadSends(ctx), EMPTY_SEND)), null, false);
+
+    expect(
+      communicationsCalls(ctx.gateway)
+        .filter((call) => call.path === '/v1/messages')
+        .map((call) => call.query),
+    ).toEqual([{ pageIndex: '9999' }, { pageIndex: '1' }]);
+    expect($('table.mura-table-grid tbody tr')).toHaveLength(messages.length);
+    expect($('ul.pagination.pull-right li.active').text()).toBe('1');
+    expect($('.mura-header .nav-module-specific a').toArray().map((el) => [$(el).text(), $(el).attr('class')])).toEqual([
+      ['Templates', 'btn'],
+      ['Sends', 'btn active'],
     ]);
   });
 

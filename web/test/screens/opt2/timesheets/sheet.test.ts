@@ -7,7 +7,7 @@ import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import type { Opt2ScreenDefinition } from '@/screens/registry';
-import { alertBox } from '@/screens/opt2/shared';
+import { alertBox, GUARDED_SUBMIT } from '@/screens/opt2/shared';
 import { timesheetsScreens } from '@/screens/opt2/timesheets';
 import { loadSheet, sheetBody } from '@/screens/opt2/timesheets/sheet';
 import { TIMESHEETS_AS_OF, TIMESHEET_IDS, timesheetsAnswersByRole } from '../../../fixtures/opt2/timesheets';
@@ -160,9 +160,13 @@ describe('timesheets sheet detail', () => {
         (tone) => `label label-${tone}`,
       ),
     );
-    expect($('form').toArray().map((form) => [$(form).attr('method'), $(form).attr('action')])).toEqual(
-      forms.map(() => ['post', ACTION_URL]),
-    );
+    const guard = cheerio.load(`<form${GUARDED_SUBMIT.value}></form>`, null, false)('form').attr('onsubmit');
+    // Each day action is a write, submitted once through legacy submitForm.
+    expect(
+      $('form')
+        .toArray()
+        .map((form) => [$(form).attr('method'), $(form).attr('action'), $(form).attr('onsubmit')]),
+    ).toEqual(forms.map(() => ['post', ACTION_URL, guard]));
     expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([
       {
         service: 'timesheets',
@@ -211,6 +215,21 @@ describe('timesheets sheet detail', () => {
     });
     expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
   });
+
+  it.each(['..', '../x', '../../x', 'abc'])(
+    'answers the malformed sheet id %j with the invalid-parameters alert without calling timesheets',
+    async (timesheetid) => {
+      const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+      const req = opt2RoleRequest(Roles.timesheetsEmployee, { rc: { siteid: SITE, asOf: TIMESHEETS_AS_OF, timesheetid } });
+      const ctx = makeScreenContext({ req, gateway });
+
+      const model = fragmentModel(toString(sheetBody(ctx, await loadSheet(ctx))));
+
+      expect(model.headings).toEqual(['Timesheet']);
+      expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+      expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
+    },
+  );
 
   it('places a supplied alert between the header and the sheet tables', async () => {
     const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);

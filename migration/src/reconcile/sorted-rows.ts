@@ -25,8 +25,13 @@ export interface UnitRowSorterOptions {
   spillDir?: string | undefined;
 }
 
-/** Rebuilds a row from its canonical encoding, program id and the payload it was added with, as the side that added it built it. */
-export type UnitRowBuilder<T = CanonicalRow> = (encoding: string, legacyProgramId: number | undefined, payload: string | undefined) => T;
+/** Rebuilds a row from its canonical encoding, program id, the payload it was added with and its key values, as the side that added it built it. */
+export type UnitRowBuilder<T = CanonicalRow> = (
+  encoding: string,
+  legacyProgramId: number | undefined,
+  payload: string | undefined,
+  keyValues: readonly KeyValue[],
+) => T;
 
 /** What the sorter keeps of a row: its tenant, what orders it, its encoding and an opaque payload that never orders it. */
 interface Entry {
@@ -235,7 +240,7 @@ export class UnitRowSorter<T = CanonicalRow> {
       this.lastTenant = tenantId;
       for (let entry = await this.peek(); entry !== undefined && compareTenants(entry.tenantId, tenantId) <= 0; entry = await this.peek()) {
         this.head = undefined;
-        if (entry.tenantId === tenantId) yield this.build(entry.encoding, entry.legacyProgramId, entry.payload);
+        if (entry.tenantId === tenantId) yield this.build(entry.encoding, entry.legacyProgramId, entry.payload, entry.keyValues);
       }
       completed = true;
     } finally {

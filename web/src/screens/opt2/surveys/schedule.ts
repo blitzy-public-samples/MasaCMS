@@ -6,19 +6,23 @@ import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext } from '
 import {
   block,
   controlGroup,
+  focusesFirst,
   gridTable,
+  isMalformedId,
   opt2ActionUrl,
   opt2Label,
   opt2View,
   postForm,
+  refusedFields,
   stateBadgeOf,
   submitToService,
   textInput,
+  type FieldRule,
+  type Opt2Refusal,
   type Opt2Write,
   type StateDisplay,
 } from '../shared';
 import {
-  NO_SURVEY,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
@@ -27,7 +31,9 @@ import {
   surveyHeader,
   surveyIdOf,
   surveyStatusBadge,
+  surveyTitleRow,
   unreadHeader,
+  unreadSurveyId,
   type Survey,
   type Unread,
 } from './common';
@@ -58,7 +64,8 @@ const INTEGER = /^[+-]?\d+$/;
 
 /** The survey (`getSurvey`), then its tasks (`listSurveyTasks`) with the CSRF pair of its id context. */
 async function loadSchedule(ctx: ScreenContext, surveyId: string): Promise<ScheduleData> {
-  if (surveyId === '') return NO_SURVEY;
+  const unread = unreadSurveyId(surveyId);
+  if (unread !== undefined) return unread;
   const query = { siteid: siteIdOf(ctx) };
   const survey = readOf(
     await ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', { params: { surveyId }, query }),
@@ -103,23 +110,51 @@ function scheduleRequestOf(values: ScheduleValues): ScheduleRequest {
   };
 }
 
+// The contract's LocalSecondTimestamp.
+const LAUNCH_AT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$/;
+const MIN_LAUNCH_YEAR = 1753;
+
+/** Whether surveys may accept launch time `text`: the contract's pattern, from 1753, on a real date and clock time. */
+function mayLaunchAt(text: string): boolean {
+  if (!LAUNCH_AT.test(text) || Number(text.slice(0, 4)) < MIN_LAUNCH_YEAR) return false;
+  // surveys refuses a time that rolls over when parsed; read as UTC, fields roll over in every zone alike.
+  const [year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0] = text.split(/[-T:]/).map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second)).toISOString().slice(0, 19) === text;
+}
+
+/** The surveys schedule rules over the body the form text is sent as: launchAt's time, offsets of 0 or more. */
+const SCHEDULE_RULES: Readonly<Record<keyof ScheduleValues, FieldRule>> = Object.freeze({
+  launch: (launch) =>
+    mayLaunchAt(scheduleRequestOf({ launch, reminders: '' }).launchAt)
+      ? undefined
+      : 'Enter an existing date and time from 1753 on as yyyy-mm-ddThh:mm:ss, for example 2026-06-30T09:15:00.',
+  reminders: (reminders) =>
+    (scheduleRequestOf({ launch: '', reminders }).reminders ?? []).every(({ offsetMinutes }) => offsetMinutes >= 0)
+      ? undefined
+      : 'Enter whole numbers of minutes, 0 or more, separated by commas.',
+});
+
 /**
- * Status, the schedule form holding `values` (default: the stored schedule), then the reminder and task grids;
- * `alert` follows the header. Without a survey, only the header, `alert` and the read's alert.
+ * Status, `alert`, the schedule form holding `values` (default: the stored schedule) marked for `refusal`, then the
+ * reminder and task grids. Without a survey, only the header, `alert` and the read's alert.
  */
 function renderSchedule(
   ctx: ScreenContext,
   data: ScheduleData,
-  { alert, values }: { alert?: SafeHtml; values?: ScheduleValues } = {},
+  { alert, refusal, values }: { alert?: SafeHtml; refusal?: Opt2Refusal; values?: ScheduleValues } = {},
 ): SafeHtml {
   if ('unread' in data) return html`${unreadHeader(ctx, 'schedule')}${alert}${data.unread}`;
   const { survey, tasks } = data;
   const shown = values ?? storedValues(survey);
+  const errors = refusedFields(SCHEDULE_RULES, shown, refusal);
   const form = postForm(
     opt2ActionUrl(SURVEYS_MODULE, 'schedule', { siteid: siteIdOf(ctx), surveyid: survey.surveyId }),
-    html`${controlGroup('Launch At (yyyy-mm-ddThh:mm:ss)', textInput('launchAt', shown.launch))}${controlGroup(
+    html`${controlGroup(
+      'Launch At (yyyy-mm-ddThh:mm:ss)',
+      textInput('launchAt', shown.launch, { error: errors.launch, focus: focusesFirst(refusal, errors) }),
+    )}${controlGroup(
       'Reminder Offsets (minutes after launch, comma-separated)',
-      textInput('reminders', shown.reminders),
+      textInput('reminders', shown.reminders, { error: errors.reminders }),
     )}`,
     'Save Schedule',
     { hidden: ctx.csrf.render(survey.surveyId) },
@@ -133,6 +168,7 @@ function renderSchedule(
       dateTimeText(reminder.sentAt),
     ]),
     'No reminders are scheduled.',
+    { columnClasses: [undefined, 'hidden-xs'] },
   );
   const status = opt2Label(ctx, 'Status');
   const taskGrid = gridTable(
@@ -144,22 +180,23 @@ function renderSchedule(
       stateBadgeOf(ctx, TASK_STATUSES, task.status),
     ]),
     'No launch or reminder tasks are scheduled.',
+    { columnClasses: [undefined, 'hidden-xs'] },
   );
   // The form ends its block, as legacy action rows do: the next heading carries no top margin.
-  return html`${surveyHeader(ctx, survey, 'schedule')}${alert}${block(
-    html`<p>${status}: ${surveyStatusBadge(ctx, survey.status)}</p>${form}`,
+  return html`${surveyHeader(ctx, survey, 'schedule')}${block(
+    html`${surveyTitleRow(ctx, survey)}<p>${status}: ${surveyStatusBadge(ctx, survey.status)}</p>${alert}${form}`,
   )}${block(html`<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`)}`;
 }
 
-/** Loads and renders the schedule body of `surveyId`: `opts.alert` after the header, the form holding `opts.values`. */
+/** Loads and renders the schedule body of `surveyId` with `opts.alert`, posted `opts.values` and `opts.refusal`. */
 export async function scheduleBody(
   ctx: ScreenContext,
   surveyId: string,
-  opts: { alert?: SafeHtml; values?: { launch?: string; reminders?: string } } = {},
+  opts: { alert?: SafeHtml; refusal?: Opt2Refusal; values?: { launch?: string; reminders?: string } } = {},
 ): Promise<SafeHtml> {
-  const { alert, values } = opts;
+  const { alert, refusal, values } = opts;
   const shown = values && { launch: values.launch ?? '', reminders: values.reminders ?? '' };
-  return renderSchedule(ctx, await loadSchedule(ctx, surveyId), { alert, values: shown });
+  return renderSchedule(ctx, await loadSchedule(ctx, surveyId), { alert, refusal, values: shown });
 }
 
 /** `/opt2/admin/surveys/schedule?surveyid=…`: launch time, reminders and their tasks. */
@@ -178,10 +215,14 @@ export const scheduleAction: Opt2ActionDefinition = {
   action: 'schedule',
   roles: SURVEYS_ROLES,
   service: 'surveys',
-  submit(ctx) {
+  async submit(ctx) {
     const surveyId = surveyIdOf(ctx);
     const siteid = siteIdOf(ctx);
     const values = postedValues(ctx.req.rc);
+    // The schedule read refuses a malformed id itself, with the invalid-parameters alert; nothing is written.
+    if (isMalformedId(surveyId)) {
+      return { kind: 'render', view: opt2View(SURVEYS_MODULE, await scheduleBody(ctx, surveyId), 'schedule') };
+    }
     const write: Opt2Write = {
       service: 'surveys',
       call: (gateway, headers) =>
@@ -196,7 +237,7 @@ export const scheduleAction: Opt2ActionDefinition = {
       ctx,
       write,
       { module: SURVEYS_MODULE, screen: 'schedule', params: { siteid, surveyid: surveyId } },
-      (alert) => scheduleBody(ctx, surveyId, { alert, values }),
+      (alert, refusal) => scheduleBody(ctx, surveyId, { alert, refusal, values }),
     );
   },
 };

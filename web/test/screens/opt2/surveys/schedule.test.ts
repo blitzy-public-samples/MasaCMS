@@ -1,9 +1,10 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 // The surveys schedule screen and its post action: DOM snapshot, service calls, CSRF forwarding, re-render, denials.
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
-import { alertBox } from '@/screens/opt2/shared';
+import { alertBox, GUARDED_SUBMIT } from '@/screens/opt2/shared';
 import { scheduleBody } from '@/screens/opt2/surveys/schedule';
 import {
   SURVEY_IDS,
@@ -14,7 +15,7 @@ import {
 } from '../../../fixtures/opt2/surveys';
 import { fragmentModel, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
-import { routeKey } from '../../../helpers/fake-gateway';
+import { routeKey, type FakeReply } from '../../../helpers/fake-gateway';
 import { FIXED_CSRF, renderScreenPage } from '../../../helpers/screen-context';
 import {
   NOACCESS,
@@ -119,7 +120,7 @@ describe('surveys schedule screen', () => {
 
     expect(model).toEqual<DomModel>({
       title: '',
-      headings: ['Schedule: Cross-program timesheet experience', 'Reminders', 'Tasks'],
+      headings: ['Schedule', 'Reminders', 'Tasks'],
       ...formParts('2026-07-01T09:00:00', '1440,4320', FIXED_CSRF.token, FIXED_CSRF.expires),
       links: headerLinks(MULTI),
       tables: [
@@ -161,14 +162,17 @@ describe('surveys schedule screen', () => {
     if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
     const action =
       `&#x2f;opt2&#x2f;admin-actions&#x2f;surveys&#x2f;schedule&#x3f;siteid&#x3d;${SITE}&amp;surveyid&#x3d;${MULTI}`;
-    expect(page.html).toContain(`<form novalidate="novalidate" action="${action}" method="post" name="form1">`);
+    expect(page.html).toContain(
+      `<form novalidate="novalidate" action="${action}" method="post" name="form1"${GUARDED_SUBMIT.value}>`,
+    );
     expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/surveys\/surveys\?siteid=tenant-a">/);
+    expect(page.html).not.toContain(' autofocus');
   });
 
   it('shows an empty form and empty grids for a survey never scheduled', async () => {
     const model = await bodyModel('schedule', managerRequest({ surveyid: SINGLE }), surveysGateway());
 
-    expect(model.headings).toEqual(['Schedule: Program 1 onboarding check-in', 'Reminders', 'Tasks']);
+    expect(model.headings).toEqual(['Schedule', 'Reminders', 'Tasks']);
     expect(model.controls.slice(0, 2).map(({ value }) => value)).toEqual(['', '']);
     expect(model.tables).toEqual([]);
   });
@@ -209,6 +213,23 @@ describe('surveys schedule screen', () => {
       [`/v1/surveys/${MULTI}`, `/v1/surveys/${MULTI}/tasks`].slice(0, reads),
     );
   });
+
+  it.each(['..', '../x', '../../x', 'abc'])(
+    'answers the malformed survey id %j as surveys answers one, asking it nothing, on the screen and its post',
+    async (surveyid) => {
+      const gateway = surveysGateway();
+      const alert = [errorAlert('Invalid parameters')];
+
+      const screen = await bodyModel('schedule', managerRequest({ surveyid }), gateway);
+      const post = renderedModel(
+        await surveysAction('schedule').submit(contextFor(managerRequest(scheduleRc({ surveyid })), gateway)),
+      );
+
+      expect(screen).toEqual(noSurveyModel(alert));
+      expect(post).toEqual(noSurveyModel(alert));
+      expect(gateway.calls).toEqual([]);
+    },
+  );
 
   it.each([
     { route: SURVEY_ROUTE, status: 503, error: GatewayUnavailableError },
@@ -326,8 +347,102 @@ describe('surveys schedule action', () => {
 
     expect(model.alerts).toEqual([{ text: alert, className: 'alert alert-error' }]);
     expect(model).toMatchObject(formParts(invalidScheduleRequest.launchAt, '1440', '<token>', '<token>'));
-    expect(model.headings).toEqual(['Schedule: Cross-program timesheet experience', 'Reminders', 'Tasks']);
+    expect(model.headings).toEqual(['Schedule', 'Reminders', 'Tasks']);
     expect(csrfContexts(gateway)).toEqual([MULTI]);
+  });
+
+  const LAUNCH_MESSAGE =
+    'Enter an existing date and time from 1753 on as yyyy-mm-ddThh:mm:ss, for example 2026-06-30T09:15:00.';
+  const REMINDERS_MESSAGE = 'Enter whole numbers of minutes, 0 or more, separated by commas.';
+  /** A schedule refusal answered with `status` and envelope `message`. */
+  const scheduleRefusal = (status: number, message: string): FakeReply => ({
+    status,
+    body: { apiversion: 'v1', method: 'surveys.schedule', error: { message, code: 'invalid_request' } },
+  });
+  const CSRF_REFUSAL = scheduleRefusal(400, 'Invalid CSRF tokens');
+
+  /** The re-rendered schedule body of a schedule of `rc` refused with `reply`. */
+  async function refusedBody(rc: Record<string, string>, reply: FakeReply = scheduleInvalid) {
+    const gateway = surveysGateway({ [SCHEDULE_ROUTE]: reply });
+    const result = await surveysAction('schedule').submit(contextFor(managerRequest(scheduleRc(rc)), gateway));
+    if (result.kind !== 'render') throw new Error(`Expected a re-render, got ${result.kind}`);
+    return cheerio.load(toString(result.view.body), null, false);
+  }
+
+  /** The marked fields of a schedule of `rc` refused with `reply`: name, message and focus, in order. */
+  async function markedFields(rc: Record<string, string>, reply: FakeReply = scheduleInvalid) {
+    const $ = await refusedBody(rc, reply);
+    expect($('[autofocus]')).toHaveLength(1);
+    return $('div.mura-control-group.has-error')
+      .toArray()
+      .map((group) => {
+        const input = $(group).find('input');
+        const message = $(group).children('label').next('p.help-block');
+        expect(input.attr('aria-invalid')).toBe('true');
+        expect(input.attr('aria-describedby')).toBe(`${input.attr('id')}-error`);
+        expect(message.attr('id')).toBe(`${input.attr('id')}-error`);
+        return [input.attr('name'), message.text(), input.attr('autofocus') !== undefined];
+      });
+  }
+
+  it.each<{ label: string; rc: Record<string, string>; marked: unknown[][] }>([
+    { label: 'the launch time tomorrow', rc: { launchAt: 'tomorrow' }, marked: [['launchAt', LAUNCH_MESSAGE, true]] },
+    ...['2026-08-01T10:00', '2026-06-31T09:00:00', '2026-08-01T24:00:00', '1752-12-31T23:59:59'].map((launchAt) => ({
+      label: `the launch time ${launchAt}`,
+      rc: { launchAt },
+      marked: [['launchAt', LAUNCH_MESSAGE, true]],
+    })),
+    { label: 'the offsets abc,60', rc: { reminders: 'abc,60' }, marked: [['reminders', REMINDERS_MESSAGE, true]] },
+    { label: 'the offset -30', rc: { reminders: '-30' }, marked: [['reminders', REMINDERS_MESSAGE, true]] },
+    { label: 'the offset 1.5', rc: { reminders: '60,1.5' }, marked: [['reminders', REMINDERS_MESSAGE, true]] },
+    {
+      label: 'both fields, the launch time focused',
+      rc: { launchAt: 'tomorrow', reminders: '-30' },
+      marked: [
+        ['launchAt', LAUNCH_MESSAGE, true],
+        ['reminders', REMINDERS_MESSAGE, false],
+      ],
+    },
+  ])('marks $label beside its field on the invalidParameters refusal', async ({ rc, marked }) => {
+    expect(await markedFields(rc)).toEqual(marked);
+  });
+
+  it.each<{ label: string; rc: Record<string, string>; reply?: FakeReply }>([
+    {
+      label: 'a padded launch time and +15, -0 and blank offsets, which surveys may accept',
+      rc: { launchAt: ' 2026-08-01T10:00:00 ', reminders: '+15, -0, ,30' },
+    },
+    { label: 'a leap day, which surveys may accept', rc: { launchAt: '2028-02-29T23:59:59' } },
+    { label: 'the first allowed year, which surveys may accept', rc: { launchAt: '1753-01-01T00:00:00' } },
+    ...(
+      [
+        ['a CSRF refusal', CSRF_REFUSAL],
+        ['a role refusal (403)', scheduleRefusal(403, 'Insufficient Account Permissions')],
+        ['an unknown survey (404)', scheduleRefusal(404, 'Not Found')],
+        ['a conflict (409)', scheduleRefusal(409, 'Conflict')],
+      ] as const
+    ).map(([label, reply]) => ({
+      label: `${label}, which says nothing of the values`,
+      rc: { launchAt: 'tomorrow', reminders: '-30' },
+      reply,
+    })),
+  ])('marks no field for $label, and focuses the launch time', async ({ rc, reply }) => {
+    const $ = await refusedBody(rc, reply);
+    expect($('.has-error')).toHaveLength(0);
+    expect($('[aria-invalid]')).toHaveLength(0);
+    expect(
+      $('[autofocus]')
+        .toArray()
+        .map((el) => $(el).attr('id')),
+    ).toEqual(['launchAt']);
+  });
+
+  it('shows the refused schedule alert just before the schedule form, the posted text kept', async () => {
+    const $ = await refusedBody({ launchAt: 'tomorrow', reminders: 'abc,60' });
+
+    expect($('form[name="form1"]').prev().is('div.alert.alert-error')).toBe(true);
+    expect($('div.mura-header').next().is('div.alert')).toBe(false);
+    expect([$('#launchAt').attr('value'), $('#reminders').attr('value')]).toEqual(['tomorrow', 'abc,60']);
   });
 
   it('re-renders only the header, the write alert and the read alert when the survey is gone', async () => {

@@ -13,14 +13,7 @@ exports[`sign action > re-renders an already signed request with the service con
   "headings": [
     "Signature Request",
   ],
-  "labels": [
-    "Document",
-    "State",
-    "Signer",
-    "Created",
-    "Created By",
-    "Document SHA-256",
-  ],
+  "labels": [],
   "links": [
     {
       "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",

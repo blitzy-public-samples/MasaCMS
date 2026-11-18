@@ -37,6 +37,7 @@ import {
   type CanonicalRow,
   type CatalogColumn,
   type ExtractScope,
+  type KeyValue,
   type ScopeFilter,
 } from '../extract/index.js';
 import { SUPPORTED_FILE_STORE, objectKey, parseObjectKey, parseStoredName, storePath, withSpool, type StoredName } from '../files/index.js';
@@ -138,11 +139,16 @@ function tableKey(name: string): string {
   return name.replace(/^dbo\./i, '').toLowerCase();
 }
 
+/** Key of column `name` in `row`: its own exact key, else the first matching it case-insensitively; undefined when absent. */
+function ownKeyOf(row: Readonly<Record<string, unknown>>, name: string): string | undefined {
+  if (Object.hasOwn(row, name)) return name;
+  const lower = name.toLowerCase();
+  return Object.keys(row).find((key) => key.toLowerCase() === lower);
+}
+
 /** Value of column `name` in `row`, matched case-insensitively as SQL Server resolves names; undefined when absent. */
 function valueOf(row: Readonly<Record<string, unknown>>, name: string): unknown {
-  if (Object.hasOwn(row, name)) return row[name];
-  const lower = name.toLowerCase();
-  const found = Object.keys(row).find((key) => key.toLowerCase() === lower);
+  const found = ownKeyOf(row, name);
   return found === undefined ? undefined : row[found];
 }
 
@@ -677,9 +683,14 @@ function layoutOf(definition: ExportTable, target: LegacyTableTarget, folded: bo
 }
 
 // Both sides are rebuilt here with key values in canonical text form, so one comparator orders legacy and target rows alike.
-/** A row over the layout's comparison columns. */
-function canonicalRowOf(table: string, layout: TableLayout, values: Values, legacyProgramId: number | undefined): CanonicalRow {
-  const encoding = encodeRow(layout.compare, values);
+/** A row over the layout's comparison columns; `encoding` is theirs when already known. */
+function canonicalRowOf(
+  table: string,
+  layout: TableLayout,
+  values: Values,
+  legacyProgramId: number | undefined,
+  encoding: string = encodeRow(layout.compare, values),
+): CanonicalRow {
   const keyed = layout.keyNames.length > 0;
   return {
     table,
@@ -691,14 +702,24 @@ function canonicalRowOf(table: string, layout: TableLayout, values: Values, lega
   };
 }
 
-/** A legacy row's values of the layout's comparison columns; throws when the live table lacks one the owner maps. */
-function projected(layout: TableLayout, row: CanonicalRow, table: string): Values {
-  const values: Values = {};
-  for (const column of layout.compare) {
-    if (!hasValue(row.row, column.name)) throw new Error(`live legacy table ${table} has no column ${column.name}, which its owner maps`);
-    values[column.name] = valueOf(row.row, column.name) as CanonicalValue;
-  }
-  return values;
+/** Projects legacy rows onto `compare`, resolving each column's row key once per row shape; throws for a row lacking a mapped column. */
+export function legacyProjector(compare: readonly CanonicalColumn[], table: string): (row: Readonly<Record<string, unknown>>) => Values {
+  let keys: (readonly [name: string, key: string])[] | undefined;
+  // A key resolved for an earlier row stands while this row has it and, where it is not the exact name, still lacks that name.
+  const fits = (row: Readonly<Record<string, unknown>>, resolved: readonly (readonly [string, string])[]): boolean =>
+    resolved.every(([name, key]) => Object.hasOwn(row, key) && (key === name || !Object.hasOwn(row, name)));
+  return (row) => {
+    if (keys === undefined || !fits(row, keys)) {
+      keys = compare.map((column) => {
+        const key = ownKeyOf(row, column.name);
+        if (key === undefined) throw new Error(`live legacy table ${table} has no column ${column.name}, which its owner maps`);
+        return [column.name, key] as const;
+      });
+    }
+    const values: Values = {};
+    for (const [name, key] of keys) values[name] = row[key] as CanonicalValue;
+    return values;
+  };
 }
 
 /** Reads every export page `params` names, awaiting `onTable` on each page's `table` entry as it arrives; records the pages' object manifest. */
@@ -855,14 +876,50 @@ function keyShapeOf(layout: TableLayout): SortShape {
   return { keyed: true, keyColumns: layout.keyNames, columns };
 }
 
-/** A row over the layout's comparison columns rebuilt from their encoding, with `extra` values the comparison leaves out. */
-function decodedRowOf(table: string, layout: TableLayout, encoding: string, legacyProgramId: number | undefined, extra: Values = {}): CanonicalRow {
-  return canonicalRowOf(table, layout, { ...decodeRow(layout.compare, encoding), ...extra }, legacyProgramId);
+/**
+ * A row over the layout's comparison columns rebuilt from their encoding, with `extra` values the comparison leaves out.
+ * Given the row's canonical `keyValues`, or for a keyless layout, `row` is decoded only when first read.
+ */
+export function decodedRowOf(
+  table: string,
+  layout: TableLayout,
+  encoding: string,
+  legacyProgramId: number | undefined,
+  extra: Values = {},
+  keyValues?: readonly KeyValue[],
+): CanonicalRow {
+  const keys = layout.keyNames.length === 0 ? [] : keyValues;
+  // An extra value of a comparison column changes the row's encoding and key, so that row is rebuilt from its values.
+  if (keys === undefined || Object.keys(extra).some((name) => layout.compare.some((column) => column.name === name))) {
+    return canonicalRowOf(table, layout, { ...decodeRow(layout.compare, encoding), ...extra }, legacyProgramId);
+  }
+  const keyRecord = Object.fromEntries(layout.keyNames.map((name, index) => [name, keys[index] ?? null]));
+  let values: Values | undefined;
+  return {
+    table,
+    ...(legacyProgramId === undefined ? {} : { legacyProgramId }),
+    key: layout.keyNames.length === 0 ? encoding : encodeKey(layout.compare, layout.keyNames, keyRecord),
+    keyValues: keys,
+    encoding,
+    // Enumerable, so a spread of the row copies its decoded values.
+    get row(): Values {
+      values ??= { ...decodeRow(layout.compare, encoding), ...extra };
+      return values;
+    },
+  };
 }
 
-/** A target key as the key-ordered spill holds it: the key encoding of a keyed row, the whole row otherwise. */
-function keyRowOf(row: CanonicalRow, layout: TableLayout): CanonicalRow {
-  return layout.keyNames.length === 0 ? row : { ...row, encoding: row.key, row: {} };
+/** A target key as the key-ordered spill holds it: the key encoding of a keyed row, the whole row otherwise; never reads `row.row`. */
+export function keyRowOf(row: CanonicalRow, layout: TableLayout): CanonicalRow {
+  if (layout.keyNames.length === 0) return row;
+  return {
+    table: row.table,
+    ...(row.legacyProgramId === undefined ? {} : { legacyProgramId: row.legacyProgramId }),
+    key: row.key,
+    keyValues: row.keyValues,
+    encoding: row.key,
+    row: {},
+  };
 }
 
 /** A key-ordered spill record rebuilt as the target key it holds and that key's tenant. */
@@ -928,33 +985,60 @@ async function importTable(session: ImportSession, unit: string, table: string, 
     sorters.push(created);
     return created;
   };
+  // The first pass over the tenants' exports, settled either way; the sorters it fills are disposed only after it.
+  let targetSettled: Promise<void> = Promise.resolve();
+  const reading = { stopped: false };
   try {
     // The owner may return more rows than the match names, so each tenant's rows are filtered here as they arrive.
     const first: { side?: TargetSide } = {};
+    let sideFixed = (): void => undefined;
+    const fixed = new Promise<void>((resolve) => {
+      sideFixed = resolve;
+    });
     const readTarget = (tenantId: string, withKeys: boolean): Promise<void> =>
       readTenantExport(session, target.owner, { unit, tenantId, match }, table, async (exported) => {
+        if (reading.stopped) throw new Error(`the import of ${table} ended before its ${target.owner} export was read`);
         if (first.side === undefined) {
           const layout = layoutOf(exported, target, shape.folded);
           const keyShape = keyShapeOf(layout);
           first.side = {
             plan: { definition: exported, layout, ...tableScope(session, table, liveColumns, liveFilter, layout) },
-            before: sorter(new UnitRowSorter(rowShapeOf(layout), (encoding, programId) => decodedRowOf(table, layout, encoding, programId), session.sorting)),
+            before: sorter(
+              new UnitRowSorter(rowShapeOf(layout), (encoding, programId, _payload, keyValues) => decodedRowOf(table, layout, encoding, programId, {}, keyValues), session.sorting),
+            ),
             held: sorter(new UnitRowSorter(keyShape, (encoding, programId, tenantId) => heldKeyOf(table, keyShape, encoding, programId, tenantId ?? ''), session.sorting)),
           };
+          sideFixed();
         }
         const { plan, before, held } = first.side;
+        // Decoding validates the owner's row, and its encoding over the same columns is that row unchanged.
+        const reuse = !plan.layout.folded && plan.filter.terms.length === 0;
         for (const exportRow of exported.rows) {
           const values: Values = decodeRow(plan.definition.columns, exportRow.row);
           if (plan.layout.folded) values[LEGACY_PROGRAM_ID_COLUMN] = programText(exportRow, table);
           if (!rowInScope(plan.filter, values)) continue;
-          const row = canonicalRowOf(table, plan.layout, values, exportRow.legacyProgramId);
+          const row = canonicalRowOf(table, plan.layout, values, exportRow.legacyProgramId, reuse ? exportRow.row : undefined);
           await before.add(tenantId, row);
           if (withKeys) await held.add(KEY_ORDER, keyRowOf(row, plan.layout), tenantId);
         }
       });
     const tenants = await session.tenants();
-    for (const tenantId of tenants) await readTarget(tenantId, true);
-    if (first.side === undefined) throw new Error(`${target.owner} exports no ${table} table for unit ${unit}`);
+    // The legacy side starts once the first export page fixes the plan, while the remaining pages are still read.
+    const targetRead = (async () => {
+      for (const tenantId of tenants) {
+        if (reading.stopped) return;
+        await readTarget(tenantId, true);
+      }
+    })();
+    targetSettled = targetRead.then(
+      () => undefined,
+      () => undefined,
+    );
+    await Promise.race([fixed, targetSettled]);
+    if (first.side === undefined) {
+      await targetRead;
+      throw new Error(`${target.owner} exports no ${table} table for unit ${unit}`);
+    }
     const { plan: { definition, layout, scope }, before, held } = first.side;
 
     const selector = await rowSelectorFor(session, table, target, shape.columns, layout.columns, []);
@@ -964,24 +1048,36 @@ async function importTable(session: ImportSession, unit: string, table: string, 
     const placed = sorter(
       new UnitRowSorter(
         rowShapeOf(layout),
-        (encoding, programId, payload): PlacedRow => ({ row: decodedRowOf(table, layout, encoding, programId), placement: JSON.parse(payload ?? '') as Placement }),
+        (encoding, programId, payload, keyValues): PlacedRow => ({
+          row: decodedRowOf(table, layout, encoding, programId, {}, keyValues),
+          placement: JSON.parse(payload ?? '') as Placement,
+        }),
         session.sorting,
       ),
     );
     const after = sorter(
       new UnitRowSorter(
         rowShapeOf(layout),
-        (encoding, programId, value) => decodedRowOf(table, layout, encoding, programId, carried === undefined || value === undefined ? {} : decodeRow([carried], value)),
+        (encoding, programId, value, keyValues) =>
+          decodedRowOf(table, layout, encoding, programId, carried === undefined || value === undefined ? {} : decodeRow([carried], value), keyValues),
         session.sorting,
       ),
     );
+    const keyColumns = keyShapeOf(layout).columns;
+    // Canonical key values of a legacy row, as decoding its whole encoding would give them; none for a keyless layout.
+    const keyValuesOf = (values: Values): KeyValue[] | undefined => {
+      if (layout.keyNames.length === 0) return undefined;
+      const keys = decodeRow(keyColumns, encodeRow(keyColumns, values));
+      return layout.keyNames.map((name) => keys[name] ?? null);
+    };
+    const project = legacyProjector(layout.compare, table);
     // Whether the target holds a row's key is known only after the join, so each row records its verdict either way.
     const place = async (sources: readonly CanonicalRow[]): Promise<void> => {
       try {
         const accepting = await rowSelectorFor(session, table, target, shape.columns, layout.columns, sources);
         const rule = await rowTenantsFor(session, table, sources);
         for (const source of sources) {
-          const values = projected(layout, source, table);
+          const values = project(source.row);
           const ifHeld = outcomeOf(() => accepting.accepts(source, true));
           const ifNew = outcomeOf(() => accepting.accepts(source, false));
           if ('ok' in ifHeld && !ifHeld.ok && 'ok' in ifNew && !ifNew.ok) continue;
@@ -991,7 +1087,7 @@ async function importTable(session: ImportSession, unit: string, table: string, 
             tenant: outcomeOf(() => rule.tenantOf(source)),
             ...(carried === undefined ? {} : { carried: encodeRow([carried], { [carried.name]: valueOf(source.row, carried.name) }) }),
           };
-          const row = decodedRowOf(table, layout, encodeRow(layout.compare, values), source.legacyProgramId);
+          const row = decodedRowOf(table, layout, encodeRow(layout.compare, values), source.legacyProgramId, {}, keyValuesOf(values));
           await placed.add(KEY_ORDER, row, JSON.stringify(placement));
         }
       } finally {
@@ -1006,6 +1102,7 @@ async function importTable(session: ImportSession, unit: string, table: string, 
       chunk = [];
     }
     await place(chunk);
+    await targetRead;
 
     await held.sort();
     await placed.sort();
@@ -1035,6 +1132,9 @@ async function importTable(session: ImportSession, unit: string, table: string, 
     }
     if (sent > 0) ctx.logger.info(`window ${session.input.windowId} sent ${String(sent)} ${table} changes to ${target.owner} unit ${unit}`);
   } finally {
+    // A legacy-side failure stops the first pass at its next page; its sorters are disposed once it has settled.
+    reading.stopped = true;
+    await targetSettled;
     await Promise.all(sorters.map((created) => created.dispose()));
   }
 }

@@ -1,4 +1,4 @@
-// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, carried values, end) and site.cfm's site list.
+// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list.
 import { BRIDGE_ASSERTION_HEADER, isLegacySessionCookie, signBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
@@ -65,16 +65,31 @@ export interface UsedSinceResult {
   serverTime: string;
 }
 
-/** One `op=carry` entry: a legacy `session` key, its value and a revision that changes whenever the value does. */
+/** A JSON value other than `null`, as a shared session value travels. */
+export type SharedJsonValue = string | number | boolean | readonly unknown[] | Readonly<Record<string, unknown>>;
+
+/** One `op=carry` entry: a shared value's wire name, its value and a revision that changes whenever the value does. */
 export interface CarriedValue {
   name: string;
-  value: Readonly<Record<string, unknown>>;
+  value: SharedJsonValue;
   revision: string;
 }
 
 /** `op=carry` answer: the names installed, those whose revision differed from the one installed last. */
 export interface CarryResult {
   applied: string[];
+  serverTime: string;
+}
+
+/** One `op=export` entry: a shared value's wire name and the value legacy holds; simple values arrive as strings. */
+export interface ExportedValue {
+  name: string;
+  value: SharedJsonValue;
+}
+
+/** `op=export` answer: the shared values legacy changed since `op=carry` installed them, or that it never installed. */
+export interface ExportResult {
+  values: ExportedValue[];
   serverTime: string;
 }
 
@@ -104,8 +119,10 @@ export interface BridgeClient {
   ): Promise<BridgeResult<MarkUsedResult>>;
   /** `op=usedSince`: ledger entries used at or after `since`, a legacy wire time. */
   usedSince(cookies: LegacyCookies, since: string, call: BridgeSessionCall): Promise<BridgeResult<UsedSinceResult>>;
-  /** `op=carry`: sets each value as its top-level `session` key unless its revision is the one installed last. */
+  /** `op=carry`: sets each shared value in the legacy session unless its revision is the one installed last. */
   carry(cookies: LegacyCookies, values: CarriedValue[], call: BridgeSessionCall): Promise<BridgeResult<CarryResult>>;
+  /** `op=export`: the shared values the legacy session holds that differ from those `op=carry` installed. */
+  export(cookies: LegacyCookies, call: BridgeSessionCall): Promise<BridgeResult<ExportResult>>;
   /** `op=end`: logs the session out without a database write and invalidates it. */
   end(cookies: LegacyCookies, call: BridgeSessionCall): Promise<BridgeResult<EndResult>>;
 }
@@ -143,7 +160,7 @@ export interface SiteListClient {
   listSites(): Promise<SiteListing>;
 }
 
-type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'end';
+type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'export' | 'end';
 
 interface OpSpec {
   method: 'GET' | 'POST';
@@ -271,6 +288,8 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       send<UsedSinceResult>('usedSince', { method: 'GET', query: { since } }, cookies, call),
 
     carry: (cookies, values, call) => send<CarryResult>('carry', { method: 'POST', json: { values } }, cookies, call),
+
+    export: (cookies, call) => send<ExportResult>('export', { method: 'GET' }, cookies, call),
 
     end: (cookies, call) => send<EndResult>('end', { method: 'POST' }, cookies, call),
   };

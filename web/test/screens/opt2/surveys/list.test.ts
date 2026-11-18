@@ -107,7 +107,7 @@ describe('surveys list', () => {
     expect(page.html).toContain('<div class="mura-header"><h1>Surveys</h1></div>');
     expect(page.html).toContain('<table class="mura-table-grid">');
     expect(page.html).toContain(
-      '<td><span class="label label-inverse">Draft</span></td><td>Not scheduled</td><td>0</td>',
+      '<td><span class="label label-inverse">Draft</span></td><td class="hidden-xs">Not scheduled</td><td class="hidden-xs">0</td>',
     );
     expect(page.html).toContain('<td><span class="label label-info">Scheduled</span></td>');
     expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/surveys\/surveys\?siteid=tenant-a">/);
@@ -182,11 +182,11 @@ describe('surveys list', () => {
   });
 
   it.each([
-    { pageIndex: '1', total: 120, page: 'Page 1 of 3', links: [['Next', '2']] },
-    { pageIndex: '2', total: 120, page: 'Page 2 of 3', links: [['Previous', '1'], ['Next', '3']] },
-    { pageIndex: '3', total: 120, page: 'Page 3 of 3', links: [['Previous', '2']] },
-    { pageIndex: '1', total: 50, page: undefined, links: [] },
-  ])('pages $total surveys from page $pageIndex', async ({ pageIndex, total, page, links }) => {
+    { pageIndex: '1', total: 120, range: '1-50 of 120', links: [['2', '2'], ['3', '3'], ['', '2']] },
+    { pageIndex: '2', total: 120, range: '51-100 of 120', links: [['', '1'], ['1', '1'], ['3', '3'], ['', '3']] },
+    { pageIndex: '3', total: 120, range: '101-120 of 120', links: [['', '2'], ['1', '1'], ['2', '2']] },
+    { pageIndex: '1', total: 50, range: undefined, links: [] },
+  ])('pages $total surveys from page $pageIndex', async ({ pageIndex, total, range, links }) => {
     const gateway = surveysGateway({ [LIST_ROUTE]: listOf(total) });
 
     const html = await bodyHtml('surveys', managerRequest({ pageIndex }), gateway);
@@ -195,8 +195,27 @@ describe('surveys list', () => {
     expect(pagerLinks).toEqual(
       links.map(([text, to]) => ({ href: `/opt2/admin/surveys/surveys?siteid=${SITE}&pageIndex=${to}`, text })),
     );
-    expect(html.includes('<p>Page ')).toBe(page !== undefined);
-    if (page !== undefined) expect(html).toContain(`<p>${page}</p>`);
+    expect(html.includes('class="pagination pull-right"')).toBe(range !== undefined);
+    if (range !== undefined) {
+      expect(html).toContain(`<p class="clearfix search-showing">Showing ${range} Results</p>`);
+      expect(html).toContain(`<li class="active"><a href="#">${pageIndex}</a></li>`);
+    }
+  });
+
+  it('shows page 1 for a page past the last, reading it after the out-of-range page', async () => {
+    const gateway = surveysGateway({
+      [LIST_ROUTE]: (request) => ({
+        status: 200,
+        body: { data: request.query['pageIndex'] === '1' ? surveys : [], total: 120 },
+      }),
+    });
+
+    const html = await bodyHtml('surveys', managerRequest({ pageIndex: '9999' }), gateway);
+
+    expect(surveysCalls(gateway).map(({ query }) => query?.pageIndex)).toEqual(['9999', '1']);
+    expect(fragmentModel(html).tables[0]?.rows).toHaveLength(surveys.length);
+    expect(html).not.toContain('There are no surveys for this site.');
+    expect(html).toContain('<li class="active"><a href="#">1</a></li>');
   });
 
   it.each([
