@@ -15,6 +15,7 @@ import {
   type RouteKeyResult,
   type VariantCondition,
   type VariantDeclaration,
+  apiRequestPath,
   entityRemoteFunctionsFromKeys,
   fixtureDispatchPath,
   isLegacySessionManaged,
@@ -1736,5 +1737,29 @@ describe('isLegacySessionManaged', () => {
     ['/ctx/_api/rest/v1/default/', {}, true],
   ])('reads %s with %j as session-managed: %s', (path, opts, expected) => {
     expect(isLegacySessionManaged(path, opts)).toBe(expected);
+  });
+});
+
+describe('apiRequestPath', () => {
+  it.each<[string, string, RouteKeyOptions?]>([
+    ['/index.cfm/_api/rest/v1/default/oauth', '/_api/rest/v1/default/oauth'],
+    ['/_api/rest/v1/default/oauth', '/_api/rest/v1/default/oauth'],
+    ['/index.cfm/_api/rest/v1/default/oauth/', '/_api/rest/v1/default/oauth/'],
+    ['/index.cfm/_api/rest/v1/default/o%61uth2', '/_api/rest/v1/default/oauth2'],
+    ['/ctx/index.cfm/_api/rest/v1/default/oauth', '/_api/rest/v1/default/oauth', { context: '/ctx' }],
+  ])('reads %s as %s', (path, expected, opts) => {
+    expect(apiRequestPath(path, opts)).toBe(expected);
+  });
+
+  it.each([
+    ['/_api/rest/v1/default/oauth', 'rest:oauth'],
+    ['/_api/rest/v1/default/oauth2', 'rest:oauth2'],
+    ['/_api/rest/v1/default/oauth/', 'rest:oauth'],
+    ['/_api/rest/v1/default/o%61uth2', 'rest:oauth2'],
+    ['/_api/rest/v1/default/oauth/tokeninfo?access_token=T1&client_id=C1', 'rest:tokeninfo'],
+  ])('keys %s to %s behind /index.cfm too, reading the same path', (url, key) => {
+    const [path = ''] = url.split('?');
+    expect([keyOf('POST', url), keyOf('POST', `/index.cfm${url}`)]).toEqual([key, key]);
+    expect(apiRequestPath(`/index.cfm${path}`)).toBe(apiRequestPath(path));
   });
 });

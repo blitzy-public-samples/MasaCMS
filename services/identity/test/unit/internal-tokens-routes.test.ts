@@ -340,6 +340,18 @@ describe('without a database', () => {
     expect(JSON.parse(body.legacyResponse.body)).toMatchObject({ error: { message: 'Insufficient Account Permissions' } });
   });
 
+  it.each<[string, string]>([
+    [`/index.cfm/_api/rest/v1/${GHOST}/oauth`, WWW_AUTHENTICATE.bearerInvalidClientCredentials],
+    [`/index.cfm/_api/rest/v1/${GHOST}/o%61uth2/`, WWW_AUTHENTICATE.bearerInvalidClientCredentials],
+    [`/index.cfm${REST_PATH}`, WWW_AUTHENTICATE.basic],
+  ])('denies a REST request without credentials on %s with legacy 401 challenging %s, reading the path legacy routes', async (requestPath, challenge) => {
+    const res = await send(offline, 'POST', AUTHENTICATE, await headersFor('gateway'), restRequest(requestPath, { method: 'POST' }));
+
+    const body = res.json() as { outcome: string; legacyResponse: { status: number; headers: Record<string, string> } };
+    expect(body).toMatchObject({ outcome: 'denied', sessionId: null, legacyResponse: { status: 401 } });
+    expect(body.legacyResponse.headers['WWW-Authenticate']).toBe(challenge);
+  });
+
   it.each<[string, Record<string, unknown>]>([
     ['the query', { query: { access_token: 'T' } }],
     ['the form', { form: { client_id: CLIENT } }],
@@ -513,5 +525,38 @@ describe.skipIf(!available)('against PostgreSQL', () => {
     expect(body).toMatchObject({ outcome: 'answered', sessionId: null, legacyResponse: { status: 200 } });
     expect(JSON.parse(body.legacyResponse.body)).toMatchObject({ token_type: 'Bearer' });
     expectEcho(body.legacyResponse.headers, echo);
+  });
+
+  type LegacyAnswer = { status: number; headers: Record<string, string>; body: string };
+
+  /** `answer` with the token values a grant generates afresh, and the body ETag they change, masked, so two grants compare byte for byte. */
+  function withoutFreshTokens(answer: LegacyAnswer): LegacyAnswer {
+    const parsed = JSON.parse(answer.body) as Record<string, unknown>;
+    const struct = (parsed.data ?? parsed) as Record<string, unknown>;
+    let body = answer.body;
+    for (const key of ['access_token', 'refresh_token']) {
+      const value = struct[key];
+      if (typeof value === 'string') body = body.replaceAll(value, `<${key}>`);
+    }
+    return { ...answer, headers: { ...answer.headers, ...(answer.headers.ETag === undefined ? {} : { ETag: '<etag>' }) }, body };
+  }
+
+  const GRANT = { method: 'POST', query: { grant_type: 'client_credentials', client_id: CLIENT, client_secret: CLIENT_SECRET } };
+  it.each<[string, string, string, Record<string, unknown>, Record<string, unknown>]>([
+    ['a client_credentials grant on oauth, in the envelope', `/index.cfm/_api/rest/v1/${GHOST}/oauth`, `/_api/rest/v1/${GHOST}/oauth`, GRANT, { data: { token_type: 'Bearer' }, method: 'getOAuthToken' }],
+    ['a client_credentials grant on oauth2, bare', `/index.cfm/_api/rest/v1/${GHOST}/oauth2`, `/_api/rest/v1/${GHOST}/oauth2`, GRANT, { token_type: 'Bearer' }],
+    ['a client_credentials grant on oauth/, in the envelope', `/index.cfm/_api/rest/v1/${GHOST}/oauth/`, `/_api/rest/v1/${GHOST}/oauth/`, GRANT, { data: { token_type: 'Bearer' } }],
+    ['a client_credentials grant on an encoded oauth2, bare', `/index.cfm/_api/rest/v1/${GHOST}/o%61uth2`, `/_api/rest/v1/${GHOST}/oauth2`, GRANT, { token_type: 'Bearer' }],
+    ['tokeninfo, bare', `/index.cfm/_api/rest/v1/${GHOST}/oauth/tokeninfo`, `/_api/rest/v1/${GHOST}/oauth/tokeninfo`, { query: { access_token: ACCESS_TOKEN, client_id: CLIENT } }, { access_token: ACCESS_TOKEN }],
+  ])('answers %s behind /index.cfm exactly as on the bare path', async (_label, behind, bare, extra, shape) => {
+    const answer = async (requestPath: string): Promise<{ outcome: string; legacyResponse: LegacyAnswer }> =>
+      (await send(app(), 'POST', AUTHENTICATE, await headersFor('gateway'), restRequest(requestPath, extra))).json();
+
+    const [prefixed, direct] = [await answer(behind), await answer(bare)];
+
+    expect(prefixed).toMatchObject({ outcome: 'answered', sessionId: null, legacyResponse: { status: 200 } });
+    expect(JSON.parse(prefixed.legacyResponse.body)).toMatchObject(shape);
+    expect(withoutFreshTokens(prefixed.legacyResponse)).toEqual(withoutFreshTokens(direct.legacyResponse));
+    expect(direct.outcome).toBe(prefixed.outcome);
   });
 });

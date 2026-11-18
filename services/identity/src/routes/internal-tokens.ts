@@ -1,5 +1,6 @@
 /** Gateway-facing token routes (`mintUserToken`, `authenticateRequest`) and the local signer's key set (`getJwks`). */
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
+import { apiRequestPath } from '@opt2/platform/legacy-compat';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import type { Jwks, TokenRequest, TokenService, UserTokenResponse } from '../domain/tokens.js';
 import type { components } from '../generated/openapi.js';
@@ -75,7 +76,7 @@ function structAppend(target: Struct, source: Struct): Struct {
 function restAuthInput(body: Schemas['AuthenticateRequest']): RestAuthInput {
   const params = structAppend(structAppend(structAppend({}, body.query), body.form ?? {}), isStruct(body.body) ? body.body : {});
   return {
-    path: body.path,
+    path: apiRequestPath(body.path),
     httpMethod: body.method,
     // A repeated header reads as one comma-separated value, as Node and the servlet container join it.
     headers: Object.fromEntries(Object.entries(body.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : value])),

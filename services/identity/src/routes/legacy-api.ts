@@ -7,6 +7,7 @@ import {
   LegacyServiceUnavailableError,
   PHOTO_CONDITION,
   WWW_AUTHENTICATE,
+  apiRequestPath,
   buildEnvelope,
   cfEq,
   cfIsBoolean,
@@ -2564,7 +2565,7 @@ async function oauthAnswer(call: ApiCall, headers: FastifyRequest['headers'], qu
   const flat: Record<string, string | undefined> = {};
   for (const name of Object.keys(headers)) flat[name] = headerValue(headers, name);
   const input: RestAuthInput = {
-    path: pathOf(call.request).replace(/^\/index\.cfm(?=\/|$)/i, ''),
+    path: apiRequestPath(pathOf(call.request), { context: call.settings.context }),
     httpMethod: call.request.method,
     headers: flat,
     query,

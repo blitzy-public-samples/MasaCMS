@@ -1242,6 +1242,11 @@ export function isLegacySessionManaged(path: string, opts: Pick<RouteKeyOptions,
   return !startsNoCase(normalisePath(path, opts.context ?? '').pathInfo, SESSIONLESS_PATH_INFO);
 }
 
+/** The path the root front controller hands an API request (query excluded), which its route key reads: decoded, without the context and the first `index.cfm` (contentServer.cfc:141-167). */
+export function apiRequestPath(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): string {
+  return normalisePath(path, opts.context ?? '').rootPath;
+}
+
 /** The api.cfm path legacy dispatches a fixture request on, each item as api.cfm reads it; undefined outside the fixture front controller. */
 export function fixtureDispatchPath(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): string | undefined {
   const items = fixtureItems(path, opts.context ?? '');

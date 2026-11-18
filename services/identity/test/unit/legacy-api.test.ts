@@ -1,13 +1,16 @@
-/** The JSON API routes against Masa 7.6.1 oracle answers over an in-memory registry: headers, CORS, route ownership, path forms, the MURA settings, identity's named methods without stored data, ad hoc validate rules, the error log and the LIKE matcher. */
+/** The JSON API routes against Masa 7.6.1 oracle answers over an in-memory registry: headers, CORS, route ownership, path forms, the MURA settings, identity's named methods without stored data, ad hoc validate rules, the error log and the LIKE matcher; and the REST token endpoint's path forms over a throwaway `identity` schema. */
+import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { LOCAL_SERVICE_TOKEN_TTL_SECONDS, collectRouteMatrix } from '@opt2/platform/auth';
 import { etag, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { validateLogRecord } from '@opt2/platform/logging';
+import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { EnvValidationError, SERVICE_CALL_TIMEOUT_MS, type FastifyInstance, type ServiceClient, type ServiceResponse } from '@opt2/platform/service-kit';
-import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { tenantIdForSite, withMetadata } from '@opt2/platform/tenancy';
+import { assertResponseMatchesOpenApi, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { createIdentityRepository } from '../../src/repo/repository.js';
+import { IDENTITY_UNITS } from '../../src/repo/tables.js';
 import { legacyApiPrefixes, likeMatcher, registerLegacyApiRoutes, type LegacyApiRouteDeps, type LegacyApiSettings } from '../../src/routes/legacy-api.js';
 import {
   ADMIN_GROUP,
@@ -15,6 +18,7 @@ import {
   CLOCK,
   EDITOR_GROUP,
   ERRORS,
+  FORM_BODY,
   HOST,
   LEGACY_JSON_TYPE,
   MEMBER,
@@ -651,6 +655,9 @@ describe('JSON API path forms', () => {
     ['in the rest family in upper case', 'root', '/_API/REST/V1/default/group/properties', 'restNoCredentials'],
     ['behind the configured context', 'context', '/masa/_api/json/v1/default/group/new', 'findNewDenied'],
     ['behind the configured context and /index.cfm', 'context', '/masa/index.cfm/_api/rest/v1/default/group/properties', 'restNoCredentials'],
+    ['in the rest family with an encoded oauth2 segment', 'root', '/_api/rest/v1/default/o%61uth2', 'restOauth2NoCredentials'],
+    ['in the rest family behind /index.cfm with an encoded oauth2 segment', 'root', '/index.cfm/_api/rest/v1/default/o%61uth2', 'restOauth2NoCredentials'],
+    ['behind the configured context and /index.cfm with an encoded oauth2 segment', 'context', '/masa/index.cfm/_api/rest/v1/default/o%61uth2', 'restOauth2NoCredentials'],
   ])('answers the JSON API %s as the oracle request and Masa 7.6.1 do: status, body, ETag and Origin echo', async (_label, appName, alias, name) => {
     const app = apps[appName];
     if (app === undefined) throw new Error(`no ${appName} app`);
@@ -670,6 +677,90 @@ describe('JSON API path forms', () => {
       expect(each.headers['access-control-allow-origin']).toBe(origin);
       expect(each.headers['access-control-allow-credentials']).toBe('true');
     }
+  });
+});
+
+const available = await pgAvailable();
+
+describe.skipIf(!available)('REST token endpoint path forms against PostgreSQL', () => {
+  /** A site identity does not register, so logging its user in raises nothing. */
+  const GHOST = 'ghost';
+  const USER = 'A0000000-0000-0000-0000000000000010';
+  const CLIENT = 'C0000000-0000-0000-0000000000000010';
+  const GRANT = { grant_type: 'client_credentials', client_id: CLIENT, client_secret: 'cc-secret' };
+  let handle: ThrowawaySchema | undefined;
+  let app: FastifyInstance | undefined;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    const { schema } = handle;
+    const db = handle.app;
+    const repo = createIdentityRepository({ clock: CLOCK, schema });
+    await ensureUnitGates(db, IDENTITY_UNITS);
+    await withMetadata(db, (tx) => tx.query(`UPDATE ${schema}.unit_gate SET state = 'open', holder_id = NULL, phase = 'quiet'`));
+    await withMetadata(db, (tx) =>
+      tx.query(
+        `INSERT INTO ${schema}.tenant_registry (site_id, tenant_id, private_user_pool_id, public_user_pool_id,` +
+          ' private_user_pool_tenant, public_user_pool_tenant, aggregate_version, updated_at) VALUES ($1, $2, $1, $1, $2, $2, 1, $3)',
+        [SITE, tenantIdForSite(SITE), NOW],
+      ),
+    );
+    // The token endpoint finds a client only in the API site's tenant.
+    await withGatedTenant(db, tenantIdForSite(SITE), async (tx) => {
+      await repo.insertAccount(tx, { userid: USER, username: 'ghost-user', type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: GHOST, remoteid: '', tablist: '' });
+      await repo.upsertPersonContact(tx, { user_id: USER, site_id: GHOST, subtype: 'Default', aggregate_version: 1, fname: 'Ghost', lname: 'User', email: 'ghost@example.test', company: '' });
+      await repo.insertOAuthClient(tx, {
+        clientid: CLIENT, clientsecret: GRANT.client_secret, siteid: SITE, granttype: 'client_credentials', userid: USER, name: 'cc', created: NOW,
+        lastupdate: NOW, description: null, redirecturl: null, lastupdatebidy: null, lastupdateby: null,
+      });
+    });
+    app = await buildApp(routeDeps(db, repo, recordingPeople(), recordingFetch().fetch, SETTINGS));
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+    await handle?.drop();
+  });
+
+  /** A form-posted grant on `url`, checked against the contract operation of `canonical`. */
+  async function grant(url: string, canonical: string): Promise<Answer> {
+    if (app === undefined) throw new Error('PostgreSQL is not available');
+    const res = await app.inject({ method: 'POST', url, headers: { host: HOST, ...(await headersFor()), ...FORM_BODY }, payload: new URLSearchParams(GRANT).toString() });
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: canonical, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    return res;
+  }
+
+  /** The key the gateway computes for a grant on `url`. */
+  function keyOf(url: string): string {
+    return scannedRouteKey({ method: 'POST', path: url, url, query: {}, form: GRANT, headers: FORM_BODY }, { appReloadKey: SETTINGS.appReloadKey }).result.key;
+  }
+
+  /** Status, challenge, content type and body, with the token values a grant generates afresh masked. */
+  function withoutFreshTokens(res: Answer): Record<string, unknown> {
+    const parsed = json(res);
+    const struct = (parsed.data ?? parsed) as Record<string, unknown>;
+    let body = res.body;
+    for (const key of ['access_token', 'refresh_token']) {
+      const value = struct[key];
+      if (typeof value === 'string') body = body.replaceAll(value, `<${key}>`);
+    }
+    return { status: res.statusCode, wwwAuthenticate: res.headers['www-authenticate'], contentType: res.headers['content-type'], body };
+  }
+
+  it.each<[string, string, string, string, number, Record<string, unknown>]>([
+    ['an encoded oauth2, answering the bare token struct', `/_api/rest/v1/${SITE}/o%61uth2`, `/_api/rest/v1/${SITE}/oauth2`, 'rest:oauth2', 200, { token_type: 'Bearer', expires_in: 3600 }],
+    ['an encoded oauth2 behind /index.cfm', `/index.cfm/_api/rest/v1/${SITE}/o%61uth2`, `/_api/rest/v1/${SITE}/oauth2`, 'rest:oauth2', 200, { token_type: 'Bearer', expires_in: 3600 }],
+    ['an encoded oauth, whose envelope of a registered site raises', `/_api/rest/v1/${SITE}/o%61uth`, `/_api/rest/v1/${SITE}/oauth`, 'rest:oauth', 500, { error: ERRORS.serverError }],
+    ['an encoded oauth behind /index.cfm', `/index.cfm/_api/rest/v1/${SITE}/o%61uth`, `/_api/rest/v1/${SITE}/oauth`, 'rest:oauth', 500, { error: ERRORS.serverError }],
+  ])('answers a client_credentials grant on %s exactly as on the decoded bare path, under the same route key', async (_label, alias, bare, key, status, shape) => {
+    const aliased = await grant(alias, bare);
+    const direct = await grant(bare, bare);
+
+    expect([keyOf(alias), keyOf(bare)]).toEqual([key, key]);
+    expect(aliased.statusCode).toBe(status);
+    expect(json(aliased)).toMatchObject(shape);
+    for (const res of [aliased, direct]) expect(res.headers.etag).toBe(etag(res.body));
+    expect(withoutFreshTokens(aliased)).toEqual(withoutFreshTokens(direct));
   });
 });
 
