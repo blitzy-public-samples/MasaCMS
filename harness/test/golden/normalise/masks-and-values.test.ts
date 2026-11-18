@@ -443,6 +443,7 @@ describe('timestamps', () => {
     ['260630100000123', undefined],
     [String(EPOCH_MS), 'title'],
     [String(EPOCH_MS), undefined],
+    ['40001324,19750248', 'formfield1234567892'],
     ['2026-06-30T10:00:00 trailing', undefined],
     ['not a date', undefined],
   ])('leaves %s under key %s unclassified and unchanged', (value, key) => {

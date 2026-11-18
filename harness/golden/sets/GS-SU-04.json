@@ -1,0 +1,240 @@
+{
+  "capturedAt": "2026-11-18T14:26:29.044Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:30.469Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-SU-04",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "surveys.survey_response": {
+        "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "columns": [
+          {
+            "name": "response_id",
+            "type": "s"
+          },
+          {
+            "name": "survey_id",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "respondentSiteID",
+            "type": "s"
+          },
+          {
+            "name": "respondent_user_id",
+            "type": "s"
+          },
+          {
+            "name": "answers",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          }
+        ],
+        "entries": [],
+        "legacyTable": "synthetic.survey_response",
+        "unit": "surveys.survey_response"
+      }
+    },
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "survey",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [],
+            "title": "GS-SU-04 Untargeted Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "survey",
+        "routeKey": "fixture:surveys/surveys@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "title": "GS-SU-04 Untargeted Survey"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [],
+            "title": "GS-SU-04 Untargeted Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "e55726cbaa8da03a9e4efa3e077b9534ab603d0e67df39008771331e84d9bb44",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys@post"
+    },
+    {
+      "index": 1,
+      "name": "respond-untargeted",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Insufficient Account Permissions"
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "respond-untargeted",
+        "routeKey": "fixture:surveys/surveys/{id}/responses@post",
+        "status": 403
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "answers": "{\"q1\":\"no\"}"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/56853823-B763-3D8D-326FC3C142BF5CA3/responses?siteid=tenant-b"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Insufficient Account Permissions"
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "046a1fe183a8de596907b92334b033ff998b78c72d67ef2cfd1b836da4eae88c",
+        "status": 403
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/responses@post"
+    },
+    {
+      "index": 2,
+      "name": "responses",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 0,
+            "items": [],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 0,
+            "totalpages": 0
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "responses",
+        "routeKey": "fixture:surveys/surveys/{id}/responses@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/56853823-B763-3D8D-326FC3C142BF5CA3/responses?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 0,
+            "items": [],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 0,
+            "totalpages": 0
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "0e1405f91a3395af8b75d3a203fa0acb2c50de651123e7e2c2972bf05e9d48a1",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/responses@get"
+    }
+  ],
+  "tableVersion": null
+}

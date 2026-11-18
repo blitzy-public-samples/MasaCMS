@@ -33,6 +33,7 @@ import {
   eSignatureAnswers,
   pendingRequest,
   signatureRequestList,
+  signedRequest,
   signedRequestDetail,
   verifyTampered,
 } from '../../../fixtures/opt2/e-signature';
@@ -176,12 +177,18 @@ describe('e-signature screen markup', () => {
     expect($('form input[name="id"]')).toHaveLength(1);
   });
 
-  it('encodes service text into markup and attributes', async () => {
-    const hostile = '"><script>alert(1)</script>';
+  const hostile = '"><script>alert(1)</script>';
+
+  it.each<[string, string, number]>([
+    ['a request the reader signs, its document a link', hostile, 3],
+    ['a request the reader may not open, its document plain text', ESIGNATURE_IDS.signer, 0],
+  ])('encodes service text into markup and attributes on %s', async (_case, sub, links) => {
     const list = { ...signatureRequestList, items: [{ ...pendingRequest, document_name: hostile, signer_user_id: hostile }] };
-    const markup = await bodyOf('requests', contextFor([SIGNER], {}, { [key('GET', REQUESTS_PATH)]: { status: 200, body: list } }));
+    const routes = { [key('GET', REQUESTS_PATH)]: { status: 200, body: list } };
+    const markup = await bodyOf('requests', contextFor([SIGNER], {}, routes, sub));
     const $ = cheerio.load(markup, null, false);
     expect($('script')).toHaveLength(0);
+    expect($('table.mura-table-grid tbody a')).toHaveLength(links);
     expect($('table.mura-table-grid tbody tr td').first().text()).toBe(hostile);
     expect(markup).toContain('&lt;script&gt;');
   });
@@ -505,6 +512,48 @@ describe('e-signature roles', () => {
     const $ = cheerio.load(await bodyOf('request', ctx), null, false);
     expect($('form')).toHaveLength(0);
     expect(csrfContexts(ctx.gateway)).toEqual([]);
+  });
+
+  describe('request list rows', () => {
+    const OTHER_SIGNER = 'E51600F0-0000-0000-0000000000000002';
+    const othersRequest = { ...signedRequest, signer_user_id: OTHER_SIGNER };
+    const list = { ...signatureRequestList, items: [othersRequest, pendingRequest] };
+    const routes = { [key('GET', REQUESTS_PATH)]: { status: 200, body: list } };
+    const NOTE = 'Only requests for which you are the signer can be opened.';
+
+    /** The request, audit chain and verify links of `request`, as [href, text]. */
+    const linksOf = (request: typeof pendingRequest): string[][] => [
+      [`/opt2/admin/e-signature/request?siteid=${SITE}&id=${request.request_id}`, request.document_name],
+      [`/opt2/admin/e-signature/audit?siteid=${SITE}&id=${request.request_id}`, 'Audit Chain'],
+      [`/opt2/admin/e-signature/verify?siteid=${SITE}&id=${request.request_id}`, 'Verify'],
+    ];
+
+    it.each<[string, readonly Role[], string, boolean, string[]]>([
+      ['its signer', [SIGNER], ESIGNATURE_IDS.signer, false, [NOTE]],
+      ['its signer, whose token id differs only in case', [SIGNER], ESIGNATURE_IDS.signer.toLowerCase(), false, [NOTE]],
+      ['a signer holding the auditor role, signer of neither', [SIGNER, AUDITOR], SUBJECTS[AUDITOR].sub, true, []],
+    ])('link the requests %s may open, with the note for a non-auditor', async (_case, roles, sub, othersOpen, notes) => {
+      const $ = cheerio.load(await bodyOf('requests', contextFor(roles, {}, routes, sub)), null, false);
+      const rowLinks = $('table.mura-table-grid tbody tr')
+        .toArray()
+        .map((tr) => $(tr).find('a').toArray().map((a) => [a.attribs.href, $(a).text()]));
+      expect(rowLinks).toEqual([othersOpen ? linksOf(othersRequest) : [], linksOf(pendingRequest)]);
+      expect($('div.block-content > p.help-block').toArray().map((el) => $(el).text())).toEqual(notes);
+      expect($('div.block-content > p.help-block + table.mura-table-grid')).toHaveLength(notes.length);
+    });
+
+    it('shows a request of another signer with its document unlinked and no actions', async () => {
+      const markup = await bodyOf('requests', contextFor([SIGNER], {}, routes));
+      expect(fragmentModel(markup).tables[0]?.rows).toEqual([
+        [othersRequest.document_name, 'Signed', OTHER_SIGNER, othersRequest.created, ''],
+        [pendingRequest.document_name, 'Pending', ESIGNATURE_IDS.signer, pendingRequest.created, 'Audit Chain Verify'],
+      ]);
+      const $ = cheerio.load(markup, null, false);
+      const others = $('table.mura-table-grid tbody tr').first().children('td');
+      expect(others.find('a')).toHaveLength(0);
+      expect([others.first().html(), others.last().html()]).toEqual([othersRequest.document_name, '']);
+      expect(markup).not.toContain(othersRequest.request_id);
+    });
   });
 
   it('shows a signed request its typed name and signer', async () => {

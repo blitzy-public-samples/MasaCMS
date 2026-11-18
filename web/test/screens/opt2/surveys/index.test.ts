@@ -1,8 +1,9 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-// The surveys module's registrations: slugs, owning service, roles, the OPT-2 nav link, and legacy admin classes only.
+// The surveys registrations: slugs, owning service, roles, gate, the OPT-2 nav link, and legacy admin classes only.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { surveysActions, surveysScreens } from '@/screens/opt2/surveys';
+import { SURVEYS_GATE } from '@/screens/opt2/surveys/common';
 import { OPT2_NAV_MODULES } from '@/shell/nav';
 import { SURVEY_IDS } from '../../../fixtures/opt2/surveys';
 import { useTestEnv } from '../../../helpers/env';
@@ -80,9 +81,9 @@ describe('surveys registrations', () => {
   it.each([
     ...surveysScreens.map((def) => ({ name: `screen ${def.screen}`, def })),
     ...surveysActions.map((def) => ({ name: `action ${def.action}`, def })),
-  ])('gives $name to the surveys service for surveys.manager, leaving access to the service', ({ def }) => {
+  ])('gives $name to the surveys service for surveys.manager, behind the surveys gate', ({ def }) => {
     expect(def).toMatchObject({ module: 'surveys', service: 'surveys', roles: ['surveys.manager'] });
-    expect(def.gate).toBeUndefined();
+    expect(def.gate).toBe(SURVEYS_GATE);
   });
 
   it('serves the OPT-2 nav link of the module', () => {

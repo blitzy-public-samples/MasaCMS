@@ -216,20 +216,23 @@ const extraction = z.union(
 /** How a step binds a value from its response. */
 export type Extraction = z.infer<typeof extraction>;
 
+const filePart = {
+  field: z.string().min(1),
+  filename: z.string().min(1),
+  contentType: z.string().regex(/^[\w.+-]+\/[\w.+-]+$/, 'must be a MIME type'),
+};
+const multipartFile = z.union(
+  [z.strictObject({ ...filePart, fixture: kebab }), z.strictObject({ ...filePart, fromStep: name })],
+  { error: 'must be {field, fixture, filename, contentType} or {field, fromStep, filename, contentType}' },
+);
+/** A multipart file: a generated fixture, or the body of an earlier step's last response (`fromStep`). */
+export type MultipartFileSpec = z.infer<typeof multipartFile>;
+
 const multipartSpec = z.strictObject({
   fields: z.record(z.string().min(1), z.string()).default(() => ({})),
-  files: z
-    .array(
-      z.strictObject({
-        field: z.string().min(1),
-        fixture: kebab,
-        filename: z.string().min(1),
-        contentType: z.string().regex(/^[\w.+-]+\/[\w.+-]+$/, 'must be a MIME type'),
-      }),
-    )
-    .min(1),
+  files: z.array(multipartFile).min(1),
 });
-/** A multipart body; each file names a fixture file, never inline bytes. */
+/** A multipart body; each file names a fixture or an earlier step, never inline bytes. */
 export type MultipartSpec = z.infer<typeof multipartSpec>;
 
 const pollSpec = z
@@ -505,6 +508,13 @@ export const scenarioSchema = z
           issue(`csrfFrom ${step.csrfFrom} names no earlier step`, ['steps', i, 'csrfFrom']);
         }
       }
+      step.multipart?.files.forEach((file, f) => {
+        if (!('fromStep' in file)) return;
+        const from = indexOf.get(file.fromStep);
+        if (from === undefined || from >= i) {
+          issue(`fromStep ${file.fromStep} names no earlier step`, ['steps', i, 'multipart', 'files', f, 'fromStep']);
+        }
+      });
       if (step.as !== undefined) {
         const variable = MATRIX_VALUE.exec(step.as)?.[1];
         const sessionNames = variable === undefined ? [step.as] : (step.matrix?.[variable] ?? []);

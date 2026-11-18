@@ -326,6 +326,59 @@ describe('stepSchema mergeHidden', () => {
   });
 });
 
+describe('multipart file sources', () => {
+  const FILE_SOURCE = 'must be {field, fixture, filename, contentType} or {field, fromStep, filename, contentType}';
+  const exportStep = { name: 'export', route: '/admin/?muraAction=cArch.exportcontent' };
+  const upload = (source: Record<string, unknown>) => ({
+    name: 'import',
+    method: 'POST',
+    route: '/admin/?muraAction=cArch.importcontent',
+    multipart: { files: [{ field: 'newFile', filename: 'export.zip', contentType: 'application/zip', ...source }] },
+  });
+  const parsed = (steps: Record<string, unknown>[]) =>
+    scenarioSchema.safeParse({
+      id: 'GS-CO-21',
+      title: 'File sources',
+      service: 'strategies-content',
+      role: 'admin',
+      sessions: { admin: { login: 'admin', via: 'admin' } },
+      steps,
+      compare: ['status'],
+      covers: [],
+    });
+
+  it.each<Record<string, string>>([{ fixture: 'masa-plugin-zip' }, { fromStep: 'export' }])(
+    'accepts a file with source %j',
+    (source) => {
+      expect(parsed([exportStep, upload(source)]).data?.steps[1]?.multipart?.files).toStrictEqual([
+        { field: 'newFile', filename: 'export.zip', contentType: 'application/zip', ...source },
+      ]);
+    },
+  );
+
+  it.each([
+    { label: 'a later step', steps: [upload({ fromStep: 'export' }), exportStep], at: 0, from: 'export' },
+    { label: 'its own step', steps: [exportStep, upload({ fromStep: 'import' })], at: 1, from: 'import' },
+    { label: 'no step', steps: [exportStep, upload({ fromStep: 'missing' })], at: 1, from: 'missing' },
+  ])('rejects a fromStep naming $label', ({ steps, at, from }) => {
+    expect(parsed(steps).error?.issues).toStrictEqual([
+      expect.objectContaining({
+        path: ['steps', at, 'multipart', 'files', 0, 'fromStep'],
+        message: `fromStep ${from} names no earlier step`,
+      }),
+    ]);
+  });
+
+  it.each<Record<string, string>>([{ fixture: 'masa-plugin-zip', fromStep: 'export' }, {}])(
+    'rejects a file with source %j',
+    (source) => {
+      expect(parsed([exportStep, upload(source)]).error?.issues.map((issue) => issue.message)).toStrictEqual([
+        FILE_SOURCE,
+      ]);
+    },
+  );
+});
+
 describe('readFixtureStatus', () => {
   it('reads <state>/fixtures.json as written', () => {
     const dir = tempDir();
@@ -456,6 +509,13 @@ describe('committed catalogue', () => {
     const flows = range('GS-UI', 5).map((id) => scenarioById(catalogue, id).browser);
     for (const flow of flows) expect(flow).toEqual({ flow: expect.any(String), console: 'no-new-errors' });
     expect(new Set(flows.map((f) => f?.flow)).size).toBe(flows.length);
+  });
+
+  it('runs the legacy-write flows after GS-LS-04, so their writes reach no earlier scenario', () => {
+    const last = ids.indexOf('GS-LS-04');
+    const flows = ['GS-PS-09', 'GS-PS-10', 'GS-CO-21', 'GS-CO-22', 'GS-CO-23'];
+    expect(last).toBeGreaterThanOrEqual(0);
+    for (const id of flows) expect(ids.indexOf(id), id).toBeGreaterThan(last);
   });
 
   it("posts GS-CO-02's edit save without the form's other hidden fields", () => {

@@ -16,6 +16,7 @@ import {
   type Opt2Write,
 } from '../shared';
 import {
+  SURVEYS_GATE,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
@@ -113,6 +114,7 @@ export const targetsScreen: Opt2ScreenDefinition<TargetsData> = {
   screen: 'targets',
   roles: SURVEYS_ROLES,
   service: 'surveys',
+  gate: SURVEYS_GATE,
   load: (ctx) => loadTargets(ctx, surveyIdOf(ctx)),
   render: (ctx, data) => opt2View(SURVEYS_MODULE, renderTargets(ctx, data, ''), 'targets'),
 };
@@ -123,6 +125,7 @@ export const bulkTargetAction: Opt2ActionDefinition = {
   action: 'bulk-target',
   roles: SURVEYS_ROLES,
   service: 'surveys',
+  gate: SURVEYS_GATE,
   async submit(ctx) {
     const surveyId = surveyIdOf(ctx);
     const siteid = siteIdOf(ctx);

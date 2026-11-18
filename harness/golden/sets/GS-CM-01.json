@@ -1,0 +1,717 @@
+{
+  "capturedAt": "2026-11-18T14:26:37.567Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:39.752Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-CM-01",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "communications.message_template": {
+        "checksum": "b10fa66cb0ba906dab9fbb2303f39d4df743cc92b8dc13d51112676129357f3e",
+        "columns": [
+          {
+            "name": "template_id",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "name",
+            "type": "s"
+          },
+          {
+            "name": "subject",
+            "type": "s"
+          },
+          {
+            "name": "body_text",
+            "type": "s"
+          },
+          {
+            "name": "body_html",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          },
+          {
+            "name": "lastUpdate",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:1>s8:tenant-as16:GS-CM-01 Welcomes17:Welcome {{fname}}s15:Hello {{fname}}s22:<p>Hello {{fname}}</p>s14:<ts:iso-local>s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "synthetic.message_template",
+        "unit": "communications.message_template"
+      }
+    },
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "create",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "body_html": "<p>Hello {{fname}}</p>",
+            "body_text": "Hello {{fname}}",
+            "created": "<ts:serializer>",
+            "lastupdate": "<ts:serializer>",
+            "name": "GS-CM-01 Welcome",
+            "siteid": "tenant-a",
+            "subject": "Welcome {{fname}}",
+            "template_id": "<id:1>"
+          },
+          "method": "communications.templates"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "create",
+        "routeKey": "fixture:communications/templates@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "bodyHtml": "<p>Hello {{fname}}</p>",
+            "bodyText": "Hello {{fname}}",
+            "name": "GS-CM-01 Welcome",
+            "subject": "Welcome {{fname}}"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/communications/templates?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "body_html": "<p>Hello {{fname}}</p>",
+            "body_text": "Hello {{fname}}",
+            "created": "<ts:serializer>",
+            "lastupdate": "<ts:serializer>",
+            "name": "GS-CM-01 Welcome",
+            "siteid": "tenant-a",
+            "subject": "Welcome {{fname}}",
+            "template_id": "<id:1>"
+          },
+          "method": "communications.templates"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "eb70ce257e1d9e25c6eac460b378b7a99bbdf0bd6bc24703b48143e7239e93a6",
+        "status": 200
+      },
+      "routeKey": "fixture:communications/templates@post"
+    },
+    {
+      "index": 1,
+      "name": "list",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 11,
+            "items": [
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Velut ascit bibo ascit thalassinus dedecor sodalitas vado. Adicio commodi carmen defaeco aegrus suasoria defetiscor. Arguo termes canonicus admiratio.</p>\n<p>Amo claro denique una atqui tendo crepusculum. Deficio suscipio uredo tergiversatio nemo sub amiculum conatus abbas. Amaritudo ad delego.</p>\n<p>Veritas tamquam vitiosus taedium tergum admiratio sub utroque congregatio nesciunt.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nVelut ascit bibo ascit thalassinus dedecor sodalitas vado. Adicio commodi carmen defaeco aegrus suasoria defetiscor. Arguo termes canonicus admiratio.\n\nAmo claro denique una atqui tendo crepusculum. Deficio suscipio uredo tergiversatio nemo sub amiculum conatus abbas. Amaritudo ad delego.\n\nVeritas tamquam vitiosus taedium tergum admiratio sub utroque congregatio nesciunt.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Account Update",
+                "siteid": "tenant-a",
+                "subject": "Your {{siteName}} account was updated",
+                "template_id": "<id:2>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Welcome",
+                "siteid": "tenant-a",
+                "subject": "Welcome to {{siteName}}, {{firstName}}",
+                "template_id": "<id:3>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Conturbo appono basium aveho amplexus claudeo uxor bardus colligo. Alias supellex terreo. Culpo sunt pariatur deorsum aranea avarus cribro acerbitas.</p>\n<p>Accusator tumultus talus. Alii cupiditas capio vergo chirographum. Arcesso amor dicta calco una canto facere.</p>\n<p>Sit tumultus absconditus capillus tam vos accusantium valeo.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nConturbo appono basium aveho amplexus claudeo uxor bardus colligo. Alias supellex terreo. Culpo sunt pariatur deorsum aranea avarus cribro acerbitas.\n\nAccusator tumultus talus. Alii cupiditas capio vergo chirographum. Arcesso amor dicta calco una canto facere.\n\nSit tumultus absconditus capillus tam vos accusantium valeo.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Weekly Digest",
+                "siteid": "tenant-a",
+                "subject": "Your weekly {{siteName}} digest, {{firstName}}",
+                "template_id": "<id:4>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Natus cetera aro ago conscendo cribro tamquam vindico assentator occaecati. Textus officia iure. Appello adhaero video peccatus adeptio utilis tumultus conduco.</p>\n<p>Casso curto credo abutor.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nNatus cetera aro ago conscendo cribro tamquam vindico assentator occaecati. Textus officia iure. Appello adhaero video peccatus adeptio utilis tumultus conduco.\n\nCasso curto credo abutor.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Timesheet Reminder",
+                "siteid": "tenant-a",
+                "subject": "{{firstName}}, your timesheet is due",
+                "template_id": "<id:5>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Amissio allatus collum cognomen arbor benevolentia nam illum aiunt degero. Colligo denuo votum. Derideo vae esse administratio corpus pecco.</p>\n<p>Eos quibusdam cubitum tribuo. Possimus curatio quod dedico copiose aveho quae incidunt calculus toties. Adipiscor cultellus conturbo caveo derelinquo tero animus desino.</p>\n<p>Apparatus accedo vulticulus viriliter molestiae color.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nAmissio allatus collum cognomen arbor benevolentia nam illum aiunt degero. Colligo denuo votum. Derideo vae esse administratio corpus pecco.\n\nEos quibusdam cubitum tribuo. Possimus curatio quod dedico copiose aveho quae incidunt calculus toties. Adipiscor cultellus conturbo caveo derelinquo tero animus desino.\n\nApparatus accedo vulticulus viriliter molestiae color.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Monthly Newsletter",
+                "siteid": "tenant-a",
+                "subject": "{{siteName}} monthly newsletter",
+                "template_id": "<id:6>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Unus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.</p>\n<p>Cotidie cubicularis defleo.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nUnus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.\n\nCotidie cubicularis defleo.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Event Invitation",
+                "siteid": "tenant-a",
+                "subject": "{{firstName}}, you are invited to a {{siteName}} event",
+                "template_id": "<id:7>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Atavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.</p>\n<p>Atrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.</p>\n<p>Similique vito vilitas thesis acceptus.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nAtavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.\n\nAtrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.\n\nSimilique vito vilitas thesis acceptus.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Password Reminder",
+                "siteid": "tenant-a",
+                "subject": "Your {{siteName}} password reminder",
+                "template_id": "<id:8>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Hic deleo tego calculus. Decor iusto vita asporto. Triumphus stips comitatus depono caritas crux desidero molestiae.</p>\n<p>Amplitudo tandem varietas tredecim contego.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nHic deleo tego calculus. Decor iusto vita asporto. Triumphus stips comitatus depono caritas crux desidero molestiae.\n\nAmplitudo tandem varietas tredecim contego.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Policy Notice",
+                "siteid": "tenant-a",
+                "subject": "Policy update for {{siteName}} members",
+                "template_id": "<id:9>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Conforto bene anser numquam cubo. Ratione tero vomica amplus molestias architecto. Socius admoneo in praesentium cometes textor bis terminatio.</p>\n<p>Claro ipsa solutio volo vulticulus tres.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nConforto bene anser numquam cubo. Ratione tero vomica amplus molestias architecto. Socius admoneo in praesentium cometes textor bis terminatio.\n\nClaro ipsa solutio volo vulticulus tres.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Approval Request",
+                "siteid": "tenant-a",
+                "subject": "Approval requested in {{siteName}}",
+                "template_id": "<id:10>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Adnuo subnecto quae termes aeternus amita adicio. Utique spargo blanditiis confido cibus pariatur amaritudo spero. Molestiae teres beneficium deporto contego suppono.</p>\n<p>Stella benevolentia contigo velit decipio voro vigilo cervus audax cohaero. Illum tego considero deduco doloremque minus. Ambulo paens substantia tunc.</p>\n<p>Succedo vergo sortitus sodalitas vulgivagus culpa.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nAdnuo subnecto quae termes aeternus amita adicio. Utique spargo blanditiis confido cibus pariatur amaritudo spero. Molestiae teres beneficium deporto contego suppono.\n\nStella benevolentia contigo velit decipio voro vigilo cervus audax cohaero. Illum tego considero deduco doloremque minus. Ambulo paens substantia tunc.\n\nSuccedo vergo sortitus sodalitas vulgivagus culpa.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Survey Invitation",
+                "siteid": "tenant-a",
+                "subject": "Share your feedback with {{siteName}}",
+                "template_id": "<id:11>"
+              },
+              {
+                "body_html": "<p>Hello {{fname}}</p>",
+                "body_text": "Hello {{fname}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "GS-CM-01 Welcome",
+                "siteid": "tenant-a",
+                "subject": "Welcome {{fname}}",
+                "template_id": "<id:1>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 11,
+            "totalpages": 1
+          },
+          "method": "communications.templates"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "list",
+        "routeKey": "fixture:communications/templates@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/communications/templates?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 11,
+            "items": [
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Velut ascit bibo ascit thalassinus dedecor sodalitas vado. Adicio commodi carmen defaeco aegrus suasoria defetiscor. Arguo termes canonicus admiratio.</p>\n<p>Amo claro denique una atqui tendo crepusculum. Deficio suscipio uredo tergiversatio nemo sub amiculum conatus abbas. Amaritudo ad delego.</p>\n<p>Veritas tamquam vitiosus taedium tergum admiratio sub utroque congregatio nesciunt.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nVelut ascit bibo ascit thalassinus dedecor sodalitas vado. Adicio commodi carmen defaeco aegrus suasoria defetiscor. Arguo termes canonicus admiratio.\n\nAmo claro denique una atqui tendo crepusculum. Deficio suscipio uredo tergiversatio nemo sub amiculum conatus abbas. Amaritudo ad delego.\n\nVeritas tamquam vitiosus taedium tergum admiratio sub utroque congregatio nesciunt.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Account Update",
+                "siteid": "tenant-a",
+                "subject": "Your {{siteName}} account was updated",
+                "template_id": "<id:2>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Welcome",
+                "siteid": "tenant-a",
+                "subject": "Welcome to {{siteName}}, {{firstName}}",
+                "template_id": "<id:3>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Conturbo appono basium aveho amplexus claudeo uxor bardus colligo. Alias supellex terreo. Culpo sunt pariatur deorsum aranea avarus cribro acerbitas.</p>\n<p>Accusator tumultus talus. Alii cupiditas capio vergo chirographum. Arcesso amor dicta calco una canto facere.</p>\n<p>Sit tumultus absconditus capillus tam vos accusantium valeo.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nConturbo appono basium aveho amplexus claudeo uxor bardus colligo. Alias supellex terreo. Culpo sunt pariatur deorsum aranea avarus cribro acerbitas.\n\nAccusator tumultus talus. Alii cupiditas capio vergo chirographum. Arcesso amor dicta calco una canto facere.\n\nSit tumultus absconditus capillus tam vos accusantium valeo.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Weekly Digest",
+                "siteid": "tenant-a",
+                "subject": "Your weekly {{siteName}} digest, {{firstName}}",
+                "template_id": "<id:4>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Natus cetera aro ago conscendo cribro tamquam vindico assentator occaecati. Textus officia iure. Appello adhaero video peccatus adeptio utilis tumultus conduco.</p>\n<p>Casso curto credo abutor.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nNatus cetera aro ago conscendo cribro tamquam vindico assentator occaecati. Textus officia iure. Appello adhaero video peccatus adeptio utilis tumultus conduco.\n\nCasso curto credo abutor.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Timesheet Reminder",
+                "siteid": "tenant-a",
+                "subject": "{{firstName}}, your timesheet is due",
+                "template_id": "<id:5>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Amissio allatus collum cognomen arbor benevolentia nam illum aiunt degero. Colligo denuo votum. Derideo vae esse administratio corpus pecco.</p>\n<p>Eos quibusdam cubitum tribuo. Possimus curatio quod dedico copiose aveho quae incidunt calculus toties. Adipiscor cultellus conturbo caveo derelinquo tero animus desino.</p>\n<p>Apparatus accedo vulticulus viriliter molestiae color.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nAmissio allatus collum cognomen arbor benevolentia nam illum aiunt degero. Colligo denuo votum. Derideo vae esse administratio corpus pecco.\n\nEos quibusdam cubitum tribuo. Possimus curatio quod dedico copiose aveho quae incidunt calculus toties. Adipiscor cultellus conturbo caveo derelinquo tero animus desino.\n\nApparatus accedo vulticulus viriliter molestiae color.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Monthly Newsletter",
+                "siteid": "tenant-a",
+                "subject": "{{siteName}} monthly newsletter",
+                "template_id": "<id:6>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Unus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.</p>\n<p>Cotidie cubicularis defleo.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nUnus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.\n\nCotidie cubicularis defleo.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Event Invitation",
+                "siteid": "tenant-a",
+                "subject": "{{firstName}}, you are invited to a {{siteName}} event",
+                "template_id": "<id:7>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Atavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.</p>\n<p>Atrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.</p>\n<p>Similique vito vilitas thesis acceptus.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nAtavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.\n\nAtrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.\n\nSimilique vito vilitas thesis acceptus.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Password Reminder",
+                "siteid": "tenant-a",
+                "subject": "Your {{siteName}} password reminder",
+                "template_id": "<id:8>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Hic deleo tego calculus. Decor iusto vita asporto. Triumphus stips comitatus depono caritas crux desidero molestiae.</p>\n<p>Amplitudo tandem varietas tredecim contego.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nHic deleo tego calculus. Decor iusto vita asporto. Triumphus stips comitatus depono caritas crux desidero molestiae.\n\nAmplitudo tandem varietas tredecim contego.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Policy Notice",
+                "siteid": "tenant-a",
+                "subject": "Policy update for {{siteName}} members",
+                "template_id": "<id:9>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Conforto bene anser numquam cubo. Ratione tero vomica amplus molestias architecto. Socius admoneo in praesentium cometes textor bis terminatio.</p>\n<p>Claro ipsa solutio volo vulticulus tres.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nConforto bene anser numquam cubo. Ratione tero vomica amplus molestias architecto. Socius admoneo in praesentium cometes textor bis terminatio.\n\nClaro ipsa solutio volo vulticulus tres.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Approval Request",
+                "siteid": "tenant-a",
+                "subject": "Approval requested in {{siteName}}",
+                "template_id": "<id:10>"
+              },
+              {
+                "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Adnuo subnecto quae termes aeternus amita adicio. Utique spargo blanditiis confido cibus pariatur amaritudo spero. Molestiae teres beneficium deporto contego suppono.</p>\n<p>Stella benevolentia contigo velit decipio voro vigilo cervus audax cohaero. Illum tego considero deduco doloremque minus. Ambulo paens substantia tunc.</p>\n<p>Succedo vergo sortitus sodalitas vulgivagus culpa.</p>\n<p>{{siteName}}</p>",
+                "body_text": "Hello {{firstName}} {{lastName}},\n\nAdnuo subnecto quae termes aeternus amita adicio. Utique spargo blanditiis confido cibus pariatur amaritudo spero. Molestiae teres beneficium deporto contego suppono.\n\nStella benevolentia contigo velit decipio voro vigilo cervus audax cohaero. Illum tego considero deduco doloremque minus. Ambulo paens substantia tunc.\n\nSuccedo vergo sortitus sodalitas vulgivagus culpa.\n\n{{siteName}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "Survey Invitation",
+                "siteid": "tenant-a",
+                "subject": "Share your feedback with {{siteName}}",
+                "template_id": "<id:11>"
+              },
+              {
+                "body_html": "<p>Hello {{fname}}</p>",
+                "body_text": "Hello {{fname}}",
+                "created": "<ts:serializer>",
+                "lastupdate": "<ts:serializer>",
+                "name": "GS-CM-01 Welcome",
+                "siteid": "tenant-a",
+                "subject": "Welcome {{fname}}",
+                "template_id": "<id:1>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 11,
+            "totalpages": 1
+          },
+          "method": "communications.templates"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "673c973d72573e044dc7924fcb57bb1b1ed555a8d9046463d0a0c3a355cc02f7",
+        "status": 200
+      },
+      "routeKey": "fixture:communications/templates@get"
+    },
+    {
+      "index": 2,
+      "name": "communications-screen",
+      "normalised": {
+        "index": 2,
+        "maskedPaths": {},
+        "name": "communications-screen",
+        "routeKey": "opt2:/opt2/admin/communications/templates",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/opt2/admin/communications/templates"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "6164a94a75c78783dd0517a184ce5a07ab69c7648f15b2edc7f4e694ddf3d47c",
+        "status": 404
+      },
+      "routeKey": "opt2:/opt2/admin/communications/templates"
+    },
+    {
+      "index": 3,
+      "name": "communications-action",
+      "normalised": {
+        "index": 3,
+        "maskedPaths": {},
+        "name": "communications-action",
+        "routeKey": "opt2:/opt2/admin-actions/communications/save-template",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/opt2/admin-actions/communications/save-template"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "910ef19ab908fde0ad18690dc1265a3fb0b554afb88b71ed5c3da8ad27a85399",
+        "status": 404
+      },
+      "routeKey": "opt2:/opt2/admin-actions/communications/save-template"
+    }
+  ],
+  "tableVersion": null
+}

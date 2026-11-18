@@ -1,0 +1,3662 @@
+{
+  "capturedAt": "2026-11-18T14:29:24.473Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:29:27.100Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-PS-09",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "bundle-options",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant B",
+            "",
+            "",
+            "Admin User",
+            "2",
+            "Back to Site Settings",
+            "Select Working Directory",
+            "Create Bundle"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeTrash",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeVersionHistory",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeMetaData",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeFormData",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeUsers",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "button",
+              "value": "Select Working Directory"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "saveFileDir",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cSettings.createBundle"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteID",
+              "type": "hidden",
+              "value": "tenant-b"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./index.cfm",
+              "id": "pluginSelectFrm",
+              "method": "get",
+              "name": "pluginSelectFrm"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Create Site Bundle"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Include in Site Bundle:"
+            },
+            {
+              "text": "Items in Trash Bin"
+            },
+            {
+              "text": "Content Version Histories"
+            },
+            {
+              "text": "Content Comments and Ratings"
+            },
+            {
+              "text": "Form Response Data"
+            },
+            {
+              "text": "Site Members & Administrative Users"
+            },
+            {
+              "text": "Also include selected Plugins:"
+            },
+            {
+              "text": "Server Directory (Optional)"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-b",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-b",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-b",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-b",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-b",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-b",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-b",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-b",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-b&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-b&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-b&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-b",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-b",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-b",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-b",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-b",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-b",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-b",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-b",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-b",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-b.<origin>/",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
+              "text": "2 Drafts"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "./?muraAction=csettings.editsite&siteID=tenant-b",
+              "text": "Back to Site Settings"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Settings"
+        },
+        "index": 0,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "bundle-options",
+        "routeKey": "admin:csettings.selectbundleoptions",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=cSettings.selectBundleOptions&siteID=tenant-b"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant B",
+            "",
+            "",
+            "Admin User",
+            "2",
+            "Back to Site Settings",
+            "Select Working Directory",
+            "Create Bundle"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeTrash",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeVersionHistory",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeMetaData",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeFormData",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "includeUsers",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "button",
+              "value": "Select Working Directory"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "saveFileDir",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cSettings.createBundle"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteID",
+              "type": "hidden",
+              "value": "tenant-b"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./index.cfm",
+              "id": "pluginSelectFrm",
+              "method": "get",
+              "name": "pluginSelectFrm"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Create Site Bundle"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Include in Site Bundle:"
+            },
+            {
+              "text": "Items in Trash Bin"
+            },
+            {
+              "text": "Content Version Histories"
+            },
+            {
+              "text": "Content Comments and Ratings"
+            },
+            {
+              "text": "Form Response Data"
+            },
+            {
+              "text": "Site Members & Administrative Users"
+            },
+            {
+              "text": "Also include selected Plugins:"
+            },
+            {
+              "text": "Server Directory (Optional)"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-b",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-b",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-b",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-b",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-b",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-b",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-b",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-b",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-b&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-b&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-b&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-b",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-b",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-b",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-b",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-b",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-b",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-b",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-b",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-b",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-b.<origin>/",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
+              "text": "2 Drafts"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "./?muraAction=csettings.editsite&siteID=tenant-b",
+              "text": "Back to Site Settings"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Settings"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "bd3b1ba12d21659cf70776140cb30daf6ef6fc442e8fc4fbc5e3b4aba6320788",
+        "status": 200
+      },
+      "routeKey": "admin:csettings.selectbundleoptions"
+    },
+    {
+      "index": 1,
+      "name": "create-bundle",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "export": {
+          "contentType": "application/zip; charset=UTF-8",
+          "entries": [
+            {
+              "name": "wddx_assetPath.xml",
+              "sha256": "d041dde0c5dabc05a348676b87f4ab3fa2b7f95d832313c779c475a3e6cc701f",
+              "size": 85
+            },
+            {
+              "name": "wddx_bundleablebeans.xml",
+              "sha256": "a78696978d4c5c41dc8d99bf6724252329bb9b619bca2c6743feabdc01dcccfd",
+              "size": 252
+            },
+            {
+              "name": "wddx_bundledate.xml",
+              "sha256": "dfe9e2dc035738ed6cd3a68aa9fd076b4db4b4d8fb721bb3ee6f1087c2369442",
+              "size": 98
+            },
+            {
+              "name": "wddx_context.xml",
+              "sha256": "7aa1f40564e5438f3a18ce36508c489759a2e7f1ddde21aa011b7a57402acdde",
+              "size": 79
+            },
+            {
+              "name": "wddx_fileAssetPath.xml",
+              "sha256": "fb1fb8cc31b5cdc8c9eac5cd31acc67ffe66438339440ae2f9c4d540f8cdb46c",
+              "size": 94
+            },
+            {
+              "name": "wddx_hasmetadata.xml",
+              "sha256": "53f8f0f744cf4f7c7931312f0a93e8e4bd225a4243755bf376fa943ae4b1d431",
+              "size": 86
+            },
+            {
+              "name": "wddx_hasstructuredassets.xml",
+              "sha256": "f92174342fd5cea186047dd81b8a63c32967d3d5b5f73aa99086b5ac428c86ed",
+              "size": 83
+            },
+            {
+              "name": "wddx_rssite.xml",
+              "sha256": "c893a454b8f836602fde024a22fb3b7c9093d36893ddc1cc4094ce3924ad18eb",
+              "size": 1331
+            },
+            {
+              "name": "wddx_rstapprovalactions.xml",
+              "sha256": "8f6af898c6e5e5aea23285b7ec3051b76ef4b2885e6486b0732914cb37ffb894",
+              "size": 538
+            },
+            {
+              "name": "wddx_rstapprovalchains.xml",
+              "sha256": "8dc9046d9d2e45f4fb147da684f6a86813829f4411afccdbc2497096be6a3617",
+              "size": 478
+            },
+            {
+              "name": "wddx_rstapprovalmemberships.xml",
+              "sha256": "63a25036f9a3f59d4c658ea978d95db23fca94c92cf64fa9f3b593c7866aeb9d",
+              "size": 380
+            },
+            {
+              "name": "wddx_rstapprovalrequests.xml",
+              "sha256": "25b9b1567b72ad0cb156bd3839758c69f6b5463c9b948cb46fec074e4b33cf66",
+              "size": 458
+            },
+            {
+              "name": "wddx_rstchangesetcategoryassign.xml",
+              "sha256": "db48e56458a21c19d77dee1c0cc37bd15e2d7b85e4fd6f2750c9fb0815c28e66",
+              "size": 318
+            },
+            {
+              "name": "wddx_rstchangesets.xml",
+              "sha256": "d20dd731bdcd8d52e31b7ea1fc35f591f1d54b5a6ff406f3c4b1dfdf08407ae0",
+              "size": 760
+            },
+            {
+              "name": "wddx_rstclassextend.xml",
+              "sha256": "883eac6ad79529d4fe1f4d4d6d0dc80582d01be37f7ccc1f751f7d8ef1abb8c6",
+              "size": 1008
+            },
+            {
+              "name": "wddx_rstclassextendattributes.xml",
+              "sha256": "e6018e5a38617cf2a30fe9787c67f99865aea610c270a1b8997fb6d0340f7e07",
+              "size": 824
+            },
+            {
+              "name": "wddx_rstclassextenddata.xml",
+              "sha256": "c4f844635d2b2d25f6beba919a1f15f7523db76dea23ec2f0b54aec95323a329",
+              "size": 498
+            },
+            {
+              "name": "wddx_rstclassextendsets.xml",
+              "sha256": "f020a5526a3a02965aa892131c0a7d40990d7769d3739a78c708cdce61cbcab9",
+              "size": 464
+            },
+            {
+              "name": "wddx_rstcontent.xml",
+              "sha256": "3b9be81f57a564564c849d0dc9bcf87797efe67d67403e456ac652df89328b75",
+              "size": 571195
+            },
+            {
+              "name": "wddx_rstcontentcategories.xml",
+              "sha256": "06aeca226ad22fab6f8e71612e09d40b9bfb4b197eb52a46321924f5952c1af4",
+              "size": 5301
+            },
+            {
+              "name": "wddx_rstcontentcategoryassign.xml",
+              "sha256": "9a0fb855307ecc78bc96c12daa1ddd5975f88615deda990eb0a2ff903522eafe",
+              "size": 68699
+            },
+            {
+              "name": "wddx_rstcontentcommentcommenters.xml",
+              "sha256": "0958920fba4add6741f4a746e02dc5ff287cbae41d2786ba9221330e17841447",
+              "size": 2242
+            },
+            {
+              "name": "wddx_rstcontentfeedadvancedparams.xml",
+              "sha256": "77f4bb3e88c930094c1fa1cb0e9fc9e9c379c87d2fddbcaff9d1222d3c31e30a",
+              "size": 456
+            },
+            {
+              "name": "wddx_rstcontentfeeditems.xml",
+              "sha256": "a986192dc2f224b2bf3bd17984cfa70b1690b99de09b46d921c14ca756f7a565",
+              "size": 248
+            },
+            {
+              "name": "wddx_rstcontentfeeds.xml",
+              "sha256": "b8befb5c47b00a81452d8a0b004a2ae37caa3b5d6b6f15750172cd2d12239f9d",
+              "size": 2080
+            },
+            {
+              "name": "wddx_rstcontentfilemetadata.xml",
+              "sha256": "8afd4af76cf6d779b15026914f961e4c5dbbe6ceeddf3d9a7737a669b0fb67b1",
+              "size": 724
+            },
+            {
+              "name": "wddx_rstcontentfilenamearchive.xml",
+              "sha256": "eb8e6929ae335f937731bb4264113a0d105a662a743274cfcdf650404d17dad2",
+              "size": 39941
+            },
+            {
+              "name": "wddx_rstcontentobjects.xml",
+              "sha256": "3ddadb065a882b52575673d21af24ca218878607a5143240c573b5de02660d8d",
+              "size": 702
+            },
+            {
+              "name": "wddx_rstcontentrelated.xml",
+              "sha256": "9c3f9b32c6d39e8077e0d791d5d4252d02aea72d03c56adc48ebf3a8758eb3a5",
+              "size": 470
+            },
+            {
+              "name": "wddx_rstcontenttags.xml",
+              "sha256": "38afbfe6d96b635b8c3abe2f9c5806655133e4496d86191d80f5620234046fa7",
+              "size": 376
+            },
+            {
+              "name": "wddx_rstcontentvariationtargeting.xml",
+              "sha256": "3c07486206ed30573bec32f83d76dae070e9273e8b050c49f5b7c4ad4fdaa6f8",
+              "size": 350
+            },
+            {
+              "name": "wddx_rstfiles.xml",
+              "sha256": "2feb9a3cc1a7a6408798fb099ba93d5332510b6d57de09557dae344d12fbae58",
+              "size": 1094
+            },
+            {
+              "name": "wddx_rstimagesizes.xml",
+              "sha256": "ea3681d491469e58ea4b1252677c23d07c4f45c19c6449bc0167ffb9365a6abb",
+              "size": 555
+            },
+            {
+              "name": "wddx_rstmailinglist.xml",
+              "sha256": "642bb6f265e597941756c13d240105ed5dad3763ff7f47805f196a7e699706eb",
+              "size": 593
+            },
+            {
+              "name": "wddx_rstoauthclients.xml",
+              "sha256": "d6cfc011b2222c40fc410a05aedc2f05fcf83d069ad13449c34bc7a438c8a203",
+              "size": 652
+            },
+            {
+              "name": "wddx_rstplugindisplayobjects.xml",
+              "sha256": "1aac32b74abc3445edd779ba324499693afb8dfe3fdd9f49aee16b295b973e2c",
+              "size": 550
+            },
+            {
+              "name": "wddx_rstpluginmodules.xml",
+              "sha256": "941e86c30b4034250d86f127f89443dec5225e5fcf30fb459e0f315a6013527a",
+              "size": 184
+            },
+            {
+              "name": "wddx_rstplugins.xml",
+              "sha256": "f56c182150d7a38bd21e5570222fcf3d59cb36a664988ee50d23d1ab04298f9f",
+              "size": 626
+            },
+            {
+              "name": "wddx_rstpluginscripts.xml",
+              "sha256": "a2cad268848c1d24db4a413b9e5664a016d01b685387b9947a7bfc77edfef10a",
+              "size": 340
+            },
+            {
+              "name": "wddx_rstpluginsettings.xml",
+              "sha256": "bd5a0930ace1b06cbc2a048803efb32beb30280f53d85aa8902552b1d457ed34",
+              "size": 264
+            },
+            {
+              "name": "wddx_rstsystemobjects.xml",
+              "sha256": "329f98735240e6b0f04d297dfd892e13c562e11b61faf0266ec54acf1689f0f9",
+              "size": 2178
+            },
+            {
+              "name": "wddx_sincedate.xml",
+              "sha256": "7aa1f40564e5438f3a18ce36508c489759a2e7f1ddde21aa011b7a57402acdde",
+              "size": 79
+            },
+            {
+              "name": "wddx_tclassextendrcsets.xml",
+              "sha256": "4e9d7092e704ed1a839905edae7a7135511d957a45ed0d815f0c7ac455df5061",
+              "size": 456
+            }
+          ],
+          "filename": "gs-ps-09_tenant-b_<ts:file-stamp-minute>.zip",
+          "kind": "zip"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "create-bundle",
+        "routeKey": "admin:csettings.createbundle",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "BundleName": "gs-ps-09",
+            "csrf_token": "<token>",
+            "csrf_token_expires": "<token>",
+            "muraAction": "cSettings.createBundle",
+            "siteID": "tenant-b"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/admin/?muraAction=cSettings.createBundle&bundleFiles=false"
+      },
+      "response": {
+        "export": {
+          "contentType": "application/zip; charset=UTF-8",
+          "entries": [
+            {
+              "name": "wddx_assetPath.xml",
+              "sha256": "d041dde0c5dabc05a348676b87f4ab3fa2b7f95d832313c779c475a3e6cc701f",
+              "size": 85
+            },
+            {
+              "name": "wddx_bundleablebeans.xml",
+              "sha256": "a78696978d4c5c41dc8d99bf6724252329bb9b619bca2c6743feabdc01dcccfd",
+              "size": 252
+            },
+            {
+              "name": "wddx_bundledate.xml",
+              "sha256": "dfe9e2dc035738ed6cd3a68aa9fd076b4db4b4d8fb721bb3ee6f1087c2369442",
+              "size": 98
+            },
+            {
+              "name": "wddx_context.xml",
+              "sha256": "7aa1f40564e5438f3a18ce36508c489759a2e7f1ddde21aa011b7a57402acdde",
+              "size": 79
+            },
+            {
+              "name": "wddx_fileAssetPath.xml",
+              "sha256": "fb1fb8cc31b5cdc8c9eac5cd31acc67ffe66438339440ae2f9c4d540f8cdb46c",
+              "size": 94
+            },
+            {
+              "name": "wddx_hasmetadata.xml",
+              "sha256": "53f8f0f744cf4f7c7931312f0a93e8e4bd225a4243755bf376fa943ae4b1d431",
+              "size": 86
+            },
+            {
+              "name": "wddx_hasstructuredassets.xml",
+              "sha256": "f92174342fd5cea186047dd81b8a63c32967d3d5b5f73aa99086b5ac428c86ed",
+              "size": 83
+            },
+            {
+              "name": "wddx_rssite.xml",
+              "sha256": "c893a454b8f836602fde024a22fb3b7c9093d36893ddc1cc4094ce3924ad18eb",
+              "size": 1331
+            },
+            {
+              "name": "wddx_rstapprovalactions.xml",
+              "sha256": "8f6af898c6e5e5aea23285b7ec3051b76ef4b2885e6486b0732914cb37ffb894",
+              "size": 538
+            },
+            {
+              "name": "wddx_rstapprovalchains.xml",
+              "sha256": "8dc9046d9d2e45f4fb147da684f6a86813829f4411afccdbc2497096be6a3617",
+              "size": 478
+            },
+            {
+              "name": "wddx_rstapprovalmemberships.xml",
+              "sha256": "63a25036f9a3f59d4c658ea978d95db23fca94c92cf64fa9f3b593c7866aeb9d",
+              "size": 380
+            },
+            {
+              "name": "wddx_rstapprovalrequests.xml",
+              "sha256": "25b9b1567b72ad0cb156bd3839758c69f6b5463c9b948cb46fec074e4b33cf66",
+              "size": 458
+            },
+            {
+              "name": "wddx_rstchangesetcategoryassign.xml",
+              "sha256": "db48e56458a21c19d77dee1c0cc37bd15e2d7b85e4fd6f2750c9fb0815c28e66",
+              "size": 318
+            },
+            {
+              "name": "wddx_rstchangesets.xml",
+              "sha256": "d20dd731bdcd8d52e31b7ea1fc35f591f1d54b5a6ff406f3c4b1dfdf08407ae0",
+              "size": 760
+            },
+            {
+              "name": "wddx_rstclassextend.xml",
+              "sha256": "883eac6ad79529d4fe1f4d4d6d0dc80582d01be37f7ccc1f751f7d8ef1abb8c6",
+              "size": 1008
+            },
+            {
+              "name": "wddx_rstclassextendattributes.xml",
+              "sha256": "e6018e5a38617cf2a30fe9787c67f99865aea610c270a1b8997fb6d0340f7e07",
+              "size": 824
+            },
+            {
+              "name": "wddx_rstclassextenddata.xml",
+              "sha256": "c4f844635d2b2d25f6beba919a1f15f7523db76dea23ec2f0b54aec95323a329",
+              "size": 498
+            },
+            {
+              "name": "wddx_rstclassextendsets.xml",
+              "sha256": "f020a5526a3a02965aa892131c0a7d40990d7769d3739a78c708cdce61cbcab9",
+              "size": 464
+            },
+            {
+              "name": "wddx_rstcontent.xml",
+              "sha256": "3b9be81f57a564564c849d0dc9bcf87797efe67d67403e456ac652df89328b75",
+              "size": 571195
+            },
+            {
+              "name": "wddx_rstcontentcategories.xml",
+              "sha256": "06aeca226ad22fab6f8e71612e09d40b9bfb4b197eb52a46321924f5952c1af4",
+              "size": 5301
+            },
+            {
+              "name": "wddx_rstcontentcategoryassign.xml",
+              "sha256": "9a0fb855307ecc78bc96c12daa1ddd5975f88615deda990eb0a2ff903522eafe",
+              "size": 68699
+            },
+            {
+              "name": "wddx_rstcontentcommentcommenters.xml",
+              "sha256": "0958920fba4add6741f4a746e02dc5ff287cbae41d2786ba9221330e17841447",
+              "size": 2242
+            },
+            {
+              "name": "wddx_rstcontentfeedadvancedparams.xml",
+              "sha256": "77f4bb3e88c930094c1fa1cb0e9fc9e9c379c87d2fddbcaff9d1222d3c31e30a",
+              "size": 456
+            },
+            {
+              "name": "wddx_rstcontentfeeditems.xml",
+              "sha256": "a986192dc2f224b2bf3bd17984cfa70b1690b99de09b46d921c14ca756f7a565",
+              "size": 248
+            },
+            {
+              "name": "wddx_rstcontentfeeds.xml",
+              "sha256": "b8befb5c47b00a81452d8a0b004a2ae37caa3b5d6b6f15750172cd2d12239f9d",
+              "size": 2080
+            },
+            {
+              "name": "wddx_rstcontentfilemetadata.xml",
+              "sha256": "8afd4af76cf6d779b15026914f961e4c5dbbe6ceeddf3d9a7737a669b0fb67b1",
+              "size": 724
+            },
+            {
+              "name": "wddx_rstcontentfilenamearchive.xml",
+              "sha256": "eb8e6929ae335f937731bb4264113a0d105a662a743274cfcdf650404d17dad2",
+              "size": 39941
+            },
+            {
+              "name": "wddx_rstcontentobjects.xml",
+              "sha256": "3ddadb065a882b52575673d21af24ca218878607a5143240c573b5de02660d8d",
+              "size": 702
+            },
+            {
+              "name": "wddx_rstcontentrelated.xml",
+              "sha256": "9c3f9b32c6d39e8077e0d791d5d4252d02aea72d03c56adc48ebf3a8758eb3a5",
+              "size": 470
+            },
+            {
+              "name": "wddx_rstcontenttags.xml",
+              "sha256": "38afbfe6d96b635b8c3abe2f9c5806655133e4496d86191d80f5620234046fa7",
+              "size": 376
+            },
+            {
+              "name": "wddx_rstcontentvariationtargeting.xml",
+              "sha256": "3c07486206ed30573bec32f83d76dae070e9273e8b050c49f5b7c4ad4fdaa6f8",
+              "size": 350
+            },
+            {
+              "name": "wddx_rstfiles.xml",
+              "sha256": "2feb9a3cc1a7a6408798fb099ba93d5332510b6d57de09557dae344d12fbae58",
+              "size": 1094
+            },
+            {
+              "name": "wddx_rstimagesizes.xml",
+              "sha256": "ea3681d491469e58ea4b1252677c23d07c4f45c19c6449bc0167ffb9365a6abb",
+              "size": 555
+            },
+            {
+              "name": "wddx_rstmailinglist.xml",
+              "sha256": "642bb6f265e597941756c13d240105ed5dad3763ff7f47805f196a7e699706eb",
+              "size": 593
+            },
+            {
+              "name": "wddx_rstoauthclients.xml",
+              "sha256": "d6cfc011b2222c40fc410a05aedc2f05fcf83d069ad13449c34bc7a438c8a203",
+              "size": 652
+            },
+            {
+              "name": "wddx_rstplugindisplayobjects.xml",
+              "sha256": "1aac32b74abc3445edd779ba324499693afb8dfe3fdd9f49aee16b295b973e2c",
+              "size": 550
+            },
+            {
+              "name": "wddx_rstpluginmodules.xml",
+              "sha256": "941e86c30b4034250d86f127f89443dec5225e5fcf30fb459e0f315a6013527a",
+              "size": 184
+            },
+            {
+              "name": "wddx_rstplugins.xml",
+              "sha256": "f56c182150d7a38bd21e5570222fcf3d59cb36a664988ee50d23d1ab04298f9f",
+              "size": 626
+            },
+            {
+              "name": "wddx_rstpluginscripts.xml",
+              "sha256": "a2cad268848c1d24db4a413b9e5664a016d01b685387b9947a7bfc77edfef10a",
+              "size": 340
+            },
+            {
+              "name": "wddx_rstpluginsettings.xml",
+              "sha256": "bd5a0930ace1b06cbc2a048803efb32beb30280f53d85aa8902552b1d457ed34",
+              "size": 264
+            },
+            {
+              "name": "wddx_rstsystemobjects.xml",
+              "sha256": "329f98735240e6b0f04d297dfd892e13c562e11b61faf0266ec54acf1689f0f9",
+              "size": 2178
+            },
+            {
+              "name": "wddx_sincedate.xml",
+              "sha256": "7aa1f40564e5438f3a18ce36508c489759a2e7f1ddde21aa011b7a57402acdde",
+              "size": 79
+            },
+            {
+              "name": "wddx_tclassextendrcsets.xml",
+              "sha256": "4e9d7092e704ed1a839905edae7a7135511d957a45ed0d815f0c7ac455df5061",
+              "size": 456
+            }
+          ],
+          "filename": "gs-ps-09_tenant-b_<ts:file-stamp-minute>.zip",
+          "kind": "zip"
+        },
+        "headers": {
+          "content-disposition": "attachment;filename=\"gs-ps-09_tenant-b_<ts:file-stamp-minute>.zip\"",
+          "content-encoding": "gzip",
+          "content-language": "en-US",
+          "content-type": "application/zip; charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "last-modified": "<ts:http-date>, <ts:http-date>",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "da374638e587503ee243654646b45b982568e3054fa9d4b9ab16dfe973f6c921",
+        "status": 200
+      },
+      "routeKey": "admin:csettings.createbundle"
+    },
+    {
+      "index": 2,
+      "name": "scaffold-assembler",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            },
+            {
+              "kind": "alert-warning",
+              "text": "IMPORTANT: After updating dynamically created entities, a reload of the Masa CMS application may be required."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant B",
+            "",
+            "",
+            "Admin User",
+            "2",
+            "Back",
+            "Delete",
+            "Save",
+            "Save",
+            "UpdateAdd Property",
+            "Delete",
+            "Cancel",
+            "UpdateAdd Relationship",
+            "Delete",
+            "Cancel",
+            "Add Property",
+            "Add Relationship",
+            "",
+            "",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "name": "entityname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "displayname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "table",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "orderby",
+              "type": "text"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "scaffold",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "bundleable",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "public",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "disabled": false,
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "displayname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "datatype",
+              "options": [
+                {
+                  "label": "{{datatypes[index].label}}",
+                  "selected": false,
+                  "value": "{{datatypes[index].label}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "fieldtype",
+              "options": [
+                {
+                  "label": "{{fieldtypes[index].label}}",
+                  "selected": false,
+                  "value": "{{fieldtypes[index].label}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "default",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "rendertype",
+              "options": [
+                {
+                  "label": "{{rendertypes[index].label}}",
+                  "selected": false,
+                  "value": "{{rendertypes[index].label}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "length",
+              "type": "text"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "required",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "listview",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "filter",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "nullable",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "disabled": false,
+              "name": "optionlist",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "optionvaluelist",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "displayname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "fieldtype",
+              "options": [
+                {
+                  "label": "{{option}}",
+                  "selected": false,
+                  "value": "{{option}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "relatesto",
+              "options": [
+                {
+                  "label": "{{option.displayname}}",
+                  "selected": false,
+                  "value": "{{option.displayname}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "fkcolumn",
+              "options": [
+                {
+                  "label": "Primary Key",
+                  "selected": false,
+                  "value": ""
+                },
+                {
+                  "label": "{{option.displayname}}",
+                  "selected": false,
+                  "value": "{{option.displayname}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "renderfield",
+              "options": [
+                {
+                  "label": "{{option.displayname}}",
+                  "selected": false,
+                  "value": "{{option.displayname}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "loadkey",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "cascade",
+              "options": [
+                {
+                  "label": "{{option}}",
+                  "selected": false,
+                  "value": "{{option}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "listview",
+              "type": "checkbox",
+              "value": "on"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Custom Masa CMS ORM Entity"
+            },
+            {
+              "level": 3,
+              "text": "JSON Preview"
+            },
+            {
+              "level": 3,
+              "text": "Entity Properties"
+            },
+            {
+              "level": 3,
+              "text": "Property Details"
+            },
+            {
+              "level": 3,
+              "text": "Relationship Details"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Entity Name"
+            },
+            {
+              "text": "Display Name"
+            },
+            {
+              "text": "Table Name"
+            },
+            {
+              "text": "Order By (optional)"
+            },
+            {
+              "text": "Scaffold"
+            },
+            {
+              "text": "Bundleable"
+            },
+            {
+              "text": "Publicly Accessible"
+            },
+            {
+              "text": "Property Name"
+            },
+            {
+              "text": "Display Name"
+            },
+            {
+              "text": "Data Type"
+            },
+            {
+              "text": "Field Type"
+            },
+            {
+              "text": "Default"
+            },
+            {
+              "text": "Form Field"
+            },
+            {
+              "text": "Length"
+            },
+            {
+              "text": "Required"
+            },
+            {
+              "text": "List"
+            },
+            {
+              "text": "Filter"
+            },
+            {
+              "text": "Nullable"
+            },
+            {
+              "text": "Option List"
+            },
+            {
+              "text": "Option Value List"
+            },
+            {
+              "text": "Property Name"
+            },
+            {
+              "text": "Display Name"
+            },
+            {
+              "text": "Relationship Type"
+            },
+            {
+              "text": "Relates To"
+            },
+            {
+              "text": "Foreign Key Column"
+            },
+            {
+              "text": "Render Field"
+            },
+            {
+              "text": "Load Key"
+            },
+            {
+              "text": "Cascade Delete?"
+            },
+            {
+              "text": "List"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-b",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-b",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-b",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-b",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-b",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-b",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-b",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-b",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-b&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-b&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-b&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-b",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-b",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-b",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-b",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-b",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-b",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-b",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-b",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-b",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-b.<origin>/",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
+              "text": "2 Drafts"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "./?muraAction=carch.list&siteid=tenant-b&activeTab=2",
+              "text": "Back"
+            },
+            {
+              "href": "#tabDef",
+              "text": "Definition"
+            },
+            {
+              "href": "#tabJson",
+              "text": "JSON"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS"
+        },
+        "index": 2,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "scaffold-assembler",
+        "routeKey": "admin:scaffold.assembler",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=scaffold.assembler&siteid=tenant-b"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            },
+            {
+              "kind": "alert-warning",
+              "text": "IMPORTANT: After updating dynamically created entities, a reload of the Masa CMS application may be required."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant B",
+            "",
+            "",
+            "Admin User",
+            "2",
+            "Back",
+            "Delete",
+            "Save",
+            "Save",
+            "UpdateAdd Property",
+            "Delete",
+            "Cancel",
+            "UpdateAdd Relationship",
+            "Delete",
+            "Cancel",
+            "Add Property",
+            "Add Relationship",
+            "",
+            "",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "name": "entityname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "displayname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "table",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "orderby",
+              "type": "text"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "scaffold",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "bundleable",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "public",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "disabled": false,
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "displayname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "datatype",
+              "options": [
+                {
+                  "label": "{{datatypes[index].label}}",
+                  "selected": false,
+                  "value": "{{datatypes[index].label}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "fieldtype",
+              "options": [
+                {
+                  "label": "{{fieldtypes[index].label}}",
+                  "selected": false,
+                  "value": "{{fieldtypes[index].label}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "default",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "rendertype",
+              "options": [
+                {
+                  "label": "{{rendertypes[index].label}}",
+                  "selected": false,
+                  "value": "{{rendertypes[index].label}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "length",
+              "type": "text"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "required",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "listview",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "filter",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "nullable",
+              "type": "checkbox",
+              "value": "on"
+            },
+            {
+              "disabled": false,
+              "name": "optionlist",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "optionvaluelist",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "displayname",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "fieldtype",
+              "options": [
+                {
+                  "label": "{{option}}",
+                  "selected": false,
+                  "value": "{{option}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "relatesto",
+              "options": [
+                {
+                  "label": "{{option.displayname}}",
+                  "selected": false,
+                  "value": "{{option.displayname}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "fkcolumn",
+              "options": [
+                {
+                  "label": "Primary Key",
+                  "selected": false,
+                  "value": ""
+                },
+                {
+                  "label": "{{option.displayname}}",
+                  "selected": false,
+                  "value": "{{option.displayname}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "renderfield",
+              "options": [
+                {
+                  "label": "{{option.displayname}}",
+                  "selected": false,
+                  "value": "{{option.displayname}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "name": "loadkey",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "name": "cascade",
+              "options": [
+                {
+                  "label": "{{option}}",
+                  "selected": false,
+                  "value": "{{option}}"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "name": "listview",
+              "type": "checkbox",
+              "value": "on"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Custom Masa CMS ORM Entity"
+            },
+            {
+              "level": 3,
+              "text": "JSON Preview"
+            },
+            {
+              "level": 3,
+              "text": "Entity Properties"
+            },
+            {
+              "level": 3,
+              "text": "Property Details"
+            },
+            {
+              "level": 3,
+              "text": "Relationship Details"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Entity Name"
+            },
+            {
+              "text": "Display Name"
+            },
+            {
+              "text": "Table Name"
+            },
+            {
+              "text": "Order By (optional)"
+            },
+            {
+              "text": "Scaffold"
+            },
+            {
+              "text": "Bundleable"
+            },
+            {
+              "text": "Publicly Accessible"
+            },
+            {
+              "text": "Property Name"
+            },
+            {
+              "text": "Display Name"
+            },
+            {
+              "text": "Data Type"
+            },
+            {
+              "text": "Field Type"
+            },
+            {
+              "text": "Default"
+            },
+            {
+              "text": "Form Field"
+            },
+            {
+              "text": "Length"
+            },
+            {
+              "text": "Required"
+            },
+            {
+              "text": "List"
+            },
+            {
+              "text": "Filter"
+            },
+            {
+              "text": "Nullable"
+            },
+            {
+              "text": "Option List"
+            },
+            {
+              "text": "Option Value List"
+            },
+            {
+              "text": "Property Name"
+            },
+            {
+              "text": "Display Name"
+            },
+            {
+              "text": "Relationship Type"
+            },
+            {
+              "text": "Relates To"
+            },
+            {
+              "text": "Foreign Key Column"
+            },
+            {
+              "text": "Render Field"
+            },
+            {
+              "text": "Load Key"
+            },
+            {
+              "text": "Cascade Delete?"
+            },
+            {
+              "text": "List"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-b",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-b",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-b",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-b",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-b",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-b",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-b",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-b",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-b&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-b&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-b&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-b",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-b",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-b",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-b",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-b",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-b",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-b",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-b",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-b",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-b.<origin>/",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
+              "text": "2 Drafts"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "./?muraAction=carch.list&siteid=tenant-b&activeTab=2",
+              "text": "Back"
+            },
+            {
+              "href": "#tabDef",
+              "text": "Definition"
+            },
+            {
+              "href": "#tabJson",
+              "text": "JSON"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "4534b67d1346becca7f72816ad86aebb35a6d7ae6aec35f7e3d6a37cf4e521e5",
+        "status": 200
+      },
+      "routeKey": "admin:scaffold.assembler"
+    },
+    {
+      "index": 3,
+      "name": "scaffold-sites",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant B",
+            "",
+            "",
+            "Admin User",
+            "2",
+            "Back",
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "default"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "umbrella"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "tenant-a"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "entityname",
+              "type": "hidden",
+              "value": "gsps09entity"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./?muraAction=scaffold.updatesites",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Site Assigments for \"\""
+            }
+          ],
+          "labels": [
+            {
+              "text": "Select sites that will have access to manage this entity"
+            },
+            {
+              "text": "Default"
+            },
+            {
+              "text": "Umbrella"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Tenant B"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-b",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-b",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-b",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-b",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-b",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-b",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-b",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-b",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-b&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-b&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-b&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-b",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-b",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-b",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-b",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-b",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-b",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-b",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-b",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-b",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-b.<origin>/",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
+              "text": "2 Drafts"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#",
+              "text": "Back"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS"
+        },
+        "index": 3,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "scaffold-sites",
+        "routeKey": "admin:scaffold.sites",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=scaffold.sites&siteid=tenant-b&entityname=gsps09entity"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant B",
+            "",
+            "",
+            "Admin User",
+            "2",
+            "Back",
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "default"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "umbrella"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "tenant-a"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "siteAssignID",
+              "type": "checkbox",
+              "value": "tenant-b"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "entityname",
+              "type": "hidden",
+              "value": "gsps09entity"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./?muraAction=scaffold.updatesites",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Site Assigments for \"\""
+            }
+          ],
+          "labels": [
+            {
+              "text": "Select sites that will have access to manage this entity"
+            },
+            {
+              "text": "Default"
+            },
+            {
+              "text": "Umbrella"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Tenant B"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-b",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-b",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-b",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-b",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-b",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-b",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-b",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-b",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-b&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-b&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-b",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-b&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-b",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-b",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-b",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-b",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-b",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-b",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-b&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-b",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-b",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-b",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-b.<origin>/",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
+              "text": "2 Drafts"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#",
+              "text": "Back"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "473e4cf7b0e57e72f3c2e9936d6626033e6744e97a4e7f5099dc012d95c854b2",
+        "status": 200
+      },
+      "routeKey": "admin:scaffold.sites"
+    },
+    {
+      "index": 4,
+      "name": "scaffold-update-sites",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [
+            {
+              "level": 1,
+              "text": "500 Error"
+            },
+            {
+              "level": 2,
+              "text": "Unable to find a view for 'core:scaffold.updatesites' action."
+            },
+            {
+              "level": 3,
+              "text": "Type:FW1.viewNotFound"
+            },
+            {
+              "level": 3,
+              "text": "'/muraWRM/admin/core/views/scaffold/updatesites.cfm' does not exist."
+            }
+          ],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "scaffold-update-sites",
+        "routeKey": "admin:scaffold.updatesites",
+        "status": 500
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "csrf_token": "<token>",
+            "csrf_token_expires": "<token>",
+            "entityname": "gsps09entity",
+            "siteAssignID": "tenant-b"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/admin/?muraAction=scaffold.updateSites"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [
+            {
+              "level": 1,
+              "text": "500 Error"
+            },
+            {
+              "level": 2,
+              "text": "Unable to find a view for 'core:scaffold.updatesites' action."
+            },
+            {
+              "level": 3,
+              "text": "Type:FW1.viewNotFound"
+            },
+            {
+              "level": 3,
+              "text": "'/muraWRM/admin/core/views/scaffold/updatesites.cfm' does not exist."
+            }
+          ],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "162909916d70f1da574d4468ef38500a4e628daeb7e9d9fb2e177bc529eec08b",
+        "status": 500
+      },
+      "routeKey": "admin:scaffold.updatesites"
+    }
+  ],
+  "tableVersion": null
+}

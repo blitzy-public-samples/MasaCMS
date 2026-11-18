@@ -1,0 +1,357 @@
+{
+  "capturedAt": "2026-11-18T14:26:07.516Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:08.826Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-TS-05",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "matrixKey": "n=0",
+      "name": "status",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:1>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "matrixKey": "n=0",
+        "name": "status",
+        "routeKey": "fixture:timesheets/sheets/{id}/status@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/timesheets/sheets/5F705111-2B34-57B6-F088B73F8A75E17F/status?siteid=tenant-a&asOf=2026-06-30"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:1>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "575bab85ffe4931bc55ef6eb0fdac7bc1521a5912c1edf85986268cbf89784ab",
+        "status": 200
+      },
+      "routeKey": "fixture:timesheets/sheets/{id}/status@get"
+    },
+    {
+      "index": 0,
+      "matrixKey": "n=1",
+      "name": "status",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:2>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "matrixKey": "n=1",
+        "name": "status",
+        "routeKey": "fixture:timesheets/sheets/{id}/status@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/timesheets/sheets/331E0A42-46BC-0ACC-ACC987165D3F8124/status?siteid=tenant-a&asOf=2026-06-30"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:2>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "aa6f84de21f70b2f01fbcbaff2157d49f401d3d347bb0d2162c841893e528c29",
+        "status": 200
+      },
+      "routeKey": "fixture:timesheets/sheets/{id}/status@get"
+    },
+    {
+      "index": 0,
+      "matrixKey": "n=2",
+      "name": "status",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:3>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "matrixKey": "n=2",
+        "name": "status",
+        "routeKey": "fixture:timesheets/sheets/{id}/status@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/timesheets/sheets/745CD624-7715-51A0-A56BC2FB6940A80A/status?siteid=tenant-a&asOf=2026-06-30"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:3>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "b056239f91fa111d6e468973bae31c4bfa040434437fa747f40daa26981c61b0",
+        "status": 200
+      },
+      "routeKey": "fixture:timesheets/sheets/{id}/status@get"
+    },
+    {
+      "index": 0,
+      "matrixKey": "n=3",
+      "name": "status",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:4>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "matrixKey": "n=3",
+        "name": "status",
+        "routeKey": "fixture:timesheets/sheets/{id}/status@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/timesheets/sheets/14F38748-22B4-AA84-4D835057DA43FF1B/status?siteid=tenant-a&asOf=2026-06-30"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:4>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "1ae1c77c3be07125aa6fc094a86ebe7ec6d693ef4f497d09d581b346f5bc3a09",
+        "status": 200
+      },
+      "routeKey": "fixture:timesheets/sheets/{id}/status@get"
+    },
+    {
+      "index": 0,
+      "matrixKey": "n=4",
+      "name": "status",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:5>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "matrixKey": "n=4",
+        "name": "status",
+        "routeKey": "fixture:timesheets/sheets/{id}/status@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/timesheets/sheets/6DB466AD-F2DB-DAA1-5FFB267765499A77/status?siteid=tenant-a&asOf=2026-06-30"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 20,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "APPROVED",
+            "timesheet_id": "<id:5>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "56a2b64bfbf9b8d815eaae8b38b41ea876de9c832670df0e356dea9a95ab244c",
+        "status": 200
+      },
+      "routeKey": "fixture:timesheets/sheets/{id}/status@get"
+    },
+    {
+      "index": 0,
+      "matrixKey": "n=5",
+      "name": "status",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 11,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "RETURNED",
+            "timesheet_id": "<id:6>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "matrixKey": "n=5",
+        "name": "status",
+        "routeKey": "fixture:timesheets/sheets/{id}/status@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/timesheets/sheets/F6CF493B-BC58-5243-76E445A850B0B987/status?siteid=tenant-a&asOf=2026-06-30"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "approved_count": 11,
+            "blackout_count": 0,
+            "day_count": 20,
+            "overdue": false,
+            "status": "RETURNED",
+            "timesheet_id": "<id:6>"
+          },
+          "method": "timesheets.sheets.status"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "c221445e9dac7b437d94e8769c008a325dc589d72dd3f7c6779121d9840eb8a9",
+        "status": 200
+      },
+      "routeKey": "fixture:timesheets/sheets/{id}/status@get"
+    }
+  ],
+  "tableVersion": null
+}

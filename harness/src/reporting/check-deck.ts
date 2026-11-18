@@ -124,6 +124,7 @@ export type DeckCheck =
   | 'render-ready'
   | 'render-mermaid'
   | 'render-lucide'
+  | 'render-overflow'
   | 'render-error';
 
 /** One rule violation; `slide` is the 1-based top-level slide it lies in, when it lies in one. */
@@ -151,7 +152,8 @@ Checks the executive summary deck against the user rule "Executive Presentation"
 Options:
   --file <path>  deck to check, resolved against the working directory (default: opt2/executive-summary/index.html)
   --render       also render the deck in headless Chromium through Playwright and report every Mermaid diagram or
-                 Lucide icon that does not render, page error and failed request (default: static checks only)
+                 Lucide icon that does not render, slide taller than the ${REVEAL_CONFIG.height} px canvas, page error and
+                 failed request (default: static checks only)
   --help         print this help and exit 0
 
 Static checks: slide count, types, order and styles; a non-text visual on every slide; content and closing limits;
@@ -184,6 +186,8 @@ const CLOSE_RESERVE_MS = 5_000;
 // How long a kill may wait, past the budget, for the killed browser to exit.
 const KILL_WAIT_MS = 1_000;
 const RENDER_VIEWPORT = { width: 1920, height: 1080 } as const;
+// Slide content taller than this, in reveal.js's unscaled canvas pixels, is clipped.
+const CANVAS_HEIGHT = Number(REVEAL_CONFIG.height);
 
 const CDN_LABELS: Readonly<Record<CdnLibrary, string>> = { reveal: 'reveal.js', mermaid: 'Mermaid', lucide: 'Lucide' };
 // A URL whose pathname names a library without a version the matcher can read is unpinned.
@@ -1118,6 +1122,7 @@ interface ProbeElement {
   closest(selector: string): ProbeElement | null;
   querySelector(selector: string): ProbeElement | null;
   getAttribute(name: string): string | null;
+  readonly scrollHeight: number;
 }
 
 interface ProbeWindow {
@@ -1132,6 +1137,8 @@ export interface RenderState {
   diagrams: { slide: number; svg: boolean; error: boolean }[];
   placeholders: { slide: number; name: string }[];
   icons: number;
+  /** Content height (`scrollHeight`, canvas px) of each top-level slide, in slide order. */
+  heights: number[];
 }
 
 // In-page probes are serialised into the browser: they may use only their argument and browser
@@ -1159,7 +1166,8 @@ const visualsRendered = (): boolean => {
 };
 
 const collectState = (selector: string): RenderState => {
-  const doc = (globalThis as unknown as ProbeWindow).document;
+  const win = globalThis as unknown as ProbeWindow;
+  const doc = win.document;
   const slides = Array.from(doc.querySelectorAll(selector));
   return {
     slides: slides.length,
@@ -1173,6 +1181,11 @@ const collectState = (selector: string): RenderState => {
       name: el.getAttribute('data-lucide') ?? '',
     })),
     icons: doc.querySelectorAll('svg[data-lucide], svg.lucide').length,
+    // Measured last, once visuals have rendered; reveal.js hides slides away from the current one, so each is shown first.
+    heights: slides.map((el, index) => {
+      win.Reveal?.slide(index);
+      return el.scrollHeight;
+    }),
   };
 };
 /* v8 ignore stop */
@@ -1199,6 +1212,12 @@ function renderFindings(state: RenderState, declaredIcons: number): DeckFinding[
   if (lost > 0) {
     findings.push({ check: 'render-lucide', detail: `${lost} of ${declaredIcons} Lucide icons became neither an SVG nor a placeholder` });
   }
+  state.heights.forEach((height, index) => {
+    if (height > CANVAS_HEIGHT) {
+      const detail = `slide content is ${height} px tall, beyond the ${CANVAS_HEIGHT} px canvas`;
+      findings.push(renderFinding('render-overflow', index + 1, detail));
+    }
+  });
   return findings;
 }
 
@@ -1320,10 +1339,11 @@ async function renderPage(
 }
 
 /**
- * Renders the deck at `file` in headless Chromium and reports what failed to render.
+ * Renders the deck at `file` in headless Chromium and reports what failed to render and each slide taller than the canvas.
  * Page calls, in order: `on('pageerror')`, `on('requestfailed')`, `goto`, `waitForFunction` (reveal.js ready),
  * `evaluate` (visit every slide; `{ selector, settleMs }` argument), `waitForFunction` (all visuals rendered; a timeout is
- * tolerated), `evaluate` (collect a {@link RenderState}; selector argument). The browser is always closed, or else killed.
+ * tolerated), `evaluate` (collect a {@link RenderState}, showing each slide to measure it; selector argument). The browser
+ * is always closed, or else killed.
  * Launch through close finish within one budget whose end is reserved for close; the step it runs out in is reported.
  */
 export async function renderDeck(file: string, opts: RenderOptions = {}): Promise<DeckFinding[]> {

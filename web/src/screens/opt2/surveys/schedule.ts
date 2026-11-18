@@ -17,12 +17,14 @@ import {
   stateBadgeOf,
   submitToService,
   textInput,
+  valueRows,
   type FieldRule,
   type Opt2Refusal,
   type Opt2Write,
   type StateDisplay,
 } from '../shared';
 import {
+  SURVEYS_GATE,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
@@ -62,7 +64,13 @@ interface ScheduleValues {
 // The service takes integer offsets; other text goes as NaN (JSON null), which it answers invalidParameters.
 const INTEGER = /^[+-]?\d+$/;
 
-/** The survey (`getSurvey`), then its tasks (`listSurveyTasks`) with the CSRF pair of its id context. */
+/** Statuses the service reschedules; it answers 409 for a LAUNCHED or CLOSED survey. */
+const SCHEDULABLE: ReadonlySet<Survey['status']> = new Set(['DRAFT', 'SCHEDULED']);
+
+const LAUNCH_LABEL = 'Launch At (yyyy-mm-ddThh:mm:ss)';
+const REMINDERS_LABEL = 'Reminder Offsets (minutes after launch, comma-separated)';
+
+/** The survey (`getSurvey`), then its tasks (`listSurveyTasks`), with the CSRF pair of its id when it is schedulable. */
 async function loadSchedule(ctx: ScreenContext, surveyId: string): Promise<ScheduleData> {
   const unread = unreadSurveyId(surveyId);
   if (unread !== undefined) return unread;
@@ -76,7 +84,7 @@ async function loadSchedule(ctx: ScreenContext, surveyId: string): Promise<Sched
   const storedId = survey.body.data.surveyId;
   const [tasks] = await Promise.all([
     ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}/tasks', { params: { surveyId }, query }),
-    ctx.csrf.prefetch([storedId]),
+    SCHEDULABLE.has(survey.body.data.status) ? ctx.csrf.prefetch([storedId]) : undefined,
   ]);
   const taskList = readOf(tasks, 'listSurveyTasks');
   if ('unread' in taskList) return taskList;
@@ -110,6 +118,15 @@ function scheduleRequestOf(values: ScheduleValues): ScheduleRequest {
   };
 }
 
+/** The stored schedule as read-only values, with why the schedule of a survey in its status cannot change. */
+function storedSchedule(survey: Survey): SafeHtml {
+  const stored = storedValues(survey);
+  return html`${valueRows([
+    [LAUNCH_LABEL, stored.launch],
+    [REMINDERS_LABEL, stored.reminders],
+  ])}<p class="help-block">A ${survey.status} survey's schedule can no longer be changed.</p>`;
+}
+
 // The contract's LocalSecondTimestamp.
 const LAUNCH_AT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$/;
 const MIN_LAUNCH_YEAR = 1753;
@@ -135,8 +152,9 @@ const SCHEDULE_RULES: Readonly<Record<keyof ScheduleValues, FieldRule>> = Object
 });
 
 /**
- * Status, `alert`, the schedule form holding `values` (default: the stored schedule) marked for `refusal`, then the
- * reminder and task grids. Without a survey, only the header, `alert` and the read's alert.
+ * Status, `alert`, the schedule form holding `values` (default: the stored schedule) marked for `refusal` or, for a
+ * survey the service does not reschedule, the stored schedule read-only, then the reminder and task grids. Without a
+ * survey, only the header, `alert` and the read's alert.
  */
 function renderSchedule(
   ctx: ScreenContext,
@@ -147,18 +165,17 @@ function renderSchedule(
   const { survey, tasks } = data;
   const shown = values ?? storedValues(survey);
   const errors = refusedFields(SCHEDULE_RULES, shown, refusal);
-  const form = postForm(
-    opt2ActionUrl(SURVEYS_MODULE, 'schedule', { siteid: siteIdOf(ctx), surveyid: survey.surveyId }),
-    html`${controlGroup(
-      'Launch At (yyyy-mm-ddThh:mm:ss)',
-      textInput('launchAt', shown.launch, { error: errors.launch, focus: focusesFirst(refusal, errors) }),
-    )}${controlGroup(
-      'Reminder Offsets (minutes after launch, comma-separated)',
-      textInput('reminders', shown.reminders, { error: errors.reminders }),
-    )}`,
-    'Save Schedule',
-    { hidden: ctx.csrf.render(survey.surveyId) },
-  );
+  const form = SCHEDULABLE.has(survey.status)
+    ? postForm(
+        opt2ActionUrl(SURVEYS_MODULE, 'schedule', { siteid: siteIdOf(ctx), surveyid: survey.surveyId }),
+        html`${controlGroup(
+          LAUNCH_LABEL,
+          textInput('launchAt', shown.launch, { error: errors.launch, focus: focusesFirst(refusal, errors) }),
+        )}${controlGroup(REMINDERS_LABEL, textInput('reminders', shown.reminders, { error: errors.reminders }))}`,
+        'Save Schedule',
+        { hidden: ctx.csrf.render(survey.surveyId) },
+      )
+    : storedSchedule(survey);
   const reminders = gridTable(
     ['Reminder', 'Offset (minutes)', 'Remind At', 'Sent At'],
     (survey.schedule?.reminders ?? []).map((reminder) => [
@@ -205,6 +222,7 @@ export const scheduleScreen: Opt2ScreenDefinition<ScheduleData> = {
   screen: 'schedule',
   roles: SURVEYS_ROLES,
   service: 'surveys',
+  gate: SURVEYS_GATE,
   load: (ctx) => loadSchedule(ctx, surveyIdOf(ctx)),
   render: (ctx, data) => opt2View(SURVEYS_MODULE, renderSchedule(ctx, data), 'schedule'),
 };
@@ -215,6 +233,7 @@ export const scheduleAction: Opt2ActionDefinition = {
   action: 'schedule',
   roles: SURVEYS_ROLES,
   service: 'surveys',
+  gate: SURVEYS_GATE,
   async submit(ctx) {
     const surveyId = surveyIdOf(ctx);
     const siteid = siteIdOf(ctx);

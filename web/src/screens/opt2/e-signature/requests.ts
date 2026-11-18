@@ -1,5 +1,5 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-import type { Role } from '@opt2/platform/auth';
+import { Roles, type Role } from '@opt2/platform/auth';
 import { LEGACY_ADMIN_SENTINEL_ID, isCfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
@@ -133,6 +133,11 @@ export const CREATE_REQUEST_FIELDS: readonly CreateRequestField[] = Object.freez
 // same pair.
 const CREATE_CSRF_CONTEXT = '';
 
+/** Roles e-signature lets open every request of the site, not only the reader's own. */
+const AUDITOR_ROLES: readonly Role[] = Object.freeze([Roles.esignatureAuditor]);
+
+const SIGNER_ONLY_NOTE = 'Only requests for which you are the signer can be opened.';
+
 /** One page of the tenant's signature requests; `null` for a reader without the signer role, which the list refuses. */
 export type RequestsData = Read<ESignatureSchemas['SignatureRequestList']> | null;
 
@@ -167,16 +172,28 @@ export async function loadRequests(ctx: ScreenContext): Promise<RequestsData> {
   return readOf(response, 'listSignatureRequests');
 }
 
-/** The grid row of `request`: its document linking to the request, then links to its audit chain and verification. */
+/** Whether the reader may open `request`: an auditor, or its signer, whose id e-signature compares case-insensitively. */
+function opens(ctx: ScreenContext, request: SignatureRequest): boolean {
+  const userId = ctx.req.user?.sub;
+  return (
+    canUse(ctx.req, AUDITOR_ROLES) ||
+    (userId !== undefined && userId.toUpperCase() === request.signer_user_id.toUpperCase())
+  );
+}
+
+/** The grid row of `request`; its document, audit chain and verification are linked only when the reader opens it. */
 function requestRow(ctx: ScreenContext, request: SignatureRequest): GridCell[] {
   const params = { id: request.request_id };
+  const openable = opens(ctx, request);
   // Values stay as the contract returns them, dates included, as on every OPT-2 screen.
   return [
-    link(screenUrl(ctx, REQUEST_SCREEN, params), request.document_name),
+    openable ? link(screenUrl(ctx, REQUEST_SCREEN, params), request.document_name) : request.document_name,
     requestStateBadge(ctx, request.state),
     request.signer_user_id,
     request.created,
-    html`${link(screenUrl(ctx, AUDIT_SCREEN, params), 'Audit Chain')} ${link(screenUrl(ctx, VERIFY_SCREEN, params), 'Verify')}`,
+    openable
+      ? html`${link(screenUrl(ctx, AUDIT_SCREEN, params), 'Audit Chain')} ${link(screenUrl(ctx, VERIFY_SCREEN, params), 'Verify')}`
+      : null,
   ];
 }
 
@@ -218,8 +235,9 @@ function createForm(ctx: ScreenContext, values: CreateRequestValues, opts: Reque
 }
 
 /**
- * The landing body: header, the requests with their paging and, for a creator, `alert` and the new-request form (else
- * `alert` follows the header); the service's alert in their place; or the lookup form for a reader without signer.
+ * The landing body: header, for a non-auditor a note on which requests open, the requests with their paging and, for
+ * a creator, `alert` and the new-request form (else `alert` follows the header); the service's alert in their place;
+ * or the lookup form for a reader without signer.
  */
 export function requestsBody(ctx: ScreenContext, data: RequestsData, opts: RequestsBodyOptions = {}): SafeHtml {
   const header = pageHeader('Signature Requests');
@@ -228,8 +246,9 @@ export function requestsBody(ctx: ScreenContext, data: RequestsData, opts: Reque
   // The contract's paged-list base types `items` as unknown[], which this list's schema narrows.
   const requests: readonly SignatureRequest[] = data.body.items;
   const rows = requests.map((request) => requestRow(ctx, request));
+  const note = canUse(ctx.req, AUDITOR_ROLES) ? null : html`<p class="help-block">${SIGNER_ONLY_NOTE}</p>`;
   const list = block(
-    html`${gridTable(headers(ctx), rows, 'There are no signature requests.', {
+    html`${note}${gridTable(headers(ctx), rows, 'There are no signature requests.', {
       columnClasses: [undefined, undefined, 'hidden-xs', 'hidden-xs hidden-sm'],
     })}${pagination(ctx, {
       page: data.body.pageindex,

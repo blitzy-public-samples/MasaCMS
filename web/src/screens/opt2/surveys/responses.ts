@@ -5,6 +5,7 @@ import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import { block, gridTable, opt2Label, opt2View, pagination, readPage } from '../shared';
 import {
   PAGE_SIZE,
+  SURVEYS_GATE,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
@@ -110,6 +111,7 @@ export const responsesScreen: Opt2ScreenDefinition<ResponsesData> = {
   screen: 'responses',
   roles: SURVEYS_ROLES,
   service: 'surveys',
+  gate: SURVEYS_GATE,
   load: loadResponses,
   render: (ctx, data) => opt2View(SURVEYS_MODULE, renderResponses(ctx, data), 'responses'),
 };

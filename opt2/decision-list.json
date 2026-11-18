@@ -24,7 +24,7 @@
         {"id": "rest:site.save", "routeKey": "rest:site.save"},
         {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
       ],
-      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08"]
+      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08", "GS-PS-10"]
     },
     {
       "table": "tpluginsettings",
@@ -48,7 +48,7 @@
         {"id": "rest:site.save", "routeKey": "rest:site.save"},
         {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
       ],
-      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08"]
+      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08", "GS-PS-10"]
     },
     {
       "table": "tpluginscripts",
@@ -72,7 +72,7 @@
         {"id": "rest:site.save", "routeKey": "rest:site.save"},
         {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
       ],
-      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08"]
+      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08", "GS-PS-10"]
     },
     {
       "table": "tplugindisplayobjects",
@@ -96,7 +96,7 @@
         {"id": "rest:site.save", "routeKey": "rest:site.save"},
         {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
       ],
-      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08"]
+      "affectedScenarios": ["GS-LS-04", "GS-PS-03", "GS-PS-04", "GS-PS-08", "GS-PS-10"]
     },
     {
       "table": "tclusterpeers",
@@ -195,7 +195,7 @@
         {"id": "rest:site.save", "routeKey": "rest:site.save"},
         {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
       ],
-      "affectedScenarios": ["GS-LS-03", "GS-LS-04", "GS-PS-01", "GS-PS-03", "GS-PS-04", "GS-PS-08"]
+      "affectedScenarios": ["GS-CO-21", "GS-LS-03", "GS-LS-04", "GS-PS-01", "GS-PS-03", "GS-PS-04", "GS-PS-08", "GS-PS-10"]
     },
     {
       "table": "trazunasettings",
@@ -222,7 +222,7 @@
         {"id": "rest:site.save", "routeKey": "rest:site.save"},
         {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
       ],
-      "affectedScenarios": ["GS-LS-04", "GS-PS-01", "GS-PS-02", "GS-PS-03", "GS-PS-04", "GS-PS-05", "GS-PS-08"]
+      "affectedScenarios": ["GS-LS-04", "GS-PS-01", "GS-PS-02", "GS-PS-03", "GS-PS-04", "GS-PS-05", "GS-PS-08", "GS-PS-10"]
     },
     {
       "table": "tcontenteventreminders",
@@ -275,7 +275,7 @@
         {"id": "rest:contentnav.save{session}", "routeKey": "rest:contentnav.save{session}"},
         {"id": "rest:contentnav.save{siteid}", "routeKey": "rest:contentnav.save{siteid}"}
       ],
-      "affectedScenarios": ["GS-BR-01", "GS-CO-01", "GS-CO-02", "GS-CO-03", "GS-CO-07", "GS-CO-09", "GS-CO-10", "GS-CO-13", "GS-CO-15", "GS-CO-18", "GS-CO-19", "GS-ID-03", "GS-LS-02", "GS-LS-03", "GS-LS-04", "GS-PS-01", "GS-PS-03", "GS-PS-06", "GS-UI-01", "GS-UI-02", "GS-UI-03", "GS-UI-05"]
+      "affectedScenarios": ["GS-BR-01", "GS-CO-01", "GS-CO-02", "GS-CO-03", "GS-CO-07", "GS-CO-09", "GS-CO-10", "GS-CO-13", "GS-CO-15", "GS-CO-18", "GS-CO-19", "GS-CO-21", "GS-ID-03", "GS-LS-02", "GS-LS-03", "GS-LS-04", "GS-PS-01", "GS-PS-03", "GS-PS-06", "GS-UI-01", "GS-UI-02", "GS-UI-03", "GS-UI-05"]
     },
     {
       "table": "fb_*",

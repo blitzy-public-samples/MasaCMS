@@ -1,0 +1,166 @@
+{
+  "capturedAt": "2026-11-18T14:26:36.511Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:37.567Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-RE-02",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "job",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "content_type": "",
+            "created": "<ts:serializer>",
+            "definition_id": "<id:1>",
+            "error": "",
+            "file_name": "",
+            "finished_at": "",
+            "format": "csv",
+            "job_id": "<id:2>",
+            "output_sha256": "",
+            "requested_by_id": "<id:3>",
+            "siteid": "tenant-a",
+            "started_at": "",
+            "state": "queued"
+          },
+          "method": "reporting.exports"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "job",
+        "routeKey": "fixture:reporting/exports@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "asOf": "2026-06-30",
+            "definitionId": "EC1A6CD7-B5BA-3213-C660CB57BE789EBE",
+            "format": "csv"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "content_type": "",
+            "created": "<ts:serializer>",
+            "definition_id": "<id:1>",
+            "error": "",
+            "file_name": "",
+            "finished_at": "",
+            "format": "csv",
+            "job_id": "<id:2>",
+            "output_sha256": "",
+            "requested_by_id": "<id:3>",
+            "siteid": "tenant-a",
+            "started_at": "",
+            "state": "queued"
+          },
+          "method": "reporting.exports"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "68d8b2b5b2b2987b5ee8470b5717cf3aec18a07623d57825fa2491bd323bde28",
+        "status": 200
+      },
+      "routeKey": "fixture:reporting/exports@post"
+    },
+    {
+      "index": 1,
+      "name": "poll",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "content_type": "",
+            "created": "<ts:serializer>",
+            "definition_id": "<id:1>",
+            "error": "source-unavailable",
+            "file_name": "",
+            "finished_at": "<ts:serializer>",
+            "format": "csv",
+            "job_id": "<id:2>",
+            "output_sha256": "",
+            "requested_by_id": "<id:3>",
+            "siteid": "tenant-a",
+            "started_at": "<ts:serializer>",
+            "state": "failed"
+          },
+          "method": "reporting.exports"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "poll",
+        "routeKey": "fixture:reporting/exports/{id}@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/5686596E-DA12-EA29-506FD61F848F6D28?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "content_type": "",
+            "created": "<ts:serializer>",
+            "definition_id": "<id:1>",
+            "error": "source-unavailable",
+            "file_name": "",
+            "finished_at": "<ts:serializer>",
+            "format": "csv",
+            "job_id": "<id:2>",
+            "output_sha256": "",
+            "requested_by_id": "<id:3>",
+            "siteid": "tenant-a",
+            "started_at": "<ts:serializer>",
+            "state": "failed"
+          },
+          "method": "reporting.exports"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "667eb793374706f984cfd2dbd722f3d688aef28fb9cb54a4132c317c31e7344a",
+        "status": 200
+      },
+      "routeKey": "fixture:reporting/exports/{id}@get"
+    }
+  ],
+  "tableVersion": null
+}

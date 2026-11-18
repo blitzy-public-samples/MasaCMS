@@ -445,6 +445,62 @@ describe('classifyScenario', () => {
     expect(decisionList.actionVariants.map((variant) => variant.routeKey)).toContain(WITHHELD_KEY);
   });
 
+  it.each<[string, () => Case, string, string | null]>([
+    [
+      'declared on the scenario',
+      () => {
+        const scenario = derive('GS-ID-05', {
+          service: 'identity',
+          role: 'admin',
+          covers: [WITHHELD_KEY],
+          expected: 'withheld',
+          decisionListRef: WITHHELD_KEY,
+        });
+        return { scenario, golden: retarget(golden, scenario.id), replay: retarget(replay, scenario.id) };
+      },
+      '1 unlisted difference',
+      null,
+    ],
+    ['declared on a step', () => withheldCase(WITHHELD_KEY), '1 unlisted difference', null],
+    [
+      'declared on a step that also halts',
+      () => {
+        const withheld = withheldCase(WITHHELD_KEY);
+        const halted = { step: 'delete', routeKey: WITHHELD_KEY, reason: 'session-managed', exceptionId: 'EX-ID-HALT' };
+        return { ...withheld, replay: withheld.replay === null ? null : { ...withheld.replay, halted: [halted] } };
+      },
+      '1 unlisted difference; session-managed',
+      'EX-ID-HALT',
+    ],
+  ])(
+    'withholds a scenario %s despite an unlisted difference, still reporting it',
+    (_title, build, reason, exceptionId) => {
+      const withheld = build();
+      if (withheld.replay === null) throw new Error('case has no replay');
+      const verdict = classify({ ...withheld, replay: retitled(withheld.replay, CHANGED_TITLE) });
+      expect(verdict).toStrictEqual({
+        result: 'withheld',
+        reason,
+        differences: [{ ...TITLE_DIFFERENCE, step: withheld.replay.steps[0]?.name }],
+        exceptionId,
+        decisionListRef: [WITHHELD_REF],
+      });
+    },
+  );
+
+  it('fails a withheld scenario whose replay run failed, leaving nothing to compare', () => {
+    const withheld = withheldCase(WITHHELD_KEY);
+    if (withheld.replay === null) throw new Error('case has no replay');
+    const failed = { ...withheld.replay, error: { message: 'gateway answered 502', step: 'delete' } };
+    expect(classify({ ...withheld, replay: failed })).toStrictEqual({
+      result: 'fail',
+      reason: 'replay failed at delete: gateway answered 502',
+      differences: [],
+      exceptionId: null,
+      decisionListRef: [WITHHELD_REF],
+    });
+  });
+
   it('throws GoldenConfigError for a withheld route key the decision list does not hold', () => {
     const unknown = withheldCase(UNKNOWN_KEY);
     expect(() => classify(unknown)).toThrow(GoldenConfigError);

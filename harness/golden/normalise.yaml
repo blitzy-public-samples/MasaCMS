@@ -103,6 +103,12 @@ timestamps:
       pattern: "\\d{13}"
       scope: whole-value
       keys: ["*time*", "*At"]
+    # cfformprotect's form load time: yyyymmdd and HHmmss, each plus 19740206 (core/vendor/cfformprotect/cffp.cfm:37-42).
+    - name: cffp-blurred
+      format: "yyyymmdd+19740206,HHmmss+19740206"
+      pattern: "\\d{8},\\d{8}"
+      scope: whole-value
+      keys: [formfield1234567893]
   dateOnlyFields: [asOf, effectiveFrom, workDate, businessDate, dueDate]
   dateOnlyFieldMatch: ignore-case-and-underscores
   dateOnlyFieldKinds: [json-keys, form-fields, query-params, column-headers]

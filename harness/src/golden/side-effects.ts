@@ -962,8 +962,8 @@ async function fetchUnitExport(
 
 /**
  * One snapshot per target unit of `spec.table` from its owner's `GET /internal/v1/migration/export`, encodings as
- * returned and kept within `spec.where`. A unit that does not own a `where` column is bounded by the keys of a sibling
- * unit that does (people.person by identity.user_account's `UserID` for a `username` scope).
+ * returned and kept within `spec.where`. A unit that does not own a `where` column keeps the rows whose key any sibling
+ * unit that does holds within `spec.where` (identity.credential by group_account's or user_account's `UserID`).
  */
 export async function targetRows(spec: ResolvedRowSpec, deps: TargetRowDeps): Promise<RowSnapshot[]> {
   const config = deps.config ?? resolveSideEffectConfig(deps.env);
@@ -988,21 +988,28 @@ export async function targetRows(spec: ResolvedRowSpec, deps: TargetRowDeps): Pr
     if (ownsTerms(target)) {
       kept = data.rows.filter((row) => matchesWhere(data, row, terms, target.unit));
     } else {
-      const anchor = ref.entry.targets.find(
+      const anchors = ref.entry.targets.filter(
         (t) => t !== target && ownsTerms(t) && t.keyColumns.length > 0 && t.keyColumns.every((key) => owns(target, key)),
       );
-      if (anchor === undefined) {
+      if (anchors.length === 0) {
         throw new GoldenConfigError(
           `rows: unit ${target.unit} does not own every where column of ${ref.entry.table}, and no sibling unit that does shares a key with it`,
         );
       }
-      const anchorData = await exportOf(anchor);
-      const keys = new Set(
-        anchorData.rows
-          .filter((row) => matchesWhere(anchorData, row, terms, anchor.unit))
-          .map((row) => keyTuple(anchorData, row, anchor.keyColumns, anchor.unit)),
+      // Each anchor's predicate holds only some legacy rows (group_account Type = 1, user_account Type = 2).
+      const bounds: { anchor: OwnershipTarget; keys: Set<string> }[] = [];
+      for (const anchor of anchors) {
+        const anchorData = await exportOf(anchor);
+        const keys = new Set(
+          anchorData.rows
+            .filter((row) => matchesWhere(anchorData, row, terms, anchor.unit))
+            .map((row) => keyTuple(anchorData, row, anchor.keyColumns, anchor.unit)),
+        );
+        bounds.push({ anchor, keys });
+      }
+      kept = data.rows.filter((row) =>
+        bounds.some(({ anchor, keys }) => keys.has(keyTuple(data, row, anchor.keyColumns, target.unit))),
       );
-      kept = data.rows.filter((row) => keys.has(keyTuple(data, row, anchor.keyColumns, target.unit)));
     }
     snapshots.push(snapshotOf(deps.ownership, ref, target, [...data.columns], kept.map((row) => row.encoding)));
   }

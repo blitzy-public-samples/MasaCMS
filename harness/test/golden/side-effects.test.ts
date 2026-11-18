@@ -1504,6 +1504,79 @@ describe('targetRows', () => {
     );
   });
 
+  // The tusers split of opt2/table-ownership.json: group_account, listed first, holds Type = 1 rows only.
+  const SPLIT_USERS = table({
+    table: 'tusers',
+    owner: 'identity',
+    split: { by: 'Type+column' },
+    targets: [
+      target('identity.group_account', 'identity', 'Type = 1', ['UserID'], ['GroupName', 'UserName', 'Type']),
+      target('identity.user_account', 'identity', 'Type = 2', ['UserID'], ['UserName', 'Type']),
+      target('identity.credential', 'identity', 'Type = 2', ['UserID'], ['Password']),
+      target('identity.login_state', 'identity', 'Type = 2', ['UserID'], ['LastLogin']),
+      target('people.person', 'people', 'Type = 2', ['UserID', 'SiteID'], ['GroupName', 'Fname', 'Email']),
+    ],
+  });
+  const SPLIT_COLUMNS: Record<string, CanonicalColumn[]> = {
+    'identity.group_account': [col('UserID', 's'), col('GroupName', 's'), col('UserName', 's'), col('Type', 'i')],
+    'identity.user_account': ACCOUNT_COLUMNS,
+    'identity.credential': [col('UserID', 's'), col('Password', 's')],
+    'identity.login_state': [col('UserID', 's'), col('LastLogin', 't')],
+    'people.person': [col('UserID', 's'), col('GroupName', 's'), col('Fname', 's'), col('Email', 's'), col('SiteID', 's')],
+  };
+  const ADA = { ...U1, Password: 'FIXTURE-HASH-1', LastLogin: '2026-06-30T09:15:00.000' };
+  const NULL_USER = { ...U2, Password: 'FIXTURE-HASH-2', LastLogin: '2026-06-30T10:30:00.000' };
+
+  function splitColumns(unit: string): CanonicalColumn[] {
+    const columns = SPLIT_COLUMNS[unit];
+    if (columns === undefined) throw new Error(`no fixture columns for ${unit}`);
+    return columns;
+  }
+
+  /** Default-site exports of SPLIT_USERS: G1 in group_account, ADA and NULL_USER in every other unit. */
+  function splitUserExports(): FakeHttp {
+    const page = ({ unit, keyColumns }: OwnershipTarget): ExportPage => {
+      const rows = unit === 'identity.group_account' ? [G1] : [ADA, NULL_USER];
+      return { unit, siteId: 'default', tables: [exportTable(unit, 'tusers', splitColumns(unit), keyColumns, rows)] };
+    };
+    const ownedBy = (owner: string): ExportPage[] => SPLIT_USERS.targets.filter((t) => t.owner === owner).map(page);
+    return exportService(exportService(fakeHttp(), 'identity', ownedBy('identity')), 'people', ownedBy('people'));
+  }
+
+  const noSplitRows = { 'identity.credential': [], 'identity.login_state': [], 'people.person': [] };
+
+  it.each<{ label: string; where: Record<string, string>; expected: Record<string, Record<string, unknown>[]> }>([
+    {
+      label: "a user's username keeps its Type = 2 rows, which group_account does not hold",
+      where: { username: 'Fixture-Ada' },
+      expected: {
+        'identity.group_account': [],
+        'identity.user_account': [ADA],
+        'identity.credential': [ADA],
+        'identity.login_state': [ADA],
+        'people.person': [ADA],
+      },
+    },
+    {
+      label: "a group's name keeps its group_account row alone",
+      where: { groupname: 'Editors' },
+      expected: { 'identity.group_account': [G1], 'identity.user_account': [], ...noSplitRows },
+    },
+  ])('bounds each unit without the where column by the keys of every sibling with it: $label', async (c) => {
+    const http = splitUserExports();
+    const sql = await fakeSql(legacyDb({ 'dbo.tsettings': { rows: [{ SiteID: 'default' }] } }));
+    const deps = { ...(await rowDeps(http, sql)), ownership: withTables(SPLIT_USERS) };
+
+    const snapshots = await targetRows({ table: 'tusers', where: c.where }, deps);
+
+    expect(snapshots.map((s) => s.unit)).toStrictEqual(SPLIT_USERS.targets.map((t) => t.unit));
+    expect(Object.fromEntries(snapshots.map((s) => [s.unit, s.rows]))).toStrictEqual(
+      Object.fromEntries(Object.entries(c.expected).map(([unit, rows]) => [unit, encoded(splitColumns(unit), rows)])),
+    );
+    const units = http.calls.map((call) => call.url.searchParams.get('unit'));
+    expect(units).toStrictEqual(SPLIT_USERS.targets.map((t) => t.unit));
+  });
+
   it("reads a Program_<n> table's export in the program's site with its programId", async () => {
     const columns = [col('blackout_id', 's'), col('day_id', 's'), col('reason', 's')];
     const blackouts = [

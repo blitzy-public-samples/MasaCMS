@@ -1,6 +1,7 @@
 # Golden scenarios: requests only; responses are whatever legacy answers at capture. Capture and replay follow this order, except the GS-PE-RH rehearsal scenarios, which run last.
 # Scenario: id, title, service, role, sessions{name: {login, via}}, seedRefs[{as, source, path, where, index}], steps[], compare[], rows[{table, where}], normalisationOverrides, covers[]; optional purpose, tableVersion, fixtures, expected, decisionListRef, exceptionId, acrossTransition, replayFaults, browser, tasks.
-# Step: name, method, route, as, auth, csrf, csrfFrom, mergeHidden, headers, form | body | multipart{fields, files[{field, fixture, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
+# Step: name, method, route, as, auth, csrf, csrfFrom, mergeHidden, headers, form | body | multipart{fields, files[{field, fixture | fromStep, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
+# A multipart file's fromStep uploads the body of that earlier step's last response in the same scenario.
 # auth: session | anonymous | basic:<user>:<secret> | bearer:<token>; csrf: fetch-form | json-api:<context> | none; extract: {from: body | header:<Name> | dom | location-query, path | selector, attr, param | pattern} (dom path: JSON body string holding the markup; dom pattern: regular expression whose first capture group, matched against the attr value or text, is the value).
 # seedRefs index is 0-based and negative from the end; a reserved ref resolves to a scalar, read as ${seed.<as>}.
 # Placeholders: ${secret:admin|qa_editor|appreload|seed:<user>|oauth:<clientId>|generated:<name>}, ${user:<site>:<role>}, ${seed.<as>.<field>}, ${<step>.<binding>}, ${matrix.<var>}, ${asOf}, ${nodash:<value>} (<value> without '-'), ${urlencode:<value>} (legacy esapiEncode('url')); keys resolve like values.
@@ -4890,7 +4891,8 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
     seedRefs:
-      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
+      # A page no other scenario drafts: loadquickedit.cfm renders the quick editor only when the page has no draft.
+      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 5}
     browser: {flow: inline-save, console: no-new-errors}
     steps:
       - name: tree
@@ -9655,3 +9657,293 @@ scenarios:
       - admin:csettings.deployplugin
       - admin:csettings.updateplugin
       - admin:csettings.updatesite{bundle}
+  - id: GS-PS-09
+    title: Site bundle download and scaffolder site assignment
+    service: programs-sites
+    role: admin (S2)
+    purpose: coverage
+    sessions:
+      admin: {login: admin, via: admin}
+    seedRefs: []
+    steps:
+      - name: bundle-options
+        method: GET
+        route: /admin/?muraAction=cSettings.selectBundleOptions&siteID=tenant-b
+        as: admin
+      # bundleFiles=false skips BundleFiles (settingsBundle.cfc:1855), whose theme step writes back into the web root
+      # (settingsBundle.cfc:300-312), a file state capture and replay do not reset between them.
+      - name: create-bundle
+        method: POST
+        route: /admin/?muraAction=cSettings.createBundle&bundleFiles=false
+        as: admin
+        csrf: fetch-form
+        csrfFrom: bundle-options
+        form:
+          BundleName: gs-ps-09
+      - name: scaffold-assembler
+        method: GET
+        route: /admin/?muraAction=scaffold.assembler&siteid=tenant-b
+        as: admin
+      - name: scaffold-sites
+        method: GET
+        route: /admin/?muraAction=scaffold.sites&siteid=tenant-b&entityname=gsps09entity
+        as: admin
+      - name: scaffold-update-sites
+        method: POST
+        route: /admin/?muraAction=scaffold.updateSites
+        as: admin
+        csrf: fetch-form
+        csrfFrom: scaffold-sites
+        form:
+          siteAssignID: tenant-b
+    compare: [status, auth, dom, export]
+    normalisationOverrides: {}
+    covers:
+      - admin:csettings.selectbundleoptions
+      - admin:csettings.createbundle
+      - admin:scaffold.assembler
+      - admin:scaffold.sites
+      - admin:scaffold.updatesites
+  - id: GS-PS-10
+    title: Plugin deploy, settings and site assignment, plugin bundle and delete
+    service: programs-sites
+    role: admin (S2)
+    purpose: coverage
+    sessions:
+      admin: {login: admin, via: admin}
+    seedRefs: []
+    steps:
+      - name: deploy-tokens
+        method: GET
+        route: /_api/json/v1/tenant-b/generateCSRFTokens?context=newplugin
+        as: admin
+        extract:
+          csrfToken: {from: body, path: data.csrf_token}
+          csrfExpires: {from: body, path: data.csrf_token_expires}
+      - name: deploy-plugin
+        method: POST
+        route: /admin/?muraAction=cSettings.deployPlugin
+        as: admin
+        multipart:
+          fields:
+            csrf_token: ${deploy-tokens.csrfToken}
+            csrf_token_expires: ${deploy-tokens.csrfExpires}
+          files:
+            - {field: newPlugin, fixture: masa-plugin-zip, filename: gs-ps-10-plugin.zip, contentType: application/zip}
+        extract:
+          moduleid: {from: location-query, param: moduleid}
+        expected: withheld
+        decisionListRef: admin:csettings.deployplugin
+      - name: update-plugin
+        method: POST
+        route: /admin/?muraAction=cSettings.updatePlugin
+        as: admin
+        csrf: fetch-form
+        csrfFrom: deploy-plugin
+        form:
+          pluginalias: GS-PS-10 Plugin
+          loadPriority: '5'
+          siteAssignID: tenant-b
+          greeting: GS-PS-10 greeting
+        expected: withheld
+        decisionListRef: admin:csettings.updateplugin
+      - name: edit-plugin
+        method: GET
+        route: /admin/?muraAction=cSettings.editPlugin&moduleID=${deploy-plugin.moduleid}
+        as: admin
+        extract:
+          bundleName: {from: dom, selector: 'a[href*="cSettings.createBundle"]', attr: href, param: BundleName}
+          bundleToken: {from: dom, selector: 'a[href*="cSettings.createBundle"]', attr: href, param: csrf_token}
+          bundleExpires: {from: dom, selector: 'a[href*="cSettings.createBundle"]', attr: href, param: csrf_token_expires}
+      - name: plugin-bundle
+        method: GET
+        route: /admin/index.cfm?muraAction=cSettings.createBundle&moduleid=${deploy-plugin.moduleid}&siteID=&BundleName=${edit-plugin.bundleName}&bundleMode=plugin&csrf_token=${edit-plugin.bundleToken}&csrf_token_expires=${edit-plugin.bundleExpires}
+        as: admin
+      - name: delete-tokens
+        method: GET
+        route: /_api/json/v1/tenant-b/generateCSRFTokens?context=${deploy-plugin.moduleid}
+        as: admin
+        extract:
+          csrfToken: {from: body, path: data.csrf_token}
+          csrfExpires: {from: body, path: data.csrf_token_expires}
+      - name: delete-plugin
+        method: GET
+        route: /admin/?muraAction=cSettings.deletePlugin&moduleID=${deploy-plugin.moduleid}&csrf_token=${delete-tokens.csrfToken}&csrf_token_expires=${delete-tokens.csrfExpires}
+        as: admin
+        expected: withheld
+        decisionListRef: admin:csettings.deleteplugin
+    compare: [status, auth, dom, export, rows]
+    rows:
+      - {table: tcontent, where: {moduleid: '${deploy-plugin.moduleid}'}}
+    normalisationOverrides: {}
+    covers:
+      - api:generatecsrftokens
+      - admin:csettings.deployplugin
+      - admin:csettings.updateplugin
+      - admin:csettings.editplugin
+      - admin:csettings.createbundle
+      - admin:csettings.deleteplugin
+  - id: GS-CO-21
+    title: Content export imported back as a draft
+    service: strategies-content
+    role: admin
+    purpose: coverage
+    sessions:
+      admin: {login: admin, via: admin}
+    seedRefs:
+      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 2}
+    steps:
+      - name: export-content
+        method: GET
+        route: /admin/?muraAction=cArch.exportcontent&contentid=${seed.page.contentID}&siteid=tenant-a
+        as: admin
+      - name: import-form
+        method: GET
+        route: /admin/?muraAction=cArch.import&contentid=${seed.page.contentID}&moduleid=00000000000000000000000000000000000&siteid=tenant-a
+        as: admin
+      # Legacy answers its error page here and imports no row (settingsBundleBean.cfc:193 on ACF 2023).
+      - name: import-content
+        method: POST
+        route: /admin/?muraAction=cArch.importcontent
+        as: admin
+        csrf: fetch-form
+        csrfFrom: import-form
+        multipart:
+          fields:
+            import_status: Draft
+            changeset_name: ''
+          files:
+            - {field: newFile, fromStep: export-content, filename: gs-co-21-export.zip, contentType: application/zip}
+        expected: withheld
+        decisionListRef: admin:carch.importcontent
+    compare: [status, auth, dom, export, rows]
+    rows:
+      - {table: tcontent, where: {parentid: '${seed.page.contentID}'}}
+    normalisationOverrides: {}
+    covers:
+      - admin:carch.exportcontent
+      - admin:carch.import
+      - admin:carch.importcontent
+  - id: GS-CO-22
+    title: Component export imported back as a new component
+    service: strategies-content
+    role: admin
+    purpose: coverage
+    sessions:
+      admin: {login: admin, via: admin}
+    seedRefs:
+      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 3}
+    steps:
+      # The seed holds no component; exportcomponent packs the body of any content id (carch.cfc:154-171).
+      - name: export-component
+        method: GET
+        route: /admin/?muraAction=cArch.exportcomponent&contentid=${seed.page.contentID}&siteid=tenant-a
+        as: admin
+      - name: import-form
+        method: GET
+        route: /admin/?muraAction=cArch.importcomponent&siteid=tenant-a&moduleid=00000000000000000000000000000000003
+        as: admin
+      - name: import-component
+        method: POST
+        route: /admin/?muraAction=cArch.importcomponent&siteid=tenant-a
+        as: admin
+        multipart:
+          fields:
+            title: GS-CO-22 Component
+          files:
+            - {field: componentzip, fromStep: export-component, filename: gs-co-22-component.zip, contentType: application/zip}
+    compare: [status, auth, dom, export, rows]
+    rows:
+      - {table: tcontent, where: {siteid: tenant-a, moduleid: '00000000000000000000000000000000003', title: GS-CO-22 Component}, minRows: 1}
+    normalisationOverrides: {}
+    covers:
+      - admin:carch.exportcomponent
+      - admin:carch.importcomponent
+  - id: GS-CO-23
+    title: Bounce cleanup removes a mailing-list member
+    service: communications
+    role: admin
+    purpose: coverage
+    sessions:
+      admin: {login: admin, via: admin}
+    seedRefs: []
+    steps:
+      - name: list-form
+        method: GET
+        route: /admin/?muraAction=cMailingList.edit&siteid=tenant-a&mlid=
+        as: admin
+        extract:
+          mlid: {from: dom, selector: 'form[name=form1] input[name=mlid]', attr: value}
+      - name: list-add
+        method: POST
+        route: /admin/?muraAction=cMailingList.update
+        as: admin
+        form:
+          action: add
+          mlid: ${list-form.mlid}
+          Name: GS-CO-23 List
+          isPublic: '0'
+          ispurge: '0'
+          description: Golden scenario bounce list
+          siteid: tenant-a
+          direction: add
+        extract:
+          mlid: {from: location-query, param: mlid}
+      - name: bounced-add
+        method: POST
+        route: /admin/?muraAction=cMailingList.updatemember
+        as: admin
+        form:
+          email: gs-co-23-bounced@seed.opt2.test
+          fname: GS
+          lname: CO-23
+          company: Golden
+          action: add
+          mlid: ${list-add.mlid}
+          siteid: tenant-a
+          isVerified: '1'
+      - name: kept-add
+        method: POST
+        route: /admin/?muraAction=cMailingList.updatemember
+        as: admin
+        form:
+          email: gs-co-23-kept@seed.opt2.test
+          fname: GS
+          lname: CO-23
+          company: Golden
+          action: add
+          mlid: ${list-add.mlid}
+          siteid: tenant-a
+          isVerified: '1'
+      - name: members-before
+        method: GET
+        route: /admin/?muraAction=cMailingList.listmembers&siteid=tenant-a&mlid=${list-add.mlid}
+        as: admin
+      - name: bounces
+        method: GET
+        route: /admin/?muraAction=cEmail.showAllBounces&siteid=tenant-a
+        as: admin
+      - name: delete-bounces
+        method: POST
+        route: /admin/?muraAction=cEmail.deleteBounces
+        as: admin
+        form:
+          bouncedEmail: gs-co-23-bounced@seed.opt2.test
+          siteID: tenant-a
+      - name: members-after
+        method: GET
+        route: /admin/?muraAction=cMailingList.listmembers&siteid=tenant-a&mlid=${list-add.mlid}
+        as: admin
+    compare: [status, auth, dom, rows]
+    rows:
+      - {table: tmailinglist, where: {mlid: '${list-add.mlid}'}, minRows: 1}
+      - {table: tmailinglistmembers, where: {mlid: '${list-add.mlid}'}, minRows: 1}
+      - {table: tmailinglistmembers, where: {email: gs-co-23-bounced@seed.opt2.test}}
+    normalisationOverrides: {}
+    covers:
+      - admin:cmailinglist.edit
+      - admin:cmailinglist.update
+      - admin:cmailinglist.updatemember
+      - admin:cmailinglist.listmembers
+      - admin:cemail.showallbounces
+      - admin:cemail.deletebounces

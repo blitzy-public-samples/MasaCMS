@@ -1,0 +1,471 @@
+{
+  "capturedAt": "2026-11-18T14:26:27.477Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:29.042Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-SU-03",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "surveys.survey_response": {
+        "checksum": "955c00d26cb8e82c4783e171b7375253db62411cea6960a5b8edb9f5f40d6337",
+        "columns": [
+          {
+            "name": "response_id",
+            "type": "s"
+          },
+          {
+            "name": "survey_id",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "respondentSiteID",
+            "type": "s"
+          },
+          {
+            "name": "respondent_user_id",
+            "type": "s"
+          },
+          {
+            "name": "answers",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:4>s6:<id:2>s8:tenant-as8:tenant-bs6:<id:3>s11:{\"q1\":\"no\"}s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "synthetic.survey_response",
+        "unit": "surveys.survey_response"
+      },
+      "surveys.survey_target": {
+        "checksum": "44730bd01210427647599e7ff8e5ed87745dbef5cd4f812a1587331bdf779b9d",
+        "columns": [
+          {
+            "name": "target_id",
+            "type": "s"
+          },
+          {
+            "name": "survey_id",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "group_name",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:5>s6:<id:2>s8:tenant-bNs14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:6>s6:<id:2>s8:umbrellaNs14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "synthetic.survey_target",
+        "unit": "surveys.survey_target"
+      }
+    },
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "survey",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [],
+            "title": "GS-SU-03 Multi-site Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "survey",
+        "routeKey": "fixture:surveys/surveys@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "title": "GS-SU-03 Multi-site Survey"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [],
+            "title": "GS-SU-03 Multi-site Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "814dd23a19bb3ac5f302c22cb0110de851f216c3657589ca2f8f05a83134e214",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys@post"
+    },
+    {
+      "index": 1,
+      "name": "bulk-target",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "inserted": 2,
+            "total": 2
+          },
+          "method": "surveys.surveys.targets.bulk"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "bulk-target",
+        "routeKey": "fixture:surveys/surveys/{id}/targets/bulk@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "targets": [
+              {
+                "siteID": "tenant-b"
+              },
+              {
+                "siteID": "tenant-b"
+              },
+              {
+                "siteID": "umbrella"
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/5684FBC5-AE26-D6FE-9C3D2AE1B97E08E9/targets/bulk?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "inserted": 2,
+            "total": 2
+          },
+          "method": "surveys.surveys.targets.bulk"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "299c88a3b753f68dc1ba74e23a6a7ad8b26e82cda0618910a0f51d50316937f2",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/targets/bulk@post"
+    },
+    {
+      "index": 2,
+      "name": "respond-other-site",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "answers": "{\"q1\":\"no\"}",
+            "created": "<ts:serializer>",
+            "respondent_user_id": "<id:3>",
+            "respondentsiteid": "tenant-b",
+            "response_id": "<id:4>",
+            "siteid": "tenant-a",
+            "survey_id": "<id:2>"
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "respond-other-site",
+        "routeKey": "fixture:surveys/surveys/{id}/responses@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "answers": "{\"q1\":\"no\"}"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/5684FBC5-AE26-D6FE-9C3D2AE1B97E08E9/responses?siteid=tenant-b"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "answers": "{\"q1\":\"no\"}",
+            "created": "<ts:serializer>",
+            "respondent_user_id": "<id:3>",
+            "respondentsiteid": "tenant-b",
+            "response_id": "<id:4>",
+            "siteid": "tenant-a",
+            "survey_id": "<id:2>"
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "ca88e8d8e718b3924e173833e034725fccc21eced7708c5d3a7eec16355e2b98",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/responses@post"
+    },
+    {
+      "index": 3,
+      "name": "responses",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 1,
+            "items": [
+              {
+                "answers": "{\"q1\":\"no\"}",
+                "created": "<ts:serializer>",
+                "respondent_user_id": "<id:3>",
+                "respondentsiteid": "tenant-b",
+                "response_id": "<id:4>",
+                "siteid": "tenant-a",
+                "survey_id": "<id:2>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 1,
+            "totalpages": 1
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "responses",
+        "routeKey": "fixture:surveys/surveys/{id}/responses@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/5684FBC5-AE26-D6FE-9C3D2AE1B97E08E9/responses?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 1,
+            "items": [
+              {
+                "answers": "{\"q1\":\"no\"}",
+                "created": "<ts:serializer>",
+                "respondent_user_id": "<id:3>",
+                "respondentsiteid": "tenant-b",
+                "response_id": "<id:4>",
+                "siteid": "tenant-a",
+                "survey_id": "<id:2>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 1,
+            "totalpages": 1
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "d868725d3a65c65099654893b5ff817da1a2733341e6d90900c49e490cd93ec3",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/responses@get"
+    },
+    {
+      "index": 4,
+      "name": "detail",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [
+              {
+                "created": "<ts:serializer>",
+                "group_name": "",
+                "siteid": "tenant-b",
+                "survey_id": "<id:2>",
+                "target_id": "<id:5>"
+              },
+              {
+                "created": "<ts:serializer>",
+                "group_name": "",
+                "siteid": "umbrella",
+                "survey_id": "<id:2>",
+                "target_id": "<id:6>"
+              }
+            ],
+            "title": "GS-SU-03 Multi-site Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "detail",
+        "routeKey": "fixture:surveys/surveys/{id}@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/5684FBC5-AE26-D6FE-9C3D2AE1B97E08E9?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [
+              {
+                "created": "<ts:serializer>",
+                "group_name": "",
+                "siteid": "tenant-b",
+                "survey_id": "<id:2>",
+                "target_id": "<id:5>"
+              },
+              {
+                "created": "<ts:serializer>",
+                "group_name": "",
+                "siteid": "umbrella",
+                "survey_id": "<id:2>",
+                "target_id": "<id:6>"
+              }
+            ],
+            "title": "GS-SU-03 Multi-site Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "6f7491a64429ab93184978b70319c0910c882042f801035e024e800466838c5e",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}@get"
+    }
+  ],
+  "tableVersion": null
+}

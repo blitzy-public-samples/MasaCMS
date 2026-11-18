@@ -1,0 +1,1572 @@
+{
+  "capturedAt": "2026-11-18T14:20:22.446Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:21:22.981Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-ID-04",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "login-page",
+      "normalised": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "Log In",
+            "Submit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password",
+              "type": "password"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "rememberMe",
+              "type": "checkbox",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "rb",
+              "options": [
+                {
+                  "label": "English",
+                  "selected": false,
+                  "value": "en_US"
+                },
+                {
+                  "label": "Danish",
+                  "selected": false,
+                  "value": "da"
+                },
+                {
+                  "label": "Deutsch",
+                  "selected": false,
+                  "value": "de"
+                },
+                {
+                  "label": "Dutch",
+                  "selected": false,
+                  "value": "nl"
+                },
+                {
+                  "label": "Filipino",
+                  "selected": false,
+                  "value": "fil"
+                },
+                {
+                  "label": "Français",
+                  "selected": false,
+                  "value": "fr"
+                },
+                {
+                  "label": "Hungarian",
+                  "selected": false,
+                  "value": "hu"
+                },
+                {
+                  "label": "Indonesian",
+                  "selected": false,
+                  "value": "id"
+                },
+                {
+                  "label": "Italian",
+                  "selected": false,
+                  "value": "it"
+                },
+                {
+                  "label": "Portuguese",
+                  "selected": false,
+                  "value": "pt"
+                },
+                {
+                  "label": "Русский",
+                  "selected": false,
+                  "value": "ru"
+                },
+                {
+                  "label": "Spanish",
+                  "selected": false,
+                  "value": "es"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "returnUrl",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cLogin.login"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "submit",
+              "value": "Submit"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "status",
+              "type": "hidden",
+              "value": "sendlogin"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "returnURL",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            }
+          ],
+          "forms": [
+            {
+              "action": "index.cfm",
+              "id": "loginForm",
+              "method": "post",
+              "name": "frmLogin"
+            },
+            {
+              "action": "./?muraAction=clogin.main",
+              "id": "sendLogin",
+              "method": "post",
+              "name": "sendLogin"
+            }
+          ],
+          "headings": [
+            {
+              "level": 2,
+              "text": "Forget your password?"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Username"
+            },
+            {
+              "text": "Password"
+            },
+            {
+              "text": "Remember me"
+            },
+            {
+              "text": ""
+            },
+            {
+              "text": "Forget your password?"
+            },
+            {
+              "text": "Email Address"
+            },
+            {
+              "text": "Return to login"
+            }
+          ],
+          "links": [
+            {
+              "href": "#",
+              "text": "Forget your password?"
+            },
+            {
+              "href": "#",
+              "text": "Return to login"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Login"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "login-page",
+        "routeKey": "admin:clogin.main",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=cLogin.main"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "Log In",
+            "Submit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password",
+              "type": "password"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "rememberMe",
+              "type": "checkbox",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "rb",
+              "options": [
+                {
+                  "label": "English",
+                  "selected": false,
+                  "value": "en_US"
+                },
+                {
+                  "label": "Danish",
+                  "selected": false,
+                  "value": "da"
+                },
+                {
+                  "label": "Deutsch",
+                  "selected": false,
+                  "value": "de"
+                },
+                {
+                  "label": "Dutch",
+                  "selected": false,
+                  "value": "nl"
+                },
+                {
+                  "label": "Filipino",
+                  "selected": false,
+                  "value": "fil"
+                },
+                {
+                  "label": "Français",
+                  "selected": false,
+                  "value": "fr"
+                },
+                {
+                  "label": "Hungarian",
+                  "selected": false,
+                  "value": "hu"
+                },
+                {
+                  "label": "Indonesian",
+                  "selected": false,
+                  "value": "id"
+                },
+                {
+                  "label": "Italian",
+                  "selected": false,
+                  "value": "it"
+                },
+                {
+                  "label": "Portuguese",
+                  "selected": false,
+                  "value": "pt"
+                },
+                {
+                  "label": "Русский",
+                  "selected": false,
+                  "value": "ru"
+                },
+                {
+                  "label": "Spanish",
+                  "selected": false,
+                  "value": "es"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "returnUrl",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cLogin.login"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "submit",
+              "value": "Submit"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "status",
+              "type": "hidden",
+              "value": "sendlogin"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "returnURL",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            }
+          ],
+          "forms": [
+            {
+              "action": "index.cfm",
+              "id": "loginForm",
+              "method": "post",
+              "name": "frmLogin"
+            },
+            {
+              "action": "./?muraAction=clogin.main",
+              "id": "sendLogin",
+              "method": "post",
+              "name": "sendLogin"
+            }
+          ],
+          "headings": [
+            {
+              "level": 2,
+              "text": "Forget your password?"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Username"
+            },
+            {
+              "text": "Password"
+            },
+            {
+              "text": "Remember me"
+            },
+            {
+              "text": ""
+            },
+            {
+              "text": "Forget your password?"
+            },
+            {
+              "text": "Email Address"
+            },
+            {
+              "text": "Return to login"
+            }
+          ],
+          "links": [
+            {
+              "href": "#",
+              "text": "Forget your password?"
+            },
+            {
+              "href": "#",
+              "text": "Return to login"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Login"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "d3bf72a667be5b5613f544189654919deeff4ff7806e381cddb4de858e105eea",
+        "status": 200
+      },
+      "routeKey": "admin:clogin.main"
+    },
+    {
+      "decisionListRef": "admin:clogin.main{status=sendlogin}",
+      "expected": "withheld",
+      "index": 1,
+      "name": "send-login",
+      "normalised": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-error",
+              "text": "If there is an account associated with this email address, your account information has been sent to you."
+            }
+          ],
+          "buttons": [
+            "Log In",
+            "Submit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password",
+              "type": "password"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "rememberMe",
+              "type": "checkbox",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "rb",
+              "options": [
+                {
+                  "label": "English",
+                  "selected": false,
+                  "value": "en_US"
+                },
+                {
+                  "label": "Danish",
+                  "selected": false,
+                  "value": "da"
+                },
+                {
+                  "label": "Deutsch",
+                  "selected": false,
+                  "value": "de"
+                },
+                {
+                  "label": "Dutch",
+                  "selected": false,
+                  "value": "nl"
+                },
+                {
+                  "label": "Filipino",
+                  "selected": false,
+                  "value": "fil"
+                },
+                {
+                  "label": "Français",
+                  "selected": false,
+                  "value": "fr"
+                },
+                {
+                  "label": "Hungarian",
+                  "selected": false,
+                  "value": "hu"
+                },
+                {
+                  "label": "Indonesian",
+                  "selected": false,
+                  "value": "id"
+                },
+                {
+                  "label": "Italian",
+                  "selected": false,
+                  "value": "it"
+                },
+                {
+                  "label": "Portuguese",
+                  "selected": false,
+                  "value": "pt"
+                },
+                {
+                  "label": "Русский",
+                  "selected": false,
+                  "value": "ru"
+                },
+                {
+                  "label": "Spanish",
+                  "selected": false,
+                  "value": "es"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "returnUrl",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cLogin.login"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "submit",
+              "value": "Submit"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "status",
+              "type": "hidden",
+              "value": "sendlogin"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "returnURL",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            }
+          ],
+          "forms": [
+            {
+              "action": "index.cfm",
+              "id": "loginForm",
+              "method": "post",
+              "name": "frmLogin"
+            },
+            {
+              "action": "./?muraAction=clogin.main",
+              "id": "sendLogin",
+              "method": "post",
+              "name": "sendLogin"
+            }
+          ],
+          "headings": [
+            {
+              "level": 2,
+              "text": "Forget your password?"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Username"
+            },
+            {
+              "text": "Password"
+            },
+            {
+              "text": "Remember me"
+            },
+            {
+              "text": ""
+            },
+            {
+              "text": "Forget your password?"
+            },
+            {
+              "text": "Email Address"
+            },
+            {
+              "text": "Return to login"
+            }
+          ],
+          "links": [
+            {
+              "href": "#",
+              "text": "Forget your password?"
+            },
+            {
+              "href": "#",
+              "text": "Return to login"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Login"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "send-login",
+        "routeKey": "admin:clogin.main{status=sendlogin}",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "compactDisplay": "false",
+            "email": "glen.toy@seed.opt2.test",
+            "isAdminLogin": "true",
+            "returnURL": "",
+            "status": "sendlogin"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/admin/?muraAction=cLogin.main"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-error",
+              "text": "If there is an account associated with this email address, your account information has been sent to you."
+            }
+          ],
+          "buttons": [
+            "Log In",
+            "Submit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password",
+              "type": "password"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "rememberMe",
+              "type": "checkbox",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "rb",
+              "options": [
+                {
+                  "label": "English",
+                  "selected": false,
+                  "value": "en_US"
+                },
+                {
+                  "label": "Danish",
+                  "selected": false,
+                  "value": "da"
+                },
+                {
+                  "label": "Deutsch",
+                  "selected": false,
+                  "value": "de"
+                },
+                {
+                  "label": "Dutch",
+                  "selected": false,
+                  "value": "nl"
+                },
+                {
+                  "label": "Filipino",
+                  "selected": false,
+                  "value": "fil"
+                },
+                {
+                  "label": "Français",
+                  "selected": false,
+                  "value": "fr"
+                },
+                {
+                  "label": "Hungarian",
+                  "selected": false,
+                  "value": "hu"
+                },
+                {
+                  "label": "Indonesian",
+                  "selected": false,
+                  "value": "id"
+                },
+                {
+                  "label": "Italian",
+                  "selected": false,
+                  "value": "it"
+                },
+                {
+                  "label": "Portuguese",
+                  "selected": false,
+                  "value": "pt"
+                },
+                {
+                  "label": "Русский",
+                  "selected": false,
+                  "value": "ru"
+                },
+                {
+                  "label": "Spanish",
+                  "selected": false,
+                  "value": "es"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "returnUrl",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cLogin.login"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "submit",
+              "value": "Submit"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "status",
+              "type": "hidden",
+              "value": "sendlogin"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "returnURL",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            }
+          ],
+          "forms": [
+            {
+              "action": "index.cfm",
+              "id": "loginForm",
+              "method": "post",
+              "name": "frmLogin"
+            },
+            {
+              "action": "./?muraAction=clogin.main",
+              "id": "sendLogin",
+              "method": "post",
+              "name": "sendLogin"
+            }
+          ],
+          "headings": [
+            {
+              "level": 2,
+              "text": "Forget your password?"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Username"
+            },
+            {
+              "text": "Password"
+            },
+            {
+              "text": "Remember me"
+            },
+            {
+              "text": ""
+            },
+            {
+              "text": "Forget your password?"
+            },
+            {
+              "text": "Email Address"
+            },
+            {
+              "text": "Return to login"
+            }
+          ],
+          "links": [
+            {
+              "href": "#",
+              "text": "Forget your password?"
+            },
+            {
+              "href": "#",
+              "text": "Return to login"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Login"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "df45f3752694ff0a7e1e81a8b82861816b83f65f51665a9740b87306c1ca581c",
+        "status": 200
+      },
+      "routeKey": "admin:clogin.main{status=sendlogin}"
+    },
+    {
+      "decisionListRef": "admin:clogin.login{status=sendlogin}",
+      "expected": "withheld",
+      "index": 2,
+      "name": "send-login-via-login",
+      "normalised": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-error",
+              "text": "If there is an account associated with this email address, your account information has been sent to you."
+            }
+          ],
+          "buttons": [
+            "Log In",
+            "Submit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password",
+              "type": "password"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "rememberMe",
+              "type": "checkbox",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "rb",
+              "options": [
+                {
+                  "label": "English",
+                  "selected": false,
+                  "value": "en_US"
+                },
+                {
+                  "label": "Danish",
+                  "selected": false,
+                  "value": "da"
+                },
+                {
+                  "label": "Deutsch",
+                  "selected": false,
+                  "value": "de"
+                },
+                {
+                  "label": "Dutch",
+                  "selected": false,
+                  "value": "nl"
+                },
+                {
+                  "label": "Filipino",
+                  "selected": false,
+                  "value": "fil"
+                },
+                {
+                  "label": "Français",
+                  "selected": false,
+                  "value": "fr"
+                },
+                {
+                  "label": "Hungarian",
+                  "selected": false,
+                  "value": "hu"
+                },
+                {
+                  "label": "Indonesian",
+                  "selected": false,
+                  "value": "id"
+                },
+                {
+                  "label": "Italian",
+                  "selected": false,
+                  "value": "it"
+                },
+                {
+                  "label": "Portuguese",
+                  "selected": false,
+                  "value": "pt"
+                },
+                {
+                  "label": "Русский",
+                  "selected": false,
+                  "value": "ru"
+                },
+                {
+                  "label": "Spanish",
+                  "selected": false,
+                  "value": "es"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "returnUrl",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cLogin.login"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "submit",
+              "value": "Submit"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "status",
+              "type": "hidden",
+              "value": "sendlogin"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "returnURL",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            }
+          ],
+          "forms": [
+            {
+              "action": "index.cfm",
+              "id": "loginForm",
+              "method": "post",
+              "name": "frmLogin"
+            },
+            {
+              "action": "./?muraAction=clogin.main",
+              "id": "sendLogin",
+              "method": "post",
+              "name": "sendLogin"
+            }
+          ],
+          "headings": [
+            {
+              "level": 2,
+              "text": "Forget your password?"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Username"
+            },
+            {
+              "text": "Password"
+            },
+            {
+              "text": "Remember me"
+            },
+            {
+              "text": ""
+            },
+            {
+              "text": "Forget your password?"
+            },
+            {
+              "text": "Email Address"
+            },
+            {
+              "text": "Return to login"
+            }
+          ],
+          "links": [
+            {
+              "href": "#",
+              "text": "Forget your password?"
+            },
+            {
+              "href": "#",
+              "text": "Return to login"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Login"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "send-login-via-login",
+        "routeKey": "admin:clogin.login{status=sendlogin}",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "compactDisplay": "false",
+            "csrf_token": "<token>",
+            "csrf_token_expires": "<token>",
+            "email": "glen.toy@seed.opt2.test",
+            "isAdminLogin": "true",
+            "muraAction": "cLogin.login",
+            "returnUrl": "",
+            "status": "sendlogin"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/admin/index.cfm"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-error",
+              "text": "If there is an account associated with this email address, your account information has been sent to you."
+            }
+          ],
+          "buttons": [
+            "Log In",
+            "Submit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password",
+              "type": "password"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "rememberMe",
+              "type": "checkbox",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "rb",
+              "options": [
+                {
+                  "label": "English",
+                  "selected": false,
+                  "value": "en_US"
+                },
+                {
+                  "label": "Danish",
+                  "selected": false,
+                  "value": "da"
+                },
+                {
+                  "label": "Deutsch",
+                  "selected": false,
+                  "value": "de"
+                },
+                {
+                  "label": "Dutch",
+                  "selected": false,
+                  "value": "nl"
+                },
+                {
+                  "label": "Filipino",
+                  "selected": false,
+                  "value": "fil"
+                },
+                {
+                  "label": "Français",
+                  "selected": false,
+                  "value": "fr"
+                },
+                {
+                  "label": "Hungarian",
+                  "selected": false,
+                  "value": "hu"
+                },
+                {
+                  "label": "Indonesian",
+                  "selected": false,
+                  "value": "id"
+                },
+                {
+                  "label": "Italian",
+                  "selected": false,
+                  "value": "it"
+                },
+                {
+                  "label": "Portuguese",
+                  "selected": false,
+                  "value": "pt"
+                },
+                {
+                  "label": "Русский",
+                  "selected": false,
+                  "value": "ru"
+                },
+                {
+                  "label": "Spanish",
+                  "selected": false,
+                  "value": "es"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "returnUrl",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cLogin.login"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "type": "submit",
+              "value": "Submit"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "status",
+              "type": "hidden",
+              "value": "sendlogin"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "returnURL",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "isAdminLogin",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "compactDisplay",
+              "type": "hidden",
+              "value": "false"
+            }
+          ],
+          "forms": [
+            {
+              "action": "index.cfm",
+              "id": "loginForm",
+              "method": "post",
+              "name": "frmLogin"
+            },
+            {
+              "action": "./?muraAction=clogin.main",
+              "id": "sendLogin",
+              "method": "post",
+              "name": "sendLogin"
+            }
+          ],
+          "headings": [
+            {
+              "level": 2,
+              "text": "Forget your password?"
+            }
+          ],
+          "labels": [
+            {
+              "text": "Username"
+            },
+            {
+              "text": "Password"
+            },
+            {
+              "text": "Remember me"
+            },
+            {
+              "text": ""
+            },
+            {
+              "text": "Forget your password?"
+            },
+            {
+              "text": "Email Address"
+            },
+            {
+              "text": "Return to login"
+            }
+          ],
+          "links": [
+            {
+              "href": "#",
+              "text": "Forget your password?"
+            },
+            {
+              "href": "#",
+              "text": "Return to login"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Login"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "db223d405709f9fb52fa9fc5600030eccc2e82114824cb189c4e4b0d6ea1b2b7",
+        "status": 200
+      },
+      "routeKey": "admin:clogin.login{status=sendlogin}"
+    }
+  ],
+  "tableVersion": null
+}

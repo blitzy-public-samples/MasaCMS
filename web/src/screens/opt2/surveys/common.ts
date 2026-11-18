@@ -9,6 +9,7 @@ import {
   errorMessage,
   invalidParametersAlert,
   isMalformedId,
+  opt2Gate,
   opt2Label,
   opt2ScreenUrl,
   pageHeader,
@@ -30,8 +31,11 @@ export type Unread = { readonly unread: SafeHtml };
 
 export const SURVEYS_MODULE: Opt2Module = 'surveys';
 
-/** Roles the surveys service requires on every `/v1/surveys` route; the service decides access. */
+/** Roles the surveys service requires on every `/v1/surveys` route. */
 export const SURVEYS_ROLES: readonly Role[] = Object.freeze([Roles.surveysManager]);
+
+/** Deny-by-default gate of every surveys screen and action, by the roles the surveys service requires. */
+export const SURVEYS_GATE = opt2Gate(SURVEYS_ROLES);
 
 /** Rows per page of the paged screens, sent as `itemsPerPage` so the pager counts pages as the service fills them. */
 export const PAGE_SIZE = 50;

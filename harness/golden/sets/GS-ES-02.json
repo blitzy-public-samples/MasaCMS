@@ -1,0 +1,457 @@
+{
+  "capturedAt": "2026-11-18T14:26:58.553Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:27:00.156Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-ES-02",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "request",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "document_name": "gs-es-02.txt",
+            "document_sha256": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+            "request_id": "<id:2>",
+            "signer_user_id": "<id:1>",
+            "siteid": "tenant-a",
+            "state": "PENDING"
+          },
+          "method": "esignature.requests"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "request",
+        "routeKey": "fixture:esignature/requests@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "documentBase64": "R1MtRVMgZ29sZGVuIGRvY3VtZW50",
+            "documentName": "gs-es-02.txt",
+            "signerUserId": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "document_name": "gs-es-02.txt",
+            "document_sha256": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+            "request_id": "<id:2>",
+            "signer_user_id": "<id:1>",
+            "siteid": "tenant-a",
+            "state": "PENDING"
+          },
+          "method": "esignature.requests"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "1bcc83ebabdc23b9c9683c96f330e7db92b11dd523367e10107108dc1e3abcdd",
+        "status": 200
+      },
+      "routeKey": "fixture:esignature/requests@post"
+    },
+    {
+      "index": 1,
+      "name": "sign",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "document_name": "gs-es-02.txt",
+            "document_sha256": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+            "request_id": "<id:2>",
+            "signer_user_id": "<id:1>",
+            "siteid": "tenant-a",
+            "state": "SIGNED"
+          },
+          "method": "esignature.requests.sign"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "sign",
+        "routeKey": "fixture:esignature/requests/{id}/sign@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "typedName": "Golden Signer"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/sign?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "document_name": "gs-es-02.txt",
+            "document_sha256": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+            "request_id": "<id:2>",
+            "signer_user_id": "<id:1>",
+            "siteid": "tenant-a",
+            "state": "SIGNED"
+          },
+          "method": "esignature.requests.sign"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "c4e33342dc6ba941be11cd16280b07a9d9ec02338f113f820152dd319506e54c",
+        "status": 200
+      },
+      "routeKey": "fixture:esignature/requests/{id}/sign@post"
+    },
+    {
+      "index": 2,
+      "name": "audit",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 2,
+            "items": [
+              {
+                "action": "created",
+                "actor_user_id": "<id:1>",
+                "at": "<ts:iso-local>",
+                "detail": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+                "entry_hash": "<hash:1>",
+                "entry_id": "<id:3>",
+                "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "request_id": "<id:2>",
+                "seq": 1
+              },
+              {
+                "action": "signed",
+                "actor_user_id": "<id:1>",
+                "at": "<ts:iso-local>",
+                "detail": "Golden Signer",
+                "entry_hash": "<hash:2>",
+                "entry_id": "<id:4>",
+                "prev_hash": "<hash:1>",
+                "request_id": "<id:2>",
+                "seq": 2
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 2,
+            "totalpages": 1
+          },
+          "method": "esignature.requests.audit"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "audit",
+        "routeKey": "fixture:esignature/requests/{id}/audit@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/audit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 2,
+            "items": [
+              {
+                "action": "created",
+                "actor_user_id": "<id:1>",
+                "at": "<ts:iso-local>",
+                "detail": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+                "entry_hash": "<hash:1>",
+                "entry_id": "<id:3>",
+                "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "request_id": "<id:2>",
+                "seq": 1
+              },
+              {
+                "action": "signed",
+                "actor_user_id": "<id:1>",
+                "at": "<ts:iso-local>",
+                "detail": "Golden Signer",
+                "entry_hash": "<hash:2>",
+                "entry_id": "<id:4>",
+                "prev_hash": "<hash:1>",
+                "request_id": "<id:2>",
+                "seq": 2
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 2,
+            "totalpages": 1
+          },
+          "method": "esignature.requests.audit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "ff4667a74b3eca504a98008273c58617e3f83203062cbd74c698f2f5ed008260",
+        "status": 200
+      },
+      "routeKey": "fixture:esignature/requests/{id}/audit@get"
+    },
+    {
+      "index": 3,
+      "name": "verify",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "brokenat": 0,
+            "entries": 2,
+            "valid": true
+          },
+          "method": "esignature.requests.verify"
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "verify",
+        "routeKey": "fixture:esignature/requests/{id}/verify@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/verify?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "brokenat": 0,
+            "entries": 2,
+            "valid": true
+          },
+          "method": "esignature.requests.verify"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "eff8867613cc8c105d6a1a550726e5731acc70522d6d023364a1c255ecc9a5f0",
+        "status": 200
+      },
+      "routeKey": "fixture:esignature/requests/{id}/verify@get"
+    },
+    {
+      "index": 4,
+      "name": "verify-supplied",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "brokenat": 0,
+            "entries": 2,
+            "valid": true
+          },
+          "method": "esignature.requests.verify"
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "verify-supplied",
+        "routeKey": "fixture:esignature/requests/{id}/verify@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "entries": [
+              {
+                "action": "created",
+                "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
+                "at": "2026-11-18T14:26:59.697",
+                "detail": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+                "entry_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
+                "entry_id": "5689BB94-9B75-6ADA-BF18E8A5AC3DF88C",
+                "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "request_id": "5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C",
+                "seq": 1
+              },
+              {
+                "action": "signed",
+                "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
+                "at": "2026-11-18T14:26:59.740",
+                "detail": "Golden Signer",
+                "entry_hash": "5c0aec352c9139ecb6d02d69f4258910368a65bd4a909c24f5656b541fea5379",
+                "entry_id": "5689BD45-CDD0-3333-FE705CBBA4BB57D4",
+                "prev_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
+                "request_id": "5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C",
+                "seq": 2
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/verify?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "brokenat": 0,
+            "entries": 2,
+            "valid": true
+          },
+          "method": "esignature.requests.verify"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "eff8867613cc8c105d6a1a550726e5731acc70522d6d023364a1c255ecc9a5f0",
+        "status": 200
+      },
+      "routeKey": "fixture:esignature/requests/{id}/verify@post"
+    },
+    {
+      "index": 5,
+      "name": "verify-tampered",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "brokenat": 2,
+            "entries": 2,
+            "valid": false
+          },
+          "method": "esignature.requests.verify"
+        },
+        "index": 5,
+        "maskedPaths": {},
+        "name": "verify-tampered",
+        "routeKey": "fixture:esignature/requests/{id}/verify@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "entries": [
+              {
+                "action": "created",
+                "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
+                "at": "2026-11-18T14:26:59.697",
+                "detail": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
+                "entry_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
+                "entry_id": "5689BB94-9B75-6ADA-BF18E8A5AC3DF88C",
+                "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "request_id": "5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C",
+                "seq": 1
+              },
+              {
+                "action": "signed",
+                "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
+                "at": "2026-11-18T14:26:59.740",
+                "detail": "Tampered Signer",
+                "entry_hash": "5c0aec352c9139ecb6d02d69f4258910368a65bd4a909c24f5656b541fea5379",
+                "prev_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
+                "seq": 2
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/verify?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "brokenat": 2,
+            "entries": 2,
+            "valid": false
+          },
+          "method": "esignature.requests.verify"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "95588b332afd3c98971862e9ea534c94532ecda8004917639993f4c398877b16",
+        "status": 200
+      },
+      "routeKey": "fixture:esignature/requests/{id}/verify@post"
+    }
+  ],
+  "tableVersion": null
+}

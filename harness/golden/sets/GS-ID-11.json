@@ -1,0 +1,87 @@
+{
+  "capturedAt": "2026-11-18T14:27:08.403Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:27:08.843Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-ID-11",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "exceptionId": "EX-LOGIN-LOCKDOWN",
+      "expected": "halted",
+      "index": 0,
+      "name": "session-lockdown-check",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "status": "success"
+          },
+          "method": "login"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "session-lockdown-check",
+        "routeKey": "api:login",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "lockdowncheck": "true",
+            "password": "<secret>",
+            "username": "admin"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/_api/json/v1/tenant-a/login"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "status": "success"
+          },
+          "method": "login"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "8ff73c1ce37be90349926ea320b8fa4b749735e5e74ac8ac7ac73e021a707449",
+        "status": 200
+      },
+      "routeKey": "api:login"
+    }
+  ],
+  "tableVersion": null
+}

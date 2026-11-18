@@ -340,6 +340,31 @@ describe('canonicalAdminUrl on the fixture links', () => {
   });
 });
 
+describe('domModel on the cfformprotect fields', () => {
+  // core/vendor/cfformprotect/cffp.cfm:24-49 as ACF renders it: each input id is a fresh CF UUID.
+  const protectedForm = (id: string, blurred: string): string =>
+    `<form method="post" action="./?display=editprofile">` +
+    `<input id="fp${id}" type="hidden" name="formfield1234567891" class="cffp_mm" value="" />` +
+    `<input id="fp${id}" type="hidden" name="formfield1234567893" value="${blurred}" />` +
+    `<label style="display:none">Leave this field empty <input id="fp${id}" type="text" name="formfield1234567894" value="" /></label>` +
+    `</form>`;
+  const capture = (): DomModelResult['model'] => modelOf(protectedForm(cfUuid('1'), '40001324,19750248')).model;
+
+  it('gives the blurred load time its timestamp class, so two load times model alike', () => {
+    const golden = capture();
+
+    expect(golden.controls.find((control) => control.name === 'formfield1234567893')?.value).toBe('<ts:cffp-blurred>');
+    expect(modelOf(protectedForm(cfUuid('2'), '40001325,19976165')).model).toStrictEqual(golden);
+  });
+
+  it.each(['40001324', '40001324,19750248,1', '2026-11-18,01:00:42'])(
+    'keeps a load time of another format, %s, a difference',
+    (blurred) => {
+      expect(modelOf(protectedForm(cfUuid('2'), blurred)).model).not.toStrictEqual(capture());
+    },
+  );
+});
+
 describe('domModel on the admin reload link', () => {
   it.each([
     ['a configured key', ['Fixture', 'Reload', 'Key'].join('-')],

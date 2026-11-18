@@ -1,0 +1,440 @@
+{
+  "capturedAt": "2026-11-18T14:26:20.678Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:23.336Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-FI-04",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "record",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "75.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-04 record",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "record",
+        "routeKey": "fixture:finance/records@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "75.0000",
+            "period": "2026-06",
+            "title": "GS-FI-04 record"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "75.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-04 record",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "9354a42bdfe61c1a8a338f2cfb8c58b8cd931e1555121d3574edc42926dc9e95",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records@post"
+    },
+    {
+      "index": 1,
+      "name": "upload",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "attachment_id": "<id:3>",
+            "content_type": "application/pdf",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "file_name": "gs-fi-04.pdf",
+            "record_id": "<id:2>",
+            "sha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+            "size_bytes": 595
+          },
+          "method": "finance.records.attachments"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "upload",
+        "routeKey": "fixture:finance/records/{id}/attachments@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "multipart",
+          "value": {
+            "fields": {},
+            "files": [
+              {
+                "contentType": "application/pdf",
+                "field": "file",
+                "filename": "gs-fi-04.pdf",
+                "sha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+                "size": 595
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----formdata-undici-015588096435",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5683F919-BDDA-7AEB-99018A4A244F28B6/attachments?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "attachment_id": "<id:3>",
+            "content_type": "application/pdf",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "file_name": "gs-fi-04.pdf",
+            "record_id": "<id:2>",
+            "sha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+            "size_bytes": 595
+          },
+          "method": "finance.records.attachments"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "422773eed86971b2d07d8e2f7cf45b724fdfb749781ef3cf975d434a1c07dee6",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/attachments@post"
+    },
+    {
+      "index": 2,
+      "name": "attachments",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 1,
+            "items": [
+              {
+                "attachment_id": "<id:3>",
+                "content_type": "application/pdf",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:1>",
+                "file_name": "gs-fi-04.pdf",
+                "record_id": "<id:2>",
+                "sha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+                "size_bytes": 595
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 1,
+            "totalpages": 1
+          },
+          "method": "finance.records.attachments"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "attachments",
+        "routeKey": "fixture:finance/records/{id}/attachments@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5683F919-BDDA-7AEB-99018A4A244F28B6/attachments?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 1,
+            "items": [
+              {
+                "attachment_id": "<id:3>",
+                "content_type": "application/pdf",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:1>",
+                "file_name": "gs-fi-04.pdf",
+                "record_id": "<id:2>",
+                "sha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+                "size_bytes": 595
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 1,
+            "totalpages": 1
+          },
+          "method": "finance.records.attachments"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "6808a99d66e2cb511917ccdc62eba76cc7909714343bf3f1d8bdc5b791ee8335",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/attachments@get"
+    },
+    {
+      "index": 3,
+      "name": "download",
+      "normalised": {
+        "export": {
+          "kind": "pdf",
+          "pages": [
+            "OPT-2 golden fixture"
+          ]
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "download",
+        "routeKey": "fixture:finance/records/{id}/attachments/{id}@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5683F919-BDDA-7AEB-99018A4A244F28B6/attachments/5683FD55-E41F-4076-67EB50565CA4ADD2?siteid=tenant-a"
+      },
+      "response": {
+        "export": {
+          "kind": "pdf",
+          "pages": [
+            "OPT-2 golden fixture"
+          ]
+        },
+        "headers": {
+          "content-disposition": "attachment; filename=\"gs-fi-04.pdf\"",
+          "content-type": "application/pdf",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/attachments/{id}@get"
+    },
+    {
+      "index": 4,
+      "name": "finance-attachments-unsigned",
+      "normalised": {
+        "index": 4,
+        "maskedPaths": {},
+        "name": "finance-attachments-unsigned",
+        "routeKey": "opt2:/opt2/files/finance-attachments/gs-unsigned",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/opt2/files/finance-attachments/gs-unsigned"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "7a1ab23196d483b49e1fbfb28e6db5adf2a4ff1ee5bcb77ba94172f73778488a",
+        "status": 404
+      },
+      "routeKey": "opt2:/opt2/files/finance-attachments/gs-unsigned"
+    }
+  ],
+  "tableVersion": null
+}

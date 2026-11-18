@@ -1,0 +1,1437 @@
+{
+  "capturedAt": "2026-11-18T14:26:12.006Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:16.094Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-FI-01",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "finance.record": {
+        "checksum": "4d86afabd1f50ffec85c987454317beebccb6e543ad7094d0140f30960db11ab",
+        "columns": [
+          {
+            "name": "record_id",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "title",
+            "type": "s"
+          },
+          {
+            "name": "amount",
+            "scale": 4,
+            "type": "d"
+          },
+          {
+            "name": "period",
+            "type": "s"
+          },
+          {
+            "name": "state",
+            "type": "s"
+          },
+          {
+            "name": "version",
+            "type": "i"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          },
+          {
+            "name": "createdByID",
+            "type": "s"
+          },
+          {
+            "name": "lastUpdate",
+            "type": "s"
+          },
+          {
+            "name": "lastUpdateByID",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:2>s8:tenant-as17:GS-FI-01 approvedd9:1250.0000s7:2026-06s8:APPROVEDi1:3s14:<ts:iso-local>s6:<id:1>s14:<ts:iso-local>s6:<id:3>"
+          }
+        ],
+        "legacyTable": "Program_N.finance_record",
+        "unit": "finance.record"
+      },
+      "finance.record_version": {
+        "checksum": "5bd4f2eecbbc022498f8290b8941480abe2c51f0c1a625ba75f5092c1b235035",
+        "columns": [
+          {
+            "name": "version_id",
+            "type": "s"
+          },
+          {
+            "name": "record_id",
+            "type": "s"
+          },
+          {
+            "name": "version",
+            "type": "i"
+          },
+          {
+            "name": "state",
+            "type": "s"
+          },
+          {
+            "name": "title",
+            "type": "s"
+          },
+          {
+            "name": "amount",
+            "scale": 4,
+            "type": "d"
+          },
+          {
+            "name": "period",
+            "type": "s"
+          },
+          {
+            "name": "action",
+            "type": "s"
+          },
+          {
+            "name": "actor_user_id",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:6>s6:<id:4>i1:1s11:IN-PROGRESSs20:GS-FI-01 resubmittedd8:310.5000s7:2026-06s6:creates6:<id:1>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:7>s6:<id:4>i1:2s9:SUBMITTEDs20:GS-FI-01 resubmittedd8:310.5000s7:2026-06s6:submits6:<id:1>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:8>s6:<id:4>i1:3s8:REJECTEDs20:GS-FI-01 resubmittedd8:310.5000s7:2026-06s6:rejects6:<id:3>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:9>s6:<id:4>i1:4s12:RE-SUBMITTEDs20:GS-FI-01 resubmittedd8:310.5000s7:2026-06s8:resubmits6:<id:1>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s7:<id:10>s6:<id:4>i1:5s8:APPROVEDs20:GS-FI-01 resubmittedd8:310.5000s7:2026-06s7:approves6:<id:3>s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "Program_N.finance_record_version",
+        "unit": "finance.record_version"
+      }
+    },
+    "tasks": [],
+    "transitions": [
+      {
+        "aggregate": "<id:2>",
+        "states": [
+          "IN-PROGRESS",
+          "SUBMITTED",
+          "APPROVED"
+        ]
+      },
+      {
+        "aggregate": "<id:4>",
+        "states": [
+          "IN-PROGRESS",
+          "SUBMITTED",
+          "REJECTED",
+          "RE-SUBMITTED",
+          "APPROVED"
+        ]
+      },
+      {
+        "aggregate": "<id:5>",
+        "states": [
+          "IN-PROGRESS",
+          "SUBMITTED",
+          "REJECTED",
+          "RE-SUBMITTED",
+          "REJECTED"
+        ]
+      }
+    ]
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "approved",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "1250.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-01 approved",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "approved",
+        "routeKey": "fixture:finance/records@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "1250.0000",
+            "period": "2026-06",
+            "title": "GS-FI-01 approved"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "1250.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-01 approved",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "1bb294a4f4bf0fd3c0d6c826a3a19438888759c41cc34b250e75b8c850f8ed7b",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records@post"
+    },
+    {
+      "index": 1,
+      "name": "submit-1",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "1250.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-01 approved",
+            "version": 2
+          },
+          "method": "finance.records.submit"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "submit-1",
+        "routeKey": "fixture:finance/records/{id}/submit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/56829AE0-D66D-167A-59995C990184118E/submit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "1250.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-01 approved",
+            "version": 2
+          },
+          "method": "finance.records.submit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "c398c4bd30551a93fa426dd98965d0dab48117ee39ece4e173566ecc1ad7e9ab",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/submit@post"
+    },
+    {
+      "index": 2,
+      "name": "approve-1",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "1250.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "APPROVED",
+            "title": "GS-FI-01 approved",
+            "version": 3
+          },
+          "method": "finance.records.approve"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "approve-1",
+        "routeKey": "fixture:finance/records/{id}/approve@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/56829AE0-D66D-167A-59995C990184118E/approve?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "1250.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "APPROVED",
+            "title": "GS-FI-01 approved",
+            "version": 3
+          },
+          "method": "finance.records.approve"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "c14b7ab0e0945b33e6dd83144d34ad21a81295ca1b2b0c6928b635360d39f79e",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/approve@post"
+    },
+    {
+      "index": 3,
+      "name": "resubmitted",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-01 resubmitted",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "resubmitted",
+        "routeKey": "fixture:finance/records@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "310.5000",
+            "period": "2026-06",
+            "title": "GS-FI-01 resubmitted"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-01 resubmitted",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "25197a7028d4d6e1fb25f0de2a7bc1e8674abea0147f23c82e174886e2c996b8",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records@post"
+    },
+    {
+      "index": 4,
+      "name": "submit-2",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 2
+          },
+          "method": "finance.records.submit"
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "submit-2",
+        "routeKey": "fixture:finance/records/{id}/submit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682B01F-B406-BC57-B8D55384C6297129/submit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 2
+          },
+          "method": "finance.records.submit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "6d7fa60fdbc2eb41eec8832bb4e1956cf39d9b36b3efa15752049d3a9df0cfd0",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/submit@post"
+    },
+    {
+      "index": 5,
+      "name": "reject-2",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 3
+          },
+          "method": "finance.records.reject"
+        },
+        "index": 5,
+        "maskedPaths": {},
+        "name": "reject-2",
+        "routeKey": "fixture:finance/records/{id}/reject@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682B01F-B406-BC57-B8D55384C6297129/reject?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 3
+          },
+          "method": "finance.records.reject"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "9c234380dbdc3340b5e43ca65ead60e418169a7f76d77de66f04a542d6c58cac",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/reject@post"
+    },
+    {
+      "index": 6,
+      "name": "resubmit-2",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "RE-SUBMITTED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 4
+          },
+          "method": "finance.records.resubmit"
+        },
+        "index": 6,
+        "maskedPaths": {},
+        "name": "resubmit-2",
+        "routeKey": "fixture:finance/records/{id}/resubmit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682B01F-B406-BC57-B8D55384C6297129/resubmit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "RE-SUBMITTED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 4
+          },
+          "method": "finance.records.resubmit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "b78dd26ef8411e859ff01f57ce820bcaad56899732a0a40a08b745c55e6925b2",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/resubmit@post"
+    },
+    {
+      "index": 7,
+      "name": "approve-2",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "APPROVED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 5
+          },
+          "method": "finance.records.approve"
+        },
+        "index": 7,
+        "maskedPaths": {},
+        "name": "approve-2",
+        "routeKey": "fixture:finance/records/{id}/approve@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682B01F-B406-BC57-B8D55384C6297129/approve?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "APPROVED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 5
+          },
+          "method": "finance.records.approve"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "90967173183a45097133bebf886817b0b686380b3a82d85a9d2a5b154014972f",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/approve@post"
+    },
+    {
+      "index": 8,
+      "name": "rejected",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-01 rejected twice",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "index": 8,
+        "maskedPaths": {},
+        "name": "rejected",
+        "routeKey": "fixture:finance/records@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "99.9900",
+            "period": "2026-06",
+            "title": "GS-FI-01 rejected twice"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-01 rejected twice",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "33d058564f598575d85105118e43b6e4d3463c3df9a042a58980b37ff8dadccd",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records@post"
+    },
+    {
+      "index": 9,
+      "name": "submit-3",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 2
+          },
+          "method": "finance.records.submit"
+        },
+        "index": 9,
+        "maskedPaths": {},
+        "name": "submit-3",
+        "routeKey": "fixture:finance/records/{id}/submit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682C914-0F18-E9AB-A0F3E5708D8B7C02/submit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 2
+          },
+          "method": "finance.records.submit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "eb11d3c439ade819c4b9c261c5750517ff9fe25eaaf5581a0271f635d15c57fd",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/submit@post"
+    },
+    {
+      "index": 10,
+      "name": "reject-3",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 3
+          },
+          "method": "finance.records.reject"
+        },
+        "index": 10,
+        "maskedPaths": {},
+        "name": "reject-3",
+        "routeKey": "fixture:finance/records/{id}/reject@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682C914-0F18-E9AB-A0F3E5708D8B7C02/reject?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 3
+          },
+          "method": "finance.records.reject"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "703fae96923cca60188a10595b4998c278a10272c79ca3caa490eb558e4dd98f",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/reject@post"
+    },
+    {
+      "index": 11,
+      "name": "resubmit-3",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "RE-SUBMITTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 4
+          },
+          "method": "finance.records.resubmit"
+        },
+        "index": 11,
+        "maskedPaths": {},
+        "name": "resubmit-3",
+        "routeKey": "fixture:finance/records/{id}/resubmit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682C914-0F18-E9AB-A0F3E5708D8B7C02/resubmit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "RE-SUBMITTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 4
+          },
+          "method": "finance.records.resubmit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "bb80e54f764d6e7bcdd4e1c558840b8af5742972709410f5597dd03069574ed0",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/resubmit@post"
+    },
+    {
+      "index": 12,
+      "name": "reject-3b",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 5
+          },
+          "method": "finance.records.reject"
+        },
+        "index": 12,
+        "maskedPaths": {},
+        "name": "reject-3b",
+        "routeKey": "fixture:finance/records/{id}/reject@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682C914-0F18-E9AB-A0F3E5708D8B7C02/reject?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "99.9900",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:5>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-01 rejected twice",
+            "version": 5
+          },
+          "method": "finance.records.reject"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "570d7601ba97e38cd0921fe36736cbfb2a536d1506c65896b6db4c0d8de47602",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/reject@post"
+    },
+    {
+      "index": 13,
+      "name": "detail",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "APPROVED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 5
+          },
+          "method": "finance.records"
+        },
+        "index": 13,
+        "maskedPaths": {},
+        "name": "detail",
+        "routeKey": "fixture:finance/records/{id}@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/5682B01F-B406-BC57-B8D55384C6297129?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "310.5000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:4>",
+            "siteid": "tenant-a",
+            "state": "APPROVED",
+            "title": "GS-FI-01 resubmitted",
+            "version": 5
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "26ce0f7348b80d11a7cd94f5eb56251e6e1caa2bd93ecf3312c49e0fc245691b",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}@get"
+    },
+    {
+      "index": 14,
+      "name": "finance-screen",
+      "normalised": {
+        "index": 14,
+        "maskedPaths": {},
+        "name": "finance-screen",
+        "routeKey": "opt2:/opt2/admin/finance/records",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/opt2/admin/finance/records"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "990ad1c883d4b2ea94f68890ca6f458e55a0f8207953fc4cdb90eeb27a3c8e23",
+        "status": 404
+      },
+      "routeKey": "opt2:/opt2/admin/finance/records"
+    },
+    {
+      "index": 15,
+      "name": "finance-action",
+      "normalised": {
+        "index": 15,
+        "maskedPaths": {},
+        "name": "finance-action",
+        "routeKey": "opt2:/opt2/admin-actions/finance/transition",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/opt2/admin-actions/finance/transition"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "41dcdd3c23cd5ef6a7397839346c98be4b48d76df758e9f6afa5575a12a828fe",
+        "status": 404
+      },
+      "routeKey": "opt2:/opt2/admin-actions/finance/transition"
+    }
+  ],
+  "tableVersion": null
+}

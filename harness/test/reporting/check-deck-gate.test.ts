@@ -714,6 +714,7 @@ const RENDERED: RenderState = {
   diagrams: DIAGRAM_SLIDES.map((n) => ({ slide: n, svg: true, error: false })),
   placeholders: [],
   icons: DECLARED_ICONS,
+  heights: SLIDES.map(() => 1080),
 };
 const DRIVEN = ['newPage', 'on pageerror', 'on requestfailed', 'goto', 'waitForFunction', 'evaluate', 'waitForFunction', 'evaluate', 'close'];
 

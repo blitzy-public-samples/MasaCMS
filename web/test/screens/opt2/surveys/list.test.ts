@@ -224,18 +224,18 @@ describe('surveys list', () => {
   ])('answers the service $status with the access gate redirect', async ({ status, location }) => {
     const gateway = surveysGateway({ [LIST_ROUTE]: { status } });
 
-    const page = await renderScreenPage(surveysScreen('surveys'), contextFor(adminS2Request({ mode: 'opt2' }), gateway));
+    const page = await renderScreenPage(surveysScreen('surveys'), contextFor(managerRequest(), gateway));
 
     expect(page).toEqual({ kind: 'redirect', location });
   });
 
-  it('leaves access to the service: the S2 admin without surveys.manager is sent its call, and its 403', async () => {
-    const gateway = surveysGateway({ [LIST_ROUTE]: { status: 403 } });
+  it('sends the S2 admin without surveys.manager to no-access without asking surveys', async () => {
+    const gateway = surveysGateway();
 
-    await renderScreenPage(surveysScreen('surveys'), contextFor(adminS2Request(), gateway));
+    const page = await renderScreenPage(surveysScreen('surveys'), contextFor(adminS2Request({ mode: 'opt2' }), gateway));
 
-    expect(surveysCalls(gateway).map(({ method, path }) => `${method} ${path}`)).toEqual(['GET /v1/surveys']);
-    expect(surveysScreen('surveys').gate).toBeUndefined();
+    expect(page).toEqual({ kind: 'redirect', location: NOACCESS });
+    expect(surveysCalls(gateway)).toEqual([]);
   });
 
   it('propagates an unavailable surveys service', async () => {

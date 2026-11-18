@@ -2,6 +2,7 @@
 import { load } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, type Role } from '@opt2/platform/auth';
+import { runGate, secure } from '@/lib/access-gate';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
@@ -18,7 +19,7 @@ import {
   surveys,
   surveysAnswers,
 } from '../../fixtures/opt2/surveys';
-import { opt2RoleRequest } from '../../helpers/admin-request';
+import { anonymousRequest, opt2RoleRequest } from '../../helpers/admin-request';
 import { fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeRouteTable } from '../../helpers/fake-gateway';
@@ -54,11 +55,6 @@ function renderedModel(result: SubmitResult): DomModel {
   if (result.kind !== 'render') throw new Error(`The submit answered ${result.kind}, not a re-render`);
   return fragmentModel(String(result.view.body));
 }
-
-/** Every surveys fixture route answering 403. */
-const refusedEverywhere: FakeRouteTable = Object.fromEntries(
-  Object.keys(surveysAnswers).map((key) => [key, { status: 403 }]),
-);
 
 const ACTIONS: ReadonlyArray<{ action: string; def: Opt2ActionDefinition; rc: Record<string, string> }> = [
   { action: 'schedule', def: scheduleAction, rc: { launchAt: '2026-07-01T09:00:00', reminders: '1440' } },
@@ -117,27 +113,48 @@ describe('survey screen headers', () => {
   });
 });
 
-// Surveys definitions carry no web gate: the service's answer to the token decides access.
 describe('surveys access', () => {
-  it.each(surveysScreens.map((def) => ({ screen: def.screen, def })))(
-    'leaves $screen to the service when rc claims a role the token lacks',
+  const SCREENS = surveysScreens.map((def) => ({ screen: def.screen, def }));
+
+  it.each(SCREENS)(
+    'sends an anonymous user from $screen to the login, returning to it, unasked',
+    async ({ screen, def }) => {
+      const target = `/opt2/admin/surveys/${screen}?siteid=${SITE}&surveyid=${MULTI}`;
+      const req = anonymousRequest({ mode: 'opt2', requestTarget: target, rc: { siteid: SITE, surveyid: MULTI } });
+      const ctx = ctxFor(req);
+
+      const page = await renderScreenPage(def, ctx);
+
+      expect(page).toEqual(secure(req));
+      const returnTo = `returnURL=http%3A%2F%2Flocalhost[^&]*${encodeURIComponent(target)}&`;
+      expect(page.kind === 'redirect' ? page.location : '').toMatch(
+        new RegExp(`^/admin/\\?muraAction=cLogin\\.main&${returnTo}`),
+      );
+      expect(surveysCalls(ctx.gateway)).toEqual([]);
+    },
+  );
+
+  it.each(SCREENS)(
+    'sends a token without surveys.manager from $screen to no-access, whatever rc claims',
     async ({ def }) => {
-      const ctx = ctxFor(requestFor(Roles.financePreparer, { surveyid: MULTI, ...ROLE_LIKE_RC }), refusedEverywhere);
+      const ctx = ctxFor(requestFor(Roles.financePreparer, { surveyid: MULTI, ...ROLE_LIKE_RC }));
 
       const page = await renderScreenPage(def, ctx);
 
       expect(page).toEqual({ kind: 'redirect', location: noAccessUrl() });
-      expect(surveysCalls(ctx.gateway).length).toBeGreaterThan(0);
-      expect(JSON.stringify(surveysCalls(ctx.gateway))).not.toContain(Roles.surveysManager);
+      expect(surveysCalls(ctx.gateway)).toEqual([]);
     },
   );
 
-  it.each(ACTIONS)('leaves the $action action to the service when rc claims a role', async ({ def, rc }) => {
-    const req = requestFor(Roles.financePreparer, { surveyid: MULTI, ...rc, ...CSRF_POSTED, ...ROLE_LIKE_RC });
-    const ctx = ctxFor(req, refusedEverywhere);
+  it.each(ACTIONS)('gates the $action action by surveys.manager from the token only', async ({ action, def, rc }) => {
+    const posted = { siteid: SITE, surveyid: MULTI, ...rc, ...CSRF_POSTED };
+    const target = `/opt2/admin-actions/surveys/${action}`;
+    const anonymous = anonymousRequest({ mode: 'opt2', requestTarget: target, rc: posted });
+    const claiming = requestFor(Roles.financePreparer, { ...posted, ...ROLE_LIKE_RC });
 
-    await expect(def.submit(ctx)).rejects.toMatchObject({ name: 'GatewayDenialError', status: 403 });
-    expect(JSON.stringify(surveysCalls(ctx.gateway))).not.toContain(Roles.surveysManager);
+    await expect(runGate(anonymous, def.gate)).resolves.toEqual(secure(anonymous));
+    await expect(runGate(claiming, def.gate)).resolves.toEqual({ kind: 'redirect', location: noAccessUrl() });
+    await expect(runGate(managerRequest(posted), def.gate)).resolves.toEqual({ kind: 'allow' });
   });
 });
 

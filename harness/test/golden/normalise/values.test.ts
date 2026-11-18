@@ -88,6 +88,7 @@ const TIMESTAMP_SAMPLES: Readonly<Record<TimestampClass, TimestampSample>> = {
   'admin-date': { instants: ['6/30/2026', '10/302/2026'] },
   'admin-time': { instants: ['12:00 PM', '8:30 AM'] },
   'epoch-ms': { instants: ['1782820800000', '1800000000000'], key: 'createdAt' },
+  'cffp-blurred': { instants: ['40001324,19750248', '40010421,19976165'], key: 'formfield1234567893' },
 };
 
 let rules: NormaliseRules;

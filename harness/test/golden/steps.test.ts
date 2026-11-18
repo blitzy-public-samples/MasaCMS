@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { crc32, inflateSync } from 'node:zlib';
 import { esapiUrlEncode, routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
+import JSZip from 'jszip';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   loadCatalogue,
@@ -389,6 +390,31 @@ describe('fixtureBytes', () => {
     offsets.forEach((offset, i) => expect(text.slice(offset).startsWith(`${i + 1} 0 obj\n`)).toBe(true));
   });
 
+  it('generates a stored Masa plugin archive under a fixed DOS timestamp whose config.xml declares the plugin', async () => {
+    const zip = Buffer.from(fixtureBytes('masa-plugin-zip'));
+    expect(Buffer.from(fixtureBytes('masa-plugin-zip'))).toStrictEqual(zip);
+    expect(zip.readUInt32LE(0)).toBe(0x04034b50);
+    // Local header: compression method, modification time and date.
+    expect([zip.readUInt16LE(8), zip.readUInt16LE(10), zip.readUInt16LE(12)]).toStrictEqual([
+      0,
+      0,
+      ((2026 - 1980) << 9) | (6 << 5) | 30,
+    ]);
+    const archive = await JSZip.loadAsync(zip, { checkCRC32: true });
+    expect(Object.keys(archive.files)).toStrictEqual(['plugin/config.xml']);
+    const config = (await archive.file('plugin/config.xml')?.async('string')) ?? '';
+    for (const element of [
+      '<name>OPT-2 Golden Plugin</name>',
+      '<version>1.0.0</version>',
+      '<provider>OPT-2 golden harness</provider>',
+      '<providerURL>https://opt2.invalid/golden-plugin</providerURL>',
+      '<category>Utility</category>',
+      '<name>greeting</name>',
+    ]) {
+      expect(config).toContain(element);
+    }
+  });
+
   it('generates a stored cForm.export zip whose form.json carries the keys importForm reads', () => {
     const zip = Buffer.from(fixtureBytes('form-export-zip'));
     expect(Buffer.from(fixtureBytes('form-export-zip'))).toStrictEqual(zip);
@@ -419,7 +445,7 @@ describe('fixtureBytes', () => {
   it('rejects an unknown fixture id, naming the known ones', () => {
     expect(() => fixtureBytes('no-such-fixture')).toThrow(GoldenConfigError);
     expect(() => fixtureBytes('no-such-fixture')).toThrow(
-      'unknown file fixture no-such-fixture; known: image-png-8x8, pdf-one-page, form-export-zip',
+      'unknown file fixture no-such-fixture; known: image-png-8x8, pdf-one-page, masa-plugin-zip, form-export-zip',
     );
   });
 });
@@ -670,6 +696,55 @@ describe('runStep requests', () => {
     };
     expect(record.request.body).toStrictEqual(expected);
     expect(record.routeKey).toBe('admin:carch.multifileupload{upload=image}');
+  });
+
+  it("uploads an earlier step's response body as a fromStep file and records it by digest and size", async () => {
+    const exported = fixtureBytes('masa-plugin-zip');
+    const fake = fakeOrigin({
+      'GET /admin/?muraAction=cArch.exportcontent': () =>
+        new Response(exported, { status: 200, headers: { 'content-type': 'application/zip' } }),
+      'POST /admin/?muraAction=cArch.importcontent': html('<p>imported</p>'),
+    });
+    const file = { field: 'newFile', fromStep: 'export', filename: 'export.zip', contentType: 'application/zip' };
+    const s = scenario([
+      { name: 'export', route: '/admin/?muraAction=cArch.exportcontent' },
+      {
+        name: 'import',
+        method: 'POST',
+        route: '/admin/?muraAction=cArch.importcontent',
+        multipart: { fields: { import_status: 'Draft' }, files: [file] },
+      },
+    ]);
+    const records = await captureAll(contextFor(s, fake), s, fake);
+    expect(callAt(fake, 1).body?.includes(Buffer.from(exported))).toBe(true);
+    expect(records[1]?.request.body).toStrictEqual({
+      kind: 'multipart',
+      value: {
+        fields: { import_status: 'Draft' },
+        files: [
+          {
+            field: 'newFile',
+            filename: 'export.zip',
+            contentType: 'application/zip',
+            sha256: sha256(exported),
+            size: exported.length,
+          },
+        ],
+      },
+    });
+    expect(records[1]?.routeKey).toBe('admin:carch.importcontent');
+  });
+
+  it('rejects a fromStep file whose step has not run in this scenario before sending anything', async () => {
+    const fake = fakeOrigin({});
+    const file = { field: 'newFile', fromStep: 'export', filename: 'export.zip', contentType: 'application/zip' };
+    const s = scenario([
+      { name: 'export', route: '/admin/?muraAction=cArch.exportcontent' },
+      { name: 'import', method: 'POST', route: '/admin/?muraAction=cArch.importcontent', multipart: { files: [file] } },
+    ]);
+    const err = await configError(runStep(contextFor(s, fake), s, stepAt(s, 1), { mode: 'capture', fetch: fake.fetch }));
+    expect(err.message).toBe(`${SCENARIO} step import: fromStep export has not run in this scenario`);
+    expect(fake.calls).toStrictEqual([]);
   });
 
   it('rejects an unknown multipart fixture before sending anything', async () => {

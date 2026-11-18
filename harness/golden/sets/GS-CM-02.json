@@ -1,0 +1,463 @@
+{
+  "capturedAt": "2026-11-18T14:26:39.753Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-18T14:26:55.952Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-CM-02",
+  "sideEffects": {
+    "files": [],
+    "mail": [
+      {
+        "from": "noreply@seed.opt2.test",
+        "htmlText": "Hello {{firstName}} {{lastName}},\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n{{siteName}}",
+        "subject": "Welcome to {{siteName}}, {{firstName}}",
+        "text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+        "to": [
+          "gs-cm-02@seed.opt2.test"
+        ]
+      }
+    ],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "send",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>{{siteName}}</p>",
+            "body_text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+            "created": "<ts:serializer>",
+            "from_address": "noreply@seed.opt2.test",
+            "history": [
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "queued",
+                "status_id": "<id:2>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "sent",
+                "status_id": "<id:3>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "<mailpit:1>",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "delivered",
+                "status_id": "<id:4>"
+              }
+            ],
+            "message_id": "<id:1>",
+            "sent_at": "<ts:serializer>",
+            "siteid": "tenant-a",
+            "state": "delivered",
+            "subject": "Welcome to {{siteName}}, {{firstName}}",
+            "template_id": "<id:5>",
+            "to_address": "gs-cm-02@seed.opt2.test"
+          },
+          "method": "communications.messages"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "send",
+        "routeKey": "fixture:communications/messages@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "from": "noreply@seed.opt2.test",
+            "templateId": "42E407D6-C256-A50D-523DFA877995B9B1",
+            "to": "gs-cm-02@seed.opt2.test",
+            "variables": {
+              "fname": "Golden"
+            }
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/communications/messages?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>{{siteName}}</p>",
+            "body_text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+            "created": "<ts:serializer>",
+            "from_address": "noreply@seed.opt2.test",
+            "history": [
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "queued",
+                "status_id": "<id:2>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "sent",
+                "status_id": "<id:3>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "<mailpit:1>",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "delivered",
+                "status_id": "<id:4>"
+              }
+            ],
+            "message_id": "<id:1>",
+            "sent_at": "<ts:serializer>",
+            "siteid": "tenant-a",
+            "state": "delivered",
+            "subject": "Welcome to {{siteName}}, {{firstName}}",
+            "template_id": "<id:5>",
+            "to_address": "gs-cm-02@seed.opt2.test"
+          },
+          "method": "communications.messages"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "a0a1399524e4646e85a40a360f411ca538cd39d0e35489b0596f692636be2fbf",
+        "status": 200
+      },
+      "routeKey": "fixture:communications/messages@post"
+    },
+    {
+      "index": 1,
+      "name": "history",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>{{siteName}}</p>",
+            "body_text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+            "created": "<ts:serializer>",
+            "from_address": "noreply@seed.opt2.test",
+            "history": [
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "queued",
+                "status_id": "<id:2>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "sent",
+                "status_id": "<id:3>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "<mailpit:1>",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "delivered",
+                "status_id": "<id:4>"
+              }
+            ],
+            "message_id": "<id:1>",
+            "sent_at": "<ts:serializer>",
+            "siteid": "tenant-a",
+            "state": "delivered",
+            "subject": "Welcome to {{siteName}}, {{firstName}}",
+            "template_id": "<id:5>",
+            "to_address": "gs-cm-02@seed.opt2.test"
+          },
+          "method": "communications.messages"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "history",
+        "routeKey": "fixture:communications/messages/{id}@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/communications/messages/5686D58E-CCBC-B91F-0FA4788D482BED55?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "body_html": "<p>Hello {{firstName}} {{lastName}},</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>{{siteName}}</p>",
+            "body_text": "Hello {{firstName}} {{lastName}},\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\n{{siteName}}",
+            "created": "<ts:serializer>",
+            "from_address": "noreply@seed.opt2.test",
+            "history": [
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "queued",
+                "status_id": "<id:2>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "sent",
+                "status_id": "<id:3>"
+              },
+              {
+                "detail": "",
+                "mailpit_id": "<mailpit:1>",
+                "message_id": "<id:1>",
+                "recorded_at": "<ts:serializer>",
+                "status": "delivered",
+                "status_id": "<id:4>"
+              }
+            ],
+            "message_id": "<id:1>",
+            "sent_at": "<ts:serializer>",
+            "siteid": "tenant-a",
+            "state": "delivered",
+            "subject": "Welcome to {{siteName}}, {{firstName}}",
+            "template_id": "<id:5>",
+            "to_address": "gs-cm-02@seed.opt2.test"
+          },
+          "method": "communications.messages"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "a0a1399524e4646e85a40a360f411ca538cd39d0e35489b0596f692636be2fbf",
+        "status": 200
+      },
+      "routeKey": "fixture:communications/messages/{id}@get"
+    },
+    {
+      "index": 2,
+      "name": "list",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 5,
+            "items": [
+              {
+                "body_html": "<p>Hello Hilda Muller,</p>\n<p>Atavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.</p>\n<p>Atrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.</p>\n<p>Similique vito vilitas thesis acceptus.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Hilda Muller,\n\nAtavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.\n\nAtrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.\n\nSimilique vito vilitas thesis acceptus.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "lisandro.cruickshank@seed.opt2.test",
+                "message_id": "<id:6>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Your Tenant A password reminder",
+                "template_id": "<id:7>",
+                "to_address": "hilda.muller@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Sarai Gusikowski,</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Sarai Gusikowski,\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "heather.mclaughlin@seed.opt2.test",
+                "message_id": "<id:8>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Welcome to Tenant A, Sarai",
+                "template_id": "<id:5>",
+                "to_address": "sarai.gusikowski@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Lance VonRueden,</p>\n<p>Atavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.</p>\n<p>Atrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.</p>\n<p>Similique vito vilitas thesis acceptus.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Lance VonRueden,\n\nAtavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.\n\nAtrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.\n\nSimilique vito vilitas thesis acceptus.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "lisandro.cruickshank@seed.opt2.test",
+                "message_id": "<id:9>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Your Tenant A password reminder",
+                "template_id": "<id:7>",
+                "to_address": "lance.vonrueden@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Leigh Kertzmann,</p>\n<p>Unus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.</p>\n<p>Cotidie cubicularis defleo.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Leigh Kertzmann,\n\nUnus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.\n\nCotidie cubicularis defleo.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "annabelle.abbott@seed.opt2.test",
+                "message_id": "<id:10>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Leigh, you are invited to a Tenant A event",
+                "template_id": "<id:11>",
+                "to_address": "leigh.kertzmann@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Lennie Hills,</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Lennie Hills,\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "edwardo.jones@seed.opt2.test",
+                "message_id": "<id:12>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Welcome to Tenant A, Lennie",
+                "template_id": "<id:5>",
+                "to_address": "lennie.hills@seed.opt2.test"
+              }
+            ],
+            "itemsperpage": 5,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 201,
+            "totalpages": 41
+          },
+          "method": "communications.messages"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "list",
+        "routeKey": "fixture:communications/messages@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/communications/messages?siteid=tenant-a&itemsPerPage=5"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 5,
+            "items": [
+              {
+                "body_html": "<p>Hello Hilda Muller,</p>\n<p>Atavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.</p>\n<p>Atrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.</p>\n<p>Similique vito vilitas thesis acceptus.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Hilda Muller,\n\nAtavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.\n\nAtrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.\n\nSimilique vito vilitas thesis acceptus.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "lisandro.cruickshank@seed.opt2.test",
+                "message_id": "<id:6>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Your Tenant A password reminder",
+                "template_id": "<id:7>",
+                "to_address": "hilda.muller@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Sarai Gusikowski,</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Sarai Gusikowski,\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "heather.mclaughlin@seed.opt2.test",
+                "message_id": "<id:8>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Welcome to Tenant A, Sarai",
+                "template_id": "<id:5>",
+                "to_address": "sarai.gusikowski@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Lance VonRueden,</p>\n<p>Atavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.</p>\n<p>Atrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.</p>\n<p>Similique vito vilitas thesis acceptus.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Lance VonRueden,\n\nAtavus tantum sonitus bene. Verto claudeo cetera coaegresco. Tutamen arbor adinventitias censura caelestis surgo maxime carcer cilicium.\n\nAtrocitas balbus verto corrumpo audentia tunc peccatus. Error dedecor vulgivagus surgo cruentus. Valetudo combibo una surculus demoror amplus coma.\n\nSimilique vito vilitas thesis acceptus.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "lisandro.cruickshank@seed.opt2.test",
+                "message_id": "<id:9>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Your Tenant A password reminder",
+                "template_id": "<id:7>",
+                "to_address": "lance.vonrueden@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Leigh Kertzmann,</p>\n<p>Unus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.</p>\n<p>Cotidie cubicularis defleo.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Leigh Kertzmann,\n\nUnus attero fuga conatus arbitro iure. Sordeo usitas voluptatibus neque comminor verbum delego solus omnis. Conventus cubicularis cauda facere valetudo.\n\nCotidie cubicularis defleo.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "annabelle.abbott@seed.opt2.test",
+                "message_id": "<id:10>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Leigh, you are invited to a Tenant A event",
+                "template_id": "<id:11>",
+                "to_address": "leigh.kertzmann@seed.opt2.test"
+              },
+              {
+                "body_html": "<p>Hello Lennie Hills,</p>\n<p>Depereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.</p>\n<p>A bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.</p>\n<p>Crustulum solium uredo ventito absum expedita cito vesica ut.</p>\n<p>Tenant A</p>",
+                "body_text": "Hello Lennie Hills,\n\nDepereo admoveo videlicet nam non tam. Vulticulus modi appono. Volo utrimque curto textus sint carcer surculus amiculum clibanus.\n\nA bos explicabo acerbitas aedificium aut. Strenuus tredecim suppellex. Vero aedificium nostrum.\n\nCrustulum solium uredo ventito absum expedita cito vesica ut.\n\nTenant A",
+                "created": "<ts:serializer>",
+                "from_address": "edwardo.jones@seed.opt2.test",
+                "message_id": "<id:12>",
+                "sent_at": "<ts:serializer>",
+                "siteid": "tenant-a",
+                "state": "delivered",
+                "subject": "Welcome to Tenant A, Lennie",
+                "template_id": "<id:5>",
+                "to_address": "lennie.hills@seed.opt2.test"
+              }
+            ],
+            "itemsperpage": 5,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 201,
+            "totalpages": 41
+          },
+          "method": "communications.messages"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "45409b43498339ea8016ad8c1c94b2c72e5dafca1b359864d0db96685e0c441d",
+        "status": 200
+      },
+      "routeKey": "fixture:communications/messages@get"
+    }
+  ],
+  "tableVersion": null
+}

@@ -4,11 +4,13 @@ import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
-import { alertBox, GUARDED_SUBMIT } from '@/screens/opt2/shared';
+import { alertBox, GUARDED_SUBMIT, valueRows } from '@/screens/opt2/shared';
+import type { Survey } from '@/screens/opt2/surveys/common';
 import { scheduleBody } from '@/screens/opt2/surveys/schedule';
 import {
   SURVEY_IDS,
   invalidScheduleRequest,
+  multiSiteSurvey,
   scheduleInvalid,
   scheduleRequest,
   surveyTasks,
@@ -98,6 +100,27 @@ const formParts = (launchAt: string, reminders: string, tokenValue: string, expi
   buttons: [{ text: 'Save Schedule', type: 'submit', hasOnclick: false }],
 });
 
+/** The survey read answering the multi-site survey in `status`. */
+const surveyIn = (status: Survey['status']) => ({ status: 200, body: { data: { ...multiSiteSurvey, status } } });
+
+/** The status badge of each survey status whose schedule is read-only. */
+const READ_ONLY_BADGES = {
+  LAUNCHED: '<span class="label label-success">Launched</span>',
+  CLOSED: '<span class="label label-inverse">Closed</span>',
+} as const;
+
+/**
+ * The multi-site survey's status line, any `alert`, its stored schedule as read-only values and why they cannot
+ * change, closing the schedule block.
+ */
+const storedScheduleHtml = (status: keyof typeof READ_ONLY_BADGES, alert = ''): string =>
+  `<p>Status: ${READ_ONLY_BADGES[status]}</p>${alert}${toString(
+    valueRows([
+      ['Launch At (yyyy-mm-ddThh:mm:ss)', '2026-07-01T09:00:00'],
+      ['Reminder Offsets (minutes after launch, comma-separated)', '1440,4320'],
+    ]),
+  )}<p class="help-block">A ${status} survey's schedule can no longer be changed.</p></div>`;
+
 const scheduleRc = (rc: Record<string, string> = {}): Record<string, string> => ({
   surveyid: MULTI,
   launchAt: scheduleRequest.launchAt,
@@ -176,6 +199,28 @@ describe('surveys schedule screen', () => {
     expect(model.controls.slice(0, 2).map(({ value }) => value)).toEqual(['', '']);
     expect(model.tables).toEqual([]);
   });
+
+  it.each(['LAUNCHED', 'CLOSED'] as const)(
+    'shows the stored schedule of a %s survey read-only, with no form and no CSRF pair',
+    async (status) => {
+      const editable = await bodyModel('schedule', managerRequest({ surveyid: MULTI }), surveysGateway());
+      const gateway = surveysGateway({ [SURVEY_ROUTE]: surveyIn(status) });
+
+      const body = await bodyHtml('schedule', managerRequest({ surveyid: MULTI }), gateway);
+
+      expect(body).not.toContain('<form');
+      expect(body).toContain(storedScheduleHtml(status));
+      expect(fragmentModel(body)).toMatchObject({
+        headings: editable.headings,
+        controls: [],
+        buttons: [],
+        links: editable.links,
+        tables: editable.tables,
+        alerts: [],
+      });
+      expect(csrfContexts(gateway)).toEqual([]);
+    },
+  );
 
   it('shows the no-survey alert and asks no service when the request names no survey', async () => {
     const gateway = surveysGateway();
@@ -349,6 +394,25 @@ describe('surveys schedule action', () => {
     expect(model).toMatchObject(formParts(invalidScheduleRequest.launchAt, '1440', '<token>', '<token>'));
     expect(model.headings).toEqual(['Schedule', 'Reminders', 'Tasks']);
     expect(csrfContexts(gateway)).toEqual([MULTI]);
+  });
+
+  it('re-renders a survey closed before the post with its stored schedule read-only under the 409 alert', async () => {
+    const gateway = surveysGateway({
+      [SCHEDULE_ROUTE]: {
+        status: 409,
+        body: { apiversion: 'v1', method: 'surveys.schedule', error: { message: 'Conflict', code: 'invalid_request' } },
+      },
+      [SURVEY_ROUTE]: surveyIn('CLOSED'),
+    });
+    const rc = scheduleRc({ launchAt: invalidScheduleRequest.launchAt, reminders: '1440' });
+
+    const result = await surveysAction('schedule').submit(contextFor(managerRequest(rc), gateway));
+
+    expect(renderedModel(result)).toMatchObject({ controls: [], buttons: [], alerts: [errorAlert('Conflict')] });
+    const body = result.kind === 'render' ? toString(result.view.body) : '';
+    expect(body.indexOf('<div class="mura-header">')).toBe(0);
+    expect(body).toContain(storedScheduleHtml('CLOSED', toString(alertBox('Conflict'))));
+    expect(csrfContexts(gateway)).toEqual([]);
   });
 
   const LAUNCH_MESSAGE =

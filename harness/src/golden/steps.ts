@@ -12,7 +12,16 @@ import {
   type RouteKeyOptions,
   type ScannedRouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
-import type { Extraction, MultipartSpec, PollSpec, Scenario, SettleSpec, Step, StepExpectation } from './catalogue.js';
+import type {
+  Extraction,
+  MultipartFileSpec,
+  MultipartSpec,
+  PollSpec,
+  Scenario,
+  SettleSpec,
+  Step,
+  StepExpectation,
+} from './catalogue.js';
 import { GoldenConfigError } from './errors.js';
 import { defaultRouteKeyOptions } from './route-key-options.js';
 import {
@@ -346,6 +355,82 @@ function onePagePdf(): Buffer {
   return Buffer.from(pdf, 'latin1');
 }
 
+// 2026-06-30 00:00:00 as MS-DOS date and time, so a generated archive's bytes never depend on the clock.
+const DOS_DATE = ((2026 - 1980) << 9) | (6 << 5) | 30;
+const DOS_TIME = 0;
+
+/** ZIP fields shared by a local header and its central-directory record: version needed through extra length. */
+function zipEntryFields(data: Buffer, nameLength: number): Buffer {
+  const fields = Buffer.alloc(26);
+  fields.writeUInt16LE(10, 0);
+  fields.writeUInt16LE(DOS_TIME, 6);
+  fields.writeUInt16LE(DOS_DATE, 8);
+  fields.writeUInt32LE(crc32(data), 10);
+  fields.writeUInt32LE(data.length, 14);
+  fields.writeUInt32LE(data.length, 18);
+  fields.writeUInt16LE(nameLength, 22);
+  return fields;
+}
+
+/** ZIP archive of `entries` (name, bytes) in order, each stored uncompressed under the fixed DOS timestamp. */
+function storedZip(entries: ReadonlyArray<readonly [string, Buffer]>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [entryName, data] of entries) {
+    const nameBytes = Buffer.from(entryName, 'utf8');
+    const fields = zipEntryFields(data, nameBytes.length);
+    const local = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), fields, nameBytes, data]);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    fields.copy(central, 6);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local);
+    centrals.push(Buffer.concat([central, nameBytes]));
+    offset += local.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}
+
+const PLUGIN_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+	<name>OPT-2 Golden Plugin</name>
+	<loadPriority>5</loadPriority>
+	<version>1.0.0</version>
+	<provider>OPT-2 golden harness</provider>
+	<providerURL>https://opt2.invalid/golden-plugin</providerURL>
+	<category>Utility</category>
+	<settings>
+		<setting>
+			<name>greeting</name>
+			<label>Greeting</label>
+			<hint>Text the golden scenario stores.</hint>
+			<type>Text</type>
+			<required>false</required>
+			<validation></validation>
+			<regex></regex>
+			<message></message>
+			<defaultvalue>FIXTURE greeting</defaultvalue>
+			<optionlist></optionlist>
+			<optionlabellist></optionlabellist>
+		</setting>
+	</settings>
+</plugin>
+`;
+
+/** Masa plugin archive: `plugin/config.xml` with one text setting, `greeting`, and no plugin.cfc, handlers or objects. */
+function masaPluginZip(): Buffer {
+  return storedZip([['plugin/config.xml', Buffer.from(PLUGIN_CONFIG_XML, 'utf8')]]);
+}
+
 const FORM_EXPORT_FORM_ID = '6F1C2A3B-4D5E-4F60-8A1B2C3D4E5F6A7B';
 const FORM_EXPORT_FIELD_ID = '7A2B3C4D-5E6F-4071-9B2C3D4E5F6A7B8C';
 
@@ -421,6 +506,7 @@ function formExportZip(): Buffer {
 const FIXTURE_FILES: Readonly<Record<string, () => Buffer>> = {
   'image-png-8x8': png8x8,
   'pdf-one-page': onePagePdf,
+  'masa-plugin-zip': masaPluginZip,
   'form-export-zip': formExportZip,
 };
 
@@ -491,7 +577,16 @@ function mergeFields(base: FieldValues, explicit: Record<string, unknown>): Reco
   return { ...Object.fromEntries(kept), ...explicit };
 }
 
-function resolveBody(ctx: ScenarioContext, shape: RequestShape): ResolvedBody {
+/** Bytes a multipart file sends: its generated fixture, or the body of its `fromStep` step's last response. */
+function fileBytes(ctx: ScenarioContext, step: Pick<Step, 'name'>, file: MultipartFileSpec): Uint8Array {
+  if (!('fromStep' in file)) return fixtureBytes(fieldText(file.fixture));
+  const source = fieldText(file.fromStep);
+  const result = stepResponses.get(ctx)?.get(source);
+  if (result === undefined) throw stepError(ctx, step, `fromStep ${source} has not run in this scenario`);
+  return result.bytes;
+}
+
+function resolveBody(ctx: ScenarioContext, step: Pick<Step, 'name'>, shape: RequestShape): ResolvedBody {
   if (shape.form !== undefined) return { kind: 'form', fields: fieldValues(resolvePlaceholders(shape.form, ctx)) };
   if (shape.body !== undefined) return { kind: 'json', value: resolvePlaceholders(shape.body, ctx) };
   if (shape.multipart === undefined) return { kind: 'none' };
@@ -503,7 +598,7 @@ function resolveBody(ctx: ScenarioContext, shape: RequestShape): ResolvedBody {
       name: fieldText(file.field),
       filename: fieldText(file.filename),
       contentType: fieldText(file.contentType),
-      data: fixtureBytes(fieldText(file.fixture)),
+      data: fileBytes(ctx, step, file),
     })),
   };
 }
@@ -667,7 +762,7 @@ async function exchange(
   const auth = step.auth === undefined ? 'session' : resolvedText(ctx, step, step.auth, 'auth');
   const s = stepSession(ctx, step, auth, opts);
   const headers: Record<string, string> = authHeaders(auth);
-  let body = resolveBody(ctx, shape);
+  let body = resolveBody(ctx, step, shape);
   const csrf = resolvedText(ctx, step, step.csrf, 'csrf');
   if (csrf === 'fetch-form') {
     body = withFormTokens(ctx, step, body, formTokensFrom(s, await formSource(ctx, scenario, step, s, route)));

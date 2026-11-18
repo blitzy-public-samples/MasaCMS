@@ -671,7 +671,7 @@ function checks(list: Case[]): void {
 
 const DECLARED_ICONS = VALID.split('data-lucide="').length - 1;
 
-/** The state of the valid fixture once both diagrams and every icon have rendered. */
+/** The state of the valid fixture once both diagrams and every icon have rendered and each slide exactly fills the canvas. */
 const RENDERED: RenderState = {
   slides: 16,
   diagrams: [
@@ -680,6 +680,7 @@ const RENDERED: RenderState = {
   ],
   placeholders: [],
   icons: DECLARED_ICONS,
+  heights: Array<number>(16).fill(1080),
 };
 
 /** How the fake page behaves; by default the deck loads, becomes ready and renders as {@link RENDERED}. */
@@ -898,6 +899,22 @@ describe('check-deck: Executive Presentation rule', () => {
         script: { state: { ...RENDERED, icons: DECLARED_ICONS - 2 } },
         expected: [
           { check: 'render-lucide', detail: `2 of ${DECLARED_ICONS} Lucide icons became neither an SVG nor a placeholder` },
+        ],
+      },
+      {
+        name: 'reports each slide taller than the canvas with its height, after the icon findings',
+        script: {
+          state: {
+            ...RENDERED,
+            placeholders: [{ slide: 7, name: 'server' }],
+            icons: DECLARED_ICONS - 1,
+            heights: RENDERED.heights.map((height, i) => (i === 8 ? 1256 : i === 14 ? 1081 : i === 15 ? 600 : height)),
+          },
+        },
+        expected: [
+          { check: 'render-lucide', slide: 7, detail: 'Lucide icon "server" was not replaced by an SVG' },
+          { check: 'render-overflow', slide: 9, detail: 'slide content is 1256 px tall, beyond the 1080 px canvas' },
+          { check: 'render-overflow', slide: 15, detail: 'slide content is 1081 px tall, beyond the 1080 px canvas' },
         ],
       },
       {

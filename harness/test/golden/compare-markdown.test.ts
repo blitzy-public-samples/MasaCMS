@@ -714,19 +714,6 @@ function tableSection(lines: readonly string[], heading: string): string[] {
   return lines.slice(start, end === -1 ? lines.length : end);
 }
 
-/** The lines between the title, Source SHA and empty line and the next empty line. */
-function headerBlock(lines: readonly string[]): string[] {
-  return lines.slice(3, lines.indexOf('', 3));
-}
-
-/** A rendered parity.md `line` with each value only a run supplies read as `pending-run`. */
-function asPending(line: string): string {
-  return line
-    .replace(/^(Status|Generated at): .*$/, '$1: pending-run')
-    .replace(/^Fixtures: .*? \(from /, 'Fixtures: pending-run (from ')
-    .replace(/^(\| (?:total|`[^`]+`) \| )\d+ \|$/, '$1pending-run |');
-}
-
 describe('committed parity report', () => {
   let report: ParityReport;
   let committed: string[];
@@ -748,22 +735,12 @@ describe('committed parity report', () => {
     expect(tableSection(committed, '## Planned ')).toEqual(tableSection(renderParityMarkdown(report), '## Planned '));
   });
 
-  it('carries the title, Source SHA line, header, headings, legend and table columns the renderer writes', async () => {
+  it('is what the renderer writes for the committed parity.json', async () => {
+    const json = JSON.parse(await readFile(opt2Path('reports', 'parity.json'), 'utf8')) as ParityReport;
     const dir = await mkdtemp(path.join(os.tmpdir(), 'compare-committed-'));
     try {
-      const file = await writeMarkdown(path.join(dir, 'parity.md'), PARITY_TITLE, renderParityMarkdown(report));
-      const rendered = (await readFile(file, 'utf8')).split('\n').map(asPending);
-      const isHeading = (line: string): boolean => line.startsWith('#');
-      expect(committed.slice(0, 3)).toEqual(rendered.slice(0, 3));
-      expect(headerBlock(committed)).toEqual(headerBlock(rendered));
-      expect(committed.filter(isHeading)).toEqual(rendered.filter(isHeading));
-      for (const heading of ['## Result legend', '## Summary']) {
-        expect(tableSection(committed, heading)).toEqual(tableSection(rendered, heading));
-      }
-      const compared = renderParityMarkdown(fullReport());
-      for (const heading of ['## Scenarios', '## Unmet (withheld)']) {
-        expect(tableSection(committed, heading).slice(0, 4)).toEqual(tableSection(compared, heading).slice(0, 4));
-      }
+      const file = await writeMarkdown(path.join(dir, 'parity.md'), PARITY_TITLE, renderParityMarkdown(json));
+      expect(committed).toEqual((await readFile(file, 'utf8')).split('\n'));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
