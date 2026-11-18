@@ -21,6 +21,7 @@ import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
 import {
+  DEPLOYMENT_SETTINGS,
   SEEDED_SITE_FLAGS,
   SITE_CONFIG_FLAGS_PATH,
   TEST_CLOCK,
@@ -235,8 +236,9 @@ beforeAll(async () => {
       ctx = {
         domain: { db, repository: createContentRepository({ clock: TEST_CLOCK, schema: db.schema }), clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS },
         clock: TEST_CLOCK,
+        legacySettings: DEPLOYMENT_SETTINGS,
         actorFor: async (request: FastifyRequest) => actorFromClaims(request.opt2Auth.user, 'Admin User'),
-      } as Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'> as ContentRouteContext;
+      } as Pick<ContentRouteContext, 'domain' | 'clock' | 'legacySettings' | 'actorFor'> as ContentRouteContext;
       app.addHook('onError', async (_request, _reply, error) => {
         routeErrors.push(error);
       });
@@ -1246,6 +1248,17 @@ describe('selectmedia, selectfields and variationtargeting', () => {
       { fileid: FILE_PNG, title: 'About', contentid: NODE, imageURL: expect.stringContaining(FILE_PNG) },
       { fileid: FILE_JPG, title: 'Child', contentid: CHILD, imageURL: expect.stringContaining(FILE_JPG) },
     ]);
+  });
+
+  it("lists a child's image the site keeps in its file pool, read in the pool tenant", async () => {
+    t.db.respond(ACTIVE, [versionRow({ fileid: null })]);
+    t.db.respond(NEST, (params) => (JSON.stringify(params).includes(NODE) ? [versionRow({ contentid: CHILD, title: 'Child', fileid: FILE_JPG, fileext: null, filesize: null })] : []));
+    t.db.respond(/^SELECT file_pool_tenant AS pool_tenant FROM /, [{ pool_tenant: TENANT_UMBRELLA.tenantId }]);
+    t.db.respond(/^SELECT fileid, fileext, filesize, filename AS assocfilename/, (_params, _sql, { tenantId }) =>
+      tenantId === TENANT_UMBRELLA.tenantId ? [{ fileid: FILE_JPG, fileext: 'jpg', filesize: 1, assocfilename: 'child.jpg', contenttype: 'image', contentsubtype: 'jpeg' }] : [],
+    );
+    const rc = await rcOf(`/v1/sites/${SITE}/content/images?contentid=${NODE}`);
+    expect(rc.rsImages).toEqual([{ fileid: FILE_JPG, title: 'Child', contentid: CHILD, imageURL: expect.stringContaining(FILE_JPG) }]);
   });
 
   it('offers the feed fields and the site’s content attributes sorted case-sensitively, less the requested fields', async () => {

@@ -748,23 +748,34 @@ function currentAdminDomainOf(request: FastifyRequest, adminDomain: string): str
   return onAdminDomain || port === '' ? name : `${name}:${port}`;
 }
 
+/** The site URL values a request decides: its scheme, its host where the site answers to it (else the primary domain), the port, context and configBean URL flags. */
+export function requestSiteUrls(
+  site: Pick<TenantRegistryEntry, 'siteId' | 'domains'>,
+  request: FastifyRequest,
+  settings: JsonApiLegacySettings,
+): Pick<LegacySiteUrlConfig, 'siteId' | 'scheme' | 'domain' | 'requestDomain' | 'serverPort' | 'context'> & JsonApiLegacySettings['urls'] {
+  const domain = site.domains[0] ?? '';
+  const host = clientHostOf(request);
+  const onSiteDomain = site.domains.some((candidate) => candidate.toLowerCase() === host.name.toLowerCase());
+  return {
+    siteId: site.siteId,
+    scheme: requestProtocolOf(request),
+    domain,
+    requestDomain: onSiteDomain ? host.name : domain,
+    serverPort: settings.serverPort ?? serverPortSetting(host.port),
+    context: settings.context,
+    ...settings.urls,
+  };
+}
+
 // strategies-content holds no tsettings or timagesizes projection (programs-sites owns them): the registry supplies the
 // site's identity, domains and file pool, the configBean flags come from MURA_<KEY>, and every other value keeps the
 // empty value or legacy default its type documents.
 /** The URL settings of a registered site for this request. */
 function siteUrlsOf(entry: TenantRegistryEntry, request: FastifyRequest, settings: JsonApiLegacySettings): LegacySiteUrlConfig {
-  const domain = entry.domains[0] ?? '';
-  const host = clientHostOf(request);
-  const onSiteDomain = entry.domains.some((candidate) => candidate.toLowerCase() === host.name.toLowerCase());
   return {
-    siteId: entry.siteId,
-    scheme: requestProtocolOf(request),
-    domain,
-    requestDomain: onSiteDomain ? host.name : domain,
+    ...requestSiteUrls(entry, request, settings),
     previewDomain: '',
-    serverPort: settings.serverPort ?? serverPortSetting(host.port),
-    context: settings.context,
-    ...settings.urls,
     useSSL: false,
     // settingsBean getFilePoolID: the site itself when no pool is set.
     filePoolId: entry.filePoolId || entry.siteId,

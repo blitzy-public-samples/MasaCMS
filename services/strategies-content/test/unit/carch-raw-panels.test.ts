@@ -19,7 +19,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { SESSION_EFFECTS_HEADER, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
-import { SITE_CONFIG_FLAGS_PATH, TEST_CLOCK, buildContentApp, createRecordingDb, siteConfigFlagsAnswer, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { DEPLOYMENT_SETTINGS, SITE_CONFIG_FLAGS_PATH, TEST_CLOCK, buildContentApp, createRecordingDb, siteConfigFlagsAnswer, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 
@@ -77,8 +77,9 @@ const db = createRecordingDb();
 const ctx = {
   domain: { db, repository: createContentRepository({ clock: TEST_CLOCK, schema: db.schema }), clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS },
   clock: TEST_CLOCK,
+  legacySettings: DEPLOYMENT_SETTINGS,
   actorFor: (request: FastifyRequest) => Promise.resolve(actorFromClaims(request.opt2Auth.user, 'Admin User')),
-} as Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'> as ContentRouteContext;
+} as Pick<ContentRouteContext, 'domain' | 'clock' | 'legacySettings' | 'actorFor'> as ContentRouteContext;
 
 const identity: { state: Json; user: Json; csrfValid: (context: string) => boolean } = { state: {}, user: {}, csrfValid: () => true };
 const consumed: CsrfConsumeRequest[] = [];

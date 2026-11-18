@@ -14,6 +14,7 @@ import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/ac
 import { carchRawActions } from '../../src/routes/v1/carch.js';
 import { registerChangesetRoutes } from '../../src/routes/v1/cchangesets.js';
 import {
+  DEPLOYMENT_SETTINGS,
   SITE_CONFIG_FLAGS_PATH,
   TEST_CLOCK,
   buildContentApp,
@@ -66,8 +67,9 @@ let deps: DomainDeps;
 let t: ContentTestApp;
 const ctx = {
   clock: TEST_CLOCK,
+  legacySettings: DEPLOYMENT_SETTINGS,
   actorFor: (request: FastifyRequest) => Promise.resolve(actorFromClaims(request.opt2Auth.user, 'Edit Or')),
-} as Pick<ContentRouteContext, 'clock' | 'actorFor'> as ContentRouteContext;
+} as Pick<ContentRouteContext, 'clock' | 'legacySettings' | 'actorFor'> as ContentRouteContext;
 
 /** A version of tenant-a under `parentid`, its stored path from the home page. */
 function page(contentid: string, parentid: string, overrides: Parameters<typeof contentRow>[0] = {}): SeedRow {

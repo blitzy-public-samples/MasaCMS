@@ -30,6 +30,9 @@ const SERVICE = 'strategies-content';
 /** Headers a legacy form or ajax call may carry instead of its `csrf_token` fields. */
 const CSRF_HEADERS = ['X-csrf_token', 'X-csrf_token_expires'] as const;
 
+/** The browser's host and scheme as the gateway forwarded them; the service's site URLs follow them as legacy's follow `cgi.http_host`. */
+const FORWARDED_HOST_HEADERS = ['x-forwarded-host', 'x-forwarded-proto'] as const;
+
 /** End-to-end service response headers a raw relay keeps; the handler adds the legacy base headers itself. */
 const RELAYED_HEADERS = ['location', 'content-disposition', 'expires', 'cache-control', 'pragma'] as const;
 
@@ -290,14 +293,19 @@ export type CarchRawAction = {
 
 // ---- Request and response shapes ----
 
-/** The CSRF headers the inbound request carried, unchanged. */
-function csrfHeaders(req: AdminRequest): Record<string, string> {
+/** The headers among `names` the inbound request carried, unchanged. */
+function inboundHeaders(req: AdminRequest, names: readonly string[]): Record<string, string> {
   const headers: Record<string, string> = {};
-  for (const name of CSRF_HEADERS) {
+  for (const name of names) {
     const value = req.headers.get(name);
     if (value !== null) headers[name] = value;
   }
   return headers;
+}
+
+/** The CSRF headers the inbound request carried, unchanged. */
+function csrfHeaders(req: AdminRequest): Record<string, string> {
+  return inboundHeaders(req, CSRF_HEADERS);
 }
 
 /** A POST of the rc fields' relay URL-encoded, or of the multipart body as received. */
@@ -430,9 +438,9 @@ export async function toSubmitResult(
 
 /**
  * Relays a carch fragment, JSON or download action: GET sends the rc as url fields; POST sends `siteid` in the query and
- * the rc fields (or the multipart body) as the body. The answer's bytes are returned unchanged, a streamed 2xx body as
- * it arrives, and the session values it reports set are applied to `ctx.req`; a 401 or 403 becomes the controller
- * `secure()` redirect.
+ * the rc fields (or the multipart body) as the body; both carry the browser's forwarded host and scheme. The answer's
+ * bytes are returned unchanged, a streamed 2xx body as it arrives, and the session values it reports set are applied to
+ * `ctx.req`; a 401 or 403 becomes the controller `secure()` redirect.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
  * @throws TypeError When the answer reports session values the contract does not name.
  */
@@ -446,8 +454,12 @@ export async function relayCarchRaw(
   const path = `/v1/raw/carch/${action}` as const;
   // The effective rc's relay, not the inbound query, is sent: the service renders from what legacy's controller sees.
   const fields = relayContext(ctx.req, rc);
-  const get = () => ({ query: { params: rcFields(fields) }, headers: csrfHeaders(ctx.req) });
-  const post = () => ({ query: declared(fields, 'siteid'), ...postInput(ctx.req, rc, multipart) });
+  const forwarded = inboundHeaders(ctx.req, FORWARDED_HOST_HEADERS);
+  const get = () => ({ query: { params: rcFields(fields) }, headers: { ...csrfHeaders(ctx.req), ...forwarded } });
+  const post = () => {
+    const input = postInput(ctx.req, rc, multipart);
+    return { query: declared(fields, 'siteid'), ...input, headers: { ...input.headers, ...forwarded } };
+  };
   let res: GatewayResponse<Buffer | Readable>;
   if (stream) res = method === 'GET' ? await sc.stream('get', path, get()) : await sc.stream('post', path, post());
   else res = method === 'GET' ? await sc.raw('get', path, get()) : await sc.raw('post', path, post());

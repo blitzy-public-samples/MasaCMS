@@ -183,14 +183,16 @@ interface CallInput {
   readonly routes?: FakeRouteTable;
   /** Carries `rc` as a posted body; otherwise the request has none. */
   readonly post?: boolean;
+  /** Request headers besides the csrf pair and the referrer. */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** The tenant-a site admin on `carch.<action>` with the csrf headers and a referrer, over a fake gateway. */
 function screenContext(
   action: string,
-  { rc = {}, routes = {}, post = false }: CallInput = {},
+  { rc = {}, routes = {}, post = false, headers: extra = {} }: CallInput = {},
 ): ScreenContext & { gateway: FakeGatewayClient } {
-  const headers = new Headers({ ...CSRF_HEADERS, referer: REFERER });
+  const headers = new Headers({ ...CSRF_HEADERS, referer: REFERER, ...extra });
   const req = siteAdminRequest(SITE, { circuit: 'carch', item: action, rc, headers });
   return makeScreenContext({ req, gateway: fakeGatewayClient(routes), body: post ? formBody(rc) : undefined });
 }
@@ -290,6 +292,14 @@ describe('relayed carch actions', () => {
       expect.objectContaining({ moduleid: FORM_MODULE_ID, topid: FORM_MODULE_ID, type: 'Page', startrow: '1' }),
     );
     expect(ctx.req.sessionWrites).toEqual(expect.objectContaining({ moduleid: FORM_MODULE_ID }));
+  });
+
+  it.each(['GET', 'POST'] as const)('relays the browser’s forwarded host and scheme with a %s carch.loadsitemanager', async (method) => {
+    const forwarded = { 'x-forwarded-host': 'localhost:20800', 'x-forwarded-proto': 'https' };
+    const routes = { [svc(method, rawPath('loadsitemanager'))]: RELAYS.json.reply };
+    const ctx = screenContext('loadsitemanager', { rc: FIELDS, post: method === 'POST', routes, headers: forwarded });
+    expect(await invoke(definition('loadsitemanager'), ctx)).toEqual(RELAYS.json.answer);
+    expect(ctx.gateway.calls.map(({ method: sent, headers }) => [sent, headers])).toEqual([[method, { ...SENT_CSRF, ...forwarded }]]);
   });
 
   it.each<[string, Readonly<Record<string, string>>]>([

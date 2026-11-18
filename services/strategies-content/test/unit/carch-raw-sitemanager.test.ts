@@ -12,15 +12,17 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_UMBRELLA } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { UndefinedLegacyElementError } from '../../src/domain/content.js';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
+import { jsonApiLegacySettings } from '../../src/routes/jsonapi.js';
 import { SESSION_EFFECTS_HEADER, adminCsrf, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
 import type { RawActionResult } from '../../src/routes/v1/raw.js';
 import {
+  DEPLOYMENT_SETTINGS,
   SEEDED_SITE_FLAGS,
   SITE_CONFIG_FLAGS_PATH,
   TEST_CLOCK,
@@ -178,8 +180,9 @@ beforeAll(async () => {
       ctx = {
         domain: { db, repository: createContentRepository({ clock: TEST_CLOCK, schema: db.schema }), clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS },
         clock: TEST_CLOCK,
+        legacySettings: DEPLOYMENT_SETTINGS,
         actorFor: (request: FastifyRequest) => Promise.resolve(actorFromClaims(request.opt2Auth.user, 'Admin User')),
-      } as Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'> as ContentRouteContext;
+      } as Pick<ContentRouteContext, 'domain' | 'clock' | 'legacySettings' | 'actorFor'> as ContentRouteContext;
       // The raw flow the raw router gives each entry: the circuit gate, the CSRF consume where it names a context, then the entry.
       for (const [action, spec] of Object.entries(carchRawActions)) {
         app.route({
@@ -236,13 +239,14 @@ beforeEach(() => {
   seedWorld();
 });
 
-/** Posts raw `action` with `form` as a user of tenant-a: an S2 unless `roles` names an editor's grants. */
-async function raw(action: RawAction, form: Record<string, string> = {}, opts: { roles?: readonly string[]; headers?: Record<string, string> } = {}) {
+/** Posts raw `action` with `form` as a user of tenant-a: an S2 unless `roles` names an editor's grants; the query `siteid` is tenant-a unless given, none when ''. */
+async function raw(action: RawAction, form: Record<string, string> = {}, opts: { roles?: readonly string[]; headers?: Record<string, string>; siteid?: string } = {}) {
   const roles = opts.roles ?? [Roles.s2];
   const auth = await userHeaders({ sub: USER_ID, site: SITE, roles, s2: roles.includes(Roles.s2) });
+  const siteid = opts.siteid ?? SITE;
   const res = await t.app.inject({
     method: 'POST',
-    url: `/v1/raw/carch/${action}?siteid=${SITE}`,
+    url: `/v1/raw/carch/${action}${siteid === '' ? '' : `?siteid=${siteid}`}`,
     headers: { ...auth, 'content-type': 'application/x-www-form-urlencoded', ...opts.headers },
     payload: new URLSearchParams(form).toString(),
   });
@@ -399,6 +403,16 @@ describe('savecopyinfo and sitemanagertab', () => {
   it('keys the tab by the token’s site when the session holds none', async () => {
     const { out } = await raw('sitemanagertab', { tab: '1' });
     expect(effectsOf(out)).toEqual({ mura: { flatViewArgs: { [SITE]: { tab: '1' } } } });
+  });
+
+  it.each([
+    ['without a siteid, as the Site Manager sends it', SITE, ''],
+    ['with the token’s siteid, which switches the session from another site', TENANT_B.siteId, SITE],
+  ])('keys the tab by the session site the admin set-up leaves %s', async (_label, stored, siteid) => {
+    identity.adminState = { siteid: stored, mura: { flatViewArgs: { [TENANT_B.siteId]: { tab: 0 } } } };
+    const { res, out } = await raw('sitemanagertab', { tab: '1' }, { siteid });
+    expect([res.statusCode, res.headers['content-type'], res.body]).toEqual([200, HTML, '']);
+    expect(effectsOf(out)).toEqual({ mura: { flatViewArgs: { [TENANT_B.siteId]: { tab: 0 }, [SITE]: { tab: '1' } } } });
   });
 
   it.each([
@@ -653,6 +667,55 @@ describe('loadsitemanager', () => {
     versions = [];
     const { error } = await raw('loadsitemanager', { topid: HOME, moduleid: SITE_MANAGER });
     expect((error as Error).message).toBe(`The tree of ${HOME} has no root`);
+  });
+
+  it('prints an empty file type for a File row whose file the site keeps in its file pool', async () => {
+    const doc = 'A1000000-0020-4A5B-8C7D9E0F1A2B3C4D';
+    versions.push(version(doc, 'B1000000-0020-4A5B-8C7D9E0F1A2B3C4D', { type: 'File', title: 'Seed Document', menutitle: 'Seed Document', filename: 'seed-document', fileid: FILE, fileext: null, filesize: null, target: '_self', targetparams: '', orderno: 3 }));
+    t.db.respond(/^SELECT fileid, fileext, filesize, filename AS assocfilename/, [{ fileid: FILE, fileext: 'pdf', filesize: 1, assocfilename: 'seed.pdf', contenttype: 'application', contentsubtype: 'pdf' }]);
+    const { res } = await raw('loadsitemanager', { topid: HOME, moduleid: SITE_MANAGER, sortby: '', startrow: '1' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.body).toContain(doc);
+    expect([...res.body.matchAll(/data-filetype=\\"([^\\"]*)\\"/g)].map((match) => match[1])).toEqual(['']);
+  });
+
+  it.each<[string, Record<string, string>, Record<string, string>, string]>([
+    ['the browser host on a site domain alias, with its port', {}, { 'x-forwarded-host': 'localhost:20800' }, 'http://localhost:20800'],
+    ['the primary domain for a host the site does not answer to', {}, { 'x-forwarded-host': '127.0.0.1:20801' }, 'http://tenant-a.localhost:20801'],
+    ['https and the host as sent for an HTTPS request', {}, { 'x-forwarded-host': 'LocalHost', 'x-forwarded-proto': 'https' }, 'https://LocalHost'],
+    ['the MURA_PORT port over the request port', { MURA_PORT: '20800' }, { 'x-forwarded-host': 'localhost:8080' }, 'http://localhost:20800'],
+  ])('links the top’s and each row’s View on %s', async (_label, env, headers, origin) => {
+    t.db.respond(/^SELECT site_id, tenant_id, .* FROM content\.tenant_registry WHERE tenant_id = \$1 AND NOT deleted$/, [
+      {
+        site_id: SITE,
+        tenant_id: TENANT_A.tenantId,
+        public_user_pool_id: 'umbrella',
+        private_user_pool_id: SITE,
+        category_pool_id: 'umbrella',
+        file_pool_id: 'umbrella',
+        display_pool_id: 'umbrella',
+        content_pool_ids: [SITE],
+        public_user_pool_tenant: TENANT_UMBRELLA.tenantId,
+        private_user_pool_tenant: TENANT_A.tenantId,
+        category_pool_tenant: TENANT_UMBRELLA.tenantId,
+        file_pool_tenant: TENANT_UMBRELLA.tenantId,
+        display_pool_tenant: TENANT_UMBRELLA.tenantId,
+        content_pool_tenants: [TENANT_A.tenantId],
+        domains: ['tenant-a.localhost', 'localhost'],
+        aggregate_version: '1',
+        updated_at: PUBLISHED_AT,
+        deleted: false,
+      },
+    ]);
+    Object.assign(ctx, { legacySettings: jsonApiLegacySettings({ MURA_SITEIDINURLS: 'false', MURA_INDEXFILEINURLS: 'false', ...env }) });
+    try {
+      const { res } = await raw('loadsitemanager', { topid: HOME, moduleid: SITE_MANAGER, sortby: '', startrow: '1' }, { headers });
+      expect(res.statusCode, res.body).toBe(200);
+      const views = [...res.body.matchAll(/<li class=\\"preview\\"><a title=\\"View\\" href=\\"([^\\"]*)\\"/g)].map((match) => match[1]);
+      expect(views).toEqual([`${origin}/`, `${origin}/about-us/`]);
+    } finally {
+      Object.assign(ctx, { legacySettings: DEPLOYMENT_SETTINGS });
+    }
   });
 });
 

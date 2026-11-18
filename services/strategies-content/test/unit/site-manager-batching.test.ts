@@ -14,6 +14,7 @@ import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
 import {
+  DEPLOYMENT_SETTINGS,
   SITE_CONFIG_FLAGS_PATH,
   TEST_CLOCK,
   buildContentApp,
@@ -101,8 +102,9 @@ let t: ContentTestApp;
 let adminState: Record<string, unknown> = {};
 const ctx = {
   clock: TEST_CLOCK,
+  legacySettings: DEPLOYMENT_SETTINGS,
   actorFor: (request: FastifyRequest) => Promise.resolve(actorFromClaims(request.opt2Auth.user, 'Edit Or')),
-} as Pick<ContentRouteContext, 'clock' | 'actorFor'> as ContentRouteContext;
+} as Pick<ContentRouteContext, 'clock' | 'legacySettings' | 'actorFor'> as ContentRouteContext;
 
 /** The service calls the tree makes: identity's admin session state, session user and CSRF tokens of the printed contexts, and programs-sites' site flags. */
 function answerIdentity(req: ServiceRequest): ServiceResponse | Promise<ServiceResponse> {

@@ -18,7 +18,7 @@ import {
   type CarchWriteResult,
 } from '@/screens/carch/service';
 import type { RawBody, Rc, SubmitResult } from '@/screens/registry';
-import { adminS2Request, anonymousRequest } from '../../helpers/admin-request';
+import { FORWARDED_HOST_HEADERS, adminS2Request, anonymousRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
@@ -410,7 +410,7 @@ describe('relayCarchRaw', () => {
       contentType: type,
       body: Buffer.from(json),
     });
-    expect(gateway.calls).toEqual([{ service: 'strategies-content', method: 'GET', path, query: rc }]);
+    expect(gateway.calls).toEqual([{ service: 'strategies-content', method: 'GET', path, query: rc, headers: FORWARDED_HOST_HEADERS }]);
   });
 
   it('forwards the csrf headers on GET', async () => {
@@ -460,7 +460,7 @@ describe('relayCarchRaw', () => {
       body: Buffer.alloc(0),
     });
     expect(gateway.calls).toEqual([
-      { service: 'strategies-content', method: 'POST', path, query: { siteid: SITE }, form: rc },
+      { service: 'strategies-content', method: 'POST', path, query: { siteid: SITE }, form: rc, headers: FORWARDED_HOST_HEADERS },
     ]);
   });
 

@@ -61,6 +61,7 @@ const USERS_CSV = routeKey('GET', 'people', '/v1/users/download');
 const CARCH_UPDATE = routeKey('POST', 'strategies-content', '/v1/raw/carch/update');
 const LOADDIFF = routeKey('GET', 'strategies-content', '/v1/raw/carch/loaddiff');
 const LOADSITEMANAGER = routeKey('POST', 'strategies-content', '/v1/raw/carch/loadsitemanager');
+const SITEMANAGERTAB = routeKey('GET', 'strategies-content', '/v1/raw/carch/sitemanagertab');
 const CHANGESET_ROLLBACK = routeKey(
   'POST',
   'strategies-content',
@@ -381,6 +382,38 @@ describe('admin-raw response modes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe(loadsitemanagerRelay.headers['content-type']);
     expect(await response.text()).toBe(loadsitemanagerRelay.body);
+  });
+
+  // The gateway mints a site-less admin request's token for the session's stored site, which web sends as rc.siteid.
+  it('GET carch.siteManagerTab without a siteid relays the session site, answers the empty 200 and stores the tab', async () => {
+    const flatViewArgs = { [SITE]: { tab: '1' } };
+    install({
+      [SITEMANAGERTAB]: {
+        status: 200,
+        headers: { 'Content-Type': 'text/html;charset=UTF-8', 'X-Opt2-Session-Effects': JSON.stringify({ mura: { flatViewArgs } }) },
+      },
+    });
+    const referer = `http://localhost/admin/?muraAction=cArch.list&siteid=${SITE}`;
+
+    const { request, response } = await send('/admin-raw/carch/sitemanagertab', {
+      user: SUBJECTS.siteAdmin,
+      query: { muraAction: 'carch.siteManagerTab', tab: '1' },
+      headers: { ...RETURNING_BROWSER, referer },
+    });
+
+    expectLegacyHeaders(response);
+    expect([response.status, response.headers.get('content-type'), response.headers.get('location')]).toEqual([
+      200,
+      'text/html;charset=UTF-8',
+      null,
+    ]);
+    expect(await response.text()).toBe('');
+    const relay = gateway.requests.filter((recorded) => `${recorded.method} ${recorded.path}` === SITEMANAGERTAB);
+    expect(relay).toHaveLength(1);
+    expect(relay[0]?.query).toMatchObject({ siteid: SUBJECTS.siteAdmin.site, tab: '1' });
+    expect(relay[0]?.headers.authorization).toBe(request.headers.get('authorization'));
+    const saved = gateway.requests.filter((recorded) => `${recorded.method} ${recorded.path}` === SAVE_ADMIN_STATE);
+    expect(saved.map((recorded) => recorded.json)).toEqual([expect.objectContaining({ mura: { flatViewArgs } })]);
   });
 
   it('GET cUsers.download answers the people CSV as an attachment', async () => {

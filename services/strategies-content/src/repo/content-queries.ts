@@ -1750,8 +1750,7 @@ async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams): Promi
 /**
  * contentGateway.getNest: the active children of `parentId` for the Site Manager tree, with the `haskids` aggregate
  * unless `aggregation` is false, the `limit` rows after the first `offset` when given. Files join on the content's
- * own site, so their columns are null where the site's file pool is another tenant; the caller fills them with
- * `fileJoinColumns` there.
+ * own site, as legacy's do, so their columns are null where the site's file pool is another site.
  */
 export async function nest(tx: TenantTx, args: NestQuery & { offset?: number; limit?: number }): Promise<NestRow[]> {
   const p = new SqlParams();

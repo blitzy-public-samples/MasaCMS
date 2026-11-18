@@ -312,12 +312,17 @@ function siteDataFor(siteId: string): SiteData {
   };
 }
 
+/** The host and scheme the gateway forwards with a default request: HTTP for `localhost`. */
+export const FORWARDED_HOST_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'x-forwarded-host': SERVER_NAME,
+  'x-forwarded-proto': 'http',
+});
+
 /** Headers of a browser request the gateway forwarded over HTTP for `localhost`, carrying the set-up cookies. */
 function requestHeaders(extra?: HeadersInit): Headers {
   const headers = new Headers({
     'user-agent': CHROME_UA,
-    'x-forwarded-host': SERVER_NAME,
-    'x-forwarded-proto': 'http',
+    ...FORWARDED_HOST_HEADERS,
     cookie: SET_UP_COOKIES.map(([name, value]) => `${name}=${value}`).join('; '),
   });
   for (const [name, value] of new Headers(extra)) headers.set(name, value);

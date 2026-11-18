@@ -75,6 +75,7 @@ import {
   unlockFile,
   unlockNode,
   updateObjectParams,
+  withPooledFiles,
   type ContentBean,
   type ContentSaveSite,
   LegacyContentBean,
@@ -184,6 +185,7 @@ import { buildCustomIconLookup, getNextN, iconClass, type AdminSessionState, typ
 import { muraJsonEncode } from '../../legacy/cfjson.js';
 import { contentUrl, imageUrl } from '../../legacy/content-urls.js';
 import type { ContentRouteContext } from '../index.js';
+import { requestSiteUrls } from '../jsonapi.js';
 import {
   SESSION_EFFECTS_HEADER,
   adminCsrf,
@@ -575,14 +577,11 @@ async function labelsOf(rb: string, javaLocale: string): Promise<AdminLabels> {
 
 // ---- site settings ----
 
-/**
- * The site's content settings from verified registry data: its identity, primary domain and file pool; every setting
- * `content.tenant_registry` does not hold takes the settingsBean default.
- */
-async function siteOf(ctx: ContentRouteContext, actor: Actor): Promise<ContentSaveSite> {
+/** The site's content settings: registry identity, domains and file pool, the request's host and scheme, and MURA_<KEY>; the rest take settingsBean defaults. */
+async function siteOf(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<ContentSaveSite> {
   const entry = await registryEntryForTenant(ctx.domain.db, actor.tenantId);
   const siteId = entry?.siteId ?? actor.siteId;
-  const domain = entry?.domains[0] ?? '';
+  const urls = requestSiteUrls({ siteId, domains: entry?.domains ?? [] }, request, ctx.legacySettings);
   return {
     siteId,
     site: '',
@@ -595,24 +594,15 @@ async function siteOf(ctx: ContentRouteContext, actor: Actor): Promise<ContentSa
     columnCount: 3,
     customTagGroups: '',
     urls: {
-      siteId,
-      scheme: 'http',
-      domain,
-      requestDomain: domain,
-      previewDomain: '',
-      serverPort: '',
-      context: '',
-      siteIdInUrls: false,
-      indexFileInUrls: false,
-      hashUrls: false,
+      ...urls,
+      // admin/Application.cfc sets request.muraPreviewDomain to the browser's host on a site domain, else the site's domain.
+      previewDomain: urls.requestDomain,
       useSSL: false,
       filePoolId: entry?.filePoolId || siteId,
       configFileAssetPath: '',
-      // configBean getSiteAssetPath() is `/<siteDir>` (siteDir `sites`), and an empty `assetPath` setting defaults to it.
-      assetPath: '/sites',
-      siteAssetPath: '/sites',
+      // configBean getSiteAssetPath() is `/<siteDir>`, and an empty `assetPath` setting defaults to it.
+      assetPath: urls.siteAssetPath,
       fileStore: 'fileDir',
-      legacyIndexFileLocation: false,
       urlTitleDelim: '-',
       allowUnicodeInFilenames: false,
       placeholderImgId: '',
@@ -855,7 +845,7 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   rcSet(rc, 'topid', topId);
   rcSet(rc, 'rsTop', rows);
   const moduleId = rcText(rc, 'moduleid');
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const flags = await siteFlagsOf(request, actor);
   rcSet(rc, 'siteConfig', {
     customTagGroups: site.customTagGroups ?? '',
@@ -935,7 +925,7 @@ async function contentEditModel(
   const { rc } = await carchContext(pageParams(request, path), actor, () => storedSession(request));
   const siteId = rcText(rc, 'siteid');
   const contentId = rcText(rc, 'contentid');
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   if (!rcHas(url, 'contenthistid')) {
     // editLive: the node by title (typed for forms and components), else by id, then `setType(rc.type)` with before()'s default.
     const title = rcText(url, 'title');
@@ -1002,7 +992,7 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
     rsData = row === null ? [] : [queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })];
   }
   const stats = await inTenant(ctx, actor, (tx) => ctx.domain.repository.stats.readStats(tx, { contentId, siteId }));
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const flags = await siteFlagsOf(request, actor);
   return {
     ...view,
@@ -1172,7 +1162,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
     const model = await getHistory(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid') });
-    const site = await siteOf(ctx, actor);
+    const site = await siteOf(request, ctx, actor);
     // rc.deletable's parentid read (hist.cfm:96) fails before the version rows print their previews (hist.cfm:177-182).
     const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), ctx.domain.config.purgeDrafts);
     haltVersionPreviews('cArch.hist', model.items);
@@ -1200,7 +1190,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
       const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
       const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
       const model = await getAudit(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid'), contentHistId: request.params.contenthistid });
-      const site = await siteOf(ctx, actor);
+      const site = await siteOf(request, ctx, actor);
       const screen = versionScreenRc(rc, model, site, await siteFlagsOf(request, actor), ctx.domain.config.purgeDrafts);
       haltVersionPreviews('cArch.audit', model.trail);
       const items = model.trail.map((version) => {
@@ -1236,7 +1226,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
   app.post<Version>('/v1/sites/:siteid/content/versions/:contenthistid/object-params', { config }, async (request): Promise<AdminWriteResult> => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
-    const saved = await updateObjectParams(ctx.domain, actor, await siteOf(ctx, actor), rc);
+    const saved = await updateObjectParams(ctx.domain, actor, await siteOf(request, ctx, actor), rc);
     if (saved === null) return { saved: false, errors: {}, redirect: null };
     return { saved: true, errors: saved.errors, redirect: null, data: modelValue({ versionBean: Object.fromEntries(saved.entries()) }) as Record<string, unknown> };
   });
@@ -1294,14 +1284,16 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
     const siteId = rcText(rc, 'siteid');
     const contentId = rcText(rc, 'contentid');
-    const site = await siteOf(ctx, actor);
+    const site = await siteOf(request, ctx, actor);
     const node = await getActiveContent(ctx.domain, actor, { contentId, siteId });
     const children = (await getNest(ctx.domain, actor, { parentId: contentId, siteId })).rows;
     const grandchildren = [];
     for (const child of children) grandchildren.push(...(await getNest(ctx.domain, actor, { parentId: child.contentid ?? '', siteId })).rows);
+    // selectmedia.cfm reads the file pool's `tfiles`, so a pooled file keeps its columns here.
+    const nested = await withPooledFiles(ctx.domain, actor, [...children, ...grandchildren]);
     const candidates = [
       ...(node.isNew === 0 ? [{ fileid: node.version.fileid, title: node.version.title, contentid: node.version.contentid, fileext: node.version.fileext }] : []),
-      ...[...children, ...grandchildren].map((row) => ({ fileid: row.fileid, title: row.title, contentid: row.contentid, fileext: row.fileext })),
+      ...nested.map((row) => ({ fileid: row.fileid, title: row.title, contentid: row.contentid, fileext: row.fileext })),
     ];
     const seen = new Set<string>();
     const rsImages = candidates.flatMap((row) => {
@@ -1362,7 +1354,7 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
     const siteId = rcText(rc, 'siteid');
-    const site = await siteOf(ctx, actor);
+    const site = await siteOf(request, ctx, actor);
     const found = await readContent(ctx.domain, actor, { siteId, remoteId: rcRequired(rc, 'remoteid') });
     let contentId: string;
     let errors: Record<string, string> = {};
@@ -1407,7 +1399,7 @@ async function rawRc(request: FastifyRequest, actor: Actor): Promise<Rc> {
 
 /** Renders with the request's render context and identity's tokens for the contexts the view prints. */
 async function renderRaw<T>(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, render: (rctx: AdminRenderContext) => T): Promise<T> {
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   return renderWithTokens(request, await renderBaseOf(request, ctx, actor, site), render);
 }
 
@@ -1451,7 +1443,7 @@ function promptVersionOf(bean: LegacyContentBean, now: Date): DraftPromptVersion
 /** carch.saveQuickEdit (carch.cfc:254-283): one attribute of an Editor's node without drafts; always an empty body. */
 async function runSaveQuickEdit(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const rc = await rawRc(request, actor);
-  await saveQuickEdit(ctx.domain, actor, await siteOf(ctx, actor), { rc, csrfValid: !csrfRejected(request) });
+  await saveQuickEdit(ctx.domain, actor, await siteOf(request, ctx, actor), { rc, csrfValid: !csrfRejected(request) });
   return aborted();
 }
 
@@ -1459,7 +1451,7 @@ async function runSaveQuickEdit(request: FastifyRequest, ctx: ContentRouteContex
 async function runLockFile(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const rc = await rawRc(request, actor);
   if (csrfRejected(request)) return aborted();
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const outcome = await lockFile(ctx.domain, actor, { contentId: rcRequired(rc, 'contentid'), siteId: rcText(rc, 'siteid'), context: site.urls.context, requestId: request.id });
   return outcome.locked ? located(outcome.location) : aborted();
 }
@@ -1481,13 +1473,24 @@ async function runSaveCopyInfo(request: FastifyRequest, _ctx: ContentRouteContex
   return aborted({ copySiteID: effect.copySiteID, copyContentID: effect.copyContentID, copyModuleID: effect.copyModuleID, copyAll: effect.copyAll });
 }
 
+/**
+ * `session.siteID` as admin/Application.cfc:384-397 leaves it: a requested `siteid` (the token's, by the site check)
+ * other than the stored site switches it, before web stores the switch; else the stored site, else the token's.
+ */
+function sessionSiteOf(request: FastifyRequest, state: StoredAdminState, actor: Actor): string {
+  const requested = rcText(paramsOf(request), 'siteid');
+  const stored = state.siteid ?? '';
+  if (requested !== '' && !cfEq(requested, stored)) return requested;
+  return stored === '' ? actor.siteId : stored;
+}
+
 /** carch.siteManagerTab (carch.cfc:516-523): the Site Manager tab of the session's site; legacy checks no token. */
 async function runSiteManagerTab(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const rc = await rawRc(request, actor);
   const state = await storedSession(request);
-  const effect = siteManagerTab({ siteId: state.siteid ?? actor.siteId, tab: rcRequired(rc, 'tab') });
+  const effect = siteManagerTab({ siteId: sessionSiteOf(request, state, actor), tab: rcRequired(rc, 'tab') });
   if (effect.kind !== 'flatViewArgs') throw new TypeError('siteManagerTab answered no tab');
-  const base = await renderBaseOf(request, ctx, actor, await siteOf(ctx, actor));
+  const base = await renderBaseOf(request, ctx, actor, await siteOf(request, ctx, actor));
   return rendered(renderSiteManagerTab(effect.tab, { session: { ...base.session, siteId: effect.siteId } }));
 }
 
@@ -1495,7 +1498,7 @@ async function runSiteManagerTab(request: FastifyRequest, ctx: ContentRouteConte
 async function runApprovalAction(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const rc = await rawRc(request, actor);
   const input = { requestId: rcRequired(rc, 'requestID'), action: rcRequired(rc, 'action'), comment: rcRequired(rc, 'comment') };
-  const result = await approvalAction(ctx.domain, actor, await siteOf(ctx, actor), input);
+  const result = await approvalAction(ctx.domain, actor, await siteOf(request, ctx, actor), input);
   return rendered(renderApprovalActionJson({ contenthistid: result.value.contenthistid, previewUrl: result.value.previewurl }));
 }
 
@@ -1510,7 +1513,7 @@ async function runGetImageSizeUrl(request: FastifyRequest, ctx: ContentRouteCont
   const rc = await rawRc(request, actor);
   const fileId = rcRequired(rc, 'fileid');
   const size = rcRequired(rc, 'size');
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   // The file sits where the site's `filePoolID` places it.
   const [file] = fileId === '' ? [] : await withPoolTenant(ctx.domain.db, actor.tenantId, 'file', (tx) => ctx.domain.repository.content.fileJoinColumns(tx, [fileId]));
   return rendered(renderImageSizeUrlJson(imageUrl(site.urls, { fileId, size, fileExtOf: () => file?.fileext ?? '' })));
@@ -1520,7 +1523,7 @@ async function runGetImageSizeUrl(request: FastifyRequest, ctx: ContentRouteCont
 async function runDownloadData(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchDownloadResult> {
   const rc = await rawRc(request, actor);
   const state = await storedSession(request);
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const csv = await downloadData(ctx.domain, actor, rc, { link: attachmentLink(site), locale: state.locale ?? 'en_US' });
   return { status: 200, contentType: DOWNLOAD_CONTENT_TYPE, body: csv.body, headers: { 'content-disposition': `attachment;filename=${csv.fileName}`, expires: '0' } };
 }
@@ -1532,7 +1535,7 @@ async function runLoadDiff(request: FastifyRequest, ctx: ContentRouteContext, ac
   const now = ctx.clock.now();
   const v1 = diffVersionOf(await legacyVersion(ctx, actor, rcRequired(rc, 'contenthistid1'), siteId), now);
   const v2 = diffVersionOf(await legacyVersion(ctx, actor, rcRequired(rc, 'contenthistid2'), siteId), now);
-  const base = await renderBaseOf(request, ctx, actor, await siteOf(ctx, actor));
+  const base = await renderBaseOf(request, ctx, actor, await siteOf(request, ctx, actor));
   return rendered(renderLoadDiff(v1, v2, base));
 }
 
@@ -1726,7 +1729,7 @@ async function runLoadSiteManager(request: FastifyRequest, ctx: ContentRouteCont
   rcSet(rc, 'topid', topId);
   const rsTop = rows[0];
   if (rsTop === undefined) throw new UndefinedLegacyElementError(`The tree of ${topId} has no root`);
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const base = await renderBaseOf(request, ctx, actor, site);
   const memberships = await membershipsOf(request, ctx, actor);
   const crumbs = await getCrumbList(ctx.domain, actor, { contentId: topId, siteId });
@@ -1763,7 +1766,7 @@ function runSiteSection(refresh: boolean): (request: FastifyRequest, ctx: Conten
     rcParam(rc, 'sorted', false);
     const siteId = rcText(rc, 'siteid');
     const sectionId = rcRequired(rc, 'contentid');
-    const site = await siteOf(ctx, actor);
+    const site = await siteOf(request, ctx, actor);
     const base = await renderBaseOf(request, ctx, actor, site);
     const closing = !refresh && cfListToArray(base.session.openSectionList).includes(sectionId);
     const sortBy = rcText(rc, 'sortby');
@@ -2097,7 +2100,7 @@ async function runLoadSiteFlat(request: FastifyRequest, ctx: ContentRouteContext
   const rc = await rawRc(request, actor);
   const event = normalizeSiteFlatEvent(siteFlatEventOf(rc));
   const siteId = eventText(event, 'siteid');
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const base = await renderBaseOf(request, ctx, actor, site);
   const powerUser = await isPowerUser(request, ctx, actor);
   const subtypes = await subtypesOf(ctx, actor, base.session.siteId, true);
@@ -2681,7 +2684,7 @@ async function runLoadClass(request: FastifyRequest, ctx: ContentRouteContext, a
   for (const [name, value] of [['layoutmanager', 'false'], ['contentid', ''], ['parentid', ''], ['contenthistid', ''], ['objectid', '']] as const) rcParam(rc, name, value);
   const siteId = rcText(rc, 'siteid');
   const classid = rcRequired(rc, 'classid');
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   const model: LoadClassModel = {
     classid,
     subclassid: rcText(rc, 'subclassid'),
@@ -2950,7 +2953,7 @@ function multiFileUploadResult(request: FastifyRequest, item: Record<string, unk
 async function runUpdate(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const { rc } = await carchContext(paramsOf(request), actor, () => storedSession(request));
   const state = await storedSession(request);
-  const site = await siteOf(ctx, actor);
+  const site = await siteOf(request, ctx, actor);
   // update.cfm's isDefined("url.qqfile") reads the url scope the start-up scan left.
   const qqfile = legacyScopesOf(request).url.entries.some(([key]) => key.toLowerCase() === 'qqfile');
   const multiFileUpload = muraValue(state, 'multifileupload');

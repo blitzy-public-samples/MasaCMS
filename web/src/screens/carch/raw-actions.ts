@@ -33,7 +33,7 @@ const RAW_ACTION_MODES = {
   loadsitesection: 'json',
   loadtagarray: 'json',
   refreshsitesection: 'fragment',
-  // Its `session.flatViewArgs` write is state strategies-content keeps; no web session value comes back to apply.
+  // Its `session.flatViewArgs` write comes back as a session effect, which the relay applies and the handler persists.
   sitemanagertab: 'json',
   siteparents: 'fragment',
   statusmodal: 'fragment',

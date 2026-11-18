@@ -14,7 +14,7 @@ import {
   type ScreenRequestBody,
 } from '@/screens/registry';
 import { CONTENT_HIST_IDS, CONTENT_IDS } from '../../fixtures/strategies-content/carch';
-import { anonymousRequest, siteAdminRequest } from '../../helpers/admin-request';
+import { FORWARDED_HOST_HEADERS, anonymousRequest, siteAdminRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
@@ -66,6 +66,8 @@ interface WriteCase {
   readonly path: ServicePath;
   /** Sent beside the form by a raw relay; the object-params write sends none. */
   readonly query?: Readonly<Record<string, string>>;
+  /** The request's forwarded host and scheme, which a raw relay passes on; the object-params write sends none. */
+  readonly headers?: Readonly<Record<string, string>>;
   readonly reply: FakeReply;
   readonly answer: RawBody;
 }
@@ -74,6 +76,7 @@ const relayedPost = (action: string, fields: Readonly<Record<string, string>>): 
   fields: { ...fields, ...CSRF_FIELDS },
   path: rawPath(action),
   query: { siteid: SITE },
+  headers: FORWARDED_HOST_HEADERS,
   reply: ABORT_REPLY,
   answer: ABORT_ANSWER,
 });
@@ -219,12 +222,19 @@ describe('carch inline write registration', () => {
 describe('carch inline writes', () => {
   it.each(WRITES)(
     'posts carch.%s for %s as received and answers with the service response',
-    async (action, _label, { fields, path, query, reply, answer }: WriteCase) => {
+    async (action, _label, { fields, path, query, headers, reply, answer }: WriteCase) => {
       const ctx = contextOf(action, fields, { routes: { [routeKey('POST', SERVICE, path)]: reply } });
       await expect(answerOf(definition(action), ctx)).resolves.toEqual(answer);
       // The form is the rc as carch before() leaves it; the request carried no csrf headers, so none are sent.
       expect(ctx.gateway.calls).toEqual([
-        { service: SERVICE, method: 'POST', path, ...(query === undefined ? {} : { query }), form: { ...ctx.req.rc } },
+        {
+          service: SERVICE,
+          method: 'POST',
+          path,
+          ...(query === undefined ? {} : { query }),
+          form: { ...ctx.req.rc },
+          ...(headers === undefined ? {} : { headers }),
+        },
       ]);
       expect(ctx.gateway.calls[0]?.form).toMatchObject(fields);
     },
@@ -236,7 +246,7 @@ describe('carch inline writes', () => {
     const ctx = contextOf(action, fields, { routes, post: false });
     await expect(answerOf(definition(action), ctx)).resolves.toEqual(ABORT_ANSWER);
     expect(ctx.gateway.calls).toEqual([
-      { service: SERVICE, method: 'GET', path: rawPath(action), query: { ...ctx.req.rc } },
+      { service: SERVICE, method: 'GET', path: rawPath(action), query: { ...ctx.req.rc }, headers: FORWARDED_HOST_HEADERS },
     ]);
     expect(ctx.gateway.calls[0]?.query).toMatchObject({ ...fields, siteid: SITE });
   });

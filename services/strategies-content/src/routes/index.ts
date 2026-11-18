@@ -21,7 +21,7 @@ import { FEED_PATHS, registerFeedRoutes } from './feed.js';
 import { registerFileRoutes } from './files.js';
 import { registerContentLinksRoutes } from './internal-content-links.js';
 import { registerFileLookupRoutes } from './internal-file-lookup.js';
-import { JSON_API_PREFIXES, jsonApiLegacySettings, registerJsonApiRoutes } from './jsonapi.js';
+import { JSON_API_PREFIXES, jsonApiLegacySettings, registerJsonApiRoutes, type JsonApiLegacySettings } from './jsonapi.js';
 import { registerMigrationObjectRoutes } from './migration-objects.js';
 import { registerRaterRoutes } from './rater.js';
 import { RENDER_PREFIXES, registerRenderRoutes } from './render.js';
@@ -66,6 +66,8 @@ export interface ContentRouteContext {
   taskPort: TaskPort;
   env: ContentEnv;
   clock: Clock;
+  /** The configBean values of MURA_<KEY>, which the parsed service env does not carry. */
+  legacySettings: JsonApiLegacySettings;
   actorFor(request: FastifyRequest): Promise<Actor>;
 }
 
@@ -119,9 +121,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
     return actor;
   };
-  const ctx: ContentRouteContext = { domain, storage, taskPort, env, clock, actorFor };
   // The configBean values of MURA_<KEY>, which the parsed service env does not carry.
   const legacySettings = jsonApiLegacySettings(process.env);
+  const ctx: ContentRouteContext = { domain, storage, taskPort, env, clock, legacySettings, actorFor };
 
   registerMigrationObjectRoutes(app, ctx);
   registerFileRoutes(app, ctx);

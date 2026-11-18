@@ -700,6 +700,21 @@ describe('getNest and getPageCount', () => {
     expect(params.slice(2)).toEqual([10, 10]);
   });
 
+  it("getNest leaves a pooled file child's columns null, reading no file-pool tenant, as legacy's site-scoped file join does", async () => {
+    const page = await getNest(deps, S2, { parentId: C.root, siteId: SITE });
+    expect(page.rows.find((row) => row.contentid === C.fileNode)).toMatchObject({
+      type: 'File',
+      fileid: IDS.files.pdf,
+      fileext: null,
+      filesize: null,
+      contenttype: null,
+      contentsubtype: null,
+      assocfilename: null,
+    });
+    expect(statements(FILE_JOIN)).toEqual([]);
+    expect(db.statements.filter((statement) => statement.tenantId === TENANT_UMBRELLA.tenantId)).toEqual([]);
+  });
+
   it('getNest orders by a listed sortBy and direction', async () => {
     await getNest(deps, S2, { ...SECTION, sortBy: 'title', sortDirection: 'desc' });
     expect(statementOf(NEST_SELECT).sql).toContain(' ORDER BY lower(tcontent.title) DESC NULLS LAST, min(tcontent.tcontent_id) ASC');

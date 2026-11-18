@@ -17,7 +17,7 @@ import {
   loadsitemanagerDecoded,
   loadsitemanagerRelay,
 } from '../../fixtures/strategies-content/raw';
-import { siteAdminRequest } from '../../helpers/admin-request';
+import { FORWARDED_HOST_HEADERS, siteAdminRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
@@ -118,6 +118,7 @@ describe('carch raw actions', () => {
         method: 'GET',
         path: rawPath('loaddiff'),
         query: expect.objectContaining({ ...rc, siteid: SITE }),
+        headers: FORWARDED_HOST_HEADERS,
       },
     ]);
   });
@@ -166,6 +167,7 @@ describe('carch raw actions', () => {
         path: rawPath('approvalaction'),
         query: { siteid: SITE },
         form: expect.objectContaining(fields),
+        headers: FORWARDED_HOST_HEADERS,
       },
     ]);
     for (const name of CSRF_NAMES) expect(ctx.gateway.calls[0]?.form?.[name]).toBe(fields[name]);

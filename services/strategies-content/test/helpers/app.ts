@@ -90,6 +90,7 @@ import { registerRaterRoutes } from '../../src/routes/rater.js';
 import { registerFileRoutes } from '../../src/routes/files.js';
 import { registerContentLinksRoutes } from '../../src/routes/internal-content-links.js';
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
+import { jsonApiLegacySettings } from '../../src/routes/jsonapi.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.js';
 import { registerInterestGroupRoutes } from '../../src/routes/v1/interest-groups.js';
@@ -101,6 +102,9 @@ export const SERVICE = OWNER;
 
 /** Clock of every test app: the shared business date at noon UTC. */
 export const TEST_CLOCK: Clock = businessClock();
+
+/** The deployment's MURA_<KEY> settings: the settings template's, with site ids and the index file out of URLs. */
+export const DEPLOYMENT_SETTINGS = jsonApiLegacySettings({ MURA_SITEIDINURLS: 'false', MURA_INDEXFILEINURLS: 'false' });
 
 /** Transaction id every changelog write and snapshot horizon of the recording pool reports. */
 export const FAKE_XID = '1000';

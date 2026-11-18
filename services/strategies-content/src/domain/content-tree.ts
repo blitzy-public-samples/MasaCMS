@@ -84,14 +84,14 @@ export interface ItemRef {
   siteId: string;
 }
 
-// The `tfiles` columns the version and tree reads left-join on `fileid` alone.
+// The `tfiles` columns the version and kids reads left-join on `fileid` alone.
 const FILE_COLUMNS = ['filesize', 'fileext', 'contenttype', 'contentsubtype', 'assocfilename'] as const;
 
 /** A row carrying the `tfiles` columns of its `fileid`. */
 type FileJoined = { fileid: string | null; filesize: FileRow['filesize'] | null; fileext: string | null };
 
 /** `rows` with the file columns filled in the file-pool tenant where the site's files live in another tenant. */
-async function withPooledFiles<R extends FileJoined>(deps: DomainDeps, actor: Actor, rows: R[]): Promise<R[]> {
+export async function withPooledFiles<R extends FileJoined>(deps: DomainDeps, actor: Actor, rows: R[]): Promise<R[]> {
   const unjoined = (row: R): boolean => row.fileid !== null && row.fileid !== '' && row.filesize === null && row.fileext === null;
   const fileIds = [...new Set(rows.filter(unjoined).map((row) => row.fileid as string))];
   if (fileIds.length === 0) {
@@ -558,20 +558,19 @@ export interface NestArgs extends RowWindow {
   sortDirection?: string;
 }
 
-/** contentManager.getNest [contentManager.cfc:246-256]: the active children of `parentId` for the Site Manager tree, windowed in SQL. */
+/** contentManager.getNest [contentManager.cfc:246-256]: the active children of `parentId` for the Site Manager tree, windowed in SQL, files joined in the content's own site. */
 export async function getNest(deps: DomainDeps, actor: Actor, args: NestArgs): Promise<TreePage<NestRow>> {
   const { from, maxRows } = windowBounds(args);
   const query = { parentId: args.parentId, siteId: args.siteId, sortBy: args.sortBy ?? 'orderno', sortDirection: args.sortDirection ?? 'asc' };
   // A bound past Number.MAX_SAFE_INTEGER selects the rows that bound does, and would not bind as a bigint.
   const offset = Math.min(from, Number.MAX_SAFE_INTEGER);
   const limit = maxRows < 0 ? undefined : Math.min(maxRows, Number.MAX_SAFE_INTEGER);
-  const page = await withTenant(deps.db, actor.tenantId, async (tx) => {
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
     const rows = await deps.repository.content.nest(tx, { ...query, offset, limit });
     // A page short of its cap ends the query, unless it is empty after row one.
     const ended = (limit === undefined || rows.length < limit) && (rows.length > 0 || from === 0);
     return { rows, recordCount: ended ? from + rows.length : await deps.repository.content.nestCount(tx, query) };
   });
-  return { rows: await withPooledFiles(deps, actor, page.rows), recordCount: page.recordCount };
 }
 
 /** contentManager.getPageCount [contentManager.cfc:806-813]: `rsPageCount.counter`, the site's active pages, folders, files, calendars and galleries. */

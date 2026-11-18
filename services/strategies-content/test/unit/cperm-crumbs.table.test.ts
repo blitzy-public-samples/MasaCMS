@@ -25,7 +25,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, registerCarchRoutes } from '../../src/routes/v1/carch.js';
-import { SITE_CONFIG_FLAGS_PATH, siteConfigFlagsAnswer } from '../helpers/app.js';
+import { DEPLOYMENT_SETTINGS, SITE_CONFIG_FLAGS_PATH, siteConfigFlagsAnswer } from '../helpers/app.js';
 
 type Row = Record<string, unknown>;
 
@@ -133,8 +133,9 @@ describe.skipIf(!(await pgAvailable()))('cperm crumbs of a node whose stored his
     const ctx = {
       domain: { db: handle.app, repository: createContentRepository({ clock: CLOCK, schema: handle.schema }), clock: CLOCK, config: CONTENT_CONFIG_DEFAULTS },
       clock: CLOCK,
+      legacySettings: DEPLOYMENT_SETTINGS,
       actorFor: async (request: FastifyRequest) => actorFromClaims(request.opt2Auth.user, 'Admin User'),
-    } as Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'> as ContentRouteContext;
+    } as Pick<ContentRouteContext, 'domain' | 'clock' | 'legacySettings' | 'actorFor'> as ContentRouteContext;
     await registerCarchRoutes(app, ctx);
     await app.ready();
     // identity's admin session store, which carch before() reads for the history screen, and programs-sites' site flags.
