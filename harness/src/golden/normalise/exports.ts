@@ -98,6 +98,42 @@ const KIND_BY_MEDIA_TYPE: ReadonlyMap<string, ExportKind> = new Map([
 /** Levels of archives nested in a ZIP download that are read as archives; one nested deeper is a file by its digest. */
 export const ZIP_NESTING_LIMIT = 3;
 
+/** Merged cells an XLSX body may declare across its worksheets; exceljs creates each one on load. */
+export const XLSX_MERGED_CELL_LIMIT = 100_000;
+
+/** Merged ranges an XLSX body may declare across its worksheets; exceljs checks each against every earlier one. */
+export const XLSX_MERGED_RANGE_LIMIT = 2_000;
+
+// Excel's last row: exceljs bounds columns itself but not rows.
+const XLSX_LAST_ROW = 1_048_576;
+
+/** A range's bounds as exceljs decodes them, each at least 1. */
+interface ExcelRangeBounds {
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
+/** The parts exceljs parsed from a workbook; each worksheet's `mergeCells` are the refs it merges next. */
+interface ParsedWorkbook {
+  worksheets: { mergeCells?: readonly (string | undefined)[] | null }[];
+}
+
+/** exceljs's XLSX reader: `load` parses every part, calls `reconcile`, then builds the workbook from the model. */
+interface XlsxReader {
+  load(data: ArrayBuffer): Promise<ExcelJS.Workbook>;
+  reconcile(model: ParsedWorkbook, options: unknown): void;
+}
+
+// exceljs's own range decoder and XLSX reader (it has no exports map), so merges are read as its load reads them.
+const ExcelRange = createRequire(import.meta.url)('exceljs/lib/doc/range.js') as new (
+  ref: string | undefined,
+) => ExcelRangeBounds;
+const ExcelXlsx = createRequire(import.meta.url)('exceljs/lib/xlsx/xlsx.js') as new (
+  workbook: ExcelJS.Workbook,
+) => XlsxReader;
+
 const ZIP_NAME = /\.zip$/i;
 const NESTED_ENTRY_SEPARATOR = '!/';
 
@@ -213,11 +249,37 @@ function sheetRows(sheet: ExcelJS.Worksheet): XlsxCell[][] {
   return rows;
 }
 
+/** Cells exceljs creates to merge `ref`, Infinity past Excel's last row; throws as its load does for a bad ref. */
+function mergedCells(ref: string | undefined): number {
+  const range = new ExcelRange(ref);
+  if (range.bottom > XLSX_LAST_ROW) return Infinity;
+  return (range.bottom - range.top + 1) * (range.right - range.left + 1);
+}
+
+/** exceljs's XLSX reader, throwing RangeError before it merges more ranges or cells than the limits allow. */
+class MergeBoundedXlsx extends ExcelXlsx {
+  override reconcile(model: ParsedWorkbook, options: unknown): void {
+    super.reconcile(model, options);
+    let ranges = 0;
+    let cells = 0;
+    for (const ref of model.worksheets.flatMap((sheet) => sheet.mergeCells ?? [])) {
+      ranges += 1;
+      cells += mergedCells(ref);
+      // Negated, so a NaN count fails the bound too.
+      if (!(ranges <= XLSX_MERGED_RANGE_LIMIT && cells <= XLSX_MERGED_CELL_LIMIT)) {
+        throw new RangeError(
+          `XLSX merges more than ${XLSX_MERGED_RANGE_LIMIT} ranges or ${XLSX_MERGED_CELL_LIMIT} cells`,
+        );
+      }
+    }
+  }
+}
+
 /** XLSX `bytes` as cell values per worksheet; workbook metadata, styles and string storage are not part of it. */
 export async function xlsxModel(bytes: Buffer, state: IdOrdinals, rules: NormaliseRules): Promise<XlsxModel> {
   const workbook = new ExcelJS.Workbook();
   // exceljs declares its input as an ArrayBuffer; JSZip reads either form.
-  await workbook.xlsx.load(Uint8Array.from(bytes).buffer);
+  await new MergeBoundedXlsx(workbook).load(Uint8Array.from(bytes).buffer);
   const compareNames = rules.exports.xlsx.sheetNames === 'compare';
   return {
     kind: 'xlsx',

@@ -299,7 +299,7 @@ describe('programs-sites lookupSiteFeedSettings', () => {
 describe('programs-sites lookupSiteConfigFlags', () => {
   const PATH = '/internal/v1/sites/config-flags:lookup';
   const exchanges: Array<{ req: ServiceRequest; res: ServiceResponse }> = [];
-  const flags: Json = { siteID: SITE_A, hasLockableNodes: 0, hasChangesets: null, dataCollection: 1, hasComments: 1, scaffolding: 1 };
+  const flags: Json = { siteID: SITE_A, hasLockableNodes: 0, hasChangesets: null, dataCollection: 1, hasComments: 1, scaffolding: 1, hasFeedManager: 0 };
   let answer: Awaited<ReturnType<ReturnType<typeof createSitesClient>['configFlags']>>;
 
   beforeAll(async () => {
@@ -325,6 +325,11 @@ describe('programs-sites lookupSiteConfigFlags', () => {
       assertResponseMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: req.method, path: req.path, status: res.status, contentType: 'application/json', body: res.body });
     }
     expect(answer).toEqual([flags]);
+  });
+
+  it('declares the feed-manager flag the cfeed gate reads as a required item field', () => {
+    const body = { items: [Object.fromEntries(Object.entries(flags).filter(([name]) => name !== 'hasFeedManager'))] };
+    expect(() => assertResponseMatchesOpenApi(PROGRAMS_SITES_OPENAPI, { method: 'POST', path: PATH, status: 200, contentType: 'application/json', body })).toThrow();
   });
 });
 

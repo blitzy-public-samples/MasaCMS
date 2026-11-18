@@ -486,7 +486,7 @@ describe('routes over the composed app', () => {
   });
 
   it.each(['', '?feedManager=0', '?hasFeedManager=false&feedmanager=no'])(
-    'decides the cfeed.list gate from the verified roles alone, whatever the query says (%j)',
+    'decides the cfeed.list gate of a feed-manager site from the verified roles, whatever the query says (%j)',
     async (query) => {
       const admitted = await t.app.inject({ method: 'GET', url: `/v1/sites/${SITE}/feeds${query}`, headers: await contentHeaders('site-admin') });
       expect(admitted.statusCode).toBe(200);

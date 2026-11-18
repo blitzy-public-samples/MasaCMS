@@ -1086,7 +1086,7 @@ describe('readFeedSettings', () => {
 
 describe('readConfigFlags', () => {
   const LOOKUP_PATH = '/internal/v1/sites/config-flags:lookup';
-  const STORED = { haslockablenodes: 0, haschangesets: 1, datacollection: 1, hascomments: 1, scaffolding: 1 } as const;
+  const STORED = { haslockablenodes: 0, haschangesets: 1, datacollection: 1, hascomments: 1, scaffolding: 1, feedmanager: 1 } as const;
 
   it('answers one entry per listed id in request order, resolving an empty or unknown id to default as getSite does', async () => {
     const { db, domain, opened, repo } = harness([siteRow('default', STORED), siteRow('tenant-a', STORED), siteRow('tenant-b', STORED)]);
@@ -1103,17 +1103,17 @@ describe('readConfigFlags', () => {
     {
       name: 'the stored flags of tenant-a, scaffolding on',
       row: STORED,
-      expected: { siteID: 'tenant-a', hasLockableNodes: 0, hasChangesets: 1, dataCollection: 1, hasComments: 1, scaffolding: 1 },
+      expected: { siteID: 'tenant-a', hasLockableNodes: 0, hasChangesets: 1, dataCollection: 1, hasComments: 1, scaffolding: 1, hasFeedManager: 1 },
     },
     {
       name: 'every stored flag turned the other way',
-      row: { haslockablenodes: 1, haschangesets: 0, datacollection: 0, hascomments: 0, scaffolding: 0 },
-      expected: { hasLockableNodes: 1, hasChangesets: 0, dataCollection: 0, hasComments: 0, scaffolding: 0 },
+      row: { haslockablenodes: 1, haschangesets: 0, datacollection: 0, hascomments: 0, scaffolding: 0, feedmanager: 0 },
+      expected: { hasLockableNodes: 1, hasChangesets: 0, dataCollection: 0, hasComments: 0, scaffolding: 0, hasFeedManager: 0 },
     },
     {
       name: 'the numeric setters’ defaults and null for the setter-less flags over NULL columns',
-      row: { haslockablenodes: null, haschangesets: null, datacollection: null, hascomments: null, scaffolding: null },
-      expected: { hasLockableNodes: 0, hasChangesets: null, dataCollection: null, hasComments: 1, scaffolding: 1 },
+      row: { haslockablenodes: null, haschangesets: null, datacollection: null, hascomments: null, scaffolding: null, feedmanager: null },
+      expected: { hasLockableNodes: 0, hasChangesets: null, dataCollection: null, hasComments: 1, scaffolding: 1, hasFeedManager: null },
     },
     { name: 'dataCollection 0 while configBean’s is off', row: STORED, dataCollection: false, expected: { dataCollection: 0, hasChangesets: 1 } },
   ])('reads $name', async ({ row, dataCollection, expected }) => {

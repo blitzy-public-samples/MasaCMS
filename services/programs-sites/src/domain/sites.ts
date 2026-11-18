@@ -315,8 +315,9 @@ function flagNumber(value: SiteStoredValue): number | null {
 }
 
 /**
- * The `getValue(<flag>)` answers the admin views test (settingsBean.cfc:360-364,427-433,576-581,1336-1341): the numeric
- * setters keep their defaults over a NULL column, so only hasChangesets and dataCollection can be null.
+ * The `getValue(<flag>)` answers the admin views test (settingsBean.cfc:360-364,427-433,576-581,1336-1341) and the
+ * cfeed gate's getHasFeedManager() (settingsBean.cfc:126,411-418): the numeric setters keep their defaults over a NULL
+ * column, so only hasChangesets, dataCollection and hasFeedManager, which has no such setter, can be null.
  */
 function toConfigFlags(bean: SiteBean, config: LegacyGlobalConfig): SiteConfigFlags {
   return {
@@ -326,6 +327,7 @@ function toConfigFlags(bean: SiteBean, config: LegacyGlobalConfig): SiteConfigFl
     dataCollection: flagNumber(effectiveDataCollection(bean, config)),
     hasComments: cfToNumber(getSiteText(bean, 'hasComments')),
     scaffolding: cfToNumber(getSiteText(bean, 'scaffolding')),
+    hasFeedManager: flagNumber(getSiteValue(bean, 'feedManager')),
   };
 }
 

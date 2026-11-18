@@ -8,6 +8,7 @@ import { createLogger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
   CSRF_CONSUME_PATH,
+  ServiceUnavailableError,
   createService,
   legacyParamsOf,
   loadEnv,
@@ -25,6 +26,7 @@ import { feedItemRemoteId, parseFeedXml, rssChannelItems } from '../../src/legac
 import { adminCsrf, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { cfeedRawActions, registerFeedAdminRoutes, type FeedAdminRouteContext } from '../../src/routes/v1/cfeed.js';
 import { rawSurfaceOf } from '../../src/routes/v1/raw.js';
+import { SITE_CONFIG_FLAGS_PATH, feedManagerFlagsAnswer, type StoredFeedManager } from '../helpers/app.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
@@ -50,6 +52,10 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
   let remote: Awaited<ReturnType<FetchRemote>> | Error = { status: 200, body: rss(PUB_DATE) };
   const fetched: string[] = [];
   const consumed: CsrfConsumeRequest[] = [];
+  /** The site's `tsettings.feedManager` programs-sites answers, or the error its lookup fails with. */
+  let storedFeedManager: StoredFeedManager | Error = 1;
+  /** `<service> <path>` of every service call, in order. */
+  const calls: string[] = [];
 
   const fetchRemote: FetchRemote = async (url) => {
     fetched.push(url);
@@ -106,6 +112,11 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
     }
     await app.ready();
     const request = async (req: ServiceRequest) => {
+      calls.push(`${req.service} ${req.path}`);
+      if (req.service === 'programs-sites' && req.path === SITE_CONFIG_FLAGS_PATH) {
+        if (storedFeedManager instanceof Error) throw storedFeedManager;
+        return feedManagerFlagsAnswer(storedFeedManager)(req);
+      }
       if (req.service !== 'identity' || req.path !== CSRF_CONSUME_PATH) throw new Error(`unexpected call ${req.service} ${req.path}`);
       const consume = req.json as CsrfConsumeRequest;
       consumed.push(consume);
@@ -123,6 +134,8 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
     remote = { status: 200, body: rss(PUB_DATE) };
     fetched.length = 0;
     consumed.length = 0;
+    storedFeedManager = 1;
+    calls.length = 0;
   });
 
   /** Headers of a user of `site` holding `roles`; null is a caller with no user token. */
@@ -181,6 +194,63 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
         const response = await get(target, subject.roles, subject.site);
         expect(response.statusCode, `${target}: ${response.body}`).toBe(expected);
       }
+    });
+
+    describe('on a site whose stored feed manager is off or unreadable', () => {
+      type GateCase = { name: string; method: 'GET' | 'POST'; path: () => string; fields: () => Record<string, string> };
+      const FLAG_LOOKUP = `programs-sites ${SITE_CONFIG_FLAGS_PATH}`;
+      const SPOOF = { hasFeedManager: '1', feedManager: '1' };
+      let feedId = '';
+
+      beforeAll(async () => {
+        feedId = await newFeed('Gated Off', { type: 'Remote', channellink: FEED_URL });
+      });
+
+      /** A cfeed.update deleting the feed with a token identity accepts. */
+      const deleteFields = (): Record<string, string> => ({ siteid: SITE_ID, feedID: feedId, action: 'delete', csrf_token: 'good', csrf_token_expires: '1', ...SPOOF });
+      const cases: readonly GateCase[] = [
+        { name: 'listFeeds', method: 'GET', path: () => `/v1/sites/${SITE_ID}/feeds`, fields: () => SPOOF },
+        { name: 'getFeed', method: 'GET', path: () => `/v1/sites/${SITE_ID}/feeds/${feedId}`, fields: () => SPOOF },
+        { name: 'previewFeedImport', method: 'GET', path: () => `/v1/sites/${SITE_ID}/feeds/${feedId}/import`, fields: () => SPOOF },
+        { name: 'raw loadsite', method: 'GET', path: () => '/v1/raw/cfeed/loadsite', fields: () => ({ siteid: SITE_ID, ...SPOOF }) },
+        { name: 'raw siteparents', method: 'GET', path: () => '/v1/raw/cfeed/siteparents', fields: () => ({ siteid: SITE_ID, ...SPOOF }) },
+        { name: 'raw update GET', method: 'GET', path: () => '/v1/raw/cfeed/update', fields: deleteFields },
+        { name: 'raw update POST', method: 'POST', path: () => '/v1/raw/cfeed/update', fields: deleteFields },
+      ];
+
+      /** The case as a caller holding `roles`: GET fields in the query, POST fields as the form body. */
+      const sendCase = async (gateCase: GateCase, roles: readonly string[] | null, site?: string) => {
+        const fields = new URLSearchParams(gateCase.fields()).toString();
+        if (gateCase.method === 'GET') return get(`${gateCase.path()}?${fields}`, roles, site);
+        return app.inject({
+          method: 'POST',
+          url: `${gateCase.path()}?siteid=${SITE_ID}`,
+          headers: { ...(await headersFor(roles, site)), 'content-type': 'application/x-www-form-urlencoded' },
+          payload: fields,
+        });
+      };
+
+      it.each(([0, null, 'absent'] as const).flatMap((stored) => cases.flatMap((gateCase) => subjects.map((subject) => ({ ...gateCase, stored, subject })))))(
+        '$name refuses $subject.name when programs-sites answers feedManager $stored, consuming no token and reading nothing',
+        async (cell) => {
+          storedFeedManager = cell.stored;
+          const response = await sendCase(cell, cell.subject.roles, cell.subject.site);
+          expect(response.statusCode, response.body).toBe(cell.subject.denied ?? 403);
+          expect(calls.filter((call) => call !== FLAG_LOOKUP)).toEqual([]);
+          expect([consumed, fetched]).toEqual([[], []]);
+          expect(await fx.rows('feed', 'feedid = $1', [feedId])).toHaveLength(1);
+        },
+      );
+
+      it.each(cases)('$name answers the legacy 503 and admits no one when programs-sites cannot answer the flag', async (gateCase) => {
+        storedFeedManager = new ServiceUnavailableError('programs-sites', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+        const response = await sendCase(gateCase, [Roles.s2]);
+        expect(response.statusCode, response.body).toBe(503);
+        contract(response, gateCase.method, gateCase.path());
+        expect(calls).toEqual([FLAG_LOOKUP]);
+        expect([consumed, fetched]).toEqual([[], []]);
+        expect(await fx.rows('feed', 'feedid = $1', [feedId])).toHaveLength(1);
+      });
     });
   });
 

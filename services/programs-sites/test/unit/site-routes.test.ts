@@ -85,6 +85,7 @@ const CONFIG_FLAGS: components['schemas']['SiteConfigFlags'] = {
   dataCollection: 1,
   hasComments: 1,
   scaffolding: 1,
+  hasFeedManager: 1,
 };
 const CONFIG_FLAGS_URL = '/internal/v1/sites/config-flags:lookup';
 const JSON_API_BASE_URL = 'http://localhost/index.cfm/_api/json/v1/tenant-a';

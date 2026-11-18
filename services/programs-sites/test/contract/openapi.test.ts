@@ -750,7 +750,7 @@ const CASES: Record<string, Case[]> = {
       payload: { siteIds: [SITE_B, SITE_A.toUpperCase()] },
       status: 200,
       verify: ({ body }) => {
-        const flags = { hasLockableNodes: 0, hasChangesets: 1, dataCollection: 1, hasComments: 1, scaffolding: 1 };
+        const flags = { hasLockableNodes: 0, hasChangesets: 1, dataCollection: 1, hasComments: 1, scaffolding: 1, hasFeedManager: 1 };
         expect(record(body).items).toEqual([
           { siteID: SITE_B, ...flags },
           { siteID: SITE_A, ...flags },

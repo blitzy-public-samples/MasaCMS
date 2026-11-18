@@ -785,13 +785,14 @@ export const SITE_CONFIG_FLAGS_PATH = '/internal/v1/sites/config-flags:lookup';
 /** A site's `$.siteConfig` flags as programs-sites answers them, without the site id. */
 export type SiteConfigFlagValues = Omit<SiteConfigFlags, 'siteID'>;
 
-/** The flags of a tenant-a site row as the seed stores it: scaffolding on, lockable nodes off. */
+/** The flags of a tenant-a site row as the seed stores it: scaffolding and the feed manager on, lockable nodes off. */
 export const SEEDED_SITE_FLAGS: Readonly<SiteConfigFlagValues> = Object.freeze({
   hasLockableNodes: 0,
   hasChangesets: 1,
   dataCollection: 1,
   hasComments: 1,
   scaffolding: 1,
+  hasFeedManager: 1,
 });
 
 /** programs-sites' answer to the config-flags lookup: `flags` for every listed site, under its id. */
@@ -801,6 +802,16 @@ export function siteConfigFlagsAnswer(flags: Readonly<SiteConfigFlagValues> = SE
     headers: { 'content-type': 'application/json; charset=utf-8' },
     body: { items: (req.json as { siteIds: string[] }).siteIds.map((siteID) => ({ siteID, ...flags })) },
   });
+}
+
+/** A site's stored `tsettings.feedManager`, or `'absent'` for an answer without `hasFeedManager`, as a programs-sites build predating it sends. */
+export type StoredFeedManager = number | null | 'absent';
+
+/** programs-sites' config-flags answer: {@link SEEDED_SITE_FLAGS} with `stored` as the site's feedManager. */
+export function feedManagerFlagsAnswer(stored: StoredFeedManager): ClientHandler {
+  if (stored !== 'absent') return siteConfigFlagsAnswer({ ...SEEDED_SITE_FLAGS, hasFeedManager: stored });
+  const { hasLockableNodes, hasChangesets, dataCollection, hasComments, scaffolding } = SEEDED_SITE_FLAGS;
+  return siteConfigFlagsAnswer({ hasLockableNodes, hasChangesets, dataCollection, hasComments, scaffolding } as SiteConfigFlagValues);
 }
 
 function clientRoute(service: string, method: ServiceRequest['method'], routePath: string, handler: ClientHandler): ClientRoute {

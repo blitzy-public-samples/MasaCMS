@@ -1,9 +1,9 @@
 /** The content admin circuits' gates, `secure()` denials, FW/1 redirects and CSRF wrapper of `routes/v1/access.ts`. */
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, moduleRole } from '@opt2/platform/auth';
-import { adminUrl } from '@opt2/platform/legacy-compat';
+import { adminUrl, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { IDENTITY_SERVICE, legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
 import { actorFromClaims } from '../../src/domain/context.js';
@@ -13,7 +13,6 @@ import {
   ADMIN_NOACCESS_ACTION,
   AdminDenial,
   CIRCUIT_ROUTE_REQUIRES,
-  FEED_MANAGER_FLAG_SOURCE,
   adminCsrf,
   adminDenial,
   adminRedirect,
@@ -22,7 +21,18 @@ import {
   requireCircuitAccess,
   type ContentAdminCircuit,
 } from '../../src/routes/v1/access.js';
-import { buildContentApp, buildTestApp, serviceHeaders, userHeaders, type ContentTestApp, type TestApp } from '../helpers/app.js';
+import {
+  SITE_CONFIG_FLAGS_PATH,
+  buildContentApp,
+  buildTestApp,
+  createClientRecorder,
+  feedManagerFlagsAnswer,
+  serviceHeaders,
+  userHeaders,
+  type ContentTestApp,
+  type StoredFeedManager,
+  type TestApp,
+} from '../helpers/app.js';
 import { CONTENT_SUBJECTS, contentHeaders, type ContentSubject } from '../helpers/tokens.js';
 
 type ContractOperation = Record<string, unknown>;
@@ -70,9 +80,8 @@ describe('route declarations', () => {
     expect(circuitRouteConfig('cchain').opt2.requires).not.toBe(CIRCUIT_ROUTE_REQUIRES.cchain);
   });
 
-  it('re-exports the application gate actions and records the unverified feed-manager flag', () => {
+  it('re-exports the application gate actions', () => {
     expect([ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION]).toEqual(['clogin.logout', 'cMessage.noaccess']);
-    expect(FEED_MANAGER_FLAG_SOURCE).toBe('unavailable');
   });
 });
 
@@ -121,6 +130,8 @@ describe('adminRedirect', () => {
 
 describe('circuit gates and denials', () => {
   let t: ContentTestApp;
+  // The cfeed gate reads programs-sites' seeded flags; the CSRF case reads identity's consume.
+  const client = createClientRecorder();
 
   beforeAll(async () => {
     t = await buildContentApp({
@@ -145,6 +156,7 @@ describe('circuit gates and denials', () => {
         );
       },
     });
+    client.install(t.app);
   });
 
   afterAll(async () => {
@@ -221,6 +233,7 @@ describe('circuit gates and denials', () => {
   });
 
   it('records a refused CSRF token and still runs the handler', async () => {
+    client.csrfValid = false;
     const headers = await userHeaders({ sub: USER, site: SITE, roles: [Roles.siteAdmin] });
     const response = await t.app.inject({ method: 'POST', url: `/v1/sites/${SITE}/csrf`, headers, payload: { chainid: 'C1' } });
     expect([response.statusCode, response.json()]).toEqual([200, { rejected: true }]);
@@ -259,6 +272,8 @@ const readUrl = (read: (typeof CIRCUIT_READS)[number], extraQuery = ''): string 
 
 describe('registered circuit reads', () => {
   let t: TestApp;
+  /** The site's `tsettings.feedManager` programs-sites answers. */
+  let storedFeedManager: StoredFeedManager = 1;
 
   beforeAll(async () => {
     // The carch reads load identity's stored admin state and cnav lists the session's sites; both answer empty.
@@ -269,13 +284,26 @@ describe('registered circuit reads', () => {
           'GET /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: {} }),
           'GET /v1/sessions/current/sites': () => ({ status: 200, headers: {}, body: { sites: [] } }),
         },
+        'programs-sites': {
+          [`POST ${SITE_CONFIG_FLAGS_PATH}`]: (req) => feedManagerFlagsAnswer(storedFeedManager)(req),
+        },
       },
     });
+  });
+
+  afterEach(() => {
+    storedFeedManager = 1;
   });
 
   afterAll(async () => {
     await t.close();
   });
+
+  const feedsRead = (): (typeof CIRCUIT_READS)[number] => {
+    const feeds = CIRCUIT_READS.find(({ circuit }) => circuit === 'cfeed');
+    if (feeds === undefined) throw new TypeError('CIRCUIT_READS has no cfeed read');
+    return feeds;
+  };
 
   it('probes one contract GET of every circuit', () => {
     expect(new Set(CIRCUIT_READS.map(({ circuit }) => circuit))).toEqual(new Set(CIRCUITS));
@@ -302,10 +330,28 @@ describe('registered circuit reads', () => {
     { subject: 'site-admin', flag: '0', status: 200 },
     { subject: 'editor', flag: '1', status: 403 },
   ] as const)('cfeed answers $subject $status whatever feed-manager flag ($flag) the request carries', async ({ subject, flag, status }) => {
-    const feeds = CIRCUIT_READS.find(({ circuit }) => circuit === 'cfeed');
-    if (feeds === undefined) throw new TypeError('CIRCUIT_READS has no cfeed read');
-    const url = readUrl(feeds, `hasFeedManager=${flag}&feedManager=${flag}`);
+    const url = readUrl(feedsRead(), `hasFeedManager=${flag}&feedManager=${flag}`);
     const response = await t.app.inject({ method: 'GET', url, headers: await contentHeaders(subject) });
     expect(response.statusCode, response.body).toBe(status);
+  });
+
+  it.each(
+    ([0, null, 'absent'] as const).flatMap((stored) =>
+      (['site-admin', 's2'] as const).flatMap((subject) => (['1', '0'] as const).map((flag) => ({ stored, subject, flag }))),
+    ),
+  )('cfeed refuses $subject with 403 when programs-sites answers feedManager $stored, whatever flag ($flag) the request carries', async ({ stored, subject, flag }) => {
+    storedFeedManager = stored;
+    const url = readUrl(feedsRead(), `hasFeedManager=${flag}&feedManager=${flag}`);
+    const response = await t.app.inject({ method: 'GET', url, headers: await contentHeaders(subject) });
+    expect(response.statusCode, response.body).toBe(403);
+  });
+
+  it('answers cfeed with the legacy 503 and admits no one when programs-sites cannot answer the flag', async () => {
+    t.client.clear();
+    t.client.failNext('programs-sites');
+    const response = await t.app.inject({ method: 'GET', url: readUrl(feedsRead()), headers: await contentHeaders('s2') });
+    expect(response.statusCode, response.body).toBe(503);
+    expect(response.body).toBe(apiUnavailableResponse().body);
+    expect(t.client.requests.map(({ service, method, path }) => `${service} ${method} ${path}`).at(-1)).toBe(`programs-sites POST ${SITE_CONFIG_FLAGS_PATH}`);
   });
 });

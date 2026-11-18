@@ -9,6 +9,8 @@ import { sha256Hex } from '@opt2/platform/migration-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GoldenConfigError } from '../../../src/golden/errors.js';
 import {
+  XLSX_MERGED_CELL_LIMIT,
+  XLSX_MERGED_RANGE_LIMIT,
   ZIP_NESTING_LIMIT,
   csvModel,
   exportKindFor,
@@ -284,6 +286,42 @@ describe('csvModel key ties', () => {
   });
 });
 
+const MERGE_LIMIT_ERROR = new RangeError(
+  `XLSX merges more than ${XLSX_MERGED_RANGE_LIMIT} ranges or ${XLSX_MERGED_CELL_LIMIT} cells`,
+);
+
+/** A mergeCell element whose ref attribute text is `ref`, written as is. */
+const mergeCell = (ref: string): string => `<mergeCell ref="${ref}"/>`;
+
+/** The export workbook with worksheet n given the mergeCell elements `merges[n]` and XML version `version`. */
+async function withMerges(merges: readonly (readonly string[])[], version = '1.0'): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await workbookBytes(PROPS_A));
+  for (const [n, elements] of merges.entries()) {
+    const name = `xl/worksheets/sheet${n + 1}.xml`;
+    const xml = (await zip.file(name)?.async('string')) ?? '';
+    expect(xml, name).toContain('</sheetData>');
+    const mergeList = `<mergeCells count="${elements.length}">${elements.join('')}</mergeCells>`;
+    const versioned = xml.replace('version="1.0"', `version="${version}"`);
+    zip.file(name, versioned.replace('</sheetData>', `</sheetData>${mergeList}`));
+  }
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+/** The export workbook with part `name` set to its first worksheet's XML as `patch` rewrites it. */
+async function withSheetPart(name: string, patch: (xml: string) => string): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await workbookBytes(PROPS_A));
+  const xml = (await zip.file('xl/worksheets/sheet1.xml')?.async('string')) ?? '';
+  const patched = patch(xml);
+  expect(patched, name).not.toBe(xml);
+  zip.file(name, patched);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+// A whole-sheet mergeCell in a foreign namespace: extension content exceljs skips.
+const FOREIGN_EXT =
+  '<extLst><ext uri="urn:opt2:synthetic:metadata">' +
+  '<mergeCell xmlns="urn:opt2:synthetic:metadata" ref="A1:XFD1048576"/></ext></extLst>';
+
 describe('xlsxModel', () => {
   it('compares cell values per sheet, never workbook metadata or bytes', async () => {
     const a = await workbookBytes(PROPS_A);
@@ -328,6 +366,112 @@ describe('xlsxModel', () => {
     const b = await xlsxModel(await workbookBytes(PROPS_B, 'Theo Brandt'), createIdOrdinals(), rules);
 
     expect(b).not.toStrictEqual(a);
+  });
+
+  it('reads each cell of a merged range as the value of its first cell', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Merged');
+    sheet.addRow(['Region', null, DETAIL_ID]);
+    sheet.addRow(['North', 'South', null]);
+    sheet.mergeCells('A1:B1');
+    sheet.mergeCells('C1:C2');
+
+    const model = await xlsxModel(Buffer.from(await workbook.xlsx.writeBuffer()), createIdOrdinals(), rules);
+
+    expect(model).toStrictEqual({
+      kind: 'xlsx',
+      sheets: [
+        {
+          name: 'Merged',
+          rows: [
+            ['Region', 'Region', '<id:1>'],
+            ['North', 'South', '<id:1>'],
+          ],
+        },
+      ],
+    });
+  });
+
+  it(`reads a workbook at the limits: ${XLSX_MERGED_RANGE_LIMIT} merges, ${XLSX_MERGED_CELL_LIMIT} cells`, async () => {
+    const width = XLSX_MERGED_CELL_LIMIT / XLSX_MERGED_RANGE_LIMIT;
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Limits');
+    for (let r = 1; r <= XLSX_MERGED_RANGE_LIMIT; r += 1) {
+      sheet.getCell(r, 1).value = r;
+      sheet.mergeCells(r, 1, r, width);
+    }
+
+    const model = await xlsxModel(Buffer.from(await workbook.xlsx.writeBuffer()), createIdOrdinals(), rules);
+
+    const rows = Array.from({ length: XLSX_MERGED_RANGE_LIMIT }, (_, r) => Array<number>(width).fill(r + 1));
+    expect(model.sheets).toStrictEqual([{ name: 'Limits', rows }]);
+  });
+
+  const half = XLSX_MERGED_CELL_LIMIT / 2;
+
+  it.each<{ label: string; bytes: () => Promise<Buffer> }>([
+    { label: 'the merged-range-bomb.xlsx fixture', bytes: async () => readFileSync(fixture('merged-range-bomb.xlsx')) },
+    { label: 'a merge of the whole sheet', bytes: () => withMerges([[mergeCell('A1:XFD1048576')]]) },
+    {
+      label: 'merges within the cell limit per sheet but past it across sheets',
+      bytes: () => withMerges([[mergeCell(`A1:A${half}`)], [mergeCell(`A1:A${half + 1}`)]]),
+    },
+    {
+      label: `${XLSX_MERGED_RANGE_LIMIT + 1} two-cell merges`,
+      bytes: () =>
+        withMerges([Array.from({ length: XLSX_MERGED_RANGE_LIMIT + 1 }, (_, r) => mergeCell(`A${r + 1}:B${r + 1}`))]),
+    },
+    { label: 'a 400-digit row', bytes: () => withMerges([[mergeCell(`A1:B${'9'.repeat(400)}`)]]) },
+    { label: 'one row past 2^53', bytes: () => withMerges([[mergeCell('A9007199254740993:B9007199254740993')]]) },
+    { label: 'an entity-encoded ref', bytes: () => withMerges([[mergeCell('A1:XFD&#49;048576')]]) },
+    {
+      label: "a single-quoted ref after an attribute value holding '>'",
+      bytes: () => withMerges([[`<mergeCell note="a>b" ref='A1:XFD1048576'/>`]]),
+    },
+    {
+      label: 'a ref whose line separator XML 1.1 reads as a space',
+      bytes: () => withMerges([[mergeCell('A1\u2028:XFD1048576')]], '1.1'),
+    },
+    {
+      label: 'a merge in a worksheet part workbook.xml does not reference',
+      bytes: () =>
+        withSheetPart('xl/worksheets/sheet9.xml', (xml) =>
+          xml.replace('</sheetData>', `</sheetData><mergeCells count="1">${mergeCell('A1:XFD1048576')}</mergeCells>`),
+        ),
+    },
+  ])('rejects $label before exceljs expands its merges', async ({ bytes }) => {
+    const body = await bytes();
+    const response = recorded(XLSX_TYPE, { bytesBase64: body.toString('base64') }, sha256Hex(body));
+
+    await expect(exportModel(response, createIdOrdinals(), rules)).rejects.toStrictEqual(MERGE_LIMIT_ERROR);
+  });
+
+  it.each([
+    ['a column past XFD', mergeCell('A1:XFE1')],
+    ['no ref', '<mergeCell/>'],
+  ])('rejects a merge with %s as exceljs does', async (_label, element) => {
+    const body = await withMerges([[element]]);
+    const loadError = await new ExcelJS.Workbook().xlsx.load(Uint8Array.from(body).buffer).catch((err: unknown) => err);
+
+    expect(loadError).toBeInstanceOf(Error);
+    await expect(xlsxModel(body, createIdOrdinals(), rules)).rejects.toStrictEqual(loadError);
+  });
+
+  it.each([
+    ['the worksheet', (xml: string) => xml.replace('</worksheet>', `${FOREIGN_EXT}</worksheet>`)],
+    [
+      'a sheet view',
+      (xml: string) =>
+        xml.replace(
+          '<sheetFormatPr',
+          `<sheetViews><sheetView workbookViewId="0">${FOREIGN_EXT}</sheetView></sheetViews><sheetFormatPr`,
+        ),
+    ],
+  ])('reads a merge in a foreign extension of %s as metadata exceljs ignores', async (_label, patch) => {
+    const body = await withSheetPart('xl/worksheets/sheet1.xml', patch);
+    const plain = await xlsxModel(await workbookBytes(PROPS_A), createIdOrdinals(), rules);
+
+    expect(await xlsxModel(body, createIdOrdinals(), rules)).toStrictEqual(plain);
   });
 });
 

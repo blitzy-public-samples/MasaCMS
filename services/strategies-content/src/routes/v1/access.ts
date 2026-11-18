@@ -8,6 +8,7 @@ import type { Actor } from '../../domain/context.js';
 import { feedAccess } from '../../domain/feeds.js';
 import { getModulePerm } from '../../domain/permissions.js';
 import type { components } from '../../generated/openapi.js';
+import { createSitesClient, type SiteConfigFlags } from '../../legacy/sites-client.js';
 import type { ContentRouteContext } from '../index.js';
 
 export { ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
@@ -42,22 +43,37 @@ export const CIRCUIT_ROUTE_REQUIRES: Readonly<Record<GatedContentAdminCircuit, r
   cperm: adminRolesAnd(),
 });
 
-/** Where the cfeed gate reads `tsettings.feedManager`: no verified source holds it here, so only the role part is evaluated. */
-export const FEED_MANAGER_FLAG_SOURCE: 'verified' | 'unavailable' = 'unavailable';
+const siteFlagReads = new WeakMap<FastifyRequest, Promise<SiteConfigFlags>>();
 
-// `content.tenant_registry` carries no feed-manager flag and no request value may stand in for it, so the gate applies
-// legacy's default of 1 (settingsBean.cfc:126); a site set to 0 is the gap FEED_MANAGER_FLAG_SOURCE records.
-const FEED_MANAGER_DEFAULT = Object.freeze({ hasFeedManager: true });
+/** programs-sites' `lookupSiteConfigFlags` answer for the token's site, which is the request's, read once per request. */
+export function siteFlagsOf(request: FastifyRequest, actor: Actor): Promise<SiteConfigFlags> {
+  let read = siteFlagReads.get(request);
+  if (read === undefined) {
+    read = createSitesClient(request.server.opt2.client)
+      .configFlags([actor.siteId])
+      .then(([flags]) => {
+        if (flags === undefined) throw new TypeError(`programs-sites answered no config flags for site '${actor.siteId}'`);
+        return flags;
+      });
+    siteFlagReads.set(request, read);
+  }
+  return read;
+}
 
 // getModulePerm answers true for S2 and the site Admin role, so each "Admin or S2, else both module grants" test of
 // cchangesets.cfc:82-85, ccomments.cfc:94-100 and cform.cfc:78-82 is the module pair alone.
 /** Each circuit's `before()` admission of the verified actor. */
-const CIRCUIT_GATES: Readonly<Record<ContentAdminCircuit, (actor: Actor) => boolean>> = Object.freeze({
+const CIRCUIT_GATES: Readonly<Record<ContentAdminCircuit, (actor: Actor, request: FastifyRequest) => boolean | Promise<boolean>>> = Object.freeze({
   carch: (actor: Actor) => getModulePerm(actor, SITE_MANAGER_MODULE_ID),
   cchangesets: (actor: Actor) => getModulePerm(actor, CHANGESETS_MODULE_ID) && getModulePerm(actor, SITE_MANAGER_MODULE_ID),
   ccomments: (actor: Actor) => getModulePerm(actor, COMMENTS_MODULE_ID) && getModulePerm(actor, SITE_MANAGER_MODULE_ID),
   ccategory: categoryAccess,
-  cfeed: (actor: Actor) => feedAccess(actor, FEED_MANAGER_DEFAULT),
+  // The site's stored feedManager, read before the roles as cfeed.cfc:87 does; programs-sites' 503 propagates.
+  cfeed: async (actor: Actor, request: FastifyRequest) => {
+    const { hasFeedManager } = await siteFlagsOf(request, actor);
+    // Only a stored non-zero number admits; NULL, on which legacy's `!''` errors, and an answer without the flag deny.
+    return feedAccess(actor, { hasFeedManager: typeof hasFeedManager === 'number' && hasFeedManager !== 0 });
+  },
   cchain: chainAccess,
   cform: (actor: Actor) => getModulePerm(actor, SITE_MANAGER_MODULE_ID) && getModulePerm(actor, FORMS_MODULE_ID),
   cnav: () => true,
@@ -75,6 +91,7 @@ export function circuitRouteConfig(circuit: ContentAdminCircuit): { opt2: Opt2Ro
  * The circuit's `before()` gate over verified identities only: the token's site must be `siteId`, then the actor must pass.
  * @returns The actor the handler runs as.
  * @throws AuthDenial 403 for another site; the {@link adminDenial} status when the gate refuses.
+ * @throws ServiceUnavailableError When programs-sites cannot answer the cfeed gate's flag.
  */
 export async function requireCircuitAccess(
   request: FastifyRequest,
@@ -86,7 +103,7 @@ export async function requireCircuitAccess(
   if (claims !== undefined) assertSiteMatches(siteId, claims);
   const actor = await ctx.actorFor(request);
   // AuthDenial's private constructor admits no subclass; thrown as itself, service-kit answers it as the auth hooks do.
-  if (!CIRCUIT_GATES[circuit](actor)) throw adminDenial(request).auth;
+  if (!(await CIRCUIT_GATES[circuit](actor, request))) throw adminDenial(request).auth;
   return actor;
 }
 

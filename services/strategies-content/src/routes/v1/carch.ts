@@ -97,7 +97,7 @@ import {
 } from '../../domain/forms.js';
 import { WddxDate, WddxNumber, type WddxValue } from '../../domain/wddx.js';
 import { FeedBean, feedContent, listFeedNames } from '../../domain/feeds.js';
-import { createSitesClient, type SiteConfigFlags } from '../../legacy/sites-client.js';
+import type { SiteConfigFlags } from '../../legacy/sites-client.js';
 import { UNORDERED_SORT_REASON } from '../../repo/feed-queries.js';
 import type { UploadedFile } from '../../domain/files.js';
 import { getModulePerm, getNodePerm, getNodePerms, getNodePermsInTx, getPerm, getPerms, loadMemberships, setRestriction, type NodeVerdict, type UserMemberships } from '../../domain/permissions.js';
@@ -194,6 +194,7 @@ import {
   circuitRouteConfig,
   csrfRejected,
   requireCircuitAccess,
+  siteFlagsOf,
   type AdminRedirect,
   type AdminWriteResult,
   type SessionEffects,
@@ -613,23 +614,6 @@ async function siteOf(request: FastifyRequest, ctx: ContentRouteContext, actor: 
       directImages: true,
     },
   };
-}
-
-const siteFlagReads = new WeakMap<FastifyRequest, Promise<SiteConfigFlags>>();
-
-/** programs-sites' `$.siteConfig` flags of the token's site, which is the request's, read once per request. */
-function siteFlagsOf(request: FastifyRequest, actor: Actor): Promise<SiteConfigFlags> {
-  let read = siteFlagReads.get(request);
-  if (read === undefined) {
-    read = createSitesClient(request.server.opt2.client)
-      .configFlags([actor.siteId])
-      .then(([flags]) => {
-        if (flags === undefined) throw new TypeError(`programs-sites answered no config flags for site '${actor.siteId}'`);
-        return flags;
-      });
-    siteFlagReads.set(request, read);
-  }
-  return read;
 }
 
 /** A flag as a CFML condition tests it; the null of a NULL column fails there, as `cfif ''` does. */

@@ -1,7 +1,7 @@
 /** Authorisation matrix of every strategies-content route through `app.inject`: declarations, legacy gates, transports, site binding and tenancy. */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import {
   AuthDenial,
@@ -74,9 +74,19 @@ import {
 import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
 import { esapiEncode } from '../../src/legacy/admin-markup.js';
 import type * as RouteRegistry from '../../src/routes/index.js';
-import { CIRCUIT_ROUTE_REQUIRES, FEED_MANAGER_FLAG_SOURCE, adminDenial, type GatedContentAdminCircuit } from '../../src/routes/v1/access.js';
+import { CIRCUIT_ROUTE_REQUIRES, adminDenial, type GatedContentAdminCircuit } from '../../src/routes/v1/access.js';
 import { contentQueues } from '../../src/tasks/port.js';
-import { TEST_CLOCK, buildTestApp, testEnv, type ClientHandlers, type RecordedStatement, type TestApp } from '../helpers/app.js';
+import {
+  SITE_CONFIG_FLAGS_PATH,
+  TEST_CLOCK,
+  buildTestApp,
+  feedManagerFlagsAnswer,
+  testEnv,
+  type ClientHandlers,
+  type RecordedStatement,
+  type StoredFeedManager,
+  type TestApp,
+} from '../helpers/app.js';
 import { IDS, seedMemoryStorage, seedRecordingDb } from '../helpers/seed.js';
 import {
   CONTENT_SUBJECTS,
@@ -168,9 +178,13 @@ const IDENTITY_HANDLERS: ClientHandlers = {
   },
 };
 
-/** programs-sites' answer to the site settings lookup every stored feed reads before its query: each listed site's own. */
+/** programs-sites' stored `tsettings.feedManager` of every site, which its config-flags lookup answers to the cfeed gate. */
+let storedFeedManager: StoredFeedManager = 1;
+
+/** programs-sites' answers: each listed site's own settings to the lookup every stored feed reads, and its config flags. */
 const SITES_HANDLERS: ClientHandlers = {
   'programs-sites': {
+    [`POST ${SITE_CONFIG_FLAGS_PATH}`]: (req) => feedManagerFlagsAnswer(storedFeedManager)(req),
     'POST /internal/v1/sites/feed-settings:lookup': (req) => ({
       status: 200,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1428,13 +1442,26 @@ describe('strategies-content authorisation matrix', () => {
     });
   });
 
-  for (const entry of MATRIX) {
+  const passes = [
+    ...MATRIX.map((entry) => ({ entry, feedManager: true, key: routeKey(entry) })),
+    // The cfeed routes again on a site whose stored feedManager is 0, which cfeed.cfc:87 refuses to every caller.
+    ...MATRIX.filter((entry) => familiesOf(entry)[0]?.family === 'cfeed').map((entry) => ({ entry, feedManager: false, key: `${routeKey(entry)} (feedManager 0)` })),
+  ];
+  for (const { entry, feedManager, key } of passes) {
     const [family] = familiesOf(entry);
-    describe(routeKey(entry), () => {
+    describe(key, () => {
+      if (!feedManager) {
+        beforeAll(() => {
+          storedFeedManager = 0;
+        });
+        afterAll(() => {
+          storedFeedManager = 1;
+        });
+      }
       const cells = SUBJECTS.map((subject) => {
-        const expected = family === undefined ? undefined : expectedOutcome(family, subject);
+        const expected = family === undefined ? undefined : expectedOutcome(family, subject, feedManager);
         const label = expected === undefined ? 'no family' : outcomeLabel(expected);
-        return { title: `${routeKey(entry)} × ${subject.name} → ${label}`, subject, expected };
+        return { title: `${key} × ${subject.name} → ${label}`, subject, expected };
       });
       it.each(cells)('$title', async ({ title, subject, expected }) => {
         if (family === undefined || expected === undefined) throw new Error(`${routeKey(entry)} has no family in the literal table`);
@@ -1573,25 +1600,34 @@ describe('legacy handler gates', () => {
     expect({ status: denial.statusCode, redirect: denial.redirect }).toEqual({ status: sub === undefined || sub === '' ? 401 : 403, redirect });
   });
 
-  // No verified source holds tsettings.feedManager, so no flag-off site exists to probe; the cells run with legacy's default of 1.
-  it('reads tsettings.feedManager from no request value: with no verified source the cfeed gate keeps legacy’s default of 1', () => {
-    expect(FEED_MANAGER_FLAG_SOURCE).toBe('unavailable');
+  afterEach(() => {
+    storedFeedManager = 1;
   });
+
+  const GATE_403: Outcome = Object.freeze({ kind: 'denied-gate', status: 403 });
 
   it.each(
     (
       [
-        ['s2', '0', ALLOWED],
-        ['s2', 'false', ALLOWED],
-        ['m:011+m:000', '0', ALLOWED],
-        ['m:011 only', '1', { kind: 'denied-gate', status: 403 }],
+        [1, 's2', '0', ALLOWED],
+        [1, 's2', 'false', ALLOWED],
+        [1, 'm:011+m:000', '0', ALLOWED],
+        [1, 'm:011 only', '1', GATE_403],
+        [0, 's2', '1', GATE_403],
+        [0, 's2', 'true', GATE_403],
+        [0, 'm:011+m:000', '1', GATE_403],
+        ['absent', 's2', '1', GATE_403],
       ] as const
-    ).map(([name, flag, expected]) => ({ name, flag, expected, label: outcomeLabel(expected) })),
-  )('GET /v1/sites/tenant-a/feeds?hasfeedmanager=$flag × $name → $label, as the roles alone decide', async ({ name, flag, expected }) => {
-    const result = await send(get(`/v1/sites/${SITE_A}/feeds?hasfeedmanager=${flag}&hasFeedManager=${flag}`), await credentialOf(name));
-    expect(outcomeOf(result), describeResult(result)).toEqual(expected);
-    expect(expectedOutcome(familyOf(entryNamed('GET', '/v1/sites/:siteid/feeds')), subjectNamed(name))).toEqual(expected);
-  });
+    ).map(([stored, name, flag, expected]) => ({ stored, name, flag, expected, label: outcomeLabel(expected) })),
+  )(
+    'GET /v1/sites/tenant-a/feeds?hasfeedmanager=$flag × $name when programs-sites answers feedManager $stored → $label, whatever the request says',
+    async ({ stored, name, flag, expected }) => {
+      storedFeedManager = stored;
+      const result = await send(get(`/v1/sites/${SITE_A}/feeds?hasfeedmanager=${flag}&hasFeedManager=${flag}`), await credentialOf(name));
+      expect(outcomeOf(result), describeResult(result)).toEqual(expected);
+      expect(expectedOutcome(familyOf(entryNamed('GET', '/v1/sites/:siteid/feeds')), subjectNamed(name), stored === 1)).toEqual(expected);
+    },
+  );
 });
 
 /** Inbox receipts a request recorded. */
