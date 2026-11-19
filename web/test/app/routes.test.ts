@@ -380,8 +380,9 @@ describe('admin-actions redirect mode', () => {
     expect(location).toMatch(/^\.\/\?muraAction=cUsers\.edituser&fw1pk=\d+$/);
     const preserveKey = location.slice(location.indexOf('fw1pk=') + 'fw1pk='.length);
     const saved = gateway.requests.filter((recorded) => `${recorded.method} ${recorded.path}` === SAVE_ADMIN_STATE);
-    expect(saved).toHaveLength(1);
-    const { flash } = saved[0]?.json as { readonly flash: Readonly<Record<string, Readonly<Record<string, string>>>> };
+    // The set-up's writes, saved before the screen, then the flash.
+    expect(saved.map((recorded) => Object.hasOwn(recorded.json as object, 'flash'))).toEqual([false, true]);
+    const { flash } = saved[1]?.json as { readonly flash: Readonly<Record<string, Readonly<Record<string, string>>>> };
     expect(Object.keys(flash)).toEqual([preserveKey]);
     expect(flash[preserveKey]).toMatchObject({ userid: '', siteid: SITE, username: 'jane_smith' });
     expect(relayed(toService('people'))).toEqual([UPDATE_USER]);
@@ -531,7 +532,9 @@ describe('admin-raw response modes', () => {
     expect(relay[0]?.query).toMatchObject({ siteid: SUBJECTS.siteAdmin.site, tab: '1' });
     expect(relay[0]?.headers.authorization).toBe(request.headers.get('authorization'));
     const saved = gateway.requests.filter((recorded) => `${recorded.method} ${recorded.path}` === SAVE_ADMIN_STATE);
-    expect(saved.map((recorded) => recorded.json)).toEqual([expect.objectContaining({ mura: { flatViewArgs } })]);
+    // The set-up's writes, saved before the relay, then the tab.
+    expect(saved[0]?.json).not.toHaveProperty('mura');
+    expect(saved.slice(1).map((recorded) => recorded.json)).toEqual([expect.objectContaining({ mura: { flatViewArgs } })]);
   });
 
   it('GET cUsers.download answers the people CSV as an attachment', async () => {

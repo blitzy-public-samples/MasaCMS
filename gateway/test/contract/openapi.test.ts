@@ -154,7 +154,7 @@ const IDENTITY_CALLED = [
 ];
 
 /** Migration operations behind the session barrier and the write-window client. */
-const MIGRATION_CALLED = ['windowOpen', 'windowComplete', 'projectionAwait'];
+const MIGRATION_CALLED = ['windowOpen', 'windowComplete', 'orphanArchiveProbe', 'projectionAwait'];
 
 const HTTP_METHODS = ['get', 'head', 'post', 'put', 'patch', 'delete', 'options'] as const;
 const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
@@ -1223,6 +1223,7 @@ describe("the gateway's identity and migration calls against their producer cont
   const identityResults: Partial<Record<IdentityOperationName, unknown>> = {};
   const opened: WindowOpened[] = [];
   let completed: WindowCompleteResult | undefined;
+  let orphan: boolean | undefined;
   let awaitsBefore = 0;
   let windowsBefore = 0;
   let tg: TestGateway;
@@ -1291,6 +1292,8 @@ describe("the gateway's identity and migration calls against their producer cont
     const keyed = await windows.open({ ...open, scope: { keys: { siteid: 'tenant-a' } }, requestId: 'contract-window-keys' });
     opened.push(keyed);
     completed = await windows.complete(keyed.windowId, { forwarded: true, legacyStatus: 200 });
+    tg.migration.setOrphanArchive((filenames) => filenames.includes('about/team'));
+    orphan = await windows.probeOrphanArchive(['about', 'about/team']);
   }, 120_000);
 
   afterAll(async () => {
@@ -1328,6 +1331,11 @@ describe("the gateway's identity and migration calls against their producer cont
     ]);
     expect(windows[1]?.completion).toEqual({ forwarded: true, legacyStatus: 200 });
     expect(completed).toEqual({ state: 'closed' });
+  });
+
+  it("probes for an orphan archive row through orphanArchiveProbe and returns migration's verdict", () => {
+    expect(tg.migration.orphanProbes.map(({ filenames }) => filenames)).toEqual([['about', 'about/team']]);
+    expect(orphan).toBe(true);
   });
 
   it.each([

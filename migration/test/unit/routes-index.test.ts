@@ -23,6 +23,7 @@ import {
   GATES_ROUTES,
   LEGACY_STEP_ROUTES,
   MIGRATION_ROUTES,
+  PROBE_ROUTES,
   PROJECTION_ROUTES,
   SCHEDULER_ROUTES,
   TRANSITION_ROUTES,
@@ -84,8 +85,11 @@ const background = {
 };
 const faults = { set: vi.fn(() => ({ name: 'projector-delay', params: { delayMs: 1 } })), clear: vi.fn(() => true) };
 
-// The context ports the registry binds: authority reads the gateway status, gates read the lease table and the owner gate.
+// The context ports the registry binds: authority reads the gateway status, gates read the lease table and the owner gate,
+// and the orphan archive probe queries the live legacy database.
 const gatewayStatus = vi.fn(() => Promise.resolve({ tableVersion: null, epoch: 1 }));
+const legacyQuery = vi.fn((): Promise<{ recordset: { n: number }[] }> => Promise.resolve({ recordset: [] }));
+const legacy = { live: () => Promise.resolve({ request: () => ({ input() { return this; }, query: legacyQuery }) }) };
 const leaseQuery = vi.fn(() => Promise.resolve({ rows: [] }));
 const ownerGate = vi.fn(() => Promise.resolve({ units: [{ unit: UNIT.id, state: 'open', holderId: null, phase: 'quiet' }] }));
 const catalog = {
@@ -97,7 +101,7 @@ const catalog = {
 };
 const tx = { schema: 'migration', query: leaseQuery } as unknown as MetadataTx;
 const db = { withMetadata: (fn: (t: MetadataTx) => Promise<unknown>) => fn(tx) } as unknown as TenantDb;
-const ctx = { config: CONFIG, gateway: { status: gatewayStatus }, catalog, db, owners: { gate: ownerGate } } as unknown as MigrationContext;
+const ctx = { config: CONFIG, gateway: { status: gatewayStatus }, catalog, db, owners: { gate: ownerGate }, legacy } as unknown as MigrationContext;
 
 const deps: RouteDeps = {
   ctx,
@@ -119,6 +123,7 @@ const ALL_MOCKS: readonly Mock[] = [
   gatewayStatus,
   leaseQuery,
   ownerGate,
+  legacyQuery,
 ];
 
 let app: FastifyInstance;
@@ -160,6 +165,7 @@ describe('registered operations', () => {
   it('concatenates the registrar tables in registration order', () => {
     expect(MIGRATION_ROUTES).toEqual([
       ...WINDOW_ROUTES,
+      ...PROBE_ROUTES,
       ...PROJECTION_ROUTES,
       ...AUTHORITY_ROUTES,
       ...LEGACY_STEP_ROUTES,
@@ -240,6 +246,15 @@ const DISPATCH: readonly DispatchCase[] = [
     caller: 'operator',
     status: 200,
     reached: [windows.resolve],
+  },
+  {
+    operationId: 'orphanArchiveProbe',
+    method: 'POST',
+    url: '/internal/v1/probes/orphan-archive',
+    caller: 'gateway',
+    payload: { filenames: ['about/team'] },
+    status: 200,
+    reached: [legacyQuery],
   },
   {
     operationId: 'projectionAwait',
@@ -353,6 +368,12 @@ describe('dispatch', () => {
   it('binds the projection await budget to the configured default', async () => {
     await app.inject({ method: 'POST', url: '/internal/v1/projection/await', headers: await as('gateway'), payload: { owners: ['people'] } });
     expect(projector.awaitProjection).toHaveBeenCalledWith({ owners: ['people'], timeoutMs: CONFIG.projection.defaultAwaitTimeoutMs });
+  });
+
+  it('binds the orphan archive probe to the live legacy database', async () => {
+    legacyQuery.mockResolvedValueOnce({ recordset: [{ n: 1 }] });
+    const res = await app.inject({ method: 'POST', url: '/internal/v1/probes/orphan-archive', headers: await as('gateway'), payload: { filenames: ['about'] } });
+    expect(res.json()).toEqual({ orphan: true });
   });
 
   it("binds gate reads to the owners client's status operation", async () => {

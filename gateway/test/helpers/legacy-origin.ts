@@ -1,4 +1,4 @@
-// Stand-in for LEGACY_ORIGIN: ColdFusion sessions, the bridge's session.cfm and site.cfm's paths and Version menu behind its assertion guard, and echoed pages.
+// Stand-in for LEGACY_ORIGIN: ColdFusion sessions, the bridge's session.cfm and site.cfm's paths, Version menu and static-path check behind its assertion guard, and echoed pages.
 import { Buffer } from 'node:buffer';
 import type { ServerResponse } from 'node:http';
 import {
@@ -42,7 +42,7 @@ import {
 /** Path of the bridge's session page. */
 export const BRIDGE_SESSION_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
 
-/** Path of the bridge's site page, of which the double serves `op=paths` and `op=versionMenu`. */
+/** Path of the bridge's site page, of which the double serves `op=paths`, `op=versionMenu` and `op=static`. */
 export const BRIDGE_SITE_PATH = '/gateway/legacy-bridge/cfml/site.cfm';
 
 /** `site.cfm?op=versionMenu` as the ACF 2023 oracle answers it, without `server.java`. */
@@ -149,6 +149,14 @@ export interface SitePathsCall {
   request: RecordedRequest;
 }
 
+/** One verified `site.cfm?op=static` call: the path it asked about and the answer. */
+export interface StaticPathCall {
+  path: unknown;
+  status: number;
+  body: unknown;
+  request: RecordedRequest;
+}
+
 /** The default answer to a page request: what reached legacy, as legacy received it. */
 export interface LegacyEcho {
   method: string;
@@ -224,6 +232,12 @@ export type LegacyOrigin = HttpDouble & {
   failSitePaths(status?: number): void;
   /** Programs the answer of `site.cfm?op=versionMenu`; without an argument it answers {@link LEGACY_VERSION_MENU} again. */
   setVersionMenuAnswer(answer?: { status: number; body: object }): void;
+  /** Decoded paths of the regular files the container serves without CFML; `op=static` answers `cfml: false` only for these. */
+  staticFiles: Set<string>;
+  /** Verified `site.cfm?op=static` calls. */
+  staticCalls: StaticPathCall[];
+  /** Makes `op=static` answer `status` with a `serverError` body; without an argument it answers again. */
+  failStatic(status?: number): void;
 };
 
 /** The legacy origin double served in process through its `fetch`, with no socket. */
@@ -785,6 +799,9 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
   let sitePathsFailure: number | undefined;
   let responder: LegacyResponseSpec | LegacyResponder = {};
   let versionMenuAnswer: { status: number; body: object } | undefined;
+  const staticFiles = new Set<string>();
+  const staticCalls: StaticPathCall[] = [];
+  let staticFailure: number | undefined;
   let created = 0;
 
   const sessionById = (legacySessionId: string): LegacySession => {
@@ -909,6 +926,39 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
     sendJson(res, status, { ...body, serverTime });
   };
 
+  /** Answers `site.cfm?op=static` behind the guard as site.cfm does: 403 unless signed for `site.static`, 400 for a method or path it refuses. */
+  const staticPage = (req: RecordedRequest, res: ServerResponse): void => {
+    const header = req.headers[ASSERTION_HEADER];
+    const result = typeof header === 'string' && header !== '' ? verifyBridgeAssertion(header, bridgeKey, nonces, clock.now()) : undefined;
+    if (result?.ok !== true || result.payload.op !== 'site.static' || result.payload.siteId !== queryValue(req, 'siteid')) {
+      sendBytes(res, 403, '');
+      return;
+    }
+    let path: unknown;
+    let status = 200;
+    let body: Record<string, unknown>;
+    try {
+      path = (JSON.parse(req.body.toString('utf8')) as { path?: unknown } | null)?.path;
+    } catch {
+      path = undefined;
+    }
+    if (req.method !== 'POST') {
+      status = 400;
+      body = { error: 'badRequest', message: 'POST required' };
+    } else if (typeof path !== 'string' || !path.startsWith('/') || /[\u0000\\;]|\/\.\.(\/|$)/.test(path)) {
+      status = 400;
+      body = { error: 'badRequest', message: typeof path === 'string' ? 'invalid path' : 'path is required' };
+    } else if (staticFailure !== undefined) {
+      status = staticFailure;
+      body = { error: 'serverError', message: 'java.io.IOException' };
+    } else {
+      body = { cfml: !staticFiles.has(path) };
+    }
+    body.serverTime = formatWireTime(clock.now());
+    staticCalls.push({ path, status, body, request: req });
+    sendJson(res, status, body);
+  };
+
   /** Records the session's pending tokens as used, as a validating legacy action's validateCSRFTokens does. */
   const consumePending = (session: LegacySession): void => {
     const tokens = pendingTokens.get(session.legacySessionId);
@@ -1000,6 +1050,7 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
   const handler: DoubleHandler = async (req, res) => {
     if (req.path === BRIDGE_SESSION_PATH) bridge(req, res);
     else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'versionMenu') versionMenu(req, res);
+    else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'static') staticPage(req, res);
     else if (req.path === BRIDGE_SITE_PATH) sitePage(req, res);
     else if (req.path.startsWith(BRIDGE_PREFIX)) sendBytes(res, 404, '');
     else await page(req, res);
@@ -1029,11 +1080,17 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
     setVersionMenuAnswer(answer) {
       versionMenuAnswer = answer;
     },
+    staticFiles,
+    staticCalls,
+    failStatic(status) {
+      staticFailure = status;
+    },
     // Bridge calls are recorded requests too, so the records are cleared together.
     clearRequests() {
       double.clearRequests();
       bridgeCalls.length = 0;
       sitePathsCalls.length = 0;
+      staticCalls.length = 0;
     },
     close() {
       for (const timer of timers) clearTimeout(timer);

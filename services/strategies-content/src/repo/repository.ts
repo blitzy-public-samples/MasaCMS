@@ -2401,7 +2401,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return deleteWhere<CommentRow>(
         tx,
         COMMENT,
-        (p) => (args.siteId !== undefined ? `isdeleted = 1 AND siteid = ${p.add(args.siteId)}` : 'isdeleted = 1'),
+        (p) => (args.siteId !== undefined ? `isdeleted = 1 AND ${ciIdExpr('siteid', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar` : 'isdeleted = 1'),
         ctx,
       );
     },
@@ -2872,7 +2872,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return updateWhere<CategoryRow>(
         tx,
         CATEGORY,
-        (p) => `${ciLike(p, 'path', `${args.currentPath}%`)} AND siteid = ${p.add(args.siteId)}`,
+        (p) => `${ciLike(p, 'path', `${args.currentPath}%`)} AND ${ciIdExpr('siteid', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar`,
         (row) => ({ path: replaceAllNoCase((row.path ?? '').slice(0, 1000).replace(/^ +| +$/g, ''), args.currentPath, args.newPath) }),
         ctx,
       );
@@ -2887,7 +2887,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return updateWhere<CategoryRow>(
         tx,
         CATEGORY,
-        (p) => `siteid = ${p.add(args.siteId)} AND ${ciLike(p, 'filename', `${args.currentFilename}/%`)}`,
+        (p) => `${ciIdExpr('siteid', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar AND ${ciLike(p, 'filename', `${args.currentFilename}/%`)}`,
         (row) => ({ filename: replaceAllNoCase(row.filename ?? '', `${args.currentFilename}/`, `${args.newFilename}/`) }),
         ctx,
       );
@@ -3062,7 +3062,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         tx,
         [CATEGORY],
         `SELECT categoryid FROM ${name(CATEGORY)} WHERE tenant_id = $1 AND NOT (${idEq(p, 'categoryid', args.categoryId)})` +
-          ` AND ${ciEq(p, 'filename', args.filename)} AND siteid = ${p.add(args.siteId)} LIMIT 1`,
+          ` AND ${ciEq(p, 'filename', args.filename)} AND ${ciIdExpr('siteid', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar LIMIT 1`,
         [tx.tenantId, ...p.values],
       );
       return rows.length > 0;

@@ -220,6 +220,7 @@ const IMPORT_URL = '/internal/v1/scheduler/state:import';
 const SUSPEND_URL = '/internal/v1/background:suspend';
 const RESUME_URL = '/internal/v1/background:resume';
 const LEGACY_STEPS_URL = '/internal/v1/legacy-steps';
+const ORPHAN_ARCHIVE_URL = '/internal/v1/probes/orphan-archive';
 const DELAY_FAULT_URL = '/internal/v1/faults/projector-delay';
 const UNKNOWN_FAULT_URL = '/internal/v1/faults/projector-stall';
 const NO_EFFECTS: Effects = { transactions: 0, statements: 0, serviceCalls: 0, bridgeCalls: 0, legacyReads: 0, faultToggles: 0 };
@@ -339,6 +340,60 @@ const CASES: readonly ResponseCase[] = [
     payload: { step: 'setCursor', ...STEP_RUN, deadlineAt: '2000-01-01T00:00:00.000Z' },
     outbound: [],
     verify: (_body, t) => expect(t.effects().bridgeCalls).toBe(0),
+  },
+  {
+    operationId: 'orphanArchiveProbe',
+    status: 200,
+    title: 'for a filename with an orphan archive row, matched without case',
+    method: 'POST',
+    url: ORPHAN_ARCHIVE_URL,
+    as: GATEWAY,
+    payload: { filenames: ['about', 'About/Team'] },
+    arrange: (t) => {
+      t.state.orphanArchives = ['about/team'];
+    },
+    outbound: [],
+    verify: (body, t) => {
+      expect(body).toEqual({ orphan: true });
+      expect(t.effects().legacyReads).toBe(2);
+    },
+  },
+  {
+    operationId: 'orphanArchiveProbe',
+    status: 200,
+    title: 'for filenames without an orphan archive row',
+    method: 'POST',
+    url: ORPHAN_ARCHIVE_URL,
+    as: OPERATOR,
+    payload: { filenames: ['about'] },
+    outbound: [],
+    verify: (body) => expect(body).toEqual({ orphan: false }),
+  },
+  {
+    operationId: 'orphanArchiveProbe',
+    status: 400,
+    title: 'for an empty filename list',
+    method: 'POST',
+    url: ORPHAN_ARCHIVE_URL,
+    as: GATEWAY,
+    payload: { filenames: [] },
+    outbound: [],
+    verify: (_body, t) => expect(t.effects().legacyReads).toBe(0),
+  },
+  { operationId: 'orphanArchiveProbe', status: 401, title: 'without a credential', method: 'POST', url: ORPHAN_ARCHIVE_URL, as: 'none', payload: { filenames: ['about'] } },
+  { operationId: 'orphanArchiveProbe', status: 403, title: 'for programs-sites', method: 'POST', url: ORPHAN_ARCHIVE_URL, as: PROGRAMS_SITES, payload: { filenames: ['about'] } },
+  {
+    operationId: 'orphanArchiveProbe',
+    status: 503,
+    title: 'when the live legacy database cannot be read',
+    method: 'POST',
+    url: ORPHAN_ARCHIVE_URL,
+    as: GATEWAY,
+    payload: { filenames: ['about'] },
+    arrange: (t) => {
+      t.state.legacyDown = true;
+    },
+    outbound: [],
   },
   {
     operationId: 'projectionAwait',

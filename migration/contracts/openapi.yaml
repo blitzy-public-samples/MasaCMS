@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: migration
   version: 1.0.0
-  description: 'Internal API of the OPT-2 migration service: write windows, projection await, unit authority, legacy steps, gates, transitions, scheduler state, background control and faults.'
+  description: 'Internal API of the OPT-2 migration service: write windows and their request probes, projection await, unit authority, legacy steps, gates, transitions, scheduler state, background control and faults.'
   x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 servers:
   - url: http://127.0.0.1:8102
@@ -147,6 +147,37 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
           description: The window is not import-pending.
+  /internal/v1/probes/orphan-archive:
+    post:
+      operationId: orphanArchiveProbe
+      summary: Reports whether a filename archive row of any listed filename names no active content, which a legacy 404 render deletes.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+        - platform.operator
+      x-opt2-site-check: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrphanArchiveProbeRequest'
+      responses:
+        '200':
+          description: Whether such an orphan row exists in the live legacy database, across every site.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrphanArchiveProbeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The live legacy database could not be read.
   /internal/v1/projection/await:
     post:
       operationId: projectionAwait
@@ -674,6 +705,28 @@ components:
             - closed
             - import-pending
             - unknown
+    OrphanArchiveProbeRequest:
+      type: object
+      required:
+        - filenames
+      additionalProperties: false
+      properties:
+        filenames:
+          type: array
+          description: Candidate `tcontentfilenamearchive.filename` values a request's 404 render may look up.
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: string
+            maxLength: 4000
+    OrphanArchiveProbeResponse:
+      type: object
+      required:
+        - orphan
+      additionalProperties: false
+      properties:
+        orphan:
+          type: boolean
     WriteWindow:
       type: object
       required:

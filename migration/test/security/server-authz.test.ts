@@ -82,12 +82,12 @@ function inject(route: GuardedRoute, headers: Record<string, string>): Promise<{
 }
 
 describe('deny-by-default of the composed migration service', () => {
-  it('guards the sixteen non-public contract operations, every one registered', () => {
+  it('guards the seventeen non-public contract operations, every one registered', () => {
     const registered = collectRouteMatrix(app)
       .routes.filter((route) => route.public !== true)
       // A registrar adds a parameter pattern where a literal colon follows a parameter.
       .map(({ method, url }) => `${method} ${url.replace(/\([^)]*\)/g, '')}`);
-    expect(GUARDED).toHaveLength(16);
+    expect(GUARDED).toHaveLength(17);
     expect(registered.sort()).toEqual(GUARDED.map(({ method, pattern }) => `${method} ${pattern}`).sort());
   });
 

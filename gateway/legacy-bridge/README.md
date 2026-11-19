@@ -12,7 +12,7 @@ This README is the normative contract. The pages in [`cfml/`](cfml/) implement i
 | `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, shared values (carry and export), end |
 | `cfml/jobs.cfm` | Site-monitor steps, cursor, cache purge |
 | `cfml/scheduler.cfm` | ACF scheduled-task control |
-| `cfml/site.cfm` | In-memory site registry list and rebuild; the site beans' first-touch path values; the admin Version menu's server facts |
+| `cfml/site.cfm` | In-memory site registry list and rebuild; the site beans' first-touch path values; the admin Version menu's server facts; whether a static path runs CFML |
 | `cfml/files.cfm` | Legacy file store list, get, put, delete |
 
 Every endpoint is `${LEGACY_ORIGIN}/gateway/legacy-bridge/cfml/<page>.cfm?op=<op>`, or `jobs.cfm?job=<job>`.
@@ -85,7 +85,7 @@ header value  <b64>.<mac>
 
 ## Conventions
 
-- **Methods.** Reads are `GET`. Mutations are `POST`. A body, where an op takes one, is JSON (`Content-Type: application/json`), except `files.cfm?op=put`, which takes a raw `application/octet-stream` body. A wrong method answers 400.
+- **Methods.** Reads are `GET`, except `site.cfm?op=static`, whose path travels in a `POST` body because Masa reads `url.path`. Mutations are `POST`. A body, where an op takes one, is JSON (`Content-Type: application/json`), except `files.cfm?op=put`, which takes a raw `application/octet-stream` body. A wrong method answers 400.
 - **Responses.** `application/json; charset=utf-8`, camelCase keys. Every JSON body carries `serverTime`. The exception is `files.cfm?op=get`, which returns raw bytes.
 - **Time format**, in and out: `yyyy-mm-ddTHH:nn:ss.lll` in ColdFusion mask letters (Java `yyyy-MM-dd'T'HH:mm:ss.SSS`), for example `2026-06-30T12:00:00.000`.
   - Legacy server zone (`TZ` exported by `up.sh`, AAP 0.5.5), no offset.
@@ -302,6 +302,17 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createVersionMenuC
 
 - Response: `{appServerProductName, appServerVersion, dbProductName, dbProductVersion, javaVersion, osName, osVersion, serverTime}`, every value a string or `null` as above.
 
+### `site.cfm?op=static`
+
+Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createStaticFileClient`). Before forwarding a static-family request that carries remember-me cookies while the remember-me login's units are `target`-authoritative, the gateway asks whether the request runs Masa's request start, whose remember-me login writes `tusers.LastLogin` (`core/appcfc/onRequestStart_include.cfm:222-229`); it opens a write window only then (AAP 0.5.4). Assertion op `site.static`, `siteId` `""`.
+
+- POST, JSON body `{path}`: the request path, percent-decoded, starting with `/`. No URL parameter carries it, because Masa reads `url.path`.
+- 400 `badRequest` when `path` is missing or not text, does not start with `/`, or contains a `..` segment, `\`, NUL or `;`.
+- `path` is resolved under the web root, `expandPath("/")`, never through a ColdFusion mapping.
+- `cfml` is `false` only when a regular file exists there whose extension, compared without case, is none ACF executes (`cfm`, `cfml`, `cfc`, `cfr`, `cfswf`): the container then serves the file without CFML. Otherwise it is `true`: the rewrite sends a missing file to `index.cfm`, and a directory or a template runs CFML.
+- Nothing is written.
+- Response: `{cfml, serverTime}`.
+
 ### `files.cfm?op=…`
 
 Caller: the migration service, `migration/src/files/` and the reverse projector (AAP 0.8.1, 0.8.3). Assertion op `files.<op>`, `siteId` equal to `siteid`.
@@ -356,7 +367,7 @@ The rendered server definition, `harness/repro/server.json.template`, also sets 
 | `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, shared values around legacy admin requests, logout |
 | `jobs.cfm` | The migration service on behalf of `services/programs-sites/src/jobs/dispatch.ts`; the reverse projector (`purgeCache`) | Legacy site-monitor steps, cursor hand-off, cache purge |
 | `scheduler.cfm` | `migration/src/scheduler/` and `opt2-ops` | `up.sh`, transitions, drain and resume, `down.sh` |
-| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `paths`, `versionMenu`) | After a `tsettings` batch; gateway start and every second after (`list`); each web page that prints a first-touch path (`paths`); each full-layout web admin page (`versionMenu`) |
+| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `paths`, `versionMenu`, `static`) | After a `tsettings` batch; gateway start and every second after (`list`); each web page that prints a first-touch path (`paths`); each full-layout web admin page (`versionMenu`); each static-family request with remember-me cookies while the remember-me login's units are `target`-authoritative (`static`) |
 | `files.cfm` | `migration/src/files/` and the reverse projector | Snapshot manifest, transfer, reverse projection |
 
 ## Smoke check

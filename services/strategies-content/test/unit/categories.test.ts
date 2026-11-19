@@ -131,6 +131,11 @@ function termTest(term: string, params: readonly unknown[]): (row: Row) => boole
     const [, column, n] = match;
     return (row) => row[column] !== null && sqlEq(row[column], param(n));
   }
+  match = /^\(\((?:\w+\.)?(\w+)::bpchar\) COLLATE "\w+"\."legacy_ci"\) = \$(\d+)::bpchar$/.exec(term);
+  if (match?.[1] !== undefined) {
+    const [, column, n] = match;
+    return (row) => row[column] !== null && sqlEq(row[column], param(n));
+  }
   match = /^(?:\w+\.)?"?(\w+)"? IS NULL$/.exec(term);
   if (match?.[1] !== undefined) {
     const [, column] = match;

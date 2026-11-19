@@ -1,6 +1,6 @@
 <cfscript>
 // Masa's in-memory site registry: lists its site ids and domain bindings, reads the first-touch path getters admin pages print, and rebuilds it from tsettings after a reverse-projected tsettings batch;
-// also reports the server facts the admin Version menu prints.
+// also reports the server facts the admin Version menu prints, and whether a static path runs CFML.
 app = request.opt2BridgeApp;
 try {
 	if (compare(url.op, "versionMenu") == 0) {
@@ -82,6 +82,23 @@ try {
 		if (structKeyExists(url, "initSite")) {
 			body["initThemeAssetPath"] = application.settingsManager.getSite(url.initSite).getThemeAssetPath(complete = 1);
 		}
+	} else if (compare(url.op, "static") == 0) {
+		if (compare(cgi.request_method, "POST") != 0) {
+			app.raise(400, "badRequest", "POST required");
+		}
+		// The path travels in the body: Masa's request start reads url.path.
+		requested = app.readJsonBody();
+		if (!structKeyExists(requested, "path") || !isSimpleValue(requested.path)) {
+			app.raise(400, "badRequest", "path is required");
+		}
+		staticPath = javaCast("string", requested.path);
+		if (compare(left(staticPath, 1), "/") != 0 || staticPath.matches("(?s).*([\x00\\;]|/\.\.(/|$)).*")) {
+			app.raise(400, "badRequest", "invalid path");
+		}
+		// Resolved under the web root the container serves files from, never through a ColdFusion mapping.
+		staticFile = createObject("java", "java.io.File").init(expandPath("/") & mid(staticPath, 2, len(staticPath)));
+		staticExtension = listLen(staticFile.getName(), ".") > 1 ? lcase(listLast(staticFile.getName(), ".")) : "";
+		body = {"cfml": javaCast("boolean", !staticFile.isFile() || listFind("cfm,cfml,cfc,cfr,cfswf", staticExtension) > 0)};
 	} else {
 		if (compare(url.op, "refresh") != 0) {
 			app.raise(404, "notFound", "unknown op");

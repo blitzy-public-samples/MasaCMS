@@ -18,4 +18,4 @@ Generated at: pending-run
 | finance | pending-run | pending-run | pending-run | pending-run | pending-run | pending-run | pending-run |
 | e-signature | pending-run | pending-run | pending-run | pending-run | pending-run | pending-run | pending-run |
 
-Pass: README.md, TRACEABILITY.md and contracts present with the pinned SHA; every inventory item the service carries or owns has a traceability row.
+Pass: README.md, TRACEABILITY.md and contracts present with the pinned SHA; every inventory item the service carries or owns has a traceability row; every cited test name is a test title of its cited file.

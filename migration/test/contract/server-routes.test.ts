@@ -65,9 +65,9 @@ const byRoute = (a: { method: string; url: string }, b: { method: string; url: s
   `${a.url} ${a.method}`.localeCompare(`${b.url} ${b.method}`, 'en');
 
 describe('the composed migration service', () => {
-  it("registers the contract's seventeen operations and no other route", () => {
+  it("registers the contract's eighteen operations and no other route", () => {
     const registered = collectRouteMatrix(app).routes.map(({ method, url }) => `${method} ${withoutPatterns(url)}`);
-    expect(OPERATIONS).toHaveLength(17);
+    expect(OPERATIONS).toHaveLength(18);
     expect(new Set(registered).size).toBe(registered.length);
     expect(registered.sort()).toEqual(OPERATIONS.map(({ method, url }) => `${method} ${url}`).sort());
   });

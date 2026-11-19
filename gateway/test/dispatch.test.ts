@@ -155,7 +155,9 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
       open: async () => ({ windowId: 'W1' }),
       complete: async () => ({ state: 'import-pending' as const }),
       scope: () => ({ table: true as const }),
+      probeOrphanArchive: () => Promise.resolve(false),
     },
+    staticFiles: { isCfml: () => Promise.resolve(true) },
     barrier: {
       declare: async () => undefined,
       record: async () => undefined,

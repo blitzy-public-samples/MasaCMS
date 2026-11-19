@@ -1,4 +1,4 @@
-// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list, path values and Version menu facts.
+// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list, path values, Version menu facts and static-path check.
 import { BRIDGE_ASSERTION_HEADER, isLegacySessionCookie, signBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock, type Dispatcher } from '@opt2/platform/service-kit';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
@@ -129,7 +129,7 @@ export interface BridgeClient {
   end(cookies: LegacyCookies, call: BridgeSessionCall): Promise<BridgeResult<EndResult>>;
 }
 
-/** Construction options of {@link createBridgeClient}, {@link createSiteListClient} and {@link createVersionMenuClient}. */
+/** Construction options of {@link createBridgeClient}, {@link createSiteListClient}, {@link createVersionMenuClient} and {@link createStaticFileClient}. */
 export interface BridgeClientOptions {
   /** `LEGACY_ORIGIN`, addressed directly. */
   legacyOrigin: string;
@@ -505,6 +505,30 @@ function versionMenuOf(body: unknown): LegacyVersionMenu | undefined {
     osVersion: wireTextOrNull(fields.osVersion),
   };
   return Object.values(menu).includes(undefined) ? undefined : (menu as LegacyVersionMenu);
+}
+
+/** The gateway's read, through `site.cfm?op=static`, of whether legacy runs CFML for a static-family request. */
+export interface StaticFileClient {
+  /** `op=static` for a percent-decoded request path: false only when legacy answers it with a file and no CFML; true on any failure. */
+  isCfml(path: string): Promise<boolean>;
+}
+
+/** Creates the signed `site.cfm?op=static` client; it never throws. */
+export function createStaticFileClient(opts: BridgeClientOptions): StaticFileClient {
+  const send = bridgeSender<'static'>(opts, 'site');
+
+  return {
+    async isCfml(path) {
+      try {
+        const { body } = await send<unknown>('static', { method: 'POST', json: { path } }, {}, { userAgent: BOT_USER_AGENT });
+        const cfml = (body as { cfml?: unknown } | null)?.cfml;
+        return typeof cfml === 'boolean' ? cfml : true;
+      } catch {
+        // Without the bridge's answer the request may run Masa's request start, so it counts as one that does.
+        return true;
+      }
+    },
+  };
 }
 
 /** Creates the signed `site.cfm?op=versionMenu` client; a body without the menu's values fails closed. */

@@ -1,0 +1,40 @@
+import { describe, it } from 'vitest';
+import { defineSuite } from '@opt2/platform/testing';
+import type { Row } from './helpers/types.js';
+import { block, sharedCases } from './helpers/shared.js';
+import { ROWS } from './cases';
+import './setup';
+
+const TITLE = 'reads the const title';
+const CASES = { getUser: [{ name: 'answers the stored user' }] };
+const key = 'cusers';
+
+function caseTitle(row: Row): string {
+  return `${row.from} ${row.action} as ${row.role}${row.guard === null ? '' : ` (${row.guard})`} → ${row.status}`;
+}
+
+export const pair = (a: string, b: string): string => `${a} ${b}`;
+export const plural = (word: string): string => `${word}s`;
+
+describe('cited titles', () => {
+  it('stores the row', () => {});
+  it.each([[1, { a: 1 }]])('maps %s to %j', () => {});
+  it.each([['rows']])('keeps 100%% of %s', () => {});
+  it.each([{ name: 'stored' }])('handles $name rows', () => {});
+  it(`admits ${key} only`, () => {});
+  it('stores contentid ""', () => {});
+  it('answers %s as Masa does', () => {});
+  it('can\u2019t save twice', () => {});
+  it(TITLE, () => {});
+  it.each([['refuses a blank name', 1]])('%s', () => {});
+  it.each(ROWS.map((row) => [caseTitle(row)]))('%s', () => {});
+  const rows = Object.entries(CASES).flatMap(([operationId, cases]) => cases.map((c) => ({ operationId, title: c.name })));
+  it.each(rows)('$operationId $title', () => {});
+  for (const name of ['loops over a list']) it(name, () => {});
+});
+
+sharedCases();
+block('legacy block', () => {
+  it('runs inside the block', () => {});
+});
+defineSuite({ describe, it }, 'people tables');

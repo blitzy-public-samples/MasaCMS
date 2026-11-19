@@ -38,6 +38,7 @@ import {
   fakeServiceClient,
   installedSitePaths,
   routeKey,
+  type FakeReply,
   type FakeServiceClient,
   type RecordedRequest,
 } from '../helpers/fake-gateway';
@@ -325,12 +326,25 @@ async function postRequest(path: string, body: BodyInit, contentType: string): P
 
 const savedStates = (): RecordedRequest[] => fake.requests.filter((r) => `${r.method} ${r.path}` === SAVE_ADMIN_STATE);
 
+/** What the set-up saves for the S2 admin on `default` over an empty stored session, before the screen runs. */
+const SETUP_WRITES = {
+  siteid: 'default',
+  userFilesPath: '/sites/default/assets/',
+  topID: '00000000000000000000000000000000001',
+  rb: 'en_US',
+  locale: 'en_US',
+  dateKeyFormat: 'MM/DD/YYYY',
+};
+
+/** The full layout's session-site alert entry, saved after the screen over an empty stored `session.mura`. */
+const LAYOUT_ALERTS_SAVE = { mura: { alerts: { default: {} } }, muraBase: {} };
+
 const loggedLines = (): RequestLogFields[] => vi.mocked(logRequest).mock.calls.map(([fields]) => fields);
 
 type SavedFlash = { flash: Record<string, Record<string, string>>; nextPreserveKey: number };
 
 describe('page mode', () => {
-  it('renders the view in the layout with its CSRF fields and the date key, persisting the session once', async () => {
+  it("renders the view in the layout with its CSRF fields and the date key, persisting the set-up's writes, then the layout's", async () => {
     const response = await handleAdminPage(await getRequest('/admin/cusers/list?muraAction=cusers.list'), LIST);
 
     expect(response.status).toBe(200);
@@ -338,7 +352,7 @@ describe('page mode', () => {
     expect(body).toMatch(/<div id="view">3 \S+<\/div>/);
     expect(body).toContain('value="TOKEN-listcontext"');
     expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
-    expect(savedStates()).toHaveLength(1);
+    expect(savedStates().map(({ json }) => json)).toEqual([SETUP_WRITES, LAYOUT_ALERTS_SAVE]);
     expect(loggedLines()).toEqual([
       expect.objectContaining({
         route: 'page:cusers.list',
@@ -369,7 +383,30 @@ describe('page mode', () => {
 
     expect(response.status).toBe(200);
     expect(savedStates().map(({ json }) => json)).toEqual([
-      expect.objectContaining({ mura: expect.objectContaining({ nextN: '20', objectInstanceId: 'I2' }), muraBase: { nextN: '20' } }),
+      SETUP_WRITES,
+      { mura: expect.objectContaining({ nextN: '20', objectInstanceId: 'I2' }), muraBase: { nextN: '20' } },
+    ]);
+  });
+
+  it("saves the set-up's site switch before the screen's service calls, then only the values the screen added", async () => {
+    const CATEGORIES = routeKey('POST', 'strategies-content', '/v1/sites/default/categories');
+    fake.setRoute(CATEGORIES, { status: 200, body: {} });
+    fake.setRoute(ADMIN_STATE, { status: 200, body: { siteid: 'tenant-a', topID: 'T1', openSectionList: 'S1' } });
+    probe.inspect = async (ctx) => {
+      await ctx.gateway.postForm('strategies-content', '/v1/sites/default/categories', Object.entries(relayContext(ctx.req)));
+      // A request derived as carch's controller derives it, carrying the set-up's values beside its own.
+      ctx.req = { ...ctx.req, sessionWrites: { ...ctx.req.sessionWrites, moduleid: '00000000000000000000000000000000003' } };
+    };
+
+    const target = '/admin/cusers/list?muraAction=cusers.list&siteid=default&compactDisplay=true';
+    const response = await handleAdminPage(await getRequest(target), LIST);
+
+    expect(response.status).toBe(200);
+    const calls = fake.requests.map(({ method, path }) => `${method} ${path}`);
+    expect(calls.filter((key) => key === SAVE_ADMIN_STATE || key === CATEGORIES)).toEqual([SAVE_ADMIN_STATE, CATEGORIES, SAVE_ADMIN_STATE]);
+    expect(savedStates().map(({ json }) => json)).toEqual([
+      expect.objectContaining({ siteid: 'default', userFilesPath: '/sites/default/assets/', topID: SETUP_WRITES.topID, openSectionList: '' }),
+      { moduleid: '00000000000000000000000000000000003' },
     ]);
   });
 
@@ -512,7 +549,7 @@ describe('page mode', () => {
     ]);
   });
 
-  it("logs an unexpected error once and answers legacy's 500 error page, persisting nothing", async () => {
+  it("logs an unexpected error once and answers legacy's 500 error page, persisting only the set-up's writes", async () => {
     probe.renderError = new RangeError('render failed');
 
     const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
@@ -521,7 +558,7 @@ describe('page mode', () => {
     expect(response.statusText).toBe(LEGACY_ERROR_STATUS_TEXT);
     expect(response.headers.get('content-type')).toBe(LEGACY_HTML_CONTENT_TYPE);
     expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
-    expect(savedStates()).toHaveLength(0);
+    expect(savedStates().map(({ json }) => json)).toEqual([SETUP_WRITES]);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
   });
 
@@ -542,7 +579,7 @@ describe('page mode', () => {
     const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
 
     expect([response.status, response.statusText]).toEqual([500, LEGACY_ERROR_STATUS_TEXT]);
-    expect(savedStates().map(({ json }) => json)).toEqual([expect.objectContaining({ moduleid })]);
+    expect(savedStates().map(({ json }) => json)).toEqual([SETUP_WRITES, { moduleid }]);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: fault })]);
   });
 
@@ -552,14 +589,18 @@ describe('page mode', () => {
       return Promise.resolve();
     };
     probe.renderError = new LegacyFaultError('Element X is undefined in RC.');
-    fake.setRoute(SAVE_ADMIN_STATE, { status: 503, body: 'down' });
+    // The set-up's save, before the screen, succeeds.
+    fake.setRoute(SAVE_ADMIN_STATE, (request) =>
+      (request.json as { moduleid?: string }).moduleid === undefined ? { status: 200, body: request.json } : { status: 503, body: 'down' },
+    );
 
     const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
 
     expect(response.status).toBe(503);
+    expect(savedStates()).toHaveLength(2);
   });
 
-  it('persists the writes of a request a screen derived in place of its own, with the set-up writes it carries', async () => {
+  it('persists the writes of a request a screen derived in place of its own, without the set-up writes it carries', async () => {
     const response = await handleAdminPage(await getRequest('/admin/carch/list?muraAction=carch.list'), {
       circuit: 'carch',
       action: 'list',
@@ -567,7 +608,8 @@ describe('page mode', () => {
 
     expect(await response.text()).toContain('<p id="derived">derived</p>');
     expect(savedStates().map(({ json }) => json)).toEqual([
-      expect.objectContaining({ moduleid: '00000000000000000000000000000000003', siteid: 'default' }),
+      SETUP_WRITES,
+      { moduleid: '00000000000000000000000000000000003', ...LAYOUT_ALERTS_SAVE },
     ]);
   });
 });
@@ -598,7 +640,9 @@ describe('page controller redirect', () => {
     expect(response.headers.get('location')).toBe(location);
     expect(lastCookies(response.headers.getSetCookie(), relayed.length)).toEqual(relayed);
     expect(probe.steps).toEqual(['redirect']);
-    expect(savedStates().map((saved) => (saved.json as Partial<SavedFlash>).flash?.['1'])).toEqual([flash]);
+    // The set-up's save carries no flash.
+    const flashes = savedStates().map((saved) => (saved.json as Partial<SavedFlash>).flash?.['1']);
+    expect(flashes).toEqual([undefined, ...(flash === undefined ? [] : [flash])]);
     expect(loggedLines().map(({ statusCode }) => statusCode)).toEqual([302]);
   });
 
@@ -656,8 +700,8 @@ describe('redirect mode', () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('./?muraAction=cUsers.edituser&fw1pk=1');
-    expect(savedStates()).toHaveLength(1);
-    const saved = savedStates()[0]?.json as SavedFlash;
+    expect(savedStates().map(({ json }) => json)).toEqual([SETUP_WRITES, expect.objectContaining({ flash: expect.anything() })]);
+    const saved = savedStates()[1]?.json as SavedFlash;
     expect(saved.nextPreserveKey).toBe(2);
     expect(saved.flash['1']).toMatchObject({ userid: 'U1', siteid: 'default', muraAction: 'core:cusers.update' });
   });
@@ -675,7 +719,7 @@ describe('redirect mode', () => {
     const response = await submitForm('userid=U1&siteid=default');
 
     expect(response.headers.get('location')).toBe('./?muraAction=cUsers.list&siteid=default&fw1pk=11');
-    const saved = savedStates()[0]?.json as SavedFlash;
+    const saved = savedStates()[1]?.json as SavedFlash;
     expect(saved.flash).toEqual({ 5: { b: 'y' }, 11: { userid: 'U1' } });
     expect(saved.nextPreserveKey).toBe(12);
   });
@@ -693,7 +737,7 @@ describe('redirect mode', () => {
     const response = await submitForm('userid=U1&processed=no&siteid=default');
 
     expect(response.headers.get('location')).toBe('./?muraAction=cComments&processed=true&fw1pk=1');
-    const saved = savedStates()[0]?.json as SavedFlash;
+    const saved = savedStates()[1]?.json as SavedFlash;
     expect(saved.flash['1']).toEqual({ processed: 'true', userid: 'U2' });
   });
 
@@ -902,7 +946,9 @@ describe("the layout's session-site alert entry", () => {
     const response = await send();
 
     expect(response.status).toBe(status);
-    expect(savedStates().map(({ json }) => (json as { mura?: unknown }).mura)).toEqual([mura]);
+    const [setup, ...screen] = savedStates().map(({ json }) => json as { mura?: unknown });
+    expect(setup).not.toHaveProperty('mura');
+    expect(screen.map((saved) => saved.mura)).toEqual(mura === undefined ? [] : [mura]);
   });
 });
 
@@ -918,6 +964,12 @@ describe('streamed download', () => {
   const streamed = async (): Promise<Response> =>
     handleAdminRaw(await getRequest('/admin-raw/cusers/streamed'), { circuit: 'cusers', action: 'streamed' });
 
+  /** Identity answers the save of the screen's session value through `onScreenSave`; the set-up's earlier save succeeds. */
+  const routeScreenSave = (onScreenSave: (request: RecordedRequest) => FakeReply | Promise<FakeReply>): void =>
+    fake.setRoute(SAVE_ADMIN_STATE, (request) =>
+      (request.json as { moduleid?: string }).moduleid === undefined ? { status: 200, body: request.json } : onScreenSave(request),
+    );
+
   it('answers with the legacy headers and the first bytes while the producer is still writing', async () => {
     const response = await streamed();
 
@@ -925,7 +977,7 @@ describe('streamed download', () => {
     expect(response.headers.get('content-type')).toBe('text/csv;charset=UTF-8');
     expect(response.headers.get('content-disposition')).toBe('attachment;filename=users.csv');
     expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
-    expect(savedStates()).toHaveLength(1);
+    expect(savedStates().map(({ json }) => json)).toEqual([SETUP_WRITES, { moduleid: '00000000000000000000000000000000008' }]);
     const reader = response.body!.getReader();
     expect(Buffer.from((await reader.read()).value ?? []).toString()).toBe('"USERID"\n');
     expect(producer.writableEnded).toBe(false);
@@ -938,7 +990,7 @@ describe('streamed download', () => {
     ['the client cancels the body', () => undefined, async (response) => response.body!.cancel(), 200],
     [
       'saving the session fails after the screen answered',
-      () => fake.setRoute(SAVE_ADMIN_STATE, { status: 503 }),
+      () => routeScreenSave(() => ({ status: 503 })),
       async (response) => expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML),
       503,
     ],
@@ -1004,10 +1056,10 @@ describe('streamed download', () => {
         await expect(reader.read()).rejects.toThrow();
       });
 
-    /** The upstream resets while the session is saved, which then answers `status`. */
+    /** The upstream resets while the screen's session value is saved, which then answers `status`. */
     const failsWhileSaving = (status: number) => (): void => {
       producer = new PassThrough();
-      fake.setRoute(SAVE_ADMIN_STATE, async (request) => {
+      routeScreenSave(async (request) => {
         producer.destroy(resetError());
         // The body's pending first read observes the failure before the pipeline answers.
         await new Promise((resolve) => setImmediate(resolve));
@@ -1060,7 +1112,7 @@ describe('streamed download', () => {
       ],
       [
         'the pipeline abandons the answer before handing it over',
-        () => fake.setRoute(SAVE_ADMIN_STATE, { status: 503 }),
+        () => routeScreenSave(() => ({ status: 503 })),
         async (response) => expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML),
         [],
       ],

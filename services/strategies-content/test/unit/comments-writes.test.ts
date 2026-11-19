@@ -1,11 +1,12 @@
 /** GS-CO-20's comment writes over a throwaway `content` schema: moderation of a seeded comment and commenter-keyed JSON API saves. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { TENANT_A, pgAvailable } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, pgAvailable } from '@opt2/platform/testing';
 import {
   approveComment,
   bulkEdit,
   findCommentValues,
   purgeDeletedComments,
+  purgeDeletedCommentsAction,
   saveComment,
   singleEdit,
   unapproveComment,
@@ -103,5 +104,18 @@ describe.skipIf(!(await pgAvailable()))('comment writes over a throwaway content
     expect(await purgeDeletedComments(fx.deps, ADMIN, SITE_ID)).toBe(true);
     expect([await comment(commentId), (await fx.rows('comment', 'contentid = $1', [PAGE])).map((row) => row.commentid).sort()]).toEqual([undefined, [ROOT, REPLY, PENDING].sort()]);
     expect(await commenter(commenterId)).toMatchObject({ name: 'GS-CO-20 Commenter Renamed' });
+  });
+
+  it.each<[string, string, string]>([
+    ['TENANT-A', cfId('K', 11), cfId('K', 12)],
+    ['Tenant-A', cfId('K', 13), cfId('K', 14)],
+  ])('cComments.purgeDeletedComments with siteid=%s purges the deleted comments stored under tenant-a only, as SQL Server compares siteid', async (siteid, ownId, otherId) => {
+    const deleted = { contentid: cfId('P', 2), isapproved: 1, isspam: 0, isdeleted: 1, name: 'Purge Case', email: VISITOR_EMAIL, comments: 'Deleted', entered: SEEDED_AT };
+    await fx.inTenant(async (tx) => {
+      await fx.repo.comments.insertComment(tx, { ...deleted, commentid: ownId, path: ownId, siteid: SITE_ID });
+      await fx.repo.comments.insertComment(tx, { ...deleted, commentid: otherId, path: otherId, siteid: TENANT_B.siteId });
+    });
+    expect((await purgeDeletedCommentsAction(fx.deps, ADMIN, { siteid })).processed).toBe(true);
+    expect([await comment(ownId), await comment(otherId)]).toEqual([undefined, expect.objectContaining({ siteid: TENANT_B.siteId, isdeleted: 1 })]);
   });
 });

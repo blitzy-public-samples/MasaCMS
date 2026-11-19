@@ -9,6 +9,7 @@ import {
   type Opt2RouteConfig,
 } from '@opt2/platform/auth';
 import {
+  LegacyServiceUnavailableError,
   RAW_LOCATION_HALT_VARIANT,
   REQUEST_START_COOKIE_NAMES,
   REST_CONSUMED_PARAMS_HEADER,
@@ -35,6 +36,7 @@ import {
 import type { InflightSide, InflightStore } from '../cutover/inflight.js';
 import type { CutoverState } from '../cutover/state.js';
 import type { CutoverEntry, InventoryFacts, RoutingIndex } from '../cutover/types.js';
+import type { StaticFileClient } from '../session/bridge-client.js';
 import type { SessionCarry } from '../session/carry.js';
 import type { CsrfContinuity, CsrfHandle } from '../session/csrf.js';
 import type { Hydrator } from '../session/hydration.js';
@@ -83,6 +85,7 @@ import {
   type UnavailableReason,
 } from './match.js';
 import { SAFE_METHODS, isRelayCaller, relayHandler, type RelayDeps } from './relay.js';
+import { orphanArchiveFilenames, type ProbeKind, type RequestProbes } from './request-writes.js';
 import type { SiteRegistry } from './site-registry.js';
 import type { WindowCompleteInput, WriteWindowClient } from './write-window.js';
 
@@ -112,6 +115,8 @@ export interface DispatcherDeps {
   state: Pick<CutoverState, 'active' | 'readEpochForWrite' | 'isFrozen' | 'waitUnfrozen'>;
   inflight: Pick<InflightStore, 'register' | 'remove' | 'abandon'>;
   windows: WriteWindowClient;
+  /** Legacy's answer whether it runs CFML for a static-family request, which decides the request start's writes. */
+  staticFiles: StaticFileClient;
   barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitForSession' | 'awaitPositions' | 'awaitOwners'>;
   resolver: SessionResolver;
   tokenCache: Pick<TokenCache, 'get'>;
@@ -169,6 +174,8 @@ class Exchange {
   windowId: string | undefined;
   csrfHandle: CsrfHandle | undefined;
   csrfStartedAt: Date | undefined;
+  /** The probe answers obtained for the request so far, which every later match reads. */
+  probes: RequestProbes | undefined;
   /** Set once a forwarder owns the row, the window and the claims. */
   forwarded = false;
   private csrfSettlement: Promise<void> | undefined;
@@ -279,6 +286,37 @@ function sameUnits(a: readonly string[], b: readonly string[]): boolean {
 function pathOf(url: string): string {
   const queryAt = url.indexOf('?');
   return queryAt === -1 ? url : url.slice(0, queryAt);
+}
+
+/** The file path legacy's container looks a request to `url` up by; undefined when the path names no file it could serve as is. */
+function staticFilePathOf(url: string): string | undefined {
+  const path = pathOf(url);
+  if (path.endsWith('/')) return undefined;
+  const segments: string[] = [];
+  for (const segment of path.split('/')) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return undefined;
+    }
+    // An encoded separator is not one the container splits the path on.
+    if (decoded.includes('/') || decoded.includes('\\')) return undefined;
+    segments.push(decoded);
+  }
+  return segments.join('/');
+}
+
+/** Kinds `outcome` waits on, still unanswered in `probes`, whose units add a target-authoritative unit to `windowed`. */
+function unansweredProbes(
+  outcome: RoutedOutcome,
+  probes: RequestProbes | undefined,
+  windowed: readonly string[],
+  index: RoutingIndex,
+): ProbeKind[] {
+  return (Object.entries(outcome.pendingProbes ?? {}) as Array<[ProbeKind, readonly string[]]>).flatMap(([kind, units]) =>
+    probes?.[kind] === undefined && units.some((unit) => !windowed.includes(unit) && index.unitAuthority(unit) === 'target') ? [kind] : [],
+  );
 }
 
 /** Whether the router reads `url` as in the gateway's own namespace: the path before `?` or `#`, percent-decoded, case-sensitive. */
@@ -500,7 +538,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     // The store has no upsert, so the row is inserted again with the window and routing re-read after it, as after a freeze.
     await ex.register(entry.route, 'legacy', windowId);
     const { index } = await state.readEpochForWrite();
-    const current = keyed(await matcher.match(ex.request, ex.body, index));
+    const current = keyed(await matcher.match(ex.request, ex.body, index, ex.probes));
     if (
       isForwarded(current) &&
       current.destination.kind === 'legacy' &&
@@ -540,14 +578,14 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
           return undefined;
         }
         index = state.active();
-        outcome = keyed(await matcher.match(ex.request, ex.body, index));
+        outcome = keyed(await matcher.match(ex.request, ex.body, index, ex.probes));
         continue;
       }
       // Registered before the epoch is read, so a transition that freezes this entry waits for the row.
       if (ex.row?.route !== entry.route || ex.row.side !== sideOf(outcome)) await ex.register(entry.route, sideOf(outcome));
       const fresh = (await state.readEpochForWrite()).index;
       index = fresh;
-      const current = keyed(await matcher.match(ex.request, ex.body, fresh));
+      const current = keyed(await matcher.match(ex.request, ex.body, fresh, ex.probes));
       if (!isForwarded(current) || writeEntryOf(current)?.route !== entry.route || sideOf(current) !== ex.row?.side) {
         outcome = current;
         continue;
@@ -567,6 +605,56 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       const attempt = await openWindow(ex, current, entry, units);
       if (attempt.ready) return attempt.route;
       outcome = attempt.outcome;
+    }
+  };
+
+  /** Answers `kinds` for the request matched as `outcome`; a probe that cannot decide answers that its writes run. */
+  const answerProbes = async (ex: Exchange, outcome: RoutedOutcome, kinds: readonly ProbeKind[]): Promise<RequestProbes> => {
+    const answers = await Promise.all(
+      kinds.map(async (kind): Promise<RequestProbes> => {
+        if (kind === 'cfml') {
+          const path = staticFilePathOf(ex.request.url);
+          return { cfml: path === undefined || (await deps.staticFiles.isCfml(path)) };
+        }
+        const filenames = orphanArchiveFilenames({ path: pathOf(ex.request.url), url: outcome.urlScope });
+        return { orphanArchive: filenames === undefined || (filenames.length > 0 && (await windows.probeOrphanArchive(filenames))) };
+      }),
+    );
+    return answers.reduce<RequestProbes>((all, answer) => ({ ...all, ...answer }), { ...ex.probes });
+  };
+
+  /** `route` with its request probes answered after `beforeProbing`, routed again over the units they add; undefined once answered. */
+  const probedRoute = async (ex: Exchange, route: Route, beforeProbing: () => Promise<void>): Promise<Route | undefined> => {
+    let current = route;
+    let latest: RoutedOutcome = route.outcome;
+    let prepared = false;
+    // Each pass answers at least one more probe kind, so the loop ends.
+    for (;;) {
+      const { index } = current;
+      if (index === undefined) return current;
+      const windowed = windowUnits(current.outcome, index);
+      const kinds = unansweredProbes(latest, ex.probes, windowed, index);
+      if (kinds.length === 0) return current;
+      if (!prepared) {
+        await beforeProbing();
+        prepared = true;
+      }
+      ex.probes = await answerProbes(ex, latest, kinds);
+      latest = keyed(await matcher.match(ex.request, ex.body, index, ex.probes));
+      if (windowUnits(latest, index).every((unit) => windowed.includes(unit))) continue;
+      await ex.closeWindow({ forwarded: false });
+      await ex.dropRow();
+      const rerouted = await routeRequest(ex, latest, index);
+      if (rerouted === undefined) return undefined;
+      if (rerouted.outcome.destination.kind !== 'legacy') {
+        throw new LegacyServiceUnavailableError(
+          `${loggedRouteOf(rerouted.outcome)} left legacy while its request probes were answered`,
+          'auto',
+          'routing-changed-while-probing',
+        );
+      }
+      current = rerouted;
+      latest = rerouted.outcome;
     }
   };
 
@@ -781,6 +869,14 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       if (sessionId !== undefined && result.family === 'admin') await deps.carry.beforeLegacy(sessionId, mode, { userAgent });
       ex.csrfStartedAt = clock.now();
     }
+    // A probe reads stored rows, so a static request's named session's target writes are awaited before it as a page's are.
+    const staticBarrier = async (): Promise<void> => {
+      const named = isStatic && mode === 'target-primary' ? sessionIdFromTargetCookies(parseCookieHeader(request.headers.cookie)) : undefined;
+      if (named !== undefined) await deps.barrier.awaitForSession(named);
+    };
+    const probed = await probedRoute(ex, route, staticBarrier);
+    if (probed === undefined) return reply;
+    const { failContext, haltVariant } = probed.outcome;
     const extras = [...setCookiesOf(resolution), ...(ex.csrfHandle?.setCookies ?? [])];
     const session = sessionId;
     const sentCookies = cookieHeader ?? request.headers.cookie;
@@ -875,9 +971,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       sessionMode: mode,
       beforeSend: mapsSessionCookies ? beforeSend : undefined,
       onSettled,
-      failContext: outcome.failContext,
+      failContext,
       // A login halted for its redirect bytes gets legacy's head as sent, which undici's parser refuses.
-      ...(outcome.haltVariant === RAW_LOCATION_HALT_VARIANT ? { lenientHead: true } : {}),
+      ...(haltVariant === RAW_LOCATION_HALT_VARIANT ? { lenientHead: true } : {}),
     };
     // Marked before legacy can log out, so an identity end that later fails stays owed; a failed mark forwards nothing.
     if (effect === 'logout' && session !== undefined) await deps.invalidation.beforeLegacyLogout(session, mode);

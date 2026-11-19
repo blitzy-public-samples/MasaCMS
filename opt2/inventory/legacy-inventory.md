@@ -61,9 +61,9 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | storedProcedures | static | 0 |
 | storedProcedures | live | 0 |
 | storedProcedures | foreignKeys | 0 |
-| dispositions | carry | 809 |
+| dispositions | carry | 808 |
 | dispositions | legacy-served | 150 |
-| dispositions | decision | 170 |
+| dispositions | decision | 171 |
 | dispositions | retired | 56 |
 
 ## Admin controllers
@@ -1121,7 +1121,7 @@ Units each writing entry point reaches:
 | `ctl:cextend.updateattribute` | communications.extend_attribute, communications.extend_data, content.extend_attribute, content.extend_data, content.file, esignature.extend_attribute, esignature.extend_data, file-store, finance.extend_attribute, finance.extend_data, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, people.extend_attribute, people.extend_data, people.extend_data_user_activity, programs_sites.extend_attribute, programs_sites.extend_data, reporting.extend_attribute, reporting.extend_data, surveys.extend_attribute, surveys.extend_data, timesheets.extend_attribute, timesheets.extend_data |
 | `ctl:cextend.updaterelatedcontentset` | communications.extend_rc_set, content.extend_rc_set, esignature.extend_rc_set, finance.extend_rc_set, identity.extend_rc_set, people.extend_rc_set, programs_sites.extend_rc_set, reporting.extend_rc_set, surveys.extend_rc_set, timesheets.extend_rc_set |
 | `ctl:cextend.updateset` | communications.extend_attribute, communications.extend_data, communications.extend_set, content.extend_attribute, content.extend_data, content.extend_set, content.file, esignature.extend_attribute, esignature.extend_data, esignature.extend_set, file-store, finance.extend_attribute, finance.extend_data, finance.extend_set, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set, reporting.extend_attribute, reporting.extend_data, reporting.extend_set, surveys.extend_attribute, surveys.extend_data, surveys.extend_set, timesheets.extend_attribute, timesheets.extend_data, timesheets.extend_set |
-| `ctl:cextend.updatesubtype` | communications.extend_attribute, communications.extend_data, communications.extend_set, communications.extend_subtype, content.extend_attribute, content.extend_data, content.extend_set, content.extend_subtype, content.file, esignature.extend_attribute, esignature.extend_data, esignature.extend_set, esignature.extend_subtype, file-store, finance.extend_attribute, finance.extend_data, finance.extend_set, finance.extend_subtype, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, identity.extend_subtype, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, people.extend_subtype, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set, programs_sites.extend_subtype, reporting.extend_attribute, reporting.extend_data, reporting.extend_set, reporting.extend_subtype, surveys.extend_attribute, surveys.extend_data, surveys.extend_set, surveys.extend_subtype, timesheets.extend_attribute, timesheets.extend_data, timesheets.extend_set, timesheets.extend_subtype |
+| `ctl:cextend.updatesubtype` | communications.extend_attribute, communications.extend_data, communications.extend_set, communications.extend_subtype, content.content, content.extend_attribute, content.extend_data, content.extend_set, content.extend_subtype, content.file, esignature.extend_attribute, esignature.extend_data, esignature.extend_set, esignature.extend_subtype, file-store, finance.extend_attribute, finance.extend_data, finance.extend_set, finance.extend_subtype, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, identity.extend_subtype, identity.group_account, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, people.extend_subtype, people.person, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set, programs_sites.extend_subtype, reporting.extend_attribute, reporting.extend_data, reporting.extend_set, reporting.extend_subtype, surveys.extend_attribute, surveys.extend_data, surveys.extend_set, surveys.extend_subtype, timesheets.extend_attribute, timesheets.extend_data, timesheets.extend_set, timesheets.extend_subtype |
 | `ctl:cfeed.import2` | content.approval_action, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store, identity.extend_data, identity.redirect, legacy:tcontenteventreminders |
 | `ctl:cfeed.update` | content.content_object, content.feed, content.feed_advanced_param, content.feed_item, content.trash |
 | `ctl:cfeed.update{closecompactdisplay=true}` | content.content_object, content.feed, content.feed_advanced_param, content.feed_item, content.trash |
@@ -1165,7 +1165,7 @@ Units each writing entry point reaches:
 | `ctl:cusers.update{type=2,action=update}` | identity.credential, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, people.person, people.user_address, people.user_interest, people.user_tag |
 | `ctl:cwebservice.delete` | identity.oauth_client, identity.oauth_token |
 | `ctl:cwebservice.save` | identity.oauth_client, identity.oauth_token |
-| `fe:appreload` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tclustercommands, legacy:tclusterpeers, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
+| `fe:appreload` | communications.email, communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tclustercommands, legacy:tclusterpeers, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
 | `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | people.user_favorite |
 | `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | people.user_favorite |
 | `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | people.user_favorite |
@@ -1357,7 +1357,7 @@ Sources of the write records, by unit, table and operation:
 | `communications.delivery_status` | `synthetic.delivery_status` | insert | `legacy-fixtures/cfml/modules/communications.cfc:270-271` |
 | `communications.email` | `temails` | delete | `core/mura/settings/settingsDAO.cfc:204` |
 | `communications.email` | `temails` | insert | `core/mura/email/emailDAO.cfc:99-120` |
-| `communications.email` | `temails` | update | `core/mura/email/emailDAO.cfc:146-163, 172-174; core/mura/email/emailManager.cfc:156; core/mura/email/emailUtility.cfc:142, 281, 285, 440, 444` |
+| `communications.email` | `temails` | update | `core/mura/configBean.cfc:973-977; core/mura/email/emailDAO.cfc:146-163, 172-174; core/mura/email/emailManager.cfc:156; core/mura/email/emailUtility.cfc:142, 281, 285, 440, 444` |
 | `communications.email_return_stat` | `temailreturnstats` | delete | `core/mura/settings/settingsDAO.cfc:196` |
 | `communications.email_return_stat` | `temailreturnstats` | insert | `core/mura/email/emailUtility.cfc:474-477` |
 | `communications.email_stat` | `temailstats` | delete | `core/mura/settings/settingsDAO.cfc:200` |
@@ -1366,25 +1366,25 @@ Sources of the write records, by unit, table and operation:
 | `communications.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
 | `communications.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
 | `communications.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `communications.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
+| `communications.extend_attribute` | `tclassextendattributes` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
 | `communications.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
 | `communications.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
 | `communications.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `communications.extend_data` | `tclassextenddata` | update | `core/mura/content/contentUtility.cfc:1240-1243` |
+| `communications.extend_data` | `tclassextenddata` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentUtility.cfc:1240-1243` |
 | `communications.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
 | `communications.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
 | `communications.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
 | `communications.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
 | `communications.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
 | `communications.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `communications.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
+| `communications.extend_set` | `tclassextendsets` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
 | `communications.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
 | `communications.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
 | `communications.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `communications.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
+| `communications.extend_subtype` | `tclassextend` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
 | `communications.mailing_list` | `tmailinglist` | delete | `core/mura/mailinglist/mailinglistDAO.cfc:178; core/mura/publisher.cfc:1991-2004; core/mura/settings/settingsDAO.cfc:153` |
 | `communications.mailing_list` | `tmailinglist` | insert | `core/mura/mailinglist/mailinglistDAO.cfc:88-95; core/mura/publisher.cfc:2008-2018; core/mura/settings/settingsDAO.cfc:841-849` |
-| `communications.mailing_list` | `tmailinglist` | update | `core/mura/mailinglist/mailinglistDAO.cfc:163-168` |
+| `communications.mailing_list` | `tmailinglist` | update | `core/mura/configBean.cfc:973-977; core/mura/mailinglist/mailinglistDAO.cfc:163-168` |
 | `communications.mailing_list_member` | `tmailinglistmembers` | delete | `core/mura/email/emailGateway.cfc:323; core/mura/mailinglist/mailinglistDAO.cfc:188; core/mura/mailinglist/mailinglistUtility.cfc:137; core/mura/mailinglist/memberDAO.cfc:173, 187; core/mura/publisher.cfc:2027; core/mura/settings/settingsDAO.cfc:157; core/mura/trash/trashManager.cfc:111-112` |
 | `communications.mailing_list_member` | `tmailinglistmembers` | insert | `core/mura/mailinglist/memberDAO.cfc:96-105; core/mura/publisher.cfc:2032-2047` |
 | `communications.mailing_list_member` | `tmailinglistmembers` | update | `core/mura/mailinglist/memberDAO.cfc:152-159; core/mura/mailinglist/memberManager.cfc:234-238` |
@@ -1406,7 +1406,7 @@ Sources of the write records, by unit, table and operation:
 | `content.approval_request` | `tapprovalrequests` | update | `core/mura/content/approval/approvalChainBean.cfc:91-93, 103-105` |
 | `content.category` | `tcontentcategories` | delete | `core/mura/category/categoryDAO.cfc:380-381; core/mura/publisher.cfc:1203-1218; core/mura/settings/settingsDAO.cfc:220` |
 | `content.category` | `tcontentcategories` | insert | `core/mura/category/categoryDAO.cfc:93-116; core/mura/publisher.cfc:1222-1253` |
-| `content.category` | `tcontentcategories` | update | `core/mura/category/categoryDAO.cfc:344-363, 374-376; core/mura/category/categoryManager.cfc:218-221, 741-742; core/mura/category/categoryUtility.cfc:121-124` |
+| `content.category` | `tcontentcategories` | update | `core/mura/category/categoryDAO.cfc:344-363, 374-376; core/mura/category/categoryManager.cfc:218-221, 741-742; core/mura/category/categoryUtility.cfc:121-124; core/mura/configBean.cfc:973-977` |
 | `content.changeset` | `tchangesets` | delete | `core/mura/content/changeset/changesetManager.cfc:232-233; core/mura/publisher.cfc:1108-1123; core/mura/settings/settingsDAO.cfc:280` |
 | `content.changeset` | `tchangesets` | insert | `core/mura/content/changeset/changesetManager.cfc:152-194; core/mura/publisher.cfc:1127-1149` |
 | `content.changeset` | `tchangesets` | save | `core/mura/content/changeset/changesetManager.cfc:552-554` |
@@ -1418,56 +1418,58 @@ Sources of the write records, by unit, table and operation:
 | `content.changeset_tag_assign` | `tchangesettagassign` | save | `core/mura/content/changeset/changesetManager.cfc:215; core/mura/publisher.cfc:171-190, 598-610` |
 | `content.comment` | `tcontentcomments` | delete | `core/mura/content/contentCommentManager.cfc:396-399; core/mura/publisher.cfc:1772; core/mura/settings/settingsDAO.cfc:180; core/mura/trash/trashManager.cfc:47-48` |
 | `content.comment` | `tcontentcomments` | insert | `core/mura/content/contentCommentBean.cfc:502-522; core/mura/publisher.cfc:1777-1803` |
-| `content.comment` | `tcontentcomments` | update | `core/modules/v1/comments/ajax/commentsProxy.cfc:101-102; core/mura/content/contentCommentBean.cfc:331, 354, 376, 398, 421, 475-492, 567-570; core/mura/content/contentUtility.cfc:1165-1168` |
+| `content.comment` | `tcontentcomments` | update | `core/modules/v1/comments/ajax/commentsProxy.cfc:101-102; core/mura/configBean.cfc:973-977; core/mura/content/contentCommentBean.cfc:331, 354, 376, 398, 421, 475-492, 567-570; core/mura/content/contentUtility.cfc:1165-1168` |
 | `content.commenter` | `tcontentcommentcommenters` | save | `core/mura/Handler/standardEventsHandler.cfc:158-183; core/mura/publisher.cfc:171-190, 598-610` |
 | `content.content` | `tcontent` | delete | `core/mura/content/contentDAO.cfc:771-772, 868-870, 1145, 1196-1197; core/mura/plugin/pluginManager.cfc:968; core/mura/publisher.cfc:682-704; core/mura/settings/settingsDAO.cfc:176` |
-| `content.content` | `tcontent` | insert | `core/mura/content/contentDAO.cfc:569-734; core/mura/plugin/pluginManager.cfc:1088-1104; core/mura/publisher.cfc:716-827, 3253-3269; core/mura/settings/settingsDAO.cfc:536-552, 555-572, 575-609, 613-630, 634-651, 656-673, 677-694, 698-715, 719-736, 741-758, 762-779, 783-800, 804-821` |
+| `content.content` | `tcontent` | insert | `core/mura/configBean.cfc:975-977; core/mura/content/contentDAO.cfc:569-734; core/mura/plugin/pluginManager.cfc:1088-1104; core/mura/publisher.cfc:716-827, 3253-3269; core/mura/settings/settingsDAO.cfc:536-552, 555-572, 575-609, 613-630, 634-651, 656-673, 677-694, 698-715, 719-736, 741-758, 762-779, 783-800, 804-821` |
 | `content.content` | `tcontent` | save | `core/mura/content/changeset/changesetManager.cfc:533` |
-| `content.content` | `tcontent` | update | `admin/core/views/carch/list.cfm:608, 614, 621; core/appcfc/onApplicationStart_include.cfm:892-929, 910, 922; core/mura/content/changeset/changesetManager.cfc:621-625; core/mura/content/contentDAO.cfc:883-885, 1170-1171; core/mura/content/contentManager.cfc:933-936, 1307-1310, 1325-1328, 1543-1545, 1554-1557, 1576-1577; core/mura/content/contentUtility.cfc:480-481, 486-488, 523, 538, 1125-1128, 1197-1198, 1210, 1222; core/mura/content/dataCollection/dataCollectionManager.cfc:403-410; core/mura/publisher.cfc:708-711, 3245-3248; core/mura/settings/settingsManager.cfc:731` |
+| `content.content` | `tcontent` | update | `admin/core/views/carch/list.cfm:608, 614, 621; core/appcfc/onApplicationStart_include.cfm:892-929, 910, 922; core/mura/configBean.cfc:973-977; core/mura/content/changeset/changesetManager.cfc:621-625; core/mura/content/contentDAO.cfc:883-885, 1170-1171; core/mura/content/contentManager.cfc:933-936, 1307-1310, 1325-1328, 1543-1545, 1554-1557, 1576-1577; core/mura/content/contentUtility.cfc:480-481, 486-488, 523, 538, 1125-1128, 1197-1198, 1210, 1222; core/mura/content/dataCollection/dataCollectionManager.cfc:403-410; core/mura/extend/extendSubType.cfc:655-661, 742-746; core/mura/publisher.cfc:708-711, 3245-3248; core/mura/settings/settingsManager.cfc:731` |
 | `content.content_assignment` | `tcontentassignments` | delete | `core/mura/content/contentDAO.cfc:1201-1202, 1414-1422; core/mura/settings/settingsDAO.cfc:212; core/mura/trash/trashManager.cfc:41-43` |
 | `content.content_assignment` | `tcontentassignments` | insert | `core/mura/content/contentDAO.cfc:1433-1439` |
+| `content.content_assignment` | `tcontentassignments` | update | `core/mura/configBean.cfc:973-977` |
 | `content.content_category_assign` | `tcontentcategoryassign` | delete | `core/mura/bean/beanORM.cfc:731; core/mura/client/api/json/v1/jsonApiUtility.cfc:3299; core/mura/content/contentDAO.cfc:792-794, 844-846, 1158-1159, 1223-1224; core/mura/publisher.cfc:972-987; core/mura/settings/settingsDAO.cfc:216; core/mura/trash/trashManager.cfc:68-69` |
 | `content.content_category_assign` | `tcontentcategoryassign` | insert | `core/mura/category/categoryDAO.cfc:325-334; core/mura/content/contentUtility.cfc:1031-1035; core/mura/publisher.cfc:1006-1017` |
 | `content.content_category_assign` | `tcontentcategoryassign` | save | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2004` |
 | `content.content_category_assign` | `tcontentcategoryassign` | update | `core/mura/category/categoryDAO.cfc:396-400` |
 | `content.content_object` | `tcontentobjects` | delete | `core/mura/content/contentDAO.cfc:776-778, 833-835, 1126, 1213-1214, 1235-1236; core/mura/plugin/pluginManager.cfc:1169-1170; core/mura/publisher.cfc:833-848; core/mura/settings/settingsDAO.cfc:188` |
-| `content.content_object` | `tcontentobjects` | insert | `core/mura/content/contentDAO.cfc:914-925, 934-945, 956-967; core/mura/content/contentUtility.cfc:1049-1053; core/mura/publisher.cfc:579-591, 867-887` |
+| `content.content_object` | `tcontentobjects` | insert | `core/mura/configBean.cfc:975-977; core/mura/content/contentDAO.cfc:914-925, 934-945, 956-967; core/mura/content/contentUtility.cfc:1049-1053; core/mura/publisher.cfc:579-591, 867-887` |
 | `content.content_object` | `tcontentobjects` | update | `core/mura/content/contentDAO.cfc:982-987` |
 | `content.content_rating` | `tcontentratings` | delete | `core/mura/publisher.cfc:1809; core/mura/settings/settingsDAO.cfc:192; core/mura/trash/trashManager.cfc:31-32; core/mura/user/userDAO.cfc:819` |
 | `content.content_rating` | `tcontentratings` | insert | `core/mura/content/rater/rateBean.cfc:87-94; core/mura/publisher.cfc:1813-1821` |
 | `content.content_rating` | `tcontentratings` | update | `core/mura/content/rater/rateBean.cfc:76-81` |
 | `content.content_related` | `tcontentrelated` | delete | `core/mura/content/contentDAO.cfc:798-800, 850-852, 1228-1229; core/mura/publisher.cfc:1023-1038; core/mura/settings/settingsDAO.cfc:208` |
 | `content.content_related` | `tcontentrelated` | insert | `core/mura/content/contentDAO.cfc:1340-1348, 1360-1368; core/mura/content/contentUtility.cfc:1040-1044; core/mura/publisher.cfc:1058-1076` |
+| `content.content_related` | `tcontentrelated` | update | `core/mura/configBean.cfc:973-977` |
 | `content.content_remote_pointer` | `tcontentremotepointer` | delete | `core/mura/content/contentDAO.cfc:1208-1209; core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:303-313; core/mura/trash/trashManager.cfc:52-53` |
 | `content.content_remote_pointer` | `tcontentremotepointer` | save | `core/mura/publisher.cfc:171-190, 598-610` |
 | `content.content_stats` | `tcontentstats` | delete | `core/mura/content/contentStatsBean.cfc:208-210; core/mura/publisher.cfc:1827` |
 | `content.content_stats` | `tcontentstats` | insert | `core/mura/content/contentStatsBean.cfc:240-255; core/mura/publisher.cfc:1831-1867` |
 | `content.content_stats` | `tcontentstats` | save | `admin/core/controllers/carch.cfc:323-328, 585, 598-605, 617-624` |
-| `content.content_stats` | `tcontentstats` | update | `core/modules/v1/comments/ajax/commentsProxy.cfc:101-102; core/mura/content/contentStatsBean.cfc:221-234` |
+| `content.content_stats` | `tcontentstats` | update | `core/modules/v1/comments/ajax/commentsProxy.cfc:101-102; core/mura/configBean.cfc:973-977; core/mura/content/contentStatsBean.cfc:221-234` |
 | `content.content_tag` | `tcontenttags` | delete | `core/mura/content/contentDAO.cfc:804-806, 856-858, 1134, 1218-1219; core/mura/publisher.cfc:893-908; core/mura/settings/settingsDAO.cfc:252` |
 | `content.content_tag` | `tcontenttags` | insert | `core/mura/content/contentDAO.cfc:1046-1053, 1068-1075; core/mura/publisher.cfc:926-940` |
 | `content.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
 | `content.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
 | `content.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `content.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
+| `content.extend_attribute` | `tclassextendattributes` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
 | `content.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
 | `content.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
 | `content.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `content.extend_data` | `tclassextenddata` | update | `core/mura/content/contentUtility.cfc:1240-1243` |
+| `content.extend_data` | `tclassextenddata` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentUtility.cfc:1240-1243` |
 | `content.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
 | `content.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
 | `content.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
 | `content.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
 | `content.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
 | `content.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `content.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
+| `content.extend_set` | `tclassextendsets` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
 | `content.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
 | `content.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
 | `content.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `content.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
+| `content.extend_subtype` | `tclassextend` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
 | `content.feed` | `tcontentfeeds` | delete | `core/mura/content/feed/feedDAO.cfc:324-325; core/mura/publisher.cfc:1279-1294; core/mura/settings/settingsDAO.cfc:236` |
 | `content.feed` | `tcontentfeeds` | insert | `core/mura/content/feed/feedDAO.cfc:92-141; core/mura/publisher.cfc:1298-1391` |
-| `content.feed` | `tcontentfeeds` | update | `core/mura/content/feed/feedDAO.cfc:268-310` |
+| `content.feed` | `tcontentfeeds` | update | `core/mura/configBean.cfc:973-977; core/mura/content/feed/feedDAO.cfc:268-310` |
 | `content.feed_advanced_param` | `tcontentfeedadvancedparams` | delete | `core/mura/content/feed/feedDAO.cfc:433-434; core/mura/publisher.cfc:1442-1457; core/mura/settings/settingsDAO.cfc:232; core/mura/trash/trashManager.cfc:122-123` |
 | `content.feed_advanced_param` | `tcontentfeedadvancedparams` | insert | `core/mura/content/feed/feedDAO.cfc:412-422; core/mura/publisher.cfc:1475-1486` |
 | `content.feed_advanced_param` | `tcontentfeedadvancedparams` | update | `core/mura/publisher.cfc:3007-3013` |
@@ -1476,15 +1478,17 @@ Sources of the write records, by unit, table and operation:
 | `content.file` | `tfiles` | delete | `core/mura/bean/beanORM.cfc:731; core/mura/client/api/json/v1/jsonApiUtility.cfc:3299; core/mura/content/file/fileDAO.cfc:366-369; core/mura/publisher.cfc:1556-1562, 1568-1569; core/mura/settings/settingsDAO.cfc:272` |
 | `content.file` | `tfiles` | insert | `core/mura/publisher.cfc:1591-1644` |
 | `content.file` | `tfiles` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211; core/mura/client/api/json/v1/jsonApiUtility.cfc:2004; core/mura/content/contentFileMetaDataBean.cfc:220; core/mura/content/contentManager.cfc:1435, 2540, 2629; core/mura/content/file/fileBean.cfc:158; core/mura/content/file/fileDAO.cfc:214; core/mura/settings/settingsManager.cfc:283, 387` |
-| `content.file` | `tfiles` | update | `core/mura/content/contentManager.cfc:2555-2556, 2643-2644; core/mura/content/file/fileDAO.cfc:230, 375-380` |
+| `content.file` | `tfiles` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentManager.cfc:2555-2556, 2643-2644; core/mura/content/file/fileDAO.cfc:230, 375-380` |
 | `content.file_metadata` | `tcontentfilemetadata` | delete | `core/mura/bean/beanORM.cfc:731; core/mura/client/api/json/v1/jsonApiUtility.cfc:3299; core/mura/content/contentDAO.cfc:1652-1668; core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:303-313` |
 | `content.file_metadata` | `tcontentfilemetadata` | save | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2004; core/mura/content/contentDAO.cfc:1686-1723; core/mura/content/contentFileMetaDataBean.cfc:207; core/mura/content/contentManager.cfc:1644; core/mura/publisher.cfc:171-190, 598-610` |
 | `content.filename_archive` | `tcontentfilenamearchive` | delete | `core/mura/Handler/standardEventsHandler.cfc:495; core/mura/bean/beanORM.cfc:731; core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:303-313` |
 | `content.filename_archive` | `tcontentfilenamearchive` | save | `core/mura/content/contentManager.cfc:1695; core/mura/publisher.cfc:171-190, 598-610` |
 | `content.form_response_packet` | `tformresponsepackets` | delete | `core/mura/content/dataCollection/dataCollectionManager.cfc:219-220; core/mura/publisher.cfc:1900; core/mura/settings/settingsDAO.cfc:165; core/mura/trash/trashManager.cfc:57-58` |
 | `content.form_response_packet` | `tformresponsepackets` | insert | `core/mura/content/dataCollection/dataCollectionManager.cfc:181-188; core/mura/publisher.cfc:1905-1913` |
+| `content.form_response_packet` | `tformresponsepackets` | update | `core/mura/configBean.cfc:973-977` |
 | `content.form_response_question` | `tformresponsequestions` | delete | `core/mura/content/dataCollection/dataCollectionManager.cfc:213-214; core/mura/publisher.cfc:1920-1926; core/mura/settings/settingsDAO.cfc:169-172; core/mura/trash/trashManager.cfc:62-63` |
 | `content.form_response_question` | `tformresponsequestions` | insert | `core/mura/content/dataCollection/dataCollectionManager.cfc:166-172; core/mura/publisher.cfc:1932-1939` |
+| `content.form_response_question` | `tformresponsequestions` | update | `core/mura/configBean.cfc:973-977` |
 | `content.source_map` | `tcontentsourcemaps` | delete | `core/mura/content/contentDAO.cfc:1627-1637` |
 | `content.source_map` | `tcontentsourcemaps` | save | `core/mura/content/contentManager.cfc:1623` |
 | `content.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
@@ -1545,34 +1549,35 @@ Sources of the write records, by unit, table and operation:
 | `finance.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `identity.credential` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
 | `identity.credential` | `tusers` | insert | `core/mura/publisher.cfc:2433-2477; core/mura/settings/settingsDAO.cfc:853-880; core/mura/user/userDAO.cfc:304-344` |
-| `identity.credential` | `tusers` | update | `core/mura/user/userDAO.cfc:411-455, 698-701; core/mura/user/userUtility.cfc:167-173` |
+| `identity.credential` | `tusers` | update | `core/mura/configBean.cfc:973-977; core/mura/user/userDAO.cfc:411-455, 698-701; core/mura/user/userUtility.cfc:167-173` |
 | `identity.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
 | `identity.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
 | `identity.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `identity.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
+| `identity.extend_attribute` | `tclassextendattributes` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
 | `identity.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
 | `identity.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
 | `identity.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `identity.extend_data` | `tclassextenddata` | update | `core/mura/content/contentUtility.cfc:1240-1243` |
+| `identity.extend_data` | `tclassextenddata` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentUtility.cfc:1240-1243` |
 | `identity.extend_data_user_activity` | `tclassextenddatauseractivity` | delete | `core/mura/extend/extendAttribute.cfc:493-494; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:3071` |
 | `identity.extend_data_user_activity` | `tclassextenddatauseractivity` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641; core/mura/publisher.cfc:3081-3100` |
 | `identity.extend_data_user_activity` | `tclassextenddatauseractivity` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
+| `identity.extend_data_user_activity` | `tclassextenddatauseractivity` | update | `core/mura/configBean.cfc:973-977` |
 | `identity.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
 | `identity.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
 | `identity.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
 | `identity.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
 | `identity.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
 | `identity.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `identity.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
+| `identity.extend_set` | `tclassextendsets` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
 | `identity.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
 | `identity.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
 | `identity.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `identity.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
+| `identity.extend_subtype` | `tclassextend` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
 | `identity.group_account` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
 | `identity.group_account` | `tusers` | insert | `core/mura/publisher.cfc:2433-2477; core/mura/settings/settingsDAO.cfc:853-880; core/mura/user/userDAO.cfc:304-344` |
-| `identity.group_account` | `tusers` | update | `core/mura/user/userBean.cfc:768-771; core/mura/user/userDAO.cfc:411-455; core/mura/user/userUtility.cfc:817-843` |
+| `identity.group_account` | `tusers` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:742-746; core/mura/user/userBean.cfc:768-771; core/mura/user/userDAO.cfc:411-455; core/mura/user/userUtility.cfc:817-843` |
 | `identity.login_state` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
-| `identity.login_state` | `tusers` | update | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2065-2071; core/mura/user/userBean.cfc:768-771; core/mura/user/userUtility.cfc:367-370, 368-369, 817-843` |
+| `identity.login_state` | `tusers` | update | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2065-2071; core/mura/configBean.cfc:973-977; core/mura/user/userBean.cfc:768-771; core/mura/user/userUtility.cfc:367-370, 368-369, 817-843` |
 | `identity.membership` | `tusersmemb` | delete | `core/mura/publisher.cfc:2159-2178; core/mura/settings/settingsDAO.cfc:141; core/mura/trash/trashManager.cfc:104-106; core/mura/user/userDAO.cfc:507-512, 540, 878-887` |
 | `identity.membership` | `tusersmemb` | insert | `core/mura/publisher.cfc:2191-2194; core/mura/user/userDAO.cfc:570-574` |
 | `identity.oauth_client` | `toauthclients` | delete | `admin/core/controllers/cwebservice.cfc:119; core/mura/bean/beanORM.cfc:731; core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:303-313` |
@@ -1588,10 +1593,10 @@ Sources of the write records, by unit, table and operation:
 | `identity.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `identity.user_account` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
 | `identity.user_account` | `tusers` | insert | `core/mura/publisher.cfc:2433-2477; core/mura/settings/settingsDAO.cfc:853-880; core/mura/user/userDAO.cfc:304-344` |
-| `identity.user_account` | `tusers` | update | `core/mura/user/userDAO.cfc:411-455` |
+| `identity.user_account` | `tusers` | update | `core/mura/configBean.cfc:973-977; core/mura/user/userDAO.cfc:411-455` |
 | `identity.user_address` | `tuseraddresses` | delete | `core/mura/publisher.cfc:2349-2368; core/mura/settings/settingsDAO.cfc:145; core/mura/trash/trashManager.cfc:94-95; core/mura/user/userDAO.cfc:814` |
 | `identity.user_address` | `tuseraddresses` | insert | `core/mura/publisher.cfc:2378-2406; core/mura/user/userDAO.cfc:780-804` |
-| `identity.user_address` | `tuseraddresses` | update | `core/mura/user/userDAO.cfc:753-771, 854, 857` |
+| `identity.user_address` | `tuseraddresses` | update | `core/mura/configBean.cfc:973-977; core/mura/user/userDAO.cfc:753-771, 854, 857` |
 | `identity.user_device` | `tuserdevice` | save | `core/mura/login/loginManager.cfc:315, 370, 451` |
 | `identity.user_favorite` | `tusersfavorites` | delete | `core/mura/publisher.cfc:2310-2314; core/mura/settings/settingsDAO.cfc:137; core/mura/trash/trashManager.cfc:99-100` |
 | `identity.user_favorite` | `tusersfavorites` | insert | `core/mura/publisher.cfc:2319-2334` |
@@ -1611,13 +1616,13 @@ Sources of the write records, by unit, table and operation:
 | `legacy:tentity-declared:*` | `tentity-declared:*` | update | `core/mura/client/api/json/v1/jsonApiUtility.cfc:215` |
 | `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | delete | `core/mura/plugin/pluginManager.cfc:1173; core/mura/publisher.cfc:3323-3324` |
 | `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | insert | `core/mura/plugin/pluginDisplayObjectBean.cfc:275-285; core/mura/publisher.cfc:3328-3348` |
-| `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | update | `core/mura/plugin/pluginDisplayObjectBean.cfc:260-269; core/mura/plugin/pluginManager.cfc:1111-1113` |
+| `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | update | `core/mura/configBean.cfc:973-977; core/mura/plugin/pluginDisplayObjectBean.cfc:260-269; core/mura/plugin/pluginManager.cfc:1111-1113` |
 | `legacy:tplugins` | `tplugins` | delete | `core/mura/plugin/pluginManager.cfc:1280` |
 | `legacy:tplugins` | `tplugins` | insert | `core/mura/plugin/pluginManager.cfc:339-355; core/mura/publisher.cfc:3198-3210` |
-| `legacy:tplugins` | `tplugins` | update | `core/mura/plugin/pluginManager.cfc:359, 368-370, 483-507, 1035-1038, 1069-1071, 1142-1144; core/mura/publisher.cfc:3171-3182, 3230-3232` |
+| `legacy:tplugins` | `tplugins` | update | `core/mura/configBean.cfc:973-977; core/mura/plugin/pluginManager.cfc:359, 368-370, 483-507, 1035-1038, 1069-1071, 1142-1144; core/mura/publisher.cfc:3171-3182, 3230-3232` |
 | `legacy:tpluginscripts` | `tpluginscripts` | delete | `core/mura/plugin/pluginManager.cfc:1162; core/mura/publisher.cfc:3289-3290` |
 | `legacy:tpluginscripts` | `tpluginscripts` | insert | `core/mura/plugin/pluginScriptBean.cfc:153-159; core/mura/publisher.cfc:3296-3305` |
-| `legacy:tpluginscripts` | `tpluginscripts` | update | `core/mura/plugin/pluginScriptBean.cfc:142-147` |
+| `legacy:tpluginscripts` | `tpluginscripts` | update | `core/mura/configBean.cfc:973-977; core/mura/plugin/pluginScriptBean.cfc:142-147` |
 | `legacy:tpluginsettings` | `tpluginsettings` | delete | `core/mura/plugin/pluginManager.cfc:1155; core/mura/publisher.cfc:3366-3367` |
 | `legacy:tpluginsettings` | `tpluginsettings` | insert | `core/mura/plugin/pluginManager.cfc:1018-1022; core/mura/publisher.cfc:3371-3378` |
 | `legacy:trazunasettings` | `trazunasettings` | delete | `core/mura/bean/beanORM.cfc:731; core/mura/settings/settingsManager.cfc:316` |
@@ -1627,34 +1632,35 @@ Sources of the write records, by unit, table and operation:
 | `people.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
 | `people.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
 | `people.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `people.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
+| `people.extend_attribute` | `tclassextendattributes` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
 | `people.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
 | `people.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
 | `people.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `people.extend_data` | `tclassextenddata` | update | `core/mura/content/contentUtility.cfc:1240-1243` |
+| `people.extend_data` | `tclassextenddata` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentUtility.cfc:1240-1243` |
 | `people.extend_data_user_activity` | `tclassextenddatauseractivity` | delete | `core/mura/extend/extendAttribute.cfc:493-494; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:3071` |
 | `people.extend_data_user_activity` | `tclassextenddatauseractivity` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641; core/mura/publisher.cfc:3081-3100` |
 | `people.extend_data_user_activity` | `tclassextenddatauseractivity` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
+| `people.extend_data_user_activity` | `tclassextenddatauseractivity` | update | `core/mura/configBean.cfc:973-977` |
 | `people.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
 | `people.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
 | `people.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
 | `people.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
 | `people.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
 | `people.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `people.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
+| `people.extend_set` | `tclassextendsets` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
 | `people.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
 | `people.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
 | `people.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `people.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
+| `people.extend_subtype` | `tclassextend` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
 | `people.person` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
 | `people.person` | `tusers` | insert | `core/mura/publisher.cfc:2433-2477; core/mura/settings/settingsDAO.cfc:853-880; core/mura/user/userDAO.cfc:304-344` |
-| `people.person` | `tusers` | update | `core/mura/user/userDAO.cfc:411-455` |
+| `people.person` | `tusers` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:742-746; core/mura/user/userDAO.cfc:411-455` |
 | `people.person_archive` | `synthetic.person_archive` | insert | `legacy-fixtures/cfml/modules/people.cfc:50` |
 | `people.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
 | `people.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `people.user_address` | `tuseraddresses` | delete | `core/mura/publisher.cfc:2349-2368; core/mura/settings/settingsDAO.cfc:145; core/mura/trash/trashManager.cfc:94-95; core/mura/user/userDAO.cfc:814` |
 | `people.user_address` | `tuseraddresses` | insert | `core/mura/publisher.cfc:2378-2406; core/mura/user/userDAO.cfc:780-804` |
-| `people.user_address` | `tuseraddresses` | update | `core/mura/user/userDAO.cfc:753-771, 854, 857` |
+| `people.user_address` | `tuseraddresses` | update | `core/mura/configBean.cfc:973-977; core/mura/user/userDAO.cfc:753-771, 854, 857` |
 | `people.user_favorite` | `tusersfavorites` | delete | `core/mura/content/favorite/favoriteBean.cfc:200-201; core/mura/content/favorite/favoriteManager.cfc:248-250; core/mura/publisher.cfc:2310-2314; core/mura/settings/settingsDAO.cfc:137; core/mura/trash/trashManager.cfc:99-100` |
 | `people.user_favorite` | `tusersfavorites` | insert | `core/mura/content/favorite/favoriteBean.cfc:226-238; core/mura/publisher.cfc:2319-2334` |
 | `people.user_favorite` | `tusersfavorites` | update | `core/mura/content/favorite/favoriteBean.cfc:211-220` |
@@ -1665,31 +1671,31 @@ Sources of the write records, by unit, table and operation:
 | `programs_sites.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
 | `programs_sites.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
 | `programs_sites.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `programs_sites.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
+| `programs_sites.extend_attribute` | `tclassextendattributes` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
 | `programs_sites.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
 | `programs_sites.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
 | `programs_sites.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `programs_sites.extend_data` | `tclassextenddata` | update | `core/mura/content/contentUtility.cfc:1240-1243` |
+| `programs_sites.extend_data` | `tclassextenddata` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentUtility.cfc:1240-1243` |
 | `programs_sites.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
 | `programs_sites.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
 | `programs_sites.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
 | `programs_sites.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
 | `programs_sites.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
 | `programs_sites.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `programs_sites.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
+| `programs_sites.extend_set` | `tclassextendsets` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
 | `programs_sites.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
 | `programs_sites.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
 | `programs_sites.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `programs_sites.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
+| `programs_sites.extend_subtype` | `tclassextend` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
 | `programs_sites.image_size` | `timagesizes` | delete | `core/mura/publisher.cfc:1168; core/mura/settings/settingsDAO.cfc:129; core/mura/settings/settingsImageSizeBean.cfc:220-221` |
 | `programs_sites.image_size` | `timagesizes` | insert | `core/mura/publisher.cfc:1173-1181; core/mura/settings/settingsImageSizeBean.cfc:201-207` |
 | `programs_sites.image_size` | `timagesizes` | update | `core/mura/settings/settingsImageSizeBean.cfc:190-195` |
 | `programs_sites.site` | `tsettings` | delete | `core/mura/settings/settingsDAO.cfc:125` |
 | `programs_sites.site` | `tsettings` | insert | `core/mura/settings/settingsDAO.cfc:437-532` |
-| `programs_sites.site` | `tsettings` | update | `core/mura/extend/extendManager.cfc:2016-2018; core/mura/publisher.cfc:300-301, 314-374, 2539-2542; core/mura/settings/settingsDAO.cfc:244, 248, 322-416; core/mura/settings/settingsManager.cfc:221, 237` |
-| `programs_sites.system_object` | `tsystemobjects` | delete | `core/mura/publisher.cfc:947; core/mura/settings/settingsDAO.cfc:184` |
-| `programs_sites.system_object` | `tsystemobjects` | insert | `core/mura/publisher.cfc:958-965; core/mura/settings/settingsDAO.cfc:830-836` |
-| `programs_sites.system_object` | `tsystemobjects` | update | `core/mura/settings/settingsManager.cfc:734-737` |
+| `programs_sites.site` | `tsettings` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:2016-2018; core/mura/publisher.cfc:300-301, 314-374, 2539-2542; core/mura/settings/settingsDAO.cfc:244, 248, 322-416; core/mura/settings/settingsManager.cfc:221, 237` |
+| `programs_sites.system_object` | `tsystemobjects` | delete | `core/mura/configBean.cfc:976; core/mura/publisher.cfc:947; core/mura/settings/settingsDAO.cfc:184` |
+| `programs_sites.system_object` | `tsystemobjects` | insert | `core/mura/configBean.cfc:975-977; core/mura/publisher.cfc:958-965; core/mura/settings/settingsDAO.cfc:830-836` |
+| `programs_sites.system_object` | `tsystemobjects` | update | `core/mura/configBean.cfc:973-977; core/mura/settings/settingsManager.cfc:734-737` |
 | `programs_sites.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
 | `programs_sites.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `reporting.export_job` | `synthetic.export_job` | insert | `legacy-fixtures/cfml/modules/reporting.cfc:66-67` |
@@ -1809,66 +1815,66 @@ Sources of the write records, by unit, table and operation:
 | `tbl:tchangesetrollback` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
 | `tbl:tchangesets` | migration | yes | yes | strategies-content | 1 | carry (5) | 14 |
 | `tbl:tchangesettagassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 11 |
-| `tbl:tclassextend` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 22 |
-| `tbl:tclassextendattributes` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 23 |
-| `tbl:tclassextenddata` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 35 |
-| `tbl:tclassextenddatauseractivity` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 14 |
+| `tbl:tclassextend` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 23 |
+| `tbl:tclassextendattributes` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 24 |
+| `tbl:tclassextenddata` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 36 |
+| `tbl:tclassextenddatauseractivity` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 15 |
 | `tbl:tclassextendrcsets` | orm | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 11 |
-| `tbl:tclassextendsets` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 19 |
+| `tbl:tclassextendsets` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 20 |
 | `tbl:tclustercommands` | migration | no | yes | — | 5 | decision (2, withheld) | 11 |
 | `tbl:tclusterpeers` | migration | no | yes | — | 5 | decision (2, withheld) | 11 |
-| `tbl:tcontent` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 97 |
-| `tbl:tcontentassignments` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 9 |
-| `tbl:tcontentcategories` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 13 |
+| `tbl:tcontent` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 101 |
+| `tbl:tcontentassignments` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 10 |
+| `tbl:tcontentcategories` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 14 |
 | `tbl:tcontentcategoryassign` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 22 |
 | `tbl:tcontentcommentcommenters` | orm | no | yes | strategies-content | 1 | carry (5) | 5 |
-| `tbl:tcontentcomments` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 19 |
+| `tbl:tcontentcomments` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 20 |
 | `tbl:tcontentdisplaytitleapprovals` | bootstrap | yes | no | strategies-content | 1 | carry (5) | 0 |
 | `tbl:tcontenteventreminders` | bootstrap | yes | no | — | 5 | decision (2, withheld) | 11 |
 | `tbl:tcontentfeedadvancedparams` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 10 |
 | `tbl:tcontentfeeditems` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 8 |
-| `tbl:tcontentfeeds` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 8 |
+| `tbl:tcontentfeeds` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 9 |
 | `tbl:tcontentfilemetadata` | orm | yes | yes | strategies-content | 1 | carry (5) | 17 |
 | `tbl:tcontentfilenamearchive` | orm | yes | yes | strategies-content | 1 | carry (5) | 10 |
-| `tbl:tcontentobjects` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 25 |
+| `tbl:tcontentobjects` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 26 |
 | `tbl:tcontentpublicsubmissionapprovals` | bootstrap | yes | no (static: yes) | strategies-content | 1 | carry (5) | 0 |
 | `tbl:tcontentratings` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 9 |
-| `tbl:tcontentrelated` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 17 |
+| `tbl:tcontentrelated` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 18 |
 | `tbl:tcontentremotepointer` | orm | yes | yes | strategies-content | 1 | carry (5) | 6 |
 | `tbl:tcontentsourcemaps` | orm | yes | yes | strategies-content | 1 | carry (5) | 6 |
-| `tbl:tcontentstats` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 17 |
+| `tbl:tcontentstats` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 18 |
 | `tbl:tcontenttags` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 18 |
 | `tbl:tcontentvariationtargeting` | orm | yes | yes | strategies-content | 1 | carry (5) | 13 |
 | `tbl:tdirectories` | migration | yes | yes | programs-sites | 1 | carry (5) | 0 |
 | `tbl:temailreturnstats` | bootstrap | no | no | communications | 1 | legacy-served (4) | 2 |
-| `tbl:temails` | bootstrap | yes | yes | communications | 1 | legacy-served (4) | 15 |
+| `tbl:temails` | bootstrap | yes | yes | communications | 1 | legacy-served (4) | 16 |
 | `tbl:temailstats` | bootstrap | no | no | communications | 1 | legacy-served (4) | 7 |
 | `tbl:tentity` | orm | no | yes | — | 5 | decision (2, withheld) | 10 |
-| `tbl:tfiles` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 40 |
-| `tbl:tformresponsepackets` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 8 |
-| `tbl:tformresponsequestions` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 8 |
+| `tbl:tfiles` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 41 |
+| `tbl:tformresponsepackets` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 9 |
+| `tbl:tformresponsequestions` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 9 |
 | `tbl:tglobals` | bootstrap | no | no | — | — | retired (1) | 0 |
 | `tbl:timagesizes` | migration | yes | yes | programs-sites | 1 | carry (5) | 14 |
-| `tbl:tmailinglist` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 10 |
+| `tbl:tmailinglist` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 11 |
 | `tbl:tmailinglistmembers` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 14 |
 | `tbl:toauthclients` | orm | yes | yes | identity | 1 | carry (5) | 8 |
 | `tbl:toauthtokens` | orm | no | yes | identity | 1 | carry (5) | 19 |
 | `tbl:tpermissions` | bootstrap | yes | yes | identity | 2 | carry (5) | 11 |
-| `tbl:tplugindisplayobjects` | migration | no | yes | — | 5 | decision (2, withheld) | 11 |
-| `tbl:tplugins` | migration | no | yes | — | 5 | decision (2, withheld) | 21 |
-| `tbl:tpluginscripts` | migration | no | yes | — | 5 | decision (2, withheld) | 10 |
+| `tbl:tplugindisplayobjects` | migration | no | yes | — | 5 | decision (2, withheld) | 12 |
+| `tbl:tplugins` | migration | no | yes | — | 5 | decision (2, withheld) | 22 |
+| `tbl:tpluginscripts` | migration | no | yes | — | 5 | decision (2, withheld) | 11 |
 | `tbl:tpluginsettings` | migration | no | yes | — | 5 | decision (2, withheld) | 8 |
 | `tbl:trazunasettings` | orm | yes | yes | — | 5 | decision (2, withheld) | 13 |
 | `tbl:tredirects` | bootstrap | yes | yes | identity | 1 | carry (5) | 13 |
 | `tbl:tremotepointer` | orm | yes | yes | — | 5 | decision (2, withheld) | 4 |
 | `tbl:tsessiontracking` | bootstrap | yes | yes | reporting | 1 | legacy-served (4) | 5 |
-| `tbl:tsettings` | bootstrap | yes | yes (bootstrap: no) | programs-sites | 1 | carry (5) | 20 |
-| `tbl:tsystemobjects` | bootstrap | yes | no | programs-sites | 1 | carry (5) | 9 |
+| `tbl:tsettings` | bootstrap | yes | yes (bootstrap: no) | programs-sites | 1 | carry (5) | 21 |
+| `tbl:tsystemobjects` | bootstrap | yes | no | programs-sites | 1 | carry (5) | 12 |
 | `tbl:ttrash` | migration | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 13 |
-| `tbl:tuseraddresses` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 12 |
+| `tbl:tuseraddresses` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 13 |
 | `tbl:tuserdevice` | orm | yes | yes | identity | 1 | carry (5) | 3 |
 | `tbl:tuserremotesessions` | migration | no | yes | identity | 1 | carry (5) | 0 |
-| `tbl:tusers` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 19 |
+| `tbl:tusers` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 21 |
 | `tbl:tusersfavorites` | bootstrap | yes | yes | identity, people | 1, 3 | carry (5) | 10 |
 | `tbl:tusersinterests` | bootstrap | no | yes | identity, people | 1, 3 | carry (5) | 9 |
 | `tbl:tusersmemb` | bootstrap | no | yes | identity | 2 | carry (5) | 11 |
@@ -2015,358 +2021,3 @@ Sources of the write records, by unit, table and operation:
 | correction | `tables.serializedColumns` | — | expected tcontentobjects.Params, tformresponsepackets.Data, toauthtokens.data, ttrash.objectstring; computed tcontent.objectParams, tcontentobjects.Params, tformresponsepackets.Data, toauthtokens.data, ttrash.objectstring |
 | count-difference | `tables.withSiteId` | — | AAP 54, computed 55; siteID on 33 bootstrap, 4 migration and 18 ORM-only tables; inherited from a base component: tcontentfilemetadata (core/mura/bean/beanORMVersioned.cfc:80); live catalog 54, tables absent live: tremotepointer |
 | unmatched-write | — | `core/mura/client/api/json/v1/jsonApiUtility.cfc:215` | core/mura/client/api/json/v1/jsonApiUtility.cfc#checkSchema writes tentity-declared:*, which no tables[] entry lists |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod('$',event("muraScope")).injectMethod (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:177` | component reference themeRenderer.injectMethod('$',event("muraScope")).injectMethod('mura',event("muraScope")).injectMethod (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/MasaScope.cfc:178` | component reference themeRenderer.init (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:132` | bean reference bean.has (also reached from 740 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:138` | bean reference bean.getPrimaryKey (also reached from 740 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:364` | bean reference obj.setSiteID (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:367` | bean reference obj.getPrimaryKey (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:369` | bean reference obj.getPrimaryKey (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:372` | bean reference obj.loadBy (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:372` | bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:374` | bean reference obj.get (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:374` | bean reference obj.getPrimaryKey (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:384` | bean reference obj.get (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:384` | bean reference obj.getPrimaryKey (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:396` | bean reference obj.setSiteID (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:399` | bean reference obj.getPrimaryKey (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:401` | bean reference obj.getPrimaryKey (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:404` | bean reference obj.loadBy (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/bean.cfc:404` | bean reference obj.loadBy(argumentCollection=loadArgs).set (also reached from 739 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/beanFactory.cfc:120` | bean reference getBean(p.relatesto).getValue (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:91` | bean reference variables.parent.containsBean (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:682` | bean reference head.listener (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:684` | bean reference head.listener.onLoad (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:687` | bean reference getBean( head.listener ).onLoad (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/bean/ioc.cfc:689` | bean reference head.listener.toString (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:151` | bean reference variables.collection.get (also reached from 428 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:155` | bean reference cacheData.object.get (also reached from 428 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:196` | bean reference variables.collection.put (also reached from 428 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:219` | bean reference variables.collection.get (also reached from 428 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cache/cacheAbstract.cfc:222` | bean reference cacheData.object.get (also reached from 428 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/cfobject.cfc:265` | method reference this.onMissingMethod (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2029` | bean reference entity.registerAsEntity (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2032` | bean reference entity.checkSchema (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2036` | bean reference entity.getEntityName (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2071` | bean reference entity.isOrm (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2077` | bean reference entity.getEntityName (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2118` | component reference createObject('component','#package#.#beanName#').init (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/configBean.cfc:2131` | component reference beanInstance.onApplicationLoad (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2762` | bean reference variables.m.event (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2762` | bean reference variables.m.event().setValue (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2763` | bean reference variables.m.announceEvent (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2767` | bean reference variables.m.event (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2767` | bean reference variables.m.event().setValue (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/content/contentRenderer.cfc:2768` | bean reference variables.m.announceEvent (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/extend/extendSubType.cfc:655-661` | table reference #getBaseTable()# (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1422` | method reference arguments.event.event (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1454` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1495` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1541` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1581` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1661` | method reference arguments.event.event (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1711` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1757` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1806` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1849` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:1893` | method reference getExecutor().executeScript (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2868` | component reference createObject("component",componentPath).init (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2870` | component reference createObject("component",componentPath).init (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:2877` | component reference createObject("component",componentPath).init (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/plugin/pluginManager.cfc:3132` | component reference eventHandler.init (also reached from 736 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundle.cfc:39` | bean reference variables.javaLocale.init (also reached from 485 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundleFactory.cfc:127` | bean reference variables.parentFactory.getKeyValue (also reached from 480 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/resourceBundleFactory.cfc:137` | bean reference variables.parentFactory.getKeyValue (also reached from 480 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.delete` | `core/mura/resourceBundle/utils.cfc:152` | bean reference variables.thisLocale.getDisplayName (also reached from 485 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:655` | bean reference entity.getHasManyPropArray (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:657` | bean reference entity.getTable (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:657` | bean reference entity.translatePropKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:661` | bean reference entity.getHasOnePropArray (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:663` | bean reference entity.getTable (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:663` | bean reference entity.translatePropKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:673` | bean reference entity.getHasManyPropArray (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:675` | bean reference entity.getTable (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:675` | bean reference entity.getValue (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:675` | bean reference entity.translatePropKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:679` | bean reference entity.getHasOnePropArray (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:681` | bean reference entity.getTable (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:681` | bean reference entity.getValue (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanFeed.cfc:681` | bean reference entity.translatePropKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanIterator.cfc:101` | bean reference getBean(variables.entityName).set (also reached from 139 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanIterator.cfc:101` | bean reference getBean(variables.entityName).set(queryRowToStruct(variables.records,arguments.recordIndex)).setIsNew (also reached from 139 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/bean/beanIterator.cfc:107` | bean reference getBean(variables.entityName).set (also reached from 139 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1690` | bean reference arguments.bean.get (also reached from 295 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1694` | bean reference arguments.bean.getEntityName (also reached from 295 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1710` | bean reference arguments.bean.allowAccess (also reached from 295 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2764` | bean reference entity.getFeed (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2768` | bean reference entity.setType (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2772` | bean reference entity.allowQueryParams (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2776` | bean reference entity.getEntityName (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2794` | bean reference entity.getEntityName (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2853` | bean reference entity.getEntityName (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2854` | bean reference entity.getEntityName (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2867` | bean reference entity.valueExists (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2880` | bean reference entity.getEntityName (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2883` | bean reference entity.getPrimaryKey (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2887` | bean reference entity.hasProperty (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2887` | bean reference entity.valueExists (also reached from 229 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3045` | bean reference feed.getEntity().getTable (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3127` | bean reference getBean(arguments.feed.getEntityName()).getPrimaryKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3165` | bean reference arguments.iterator.setNextN (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3167` | bean reference arguments.iterator.setNextN (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3201` | bean reference entity.getPrimaryKey (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3208` | bean reference entity.loadBy (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3208` | bean reference entity.loadBy(argumentCollection=params).getCrumbIterator (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3219` | bean reference entity.getEntityName (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3222` | bean reference entity.getEntityName (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3225` | bean reference arguments.iterator.hasNext (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3226` | bean reference arguments.iterator.next (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3613` | bean reference variables.images.reset (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3641` | bean reference variables.images.reset (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/content/contentRenderer.cfc:3063` | bean reference variables.$.event (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/content/contentRenderer.cfc:3067` | bean reference variables.$.event (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/content/contentRenderer.cfc:3068` | bean reference variables.$.event (also reached from 261 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findall` | `core/mura/utility.cfc:490` | bean reference getPageContext().getRequest().getScheme (also reached from 315 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:884` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:896` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:904` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.findone` | `core/mura/content/contentServer.cfc:912` | bean reference getpagecontext().getresponse().setcontenttype (also reached from 37 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1987` | bean reference currentCategories.hasNext (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1988` | bean reference currentCategories.hasNext (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1989` | bean reference currentCategories.next (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1989` | bean reference currentCategories.next().get (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2015` | bean reference currentCategories.hasNext (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2016` | bean reference currentCategories.hasNext (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2017` | bean reference currentCategories.next (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2017` | bean reference currentCategories.next().get (also reached from 80 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/content/file/s3.cfc:323` | bean reference variables.awsSecret.getBytes (also reached from 93 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/resourceBundle/resourceBundle.cfc:177` | bean reference variables.msgFormat.init (also reached from 84 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:address.save` | `core/mura/resourceBundle/resourceBundle.cfc:188` | bean reference thisFormat.format (also reached from 84 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:checkschema` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:215` | bean reference getBean(arguments.entityname).checkSchema (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:172` | bean reference getBean(obj.entityname).getDynamic (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1552` | bean reference exampleEntity.setType (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1555` | bean reference exampleEntity.getProperties (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1587` | bean reference exampleEntity.getEntityName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1588` | bean reference exampleEntity.getBundleable (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1589` | bean reference exampleEntity.getOrderBy (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1590` | bean reference exampleEntity.getIsHistorical (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1591` | bean reference exampleEntity.getDynamic (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1592` | bean reference exampleEntity.getscaffold (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1593` | bean reference exampleEntity.getEntityDisplayName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1594` | bean reference exampleEntity.getPrimaryKey (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:declareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1612` | bean reference exampleEntity.getTable (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:group.delete` | `core/mura/bean/beanFeed.cfc:328` | bean reference getEntity().getDbUtility (also reached from 60 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:group.delete` | `core/mura/bean/beanFeed.cfc:778` | bean reference getEntity().getTable (also reached from 56 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:group.delete` | `core/mura/bean/beanFeed.cfc:927` | bean reference getEntity().getLoadSQLColumnsAndTables (also reached from 56 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:group.delete` | `core/mura/bean/beanFeed.cfc:929` | bean reference getEntity().getLoadSQLColumnsAndTables (also reached from 56 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:group.delete` | `core/mura/bean/beanFeed.cfc:940` | bean reference getEntity().getPrimaryKey (also reached from 56 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:group.delete` | `core/mura/cfobject.cfc:471` | bean reference getBean(argumentCollection=arguments).getFeed (also reached from 41 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:logout` | `core/mura/login/loginManager.cfc:503` | bean reference getPageContext().getSession (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:logout` | `core/mura/login/loginManager.cfc:504` | bean reference j2eeSession.invalidate (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:processasyncobject` | `core/mura/utility.cfc:555` | component reference CreateObject("component","cfformprotect.cffpVerify").init (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:processasyncobject` | `core/mura/utility.cfc:565` | component reference cffp.testSubmission (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:site.save` | `core/mura/publisher.cfc:1546` | bean reference application.confiBean.getFileDir (also reached from 7 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:site.save` | `core/mura/publisher.cfc:1549` | bean reference application.confiBean.getFileDir (also reached from 7 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:site.save` | `core/mura/publisher.cfc:3393` | component reference pluginCFC.init (also reached from 7 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:site.save` | `core/mura/publisher.cfc:3395` | component reference pluginCFC.fromBundle (also reached from 7 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:swagger` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:4481` | bean reference entity.setType (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:swagger` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:4484` | bean reference entity.getPrimaryKey (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:swagger` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:4486` | bean reference entity.getEntityName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:swagger` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:4489` | bean reference entity.getPrimaryKey (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:185` | bean reference entity.getDynamic (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:185` | bean reference entity.getTable (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:187` | bean reference entity.getTable (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:191` | bean reference entity.getEntityName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:undeclareentity` | `core/mura/bean/beanFactory.cfc:193` | bean reference entity.getEntityName (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `api:undeclareentity` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:194` | bean reference getBean(arguments.entityname).getDynamic (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:309` | bean reference beanInstance.getEntityDisplayName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:309` | bean reference beanInstance.pluralizeHasRefName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:316` | bean reference beanInstance.getEntityDisplayName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `admin/core/views/carch/dsp_secondary_menu.cfm:316` | bean reference beanInstance.pluralizeHasRefName (also reached from 12 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2319` | method reference arguments.event.event (also reached from 35 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2447` | method reference getExecutor().renderScript (also reached from 35 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2573` | method reference getExecutor().renderScript (also reached from 35 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.audit` | `core/mura/plugin/pluginManager.cfc:2638` | method reference getExecutor().renderScript (also reached from 35 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.datamanager` | `admin/core/views/carch/datamanager.cfm:136` | include reference data_manager/dsp_ormform.cfm; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `admin/core/views/carch/edit_panels.cfm:220` | include reference form/dsp_panel_Remote.cfm (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `admin/core/views/carch/form/dsp_panel_layoutobjects.cfm:239` | include reference /#application.configBean.getWebRootMap()#/#rc.siteID#/includes/display_objects/custom/admin/dsp_objectClassLabel.cfm (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:1972` | method reference arguments.event.event (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:2039` | method reference getExecutor().renderScript (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:2102` | method reference getExecutor().renderScript (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:2166` | method reference getExecutor().renderScript (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:2224` | method reference getExecutor().renderScript (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:2386` | method reference getExecutor().renderScript (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.edit` | `core/mura/plugin/pluginManager.cfc:2513` | method reference getExecutor().renderScript (also reached from 15 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.export` | `admin/core/controllers/carch.cfc:119` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.export` | `admin/core/controllers/carch.cfc:121` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.exportcontent` | `core/mura/settings/settingsBundleBean.cfc:1818` | bean reference getBean(beanName=local.b,siteid=arguments.siteid).toBundle (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.exportcontent` | `core/mura/settings/settingsBundleBean.cfc:1870` | bean reference bean.toBundle (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.getaudittrail` | `admin/core/controllers/carch.cfc:638` | bean reference getpagecontext().getResponse().setContentType; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.getimagesizeurl` | `admin/core/controllers/carch.cfc:646` | bean reference getpagecontext().getResponse().setContentType; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.importcontent` | `admin/core/controllers/carch.cfc:136` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.importcontent` | `admin/core/controllers/carch.cfc:148` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.importcontent` | `admin/core/controllers/carch.cfc:150` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loadclass` | `admin/core/views/carch/loadclass.cfm:103` | include reference objectclass/legacy/dsp_Folders.cfm; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loadclass` | `admin/core/views/carch/loadclass.cfm:130` | include reference /#application.configBean.getWebRootMap()#/#rc.siteID#/includes/display_objects/custom/admin/dsp_objectClass.cfm; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loadclassconfigurator` | `admin/core/views/carch/loadclassconfigurator.cfm:157` | include reference #configFile#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loaddiff` | `core/mura/diffMatchPatch.cfc:16` | bean reference variables.diff_match_patch.diff_cleanupSemantic; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loaddiff` | `core/mura/diffMatchPatch.cfc:20` | bean reference variables.diff_match_patch.diff_prettyHTML; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loaddiff` | `core/mura/diffMatchPatch.cfc:21` | bean reference variables.diff_match_patch.diff_text1; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loaddiff` | `core/mura/diffMatchPatch.cfc:22` | bean reference variables.diff_match_patch.diff_text2; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loadrelatedcontent` | `admin/core/views/carch/loadrelatedcontent.cfm:487` | bean reference sample.getSearchableProps; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loadrelatedcontent` | `admin/core/views/carch/loadrelatedcontent.cfm:515` | bean reference sample.getListViewProps; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.loadselectedrelatedcontent` | `admin/core/views/carch/loadselectedrelatedcontent.cfm:131` | bean reference sample.getListViewProps; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.update` | `admin/core/controllers/carch.cfc:427` | bean reference variables.fw.redirect (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.update` | `admin/core/controllers/carch.cfc:430` | bean reference variables.fw.redirect (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.update` | `admin/core/controllers/carch.cfc:438` | bean reference variables.fw.redirect (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:carch.update` | `admin/core/controllers/carch.cfc:446` | bean reference variables.fw.redirect (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccategory.update` | `admin/core/controllers/ccategory.cfc:117` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchain.delete` | `admin/core/controllers/cchain.cfc:120` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchain.save` | `admin/core/controllers/cchain.cfc:104` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchain.save` | `admin/core/controllers/cchain.cfc:112` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchangesets.delete` | `admin/core/controllers/cchangesets.cfc:191` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchangesets.publish` | `admin/core/controllers/cchangesets.cfc:146` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchangesets.removeitem` | `admin/core/controllers/cchangesets.cfc:170` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchangesets.rollback` | `admin/core/controllers/cchangesets.cfc:153` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cchangesets.save` | `admin/core/controllers/cchangesets.cfc:183` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.approve` | `admin/core/controllers/ccomments.cfc:175` | bean reference getFW().redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.bulkedit` | `admin/core/controllers/ccomments.cfc:138` | bean reference getFW().setView; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.delete` | `admin/core/controllers/ccomments.cfc:193` | bean reference getFW().redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.markasspam` | `admin/core/controllers/ccomments.cfc:201` | bean reference getFW().redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.purgedeletedcomments` | `admin/core/controllers/ccomments.cfc:357` | bean reference getFW().redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.singleedit` | `admin/core/controllers/ccomments.cfc:166` | bean reference getFW().setView; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ccomments.unapprove` | `admin/core/controllers/ccomments.cfc:184` | bean reference getFW().redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ceditprofile.update` | `admin/core/controllers/ceditprofile.cfc:138` | bean reference variables.fw.redirect (also reached from 2 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cemail.update` | `admin/core/controllers/cemail.cfc:122` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cemail.update` | `core/mura/email/emailUtility.cfc:229` | include reference #template# (also reached from 2 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cemail.update` | `core/mura/email/emailUtility.cfc:254` | include reference #template# (also reached from 2 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cextend.exportsubtype` | `admin/core/controllers/cextend.cfc:96` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cextend.importsubtypes` | `admin/core/controllers/cextend.cfc:111` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cextend.updaterelatedcontentset` | `admin/core/controllers/cextend.cfc:196` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cextend.updatesubtype` | `core/mura/extend/extendSubType.cfc:742-746` | table reference #getBaseTable()#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cfeed.update` | `admin/core/controllers/cfeed.cfc:137` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cfeed.update` | `admin/core/controllers/cfeed.cfc:144` | bean reference variables.fw.redirect (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cform.getdialog` | `core/mura/formBuilder/formBuilderManager.cfc:237` | include reference #templatePath#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cform.getfieldtemplate` | `core/mura/formBuilder/formBuilderManager.cfc:210` | include reference #templatePath#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:clogin.login` | `admin/core/controllers/clogin.cfc:111` | bean reference variables.fw.redirect (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:clogin.logout` | `admin/core/controllers/clogin.cfc:117` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:clogin.main` | `admin/core/controllers/clogin.cfc:97` | bean reference variables.fw.redirect (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cmailinglist.update` | `admin/core/controllers/cmailinglist.cfc:115` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cmailinglist.update` | `admin/core/controllers/cmailinglist.cfc:117` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cmailinglist.updatemember` | `admin/core/controllers/cmailinglist.cfc:128` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.update` | `admin/core/controllers/cperm.cfc:107` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:124` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:127` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:130` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:133` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:136` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:141` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:144` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:147` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:150` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:153` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:157` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:159` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.createbundle` | `admin/core/controllers/csettings.cfc:260` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.createbundle` | `admin/core/controllers/csettings.cfc:262` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.deleteplugin` | `core/mura/plugin/pluginManager.cfc:897` | include reference /plugins/#arguments.pluginDir#/plugin/config.xml.cfm (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.deleteplugin` | `core/mura/plugin/pluginManager.cfc:1260` | component reference pluginCFC.init; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.deleteplugin` | `core/mura/plugin/pluginManager.cfc:1264` | component reference pluginCFC.delete; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.deployplugin` | `admin/core/controllers/csettings.cfc:149` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.deployplugin` | `admin/core/controllers/csettings.cfc:152` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.list` | `admin/core/controllers/csettings.cfc:106` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.list` | `core/mura/autoUpdater/autoUpdater.cfc:217` | include reference coreUpdates/#rsCoreUpdates.name#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.sitecopy` | `admin/core/controllers/csettings.cfc:239` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updateplugin` | `core/mura/plugin/pluginManager.cfc:1127` | component reference pluginCFC.init (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updateplugin` | `core/mura/plugin/pluginManager.cfc:1132` | component reference pluginCFC.update (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updateplugin` | `core/mura/plugin/pluginManager.cfc:1136` | component reference pluginCFC.install (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updatesite` | `admin/core/controllers/csettings.cfc:221` | bean reference variables.fw.redirect (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updatesite` | `admin/core/controllers/csettings.cfc:223` | bean reference variables.fw.redirect (also reached from 4 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updatesite{action=add}` | `admin/core/controllers/csettings.cfc:203` | bean reference variables.fw.redirect (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:csettings.updatesite{action=update}` | `admin/core/controllers/csettings.cfc:186` | bean reference variables.fw.redirect (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ctrash.empty` | `admin/core/controllers/ctrash.cfc:105` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:ctrash.restore` | `core/mura/trash/trashManager.cfc:315` | bean reference retrieved.setAllValues; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.addtogroup` | `admin/core/controllers/cusers.cfc:388` | bean reference variables.fw.redirect (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.addtogroup` | `admin/core/controllers/cusers.cfc:394` | bean reference variables.fw.redirect (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.addtogroup` | `admin/core/controllers/cusers.cfc:397` | bean reference variables.fw.redirect (also reached from 11 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.advancedsearch` | `admin/core/controllers/cusers.cfc:443` | bean reference getPageContext().getRequest().getParameterMap; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.advancedsearchtocsv` | `admin/core/controllers/cusers.cfc:455` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.default` | `admin/core/controllers/cusers.cfc:175` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.downloadgroupmembers` | `admin/core/controllers/cusers.cfc:269` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.removefromgroup` | `admin/core/controllers/cusers.cfc:281` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.update` | `admin/core/controllers/cusers.cfc:351` | bean reference variables.fw.redirect (also reached from 5 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.updateaddress` | `admin/core/controllers/cusers.cfc:371` | bean reference variables.fw.redirect (also reached from 2 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.updateaddress` | `admin/core/controllers/cusers.cfc:373` | bean reference variables.fw.redirect (also reached from 2 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cusers.update{photo}` | `admin/core/controllers/cusers.cfc:348` | bean reference variables.fw.redirect (also reached from 2 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cwebservice.delete` | `admin/core/controllers/cwebservice.cfc:123` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cwebservice.save` | `admin/core/controllers/cwebservice.cfc:103` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:cwebservice.save` | `admin/core/controllers/cwebservice.cfc:113` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:home.redirect` | `admin/core/controllers/home.cfc:93` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:home.redirect` | `admin/core/controllers/home.cfc:118` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:home.redirect` | `admin/core/controllers/home.cfc:122` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:home.redirect` | `admin/core/controllers/home.cfc:126` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `ctl:home.redirect` | `admin/core/controllers/home.cfc:128` | bean reference variables.fw.redirect; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:appreload` | `core/mura/configBean.cfc:976` | include reference dbUpdates/#rsUpdates.name#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:doaction=forwardEmail` | `core/mura/email/emailUtility.cfc:395` | include reference #template#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:doaction=forwardEmail` | `core/mura/email/emailUtility.cfc:418` | include reference #template#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:doaction=login` | `core/mura/Handler/standardEventsHandler.cfc:542` | component reference createObject("component","#application.configBean.getWebRootMap()#.#arguments.event.getValue('siteid')#.includes.loginHandler").init().handleLogin; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:doaction=login` | `core/mura/Handler/standardEventsHandler.cfc:542` | component reference createObject("component","#application.configBean.getWebRootMap()#.#arguments.event.getValue('siteid')#.includes.loginHandler").init; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/Handler/standardEventsHandler.cfc:93` | include reference /muraWRM/config/lockdown.cfm; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/Handler/standardEventsHandler.cfc:986` | bean reference getpagecontext().getresponse().setcontenttype; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/Translator/standardHTMLTranslator.cfc:130` | include reference #arguments.event.getSite().getTemplateIncludePath()#/#renderer.getTemplate()#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/contentRenderer.cfc:2910` | bean reference variables.$.content; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/contentRenderer.cfc:2924` | include reference /#application.configBean.getWebRootMap()##application.configBean.getAdminDir()#/core/utilities/modal/toolbar.cfm; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/contentRenderer.cfc:2952` | include reference #lookupData.filePath#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:85` | bean reference context.getResponse (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:86` | bean reference response.getOutputStream (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:87` | bean reference response.setContentType (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:88` | bean reference response.setContentLength (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:89` | bean reference out.write (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:90` | bean reference out.flush (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/mura/content/file/renderLucee.cfc:92` | bean reference out.close (also reached from 3 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/templates/lockdown.cfm:200` | bean reference $.getBean('googleLoginProvider').generateAuthUrl; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/templates/lockdown.cfm:209` | bean reference $.getBean('facebookLoginProvider').generateAuthUrl; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/templates/lockdown.cfm:218` | bean reference $.getBean('githubLoginProvider').generateAuthUrl; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fe:render` | `core/templates/lockdown.cfm:227` | bean reference $.getBean('azureadLoginProvider').generateAuthUrl; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:communications/messages/{id}@get` | `legacy-fixtures/cfml/lib/auth.cfc:22` | component reference new mura.user.sessionUserFacade (also reached from 45 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:communications/messages/{id}@get` | `legacy-fixtures/cfml/lib/auth.cfc:109` | component reference createObject("component", "mura.MasaScope").init (also reached from 45 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:278` | bean reference application.settingsManager.getSite; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:279` | bean reference application.userManager.read; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:280` | bean reference local.user.getIsNew; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:280` | bean reference local.user.getType; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:281` | bean reference local.site.getPrivateUserPoolID; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:281` | bean reference local.site.getPublicUserPoolID; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:281` | bean reference local.user.getSiteID; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:esignature/requests@post` | `legacy-fixtures/cfml/modules/esignature.cfc:284` | bean reference local.user.getUserID; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:finance/records/{id}/approve@post` | `legacy-fixtures/cfml/lib/auth.cfc:46` | bean reference application.configBean.getReadOnlyQRYAttrs (also reached from 20 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:80` | bean reference application.userManager.read (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:81` | bean reference application.settingsManager.getSite (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:82` | bean reference local.user.getIsNew (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:83` | bean reference local.user.getType (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:84` | bean reference local.site.getPublicUserPoolID (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:84` | bean reference local.user.getSiteID (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:85` | bean reference local.site.getPrivateUserPoolID (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:people/persons/{id}/archive@get` | `legacy-fixtures/cfml/modules/people.cfc:85` | bean reference local.user.getSiteID (also reached from 1 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:surveys/surveys/{id}/responses@post` | `legacy-fixtures/cfml/lib/auth.cfc:131` | bean reference application.settingsManager.getSite(request.siteid).getPublicUserPoolID; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:surveys/surveys/{id}/responses@post` | `legacy-fixtures/cfml/lib/auth.cfc:131` | bean reference application.settingsManager.getSite; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:surveys/surveys/{id}/targets/bulk@post` | `legacy-fixtures/cfml/modules/surveys.cfc:274` | bean reference application.settingsManager.siteExists; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:surveys/surveys/{id}/targets/bulk@post` | `legacy-fixtures/cfml/modules/surveys.cfc:279` | bean reference application.settingsManager.getSite(local.target.siteID).getSiteID; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `fix:surveys/surveys/{id}/targets/bulk@post` | `legacy-fixtures/cfml/modules/surveys.cfc:279` | bean reference application.settingsManager.getSite; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:77` | bean reference getpagecontext().getresponse; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:107` | bean reference responseObject.setcontenttype; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:109` | bean reference responseObject.setcontenttype; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:139` | bean reference getpagecontext().getresponse().setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:149` | bean reference responseObject.setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:154` | bean reference responseObject.setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:159` | bean reference responseObject.setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:164` | bean reference responseObject.setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:169` | bean reference responseObject.setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/feed/v1` | `core/mura/client/api/feed/v1/feedApiUtility.cfc:175` | bean reference responseObject.getresponse().setStatus; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/_api/resource/variation` | `core/mura/executor.cfc:7` | include reference #filepath#; settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/oauth` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1472` | bean reference getpagecontext().getResponse (also reached from 8 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/oauth` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1473` | bean reference responseObject.setContentType (also reached from 8 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/oauth` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1476` | bean reference responseObject.setStatus (also reached from 8 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/oauth` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1478` | bean reference responseObject.setStatus (also reached from 8 more); settle it in harness/inventory/writer-overrides.yaml |
-| unresolved-call | `rte:/oauth` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:1501` | bean reference responseObject.setContentType (also reached from 8 more); settle it in harness/inventory/writer-overrides.yaml |

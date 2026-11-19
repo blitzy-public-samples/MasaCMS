@@ -8,7 +8,7 @@ import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type { RoutingIndex } from '../../src/cutover/types.js';
 import { bodyParamsFrom } from '../../src/dispatcher/body.js';
 import { createMatcher, type Matcher, type RoutedOutcome } from '../../src/dispatcher/match.js';
-import { createRequestWrites } from '../../src/dispatcher/request-writes.js';
+import { createRequestWrites, type RequestProbes } from '../../src/dispatcher/request-writes.js';
 import { buildTestGateway, type TestGateway } from '../helpers/app.js';
 import { TEST_SERVICE_NAMES } from '../helpers/env.js';
 import type { InflightRowRecord } from '../helpers/memory-store.js';
@@ -21,6 +21,8 @@ const PAGE_LOGIN = ['identity.login_state', 'identity.user_device', 'identity.us
 const FORM_UNITS = ['content.file', 'identity.redirect'];
 const RATING = ['content.content_rating', 'content.content_stats'];
 const ASYNC = '/index.cfm/_api/json/v1/default/?method=processAsyncObject';
+const ORPHAN_ARCHIVE = ['content.filename_archive'];
+const STATIC_FILE = '/core/vendor/jquery/jquery.min.js';
 
 // An empty env, so the committed inventory and cut-over files are used whatever OPT2_CUTOVER_DIR the shell sets.
 const PATHS = resolveGatewayPaths({});
@@ -32,6 +34,8 @@ interface Sent {
   url: string;
   form?: Record<string, string>;
   cookie?: string;
+  /** Probe answers the dispatcher obtained for the request. */
+  probes?: RequestProbes;
 }
 
 const matcher: Matcher = createMatcher({
@@ -47,7 +51,7 @@ const matcher: Matcher = createMatcher({
   requestWrites: createRequestWrites(inventory, ownership),
 });
 
-async function outcomeOf({ method, url, form, cookie }: Sent): Promise<RoutedOutcome> {
+async function outcomeOf({ method, url, form, cookie, probes }: Sent): Promise<RoutedOutcome> {
   const verb = method ?? (form === undefined ? 'GET' : 'POST');
   const bytes = form === undefined ? undefined : Buffer.from(new URLSearchParams(form).toString());
   const headers: Record<string, string> = {
@@ -55,7 +59,7 @@ async function outcomeOf({ method, url, form, cookie }: Sent): Promise<RoutedOut
     ...(cookie === undefined ? {} : { cookie }),
   };
   const contentType = bytes === undefined ? undefined : URLENCODED;
-  const outcome = await matcher.match({ url, method: verb, headers }, bodyParamsFrom(contentType, bytes, verb));
+  const outcome = await matcher.match({ url, method: verb, headers }, bodyParamsFrom(contentType, bytes, verb), v0002, probes);
   if (outcome.result === undefined) throw new TypeError(`${url} was relayed, not keyed`);
   return outcome;
 }
@@ -150,6 +154,50 @@ describe('legacy-bound entries under v0002 as the request shapes them', () => {
     expect(outcome.destination.kind).toBe('target');
     expect(outcome.entry).toBe(v0002.entryFor('cfm:/core/modules/v1/rater/ajax/saverate.cfm'));
     expect(outcome.tableScope).toBeUndefined();
+  });
+
+  it.each<[string, Sent, Record<string, string[]> | undefined]>([
+    ['an anonymous home page render', { url: '/' }, { orphanArchive: ORPHAN_ARCHIVE }],
+    ['a page render that may 404', { url: '/missing-page/' }, { orphanArchive: ORPHAN_ARCHIVE }],
+    ['a missing template rendered as a page', { url: '/zz-missing.cfm' }, { orphanArchive: ORPHAN_ARCHIVE }],
+    ['a reload in front of a page render', { url: '/missing-page/?appreload' }, { orphanArchive: ORPHAN_ARCHIVE }],
+    ['a static file with remember-me cookies', { url: STATIC_FILE, cookie: REMEMBER_ME }, { orphanArchive: ORPHAN_ARCHIVE, cfml: IDENTITY_LOGIN }],
+    ['a static file with both probes answered', { url: STATIC_FILE, cookie: REMEMBER_ME, probes: { orphanArchive: false, cfml: false } }, undefined],
+    ['a display object render', { url: `${ASYNC}&object=search` }, undefined],
+    ['a page on remember-me cookies', { url: '/?doaction=subscribe', cookie: REMEMBER_ME }, { orphanArchive: ORPHAN_ARCHIVE }],
+  ])('reports for %s the pending probes %j', async (_label, sent, pending) => {
+    expect((await outcomeOf(sent)).pendingProbes).toEqual(pending);
+  });
+
+  it('reports no pending probes for a target entry', async () => {
+    const outcome = await outcomeOf({ url: '/core/modules/v1/rater/ajax/saveRate.cfm', form: { contentID: 'C1', rate: '5' }, cookie: REMEMBER_ME });
+    expect(outcome.destination.kind).toBe('target');
+    expect(outcome.pendingProbes).toBeUndefined();
+  });
+
+  it.each<[string, Sent, string, string[]]>([
+    ['a 404 render reaching an orphan archive row', { url: '/missing-page/', probes: { orphanArchive: true } }, 'page:render', ORPHAN_ARCHIVE],
+    ['a 404 render reaching none', { url: '/missing-page/', probes: { orphanArchive: false } }, 'page:render', []],
+    [
+      'a missing static file legacy renders, with remember-me cookies',
+      { url: STATIC_FILE, cookie: REMEMBER_ME, probes: { orphanArchive: false, cfml: true } },
+      'static:/core/vendor/**',
+      IDENTITY_LOGIN,
+    ],
+    [
+      'a missing static file reaching an orphan archive row',
+      { url: '/core/vendor/missing.js', probes: { orphanArchive: true } },
+      'static:/core/vendor/**',
+      ORPHAN_ARCHIVE,
+    ],
+    ['a static file legacy serves as a file', { url: STATIC_FILE, cookie: REMEMBER_ME, probes: { orphanArchive: false, cfml: false } }, 'static:/core/vendor/**', []],
+  ])('widens %s (%j) under %s by the target units %j', async (_label, sent, route, units) => {
+    const [outcome, unprobed] = await Promise.all([outcomeOf(sent), outcomeOf({ ...sent, probes: undefined })]);
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    expect(outcome.entry?.route).toBe(route);
+    expect(targetUnits(outcome)).toEqual([...new Set([...targetUnits(unprobed), ...units])].sort());
+    expect(targetUnits(unprobed).filter((unit) => units.includes(unit))).toEqual([]);
+    expect(outcome.pendingProbes).toBeUndefined();
   });
 
   it('shapes the page behind a reload before the reload joins its units', async () => {
@@ -303,10 +351,15 @@ describe('legacy-bound public requests through the gateway under v0002', () => {
 
   it.each([
     ['a sessionless REST call', '/_api/rest/v1/default/?method=processAsyncObject&object=search'],
-    ['a static file', '/core/vendor/jquery/jquery.min.js'],
+    ['a static file legacy serves as a file', STATIC_FILE],
   ])('opens no window for %s carrying remember-me cookies', async (_label, url) => {
-    const { windows } = await send({ url, cookie: REMEMBER_ME });
-    expect(windows).toEqual([]);
+    gw.legacy.staticFiles.add(STATIC_FILE);
+    try {
+      const { windows } = await send({ url, cookie: REMEMBER_ME });
+      expect(windows).toEqual([]);
+    } finally {
+      gw.legacy.staticFiles.delete(STATIC_FILE);
+    }
   });
 
   it('keeps serving anonymous page renders while migration refuses every window, as when strategies-content is down', async () => {

@@ -4,7 +4,7 @@
   "generatedAt": null,
   "status": "pending-run",
   "inventory": "opt2/inventory/legacy-inventory.json",
-  "passCondition": "README.md, TRACEABILITY.md and contracts present with the pinned SHA; every inventory item the service carries or owns has a traceability row",
+  "passCondition": "README.md, TRACEABILITY.md and contracts present with the pinned SHA; every inventory item the service carries or owns has a traceability row; every cited test name is a test title of its cited file",
   "services": [
     {
       "service": "identity",
@@ -31,6 +31,10 @@
         "carriedOrOwned": null,
         "covered": null,
         "missing": []
+      },
+      "citations": {
+        "names": null,
+        "unresolved": []
       },
       "result": "pending-run"
     },
@@ -60,6 +64,10 @@
         "covered": null,
         "missing": []
       },
+      "citations": {
+        "names": null,
+        "unresolved": []
+      },
       "result": "pending-run"
     },
     {
@@ -87,6 +95,10 @@
         "carriedOrOwned": null,
         "covered": null,
         "missing": []
+      },
+      "citations": {
+        "names": null,
+        "unresolved": []
       },
       "result": "pending-run"
     },
@@ -116,6 +128,10 @@
         "covered": null,
         "missing": []
       },
+      "citations": {
+        "names": null,
+        "unresolved": []
+      },
       "result": "pending-run"
     },
     {
@@ -143,6 +159,10 @@
         "carriedOrOwned": null,
         "covered": null,
         "missing": []
+      },
+      "citations": {
+        "names": null,
+        "unresolved": []
       },
       "result": "pending-run"
     },
@@ -172,6 +192,10 @@
         "covered": null,
         "missing": []
       },
+      "citations": {
+        "names": null,
+        "unresolved": []
+      },
       "result": "pending-run"
     },
     {
@@ -199,6 +223,10 @@
         "carriedOrOwned": null,
         "covered": null,
         "missing": []
+      },
+      "citations": {
+        "names": null,
+        "unresolved": []
       },
       "result": "pending-run"
     },
@@ -228,6 +256,10 @@
         "covered": null,
         "missing": []
       },
+      "citations": {
+        "names": null,
+        "unresolved": []
+      },
       "result": "pending-run"
     },
     {
@@ -256,6 +288,10 @@
         "covered": null,
         "missing": []
       },
+      "citations": {
+        "names": null,
+        "unresolved": []
+      },
       "result": "pending-run"
     },
     {
@@ -283,6 +319,10 @@
         "carriedOrOwned": null,
         "covered": null,
         "missing": []
+      },
+      "citations": {
+        "names": null,
+        "unresolved": []
       },
       "result": "pending-run"
     }

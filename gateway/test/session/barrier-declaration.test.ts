@@ -203,7 +203,9 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
         open: async () => ({ windowId: 'W1' }),
         complete: async () => ({ state: 'closed' as const }),
         scope: () => ({ table: true as const }),
+        probeOrphanArchive: () => Promise.resolve(false),
       },
+      staticFiles: { isCfml: () => Promise.resolve(true) },
       barrier,
       resolver: {
         resolveSession: async () => session,

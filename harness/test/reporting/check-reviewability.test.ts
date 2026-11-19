@@ -35,6 +35,7 @@ import type {
   ReviewItem,
   ServiceName,
   ServiceReport,
+  TestCitation,
 } from '../../src/reporting/check-reviewability.js';
 
 const SHA = pinnedSha();
@@ -46,6 +47,9 @@ const FIXTURES = fileURLToPath(new URL('../fixtures/', import.meta.url));
 
 const fixture = (relPath: string): Promise<string> => readFile(path.join(FIXTURES, relPath), 'utf8');
 const TRACEABILITY = await fixture('reporting/traceability-identity.md.txt');
+/** The test file the traceability fixture's first row cites, holding the title that row names. */
+const ADMIN_SESSIONS_TEST = await fixture('reporting/admin-sessions.test.ts.txt');
+const CITED_TITLES_TEST = await fixture('reporting/cited-titles.test.ts.txt');
 const README = await fixture('reporting/readme-service.md.txt');
 const OPENAPI = await fixture('reporting/openapi-sample.yaml');
 const EVENT = await fixture('reporting/event-sample.json');
@@ -104,14 +108,14 @@ const CEMAIL_PROPOSED: Inventory = (() => {
   return inventory;
 })();
 
-/** Code and test files the traceability fixture's rows cite. */
+/** Code files the traceability fixture's rows cite. */
 const FIXTURE_REFS = [
   'services/identity/src/routes/admin-sessions.ts',
   'services/identity/src/domain/login.ts',
   'services/identity/src/routes/admin-permissions.ts',
   'services/identity/src/domain/permissions.ts',
-  'services/identity/test/unit/admin-sessions.test.ts',
 ];
+const FIXTURE_TEST = 'services/identity/test/unit/admin-sessions.test.ts';
 
 const EVENT_FILE = 'contracts/events/identity.group.changed.v1.json';
 const TABLE_HEADER = [
@@ -203,6 +207,7 @@ async function buildPassingIdentity(
   const traceability = `${overrides.traceability ?? TRACEABILITY}${rows.join('\n')}\n`;
   await buildService(dir, 'identity', { ...overrides, traceability });
   await touch(dir, [...FIXTURE_REFS, ...UNCOVERED_BY_FIXTURE.flatMap((id) => rowRefs('identity', id))]);
+  await writeTree(dir, { [FIXTURE_TEST]: ADMIN_SESSIONS_TEST });
 }
 
 function deps(dir: string, inventory: Inventory = LOGIN_CARRIED, ownership: Ownership = OWNERSHIP): CheckDeps {
@@ -252,12 +257,13 @@ describe('parseTraceabilityRows', () => {
     const rows = parseTraceabilityRows(TRACEABILITY);
 
     expect(
-      rows.map(({ line, cells, sourceRefs, codePaths, testRefs }) => ({
+      rows.map(({ line, cells, sourceRefs, codePaths, testRefs, testNames }) => ({
         line,
         columns: cells.length,
         sourceRefs,
         codePaths,
         testRefs,
+        testNames,
       })),
     ).toEqual([
       {
@@ -266,6 +272,12 @@ describe('parseTraceabilityRows', () => {
         sourceRefs: ['admin/core/controllers/clogin.cfc:101-113'],
         codePaths: ['services/identity/src/routes/admin-sessions.ts', 'services/identity/src/domain/login.ts'],
         testRefs: ['services/identity/test/unit/admin-sessions.test.ts', 'GS-ID-01'],
+        testNames: [
+          {
+            file: 'services/identity/test/unit/admin-sessions.test.ts',
+            names: ['redirects a successful login with a return URL %s, %j, to %j'],
+          },
+        ],
       },
       {
         line: 8,
@@ -273,6 +285,7 @@ describe('parseTraceabilityRows', () => {
         sourceRefs: ['admin/core/controllers/clogin.cfc:115-118'],
         codePaths: ['services/identity/src/routes/admin-sessions.ts', 'services/identity/src/domain/login.ts'],
         testRefs: ['GS-ID-01'],
+        testNames: [],
       },
       {
         line: 9,
@@ -280,8 +293,68 @@ describe('parseTraceabilityRows', () => {
         sourceRefs: ['admin/core/controllers/cperm.cfc:119-160'],
         codePaths: ['services/identity/src/routes/admin-permissions.ts', 'services/identity/src/domain/permissions.ts'],
         testRefs: ['GS-ID-07'],
+        testNames: [],
       },
     ]);
+  });
+
+  it.each<[string, string, TestCitation[]]>([
+    [
+      'a ›-led list ending at a GS id after a semicolon',
+      '`test/unit/a.test.ts` › "first", "second"; GS-ID-01',
+      [{ file: 'test/unit/a.test.ts', names: ['first', 'second'] }],
+    ],
+    [
+      'names holding quotes, the last ending in two',
+      '`test/unit/a.test.ts` "raises %s as "%s"", "stores contentid """',
+      [{ file: 'test/unit/a.test.ts', names: ['raises %s as "%s"', 'stores contentid ""'] }],
+    ],
+    [
+      'a parenthetical after a name, quotes inside it skipped',
+      '`test/unit/a.test.ts` › "answers %s" (`findOne`, "not a name"), "keeps the row"',
+      [{ file: 'test/unit/a.test.ts', names: ['answers %s', 'keeps the row'] }],
+    ],
+    [
+      'a helper code span between the file and its name',
+      '`test/isolation/isolation.test.ts` `defineIsolationSuite` "tenant isolation: x"',
+      [{ file: 'test/isolation/isolation.test.ts', names: ['tenant isolation: x'] }],
+    ],
+    [
+      'two files, a line suffix and a repo-relative path',
+      '`test/unit/a.test.ts:12` › "one"; `web/test/b.test.ts` "two", "three"',
+      [
+        { file: 'test/unit/a.test.ts', names: ['one'] },
+        { file: 'web/test/b.test.ts', names: ['two', 'three'] },
+      ],
+    ],
+    [
+      'quotes after a semicolon or a GS id, which belong to no file',
+      '`test/unit/a.test.ts` "kept"; "orphan" `test/unit/b.test.ts`, GS-ID-02 "orphan"',
+      [
+        { file: 'test/unit/a.test.ts', names: ['kept'] },
+        { file: 'test/unit/b.test.ts', names: [] },
+      ],
+    ],
+    [
+      'a bare test path and a double-backtick span holding a quote',
+      '`` "#<>`{} `` test/unit/a.test.ts › "bare"',
+      [{ file: 'test/unit/a.test.ts', names: ['bare'] }],
+    ],
+    [
+      'a name no quote closes',
+      '`test/unit/a.test.ts` › "open ended',
+      [{ file: 'test/unit/a.test.ts', names: ['open ended'] }],
+    ],
+    ['an unclosed backtick before a quote', 'see ` "x"', []],
+    [
+      'an unclosed parenthetical',
+      '`test/unit/a.test.ts` "x" (see "y"',
+      [{ file: 'test/unit/a.test.ts', names: ['x'] }],
+    ],
+  ])('parses the cited test names of %s', (_name, cell, testNames) => {
+    const [row] = parseTraceabilityRows(`| a | b |\n|---|---|\n| x | ${cell} |\n`);
+
+    expect(row?.testNames).toEqual(testNames);
   });
 
   it.each([
@@ -323,6 +396,7 @@ describe('parseTraceabilityRows', () => {
         sourceRefs: ['core/setup/db/mssql.sql:467-505'],
         codePaths: [],
         testRefs: [],
+        testNames: [],
       },
     ]);
   });
@@ -572,6 +646,7 @@ describe('checkService', () => {
         events: [{ path: `services/identity/${EVENT_FILE}`, present: true, sha: SHA }],
       },
       inventoryItems: { carriedOrOwned: 4, covered: 4, missing: [] },
+      citations: { names: 1, unresolved: [] },
       result: 'pass',
     });
   });
@@ -775,6 +850,16 @@ describe('checkService', () => {
       ],
       ['a test file not on disk', [testAbsent], { id: MEMB, reason: 'test-missing', line: 10, paths: [ABSENT_TEST] }],
       [
+        'a test name its file does not hold',
+        [`| \`${MEMB}\` | ${SOURCE} | carry | \`${CODE}\` | \`${TEST}\` › "no such test" |`],
+        { id: MEMB, reason: 'test-missing', line: 10, paths: [`${TEST} › "no such test"`] },
+      ],
+      [
+        'an absent test file and a name of a present one',
+        [`| \`${MEMB}\` | ${SOURCE} | carry | \`${CODE}\` | \`${ABSENT_TEST}\` "a"; \`${TEST}\` "b" |`],
+        { id: MEMB, reason: 'test-missing', line: 10, paths: [ABSENT_TEST, `${TEST} › "b"`] },
+      ],
+      [
         'an incomplete row before one with an absent test file',
         [incomplete, testAbsent],
         { id: MEMB, reason: 'test-missing', line: 11, paths: [ABSENT_TEST] },
@@ -826,11 +911,217 @@ describe('checkService', () => {
   it.each<[string, (dir: string) => Promise<unknown>, string]>([
     ['README.md is a directory', (dir) => mkdir(path.join(dir, 'services/identity/README.md')), 'EISDIR'],
     ['contracts/events is a file', (dir) => writeTree(dir, { 'services/identity/contracts/events': '' }), 'ENOTDIR'],
+    ['a cited test file is a directory', (dir) => mkdir(path.join(dir, FIXTURE_TEST), { recursive: true }), 'EISDIR'],
   ])('rethrows a read error other than a missing file when %s', async (_name, arrange, code) => {
     await buildService(root, 'identity', { readme: null, event: null });
     await arrange(root);
 
     await expect(checkService('identity', deps(root))).rejects.toMatchObject({ code });
+  });
+});
+
+describe('cited test names', () => {
+  const CITED = 'test/unit/cited.test.ts';
+  /** The cited fixture and its imports, a web test of import forms, and tests of bound registrars and case inputs. */
+  const TITLE_TREE: Record<string, string> = {
+    [`services/identity/${CITED}`]: CITED_TITLES_TEST,
+    'services/identity/test/unit/helpers/shared.ts': [
+      "import { describe, it } from 'vitest';",
+      "export function sharedCases(): void { it('answers 404 for an unknown id', () => {}); }",
+      'export function block(name: string, fn: () => void): void { describe(name, fn); }',
+    ].join('\n'),
+    'services/identity/test/unit/helpers/types.ts': [
+      "import { it } from 'vitest';",
+      'export type Row = { from: string; action: string; role: string; guard: string | null; status: number };',
+      "it('only a type file title', () => {});",
+    ].join('\n'),
+    'services/identity/test/unit/cases/index.ts': [
+      'export const ROWS = [',
+      "  { from: 'DRAFT', action: 'submit', role: 'timesheets.employee', guard: 'blackout', status: 409 },",
+      '];',
+    ].join('\n'),
+    'services/identity/test/unit/setup': 'not a module\n',
+    'platform/src/testing/index.ts': [
+      'export function defineSuite(api: { describe: Function; it: Function }, label: string): void {',
+      "  api.describe(`tenant isolation: ${label}`, () => api.it('seeds one row per tenant', () => {}));",
+      '}',
+    ].join('\n'),
+    'web/test/screens/view.test.ts': [
+      "import { it } from 'vitest';",
+      "import { heading } from '../helpers';",
+      "import './panel-cases.js';",
+      "it('renders the panel title', () => heading());",
+    ].join('\n'),
+    'web/test/helpers/index.ts': "export function heading(): void { it('shows the helper heading', () => {}); }",
+    'web/test/screens/panel-cases.tsx': "it('mounts the panel', () => <h1>panel</h1>);",
+    'services/identity/test/unit/routes.test.ts': [
+      "const route = { path: '/v1/x', note: 'stray literal' };",
+      'app.get(route.path, () => {});',
+      'app.post(`${route.path}`, () => {});',
+      "it('serves the route', () => {});",
+    ].join('\n'),
+    'services/identity/test/unit/probe-route.test.ts':
+      "it('stores the row', () => {});\napp.get('/not-a-test', () => {});",
+    'services/identity/test/unit/probe-case.test.ts':
+      "it.each([['the real case']])('%s', () => {});\nconst response = { message: 'this is not a test title' };",
+    'services/identity/test/unit/helpers/suites.ts': [
+      "import { describe, it } from 'vitest';",
+      "import type { SuiteAPI } from 'vitest';",
+      'export type Block = (name: string, fn: () => void) => unknown;',
+      'type Runner = typeof it;',
+      'export const describeWithDb = describe.skipIf(!process.env.PG);',
+      'export function defineCases(block: Block = describe): void {',
+      "  block('stored-row cases', () => it('moves a queued job', () => {}));",
+      '}',
+      'export function defineTyped(run: typeof describe, suite: SuiteAPI, aliased: Runner): void {',
+      "  run('typed by typeof', () => {});",
+      "  suite('typed as SuiteAPI', () => {});",
+      "  aliased('typed by an alias', () => {});",
+      '}',
+    ].join('\n'),
+    'services/identity/test/unit/bound.test.ts': [
+      "import { describe, it } from 'vitest';",
+      "import { defineCases, defineTyped, describeWithDb } from './helpers/suites.js';",
+      'defineCases();',
+      "describeWithDb('database cases', () => {});",
+      'defineTyped(describe, describe, it);',
+      'function helper(label: string, fn: () => void): void { fn(); }',
+      "helper('a helper title', () => {});",
+      "/x/.test('a regex subject');",
+      'const schema = { describe: (text: string) => text };',
+      "schema.describe('a schema description');",
+    ].join('\n'),
+    'services/identity/test/unit/inputs.test.ts': [
+      "import { it } from 'vitest';",
+      "const unrelated = { message: 'an unrelated literal' };",
+      "[{ name: 'answers each case' }].forEach((c) => it(c.name, () => {}));",
+      'const BUILT: Record<string, { name: string }[]> = {};',
+      "for (const verb of ['Get', 'Head']) BUILT[`favorites${verb}`] = [{ name: `${verb.toUpperCase()} saves it` }];",
+      "BUILT.favoritesGet?.push({ name: 'refuses a bad credential' });",
+      'const rows = Object.entries(BUILT).flatMap(([operationId, cases]) =>',
+      '  cases.map((c) => ({ operationId, title: c.name })),',
+      ');',
+      "it.each(rows)('$operationId $title', () => {});",
+    ].join('\n'),
+  };
+  const citeIn = (file: string, ...names: string[]): string =>
+    `\`test/unit/${file}\` › ${names.map((name) => `"${name}"`).join(', ')}`;
+  const cite = (...names: string[]): string => `\`${CITED}\` › ${names.map((name) => `"${name}"`).join(', ')}`;
+
+  it.each<[string, string, string[]]>([
+    ['an exact title', cite('stores the row'), []],
+    ['a %s and %j template filled in', cite('maps 1 to {"a":1}'), []],
+    ['a %% escape beside a %s', cite('keeps 100% of rows'), []],
+    ['a $name template filled in', cite('handles stored rows'), []],
+    ['a ${key} template as written and filled in', cite('admits ${key} only', 'admits cusers only'), []],
+    ['a describe › it path', cite('cited titles › stores the row'), []],
+    [
+      'a relative helper and a case helper',
+      cite('answers 404 for an unknown id', 'legacy block › runs inside the block'),
+      [],
+    ],
+    [
+      'an @opt2/platform/testing helper title',
+      cite('tenant isolation: people tables', 'tenant isolation: people tables › seeds one row per tenant'),
+      [],
+    ],
+    ['a data-driven %s case name', cite('refuses a blank name'), []],
+    ['a computed %s title with a nested template', cite('DRAFT submit as timesheets.employee (blackout) → 409'), []],
+    ['a $operationId $title case', cite('getUser answers the stored user'), []],
+    ['a case name its own .each rows hold', citeIn('probe-case.test.ts', 'the real case'), []],
+    [
+      'a forEach case and cases written into a table',
+      citeIn(
+        'inputs.test.ts',
+        'answers each case',
+        'favoritesHead HEAD saves it',
+        'favoritesGet refuses a bad credential',
+      ),
+      [],
+    ],
+    [
+      'a helper-parameter registrar, an imported describe.skipIf and typed registrar parameters',
+      citeIn(
+        'bound.test.ts',
+        'stored-row cases › moves a queued job',
+        'database cases',
+        'typed by typeof',
+        'typed as SuiteAPI',
+        'typed by an alias',
+      ),
+      [],
+    ],
+    ['a const title and a looped non-literal one', cite('reads the const title', 'loops over a list'), []],
+    ['a name ending in a quote', cite('stores contentid ""'), []],
+    [
+      'a name before a parenthetical',
+      `\`${CITED}\` › "answers %s as Masa does" (\`findOneStored\`), "stores the row"`,
+      [],
+    ],
+    ['a \\u2019 escape, decoded', cite('can’t save twice'), []],
+    [
+      'extensionless, index and .tsx imports',
+      '`web/test/screens/view.test.ts` › "renders the panel title", "shows the helper heading", "mounts the panel"',
+      [],
+    ],
+    ['a name no title holds', cite('no such test'), ['no such test']],
+    ['other text for a %s title', cite('refuses anything else'), ['refuses anything else']],
+    [
+      'an operation or a case name alone',
+      cite('getUser', 'answers the stored user'),
+      ['getUser', 'answers the stored user'],
+    ],
+    ['a route a non-registrar call takes', citeIn('probe-route.test.ts', '/not-a-test'), ['/not-a-test']],
+    [
+      'a literal outside the inputs of a %s registration',
+      citeIn('probe-case.test.ts', 'this is not a test title'),
+      ['this is not a test title'],
+    ],
+    [
+      'a literal outside every registration’s inputs',
+      citeIn('inputs.test.ts', 'an unrelated literal', 'favoritesGet an unrelated literal'),
+      ['an unrelated literal', 'favoritesGet an unrelated literal'],
+    ],
+    [
+      'titles of an unbound helper, a regex test and a describe property without a body',
+      citeIn('bound.test.ts', 'a helper title', 'a regex subject', 'a schema description'),
+      ['a helper title', 'a regex subject', 'a schema description'],
+    ],
+    [
+      'a computed title missing its literal words',
+      cite('DRAFT submit by timesheets.employee → 409'),
+      ['DRAFT submit by timesheets.employee → 409'],
+    ],
+    ['a title only a type-only import holds', cite('only a type file title'), ['only a type file title']],
+    ['an identifier a one-letter template ends', cite('lookupSiteFeedSettings'), ['lookupSiteFeedSettings']],
+    ['a name in an absent test file', '`test/unit/absent.test.ts` › "stores the row"', ['stores the row']],
+    [
+      'a literal beside non-literal titles no registrar takes',
+      '`test/unit/routes.test.ts` › "serves the route", "stray literal"',
+      ['stray literal'],
+    ],
+  ])('checks %s on a row naming no item', async (_name, cell, unresolved) => {
+    const row = `| \`fe:uncovered\` | \`core/index.cfm:1-2\` | carry | \`src/domain/uncovered.ts\` | ${cell} |`;
+    await buildPassingIdentity(root, { traceability: `${TRACEABILITY}${row}\n` });
+    await writeTree(root, TITLE_TREE);
+
+    const report = await checkService('identity', deps(root));
+
+    expect(report.citations.unresolved.map((entry) => [entry.line, entry.name])).toEqual(
+      unresolved.map((name) => [10, name]),
+    );
+    expect(report.inventoryItems.missing).toEqual([]);
+    expect(report.result).toBe(unresolved.length === 0 ? 'pass' : 'fail');
+  });
+
+  it('counts every cited name, the fixture row included', async () => {
+    const row = `| \`fe:uncovered\` | \`core/index.cfm:1-2\` | carry | — | ${cite('stores the row', 'no such test')} |`;
+    await buildPassingIdentity(root, { traceability: `${TRACEABILITY}${row}\n` });
+    await writeTree(root, TITLE_TREE);
+
+    await expect(checkService('identity', deps(root))).resolves.toMatchObject({
+      citations: { names: 3, unresolved: [{ line: 10, file: CITED, name: 'no such test' }] },
+    });
   });
 });
 
@@ -883,6 +1174,9 @@ describe('buildReport and markdownLines', () => {
       '- `ctl:cusers.update{type=2,action=add}` (`admin:cusers.update{type=2,action=add}`): no-row',
       '- `tbl:tusers`: no-row',
       '',
+      '## Unresolved test names',
+      '',
+      'None.',
     ]);
   });
 
@@ -912,6 +1206,7 @@ describe('buildReport and markdownLines', () => {
           },
         ],
       },
+      citations: { names: 3, unresolved: [{ line: 9, file: 'test/unit/run-export.test.ts', name: 'runs %s twice' }] },
       result: 'fail',
     };
     const report: ReviewabilityReport = {
@@ -932,6 +1227,14 @@ describe('buildReport and markdownLines', () => {
     expect(lines).toContain(
       '- `api:reporting.exports` (`fixture:reporting/exports`): test-missing at line 8: `test/unit/exports.test.ts`',
     );
+    expect(lines.slice(lines.indexOf('## Unresolved test names'))).toEqual([
+      '## Unresolved test names',
+      '',
+      '### reporting',
+      '',
+      '- line 9: `test/unit/run-export.test.ts` › "runs %s twice"',
+      '',
+    ]);
   });
 
   it('renders a service without event contracts and states None. when nothing is missing', async () => {
@@ -940,7 +1243,7 @@ describe('buildReport and markdownLines', () => {
     const lines = markdownLines(await buildReport(['identity'], deps(root), clock));
 
     expect(lines).toContain('| identity | ok | ok | ok | none | 6 | 4 | 4 | 0 | pass |');
-    expect(lines.slice(-3)).toEqual(['## Missing items', '', 'None.']);
+    expect(lines.slice(-7)).toEqual(['## Missing items', '', 'None.', '', '## Unresolved test names', '', 'None.']);
   });
 });
 

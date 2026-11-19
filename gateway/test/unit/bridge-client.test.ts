@@ -13,6 +13,7 @@ import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, fixedClock } from '@o
 import {
   createBridgeClient,
   createSiteListClient,
+  createStaticFileClient,
   createVersionMenuClient,
   isBridgeSessionMismatch,
   type BridgeClient,
@@ -1063,5 +1064,74 @@ describe('createVersionMenuClient', () => {
     const failure = await failureOf(menus().versionMenu());
 
     expect(failure.cause).toBeInstanceOf(SyntaxError);
+  });
+});
+
+describe('createStaticFileClient', () => {
+  const files = (overrides: Partial<BridgeClientOptions> = {}) =>
+    createStaticFileClient({
+      legacyOrigin: double.url,
+      hmacKey: VECTOR_KEY,
+      clock: fixedClock(NOW),
+      fetch: double.fetch,
+      ...overrides,
+    });
+
+  it('sends a signed POST of the path in a JSON body to site.cfm?op=static without cookies, as the bridge bot', async () => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { cfml: false, serverTime: SERVER_TIME });
+    });
+
+    await expect(files().isCfml('/core/vendor/jquery/jquery.min.js')).resolves.toBe(false);
+
+    expect(double.requests).toHaveLength(1);
+    const [req] = double.requests;
+    expect(req?.method).toBe('POST');
+    expect(req?.url).toBe(`${SITE_PAGE}?op=static`);
+    expect(req?.headers.cookie).toBeUndefined();
+    expect(req?.headers['user-agent']).toBe('opt2-legacy-bridge-bot');
+    expect(req?.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(req?.body.toString('utf8') ?? '')).toEqual({ path: '/core/vendor/jquery/jquery.min.js' });
+    const assertion = assertionOf(req);
+    const { exp, nonce, ...named } = claimsOf(assertion);
+    expect(named).toEqual({ aud: 'legacy-bridge', op: 'site.static', sid: '', sub: '', siteId: '' });
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(exp - VECTOR_NOW_SECONDS).toBe(60);
+  });
+
+  it('is answered by the legacy origin double behind its assertion guard, true but for a file it serves', async () => {
+    const legacy = createInProcessLegacyOrigin({ bridgeKey: VECTOR_KEY, clock: fixedClock(NOW) });
+    try {
+      legacy.staticFiles.add('/themes/default/logo.png');
+      const over = files({ legacyOrigin: legacy.url, fetch: legacy.fetch });
+      await expect(over.isCfml('/themes/default/logo.png')).resolves.toBe(false);
+      await expect(over.isCfml('/themes/default/missing.png')).resolves.toBe(true);
+      await expect(files({ legacyOrigin: legacy.url, fetch: legacy.fetch, hmacKey: 'not-the-bridge-key' }).isCfml('/themes/default/logo.png')).resolves.toBe(true);
+      expect(legacy.staticCalls.map(({ path, status, body }) => ({ path, status, cfml: (body as { cfml?: unknown }).cfml }))).toEqual([
+        { path: '/themes/default/logo.png', status: 200, cfml: false },
+        { path: '/themes/default/missing.png', status: 200, cfml: true },
+      ]);
+    } finally {
+      await legacy.close();
+    }
+  });
+
+  it.each<[string, (res: ServerResponse) => void]>([
+    ['an answer of true', (res) => sendJson(res, 200, { cfml: true, serverTime: SERVER_TIME })],
+    ['a 400 refusal', (res) => sendBytes(res, 400, '{"error":"badRequest","message":"invalid path"}')],
+    ['a guard 403', (res) => sendBytes(res, 403, '')],
+    ['a 500', (res) => sendBytes(res, 500, '{"error":"serverError","message":"java.io.IOException"}')],
+    ['a cfml value that is not a boolean', (res) => sendJson(res, 200, { cfml: 'NO', serverTime: SERVER_TIME })],
+    ['a body without cfml', (res) => sendJson(res, 200, { serverTime: SERVER_TIME })],
+    ['a JSON null body', (res) => sendBytes(res, 200, 'null', { 'content-type': 'application/json; charset=utf-8' })],
+    ['a body that is not JSON', (res) => sendBytes(res, 200, '<html>Masa CMS</html>', { 'content-type': 'text/html' })],
+  ])('answers true, never throwing, for %s', async (_case, answer) => {
+    double.setHandler((_req, res) => answer(res));
+
+    await expect(files().isCfml('/themes/default/logo.png')).resolves.toBe(true);
+  });
+
+  it('answers true when legacy cannot be reached', async () => {
+    await expect(files({ fetch: refusingFetch() }).isCfml('/themes/default/logo.png')).resolves.toBe(true);
   });
 });

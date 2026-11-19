@@ -23,7 +23,6 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 const SERVICE = 'strategies-content';
 const USER = cfId('U', 1);
 const SITE_B = TENANT_B.siteId;
-const TREE_PATH = `/v1/sites/${SITE_ID}/content/tree`;
 const FOLDER = cfId('F', 1);
 const ALPHA = cfId('C', 1);
 const BRAVO = cfId('C', 2);
@@ -121,12 +120,13 @@ describe.skipIf(!(await pgAvailable()))('carch.list in-view sort', () => {
     await openGates(fx.handle.app, { units: CONTENT_UNITS, holderId, state });
   };
 
-  /** The tree page's answer to `fields` for the level under the folder, checked against the contract unless it is the undeclared legacy 500. */
-  const tree = async (fields: ReadonlyArray<readonly [string, string]>): Promise<InjectResponse> => {
+  /** The tree page's answer to `fields` for the level under the folder, the path and token naming `site`, checked against the contract unless it is the undeclared legacy 500. */
+  const tree = async (fields: ReadonlyArray<readonly [string, string]>, site: string = SITE_ID): Promise<InjectResponse> => {
+    const path = `/v1/sites/${site}/content/tree`;
     const query = new URLSearchParams([['topid', FOLDER], ['moduleid', SITE_TREE], ...fields].map(([name, value]): [string, string] => [name, value])).toString();
-    const res = await app.inject({ method: 'GET', url: `${TREE_PATH}?${query}`, headers: await userHeaders({ sub: USER, site: SITE_ID, roles: [Roles.s2], s2: true }) });
+    const res = await app.inject({ method: 'GET', url: `${path}?${query}`, headers: await userHeaders({ sub: USER, site, roles: [Roles.s2], s2: true }) });
     if (res.statusCode !== 500) {
-      assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: TREE_PATH, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+      assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
     }
     return res;
   };
@@ -294,6 +294,23 @@ describe.skipIf(!(await pgAvailable()))('carch.list in-view sort', () => {
       }),
     );
     expect(await stored(TENANT_B.tenantId)).toEqual(otherTenant);
+  });
+
+  it.each([
+    ['its stored spelling', SITE_ID],
+    ['upper case', SITE_ID.toUpperCase()],
+    ['mixed case', 'Tenant-A'],
+  ] as const)('reads and renumbers the stored site rows for the site in %s, echoing that spelling in rc.siteid', async (_label, site) => {
+    await fx.inTenant((tx) =>
+      tx.query(`UPDATE ${fx.handle.schema}.content SET sortby = 'title', sortdirection = 'desc' WHERE contentid = $1::bpchar AND active = 1`, [FOLDER]),
+    );
+    const before = await stored();
+    const rc = rcOf(await tree([['saveSort', 'true'], ['sortBy', 'orderno'], ['sortDirection', 'asc'], ['orderperm', 'editor']], site));
+    const rows = (key: string): unknown[][] => (rc[key] as Json[]).map((row) => [row.contentid, row.siteid]);
+    expect([rc.siteid, rc.topid, rows('rsTop'), rows('crumbdata')]).toEqual([site, FOLDER, [[FOLDER, SITE_ID]], [[FOLDER, SITE_ID], [HOME, SITE_ID]]]);
+    expect(await stored()).toEqual(
+      changed(before, { [FOLDER]: { sortby: 'orderno', sortdirection: 'asc' }, [CHARLIE]: { orderno: 1 }, [BRAVO]: { orderno: 2 }, [ALPHA]: { orderno: 3 } }),
+    );
   });
 
   it('takes the stored top sort without saveSort and renumbers the children by it', async () => {

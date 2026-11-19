@@ -345,4 +345,52 @@ describe.skipIf(!(await pgAvailable()))('ccategory admin routes', () => {
     );
     expect(rows.map((row) => row.name)).toEqual([name]);
   });
+
+  it.each([
+    ['upper case', SITE.toUpperCase(), 'U'],
+    ['mixed case', 'Tenant-A', 'M'],
+  ] as const)('applies an update, an add and a delete under the site in %s to the stored own-site rows, as SQL Server matches siteid', async (_label, site, tag) => {
+    const id = (n: number): string => `E${n}${tag}00000-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
+    const [root, kid, grand, fresh] = [1, 2, 3, 4].map(id) as [string, string, string, string];
+    const slug = `case-${tag.toLowerCase()}`;
+    const domain = { db: handle.app, repository: repo, clock: CLOCK };
+    for (const [categoryid, name, parentid] of [[root, 'Root', ''], [kid, 'Kid', root], [grand, 'Grand', kid], [fresh, 'New', '']] as const) {
+      await createCategory(domain, A, { siteid: SITE, categoryid, name: `Case ${tag} ${name}`, parentid });
+    }
+    const list = `/v1/sites/${site}/categories`;
+    const redirect = { saved: true, errors: {}, redirect: { circuit: 'cCategory', action: 'list', params: [['siteid', site]] } };
+    const fields = { isActive: '1', isInterestGroup: '1', ...CSRF };
+
+    /** The children of `parentId` in tenant-a, by filename. */
+    const kids = (parentId: string) =>
+      withTenant(handle.app, TENANT_A.tenantId, async (tx) =>
+        (await tx.query<CategoryRow>(`SELECT * FROM ${handle.schema}.category WHERE parentid = $1 ORDER BY filename`, [parentId])).rows.map((row) => ({
+          categoryid: row.categoryid.trim(),
+          siteid: row.siteid,
+          path: row.path,
+          filename: row.filename,
+        })),
+      );
+
+    // categoryDAO.update binds no siteid, so the moved row keeps its stored spelling; the descendant rewrites match it.
+    const moved = await send('POST', list, { site, form: { action: 'update', categoryID: kid, name: `Case ${tag} Kid`, parentID: fresh, ...fields } });
+    expect(moved.json()).toEqual(redirect);
+    expect(await stored(TENANT_A.tenantId, kid)).toMatchObject({ siteid: SITE, parentid: fresh, path: `${fresh},${kid}`, filename: `${slug}-new/${slug}-kid` });
+    expect(await kids(kid)).toEqual([{ categoryid: grand, siteid: SITE, path: `${fresh},${kid},${grand}`, filename: `${slug}-new/${slug}-kid/${slug}-grand` }]);
+
+    // The added twin is stored under the request's spelling and made unique against the stored one.
+    const added = await send('POST', list, { site, form: { action: 'add', categoryID: '', name: `Case ${tag} Grand`, parentID: kid, ...fields } });
+    expect(added.json()).toEqual(redirect);
+    const [, twin] = await kids(kid);
+    expect(twin).toMatchObject({ siteid: site, path: `${fresh},${kid},${twin?.categoryid ?? ''}`, filename: `${slug}-new/${slug}-kid/${slug}-grand1` });
+
+    // Deleting the stored-spelling parent lifts both children, the twin's request spelling included.
+    const removed = await send('POST', list, { site, form: { action: 'delete', categoryid: kid, ...CSRF } });
+    expect(removed.json()).toEqual(redirect);
+    expect(await stored(TENANT_A.tenantId, kid)).toBeUndefined();
+    expect((await kids(fresh)).map((row) => [row.categoryid, row.siteid, row.path])).toEqual([
+      [grand, SITE, `${fresh},${grand}`],
+      [twin?.categoryid, site, `${fresh},${twin?.categoryid ?? ''}`],
+    ]);
+  });
 });

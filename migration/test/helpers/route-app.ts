@@ -38,10 +38,11 @@ import { AUTHORITY_ROUTES, registerAuthorityRoutes } from '../../src/routes/auth
 import { BACKGROUND_ROUTES, registerBackgroundRoutes } from '../../src/routes/background.js';
 import { FAULT_ROUTES, registerFaultRoutes } from '../../src/routes/faults.js';
 import { LEGACY_STEP_ROUTES, registerLegacyStepRoutes } from '../../src/routes/legacy-steps.js';
+import { PROBE_ROUTES, registerProbeRoutes } from '../../src/routes/probes.js';
 import { PROJECTION_ROUTES, registerProjectionRoutes } from '../../src/routes/projection.js';
 import { SCHEDULER_ROUTES, registerSchedulerRoutes } from '../../src/routes/scheduler.js';
 import { SCHEDULER_STATE_TABLE, createSchedulerService } from '../../src/scheduler/index.js';
-import { createWindowService } from '../../src/windows/index.js';
+import { createWindowService, hasOrphanArchive, orphanArchiveSql } from '../../src/windows/index.js';
 
 /** Service name, the audience of invocation credentials sent to the composed app. */
 export const SERVICE = 'migration';
@@ -55,6 +56,7 @@ export const REGISTERED_OPERATIONS = Object.freeze([
   ...BACKGROUND_ROUTES,
   ...FAULT_ROUTES,
   ...LEGACY_STEP_ROUTES,
+  ...PROBE_ROUTES,
   ...PROJECTION_ROUTES,
   ...SCHEDULER_ROUTES,
 ]);
@@ -471,6 +473,10 @@ export interface BoundaryState {
   live: SchedulerDescription;
   /** `jobs.cfm` answers every step with a 500, as a manager method that threw. */
   jobsFailing: boolean;
+  /** Filenames of the live `tcontentfilenamearchive` rows whose content has no active version. */
+  orphanArchives: string[];
+  /** The live legacy database refuses every connection. */
+  legacyDown: boolean;
 }
 
 /** The gateway's contract `CutoverStatus` for `tableVersion`. */
@@ -504,7 +510,7 @@ function boundaryResponder(state: BoundaryState): Responder {
   };
 }
 
-/** Live legacy SQL Server reads of the projection barrier, `tsettings` site ids and checkpoints by owner; each pool use and query counts. */
+/** Live legacy SQL Server reads of the projection barrier, `tsettings` site ids, checkpoints by owner and the orphan archive probe; each counts. */
 function legacyDouble(state: BoundaryState, counter: { reads: number }): LegacyDb {
   const pool = {
     request() {
@@ -536,6 +542,11 @@ function legacyDouble(state: BoundaryState, counter: { reads: number }): LegacyD
               }));
             return Promise.resolve({ recordset });
           }
+          if (text === orphanArchiveSql(inputs.size)) {
+            const orphans = new Set(state.orphanArchives.map((filename) => filename.toLowerCase()));
+            const orphan = [...inputs.values()].some((value) => typeof value === 'string' && orphans.has(value.toLowerCase()));
+            return Promise.resolve({ recordset: orphan ? [{ n: 1 }] : [] });
+          }
           return Promise.reject(new Error(`The legacy double does not run: ${text}`));
         },
       };
@@ -545,6 +556,7 @@ function legacyDouble(state: BoundaryState, counter: { reads: number }): LegacyD
   return {
     live: () => {
       counter.reads += 1;
+      if (state.legacyDown) return Promise.reject(new Error('connect ECONNREFUSED: the live legacy database is down'));
       return Promise.resolve(pool as unknown as Awaited<ReturnType<LegacyDb['live']>>);
     },
     database: refuse,
@@ -643,6 +655,8 @@ export function defaultBoundaryState(): BoundaryState {
     checkpoints: [],
     live: { ping: false, siteMonitorTask: '/index.cfm/_api/sitemonitor/', tasks: [], serverTime: '2026-06-30 12:00:00' },
     jobsFailing: false,
+    orphanArchives: [],
+    legacyDown: false,
   };
 }
 
@@ -690,6 +704,7 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
     registerFaultRoutes(app, { faults: countedFaults(faults, faultCounter) });
     // The route suites run no step whose units are target-authoritative, so no window ever opens over the in-memory schema.
     registerLegacyStepRoutes(app, { windows: createWindowService(ctx, { projector }) });
+    registerProbeRoutes(app, { orphanArchive: (filenames) => hasOrphanArchive(ctx.legacy, filenames) });
     registerProjectionRoutes(app, { projector, defaultTimeoutMs: ctx.config.projection.defaultAwaitTimeoutMs });
     registerSchedulerRoutes(app, { scheduler: createSchedulerService(ctx), background });
     options.extraRoutes?.(app);

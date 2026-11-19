@@ -1255,7 +1255,8 @@ type Expr =
   | { readonly k: 'isnull'; readonly expr: Expr; readonly negated: boolean }
   | { readonly k: 'in'; readonly expr: Expr; readonly list: readonly Expr[]; readonly negated: boolean }
   | { readonly k: 'collate'; readonly expr: Expr; readonly collation: Collation }
-  | { readonly k: 'subquery'; readonly select: SelectStmt };
+  | { readonly k: 'subquery'; readonly select: SelectStmt }
+  | { readonly k: 'exists'; readonly select: SelectStmt };
 
 type SelectItem =
   | { readonly kind: 'expr'; readonly expr: Expr; readonly alias: string | null }
@@ -2058,6 +2059,12 @@ class Parser {
   }
 
   #predicate(): Expr {
+    if (this.#acceptKw('EXISTS')) {
+      this.#expectOp('(');
+      const select = this.#select();
+      this.#expectOp(')');
+      return { k: 'exists', select };
+    }
     const left = this.#additive();
     if (this.#acceptKw('IS')) {
       const negated = this.#acceptKw('NOT');
@@ -2424,6 +2431,9 @@ function bindExpr(ctx: Exec, e: Expr, scope: Scope): void {
     case 'subquery':
       if (bindSelect(ctx, e.select, scope).specs.length !== 1) throw subqueryColumnsFault();
       return;
+    case 'exists':
+      bindSelect(ctx, e.select, scope);
+      return;
   }
 }
 
@@ -2760,6 +2770,8 @@ function evalBool(ctx: Exec, e: Expr, scope: Scope): boolean | null {
       }
       return unknown ? null : e.negated;
     }
+    case 'exists':
+      return runSelect(ctx, e.select, scope).rows.length > 0;
     default:
       break;
   }

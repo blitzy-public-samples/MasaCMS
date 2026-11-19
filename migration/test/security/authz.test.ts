@@ -60,6 +60,7 @@ const CONTRACT_OPERATION_IDS = [
   'windowComplete',
   'windowGet',
   'windowResolve',
+  'orphanArchiveProbe',
   'projectionAwait',
   'unitAuthority',
   'legacyStepRun',
@@ -124,6 +125,14 @@ const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
     url: '/internal/v1/windows/:windowId(^[^:/]+)::resolve',
     requires: [OPERATOR],
     siteCheck: true,
+  },
+  {
+    operationId: 'orphanArchiveProbe',
+    method: 'POST',
+    path: '/internal/v1/probes/orphan-archive',
+    url: '/internal/v1/probes/orphan-archive',
+    requires: [GATEWAY, OPERATOR],
+    siteCheck: false,
   },
   {
     operationId: 'projectionAwait',
@@ -617,11 +626,11 @@ describe('route declarations', () => {
     expect({ host: env.PG_HOST, port: env.PG_PORT }).toEqual({ host: '127.0.0.1', port: sentinel.port });
   });
 
-  it('declares exactly the seventeen contract operations', () => {
+  it('declares exactly the eighteen contract operations', () => {
     const ids = EXPECTED_ROUTES.map((row) => row.operationId);
-    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 17, unique: 17 });
+    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 18, unique: 18 });
     expect([...ids].sort()).toEqual([...CONTRACT_OPERATION_IDS].sort());
-    expect(MIGRATION_ROUTES).toHaveLength(16);
+    expect(MIGRATION_ROUTES).toHaveLength(17);
     expect(MIGRATION_ROUTES.map(({ operationId, method, path, url }) => ({ operationId, method, path, url }))).toEqual(
       MIGRATION_ROUTES.map(({ operationId }) => {
         const { method, path, url } = rowNamed(operationId);
@@ -688,7 +697,7 @@ describe('route admission matrix', () => {
   });
 
   it.each([
-    [GATEWAY, ['windowOpen', 'windowComplete', 'projectionAwait']],
+    [GATEWAY, ['windowOpen', 'windowComplete', 'orphanArchiveProbe', 'projectionAwait']],
     [PROGRAMS_SITES, ['unitAuthority', 'legacyStepRun']],
     [serviceRole('operator'), ['transitionStart', 'transitionGet', 'faultSet', 'faultClear']],
   ] as const)('known callers are allowed: %s on %j', (subjectName, operationIds) => {

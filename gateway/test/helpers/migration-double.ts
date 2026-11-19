@@ -1,9 +1,9 @@
-// Programmable stand-in for migration's write-window and projection-await operations in gateway tests.
+// Programmable stand-in for migration's write-window, orphan archive probe and projection-await operations in gateway tests.
 import type { ServerResponse } from 'node:http';
 import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { isApplied } from '@opt2/platform/migration-kit';
 import { PROJECTION_AWAIT_TIMEOUT_MS } from '../../src/dispatcher/barrier.js';
-import type { WindowCompleteInput, WindowCompleteResult, WindowOpenInput } from '../../src/dispatcher/write-window.js';
+import type { OrphanArchiveProbeInput, WindowCompleteInput, WindowCompleteResult, WindowOpenInput } from '../../src/dispatcher/write-window.js';
 import type { components, paths } from '../../src/generated/clients/migration.js';
 import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedRequest } from './http-double.js';
 
@@ -16,6 +16,7 @@ type CompleteState = WindowCompleteResult['state'];
 const OPEN_PATH = '/internal/v1/windows' satisfies keyof paths;
 const COMPLETE_PATH = '/internal/v1/windows/{windowId}:complete' satisfies keyof paths;
 const AWAIT_PATH = '/internal/v1/projection/await' satisfies keyof paths;
+const ORPHAN_ARCHIVE_PATH = '/internal/v1/probes/orphan-archive' satisfies keyof paths;
 const COMPLETE_PATTERN = new RegExp(`^${COMPLETE_PATH.replace('{windowId}', '([^/]+)')}$`);
 
 // Captured at load so delays run on real time even while a suite fakes the global timers; timestamps instead read
@@ -28,6 +29,9 @@ export type OpenBehaviour = 'ok' | { status: number } | { delayMs: number } | 'r
 
 /** State `windowComplete` answers for a known window, fixed or computed from it. */
 export type CompleteBehaviour = CompleteState | ((window: RecordedWindow) => CompleteState);
+
+/** Answer to `orphanArchiveProbe`: the orphan verdict, computed from the filenames or fixed, an error status or a destroyed socket. */
+export type OrphanArchiveBehaviour = boolean | ((filenames: readonly string[]) => boolean) | { status: number } | 'refuse';
 
 /** Answer to `projectionAwait` while no horizon is recorded. */
 export type AwaitBehaviour = 'immediate' | { delayMs: number } | 'never';
@@ -42,6 +46,8 @@ export interface MigrationDoubleOptions {
   await?: AwaitBehaviour;
   /** Caps the wait before an unapplied await's timeout answer; defaults to the request's `timeoutMs`. */
   neverAnswerAfterMs?: number;
+  /** Defaults to `false`. */
+  orphanArchive?: OrphanArchiveBehaviour;
 }
 
 /** A window the double opened, with the open body exactly as the gateway sent it. */
@@ -53,6 +59,13 @@ export interface RecordedWindow extends WindowOpenInput {
   completion?: WindowCompleteInput;
   /** `performance.now()` when that completion arrived. */
   completedAt?: number;
+}
+
+/** One `orphanArchiveProbe` call. */
+export interface RecordedOrphanProbe {
+  filenames: string[];
+  /** `performance.now()` when the call arrived. */
+  receivedAt: number;
 }
 
 /** One `projectionAwait` call. */
@@ -67,7 +80,9 @@ export interface MigrationDouble extends HttpDouble {
   /** Windows the double opened, in open order; failed, refused and hung opens appear only in `requests`. */
   windows: RecordedWindow[];
   awaits: RecordedAwait[];
+  orphanProbes: RecordedOrphanProbe[];
   setOpen(behaviour: OpenBehaviour): void;
+  setOrphanArchive(behaviour: OrphanArchiveBehaviour): void;
   setComplete(behaviour: CompleteBehaviour): void;
   setAwait(behaviour: AwaitBehaviour): void;
   /** Sets `owner`'s projector horizon (xids below it are applied); later awaits then wait on horizons alone. */
@@ -103,9 +118,11 @@ export async function startMigrationDouble(opts: MigrationDoubleOptions = {}): P
   let openBehaviour: OpenBehaviour = opts.open ?? 'ok';
   let completeBehaviour: CompleteBehaviour = opts.complete ?? 'closed';
   let awaitBehaviour: AwaitBehaviour = opts.await ?? 'immediate';
+  let orphanBehaviour: OrphanArchiveBehaviour = opts.orphanArchive ?? false;
   let sequence = 0;
   const windows: RecordedWindow[] = [];
   const awaits: RecordedAwait[] = [];
+  const orphanProbes: RecordedOrphanProbe[] = [];
   const horizons = new Map<string, string>();
   const pending = new Set<PendingAwait>();
   const timers = new Set<() => void>();
@@ -154,6 +171,14 @@ export async function startMigrationDouble(opts: MigrationDoubleOptions = {}): P
     window.completedAt = performance.now();
     const state = typeof completeBehaviour === 'function' ? completeBehaviour(window) : completeBehaviour;
     sendJson(res, 200, { state } satisfies WindowCompleteResult);
+  }
+
+  function orphanArchive({ filenames }: OrphanArchiveProbeInput, res: ServerResponse): void {
+    orphanProbes.push({ filenames, receivedAt: performance.now() });
+    const behaviour = orphanBehaviour;
+    if (behaviour === 'refuse') res.destroy();
+    else if (typeof behaviour === 'object') sendUnavailable(res, behaviour.status);
+    else sendJson(res, 200, { orphan: typeof behaviour === 'function' ? behaviour(filenames) : behaviour });
   }
 
   /** Positions the await reports when answered by behaviour; an owners request reports each owner at xid 0. */
@@ -212,6 +237,7 @@ export async function startMigrationDouble(opts: MigrationDoubleOptions = {}): P
     if (req.method === 'POST') {
       if (req.path === OPEN_PATH) return open(parseJson<WindowOpenInput>(req), res);
       if (req.path === AWAIT_PATH) return projectionAwait(parseJson<ProjectionAwaitBody>(req), res);
+      if (req.path === ORPHAN_ARCHIVE_PATH) return orphanArchive(parseJson<OrphanArchiveProbeInput>(req), res);
       const windowId = COMPLETE_PATTERN.exec(req.path)?.[1];
       if (windowId !== undefined) {
         return complete(decodeURIComponent(windowId), parseJson<WindowCompleteInput>(req), res);
@@ -224,8 +250,12 @@ export async function startMigrationDouble(opts: MigrationDoubleOptions = {}): P
     ...base,
     windows,
     awaits,
+    orphanProbes,
     setOpen(behaviour) {
       openBehaviour = behaviour;
+    },
+    setOrphanArchive(behaviour) {
+      orphanBehaviour = behaviour;
     },
     setComplete(behaviour) {
       completeBehaviour = behaviour;

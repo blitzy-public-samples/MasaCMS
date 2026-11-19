@@ -44,6 +44,7 @@ import {
   createBridgeClient,
   createSiteListClient,
   createSitePathsClient,
+  createStaticFileClient,
   createVersionMenuClient,
   type BridgeClient,
 } from './session/bridge-client.js';
@@ -300,6 +301,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     state,
     inflight,
     windows,
+    staticFiles: createStaticFileClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock }),
     barrier,
     resolver,
     tokenCache,

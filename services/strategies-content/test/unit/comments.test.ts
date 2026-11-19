@@ -718,7 +718,7 @@ describe('ccomments admin routes', () => {
     const res = await testApp.app.inject({ method: 'POST', url: `/v1/sites/${SITE}/comments/purge-deleted`, headers: await headersFor(['site-admin']) });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ saved: true, errors: {}, redirect: REDIRECT });
-    expect(bound(/"content"\."comment" WHERE tenant_id = \$1 AND \(isdeleted = 1 AND siteid = \$2\)/, SITE)).toBe(true);
+    expect(bound(/"content"\."comment" WHERE tenant_id = \$1 AND \(isdeleted = 1 AND \(\(siteid::bpchar\) COLLATE "content"\."legacy_ci"\) = \$2::bpchar\)/, SITE)).toBe(true);
   });
 
   it('POST bulk reports processed and POST of one comment leaves it unset, neither redirecting', async () => {

@@ -21,7 +21,15 @@ import type { CutoverState } from '../cutover/state.js';
 import type { CutoverEntry, EntryKind, OwningService, RoutingIndex, VariantsFile } from '../cutover/types.js';
 import type { BodyParams } from './body.js';
 import { failContextFor, type FailContext } from './fail-closed.js';
-import { RENDER_ROUTE, asyncDoactionRoutes, type RequestFacts, type RequestWrites } from './request-writes.js';
+import {
+  RENDER_ROUTE,
+  asyncDoactionRoutes,
+  type PendingProbes,
+  type ProbeKind,
+  type RequestFacts,
+  type RequestProbes,
+  type RequestWrites,
+} from './request-writes.js';
 
 /** Gateway path prefix web relays its service calls through (`GATEWAY_SERVICE_PREFIX` of the gateway ↔ web contract). */
 export const RELAY_ALIAS_PREFIX = '/opt2/svc';
@@ -128,6 +136,8 @@ export interface RoutedOutcome {
   readonly tableScope?: boolean;
   /** The halt variant that keeps the request on legacy, when one does. */
   readonly haltVariant?: string;
+  /** Probes a legacy-bound request's writes still wait on, with the units each adds to the entry once it holds. */
+  readonly pendingProbes?: PendingProbes;
 }
 
 /** Outcome of matching one request. */
@@ -135,8 +145,8 @@ export type MatchOutcome = RelayOutcome | RoutedOutcome;
 
 /** Resolves requests against a routing index. */
 export interface Matcher {
-  /** Matches against `index`, by default the cached active version; reads only the storage key, never calls a service. */
-  match(request: MatchRequest, body: BodyParams, index?: RoutingIndex): Promise<MatchOutcome>;
+  /** Matches against `index` (default: the cached active version) with the `probes` answered so far; never calls a service. */
+  match(request: MatchRequest, body: BodyParams, index?: RoutingIndex, probes?: RequestProbes): Promise<MatchOutcome>;
 }
 
 /** Collaborators of {@link createMatcher}. */
@@ -213,13 +223,26 @@ function reloadRouting(reload: CutoverEntry | undefined, served: CutoverEntry | 
 }
 
 /** A request's key, the entry it routes under, the scan facts it read, the routes also holding it and its window's scope. */
-type KeyedMatch = Pick<RoutedOutcome, 'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes' | 'tableScope' | 'haltVariant'>;
+type KeyedMatch = Pick<
+  RoutedOutcome,
+  'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes' | 'tableScope' | 'haltVariant' | 'pendingProbes'
+>;
 
-/** A legacy-bound request's entry as the request makes it write, with the routes and window scope that come with it. */
+/** A legacy-bound request's entry as the request makes it write, with the routes, window scope and probes that come with it. */
 interface Shaped {
   readonly entry: CutoverEntry | undefined;
   readonly holdRoutes: readonly string[];
   readonly tableScope: boolean;
+  readonly pending?: PendingProbes;
+}
+
+/** `shaped` also waiting on the `extra` probes, each kind's units merged once. */
+function withPending(shaped: Shaped, extra: PendingProbes): Shaped {
+  const added = Object.entries(extra) as Array<[ProbeKind, string[]]>;
+  if (added.length === 0) return shaped;
+  const pending: PendingProbes = { ...shaped.pending };
+  for (const [kind, units] of added) pending[kind] = [...new Set([...(pending[kind] ?? []), ...units])];
+  return { ...shaped, pending };
 }
 
 /** Shapes the entries legacy serves one request under by the request-conditional writes the request can reach. */
@@ -279,7 +302,7 @@ function createShaper(
     const entry: CutoverEntry = Object.freeze({ ...base, state: 'legacy', kind: 'legacy-write', units: [...written, ...added] });
     const holdRoutes =
       heldBy === undefined || heldBy === entry.route || shaped.holdRoutes.includes(heldBy) ? shaped.holdRoutes : [...shaped.holdRoutes, heldBy];
-    return { entry, holdRoutes, tableScope: true };
+    return { ...shaped, entry, holdRoutes, tableScope: true };
   };
 
   /** `entry` less the units only writes under failing guards reach. */
@@ -319,21 +342,32 @@ function createShaper(
       const acted = index.entryFor(route);
       if (acted !== undefined && WRITE_KINDS.has(acted.kind)) shaped = widened(result, shaped, reached(acted, facts).units, route);
     }
-    return widened(result, shaped, writes.pipelineUnits(result, facts), RENDER_ROUTE);
+    return withPending(widened(result, shaped, writes.pipelineUnits(result, facts), RENDER_ROUTE), writes.pipelineProbes(result, facts));
   };
 
   return {
     served,
     startup: (result, shaped) => {
       const key = result.afterReload ?? result;
-      return widened(result, shaped, writes.startupUnits(key.family, factsOf(key)));
+      const facts = factsOf(key);
+      return withPending(widened(result, shaped, writes.startupUnits(key.family, facts)), writes.startupProbes(key.family, facts));
     },
   };
 }
 
 /** The fields a shaped entry gives a keyed match. */
-function shapedFields({ entry, holdRoutes, tableScope }: Shaped): Pick<KeyedMatch, 'entry' | 'holdRoutes' | 'tableScope'> {
-  return { entry, ...(holdRoutes.length > 0 ? { holdRoutes: Object.freeze([...holdRoutes]) } : {}), ...(tableScope ? { tableScope } : {}) };
+function shapedFields({
+  entry,
+  holdRoutes,
+  tableScope,
+  pending,
+}: Shaped): Pick<KeyedMatch, 'entry' | 'holdRoutes' | 'tableScope' | 'pendingProbes'> {
+  return {
+    entry,
+    ...(holdRoutes.length > 0 ? { holdRoutes: Object.freeze([...holdRoutes]) } : {}),
+    ...(tableScope ? { tableScope } : {}),
+    ...(pending === undefined ? {} : { pendingProbes: Object.freeze({ ...pending }) }),
+  };
 }
 
 /**
@@ -362,7 +396,7 @@ function keyedMatch(
     const served = shaper.served(result.afterReload, behind);
     const routing = reloadRouting(matched, served.entry);
     const holdRoutes = [...new Set([...routing.holdRoutes, ...served.holdRoutes])].filter((route) => route !== routing.entry?.route);
-    const shaped = shaper.startup(result, { entry: routing.entry, holdRoutes, tableScope: served.tableScope });
+    const shaped = shaper.startup(result, { ...served, entry: routing.entry, holdRoutes });
     return { result, ...scan, ...shapedFields(shaped) };
   }
   const entry = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
@@ -482,15 +516,23 @@ export function createMatcher(deps: MatcherDeps): Matcher {
     });
   };
 
-  /** Shaping of `request`'s legacy-bound entries under `index`, over the url scope its key read. */
+  /** Shaping of `request`'s legacy-bound entries under `index` with the `probes` answered so far, over the url scope its key read. */
   const shapingFor =
-    (request: ScannedRouteKeyRequest, index: RoutingIndex, writes: RequestWrites) =>
+    (request: ScannedRouteKeyRequest, index: RoutingIndex, writes: RequestWrites, probes: RequestProbes | undefined) =>
     (urlScope: Record<string, string>): EntryShaper => {
       const url = Object.fromEntries(Object.entries(urlScope).map(([name, value]) => [name.toLowerCase(), value]));
       const cookies = parseCookieHeader(headerOf(request.headers, 'cookie'));
       let managed: boolean | undefined;
       const sessionManaged = (): boolean => (managed ??= isSessionManaged(request.path, options));
-      const factsOf = (key: RouteKeyResult): RequestFacts => ({ params: key.params, url, method: request.method, cookies, sessionManaged });
+      const factsOf = (key: RouteKeyResult): RequestFacts => ({
+        path: request.path,
+        params: key.params,
+        url,
+        method: request.method,
+        cookies,
+        sessionManaged,
+        ...(probes === undefined ? {} : { probes }),
+      });
       const pageKeyOf = (): RouteKeyResult => {
         const { result, unhalted } = scannedRouteKey({ ...request, path: '/' }, options);
         const page = unhalted ?? result;
@@ -500,7 +542,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
     };
 
   return {
-    async match(request, body, index = deps.state.active()) {
+    async match(request, body, index = deps.state.active(), probes) {
       const { path, search } = splitTarget(request.url);
       if (path.startsWith(RELAY_PATH_PREFIX)) {
         return {
@@ -522,10 +564,11 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
         multipartFileNames: body.files,
       };
-      const shaping = deps.requestWrites === undefined || index === undefined ? undefined : shapingFor(keyRequest, index, deps.requestWrites);
+      const shaping =
+        deps.requestWrites === undefined || index === undefined ? undefined : shapingFor(keyRequest, index, deps.requestWrites, probes);
       const keyed = keyedMatch(keyRequest, options, index, shaping);
       const routed = (
-        { result, entry, urlScope, scanFailed, holdRoutes, tableScope, haltVariant }: KeyedMatch,
+        { result, entry, urlScope, scanFailed, holdRoutes, tableScope, haltVariant, pendingProbes }: KeyedMatch,
         destination: RoutedOutcome['destination'],
       ): RoutedOutcome => ({
         result,
@@ -537,6 +580,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         ...(holdRoutes === undefined ? {} : { holdRoutes }),
         ...(tableScope === undefined ? {} : { tableScope }),
         ...(haltVariant === undefined ? {} : { haltVariant }),
+        ...(pendingProbes === undefined || destination.kind !== 'legacy' ? {} : { pendingProbes }),
       });
 
       if (index === undefined) return routed(keyed, unavailable('no-active-version'));

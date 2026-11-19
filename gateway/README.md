@@ -73,6 +73,8 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 ## Write windows and the read-after-write barrier
 
 - **Write windows.** `legacy-write` entries always run on legacy. When any of their units is `target`-authoritative, `src/dispatcher/write-window.ts` first asks migration to open a window (`POST /internal/v1/windows`), forwards the request unchanged, buffers the legacy response, and reports completion (`POST /internal/v1/windows/{windowId}:complete`) before answering.
+- **Probed writes.** Two inventoried legacy writes depend on stored state the request does not show (`src/dispatcher/request-writes.ts`): the 404 handler's cleanup of an orphan `tcontentfilenamearchive` row, and the remember-me login of a static-family request, which runs only when legacy runs CFML for it. When either write's units add a `target`-authoritative unit to the request's window, the gateway asks once its barrier is awaited: migration `POST /internal/v1/probes/orphan-archive` with every filename the render can look up, render404's `404` included for page, static, render, asset and feed requests, and the bridge's `site.cfm?op=static` with the decoded path. A `true` answer, or no answer, routes the request again with a window over those units too.
+
 - **Barrier.** A target write response's `X-Opt2-Write-Position` is stripped from the client response and stored in `gateway.session_barrier`; a target write is declared there before it is forwarded. Before any legacy-bound request of that session, the gateway calls migration `POST /internal/v1/projection/await` with a 5 s bound and answers the legacy-shaped 503 if legacy does not yet hold every position.
 
 ## Fail closed

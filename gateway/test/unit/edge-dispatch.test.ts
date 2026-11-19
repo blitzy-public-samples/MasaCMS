@@ -23,6 +23,7 @@ import type { CutoverEntry, EntryKind, RouteFacts, RoutingIndex } from '../../sr
 import { BarrierTimeoutError } from '../../src/dispatcher/barrier.js';
 import { EDGE_METHODS, EDGE_ROUTE_URL, RELAY_ALIAS_ROUTE, registerEdgeRoute, type DispatcherDeps } from '../../src/dispatcher/dispatch.js';
 import { routedFailContext, type Destination, type MatchOutcome } from '../../src/dispatcher/match.js';
+import type { PendingProbes } from '../../src/dispatcher/request-writes.js';
 import { sendRequestTarget } from '../../src/dispatcher/request-target.js';
 import { WindowOpenError } from '../../src/dispatcher/write-window.js';
 import type { BridgeClient } from '../../src/session/bridge-client.js';
@@ -73,6 +74,8 @@ interface Script {
   httpMethod?: string;
   /** Routes besides the entry's whose freeze holds the request. */
   holdRoutes?: readonly string[];
+  /** Probes the request's writes wait on. */
+  pendingProbes?: PendingProbes;
 }
 
 const RELOAD_KEY = 'reload:application';
@@ -197,7 +200,8 @@ async function harness(
       index === undefined ? { kind: 'unavailable', reason: 'no-active-version' } : destinations[s.destination];
     const failContext = routedFailContext(result, entry, destination, url);
     const holds = s.holdRoutes === undefined ? {} : { holdRoutes: s.holdRoutes };
-    return { result, entry, destination, failContext, urlScope: urlScopeOf(url), scanFailed: false, ...holds };
+    const pending = s.pendingProbes === undefined ? {} : { pendingProbes: s.pendingProbes };
+    return { result, entry, destination, failContext, urlScope: urlScopeOf(url), scanFailed: false, ...holds, ...pending };
   };
 
   const deps: DispatcherDeps = {
@@ -245,6 +249,16 @@ async function harness(
         return { state: 'import-pending' as const };
       }),
       scope: vi.fn(() => ({ table: true as const })),
+      probeOrphanArchive: vi.fn(() => {
+        calls.push('probe.orphanArchive');
+        return Promise.resolve(false);
+      }),
+    },
+    staticFiles: {
+      isCfml: vi.fn(() => {
+        calls.push('probe.cfml');
+        return Promise.resolve(true);
+      }),
     },
     barrier: {
       declare: vi.fn(async (sessionId, owner) => {
@@ -1478,6 +1492,75 @@ describe('write windows', () => {
     expect((await h.app.inject({ method: 'POST', url: '/?doaction=saveRate' })).statusCode).toBe(503);
     expect(h.calls).toContain('window.complete:W1:false:-');
     expect(h.legacy.requests).toHaveLength(0);
+  });
+});
+
+describe('request probes', () => {
+  const ARCHIVE_UNIT = 'content.filename_archive';
+  /** A page render waiting on the orphan archive probe until a probe answer reaches the matcher, then writing the archive unit. */
+  const probedRender = (afterProbe: Script['destination'] = 'legacy') => (_url: string, call: number): Script =>
+    call === 0
+      ? { entry: { route: 'page:render', kind: 'read' }, destination: 'legacy', family: 'page', pendingProbes: { orphanArchive: [ARCHIVE_UNIT] } }
+      : { entry: { route: 'page:render', kind: 'legacy-write', units: [ARCHIVE_UNIT] }, destination: call === 1 ? 'legacy' : afterProbe, family: 'page' };
+
+  /** Makes the orphan archive probe answer `orphan`, recording the filenames it is asked about, and window opens record their units. */
+  function answerOrphan(h: Harness, orphan: boolean): void {
+    h.deps.windows.probeOrphanArchive = (filenames) => {
+      h.calls.push(`probe.orphanArchive:${filenames.join(',')}`);
+      return Promise.resolve(orphan);
+    };
+    h.deps.windows.open = (input) => {
+      h.calls.push(`window.open:${input.routeKey}:${input.units.join(',')}`);
+      return Promise.resolve({ windowId: 'W1' });
+    };
+  }
+
+  it('asks after the barrier and the claims, then opens the window over the units the answer adds before legacy runs', async () => {
+    const h = await harness({ active: indexOf('v0002', [ARCHIVE_UNIT]) });
+    h.setScript(probedRender());
+    answerOrphan(h, true);
+    h.deps.resolver.resolveLegacyBound = () => Promise.resolve(session('legacy-primary'));
+    h.legacy.setHandler((_req, res) => {
+      h.calls.push('legacy');
+      sendBytes(res, 404, 'not found');
+    });
+
+    expect((await h.app.inject({ method: 'GET', url: '/missing/page/' })).statusCode).toBe(404);
+    expect(h.calls.filter((call) => /^(barrier|csrf\.before|probe|window|legacy$)/.test(call))).toEqual([
+      `barrier:${SESSION_ID}`,
+      'csrf.before',
+      'probe.orphanArchive:404,missing,missing/page,page',
+      `window.open:page:render:${ARCHIVE_UNIT}`,
+      'legacy',
+      'window.complete:W1:true:404',
+    ]);
+  });
+
+  it('asks nothing when the units the probe would add are legacy-authoritative', async () => {
+    const h = await harness({ active: indexOf('v0002') });
+    h.setScript(probedRender());
+    answerOrphan(h, true);
+    expect((await h.app.inject({ method: 'GET', url: '/missing/' })).statusCode).toBe(200);
+    expect(h.calls.filter((call) => /^(probe|window)/.test(call))).toEqual([]);
+  });
+
+  it('answers 503 before legacy executes when routing moves the request off legacy while it is probed', async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const destination = { write: (chunk: string): void => void lines.push(JSON.parse(chunk) as Record<string, unknown>) };
+    const logger = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination });
+    const h = await harness({ active: indexOf('v0002', [ARCHIVE_UNIT]), logger });
+    h.setScript(probedRender('target'));
+    answerOrphan(h, true);
+
+    expect((await h.app.inject({ method: 'GET', url: '/missing/' })).statusCode).toBe(503);
+    await settle();
+    expect(lines.filter((line) => String(line.message).startsWith('fail-closed')).map((line) => line.message)).toEqual([
+      'fail-closed: routing changed while probing before forwarding to legacy',
+    ]);
+    expect(h.legacy.requests).toHaveLength(0);
+    expect(h.svc.requests).toHaveLength(0);
+    expect(h.calls.filter((call) => /^(probe|window)/.test(call))).toEqual(['probe.orphanArchive:404,missing']);
+    expect(rowCalls(h.calls).at(-1)).toBe('remove');
   });
 });
 

@@ -1,6 +1,7 @@
 // Composition root of the admin entry points: authentication, request context, access gate, screen dispatch, session
 // persistence and each response mode's legacy answer (server-only).
 import { Readable } from 'node:stream';
+import { isDeepStrictEqual } from 'node:util';
 import { LegacyFaultError, LegacyServiceUnavailableError, cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { requestIdFrom, systemClock } from '@opt2/platform/service-kit';
 import {
@@ -208,12 +209,21 @@ function answerFailure<T>(
   return { answer: answers.error(context, error instanceof LegacyFaultError ? error : undefined) };
 }
 
+/** The entries of `writes` that `saved` does not already hold. */
+function unsavedWrites(writes: Readonly<AdminSessionWrites>, saved: Readonly<AdminSessionWrites>): AdminSessionWrites {
+  return Object.fromEntries(
+    Object.entries(writes).filter(
+      ([key, value]) => !Object.hasOwn(saved, key) || !isDeepStrictEqual(value, saved[key as keyof AdminSessionWrites]),
+    ),
+  );
+}
+
 /**
- * Authenticates, builds the request context, resolves and gates the screen, runs it, persists the session writes in
- * one identity call and writes the request's one log line in its span, then hands the answer over. Unavailability,
- * refused credentials and service denials become `answers` and persist nothing; a fault legacy raises persists the session
- * writes made before it; any other error is logged and answered with legacy's 500 error page, persisting nothing. A
- * staged body is then removed.
+ * Authenticates, builds the request context and resolves the screen, persists the set-up's session writes, gates and
+ * runs the screen, persists the writes it added or changed, and writes the request's one log line in its span, then
+ * hands the answer over. Unavailability, refused credentials and service denials become `answers`. Nothing persists for
+ * a failure before the set-up's save; after it, a fault legacy raises also persists the session writes made before it,
+ * and any other error is logged and answered with legacy's 500 error page. A staged body is then removed.
  */
 async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>, resolve: Resolve<T>): Promise<T> {
   markPipelineRequest();
@@ -268,6 +278,8 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       const gateway = createGatewayClient({ ...calls, pathPairs: req.relayScopes.pathPairs });
       // Read before the screen runs: its `mura` writes replace this object, which is the base identity stores them against.
       const storedMura = req.session.muraValues;
+      // A copy: screens record their own writes on the set-up's object.
+      const setupWrites: AdminSessionWrites = { ...req.sessionWrites };
       context = {
         locale: req.session.locale,
         acceptEncoding: context.acceptEncoding,
@@ -276,6 +288,8 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       };
       const dispatch = resolve(req, received === undefined ? [] : uploadsOf(received.form));
       if (dispatch === undefined) return answers.notFound(context);
+      // Legacy's set-up stores these before its gate and controller run, so every service the screen calls reads them.
+      await saveSessionWrites(gateway, auth, setupWrites, storedMura);
       const ctx: ScreenContext = {
         req,
         gateway,
@@ -286,7 +300,8 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         body: received?.body,
       };
       // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
-      persistWrites = (writes = {}) => saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...writes }, storedMura);
+      persistWrites = (writes = {}) =>
+        saveSessionWrites(gateway, auth, unsavedWrites({ ...ctx.req.sessionWrites, ...writes }, setupWrites), storedMura);
       const decision = await runGate(req, dispatch.gate);
       outcome =
         decision.kind === 'redirect'

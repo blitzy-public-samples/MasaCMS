@@ -176,9 +176,9 @@ afterEach(async () => {
 
 /**
  * Runs `failing` through its handler and checks legacy's 500 status line and headers, one ERROR line, and one session
- * write holding the values a fault keeps, none for another failure; returns the body.
+ * write: the set-up's, saved before the screen, holding the values a fault keeps; returns the body.
  */
-async function failedBody({ handle, path, params, request, routes, route, cause, fault, kept = {} }: FailingCase): Promise<string> {
+async function failedBody({ handle, path, params, request, routes, route, cause, kept = {} }: FailingCase): Promise<string> {
   for (const [key, reply] of Object.entries(sessionRoutes(routes))) fake.setRoute(key, reply);
 
   const response = await handle(await adminRequest(path, { user: 'admin', ...request }), params);
@@ -190,7 +190,7 @@ async function failedBody({ handle, path, params, request, routes, route, cause,
   const lines = vi.mocked(logRequest).mock.calls.map(([fields]) => fields);
   expect(lines).toEqual([expect.objectContaining({ route, statusCode: 500, error: expect.objectContaining({ message: cause }) })]);
   const saved = fake.requests.filter(({ method, path: called }) => `${method} ${called}` === SAVE_ADMIN_STATE).map(({ json }) => json);
-  expect(saved).toEqual(fault ? [expect.objectContaining(kept)] : []);
+  expect(saved).toEqual([expect.objectContaining(kept)]);
   return response.text();
 }
 

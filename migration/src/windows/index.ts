@@ -1,4 +1,4 @@
-/** Write windows: the window service and its errors, the `windows.json` writer, unit leases, window import, legacy steps, the reload guard and the CLI's service calls. */
+/** Write windows: the window service and its errors, the `windows.json` writer, unit leases, window import, legacy steps, the reload guard, the CLI's service calls and the orphan archive probe. */
 export { createWindowService, writeWindowsReport, WindowRefusedError, WindowNotFoundError, WindowStateError } from './service.js';
 export type { WindowService, WindowServiceOptions, WindowHooks, WindowsReportResult } from './service.js';
 
@@ -28,3 +28,11 @@ export {
   STARTUP_WINDOW_HOLDER_ENV,
   STARTUP_ROUTE_KEY,
 } from './via-service.js';
+
+export {
+  ORPHAN_PROBE_MAX_FILENAMES,
+  ORPHAN_PROBE_MAX_FILENAME_LENGTH,
+  OrphanArchiveUnavailableError,
+  hasOrphanArchive,
+  orphanArchiveSql,
+} from './orphan-archive.js';

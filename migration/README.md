@@ -218,6 +218,7 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `windowGet` | `GET /internal/v1/windows/{windowId}` | Gateway, operators |
 | `windowComplete` | `POST /internal/v1/windows/{windowId}:complete` | Gateway, operators |
 | `windowResolve` | `POST /internal/v1/windows/{windowId}:resolve` | Operators (`opt2-migrate resolve-window`) |
+| `orphanArchiveProbe` | `POST /internal/v1/probes/orphan-archive` | Gateway, operators: whether a listed filename has a `tcontentfilenamearchive` row, in any site, whose content has no active version on the live legacy database, which a legacy 404 render deletes; the gateway then windows the request |
 | `projectionAwait` | `POST /internal/v1/projection/await` | Gateway |
 | `unitAuthority` | `GET /internal/v1/authority` | Programs-sites site-monitor orchestrator, gateway, operators |
 | `legacyStepRun` | `POST /internal/v1/legacy-steps` | Programs-sites site-monitor orchestrator, for steps that run on legacy; windowed when they write `target`-authoritative units |

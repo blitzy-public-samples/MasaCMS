@@ -820,12 +820,13 @@ function flatViewArgsFor(state: StoredAdminState, rc: Rc, url: Rc, sessionSiteId
 async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, siteId: string): Promise<{ rc: Record<string, unknown> }> {
   const url = paramsOf(request);
   const { rc, moduleTop } = await carchContext(pageParams(request, { siteid: siteId }), actor, () => storedSession(request));
-  const { topId, rows, reset } = await listTop(ctx, actor, rc);
+  // SQL Server matched the site id case-insensitively; the content rows hold the registry's stored spelling.
+  const site = await siteOf(request, ctx, actor);
+  const { topId, rows, reset } = await listTop(ctx, actor, rc, site.siteId);
   if (reset) await saveTreeReset(request, moduleTop?.moduleId ?? (await storedSession(request)).moduleid ?? SITE_MANAGER_MODULE, topId);
   rcSet(rc, 'topid', topId);
   rcSet(rc, 'rsTop', rows);
   const moduleId = rcText(rc, 'moduleid');
-  const site = await siteOf(request, ctx, actor);
   const flags = await siteFlagsOf(request, actor);
   rcSet(rc, 'siteConfig', {
     customTagGroups: site.customTagGroups ?? '',
@@ -843,7 +844,7 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   const saves: StoredAdminState = {};
   const mura: Record<string, unknown> = { ...(state.mura ?? {}) };
   let muraChanged = false;
-  rcSet(rc, 'crumbdata', await getCrumbList(ctx.domain, actor, { contentId: topId, siteId }));
+  rcSet(rc, 'crumbdata', await getCrumbList(ctx.domain, actor, { contentId: topId, siteId: site.siteId }));
   if (cfIsNumeric(rcGet(rc, 'nextN')) && cfToNumber(rcGet(rc, 'nextN')) > 0) {
     rcSet(mura, 'nextN', rcGet(rc, 'nextN'));
     muraChanged = true;
@@ -865,7 +866,7 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   if (rcHas(url, 'keywords')) saves.keywords = rcText(url, 'keywords');
   if (muraChanged) saves.mura = mura;
   if (Object.keys(saves).length > 0) await saveSession(request, saves);
-  await inViewSort(request, ctx, actor, rc, first);
+  await inViewSort(request, ctx, actor, rc, first, site.siteId);
   const clipboard = sessionStateOf(state);
   rcSet(rc, 'copyContentID', clipboard.copyContentId);
   rcSet(rc, 'copySiteID', clipboard.copySiteId);
@@ -882,13 +883,14 @@ async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext
   return viewModel(rc);
 }
 
-/** list.cfm's in-view sort (list.cfm:590-634) when `rc.orderperm` allows it, keeping the `rc.sortDirection` it writes; `top` is the stored `rsTop` row. */
+/** list.cfm's in-view sort (list.cfm:590-634) when `rc.orderperm` allows it, keeping the `rc.sortDirection` it writes; `top` is the stored `rsTop` row, `siteId` the site id its rows hold. */
 async function inViewSort(
   request: FastifyRequest,
   ctx: ContentRouteContext,
   actor: Actor,
   rc: Rc,
   top: { sortby: string | null; sortdirection: string | null } | undefined,
+  siteId: string,
 ): Promise<void> {
   const perm = rcText(rc, 'orderperm');
   if (!rcHas(rc, 'orderperm') || !(cfEq(perm, 'editor') || (cfEq(perm, 'author') && cfEq(ctx.domain.config.sortPermission, 'author')))) return;
@@ -897,7 +899,7 @@ async function inViewSort(
   // Legacy's order loop alone does arithmetic on `rc.startrow`, so only a non-empty `orderid` list fails on a non-number.
   const startRow = orderIds !== undefined && orderIds.length > 0 ? cfToNumber(rcGet(rc, 'startrow')) : 1;
   const sortDirection = await sortSiteManagerLevel(ctx.domain, actor, {
-    siteId: rcText(rc, 'siteid'),
+    siteId,
     topId: rcText(rc, 'topid'),
     sortBy: rcText(rc, 'sortBy'),
     sortDirection: rcText(rc, 'sortDirection'),
@@ -911,9 +913,8 @@ async function inViewSort(
   if (sortDirection !== rcText(rc, 'sortDirection')) rcSet(rc, 'sortDirection', sortDirection);
 }
 
-/** `contentManager.getList(rc)` (contentManager.cfc:147-243) with list()'s empty-result fallback to the module's top. */
-async function listTop(ctx: ContentRouteContext, actor: Actor, rc: Rc) {
-  const siteId = rcText(rc, 'siteid');
+/** `contentManager.getList(rc)` (contentManager.cfc:147-243) with list()'s empty-result fallback to the module's top, read under `siteId`. */
+async function listTop(ctx: ContentRouteContext, actor: Actor, rc: Rc, siteId: string) {
   const read = (topId: string) => inTenant(ctx, actor, (tx) => ctx.domain.repository.content.top(tx, { topId, siteId }));
   let topId = rcText(rc, 'topid') || LEGACY_ADMIN_SENTINEL_ID;
   let rows = await read(topId);
@@ -1451,7 +1452,8 @@ async function runLockFile(request: FastifyRequest, ctx: ContentRouteContext, ac
   const rc = await rawRc(request, actor);
   if (csrfRejected(request)) return aborted();
   const site = await siteOf(request, ctx, actor);
-  const outcome = await lockFile(ctx.domain, actor, { contentId: rcRequired(rc, 'contentid'), siteId: rcText(rc, 'siteid'), context: site.urls.context, requestId: request.id });
+  // SQL Server matched the site id case-insensitively; the content rows hold the registry's stored spelling.
+  const outcome = await lockFile(ctx.domain, actor, { contentId: rcRequired(rc, 'contentid'), siteId: site.siteId, context: site.urls.context, requestId: request.id });
   return outcome.locked ? located(outcome.location) : aborted();
 }
 
@@ -1459,7 +1461,8 @@ async function runLockFile(request: FastifyRequest, ctx: ContentRouteContext, ac
 function runUnlock(unlock: typeof unlockFile): (request: FastifyRequest, ctx: ContentRouteContext, actor: Actor) => Promise<CarchRawResult> {
   return async (request, ctx, actor) => {
     const rc = await rawRc(request, actor);
-    if (!csrfRejected(request)) await unlock(ctx.domain, actor, { contentId: rcRequired(rc, 'contentid'), siteId: rcText(rc, 'siteid'), requestId: request.id });
+    // SQL Server matched the site id case-insensitively; the content rows hold the registry's stored spelling.
+    if (!csrfRejected(request)) await unlock(ctx.domain, actor, { contentId: rcRequired(rc, 'contentid'), siteId: (await siteOf(request, ctx, actor)).siteId, requestId: request.id });
     return aborted();
   };
 }
@@ -1474,7 +1477,7 @@ async function runSaveCopyInfo(request: FastifyRequest, _ctx: ContentRouteContex
 
 /**
  * `session.siteID` as admin/Application.cfc:384-397 leaves it: a requested `siteid` (the token's, by the site check)
- * other than the stored site switches it, before web stores the switch; else the stored site, else the token's.
+ * other than the stored site switches it; else the stored site, else the token's.
  */
 function sessionSiteOf(request: FastifyRequest, state: StoredAdminState, actor: Actor): string {
   const requested = rcText(paramsOf(request), 'siteid');
@@ -1723,7 +1726,7 @@ async function saveTreeReset(request: FastifyRequest, moduleId: string, topId: s
 async function runLoadSiteManager(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const { rc, moduleTop } = await carchContext(paramsOf(request), actor, () => storedSession(request));
   const siteId = rcText(rc, 'siteid');
-  const { topId, rows, reset } = await listTop(ctx, actor, rc);
+  const { topId, rows, reset } = await listTop(ctx, actor, rc, siteId);
   if (reset) await saveTreeReset(request, moduleTop?.moduleId ?? (await storedSession(request)).moduleid ?? SITE_MANAGER_MODULE, topId);
   rcSet(rc, 'topid', topId);
   const rsTop = rows[0];

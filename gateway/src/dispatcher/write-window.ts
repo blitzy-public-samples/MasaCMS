@@ -1,4 +1,4 @@
-// Client of migration's write-window operations for legacy-write entries, plus the window scope taken from the request.
+// Client of migration's write-window operations for legacy-write entries and their orphan archive probe, plus the window scope taken from the request.
 import { LegacyServiceUnavailableError, normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import {
   SERVICE_CALL_TIMEOUT_MS,
@@ -37,16 +37,19 @@ export type WindowOpened = Pick<Schemas['WindowOpenResponse'], 'windowId'>;
 export type WindowCompleteInput = Schemas['WindowCompleteRequest'];
 /** Window state after completion; `unknown` when migration's answer was not received. */
 export type WindowCompleteResult = Schemas['WindowCompleteResponse'];
+/** Body of `orphanArchiveProbe`. */
+export type OrphanArchiveProbeInput = Schemas['OrphanArchiveProbeRequest'];
 /** Values of the session the request acts in, used where the request carries no scope value. */
 export interface WindowSessionValues {
   siteid?: string | undefined;
   userid?: string | undefined;
 }
 
-/** Contract path of each window operation; `satisfies` checks them against the migration contract. */
+/** Contract path of each operation the client calls; `satisfies` checks them against the migration contract. */
 export const WINDOW_OPERATIONS = Object.freeze({
   open: '/internal/v1/windows',
   complete: '/internal/v1/windows/{windowId}:complete',
+  orphanArchive: '/internal/v1/probes/orphan-archive',
 } as const satisfies Record<string, keyof paths>);
 
 const COMPLETE_STATES: ReadonlySet<string> = new Set<WindowCompleteResult['state']>(['closed', 'import-pending', 'unknown']);
@@ -77,6 +80,8 @@ export interface WriteWindowClient {
   complete(windowId: string, input: WindowCompleteInput): Promise<WindowCompleteResult>;
   /** {@link scopeFor} over the client's inventory facts. */
   scope(routeKey: string, params: Record<string, unknown>, sessionValues: WindowSessionValues): WindowScope;
+  /** `orphanArchiveProbe`: whether a 404 render looking up `filenames` may delete an archive row; never throws, true on any failure. */
+  probeOrphanArchive(filenames: readonly string[]): Promise<boolean>;
 }
 
 function sessionValue(values: WindowSessionValues, name: string): string | undefined {
@@ -172,5 +177,23 @@ export function createWriteWindowClient({ client, facts }: { client: ServiceClie
     },
 
     scope: (routeKey, params, sessionValues) => scopeFor(facts, routeKey, params, sessionValues),
+
+    async probeOrphanArchive(filenames) {
+      let response: ServiceResponse<Partial<Schemas['OrphanArchiveProbeResponse']> | null | undefined>;
+      try {
+        response = await client.request({
+          service: MIGRATION_SERVICE,
+          method: 'POST',
+          path: WINDOW_OPERATIONS.orphanArchive,
+          json: { filenames: [...filenames] } satisfies OrphanArchiveProbeInput,
+          userToken: null,
+        });
+      } catch {
+        // Unanswered, the render may delete a row, so its window is attempted, which fails closed while migration is down.
+        return true;
+      }
+      const orphan = response.body?.orphan;
+      return isSuccess(response.status) && typeof orphan === 'boolean' ? orphan : true;
+    },
   };
 }

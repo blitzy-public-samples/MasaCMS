@@ -33,9 +33,8 @@ const STARTUP = 'application.setupComplete';
 const BUNDLE_GUARD = 'fileExists(local.bundleLoc) && application.contentGateway.getPageCount(projectSiteID).counter == 1';
 const PROJECT_SITE_GUARD = "projectSiteID != 'default' && !application.settingsManager.siteExists(projectSiteID)";
 const PLUGIN_GUARD = 'application.configBean.getValue("autoDiscoverPlugins") && !isdefined("url.safemode")';
-// The generator records no writer these entries close: the dbUpdates include is an unresolved call (finding
-// fe:appreload), and only the siteMonitor run, never start-up, reaches the fromMuraTrash re-saves.
-const NO_GENERATED_RECORD = ['startup-db-updates', 'trash-restore-bean'];
+// The generator records no writer this entry closes: only the siteMonitor run, never start-up, reaches the fromMuraTrash re-saves.
+const NO_GENERATED_RECORD = ['trash-restore-bean'];
 
 /** Whether an appstart record's condition opens with the start-up branch `guard` reaching it. */
 const inStartupBranch = (writer: InventoryWriter, guard: string): boolean =>

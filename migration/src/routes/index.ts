@@ -8,12 +8,13 @@ import type { BackgroundStateApi } from '../quiesce/index.js';
 import type { Projector } from '../reverse/index.js';
 import type { SchedulerService } from '../scheduler/index.js';
 import type { TransitionService } from '../transition/index.js';
-import type { WindowService } from '../windows/index.js';
+import { hasOrphanArchive, type WindowService } from '../windows/index.js';
 import { AUTHORITY_ROUTES, registerAuthorityRoutes } from './authority.js';
 import { BACKGROUND_ROUTES, registerBackgroundRoutes } from './background.js';
 import { FAULT_ROUTES, registerFaultRoutes } from './faults.js';
 import { GATES_ROUTES, gateReadsOf, registerGatesRoutes } from './gates.js';
 import { LEGACY_STEP_ROUTES, registerLegacyStepRoutes } from './legacy-steps.js';
+import { PROBE_ROUTES, registerProbeRoutes } from './probes.js';
 import { PROJECTION_ROUTES, registerProjectionRoutes } from './projection.js';
 import { SCHEDULER_ROUTES, registerSchedulerRoutes } from './scheduler.js';
 import { TRANSITION_ROUTES, registerTransitionRoutes } from './transitions.js';
@@ -25,6 +26,7 @@ export {
   FAULT_ROUTES,
   GATES_ROUTES,
   LEGACY_STEP_ROUTES,
+  PROBE_ROUTES,
   PROJECTION_ROUTES,
   SCHEDULER_ROUTES,
   TRANSITION_ROUTES,
@@ -35,6 +37,7 @@ export {
   registerFaultRoutes,
   registerGatesRoutes,
   registerLegacyStepRoutes,
+  registerProbeRoutes,
   registerProjectionRoutes,
   registerSchedulerRoutes,
   registerTransitionRoutes,
@@ -45,6 +48,7 @@ export type { BackgroundRouteDeps } from './background.js';
 export type { FaultRouteDeps } from './faults.js';
 export type { GatesRouteDeps } from './gates.js';
 export type { LegacyStepRouteDeps } from './legacy-steps.js';
+export type { ProbeRouteDeps } from './probes.js';
 export type { ProjectionRouteDeps } from './projection.js';
 export type { SchedulerBackgroundRecord, SchedulerRouteDeps } from './scheduler.js';
 export type { TransitionRouteDeps } from './transitions.js';
@@ -64,6 +68,7 @@ export interface RouteDeps {
 /** Every operation the registrars declare, in registration order: contract `path` and Fastify `url`. */
 export const MIGRATION_ROUTES = Object.freeze([
   ...WINDOW_ROUTES,
+  ...PROBE_ROUTES,
   ...PROJECTION_ROUTES,
   ...AUTHORITY_ROUTES,
   ...LEGACY_STEP_ROUTES,
@@ -74,10 +79,11 @@ export const MIGRATION_ROUTES = Object.freeze([
   ...FAULT_ROUTES,
 ]);
 
-/** Registers the sixteen operations on an app from `createService`, whose deny-by-default hook checks each declaration. */
+/** Registers the seventeen operations on an app from `createService`, whose deny-by-default hook checks each declaration. */
 export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
   const { ctx } = deps;
   registerWindowRoutes(app, { windows: deps.windows });
+  registerProbeRoutes(app, { orphanArchive: (filenames) => hasOrphanArchive(ctx.legacy, filenames) });
   registerProjectionRoutes(app, { projector: deps.projector, defaultTimeoutMs: ctx.config.projection.defaultAwaitTimeoutMs });
   registerAuthorityRoutes(app, {
     authority: () => currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths }),

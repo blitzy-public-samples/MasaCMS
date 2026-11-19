@@ -159,6 +159,30 @@ describe('complete', () => {
   });
 });
 
+describe('probeOrphanArchive', () => {
+  it.each([true, false])('posts the filenames to migration with no user token and returns its verdict %s', async (orphan) => {
+    const client = stubClient(answer(200, { orphan }));
+    const windows = createWriteWindowClient({ client, facts: FACTS });
+    await expect(windows.probeOrphanArchive(['about', 'about/team'])).resolves.toBe(orphan);
+    expect(client.calls).toEqual([
+      { service: 'migration', method: 'POST', path: '/internal/v1/probes/orphan-archive', json: { filenames: ['about', 'about/team'] }, userToken: null },
+    ]);
+  });
+
+  it.each<[string, () => Promise<ServiceResponse>]>([
+    ['a 503 answer', answer(503, { error: { type: 'serviceUnavailable' } })],
+    ['a 400 answer', answer(400, {})],
+    ['a 200 answer without a verdict', answer(200, {})],
+    ['a 200 answer with a text verdict', answer(200, { orphan: 'false' })],
+    ['an empty body', answer(200, undefined)],
+    ['an unreachable migration service', unavailable],
+    ['any other failure', () => Promise.reject(new Error('boom'))],
+  ])('answers true without throwing for %s', async (_label, reply) => {
+    const windows = createWriteWindowClient({ client: stubClient(reply), facts: FACTS });
+    await expect(windows.probeOrphanArchive(['about'])).resolves.toBe(true);
+  });
+});
+
 describe('with the platform service client', () => {
   let double: HttpDouble | undefined;
 
