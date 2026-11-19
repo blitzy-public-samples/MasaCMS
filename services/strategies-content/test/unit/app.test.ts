@@ -304,23 +304,41 @@ describe('contentEnvSchema MURA_SORTPERMISSION', () => {
 });
 
 describe('contentEnvSchema process requirements', () => {
-  const OWN_URL = JSON.stringify({ [SERVICE]: 'http://127.0.0.1:8114' });
-  const IDENTITY_URL = JSON.stringify({ identity: 'http://127.0.0.1:8111' });
-  const CALLEES = 'OPT2_SERVICE_URLS.strategies-content: is required; OPT2_SERVICE_URLS.identity: is required';
+  const CALLEE_URLS: Readonly<Record<string, string>> = {
+    [SERVICE]: 'http://127.0.0.1:8114',
+    identity: 'http://127.0.0.1:8111',
+    'programs-sites': 'http://127.0.0.1:8113',
+  };
+  /** The callee map with every required URL but `callee`'s. */
+  const urlsWithout = (callee: string): string =>
+    JSON.stringify(Object.fromEntries(Object.entries(CALLEE_URLS).filter(([name]) => name !== callee)));
+  const CALLEES =
+    'OPT2_SERVICE_URLS.strategies-content: is required; OPT2_SERVICE_URLS.identity: is required; OPT2_SERVICE_URLS.programs-sites: is required';
 
   it.each<[string, Record<string, string | undefined>, string[], string]>([
     ['another service name', { OPT2_SERVICE_NAME: 'people' }, ['OPT2_SERVICE_NAME: must be strategies-content'], 'people: invalid environment (OPT2_SERVICE_NAME: must be strategies-content)'],
-    ['no identity URL', { OPT2_SERVICE_URLS: OWN_URL }, ['OPT2_SERVICE_URLS.identity: is required'], 'strategies-content: invalid environment (OPT2_SERVICE_URLS.identity: is required)'],
+    [
+      'no identity URL',
+      { OPT2_SERVICE_URLS: urlsWithout('identity') },
+      ['OPT2_SERVICE_URLS.identity: is required'],
+      'strategies-content: invalid environment (OPT2_SERVICE_URLS.identity: is required)',
+    ],
+    [
+      'no programs-sites URL',
+      { OPT2_SERVICE_URLS: urlsWithout('programs-sites') },
+      ['OPT2_SERVICE_URLS.programs-sites: is required'],
+      'strategies-content: invalid environment (OPT2_SERVICE_URLS.programs-sites: is required)',
+    ],
     [
       'no URL of its own',
-      { OPT2_SERVICE_URLS: IDENTITY_URL },
+      { OPT2_SERVICE_URLS: urlsWithout(SERVICE) },
       ['OPT2_SERVICE_URLS.strategies-content: is required'],
       'strategies-content: invalid environment (OPT2_SERVICE_URLS.strategies-content: is required)',
     ],
     [
       'no callee map',
       { OPT2_SERVICE_URLS: undefined },
-      ['OPT2_SERVICE_URLS.strategies-content: is required', 'OPT2_SERVICE_URLS.identity: is required'],
+      ['OPT2_SERVICE_URLS.strategies-content: is required', 'OPT2_SERVICE_URLS.identity: is required', 'OPT2_SERVICE_URLS.programs-sites: is required'],
       `strategies-content: invalid environment (${CALLEES})`,
     ],
     ['no OPT2_DB_AUTH', { OPT2_DB_AUTH: undefined }, ['OPT2_DB_AUTH: is required'], 'strategies-content: invalid environment (OPT2_DB_AUTH: is required)'],

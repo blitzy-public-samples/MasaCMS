@@ -1,5 +1,5 @@
-// The gateway client's streamed calls and its own Version menu read over the in-memory platform client: an unread
-// 2xx stream, bytes otherwise; and the multipart relay of an inbound body.
+// The gateway client's streamed calls, call bounds and its own Version menu read over the in-memory platform client: an
+// unread 2xx stream, bytes otherwise; and the multipart relay of an inbound body.
 import { PassThrough, Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -7,6 +7,7 @@ import { REQUEST_ID_HEADER, ServiceUnavailableError, type ServiceRequest } from 
 import {
   GatewayUnavailableError,
   LEGACY_VERSION_MENU_PATH,
+  RELAYED_CALL_TIMEOUT_MS,
   createGatewayClient,
   discardStreamed,
   multipartRelay,
@@ -135,6 +136,38 @@ describe('stream', () => {
     expect(sent[0]).toMatchObject({ rawBody: true });
     expect(sent[0]).not.toHaveProperty('stream');
     expect(response.body).not.toBeInstanceOf(Readable);
+  });
+});
+
+describe('call bounds', () => {
+  type AnyCall = (gateway: GatewayClient) => Promise<unknown>;
+  const MULTIPART: MultipartBody = { contentType: 'multipart/form-data; boundary=b', body: new TextEncoder().encode('--b--\r\n') };
+
+  it.each<[string, AnyCall]>([
+    ['GET through call', (gateway) => gateway.call('people', { method: 'GET', path: PATH })],
+    ['GET through a facade', (gateway) => gateway.programsSites.listSites()],
+    ['POST through post', (gateway) => gateway.post('people', PATH, { siteid: 'default' })],
+    ['POST through postForm', (gateway) => gateway.postForm('people', PATH, { siteid: 'default' })],
+    ['POST through postMultipart', (gateway) => gateway.postMultipart('people', PATH, MULTIPART)],
+    ['DELETE through raw', (gateway) => gateway.raw('people', { method: 'DELETE', path: PATH })],
+    ['GET through stream', (gateway) => gateway.stream('people', { method: 'GET', path: PATH })],
+  ])('bounds a relayed %s by RELAYED_CALL_TIMEOUT_MS', async (_label, invoke) => {
+    await invoke(client);
+
+    expect(sent).toEqual([expect.objectContaining({ timeoutMs: RELAYED_CALL_TIMEOUT_MS })]);
+  });
+
+  it.each<[string, AnyCall]>([
+    [
+      'legacySite.paths',
+      (gateway) => gateway.legacySite.paths({ sessionSite: 'default', host: 'h', forwardedProto: 'http', themeSite: 'default' }),
+    ],
+    ['legacyVersionMenu', (gateway) => gateway.legacyVersionMenu()],
+  ])("leaves the gateway's own %s on the client's default bound", async (_label, invoke) => {
+    await invoke(client);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toHaveProperty('timeoutMs');
   });
 });
 

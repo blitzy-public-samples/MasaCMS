@@ -4,6 +4,7 @@ import { PassThrough, Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { LEGACY_ERROR_PAGE_HTML, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import { GATE_WAIT_MS } from '@opt2/platform/migration-kit';
 import {
   REQUEST_ID_HEADER,
   SERVICE_CALL_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import { testVerifier } from '@opt2/platform/testing';
 import {
   GatewayDenialError,
   GatewayUnavailableError,
+  RELAYED_CALL_TIMEOUT_MS,
   WEB_SERVICE_NAMES,
   assertNotDenied,
   createGatewayClient,
@@ -124,8 +126,9 @@ describe('constants', () => {
     ]);
   });
 
-  it('bounds each call by the 10 s platform service-call timeout', () => {
+  it('bounds relayed calls by the gateway forward bound plus one 10 s service-call timeout', () => {
     expect(SERVICE_CALL_TIMEOUT_MS).toBe(10_000);
+    expect(RELAYED_CALL_TIMEOUT_MS).toBe(GATE_WAIT_MS + 2 * SERVICE_CALL_TIMEOUT_MS);
   });
 });
 
@@ -971,6 +974,7 @@ describe('setServiceClientForTests', () => {
       headers: { [REQUEST_ID_HEADER]: 'req-anonymous' },
       userToken: null,
       rawBody: true,
+      timeoutMs: RELAYED_CALL_TIMEOUT_MS,
     });
     expect(relayed.body).toEqual({ ok: true });
     expect(fake.requests).toHaveLength(1);

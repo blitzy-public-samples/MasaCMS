@@ -157,6 +157,11 @@ variable "legacy_settings" {
   }
 
   validation {
+    condition     = alltrue([for k, v in var.legacy_settings : !can(regex("\\p{Cc}", v)) if k == "MURA_LOCALE"])
+    error_message = "legacy_settings MURA_LOCALE must not contain control characters."
+  }
+
+  validation {
     condition     = alltrue([for k, v in var.legacy_settings : !can(regex("(?i)[a-z][a-z0-9+.-]*://[^/?#\\s]*@", v)) if contains(["MURA_ASSETPATH", "MURA_COREPATH", "MURA_FILEASSETPATH", "MURA_FILEDIR", "MURA_PLUGINSPATH", "MURA_PROXYSERVER", "MURA_S3ASSETS"], k)])
     error_message = "legacy_settings MURA_ASSETPATH, MURA_COREPATH, MURA_FILEASSETPATH, MURA_FILEDIR, MURA_PLUGINSPATH, MURA_PROXYSERVER and MURA_S3ASSETS must not embed URL credentials (scheme://user[:password]@host): legacy_settings values are plain env, and secrets reach the services only as existing Secret Manager ids in operator_secret_ids."
   }

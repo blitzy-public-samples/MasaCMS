@@ -40,7 +40,7 @@ const CF_TRUE = /^(?:true|yes|1)$/i;
 /**
  * Base variables plus configBean `variations` from `MURA_VARIATIONS`, a ColdFusion boolean that is false when unset, and
  * configBean `sortPermission` from `MURA_SORTPERMISSION`, kept as written and '' when unset;
- * requires this service's own name, its database and the URLs of identity and of itself, the target of its own tasks.
+ * requires this service's own name, its database and the URLs of identity, programs-sites and itself, the target of its own tasks.
  */
 export const contentEnvSchema = processEnvSchema(
   baseEnvSchema.extend({
@@ -49,7 +49,7 @@ export const contentEnvSchema = processEnvSchema(
     ),
     MURA_SORTPERMISSION: optionalEnvString().transform((value) => value ?? ''),
   }),
-  { service: OWNER, callees: [OWNER, IDENTITY_SERVICE], database: true },
+  { service: OWNER, callees: [OWNER, IDENTITY_SERVICE, 'programs-sites'], database: true },
 );
 
 // LoadedEnv rather than z.infer: createService, the storage port and the task port need the adapter choices loadEnv always sets.

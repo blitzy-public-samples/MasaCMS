@@ -134,26 +134,30 @@ Masa reads each configBean setting from its `MURA_<KEY>` variable over the setti
 | `MURA_CONTEXT` | `identity`, `people`, `programs-sites`, `strategies-content`, `web` | Blank, or a path from `/` without whitespace, `?` or `#` |
 | `MURA_COOKIEDOMAIN` | `gateway`, `web` | Blank, or one host name, optionally with a leading dot, without whitespace, `:`, `/`, `\`, `?`, `#`, `,` or `@` |
 | `MURA_DATASOURCE` | `identity`, `people` | Any text |
+| `MURA_DEBUGGINGENABLED` | `strategies-content`, `web` | Any text |
 | `MURA_EXPIREPASSWORDS` | `people`, `web` | Whole number of days |
 | `MURA_HASHURLS` | `identity`, `strategies-content`, `web` | CFML boolean |
 | `MURA_INDEXFILEINURLS` | `identity`, `strategies-content`, `web` | CFML boolean |
 | `MURA_LEGACYINDEXFILELOCATION` | `strategies-content`, `web` | CFML boolean |
+| `MURA_LOCALE` | `programs-sites`, `web` | Any text without control characters |
 | `MURA_PORT` | `identity`, `people`, `programs-sites`, `strategies-content`, `web` | Blank, or a port from 1 to 65535 |
 | `MURA_REQUESTTIMEOUT` (seconds) | `gateway` | Positive CFML number: decimal text such as `1000`, `1.5` or `2e2`, without whitespace |
 | `MURA_SECURECOOKIES` | `gateway`, `web` | CFML boolean |
 | `MURA_SESSIONBASEDLOCKDOWN` | `identity` | CFML boolean |
 | `MURA_SESSIONHISTORY` (days) | `web` | CFML number: decimal text such as `180`, `1.5` or `2e2`, without whitespace |
-| `MURA_SESSIONTIMEOUT` (minutes) | `gateway`, `web` | CFML number: decimal text such as `180`, `1.5` or `2e2`, without whitespace |
+| `MURA_SESSIONTIMEOUT` (minutes) | `gateway`, `identity`, `web` | CFML number: decimal text such as `180`, `1.5` or `2e2`, without whitespace |
 | `MURA_SITEDIR` | `strategies-content`, `web` | Any text |
 | `MURA_SITEIDINURLS` | `identity`, `strategies-content`, `web` | CFML boolean |
+| `MURA_SORTPERMISSION` | `strategies-content` | Any text |
 | `MURA_STRICTHTML` | `identity` | CFML boolean |
 | `MURA_STRONGPASSWORDS` | `web` | CFML boolean |
+| `MURA_SUPPRESSAPIPARAMS`, `MURA_USEDATANAMESPACEFORAPI` | `strategies-content` | CFML boolean |
 | `MURA_VARIATIONS` | `strategies-content` | CFML boolean |
 | `MURA_ALLOWAUTOUPDATES`, `MURA_FILEMANAGERENABLED`, `MURA_FMSHOWAPPLICATIONROOT`, `MURA_FMSHOWSITEFILES`, `MURA_FORMPOLLS`, `MURA_INDEXFILEINAPI`, `MURA_JAVAENABLED`, `MURA_KEEPMETAKEYWORDS`, `MURA_RENDERMURAALERTS`, `MURA_SHOWUSAGETABS` | `web` | CFML boolean |
 | `MURA_ASSETPATH`, `MURA_COREPATH`, `MURA_FILEASSETPATH`, `MURA_FILEDIR`, `MURA_PLUGINSPATH`, `MURA_PROXYSERVER`, `MURA_S3ASSETS` | `web` | Any text without URL credentials (`scheme://user[:password]@`) |
-| `MURA_ADMINDIR`, `MURA_ADMINEMAIL`, `MURA_DBTYPE`, `MURA_FILEDELIM`, `MURA_HTMLEDITORTYPE`, `MURA_LOCALE`, `MURA_MODE`, `MURA_PROXYUSER`, `MURA_TITLE`, `MURA_WEBROOT`, `MURA_WINDOWDOCUMENTDOMAIN` | `web` | Any text |
+| `MURA_ADMINDIR`, `MURA_ADMINEMAIL`, `MURA_DBTYPE`, `MURA_FILEDELIM`, `MURA_HTMLEDITORTYPE`, `MURA_MODE`, `MURA_PROXYUSER`, `MURA_TITLE`, `MURA_WEBROOT`, `MURA_WINDOWDOCUMENTDOMAIN` | `web` | Any text |
 
-A CFML boolean is `true`, `false`, `yes`, `no`, `1` or `0`, in any case. Plan-time validation rejects any other key, a secret-like key (one containing `PASSWORD`, `SECRET` or `TOKEN`, or ending in `KEY`), a null value and a value outside the accepted set; every accepted value parses in each reader at start-up. The table is every non-secret `MURA_<KEY>` a target reads: `web` reads the 43 it lists for it (`web/src/lib/env.ts`), `gateway` the four it lists for it (`gateway/src/app.ts`), and `migration` and the six synthetic services read none beyond `MURA_APPRELOADKEY` and `migration`'s connection settings, whose `MURA_DBTYPE` stays `mssql`. Every value lands as plain env, so the seven keys that may hold a URL refuse embedded credentials; a secret reaches a service only as an `operator_secret_ids` id.
+A CFML boolean is `true`, `false`, `yes`, `no`, `1` or `0`, in any case. Plan-time validation rejects any other key, a secret-like key (one containing `PASSWORD`, `SECRET` or `TOKEN`, or ending in `KEY`), a null value and a value outside the accepted set; every accepted value parses in each reader at start-up. The table is every non-secret `MURA_<KEY>` a target reads: `web` reads the 44 it lists for it (`web/src/lib/env.ts`), `gateway` the four it lists for it (`gateway/src/app.ts`), and `migration` and the six synthetic services read none beyond `MURA_APPRELOADKEY` and `migration`'s connection settings, whose `MURA_DBTYPE` stays `mssql`. Every value lands as plain env, so the seven keys that may hold a URL refuse embedded credentials; a secret reaches a service only as an `operator_secret_ids` id. `harness/test/repro/legacy-settings.test.ts` derives each service's `MURA_*` reads from its source and fails when its readers, connection env and secret env differ from them.
 
 ## Deterministic URLs
 

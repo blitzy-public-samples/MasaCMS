@@ -12,6 +12,7 @@ import {
   createServiceClient,
   decodeServiceBody,
   REQUEST_ID_HEADER,
+  SERVICE_CALL_TIMEOUT_MS,
   ServiceUnavailableError,
   type ServiceClient,
   type ServiceRequest,
@@ -58,6 +59,14 @@ const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 /** Path of the gateway's `legacySitePaths`. */
 const LEGACY_SITE_PATHS = '/internal/v1/legacy-site-paths';
+/** The owners' unit-gate wait, `GATE_WAIT_MS` of `@opt2/platform/migration-kit`, which web does not load. */
+const OWNER_GATE_WAIT_MS = 30_000;
+
+/**
+ * Bound of a relayed call: the gateway's target forward bound (owner gate wait plus one call bound) and one more
+ * call bound, so the gateway answers a relayed call first.
+ */
+export const RELAYED_CALL_TIMEOUT_MS = OWNER_GATE_WAIT_MS + 2 * SERVICE_CALL_TIMEOUT_MS;
 
 /** A relayed service, or the gateway answering one of its own operations. */
 export type GatewayCallee = WebServiceName | typeof GATEWAY_CALLEE;
@@ -416,6 +425,8 @@ async function send<T>(
     rawBody: true,
     // Only a 2xx body is left unread; an unavailable status, never 2xx, still arrives as bytes.
     ...(mode === 'streamed' ? { stream: true } : {}),
+    // Outlasts the gateway's closed-gate wait, so web never answers 503 for a held write that then commits.
+    ...(own ? {} : { timeoutMs: RELAYED_CALL_TIMEOUT_MS }),
   };
   let response: ServiceResponse<Buffer | Readable>;
   try {
