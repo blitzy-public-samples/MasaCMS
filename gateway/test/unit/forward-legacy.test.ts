@@ -1,6 +1,6 @@
 // Tests that the composed gateway proxies unmoved routes to legacy byte for byte, and how credentials differ for target-bound routes.
 import { Buffer } from 'node:buffer';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { testVerifier } from '@opt2/platform/testing';
@@ -33,6 +33,14 @@ const LEGACY_SENT_HEADERS: ReadonlySet<string> = new Set([
   'content-length',
   'transfer-encoding',
 ]);
+/** Content-Type values without a media type; Node delivers an empty one as ''. */
+const NO_MEDIA_TYPES = [';charset=utf-8', ',', ';', '; boundary=x', ''];
+/** Legacy's servlet container answer to a POST under such a Content-Type, sent before any CFML runs. */
+const CONTAINER_500 = {
+  status: 500,
+  headers: { 'content-type': 'text/html;charset=UTF-8' },
+  body: '<html><head><title>ERROR</title></head><body>Error processing request</body></html>',
+};
 
 let gateway: TestGateway | undefined;
 
@@ -72,6 +80,45 @@ function rawGet(g: TestGateway, target: string): Promise<{ status: number | unde
     req.on('error', reject);
     req.end();
   });
+}
+
+/** Sends `method` to raw `target` on its own connection, with `headers` in order and `body` as given. */
+function rawSend(
+  g: TestGateway,
+  method: string,
+  target: string,
+  headers: Record<string, string>,
+  body: Buffer,
+): Promise<{ status: number | undefined; headers: IncomingHttpHeaders; body: Buffer }> {
+  const { port } = g.app.server.address() as AddressInfo;
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        method,
+        path: target,
+        headers: { host: SITE_HOST, ...headers, 'content-length': String(body.length) },
+        agent: false,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+/** Lower-cased header names in `rawHeaders` that `names` lists, in the order they were sent. */
+function sentOrderOf(rawHeaders: readonly string[], names: readonly string[]): string[] {
+  return rawHeaders
+    .filter((_, index) => index % 2 === 0)
+    .map((name) => name.toLowerCase())
+    .filter((name) => names.includes(name));
 }
 
 /** Lower-cased names of the `x-opt2-*` headers in `headers`. */
@@ -224,6 +271,54 @@ describe('legacy forwarding under v0001', () => {
     expect(pages(g)).toEqual([]);
   });
 
+  it.each(NO_MEDIA_TYPES.flatMap((contentType) => [REQUEST_BYTES, Buffer.alloc(0)].map((body) => ({ contentType, body }))))(
+    "a POST under Content-Type \"$contentType\" with a $body.length-byte body reaches legacy as sent, and the client gets legacy's 500",
+    async ({ contentType, body }) => {
+      const g = await v0001();
+      await g.app.listen({ host: '127.0.0.1', port: 0 });
+      g.legacy.setResponse(CONTAINER_500);
+
+      const res = await rawSend(g, 'POST', PAGE_URL, { 'x-before': '1', 'content-type': contentType, 'x-after': '2' }, body);
+
+      expect(res.status).toBe(CONTAINER_500.status);
+      expect(res.headers['content-type']).toBe(CONTAINER_500.headers['content-type']);
+      expect(res.body.toString()).toBe(CONTAINER_500.body);
+      const received = onlyPage(g);
+      expect(received.method).toBe('POST');
+      expect(received.url).toBe(PAGE_URL);
+      expect(received.headers['content-type']).toBe(contentType);
+      expect(sentOrderOf(received.rawHeaders, ['x-before', 'content-type', 'x-after'])).toEqual(['x-before', 'content-type', 'x-after']);
+      expect(received.body.equals(body)).toBe(true);
+    },
+  );
+
+  it.each([
+    { method: 'POST', contentType: 'text' },
+    { method: 'POST', contentType: 'text/' },
+    { method: 'POST', contentType: '/plain' },
+    { method: 'POST', contentType: 'a b/c' },
+    { method: 'POST', contentType: '=' },
+    { method: 'POST', contentType: ',text/plain' },
+    { method: 'PUT', contentType: ';charset=utf-8' },
+    { method: 'PATCH', contentType: ',' },
+    { method: 'DELETE', contentType: ';' },
+    { method: 'OPTIONS', contentType: '; boundary=x' },
+  ])('a $method under Content-Type "$contentType", which Fastify refuses, reaches legacy as sent, and the client gets its answer', async ({ method, contentType }) => {
+    const g = await v0001();
+    await g.app.listen({ host: '127.0.0.1', port: 0 });
+
+    const res = await rawSend(g, method, PAGE_URL, { 'content-type': contentType }, REQUEST_BYTES);
+
+    expect(res.status).toBe(200);
+    const received = onlyPage(g);
+    expect(received.method).toBe(method);
+    expect(received.headers['content-type']).toBe(contentType);
+    expect(received.body.equals(REQUEST_BYTES)).toBe(true);
+    const echo = JSON.parse(res.body.toString()) as LegacyEcho;
+    expect(echo.contentType).toBe(contentType);
+    expect(Buffer.from(echo.bodyBase64, 'base64').equals(REQUEST_BYTES)).toBe(true);
+  });
+
   it("a target-bound request never carries the client's Authorization or forged invocation credential", async () => {
     const g = await v0001();
     const stub = g.targets.stub;
@@ -274,6 +369,27 @@ describe('legacy forwarding under v0002', () => {
     expect(res.body.toString()).toBe('<h1>404 - Not Found</h1>');
     expect(Object.values(gateway.targets).flatMap((double) => double.requests)).toEqual([]);
   });
+
+  it.each(NO_MEDIA_TYPES)(
+    "a POST to the target finance records entry under Content-Type %j reaches legacy as sent, never a service, and the client gets legacy's 500",
+    async (contentType) => {
+      const target = `${FIXTURE}/finance/records`;
+      gateway = await buildTestGateway({ version: 'v0002' });
+      await gateway.app.listen({ host: '127.0.0.1', port: 0 });
+      gateway.legacy.setResponse(CONTAINER_500);
+
+      const res = await rawSend(gateway, 'POST', target, { 'content-type': contentType }, REQUEST_BYTES);
+
+      expect(res.status).toBe(CONTAINER_500.status);
+      expect(res.headers['content-type']).toBe(CONTAINER_500.headers['content-type']);
+      expect(res.body.toString()).toBe(CONTAINER_500.body);
+      const received = onlyPage(gateway);
+      expect(received.url).toBe(target);
+      expect(received.headers['content-type']).toBe(contentType);
+      expect(received.body.equals(REQUEST_BYTES)).toBe(true);
+      expect(Object.values(gateway.targets).flatMap((double) => double.requests)).toEqual([]);
+    },
+  );
 
   it('sends a fixture path reply-from cannot parse, whose entry is target, to finance as the raw request target, never to legacy', async () => {
     const target = `${FIXTURE}/finance/records/x%5C../versions`;

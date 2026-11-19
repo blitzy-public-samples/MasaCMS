@@ -323,6 +323,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     edge.addContentTypeParser<Buffer>('*', { parseAs: 'buffer', bodyLimit: LEGACY_POST_LIMIT_BYTES }, (_request, body, done) =>
       done(null, body),
     );
+    // Fastify answers 415 to a Content-Type without a valid media type; hidden in place until preValidation, its body reaches '*'.
+    const unparsedContentTypes = new WeakMap<FastifyRequest, string>();
+    edge.addHook('preParsing', (request, _reply, payload, done) => {
+      const contentType = request.headers['content-type'];
+      if (contentType !== undefined && request.mediaType === undefined) {
+        unparsedContentTypes.set(request, contentType);
+        request.raw.headers['content-type'] = undefined;
+      }
+      done(null, payload);
+    });
+    edge.addHook('preValidation', (request, _reply, done) => {
+      const contentType = unparsedContentTypes.get(request);
+      if (contentType !== undefined) request.raw.headers['content-type'] = contentType;
+      done();
+    });
     registerEdgeRoute(edge, deps);
   });
 

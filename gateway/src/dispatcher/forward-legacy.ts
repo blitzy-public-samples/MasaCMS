@@ -406,7 +406,8 @@ export async function forwardToLegacy(
   const body = Buffer.isBuffer(request.body) ? request.body : undefined;
 
   const options: FastifyReplyFromHooks = {
-    ...(body === undefined ? {} : { body, contentType: request.headers['content-type'] ?? RAW_BODY_CONTENT_TYPE }),
+    // reply-from JSON-encodes a body sent under an empty content type, so an empty inbound one takes the raw one too.
+    ...(body === undefined ? {} : { body, contentType: request.headers['content-type'] || RAW_BODY_CONTENT_TYPE }),
     rewriteRequestHeaders: () => legacyRequestHeaders(request, ctx, body?.length),
     // undici's headers and body timeouts; an expiry ends the exchange uncertainly, so it answers the 503 unsettled.
     timeout: ctx.timeoutMs ?? LEGACY_EXCHANGE_TIMEOUT_MS,
