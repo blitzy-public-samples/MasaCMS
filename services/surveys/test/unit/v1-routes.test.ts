@@ -1,9 +1,9 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The `/v1/surveys` routes over a throwaway `surveys` schema: paged survey and response lists with their totals, batched schedule reads and `{data}` reads. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates } from '@opt2/platform/migration-kit';
@@ -37,10 +37,7 @@ type Page<T> = { data: T[]; total: number };
 type TargetPage = { data: SurveyTarget[]; next: string | null };
 type TaskPage = { data: components['schemas']['ScheduledTaskView'][]; next: string | null };
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const T0 = new Date(2026, 5, 30, 9, 0, 0, 125);
 const USER_ID = '11111111-2222-3333-4444555566667777';

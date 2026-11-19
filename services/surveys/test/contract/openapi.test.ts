@@ -1,8 +1,8 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Provider contract of surveys: every registered route against contracts/openapi.yaml, and every response shape per operation. */
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import {
@@ -85,11 +85,7 @@ interface Case {
   verify?: (answer: Answer, ctx: TestApp, seeded: Seeded) => void;
 }
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-
-const DOC = load(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 const PIN = JSON.parse(await readFile(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;

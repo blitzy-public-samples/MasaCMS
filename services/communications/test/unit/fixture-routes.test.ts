@@ -4,8 +4,8 @@
  * then over the recording database, the wire envelope, error rows and api.cfm check order.
  */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { LEGACY_ERROR_MAP, LEGACY_JSON_CONTENT_TYPE, LegacyApiError, cfHash, type LegacyErrorSpec } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
@@ -64,12 +64,8 @@ vi.mock('@opt2/platform/migration-kit', async (importOriginal) => {
   return { ...actual, withGatedTenant: vi.fn(actual.withGatedTenant) };
 });
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-
 type OpenApiDoc = { paths: Record<string, Record<string, Record<string, unknown>>> };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 
 const SCHEMA = 'communications';
 const USER_ID = '6F9619FF-8B86-D011-B42D00C04FC964FF';

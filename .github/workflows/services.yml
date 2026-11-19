@@ -93,9 +93,15 @@ jobs:
       - name: Install
         working-directory: ${{ matrix.package }}
         run: npm ci
+      - name: Lint
+        working-directory: ${{ matrix.package }}
+        run: npm run lint --if-present
       - name: Build
         working-directory: ${{ matrix.package }}
         run: npm run build
+      - name: Typecheck
+        working-directory: ${{ matrix.package }}
+        run: npm run typecheck --if-present
       - name: Test
         working-directory: ${{ matrix.package }}
         run: npm test

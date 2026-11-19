@@ -26,6 +26,7 @@ import { createLocalStorageAdapter, type LocalStorageAdapter, type StoragePort }
 import { tenantDbFromPool, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, createThrowawaySchema, mintServiceToken, mintUserToken, pgAvailable, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
 import { createRecord, type FinanceActor, type FinanceDomainDeps, type RecordInput } from '../../src/domain/records.js';
+import type { components, operations } from '../../src/generated/openapi.js';
 import { attachmentRow, recordRow, rollupRow, versionRow } from '../../src/legacy/serialize.js';
 import { findRecord, listAttachments, listRollups, listVersions, type Page, type RecordPaging } from '../../src/repo/queries.js';
 import { createFinanceRepository } from '../../src/repo/repository.js';
@@ -73,10 +74,15 @@ interface Call {
   headers?: Readonly<Record<string, string>>;
 }
 
-/** An injected answer, its JSON body already validated against the contract. */
-interface Answer {
+type Schemas = components['schemas'];
+type ErrorBody = Schemas['FixtureErrorEnvelope'];
+/** The JSON body of operation `O`'s 200 answer. */
+type Ok<O extends keyof operations> = operations[O] extends { responses: { 200: { content: { 'application/json': infer B } } } } ? B : never;
+
+/** An injected answer, its JSON body already validated against the contract as `T`. */
+interface Answer<T = ErrorBody> {
   status: number;
-  body: Record<string, any>;
+  body: T;
   headers: Record<string, unknown>;
 }
 
@@ -191,7 +197,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
   }
 
   /** Injects one gateway call and validates the answer against the contract. */
-  async function call(method: 'GET' | 'POST', url: string, request: Call, target: FastifyInstance = app): Promise<Answer> {
+  async function call<T = ErrorBody>(method: 'GET' | 'POST', url: string, request: Call, target: FastifyInstance = app): Promise<Answer<T>> {
     const { site, roles = PREPARER.roles, sub = PREPARER_ID } = request;
     const serviceRoles = request.serviceRoles === undefined ? {} : { roles: [...request.serviceRoles] };
     const headers: Record<string, string> = {
@@ -209,7 +215,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     }
     const res = await target.inject({ method, url, headers: { ...headers, ...request.headers }, ...(payload === undefined ? {} : { payload }) });
     assertResponseMatchesOpenApi(OPENAPI, { method, path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
-    return { status: res.statusCode, body: JSON.parse(res.body) as Record<string, any>, headers: res.headers };
+    return { status: res.statusCode, body: JSON.parse(res.body) as T, headers: res.headers };
   }
 
   /** The fixture error envelope `call` answers for `method`, `message` and the `invalid_request` code. */
@@ -275,7 +281,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     });
 
     it('answers the first 50 records in fixture order with the count of all', async () => {
-      const res = await call('GET', RECORDS, { site: SITE_LIST });
+      const res = await call<Ok<'listRecords'>>('GET', RECORDS, { site: SITE_LIST });
       expect(res.status).toBe(200);
       expect(res.body.total).toBe(3);
       expect(res.body.data.map((row: { record_id: string }) => row.record_id)).toEqual(ordered);
@@ -298,7 +304,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       ['a state and a period', '?state=IN-PROGRESS&period=2026-05', () => ({ ids: [ordered.find((id) => !june.includes(id))], total: 1 })],
       ['the largest page size', '?pageSize=1000', () => ({ ids: ordered, total: 3 })],
     ])('pages and filters: %s', async (_case, query, expected) => {
-      const res = await call('GET', `${RECORDS}${query}`, { site: SITE_LIST, ...APPROVER });
+      const res = await call<Ok<'listRecords'>>('GET', `${RECORDS}${query}`, { site: SITE_LIST, ...APPROVER });
       const { ids, total } = expected();
       expect([res.body.data.map((row: { record_id: string }) => row.record_id), res.body.total]).toEqual([ids, total]);
     });
@@ -378,7 +384,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     const edit = await transition(edited, 'edit', { json: { title: 'Office v2', amount: ' 1000.5 ', period: '2026-07' } });
     expect(edit.body.data).toMatchObject({ title: 'Office v2', amount: '1000.5000', period: '2026-07', state: 'IN-PROGRESS', version: 2 });
 
-    const versions = await call('GET', `${RECORDS}/${submitted}/versions`, { ...site, ...APPROVER });
+    const versions = await call<Ok<'listRecordVersions'>>('GET', `${RECORDS}/${submitted}/versions`, { ...site, ...APPROVER });
     expect(versions.body.data.map((row: { version: number; action: string; state: string }) => [row.version, row.action, row.state])).toEqual([
       [1, 'create', 'IN-PROGRESS'],
       [2, 'submit', 'SUBMITTED'],
@@ -395,7 +401,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
   it('uploads, lists and signs attachments, and embeds versions and attachments in the record detail', async () => {
     const id = await seed(SITE_FILES, { title: 'Receipts', amount: 3_157_500n, period: '2026-05' });
     const site = { site: SITE_FILES };
-    const upload = await call('POST', `${RECORDS}/${id}/attachments`, {
+    const upload = await call<Ok<'uploadRecordAttachment'>>('POST', `${RECORDS}/${id}/attachments`, {
       ...site,
       part: { name: 'file', filename: 'receipt.pdf', type: 'application/pdf', body: '%PDF-1' },
     });
@@ -418,7 +424,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     expect((await call('POST', `${RECORDS}/${MISSING_ID}/attachments`, { ...site, part: { name: 'other', body: 'x' } })).status).toBe(404);
     expect((await call('GET', `${RECORDS}/${id}/attachments`, site)).body.data).toEqual([upload.body.data]);
 
-    const signed = await call('GET', `${RECORDS}/${id}/attachments/${aid}/download-url`, { ...site, ...APPROVER });
+    const signed = await call<Ok<'getAttachmentDownloadUrl'>>('GET', `${RECORDS}/${id}/attachments/${aid}/download-url`, { ...site, ...APPROVER });
     const expires = NOW.getTime() / 1000 + 900;
     expect(signed.body.data.expiresAt).toBe(new Date(expires * 1000).toISOString());
     expect(signed.body.data.url).toMatch(
@@ -465,8 +471,13 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       );
     }
 
+    /** The `/v1` answer of a version, attachment or rollup list. */
+    type ListBody = Ok<'listRecordVersions'> | Ok<'listRecordAttachments'> | Ok<'listRollups'>;
+    /** The `/v2` page of a version, attachment or rollup list. */
+    type PageBody = Ok<'listRecordVersionsV2'> | Ok<'listRecordAttachmentsV2'> | Ok<'listRollupsV2'>;
+
     /** Each list: its `/v1` and `/v2` URL, its row key, and the keys of all its rows in order. */
-    const LISTS: [string, () => string, () => string, (row: Record<string, any>) => unknown, () => unknown[]][] = [
+    const LISTS: [string, () => string, () => string, (row: Record<string, unknown>) => unknown, () => unknown[]][] = [
       [
         'versions',
         () => `${RECORDS}/${id}/versions`,
@@ -508,14 +519,14 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     });
 
     it.each(LISTS)('answers every one of the %s on /v1 without a count, whatever page is asked', async (_case, v1, v2, key, keys) => {
-      const complete = await call('GET', v1(), site);
+      const complete = await call<ListBody>('GET', v1(), site);
       expect([complete.status, Object.keys(complete.body), complete.body.data.map(key)]).toEqual([200, ['data'], keys()]);
       expect((await call('GET', `${v1()}?page=2&pageSize=1`, site)).body).toEqual(complete.body);
       expect((await call('GET', `${v2()}?pageSize=1000`, site)).body).toEqual({ ...complete.body, total: ROWS });
     });
 
     it('embeds every version and attachment in the /v1 detail', async () => {
-      const detail = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      const detail = (await call<Ok<'getRecord'>>('GET', `${RECORDS}/${id}`, site)).body.data;
       const versions = (await call('GET', `${RECORDS}/${id}/versions`, site)).body.data;
       const attachments = (await call('GET', `${RECORDS}/${id}/attachments`, site)).body.data;
       expect([detail.versions.length, detail.attachments.length]).toEqual([ROWS, ROWS]);
@@ -524,7 +535,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     });
 
     it('embeds the first page of versions and of attachments in the /v2 detail, with the count of each', async () => {
-      const complete = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      const complete = (await call<Ok<'getRecord'>>('GET', `${RECORDS}/${id}`, site)).body.data;
       const res = await call('GET', `${V2_RECORDS}/${id}`, site);
       expect([res.status, res.body.data]).toEqual([
         200,
@@ -539,8 +550,8 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     });
 
     it.each(LISTS)('pages the %s on /v2 with the count of all, and answers an empty page past the end', async (_case, _v1, v2, key, keys) => {
-      const page = async (query: string): Promise<Record<string, any>> => (await call('GET', `${v2()}${query}`, site)).body;
-      const all = (await page('?pageSize=1000')).data as Record<string, any>[];
+      const page = async (query: string): Promise<PageBody> => (await call<PageBody>('GET', `${v2()}${query}`, site)).body;
+      const all = (await page('?pageSize=1000')).data;
       expect(all.map(key)).toEqual(keys());
       expect(await page('')).toEqual({ data: all.slice(0, DEFAULT_PAGE_SIZE), total: ROWS });
       expect(await page('?page=2')).toEqual({ data: [all[DEFAULT_PAGE_SIZE]], total: ROWS });
@@ -561,7 +572,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       const SCAN_ROWS = 1001;
       await bind(SITE_SCAN, 7);
       await seedRollups(SITE_SCAN, 7, SCAN_ROWS);
-      const complete = (await call('GET', ROLLUPS, { site: SITE_SCAN })).body.data as Record<string, any>[];
+      const complete = (await call<Ok<'listRollups'>>('GET', ROLLUPS, { site: SITE_SCAN })).body.data;
       expect(complete.map((row) => row.period)).toEqual(periods(SCAN_ROWS));
       const last = await call('GET', `${V2_ROLLUPS}?page=2&pageSize=1000`, { site: SITE_SCAN });
       expect(last.body).toEqual({ data: complete.slice(1000), total: SCAN_ROWS });
@@ -745,7 +756,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     );
 
     it('orders attachments sharing an instant by id across the page boundaries', async () => {
-      const res = await call('GET', `${RECORDS}/${recordOf(LONG)}/attachments`, { site: SITE_STREAM }, streamApp);
+      const res = await call<Ok<'listRecordAttachments'>>('GET', `${RECORDS}/${recordOf(LONG)}/attachments`, { site: SITE_STREAM }, streamApp);
       const order = Array.from({ length: LONG }, (_, k) => k).sort((x, y) => Math.floor(x / 3) - Math.floor(y / 3) || y - x);
       expect(res.body.data.map((row: { file_name: string }) => row.file_name)).toEqual(order.map((k) => `f${k}.pdf`));
     });
@@ -829,7 +840,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       await setGates('open');
       await bind(SITE_CASE, 6);
       id = await seed(SITE_CASE, { title: 'Case', amount: 1n, period: '2026-06' });
-      const upload = await call('POST', `${RECORDS}/${id}/attachments`, { ...site, part: { name: 'file', filename: 'a.pdf', body: '%PDF' } });
+      const upload = await call<Ok<'uploadRecordAttachment'>>('POST', `${RECORDS}/${id}/attachments`, { ...site, part: { name: 'file', filename: 'a.pdf', body: '%PDF' } });
       aid = upload.body.data.attachment_id as string;
     });
 
@@ -849,7 +860,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     });
 
     it('uploads to and transitions the stored record', async () => {
-      const upload = await call('POST', `${RECORDS}/${id.toLowerCase()}/attachments`, { ...site, part: { name: 'file', filename: 'b.pdf', body: '%PDF' } });
+      const upload = await call<Ok<'uploadRecordAttachment'>>('POST', `${RECORDS}/${id.toLowerCase()}/attachments`, { ...site, part: { name: 'file', filename: 'b.pdf', body: '%PDF' } });
       expect([upload.status, upload.body.data.record_id]).toEqual([200, id]);
       const submit = await call('POST', `${RECORDS}/${id.toLowerCase()}/transitions/submit`, site);
       expect([submit.status, submit.body.data]).toEqual([200, expect.objectContaining({ record_id: id, state: 'SUBMITTED', version: 2 })]);
@@ -942,7 +953,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       ['every record', '?page=1&pageSize=1000', () => ({ ids: [june, may].sort(), total: 2 })],
       ['a state and a period', '?state=IN-PROGRESS&period=2026-06', () => ({ ids: [june], total: 1 })],
     ])('lists records for its export: %s', async (_case, query, expected) => {
-      const res = await call('GET', `${RECORDS}${query}`, { site: SITE_EXPORT, ...EXPORTER });
+      const res = await call<Ok<'listRecords'>>('GET', `${RECORDS}${query}`, { site: SITE_EXPORT, ...EXPORTER });
       const { ids, total } = expected();
       expect([res.status, res.body.data.map((row: { record_id: string }) => row.record_id), res.body.total]).toEqual([200, ids, total]);
     });
@@ -1009,7 +1020,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
 
     /** The record's state, version and attachment count, read back through the routes. */
     async function stateOf(id: string): Promise<[string, number, number]> {
-      const detail = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      const detail = (await call<Ok<'getRecord'>>('GET', `${RECORDS}/${id}`, site)).body.data;
       return [detail.state, detail.version, detail.attachments.length];
     }
 
@@ -1156,7 +1167,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       expect(lines.filter(({ severity }) => severity === 'ERROR')).toEqual([]);
       for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
       expect(JSON.stringify(lines)).not.toMatch(/reason-probe|invalid byte sequence|0x00/);
-      const detail = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      const detail = (await call<Ok<'getRecord'>>('GET', `${RECORDS}/${id}`, site)).body.data;
       expect([detail.state, detail.version]).toEqual(['IN-PROGRESS', 1]);
     });
   });

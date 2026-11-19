@@ -12,7 +12,10 @@
     "generate": "openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../people/contracts/openapi.yaml -o src/generated/clients/people.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts",
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
     "start": "node dist/main.js",
+    "pretypecheck": "npm run generate",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --coverage",
     "test:contract": "vitest run test/contract",
     "test:security": "vitest run test/security"

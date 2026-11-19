@@ -1,11 +1,11 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Composition root of surveys against a throwaway schema: start-up, declared routes, the sweep chain and shutdown. */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, LOCAL_USER_TOKEN, collectRouteMatrix } from '@opt2/platform/auth';
 import { loadEnv, type BaseEnv } from '@opt2/platform/service-kit';
 import type { CreateTaskInput, TaskInfo, TaskPort } from '@opt2/platform/tasks';
@@ -23,9 +23,6 @@ import {
 } from '@opt2/platform/testing';
 import { buildApp, surveysEnvSchema, type BuildAppOptions } from '../../src/app.js';
 import { UNITS } from '../../src/repo/tables.js';
-
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0);
 const SWEEP_QUEUE = 'surveys-outbox-sweep';
@@ -50,7 +47,7 @@ function byRoute(a: DeclaredRoute, b: DeclaredRoute): number {
 
 /** Every operation of `contracts/openapi.yaml`, with its path template in Fastify form. */
 function contractRoutes(): DeclaredRoute[] {
-  const doc = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+  const doc = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
   return Object.entries(doc.paths)
     .flatMap(([path, item]) =>
       Object.entries(item)

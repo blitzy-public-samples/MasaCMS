@@ -1,8 +1,8 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** CSRF consumption of the `/v1/surveys` writes through app.inject over domain doubles: context, single use, refusals and reads. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import {
@@ -41,10 +41,7 @@ vi.mock('../../src/domain/surveys.js', async (importOriginal) => ({
   listSurveyTargets: vi.fn(),
 }));
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const USER_ID = '11111111-2222-3333-4444555566667777';
 const SESSION_ID = '0F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';

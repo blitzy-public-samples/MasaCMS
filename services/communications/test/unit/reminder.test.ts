@@ -1,8 +1,8 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The `communications-reminders` task route through `app.inject`: the surveys callback, the row closed, no-op rows, rejections and failures. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { apiUnavailableResponse, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { CLOUD_TASKS_HEADERS, taskWireBody, type CreateTaskInput, type TaskIgnoredReason, type TaskWireBody } from '@opt2/platform/tasks';
 import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, mintTasksInvokerToken, pushTo } from '@opt2/platform/testing';
@@ -14,10 +14,7 @@ import { REMINDER_TASK_PATH, type ReminderTaskIgnored } from '../../src/tasks/re
 import { REMINDER_SENT_MATCH, buildTestApp, createRecordingDb, type Row, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, surveyScheduledPayload } from '../helpers/payloads.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const SERVICE = 'communications';
 const REMINDER_QUEUE = 'communications-reminders';

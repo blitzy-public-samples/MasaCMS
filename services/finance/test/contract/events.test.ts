@@ -39,6 +39,9 @@ const sample: SiteChangedPayload = {
   domains: ['tenant-a.local'],
 };
 
+/** The tombstone the producer sends when the site is deleted. */
+const deletedSample: SiteChangedPayload = { ...sample, deleted: true };
+
 const required = [
   'siteId',
   'publicUserPoolId',
@@ -59,7 +62,8 @@ const types = {
   displayPoolId: 'string',
   contentPoolIds: 'array',
   domains: 'array',
-} as const satisfies Record<keyof SiteChangedPayload, 'string' | 'array'>;
+  deleted: 'boolean',
+} as const satisfies Record<keyof SiteChangedPayload, 'string' | 'array' | 'boolean'>;
 
 /** The element type the tenant registry consumer reads from each list field. */
 const itemTypes = {
@@ -67,7 +71,13 @@ const itemTypes = {
   domains: 'string',
 } as const satisfies Partial<Record<keyof SiteChangedPayload, 'string'>>;
 
-const expectation: ConsumerExpectation = { required: [...required], types, itemTypes, samples: [sample], kind: 'state' };
+const expectation: ConsumerExpectation = {
+  required: [...required],
+  types,
+  itemTypes,
+  samples: [sample, deletedSample],
+  kind: 'state',
+};
 
 /**
  * A copy of the producer schema with `field`'s `items` replaced, or removed when undefined.
@@ -104,11 +114,9 @@ function contractErrorOf(run: () => unknown): ContractAssertionError {
 }
 
 describe('finance consumer expectation of programs-sites.site.changed.v1', () => {
-  it('expects exactly the SiteChangedPayload fields the sample carries', () => {
-    const fields = Object.keys(sample).sort();
-
-    expect([...required].sort()).toStrictEqual(fields);
-    expect(Object.keys(types).sort()).toStrictEqual(fields);
+  it('requires the fields a live site carries and types those a deleted site carries', () => {
+    expect([...required].sort()).toStrictEqual(Object.keys(sample).sort());
+    expect(Object.keys(types).sort()).toStrictEqual(Object.keys(deletedSample).sort());
   });
 
   it('producer schema carries every field the tenant registry consumer reads', () => {

@@ -1,8 +1,8 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** performReminder over in-memory registry, repository and surveys-client doubles: outcomes, the markReminderSent call and failures. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { GateRaceError, type WriteContext } from '@opt2/platform/migration-kit';
@@ -20,15 +20,11 @@ import { performReminder, reminderSentPath, type ReminderDeps } from '../../src/
 import type { CommunicationsRepository } from '../../src/repo/repository.js';
 import { SCHEDULED_TASK, type ScheduledTaskRow, type ScheduledTaskStatus } from '../../src/repo/tables.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-
 type Schema = { $ref?: string; required?: string[]; properties?: Record<string, Schema>; pattern?: string; type?: string; minimum?: number; enum?: string[] };
 type OpenApiDoc = { components: { schemas: Record<string, Schema> } };
 
-const OWN_OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
-const SURVEYS_OPENAPI = load(readFileSync(new URL('../../../surveys/contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const OWN_OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const SURVEYS_OPENAPI = parse(readFileSync(new URL('../../../surveys/contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 
 const SCHEMA = 'communications';
 const REGISTRY_SQL = `SELECT site_id FROM ${SCHEMA}.tenant_registry WHERE tenant_id = $1 AND NOT deleted`;

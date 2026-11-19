@@ -46,6 +46,7 @@ const types = {
   displayPoolId: 'string',
   contentPoolIds: 'array',
   domains: 'array',
+  deleted: 'boolean',
 } as const satisfies Record<keyof SiteChangedPayload, JsonType>;
 
 /** The element type the registry consumer relies on in each list field. */

@@ -1,8 +1,8 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Consumer contract of surveys on communications (seam 2): the scheduled-task list, the only read of a survey's task state, and the launch-done report. */
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import {
   Roles,
   createLocalInvocationVerifier,
@@ -66,12 +66,8 @@ interface ScheduledSurvey {
   reminders: { task_name: string; offset_minutes: number }[];
 }
 
-// js-yaml is not declared by surveys, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-
 async function loadContract(relative: string): Promise<OpenApiDoc> {
-  return load(await readFile(new URL(relative, import.meta.url), 'utf8')) as OpenApiDoc;
+  return parse(await readFile(new URL(relative, import.meta.url), 'utf8')) as OpenApiDoc;
 }
 
 const commsDoc = await loadContract('../../../communications/contracts/openapi.yaml');

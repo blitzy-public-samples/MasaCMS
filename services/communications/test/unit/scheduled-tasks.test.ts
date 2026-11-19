@@ -1,8 +1,8 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `listScheduledTasks` over the in-memory app after surveys' schedule versions 1 and 2 arrive through the push route. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, mintServiceToken, pushTo } from '@opt2/platform/testing';
 import { SURVEY_SCHEDULED_SUBSCRIPTION } from '../../src/events/consumers.js';
@@ -12,10 +12,7 @@ import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { envelopeFor, surveyScheduledPayload } from '../helpers/payloads.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const SERVICE = 'communications';
 const SURVEY_ID = 'E7F8A9B0-0007-4000-8000000000000007';

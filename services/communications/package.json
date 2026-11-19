@@ -13,7 +13,9 @@
     "generate": "node -e \"for (const d of ['src/generated/clients','src/generated/events']) require('node:fs').mkdirSync(d,{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../surveys/contracts/openapi.yaml -o src/generated/clients/surveys.ts && json2ts -i ../identity/contracts/events/identity.login-mail.requested.v1.json -o src/generated/events/identity.login-mail.requested.v1.ts && json2ts -i ../surveys/contracts/events/surveys.survey.scheduled.v1.json -o src/generated/events/surveys.survey.scheduled.v1.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts && json2ts -i contracts/events/communications.message.delivery-status-changed.v1.json -o src/generated/events/communications.message.delivery-status-changed.v1.ts",
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
     "start": "node dist/main.js",
+    "typecheck": "npm run generate && tsc -p tsconfig.test.json",
     "test": "npm run generate && vitest run --coverage",
     "test:contract": "npm run generate && vitest run test/contract",
     "test:security": "npm run generate && vitest run test/security"

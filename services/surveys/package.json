@@ -12,7 +12,10 @@
     "generate": "node -e \"for (const d of ['src/generated/clients','src/generated/events']) require('node:fs').mkdirSync(d,{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../communications/contracts/openapi.yaml -o src/generated/clients/communications.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts && json2ts -i contracts/events/surveys.survey.scheduled.v1.json -o src/generated/events/surveys.survey.scheduled.v1.ts",
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
     "start": "node dist/main.js",
+    "pretypecheck": "npm run generate",
+    "typecheck": "tsc -p tsconfig.test.json",
     "pretest": "npm run generate",
     "test": "vitest run --coverage",
     "pretest:contract": "npm run generate",
@@ -33,6 +36,7 @@
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.1",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
   }
 }

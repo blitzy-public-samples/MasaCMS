@@ -27,6 +27,7 @@ const REGISTRY_FIELD_TYPES = {
   displayPoolId: 'string',
   contentPoolIds: 'array',
   domains: 'array',
+  deleted: 'boolean',
 } as const satisfies Record<keyof SiteChangedPayload, JsonType>;
 
 /** The element type the registry consumer relies on in each list field. */
@@ -36,7 +37,8 @@ const REGISTRY_ITEM_TYPES = {
 } as const satisfies Partial<Record<keyof SiteChangedPayload, JsonType>>;
 
 const expectation: ConsumerExpectation = {
-  required: Object.keys(REGISTRY_FIELD_TYPES),
+  // The producer sends `deleted` only on a site tombstone.
+  required: Object.keys(REGISTRY_FIELD_TYPES).filter((field) => field !== 'deleted'),
   types: REGISTRY_FIELD_TYPES,
   itemTypes: REGISTRY_ITEM_TYPES,
   samples: registryPayloads(),

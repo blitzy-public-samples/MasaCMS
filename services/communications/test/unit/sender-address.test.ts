@@ -17,8 +17,15 @@ const REGISTRY = 'communications.tenant_registry';
 const DEFAULT_TENANT = tenantIdForSite(DEFAULT_SITE_ID);
 const NO_DOMAIN_TENANT = tenantIdForSite('no-domain');
 const BLANK_DOMAIN_TENANT = tenantIdForSite('blank-domain');
-const DOMAIN_A = siteChangedPayload(TENANT_A.siteId).domains[0]!;
-const DOMAIN_B = siteChangedPayload(TENANT_B.siteId).domains[0]!;
+/** The first domain of `siteId`'s registry fixture; throws when the fixture has none. */
+function fixtureDomain(siteId: string): string {
+  const [domain] = siteChangedPayload(siteId).domains ?? [];
+  if (domain === undefined) throw new Error(`Registry fixture ${siteId} has no domain`);
+  return domain;
+}
+
+const DOMAIN_A = fixtureDomain(TENANT_A.siteId);
+const DOMAIN_B = fixtureDomain(TENANT_B.siteId);
 
 type Lookup = ['site' | 'entry', string];
 

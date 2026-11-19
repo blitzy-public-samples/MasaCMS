@@ -1,8 +1,8 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Consumer contracts of communications: the three topics it consumes against their producers' schemas, its surveys-launch tasks and its call of surveys' markReminderSent. */
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { serviceRole } from '@opt2/platform/auth';
 import { topicMeta, type TopicMeta } from '@opt2/platform/events';
 import { QUEUES, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
@@ -67,12 +67,8 @@ interface OpenApiDoc {
   'x-opt2-calls'?: unknown;
 }
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-
 async function loadContract(relative: string): Promise<OpenApiDoc> {
-  return load(await readFile(new URL(relative, import.meta.url), 'utf8')) as OpenApiDoc;
+  return parse(await readFile(new URL(relative, import.meta.url), 'utf8')) as OpenApiDoc;
 }
 
 const ownDoc = await loadContract('../../contracts/openapi.yaml');

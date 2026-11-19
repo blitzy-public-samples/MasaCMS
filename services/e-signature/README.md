@@ -142,6 +142,8 @@ npm start               # node dist/main.js
 npm test                # vitest with coverage, >= 90% statements
 npm run test:contract
 npm run test:security
+npm run lint            # eslint with typescript-eslint recommended rules
+npm run typecheck       # contract types, then tsc over src/ and test/ without emitting
 ```
 
 - **Configuration.** `esignatureEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) with `OPT2_SERVICE_NAME=e-signature`, `OPT2_DB_AUTH`, `PG_DATABASE` and the `OPT2_SERVICE_URLS` entries `identity` and `people` required; start-up fails naming each one missing. Locally `harness/repro/up.sh` starts it with `PORT=8120` and `PG_USER=esignature_app`.

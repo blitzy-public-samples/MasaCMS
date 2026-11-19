@@ -100,5 +100,7 @@ The environment is `stubEnvSchema` (`src/app.ts`): `baseEnvSchema` of `@opt2/pla
 | `npm test` | Every suite with coverage (≥ 90 % statements): `test/unit`, `test/contract`, `test/isolation`, `test/events`, `test/security` |
 | `npm run test:contract` | Responses and events against the contracts |
 | `npm run test:security` | The route × role matrix through `app.inject` |
+| `npm run lint` | eslint with typescript-eslint recommended rules over sources, tests and configs |
+| `npm run typecheck` | Contract types, then tsc over `src/` and `test/` without emitting |
 
 `harness/repro/test-all.sh` stage 2 runs `npm test` here. A full run needs PostgreSQL (`PG_HOST`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`; `PG_PORT` defaults to 5432) and the Pub/Sub emulator (`PUBSUB_EMULATOR_HOST`), which `test-all.sh` and CI provide. The PostgreSQL cases in `test/unit/app.test.ts`, `test/unit/repository.test.ts`, `test/isolation/rls.test.ts`, `test/events/delivery.test.ts` and `test/events/outbox.test.ts` skip when `PG_HOST` is unset. With `PG_HOST` set, a missing setting, an invalid `PG_PORT`, a refused login or a server that does not answer within 10 s fails those files with an error naming the cause. The emulator round trip in `test/events/outbox.test.ts` skips when `PUBSUB_EMULATOR_HOST` is unset; an emulator that does not answer fails the file.

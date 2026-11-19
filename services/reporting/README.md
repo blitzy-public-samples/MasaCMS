@@ -159,6 +159,8 @@ npm start               # node dist/main.js
 npm test                # vitest with coverage, >= 90% statements
 npm run test:contract
 npm run test:security
+npm run lint            # eslint with typescript-eslint recommended rules
+npm run typecheck       # contract types, then tsc over src/ and test/ without emitting
 ```
 
 - **Configuration.** The process reads `reportingEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the requirements named under **Required entries**, a missing or wrong one failing start-up. Locally, `harness/repro/up.sh` starts it with these variables set inline:

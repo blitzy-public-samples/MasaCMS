@@ -1,8 +1,8 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Scheduler hand-off routes through the composed app over the in-memory database and task port: adoption, cancellation, rejection. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import { outboxRuntimeFor } from '@opt2/platform/outbox';
 import type { CreateTaskInput } from '@opt2/platform/tasks';
 import { tenantIdForSite, withMetadata } from '@opt2/platform/tenancy';
@@ -20,10 +20,7 @@ vi.mock(import('../../src/domain/survey-tasks.js'), async (importOriginal) => {
   return { ...actual, parseLocalTimestamp: vi.fn(actual.parseLocalTimestamp) };
 });
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const DOC = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const MIGRATION = 'service:migration';
 const SURVEYS = 'service:surveys';

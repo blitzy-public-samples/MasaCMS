@@ -145,6 +145,8 @@ npm start                            # node dist/main.js
 npm test                             # vitest with coverage, >= 90% statements
 npm run test:contract
 npm run test:security
+npm run lint                         # eslint with typescript-eslint recommended rules
+npm run typecheck                    # contract types, then tsc over src/ and test/ without emitting
 npm run export-transitions           # regenerate the transition table and its export
 npm run export-transitions -- --check
 ```

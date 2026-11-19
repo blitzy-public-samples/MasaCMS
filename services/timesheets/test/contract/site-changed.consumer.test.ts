@@ -53,6 +53,7 @@ const TYPES = {
   displayPoolId: 'string',
   contentPoolIds: 'array',
   domains: 'array',
+  deleted: 'boolean',
 } as const satisfies Record<keyof SiteChangedPayload, JsonType>;
 
 /** The element type the tenant registry consumer reads from each list field. */
@@ -67,11 +68,14 @@ if (tenantAPayload === undefined) {
   throw new Error(`registryPayloads() has no ${TENANT_A.siteId} payload`);
 }
 
+/** The tombstone the producer sends when tenant-a's site is deleted. */
+const tenantADeleted: SiteChangedPayload = { ...tenantAPayload, deleted: true };
+
 const expectation: ConsumerExpectation = {
   required: [...REQUIRED],
   types: TYPES,
   itemTypes: ITEM_TYPES,
-  samples: payloads,
+  samples: [...payloads, tenantADeleted],
   kind: 'state',
 };
 
@@ -103,11 +107,9 @@ const envelope = testEnvelope({
 });
 
 describe('timesheets consumer expectation of programs-sites.site.changed.v1', () => {
-  it('expects exactly the SiteChangedPayload fields the registry payloads carry', () => {
-    const fields = Object.keys(tenantAPayload).sort();
-
-    expect([...REQUIRED].sort()).toStrictEqual(fields);
-    expect(Object.keys(TYPES).sort()).toStrictEqual(fields);
+  it('requires the fields a live registry payload carries and types those a deleted one carries', () => {
+    expect([...REQUIRED].sort()).toStrictEqual(Object.keys(tenantAPayload).sort());
+    expect(Object.keys(TYPES).sort()).toStrictEqual(Object.keys(tenantADeleted).sort());
   });
 
   it('producer schema carries every field the tenant registry consumer reads', () => {

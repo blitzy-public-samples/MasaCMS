@@ -23,7 +23,7 @@ type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : fals
 type AssertTrue<T extends true> = T;
 
 /** Fails `tsc` when `EsignatureDeps` drifts from the deps the route modules and domain functions take; checked though never referenced. */
-type DepsMatchDomain = AssertTrue<MutuallyAssignable<EsignatureDeps, EsignatureDomainDeps & { db: TenantDb }>>;
+type _DepsMatchDomain = AssertTrue<MutuallyAssignable<EsignatureDeps, EsignatureDomainDeps & { db: TenantDb }>>;
 
 /** Registers the fixture and `/v1` route plugins, each encapsulated so its own error handler covers only its routes. */
 export async function registerRoutes(app: FastifyInstance, deps: EsignatureDeps): Promise<void> {

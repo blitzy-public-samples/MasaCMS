@@ -56,7 +56,7 @@ import {
   type TrashRow,
 } from '../../src/repo/tables.js';
 import { SCHEDULED_TASKS_PATH, toScheduledTask } from '../../src/routes/scheduled-tasks.js';
-import { REMINDER_TASK_PATH, type ReminderTaskIgnored } from '../../src/tasks/reminder.js';
+import type { ReminderTaskIgnored } from '../../src/tasks/reminder.js';
 import { TEST_CLOCK, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { envelopeFor, loginMailPayload, siteChangedPayload, surveyScheduledPayload } from '../helpers/payloads.js';
 
