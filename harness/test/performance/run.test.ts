@@ -41,6 +41,7 @@ import {
   loadCutoverTable,
   main,
   measureLatencySet,
+  notTargetDetail,
   parseMinInstanceCounts,
   percentile,
   ratioFinding,
@@ -71,6 +72,8 @@ import {
   type ReadLabels,
   type ReadSetEntry,
   type RestartService,
+  type ScaleToZeroRow,
+  type SessionProbeSpec,
   type SpawnLike,
   type SpawnedProcess,
 } from '../../src/performance/run.js';
@@ -86,6 +89,7 @@ const LOGIN_PAGE = '/admin/?muraAction=clogin.main';
 const LOGIN_POST = '/admin/?muraAction=cLogin.login';
 const CUSERS = '/admin/?muraAction=cUsers.listUsers&siteid=tenant-a&ispublic=0';
 const CSETTINGS = '/admin/?muraAction=cSettings.list';
+const SITE_TREE = '/admin/?muraAction=cArch.list&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001';
 const CSRF_TOKEN = 'FIXTURE-CSRF-0001';
 const FEED_CSRF = 'FIXTURE-FEED-CSRF';
 const CUTOVER_STATUS = '/internal/v1/cutover/status';
@@ -182,6 +186,13 @@ function readEntry(set: string): ReadSetEntry {
   const entry = READ_SET.find((candidate) => candidate.set === set);
   if (entry === undefined) throw new Error(`no read set ${set}`);
   return entry;
+}
+
+/** Candidate `index` of `service`'s gateway probes, which reads a path. */
+function sessionCandidate(service: RestartService, index: number): SessionProbeSpec {
+  const spec = GATEWAY_PROBES[service][index];
+  if (spec === undefined || !('path' in spec)) throw new Error(`${service} has no path probe ${index}`);
+  return spec;
 }
 
 function count(items: readonly string[], wanted: string): number {
@@ -290,6 +301,11 @@ const LOGIN_AND_USERS_TARGET = routing('v9102', [
     carries: (method, target) => method === 'POST' && target === LOGIN_POST,
   },
   { route: 'admin:cusers.listusers', owningService: 'people', kind: 'read', carries: (method, target) => method === 'GET' && target === CUSERS },
+]);
+
+/** Only the Site Manager tree is target. */
+const SITE_TREE_TARGET = routing('v9103', [
+  { route: 'admin:carch.list', owningService: 'strategies-content', kind: 'write', carries: (method, target) => method === 'GET' && target === SITE_TREE },
 ]);
 
 interface FeedSiteOptions {
@@ -595,9 +611,9 @@ describe('serving side', () => {
     const values = { asOf: '2026-06-30', ids: PAGE_IDS, feedId: NEW_FEED_ID };
     const requests: StepRequest[] = [
       ...READ_SET.map((entry): StepRequest => ({ method: 'GET', route: resolveReadPath(entry, values) })),
-      ...Object.values(GATEWAY_PROBES).map((spec): StepRequest =>
-        'login' in spec ? LOGIN_REQUEST : { method: 'GET', route: resolveReadPath(spec, values) },
-      ),
+      ...Object.values(GATEWAY_PROBES)
+        .flat()
+        .map((spec): StepRequest => ('login' in spec ? LOGIN_REQUEST : { method: 'GET', route: resolveReadPath(spec, values) })),
     ];
     for (const request of requests) {
       const result = coverageRouteResults(request)[0] as RouteKeyResult;
@@ -637,26 +653,51 @@ describe('chooseProbe', () => {
   const ALL_LEGACY: CutoverTable = { tableVersion: 'v9999', entries: [] };
   const FIXTURES = FIXTURE_READS_TARGET.table;
   const LOGIN = LOGIN_AND_USERS_TARGET.table;
+  const FIND_ONE_TARGET: CutoverTable = {
+    tableVersion: 'v9999',
+    entries: [
+      { route: 'api:content.findone', owningService: 'strategies-content', state: 'target', kind: 'read' },
+      { route: 'admin:carch.list', owningService: 'strategies-content', state: 'target', kind: 'write' },
+    ],
+  };
   const SURVEYS_KEY = 'fixture:surveys/surveys@get';
+  const FIND_ONE_KEY = 'api:content.findone';
+  const TREE_KEY = 'admin:carch.list';
 
   it.each<[RestartService, boolean, CutoverTable, ProbeChoice]>([
-    ['identity', true, FIXTURES, { kind: 'fresh-session', via: 'surveys', spec: GATEWAY_PROBES.surveys as Extract<ProbeChoice, { kind: 'fresh-session' }>['spec'], routeKey: SURVEYS_KEY }],
+    ['identity', true, FIXTURES, { kind: 'fresh-session', via: 'surveys', spec: sessionCandidate('surveys', 0), routeKey: SURVEYS_KEY }],
     ['identity', false, FIXTURES, { kind: 'skipped', reason: FIXTURES_UNAVAILABLE }],
     ['identity', true, LOGIN, { kind: 'own', spec: { login: true }, routeKey: 'admin:clogin.login' }],
-    ['identity', true, ALL_LEGACY, { kind: 'not-target', routeKey: 'admin:clogin.login' }],
-    ['surveys', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES.surveys, routeKey: SURVEYS_KEY }],
-    ['finance', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES.finance, routeKey: 'fixture:finance/records@get' }],
-    ['e-signature', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES['e-signature'], routeKey: 'fixture:esignature/requests@get' }],
+    ['identity', true, ALL_LEGACY, { kind: 'not-target', routeKeys: ['admin:clogin.login'] }],
+    ['identity', false, SITE_TREE_TARGET.table, { kind: 'fresh-session', via: 'strategies-content', spec: sessionCandidate('strategies-content', 1), routeKey: TREE_KEY }],
+    ['surveys', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES.surveys[0], routeKey: SURVEYS_KEY }],
+    ['finance', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES.finance[0], routeKey: 'fixture:finance/records@get' }],
+    ['e-signature', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES['e-signature'][0], routeKey: 'fixture:esignature/requests@get' }],
     ['surveys', false, FIXTURES, { kind: 'skipped', reason: FIXTURES_UNAVAILABLE }],
-    ['people', false, LOGIN, { kind: 'own', spec: GATEWAY_PROBES.people, routeKey: 'admin:cusers.listusers' }],
-    ['people', true, FIXTURES, { kind: 'not-target', routeKey: 'admin:cusers.listusers' }],
-    ['programs-sites', true, FIXTURES, { kind: 'not-target', routeKey: 'admin:csettings.list' }],
-    ['strategies-content', true, FIXTURES, { kind: 'not-target', routeKey: 'api:content.findone' }],
-    ['communications', false, FIXTURES, { kind: 'not-target', routeKey: 'fixture:communications/templates@get' }],
-    ['reporting', true, FIXTURES, { kind: 'not-target', routeKey: 'fixture:reporting/exports@get' }],
-    ['timesheets', true, FIXTURES, { kind: 'not-target', routeKey: 'fixture:timesheets/sheets@get' }],
+    ['people', false, LOGIN, { kind: 'own', spec: GATEWAY_PROBES.people[0], routeKey: 'admin:cusers.listusers' }],
+    ['people', true, FIXTURES, { kind: 'not-target', routeKeys: ['admin:cusers.listusers'] }],
+    ['programs-sites', true, FIXTURES, { kind: 'not-target', routeKeys: ['admin:csettings.list'] }],
+    ['strategies-content', false, FIND_ONE_TARGET, { kind: 'own', spec: sessionCandidate('strategies-content', 0), routeKey: FIND_ONE_KEY }],
+    ['strategies-content', false, SITE_TREE_TARGET.table, { kind: 'own', spec: sessionCandidate('strategies-content', 1), routeKey: TREE_KEY }],
+    ['strategies-content', true, FIXTURES, { kind: 'not-target', routeKeys: [FIND_ONE_KEY, TREE_KEY] }],
+    ['communications', false, FIXTURES, { kind: 'not-target', routeKeys: ['fixture:communications/templates@get'] }],
+    ['reporting', true, FIXTURES, { kind: 'not-target', routeKeys: ['fixture:reporting/exports@get'] }],
+    ['timesheets', true, FIXTURES, { kind: 'not-target', routeKeys: ['fixture:timesheets/sheets@get'] }],
   ])('chooses for %s with fixtures %s', (service, fixtures, table, expected) => {
     expect(chooseProbe(service, table, fixtures)).toStrictEqual(expected);
+  });
+
+  it.each<[string, string, string[], string]>([
+    ['one key', 'people', ['admin:cusers.listusers'], 'admin:cusers.listusers is legacy-routed in v0002, so no gateway read reaches people'],
+    [
+      'two keys',
+      'strategies-content',
+      [FIND_ONE_KEY, TREE_KEY],
+      'api:content.findone and admin:carch.list are legacy-routed in v0002, so no gateway read reaches strategies-content',
+    ],
+    ['three keys', 'x', ['a:1', 'a:2', 'a:3'], 'a:1, a:2 and a:3 are legacy-routed in v0002, so no gateway read reaches x'],
+  ])('names %s in the probe-not-target detail', (_label, service, routeKeys, detail) => {
+    expect(notTargetDetail(service, routeKeys, 'v0002')).toBe(detail);
   });
 });
 
@@ -1374,7 +1415,6 @@ describe('restartAndMeasure', () => {
     probe: () => ProbePlan;
     spawns: number;
     cold: number | null;
-    scale: number | null;
     unhealthy: boolean;
     findings: Finding[];
   }
@@ -1386,7 +1426,6 @@ describe('restartAndMeasure', () => {
       probe: () => probeAnswering(() => false),
       spawns: 0,
       cold: null,
-      scale: null,
       unhealthy: false,
       findings: [{ kind: 'process-entry-missing', subject: 'people', detail: 'no people entry in up.json' }],
     },
@@ -1401,7 +1440,6 @@ describe('restartAndMeasure', () => {
       probe: () => probeAnswering(() => false),
       spawns: 0,
       cold: null,
-      scale: null,
       unhealthy: false,
       findings: [{ kind: 'stop-failed', subject: 'people', detail: 'EINVAL: fixture' }],
     },
@@ -1411,7 +1449,6 @@ describe('restartAndMeasure', () => {
       probe: () => probeAnswering(() => false),
       spawns: 1,
       cold: null,
-      scale: null,
       unhealthy: true,
       findings: [{ kind: 'start-failed', subject: 'people', detail: 'people: cannot start node' }],
     },
@@ -1426,7 +1463,6 @@ describe('restartAndMeasure', () => {
       probe: () => probeAnswering(() => false),
       spawns: 1,
       cold: null,
-      scale: null,
       unhealthy: true,
       findings: [{ kind: 'cold-start-timeout', subject: 'people', detail: `${HEALTH_URL} did not answer 200 within ${POLL_LIMIT_MS} ms` }],
     },
@@ -1436,7 +1472,6 @@ describe('restartAndMeasure', () => {
       probe: () => ({ skipped: FIXTURES_UNAVAILABLE }),
       spawns: 1,
       cold: 0.3,
-      scale: null,
       unhealthy: false,
       findings: [{ kind: 'scale-probe-skipped', subject: 'people', detail: FIXTURES_UNAVAILABLE }],
     },
@@ -1446,7 +1481,6 @@ describe('restartAndMeasure', () => {
       probe: () => ({ notTarget: 'admin:cusers.listusers is legacy-routed in v0002, so no gateway read reaches people' }),
       spawns: 1,
       cold: 0.3,
-      scale: null,
       unhealthy: false,
       findings: [
         {
@@ -1462,7 +1496,6 @@ describe('restartAndMeasure', () => {
       probe: () => probeAnswering(() => true),
       spawns: 1,
       cold: 0.3,
-      scale: null,
       unhealthy: false,
       findings: [
         {
@@ -1481,7 +1514,6 @@ describe('restartAndMeasure', () => {
         }),
       spawns: 1,
       cold: 0.3,
-      scale: null,
       unhealthy: true,
       findings: [
         {
@@ -1491,12 +1523,12 @@ describe('restartAndMeasure', () => {
         },
       ],
     },
-  ])('reports $label', async (c) => {
+  ])('reports $label, with scale to zero unavailable', async (c) => {
     const rig = c.rig();
     const outcome = await restartAndMeasure('people', rig.deps, c.probe());
     expect(outcome).toStrictEqual({
       coldStart: { service: 'people', startToFirst200Ms: c.cold, label: 'measured' },
-      scaleToZero: { service: 'people', stopToFirstSuccessMs: c.scale, label: 'derived' },
+      scaleToZero: { service: 'people', stopToFirstSuccessMs: null, label: 'unavailable' },
       findings: c.findings,
       unhealthy: c.unhealthy,
     });
@@ -1711,7 +1743,7 @@ describe('renderPerformanceMarkdown', () => {
     },
     scaleToZero: [
       { service: 'people', stopToFirstSuccessMs: 30.1, label: 'derived' },
-      { service: 'finance', stopToFirstSuccessMs: null, label: 'derived' },
+      { service: 'finance', stopToFirstSuccessMs: null, label: 'unavailable' },
     ],
     windowsOverThreshold: [{ windowId: 'w-1', routeKey: 'cusers.update', durationMs: 6000 }],
     findings: [{ kind: 'latency-ratio', subject: 'csettings.list', detail: 'a|b' }],
@@ -1729,7 +1761,8 @@ describe('renderPerformanceMarkdown', () => {
       "- Served by is the side the active cut-over version routes the row's route key to. On a `legacy` row the target columns measure the gateway proxying to legacy, and a `legacy-served` finding says so.",
       '- The request sets no latency threshold: a target p95 above 1.5x legacy and a write window over 5 s are flags, not failures.',
       "- The legacy-direct admin and timesheet sessions log in on legacy itself, which updates that user's `tusers.LastLogin` on the legacy side.",
-      '- Cold start is measured locally (process start to the first `/healthz` 200); scale to zero and back is derived (stopped service, restart, first successful request through the gateway). Each poll is bounded at 60000 ms.',
+      '- Cold start is measured locally (process start to the first `/healthz` 200); scale to zero and back is derived (stopped service, restart, first successful request through the gateway), and `unavailable` where no such request was timed. Each poll is bounded at 60000 ms.',
+      "- Each service is probed only by identity's admin login or by a request that leaves the compared state unchanged: a read, or a view whose writes are idempotent. A service none of whose probe candidates the active version routes to target has an `unavailable` row and a `probe-not-target` finding naming the candidates' route keys; one whose target-routed candidates all need the absent fixtures has an `unavailable` row and a `scale-probe-skipped` finding.",
       '- Cloud measurement: not possible without apply.',
       '',
       '## Latency',
@@ -1771,10 +1804,10 @@ describe('renderPerformanceMarkdown', () => {
       '',
       '## Scale to zero and back (derived)',
       '',
-      '| Service | Stop to first success through the gateway (ms) |',
-      '|---|---|',
-      '| people | 30.1 |',
-      '| finance | n/a |',
+      '| Service | Stop to first success through the gateway (ms) | Label |',
+      '|---|---|---|',
+      '| people | 30.1 | derived |',
+      '| finance | n/a | unavailable |',
       '',
       '## Windows over 5 s',
       '',
@@ -1822,17 +1855,17 @@ describe('main', () => {
   // FIXTURE_READS_TARGET routes the surveys, finance and e-signature probes to target; identity's is a fresh-session
   // surveys read.
   const TARGET_PROBED: readonly RestartService[] = ['identity', 'surveys', 'finance', 'e-signature'];
-  const PROBE_KEYS: Readonly<Record<RestartService, string>> = {
-    identity: 'admin:clogin.login',
-    people: 'admin:cusers.listusers',
-    'programs-sites': 'admin:csettings.list',
-    'strategies-content': 'api:content.findone',
-    communications: 'fixture:communications/templates@get',
-    reporting: 'fixture:reporting/exports@get',
-    surveys: 'fixture:surveys/surveys@get',
-    timesheets: 'fixture:timesheets/sheets@get',
-    finance: 'fixture:finance/records@get',
-    'e-signature': 'fixture:esignature/requests@get',
+  const PROBE_KEYS: Readonly<Record<RestartService, string[]>> = {
+    identity: ['admin:clogin.login'],
+    people: ['admin:cusers.listusers'],
+    'programs-sites': ['admin:csettings.list'],
+    'strategies-content': ['api:content.findone', 'admin:carch.list'],
+    communications: ['fixture:communications/templates@get'],
+    reporting: ['fixture:reporting/exports@get'],
+    surveys: ['fixture:surveys/surveys@get'],
+    timesheets: ['fixture:timesheets/sheets@get'],
+    finance: ['fixture:finance/records@get'],
+    'e-signature': ['fixture:esignature/requests@get'],
   };
 
   /** The probe-not-target findings, by subject, of every service outside `probed` under version `version`. */
@@ -1842,9 +1875,15 @@ describe('main', () => {
       .map((service) => ({
         kind: 'probe-not-target',
         subject: service,
-        detail: `${PROBE_KEYS[service]} is legacy-routed in ${version}, so no gateway read reaches ${service}`,
+        detail: notTargetDetail(service, PROBE_KEYS[service], version),
       }));
   }
+
+  /** The scale-to-zero row of `service`: derived from `ms`, unavailable without one. */
+  function scaleRow(service: RestartService, ms: number | null): ScaleToZeroRow {
+    return ms === null ? { service, stopToFirstSuccessMs: null, label: 'unavailable' } : { service, stopToFirstSuccessMs: ms, label: 'derived' };
+  }
+
   const TIMESHEETS_LABELS: ReadLabels = {
     set: 'timesheets.sheets',
     source: 'read-set',
@@ -2136,11 +2175,7 @@ describe('main', () => {
     expect(report.coldStart).toStrictEqual(RESTART_SERVICES.map((service) => ({ service, startToFirst200Ms: 100, label: 'measured' })));
     // identity's probe logs a fresh gateway session in (three requests) before its surveys read.
     expect(report.scaleToZero).toStrictEqual(
-      RESTART_SERVICES.map((service) => ({
-        service,
-        stopToFirstSuccessMs: service === 'identity' ? 120 : TARGET_PROBED.includes(service) ? 105 : null,
-        label: 'derived',
-      })),
+      RESTART_SERVICES.map((service) => scaleRow(service, service === 'identity' ? 120 : TARGET_PROBED.includes(service) ? 105 : null)),
     );
     expect(report.minInstanceCount).toStrictEqual({ source: 'minInstanceCounts', values: { ...EXPECTED_MIN_INSTANCES }, label: 'measured' });
     expect(report.windowsOverThreshold).toStrictEqual([{ windowId: 'w-1', routeKey: 'cusers.update', durationMs: 6000 }]);
@@ -2211,7 +2246,7 @@ describe('main', () => {
     });
     expect(report.latency.at(-1)).toStrictEqual(skippedLatency(TIMESHEETS_LABELS, FIXTURES_UNAVAILABLE).row);
     expect(report.coldStart.every((row) => row.startToFirst200Ms === 100)).toBe(true);
-    expect(report.scaleToZero).toStrictEqual(RESTART_SERVICES.map((service) => ({ service, stopToFirstSuccessMs: null, label: 'derived' })));
+    expect(report.scaleToZero).toStrictEqual(RESTART_SERVICES.map((service) => scaleRow(service, null)));
     expect(report.minInstanceCount).toStrictEqual({ source: 'unavailable', values: {}, label: 'measured' });
     expect(findingsOf(report, 'min-instance-count-missing').map((finding) => finding.subject)).toStrictEqual(
       Object.keys(EXPECTED_MIN_INSTANCES).sort(),
@@ -2261,15 +2296,32 @@ describe('main', () => {
     );
     // identity's probe is a fresh gateway login (three requests); people's reads the list in the admin session.
     expect(report.scaleToZero).toStrictEqual(
-      RESTART_SERVICES.map((service) => ({
-        service,
-        stopToFirstSuccessMs: service === 'identity' ? 115 : service === 'people' ? 105 : null,
-        label: 'derived',
-      })),
+      RESTART_SERVICES.map((service) => scaleRow(service, service === 'identity' ? 115 : service === 'people' ? 105 : null)),
     );
     expect(withoutKinds(report, 'legacy-served')).toStrictEqual(notTargetFindings('v9102', ['identity', 'people']));
     // Admin, the timesheet role and the scenario's sessions, then identity's login while stopped (502) and restarted.
     expect(count(stack.requests, `POST ${GATEWAY}${LOGIN_POST}`)).toBe(4 + scenarioLogins());
+  });
+
+  it('probes strategies-content by the Site Manager tree when its content read is legacy-routed, and identity by that tree in a fresh admin session', async () => {
+    const stack = fakeStack({ routing: SITE_TREE_TARGET });
+    const env = await stageMain(stack, {
+      fixtures: true,
+      plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
+      windows: { windows: [] },
+    });
+
+    const outcome = await main([], stack.deps(env));
+
+    const report = await readReport();
+    expect(outcome.code).toBe(0);
+    // identity's probe logs a fresh gateway session in as admin (three requests) before its tree read.
+    expect(report.scaleToZero).toStrictEqual(
+      RESTART_SERVICES.map((service) => scaleRow(service, service === 'identity' ? 120 : service === 'strategies-content' ? 105 : null)),
+    );
+    expect(withoutKinds(report, 'legacy-served')).toStrictEqual(notTargetFindings('v9103', ['identity', 'strategies-content']));
+    // Per service, one tree read while it was stopped (502) and its first success after the restart.
+    expect(count(stack.requests, `GET ${GATEWAY}${SITE_TREE}`)).toBe(4);
   });
 
   it('exits 1 through runCli when a restarted service never answers /healthz, measuring the others', async () => {

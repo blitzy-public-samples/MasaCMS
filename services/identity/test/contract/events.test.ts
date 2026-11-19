@@ -584,7 +584,10 @@ describe('outbox rows the identity event writers leave', () => {
   });
 });
 
-/** Every field the platform registry consumer reads from `programs-sites.site.changed.v1`, with the JSON type it relies on. */
+/** The registry fields of `programs-sites.site.changed.v1` the producer may omit, with the JSON type the consumer relies on. */
+const REGISTRY_OPTIONAL_TYPES = { deleted: 'boolean' } as const satisfies Partial<Record<keyof SiteChangedPayload, JsonType>>;
+
+/** Every other field the platform registry consumer reads from `programs-sites.site.changed.v1`, with the JSON type it relies on; the producer must send each. */
 const REGISTRY_FIELD_TYPES = {
   siteId: 'string',
   publicUserPoolId: 'string',
@@ -594,7 +597,7 @@ const REGISTRY_FIELD_TYPES = {
   displayPoolId: 'string',
   contentPoolIds: 'array',
   domains: 'array',
-} as const satisfies Record<keyof SiteChangedPayload, JsonType>;
+} as const satisfies Record<Exclude<keyof SiteChangedPayload, keyof typeof REGISTRY_OPTIONAL_TYPES>, JsonType>;
 
 /** The person fields `personContactConsumer` reads, with the JSON type of those the producer declares by `type`. */
 const PERSON_FIELD_TYPES = { userId: 'string', siteId: 'string', deleted: 'boolean' } as const satisfies Partial<Record<keyof PersonChangedPayload, JsonType>>;
@@ -625,7 +628,7 @@ describe('consumed producer contracts', () => {
   it('programs-sites.site.changed.v1 supplies every registry field identity reads, as state without fan-out', () => {
     const expectation: ConsumerExpectation = {
       required: Object.keys(REGISTRY_FIELD_TYPES),
-      types: REGISTRY_FIELD_TYPES,
+      types: { ...REGISTRY_FIELD_TYPES, ...REGISTRY_OPTIONAL_TYPES },
       itemTypes: { contentPoolIds: 'string', domains: 'string' },
       samples: registryPayloads(),
       kind: 'state',

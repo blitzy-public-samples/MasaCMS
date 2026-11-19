@@ -23,6 +23,7 @@ import {
   loadCutoverTable,
   main,
   measureLatencySet,
+  notTargetDetail,
   parseMinInstanceCounts,
   ratioFinding,
   skippedLatency,
@@ -232,26 +233,29 @@ describe('performance report', () => {
     }
   });
 
-  it('records a derived scale-to-zero-and-back timing for every restartable service', () => {
+  it('records a derived scale-to-zero-and-back timing for every service a gateway read reaches, and flags the others unavailable', () => {
     expect(report.scaleToZero.map((row) => row.service).sort()).toEqual([...RESTART_SERVICES].sort());
     for (const row of report.scaleToZero) {
-      expect(row.label, row.service).toBe('derived');
       if (!isRestartService(row.service)) throw new Error(`${row.service} is not a restartable service`);
       const choice = chooseProbe(row.service, table, fixturesAvailable);
+      const unavailable = { service: row.service, stopToFirstSuccessMs: null, label: 'unavailable' };
       if (choice.kind === 'skipped') {
         expect(fixturesAvailable, `${row.service} probe skipped only without fixtures`).toBe(false);
         expect(choice.reason, row.service).toBe(FIXTURES_UNAVAILABLE);
-        expect(row.stopToFirstSuccessMs, row.service).toBeNull();
+        expect(row, row.service).toEqual(unavailable);
         expect(findingsFor(report.findings, 'scale-probe-skipped', row.service)).toEqual([
           { kind: 'scale-probe-skipped', subject: row.service, detail: FIXTURES_UNAVAILABLE },
         ]);
         continue;
       }
-      // Soft, so one run names every service no gateway read reaches.
-      expect
-        .soft(choice.kind, `${row.service}: ${choice.routeKey} is legacy-routed in v0002, so no gateway read reaches it`)
-        .not.toBe('not-target');
-      if (choice.kind === 'not-target') continue;
+      if (choice.kind === 'not-target') {
+        expect(row, row.service).toEqual(unavailable);
+        expect(findingsFor(report.findings, 'probe-not-target', row.service)).toEqual([
+          { kind: 'probe-not-target', subject: row.service, detail: notTargetDetail(row.service, choice.routeKeys, 'v0002') },
+        ]);
+        continue;
+      }
+      expect(row.label, row.service).toBe('derived');
       expect(findingsFor(report.findings, 'probe-not-routed', row.service), row.service).toEqual([]);
       expectPositiveMs(row.stopToFirstSuccessMs, `${row.service} scale to zero and back`);
     }

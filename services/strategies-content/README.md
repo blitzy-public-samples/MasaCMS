@@ -207,6 +207,8 @@ npm run build           # contract types into src/generated/, then tsc into dist
 npm test                # vitest with coverage, >= 90% statements
 npm run test:contract
 npm run test:security
+npm run lint            # eslint with typescript-eslint recommended rules
+npm run typecheck       # contract types, then tsc over src/ and test/ without emitting
 PORT=8114 npm start     # normally started by harness/repro/up.sh
 ```
 

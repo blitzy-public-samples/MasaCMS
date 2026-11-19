@@ -222,6 +222,7 @@ ensure_cfpm_packages() {
 # since opt2-legacy is registered only at step 9.
 load_fixtures() {
   MAILPIT_API_URL="${MAILPIT_API_URL:-$MAILPIT_API_LOCAL}" CFPM_CMD="${CFPM_CMD:-$(cfpm_bin)}" \
+    SMTP_HOST="${SMTP_HOST:-127.0.0.1}" SMTP_PORT="${SMTP_PORT:-$OPT2_TOOL_PORT_MAILPIT_SMTP}" \
     "$REPO/legacy-fixtures/load-fixtures.sh" "$@" >&2
 }
 

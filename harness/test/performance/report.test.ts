@@ -86,9 +86,9 @@ const TARGET_MS = 5;
 const COLD_START_MS = 100;
 const SEED_ROLES: readonly string[] = [
   ...new Set(
-    Object.values(GATEWAY_PROBES).flatMap((spec) =>
-      'session' in spec && spec.session !== 'admin' && spec.session !== 'anonymous' ? [spec.session] : [],
-    ),
+    Object.values(GATEWAY_PROBES)
+      .flat()
+      .flatMap((spec) => ('session' in spec && spec.session !== 'admin' && spec.session !== 'anonymous' ? [spec.session] : [])),
   ),
 ];
 
@@ -428,8 +428,8 @@ describe('main over the samples', () => {
     expect(report.coldStart.map((row) => [row.service, row.startToFirst200Ms])).toStrictEqual(
       RESTART_SERVICES.map((service) => [service, COLD_START_MS]),
     );
-    expect(report.scaleToZero.map((row) => [row.service, row.stopToFirstSuccessMs !== null])).toStrictEqual(
-      RESTART_SERVICES.map((service) => [service, TARGET_PROBED.includes(service)]),
+    expect(report.scaleToZero.map((row) => [row.service, row.stopToFirstSuccessMs !== null, row.label])).toStrictEqual(
+      RESTART_SERVICES.map((service) => [service, TARGET_PROBED.includes(service), TARGET_PROBED.includes(service) ? 'derived' : 'unavailable']),
     );
 
     const markdown = await fs.readFile(path.join(reportsDir, 'performance.md'), 'utf8');
@@ -437,6 +437,8 @@ describe('main over the samples', () => {
     expect(markdown).toContain('Source: `minInstanceCounts`.');
     expect(markdown).toContain('| migration | 1 | 1 |');
     expect(markdown).toContain(`| ${SITE_DELETE_WINDOW.windowId} | ${SITE_DELETE_WINDOW.routeKey} | 7500 |`);
+    expect(markdown).toContain('| Service | Stop to first success through the gateway (ms) | Label |');
+    expect(markdown).toContain('| people | n/a | unavailable |');
     expect(markdown).toContain(`- Cloud measurement: ${CLOUD_MEASUREMENT}.`);
 
     expect(repoReports.map(fileState)).toStrictEqual(repoBefore);

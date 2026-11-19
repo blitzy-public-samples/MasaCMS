@@ -163,7 +163,8 @@ describe.skipIf(!(await pgAvailable()))('search over the content schema', () => 
   };
   const UMBRELLA_ADMIN: Actor = { ...ADMIN, siteId: TENANT_UMBRELLA.siteId, tenantId: TENANT_UMBRELLA.tenantId };
   const B_ADMIN: Actor = { ...ADMIN, siteId: TENANT_B.siteId, tenantId: TENANT_B.tenantId };
-  const titles = (rows: ReadonlyArray<{ title: string | null }>): Array<string | null> => rows.map((row) => row.title);
+  // findQuery rows may be blank or a `fields` projection, neither typed with `title`.
+  const titles = (rows: ReadonlyArray<Readonly<Record<string, unknown>>>): unknown[] => rows.map((row) => row['title']);
 
   const page = async (data: Record<string, unknown>, site: ContentSaveSite = SITE, actor: Actor = ADMIN): Promise<string> => {
     const saved = await saveContent(fx.deps, actor, site, { siteid: site.siteId, type: 'Page', approved: 1, ...data });

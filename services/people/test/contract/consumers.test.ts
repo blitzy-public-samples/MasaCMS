@@ -79,7 +79,10 @@ const GROUP_READS = {
   samples: [LIVE_GROUP, DELETED_GROUP],
 } satisfies ConsumerExpectation;
 
-const SITE_FIELDS: Record<keyof SiteChangedPayload, true> = {
+/** The site fields the tenant registry reads that the producer may omit, with the JSON type it relies on. */
+const SITE_OPTIONAL_TYPES = { deleted: 'boolean' } satisfies Partial<Record<keyof SiteChangedPayload, JsonType>>;
+
+const SITE_FIELDS: Record<Exclude<keyof SiteChangedPayload, keyof typeof SITE_OPTIONAL_TYPES>, true> = {
   siteId: true,
   publicUserPoolId: true,
   privateUserPoolId: true,
@@ -99,6 +102,7 @@ const SITE_TYPES = {
   displayPoolId: 'string',
   contentPoolIds: 'array',
   domains: 'array',
+  ...SITE_OPTIONAL_TYPES,
 } satisfies Record<keyof SiteChangedPayload, JsonType>;
 
 const SITE_SAMPLES = registryPayloads().filter((payload) => [TENANT_A.siteId, TENANT_UMBRELLA.siteId].includes(payload.siteId));

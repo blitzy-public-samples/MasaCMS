@@ -175,6 +175,8 @@ npm run build           # contract types into src/generated/, then tsc into dist
 npm test                # vitest with coverage, >= 90% statements
 npm run test:contract
 npm run test:security
+npm run lint            # eslint, typescript-eslint recommended
+npm run typecheck       # contract types, then tsc over src/ and test/ without emitting
 ```
 
 `test/unit` and `test/contract` need nothing external. The isolation and event suites need PostgreSQL 16 through `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, plus `PUBSUB_EMULATOR_HOST` where they publish, and create a throwaway schema and roles per run through `@opt2/platform/testing`.

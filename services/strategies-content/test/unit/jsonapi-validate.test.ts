@@ -267,7 +267,7 @@ function callOf(a: Invocation): JsonApiCall {
       user: { loggedIn: actor.isLoggedIn, systemUser: actor.isLoggedIn },
       allowAction: () => false,
       site: SITE_SETTINGS.urls,
-      customImageSizes: [],
+      customImageSizes: () => Promise.resolve([]),
     },
     httpMethod: a.body === undefined ? 'GET' : 'POST',
     headers,

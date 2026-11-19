@@ -43,7 +43,6 @@ import {
   type CollectionPage,
   type EntityCollectionSource,
   type ExpansionOptions,
-  type ExpansionResolver,
   type IteratorRows,
   type JsonApiRequestContext,
   type RelatedContentSetSource,

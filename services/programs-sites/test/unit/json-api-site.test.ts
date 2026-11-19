@@ -159,7 +159,7 @@ describe('findOne', () => {
       expect(body).not.toHaveProperty('params');
       const data = body.data as JsonApiSiteValues;
       expect(data).toEqual(expectedSite(TENANT_A.siteId, mode));
-      expect(data.links.self).toBe(`${baseUrl(mode, TENANT_A.siteId)}/site`);
+      expect(data.links).toHaveProperty('self', `${baseUrl(mode, TENANT_A.siteId)}/site`);
       expect(data.entityname).toBe('site');
       const fields = Object.keys(data).filter((key) => key !== 'id' && key !== 'entityname');
       expect(fields.sort()).toEqual([...new Set(JSON_API_SITE_FIELDS)].sort());

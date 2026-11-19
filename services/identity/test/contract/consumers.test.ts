@@ -17,6 +17,7 @@ import {
   findOperation,
   type ConsumerExpectation,
   type ContractViolation,
+  type JsonType,
   type OperationMatch,
 } from '@opt2/platform/testing';
 import type { PersonChangedPayload } from '../../src/events/person-contact.js';
@@ -98,7 +99,10 @@ const PERSON_FIELDS = {
   lastUpdateById: true,
 } satisfies Record<keyof PersonChangedPayload, true>;
 
-/** Every site field identity's tenant registry reads. */
+/** The site fields identity's tenant registry reads that the producer may omit, with the JSON type it relies on. */
+const SITE_OPTIONAL_TYPES = { deleted: 'boolean' } as const satisfies Partial<Record<keyof SiteChangedPayload, JsonType>>;
+
+/** Every other site field identity's tenant registry reads; the producer must send each. */
 const SITE_FIELDS = {
   siteId: true,
   publicUserPoolId: true,
@@ -108,7 +112,7 @@ const SITE_FIELDS = {
   displayPoolId: true,
   contentPoolIds: true,
   domains: true,
-} satisfies Record<keyof SiteChangedPayload, true>;
+} satisfies Record<Exclude<keyof SiteChangedPayload, keyof typeof SITE_OPTIONAL_TYPES>, true>;
 
 const LIVE_PERSON: PersonChangedPayload = {
   userId: SITE_ADMIN_A.account.userid,
@@ -153,7 +157,7 @@ const PERSON_EXPECTATION: ConsumerExpectation = {
   kind: 'state',
 };
 
-const SITE_EXPECTATION: ConsumerExpectation = { required: Object.keys(SITE_FIELDS), kind: 'state' };
+const SITE_EXPECTATION: ConsumerExpectation = { required: Object.keys(SITE_FIELDS), types: SITE_OPTIONAL_TYPES, kind: 'state' };
 
 /** A copy of a topic schema whose payload no longer declares `field`. */
 function withoutField(schema: object, field: string): object {
@@ -271,7 +275,7 @@ describe('consumed event schemas', () => {
   });
 
   // events.test.ts holds the unmutated site check; a single violation per drop also shows every other field still satisfies it.
-  it.each(Object.keys(SITE_FIELDS))('a site schema without %s fails the tenant-registry expectation on that field alone', (field) => {
+  it.each([...Object.keys(SITE_FIELDS), ...Object.keys(SITE_OPTIONAL_TYPES)])('a site schema without %s fails the tenant-registry expectation on that field alone', (field) => {
     expect(violationsOf(() => assertProducerConsumerCompatible(withoutField(siteSchema, field), SITE_EXPECTATION))).toEqual([
       { instancePath: `/${field}`, message: 'is not declared by the producer', keyword: 'properties' },
     ]);

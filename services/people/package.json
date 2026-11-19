@@ -20,7 +20,10 @@
     "start": "node dist/main.js",
     "test": "vitest run --coverage",
     "test:contract": "vitest run test/contract",
-    "test:security": "vitest run test/security"
+    "test:security": "vitest run test/security",
+    "lint": "eslint .",
+    "pretypecheck": "npm run generate",
+    "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@opt2/platform": "file:../../platform"

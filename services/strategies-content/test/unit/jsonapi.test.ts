@@ -176,7 +176,7 @@ describe('site resolution and route keys', () => {
   )("answers $url × $who with legacy's 400 invalidParameters before any domain read", async ({ url, method, subject, sub }) => {
     api.db.clear();
     api.client.clear();
-    const headers = sub === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ sub, site: 'nosuchsite', roles: [] })}` };
+    const headers: Readonly<Record<string, string>> = sub === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ sub, site: 'nosuchsite', roles: [] })}` };
     const res = await send(api, { url, subject, headers });
     expect(res.statusCode).toBe(400);
     expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);

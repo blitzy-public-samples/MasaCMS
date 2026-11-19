@@ -26,6 +26,7 @@ import type {
 import { getAdvancedSearch, getSearch, getUnassignedUsers, getUsers, newAdvancedSearchCriteria } from '../../src/domain/search.js';
 import type { Page, PeopleRepository, PersonCursor, PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
 import type { AddressRow, ExtendSubtypeRow, PersonRow } from '../../src/repo/tables.js';
+import type { components } from '../../src/generated/openapi.js';
 import {
   parseDomain,
   registerAdminUserRoutes,
@@ -376,10 +377,16 @@ async function checked(method: 'GET' | 'POST', url: string, headers: Record<stri
   return res;
 }
 
-/** {@link checked}'s status, with the JSON body of a 200. */
-async function call(method: 'GET' | 'POST', url: string, headers: Record<string, string>, form?: Record<string, string>) {
+type Schemas = components['schemas'];
+/** The 200 bodies of the cUsers reads; `/v1` and `/v2` answer the same shapes. */
+type UserList = Schemas['UserListPage'] | Schemas['UserListPageV2'];
+type GroupList = Schemas['UserGroupsPage'] | Schemas['UserGroupsPageV2'];
+type AdvancedSearch = Schemas['AdvancedSearchPage'] | Schemas['AdvancedSearchPageV2'];
+
+/** {@link checked}'s status, with the JSON body of a 200 as its contract schema `T`. */
+async function call<T = unknown>(method: 'GET' | 'POST', url: string, headers: Record<string, string>, form?: Record<string, string>) {
   const res = await checked(method, url, headers, form);
-  return { status: res.statusCode, body: res.statusCode === 200 ? (res.json() as Record<string, any>) : undefined };
+  return { status: res.statusCode, body: res.statusCode === 200 ? res.json<T>() : undefined };
 }
 
 describe('route() URL helpers [legacy: core/mura/utility.cfc:1326-1469]', () => {
@@ -525,7 +532,7 @@ describe("cwebservice.edit's Connected Account feed [legacy: admin/core/views/cw
     ['ispublic=1', [MEMBER]],
     ['', [MEMBER]],
   ])('lists the pool of %j by last name in full user rows, S2 people included', async (query, users) => {
-    const { status, body } = await call('GET', `/v1/users/feed?siteid=${SITE}&${query}`, await headersFor(S2));
+    const { status, body } = await call<Schemas['UserFeed']>('GET', `/v1/users/feed?siteid=${SITE}&${query}`, await headersFor(S2));
     expect(status).toBe(200);
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(users);
     expect(Object.keys(body?.items[0] ?? {})).toEqual(expect.arrayContaining(['UserID', 'Fname', 'Lname', 'photoFileExt']));
@@ -543,7 +550,7 @@ describe("cwebservice.edit's Connected Account feed [legacy: admin/core/views/cw
 
 describe('lists and searches', () => {
   it('lists the groups with nextN paging, resetting a start row past the end', async () => {
-    const { body } = await call('GET', '/v1/users/groups?ispublic=0&startrow=50&recordsperpage=1', await headersFor(SITE_ADMIN));
+    const { body } = await call<GroupList>('GET', '/v1/users/groups?ispublic=0&startrow=50&recordsperpage=1', await headersFor(SITE_ADMIN));
     expect(body?.items).toHaveLength(2);
     expect(body?.items[0]).toMatchObject({ UserID: GROUP, Type: 1, Counter: 2, Perm: 1, isPublic: 0 });
     expect(body?.items[1]).not.toHaveProperty('Type');
@@ -561,7 +568,7 @@ describe('lists and searches', () => {
     ['page 1 for a start row past the end', 'startrow=50&recordsperpage=1', [GROUP], 1, [{ offset: 49, limit: 1 }, { offset: 0, limit: 1 }]],
     ['every group on the default page', '', [GROUP, EDITORS], 1, [{ offset: 0, limit: 25 }]],
   ])('/v2 asks identity only for the groups of %s, with nextn over every group', async (_label, query, items, startrow, windows) => {
-    const { body } = await call('GET', `/v2/users/groups?ispublic=0&${query}`, await headersFor(SITE_ADMIN));
+    const { body } = await call<GroupList>('GET', `/v2/users/groups?ispublic=0&${query}`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: 2, startrow });
     expect(groupWindows).toEqual(windows);
@@ -579,7 +586,7 @@ describe('lists and searches', () => {
     ['recordsperpage=1500&startrow=2', [{ offset: 1500, limit: 1000 }, { offset: 2500, limit: 500 }], [1500, 2999]],
   ])('/v2 reads the page of %s in identity pages of at most 1000 groups', async (query, windows, [first, last]) => {
     groupRows = groupListing(3000);
-    const { body } = await call('GET', `/v2/users/groups?ispublic=0&${query}`, await headersFor(SITE_ADMIN));
+    const { body } = await call<GroupList>('GET', `/v2/users/groups?ispublic=0&${query}`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(groupRows.slice(first, last + 1).map((row) => row.userId));
     expect(body?.nextn).toMatchObject({ totalrecords: 3000 });
     expect(groupWindows).toEqual(windows);
@@ -594,7 +601,7 @@ describe('lists and searches', () => {
 
   it('/v1 writes every group of a listing longer than one identity page, in its order, with nextn over them', async () => {
     groupRows = groupListing(2500);
-    const { body } = await call('GET', '/v1/users/groups?ispublic=0&startrow=11&recordsperpage=10', await headersFor(SITE_ADMIN));
+    const { body } = await call<GroupList>('GET', '/v1/users/groups?ispublic=0&startrow=11&recordsperpage=10', await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(groupRows.map((row) => row.userId));
     expect(body?.nextn).toMatchObject({ totalrecords: 2500, recordsperpage: 10, startrow: 11, numberofpages: 250 });
     expect(groupWindows).toEqual([{ offset: 0 }, { offset: 1000 }, { offset: 2000 }]);
@@ -675,12 +682,12 @@ describe('lists and searches', () => {
   });
 
   it.each(VERSIONS)("%s lists the private pool's users by name with their unassigned ids", async (version) => {
-    const { body } = await call('GET', `${version}/users?ispublic=0`, await headersFor(SITE_ADMIN));
+    const { body } = await call<UserList>('GET', `${version}/users?ispublic=0`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT, JANE]);
-    expect(Object.keys(body?.items[0])).toEqual([
+    expect(Object.keys(body?.items[0] ?? {})).toEqual([
       'UserID', 'GroupName', 'Fname', 'Lname', 'UserName', 'Email', 'Type', 'subType', 'Admin', 'S2', 'LastUpdate', 'LastUpdateBy', 'isPublic', 'SiteID',
     ]);
-    expect(body?.items[0].LastUpdate).toBe('2026-06-30T09:15:00.000');
+    expect(body?.items[0]?.LastUpdate).toBe('2026-06-30T09:15:00.000');
     expect(body?.listUnassignedUsers).toEqual([JANE]);
   });
 
@@ -695,7 +702,7 @@ describe('lists and searches', () => {
       [version, '"1"', [ROOT, JANE]],
     ]),
   )('%s lists for unassigned %j the users %j, reusing an unassigned list for the marks', async (version, unassigned, users) => {
-    const { body } = await call('GET', `${version}/users?ispublic=0&unassigned=${encodeURIComponent(unassigned)}`, await headersFor(SITE_ADMIN));
+    const { body } = await call<UserList>('GET', `${version}/users?ispublic=0&unassigned=${encodeURIComponent(unassigned)}`, await headersFor(SITE_ADMIN));
     expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
     expect(body?.listUnassignedUsers).toEqual([JANE]);
   });
@@ -710,7 +717,7 @@ describe('lists and searches', () => {
       ...[' false', 'false\n', '\u0001false'].map((word): WordCase => [version, word, [MEMBER], [MEMBER]]),
     ]),
   )('%s lists the pool of ispublic %j as its scanned 1 or 0 does, with the unassigned ids', async (version, ispublic, users, unassigned) => {
-    const { status, body } = await call('GET', `${version}/users?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN));
+    const { status, body } = await call<UserList>('GET', `${version}/users?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN));
     expect(status).toBe(200);
     expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
     expect(body?.listUnassignedUsers).toEqual(unassigned);
@@ -723,12 +730,12 @@ describe('lists and searches', () => {
       [version, 'TRUE', [MEMBER]],
     ]),
   )('%s reads every site for an S2 siteid=all with ispublic %j', async (version, ispublic, users) => {
-    const { body } = await call('GET', `${version}/users?siteid=all&ispublic=${ispublic}`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `${version}/users?siteid=all&ispublic=${ispublic}`, await headersFor(S2));
     expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
   });
 
   it.each(VERSIONS)('%s reads the public pool for members', async (version) => {
-    const { body } = await call('GET', `${version}/users?ispublic=1`, await headersFor(SITE_ADMIN));
+    const { body } = await call<UserList>('GET', `${version}/users?ispublic=1`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([MEMBER]);
   });
 
@@ -741,7 +748,7 @@ describe('lists and searches', () => {
   ];
 
   it.each(VERSIONS)('%s reads every site once for an S2 siteid=all, with its people without a membership', async (version) => {
-    const { body } = await call('GET', `${version}/users?siteid=ALL&ispublic=0`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `${version}/users?siteid=ALL&ispublic=0`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT, JANE, OUTSIDER]);
     expect(body?.listUnassignedUsers).toEqual([JANE, OUTSIDER]);
     expect(identityReads.filter(({ op }) => op !== 'lookupMemberships')).toEqual(EVERY_SITE_READS);
@@ -754,7 +761,7 @@ describe('lists and searches', () => {
     ['page 1 for a start row past the end', 'ispublic=0&startrow=50&recordsperpage=1', 1, [JANE]],
     ['a page of every site for S2', 'siteid=all&ispublic=0&startrow=3&recordsperpage=1', 3, [JANE, OUTSIDER]],
   ])('/v1 answers every match for %s, with nextn over them and every unassigned user', async (_label, query, startrow, unassigned) => {
-    const { body } = await call('GET', `/v1/users?${query}`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `/v1/users?${query}`, await headersFor(S2));
     const items = query.startsWith('siteid=all') ? [ROOT, JANE, OUTSIDER] : [ROOT, JANE];
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: items.length, recordsperpage: 1, startrow });
@@ -767,7 +774,7 @@ describe('lists and searches', () => {
     ['page 1 for a start row past the end', 'ispublic=0&startrow=50&recordsperpage=1', [ROOT], 1, []],
     ['a page of every site for S2', 'siteid=all&ispublic=0&startrow=3&recordsperpage=1', [OUTSIDER], 3, [OUTSIDER]],
   ])('/v2 answers only the people of %s, with nextn over every match', async (_label, query, items, startrow, unassigned) => {
-    const { body } = await call('GET', `/v2/users?${query}`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `/v2/users?${query}`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: query.startsWith('siteid=all') ? 3 : 2, recordsperpage: 1, startrow });
     expect(body?.listUnassignedUsers).toEqual(unassigned);
@@ -782,13 +789,13 @@ describe('lists and searches', () => {
     ['/v2/users?startrow=2e-1&recordsperpage=1', [JANE], { recordsperpage: 1, startrow: 2 }],
     ['/v2/users/search?search=o&startrow=2e-1&recordsperpage=1e1', [JANE], { recordsperpage: 1, startrow: 2 }],
   ])('%s pages by startrow and recordsperpage as CFML Val reads them, without an exponent', async (url, items, paging) => {
-    const { body } = await call('GET', `${url}&siteid=${SITE}&ispublic=0`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `${url}&siteid=${SITE}&ispublic=0`, await headersFor(S2));
     expect(body?.items).toMatchObject(items.map((UserID) => ({ UserID })));
     expect(body?.nextn).toMatchObject({ totalrecords: 2, ...paging });
   });
 
   it('/v2 marks every person of an unassigned-only page without another membership lookup', async () => {
-    const { body } = await call('GET', '/v2/users?ispublic=0&unassigned=1&recordsperpage=1', await headersFor(S2));
+    const { body } = await call<UserList>('GET', '/v2/users?ispublic=0&unassigned=1&recordsperpage=1', await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([JANE]);
     expect(body?.listUnassignedUsers).toEqual([JANE]);
     // Identity's lookup applies the list's unassigned filter; the marks reuse the page.
@@ -801,7 +808,7 @@ describe('lists and searches', () => {
     ['search=admin', [ROOT], [JANE]],
     ['search=', [], [JANE]],
   ])('/v1 answers every search match of %s, with every unassigned user of the pool', async (query, items, unassigned) => {
-    const { body } = await call('GET', `/v1/users/search?ispublic=0&${query}`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `/v1/users/search?ispublic=0&${query}`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: items.length });
     expect(body?.listUnassignedUsers).toEqual(unassigned);
@@ -815,7 +822,7 @@ describe('lists and searches', () => {
     ['search=o&recordsperpage=1&startrow=2', [JANE], [JANE]],
     ['search=admin', [ROOT], []],
   ])('/v2 answers only the search matches of the page of %s', async (query, items, unassigned) => {
-    const { body } = await call('GET', `/v2/users/search?ispublic=0&${query}`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `/v2/users/search?ispublic=0&${query}`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: query.startsWith('search=o') ? 2 : 1 });
     expect(body?.listUnassignedUsers).toEqual(unassigned);
@@ -826,7 +833,7 @@ describe('lists and searches', () => {
     ['/v1', [ROOT, JANE]],
     ['/v2', [JANE]],
   ])('%s answers the advanced-search matches for page 2, marking none', async (version, items) => {
-    const { body } = await call('GET', `${version}/users/advanced-search?ispublic=0&startrow=2&recordsperpage=1`, await headersFor(S2));
+    const { body } = await call<AdvancedSearch>('GET', `${version}/users/advanced-search?ispublic=0&startrow=2&recordsperpage=1`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
     expect(body?.nextn).toMatchObject({ totalrecords: 2, recordsperpage: 1, startrow: 2 });
     expect(body?.listUnassignedUsers).toEqual([]);
@@ -835,12 +842,12 @@ describe('lists and searches', () => {
 
   // Oracle: admin start-up's Portcullis scan trims `search=%20an%20` to `an` before cUsers.search reads it.
   it.each(VERSIONS)('%s searches the term trimmed by the admin start-up scan', async (version) => {
-    const { body } = await call('GET', `${version}/users/search?ispublic=0&search=%20doe%20`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `${version}/users/search?ispublic=0&search=%20doe%20`, await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([JANE]);
   });
 
   it.each(VERSIONS)('%s searches the pool with full user rows in bootstrap casing', async (version) => {
-    const { body } = await call('GET', `${version}/users/search?ispublic=0&search=doe`, await headersFor(S2));
+    const { body } = await call<UserList>('GET', `${version}/users/search?ispublic=0&search=doe`, await headersFor(S2));
     expect(body?.items).toHaveLength(1);
     expect(body?.items[0]).toMatchObject({ UserID: JANE, mobilePhone: null, isPublic: 0, photoFileExt: 'jpg', created: '2026-06-30T09:15:00.000' });
     expect(body?.listUnassignedUsers).toEqual([JANE]);
@@ -915,7 +922,7 @@ describe('/v1 user lists over a pool larger than one identity lookup', () => {
       verifierOverride: testVerifier('people'),
       logger,
     });
-    await registerAdminUserRoutes(poolApp, { db, repository: poolRepository, identity: poolIdentity, clock: fixedClock(NOW), awaitPersonOpen: awaitOpen });
+    await registerAdminUserRoutes(poolApp, { db, repository: poolRepository, identity: poolIdentity, clock: fixedClock(NOW), awaitPersonOpen: awaitOpen, expirePasswords: 0 });
     await poolApp.listen({ port: 0, host: '127.0.0.1' });
   });
 
@@ -930,17 +937,17 @@ describe('/v1 user lists over a pool larger than one identity lookup', () => {
   });
 
   /** A site admin's GET of `url` from the pool service, checked against the contract. */
-  async function poolCall(url: string) {
+  async function poolCall<T = unknown>(url: string) {
     const res = await poolApp.inject({ method: 'GET', url, headers: await headersFor(S2) });
     assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url.split('?')[0] ?? url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
-    return { status: res.statusCode, body: res.statusCode === 200 ? (res.json() as Record<string, any>) : undefined };
+    return { status: res.statusCode, body: res.statusCode === 200 ? res.json<T>() : undefined };
   }
 
-  const idsOf = (rows: ReadonlyArray<Record<string, unknown>>): unknown[] => rows.map((row) => row.UserID ?? row.userID);
+  const idsOf = (rows: ReadonlyArray<Record<string, unknown>> | undefined): unknown[] => (rows ?? []).map((row) => row.UserID ?? row.userID);
   const sizes = (op: 'readAccounts' | 'lookupMemberships'): number[] => calls.filter((c) => c.op === op).map((c) => c.ids);
 
   it('lists the pool in one pass, as many identity lookups as 1000-id batches, with the collected reads’ rows, order, nextn and marks', async () => {
-    const { body } = await poolCall('/v1/users?ispublic=0&startrow=11&recordsperpage=10');
+    const { body } = await poolCall<UserList>('/v1/users?ispublic=0&startrow=11&recordsperpage=10');
     expect(calls).toEqual([1000, 1000, 500].flatMap((ids) => [
       { op: 'readAccounts', ids, unassigned: false },
       { op: 'lookupMemberships', ids, unassigned: false },
@@ -948,14 +955,14 @@ describe('/v1 user lists over a pool larger than one identity lookup', () => {
     expect(idsOf(body?.items)).toEqual(idsOf((await getUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows));
     expect(body?.listUnassignedUsers).toEqual(idsOf((await getUnassignedUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows));
     // `/v2` pages the same rows and marks them the same way.
-    const v2 = await poolCall('/v2/users?ispublic=0&startrow=1&recordsperpage=2500');
+    const v2 = await poolCall<UserList>('/v2/users?ispublic=0&startrow=1&recordsperpage=2500');
     expect(body?.items).toEqual(v2.body?.items);
     expect(body?.listUnassignedUsers).toEqual(v2.body?.listUnassignedUsers);
-    expect(body?.nextn).toEqual((await poolCall('/v2/users?ispublic=0&startrow=11&recordsperpage=10')).body?.nextn);
+    expect(body?.nextn).toEqual((await poolCall<UserList>('/v2/users?ispublic=0&startrow=11&recordsperpage=10')).body?.nextn);
   });
 
   it('lists the unassigned people only with the list itself as the marks, without a membership lookup', async () => {
-    const { body } = await poolCall('/v1/users?ispublic=0&unassigned=1');
+    const { body } = await poolCall<UserList>('/v1/users?ispublic=0&unassigned=1');
     const unassigned = idsOf((await getUnassignedUsers(oracle, VIEWER, { siteid: SITE, ispublic: '0' })).rows);
     expect(idsOf(body?.items)).toEqual(unassigned);
     expect(body?.listUnassignedUsers).toEqual(unassigned);
@@ -966,7 +973,7 @@ describe('/v1 user lists over a pool larger than one identity lookup', () => {
     ['Person', 2100],
     ['Person 0001', 2],
   ])('searches the pool for %j once, then reads every unassigned user of the pool in 1000-person batches, as getUnassignedUsers orders them', async (term, matches) => {
-    const { body } = await poolCall(`/v1/users/search?ispublic=0&search=${encodeURIComponent(term)}`);
+    const { body } = await poolCall<UserList>(`/v1/users/search?ispublic=0&search=${encodeURIComponent(term)}`);
     const matched = (await getSearch(oracle, VIEWER, { search: term, siteid: SITE, isPublic: '0' })).rows;
     expect(idsOf(body?.items)).toEqual(idsOf(matched));
     expect(body?.nextn).toMatchObject({ totalrecords: matches });
@@ -980,17 +987,17 @@ describe('/v1 user lists over a pool larger than one identity lookup', () => {
   });
 
   it('runs the advanced search once in 1000-person batches, with the collected search’s rows', async () => {
-    const { body } = await poolCall('/v1/users/advanced-search?ispublic=0');
+    const { body } = await poolCall<AdvancedSearch>('/v1/users/advanced-search?ispublic=0');
     expect(sizes('readAccounts')).toEqual([1000, 1000, 500]);
     expect(sizes('lookupMemberships')).toEqual([]);
     const collected = await getAdvancedSearch(oracle, VIEWER, newAdvancedSearchCriteria(), { siteid: SITE, isPublic: '0' });
     expect(idsOf(body?.items)).toEqual(idsOf(collected.rows));
-    expect(body?.items).toEqual((await poolCall('/v2/users/advanced-search?ispublic=0&recordsperpage=2500')).body?.items);
+    expect(body?.items).toEqual((await poolCall<AdvancedSearch>('/v2/users/advanced-search?ispublic=0&recordsperpage=2500')).body?.items);
     expect(body?.nextn).toMatchObject({ totalrecords: POOL });
   });
 
   it("lists the feed's first 1000 people by last name alone, ties in getAdvancedSearch's order, from one 1000-person read", async () => {
-    const { body } = await poolCall('/v1/users/feed?ispublic=0');
+    const { body } = await poolCall<Schemas['UserFeed']>('/v1/users/feed?ispublic=0');
     const collected = idsOf((await getAdvancedSearch(oracle, VIEWER, newAdvancedSearchCriteria(), { siteid: SITE, isPublic: '0' })).rows);
     expect(idsOf(body?.items)).toEqual(collected.slice(0, 1000));
     expect(sizes('readAccounts')).toEqual([1000]);
@@ -1067,7 +1074,7 @@ describe.each(VERSIONS)('advanced search under %s', (version) => {
   };
 
   it("stores a posted form's criteria for the session, then runs them", async () => {
-    const { body } = await call('POST', `${version}/users/advanced-search?ispublic=0`, await headersFor(SITE_ADMIN), form);
+    const { body } = await call<AdvancedSearch>('POST', `${version}/users/advanced-search?ispublic=0`, await headersFor(SITE_ADMIN), form);
     expect(saves).toEqual([
       {
         paramArray: [{ Field: 'tusers.lname^varchar', Relationship: 'and', Criteria: 'Doe', Condition: 'Contains' }],
@@ -1092,12 +1099,12 @@ describe.each(VERSIONS)('advanced search under %s', (version) => {
       paramCount: 1,
       paramCircuit: 'cUsers',
     };
-    const posted = await call('POST', `${version}/users/advanced-search?ispublic=0`, await headersFor(S2), { inActive: '0' });
+    const posted = await call<AdvancedSearch>('POST', `${version}/users/advanced-search?ispublic=0`, await headersFor(S2), { inActive: '0' });
     expect(saves).toEqual([]);
     expect(posted.body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT]);
-    const read = await call('GET', `${version}/users/advanced-search?ispublic=0`, await headersFor(S2));
+    const read = await call<AdvancedSearch>('GET', `${version}/users/advanced-search?ispublic=0`, await headersFor(S2));
     expect(read.body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT]);
-    const hidden = await call('GET', `${version}/users/advanced-search?ispublic=0`, await headersFor(SITE_ADMIN));
+    const hidden = await call<AdvancedSearch>('GET', `${version}/users/advanced-search?ispublic=0`, await headersFor(SITE_ADMIN));
     expect(hidden.body?.items).toEqual([]);
     expect(read.body?.criteria).toEqual({
       paramArray: [{ Field: 'tusers.fname^varchar', Relationship: 'and', Criteria: 'Root', Condition: 'Equals' }],
@@ -1118,13 +1125,13 @@ describe.each(VERSIONS)('advanced search under %s', (version) => {
     ['yes', 'abc', [JANE, MEMBER], 'Fans'],
   ])('reads, for ispublic %j and an ispublic criterion %j, the users %j with the %s groups', async (ispublic, criterion, users, group) => {
     const posted = { param: '1', paramField1: 'ispublic', paramRelationship1: 'and', paramCriteria1: criterion, paramCondition1: 'Equals' };
-    const { body } = await call('POST', `${version}/users/advanced-search?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN), posted);
+    const { body } = await call<AdvancedSearch>('POST', `${version}/users/advanced-search?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN), posted);
     expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
     expect((body?.groups as Array<{ GroupName: string }>).map((row) => row.GroupName)).toEqual([group]);
   });
 
   it('runs empty criteria over the member pool with the member groups', async () => {
-    const { body } = await call('GET', `${version}/users/advanced-search?ispublic=1`, await headersFor(SITE_ADMIN));
+    const { body } = await call<AdvancedSearch>('GET', `${version}/users/advanced-search?ispublic=1`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([MEMBER]);
     expect(body?.groups).toEqual([{ UserID: MEMBER_GROUP, GroupName: 'Fans', SiteID: UMBRELLA, isPublic: 1, Perm: 0 }]);
   });
@@ -1282,7 +1289,7 @@ describe('edit reads', () => {
   ])('reads the identity-owned block with query "$query"', async ({ query, removeBlock }) => {
     const blockedUntil = '2026-06-30T09:30:00.000';
     loginBlocks.set(JANE, blockedUntil);
-    const { status, body } = await call('GET', `/v1/users/edit?userid=${JANE}${query}`, await headersFor(SITE_ADMIN));
+    const { status, body } = await call<Schemas['UserEditData']>('GET', `/v1/users/edit?userid=${JANE}${query}`, await headersFor(SITE_ADMIN));
     expect(status).toBe(200);
     expect(body?.blockedUntil).toBe(removeBlock ? null : blockedUntil);
     expect(loginBlockCalls).toEqual([{ userId: JANE, removeBlock }]);
@@ -1303,7 +1310,7 @@ describe('edit reads', () => {
   });
 
   it('reads a stored person with the tab data of the Edit User screen', async () => {
-    const { body } = await call('GET', `/v1/users/edit?userid=${JANE}&ispublic=0`, await headersFor(SITE_ADMIN));
+    const { body } = await call<Schemas['UserEditData']>('GET', `/v1/users/edit?userid=${JANE}&ispublic=0`, await headersFor(SITE_ADMIN));
     expect(body).toMatchObject({
       isNew: false,
       tempIsPublic: 0,
@@ -1324,14 +1331,14 @@ describe('edit reads', () => {
   });
 
   it("locks an S2 person's account fields for a caller without S2, and not for an S2 caller", async () => {
-    const admin = await call('GET', `/v1/users/edit?userid=${ROOT}`, await headersFor(SITE_ADMIN));
+    const admin = await call<Schemas['UserEditData']>('GET', `/v1/users/edit?userid=${ROOT}`, await headersFor(SITE_ADMIN));
     expect(admin.body).toMatchObject({ lockedSuper: true, groupIds: [GROUP] });
     expect(admin.body?.user).toMatchObject({ S2: 1, Admin: 1, Ext: 12 });
-    expect((await call('GET', `/v1/users/edit?userid=${ROOT}`, await headersFor(S2))).body?.lockedSuper).toBe(false);
+    expect((await call<Schemas['UserEditData']>('GET', `/v1/users/edit?userid=${ROOT}`, await headersFor(S2))).body?.lockedSuper).toBe(false);
   });
 
   it('reads a new bean for an empty or unknown id, and keeps setispublic only for an admin', async () => {
-    const fresh = await call('GET', '/v1/users/edit?userid=&setispublic=0', await headersFor(SITE_ADMIN));
+    const fresh = await call<Schemas['UserEditData']>('GET', '/v1/users/edit?userid=&setispublic=0', await headersFor(SITE_ADMIN));
     expect(fresh.body).toMatchObject({ isNew: true, tempIsPublic: 0, addresses: [], groupIds: [] });
     expect(fresh.body?.user).toMatchObject({ Type: 2, isPublic: 1, SiteID: '', LastLogin: null });
     expect(fresh.body?.user.UserID).toMatch(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/);
@@ -1342,7 +1349,7 @@ describe('edit reads', () => {
   });
 
   it('reads the addressed address, or a new one under the requested id', async () => {
-    const found = await call('GET', `/v1/users/address?userid=${JANE}&addressid=${ADDRESS}`, await headersFor(SITE_ADMIN));
+    const found = await call<Schemas['AddressEditData']>('GET', `/v1/users/address?userid=${JANE}&addressid=${ADDRESS}`, await headersFor(SITE_ADMIN));
     expect(found.body).toMatchObject({
       isNew: false,
       extendedAttributes: { movedIn: "{ts '2026-06-01 00:00:00'}", access: 'Gate 4' },
@@ -1352,7 +1359,7 @@ describe('edit reads', () => {
     const missing = 'C0000000-0000-0000-0000000000000009';
     const other = await call('GET', `/v1/users/address?userid=${JANE}&addressid=${missing}`, await headersFor(SITE_ADMIN));
     expect(other.body).toMatchObject({ isNew: true, address: { addressID: missing, userID: JANE, city: null } });
-    const fresh = await call('GET', `/v1/users/address?userid=${JANE}`, await headersFor(SITE_ADMIN));
+    const fresh = await call<Schemas['AddressEditData']>('GET', `/v1/users/address?userid=${JANE}`, await headersFor(SITE_ADMIN));
     expect(fresh.body?.address.addressID).not.toBe(ADDRESS);
   });
 
@@ -1366,7 +1373,7 @@ describe('edit reads', () => {
     const stored = ACCOUNTS.get(JANE) as AccountView;
     ACCOUNTS.set(JANE, { ...stored, passwordCreated });
     try {
-      const { status, body } = await call('GET', `/v1/users/edit?userid=${userId}`, await headersFor(SITE_ADMIN));
+      const { status, body } = await call<Schemas['UserEditData']>('GET', `/v1/users/edit?userid=${userId}`, await headersFor(SITE_ADMIN));
       expect(status).toBe(200);
       expect(body?.passwordExpired).toBe(expired);
     } finally {
@@ -1410,7 +1417,7 @@ describe('credential columns', () => {
       ['UserListRow', key, '/v1/users/search?ispublic=0&search=o', (body, name) => ({ ...body, items: [{ ...(body.items as Body[])[0], [name]: null }] })],
     ]),
   )('the contract refuses a %s carrying %s', async (_schema, key, url, tamper) => {
-    const { body } = await call('GET', url, await headersFor(S2));
+    const { body } = await call<Body>('GET', url, await headersFor(S2));
     const response = { method: 'GET', path: url.split('?')[0] ?? url, status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(body) };
     expect(() => assertResponseMatchesOpenApi(OPENAPI, response)).not.toThrow();
     expect(() => assertResponseMatchesOpenApi(OPENAPI, { ...response, body: JSON.stringify(tamper(body ?? {}, key)) })).toThrow();
@@ -1498,10 +1505,10 @@ describe("the current user read of identity's findCurrentUser [legacy: core/mura
       `${ADMIN_PATH}/?muraAction=cusers.edituser&siteid=${SITE}&userid=${JANE}`,
     ],
   ])("reads %s as the token's own stored user, with identity's membership ids", async (_label, sub, roles, values, edit) => {
-    const { status, body } = await call('GET', `${CURRENT}&groupids=${GROUP},${MEMBER_GROUP}`, await identityHeaders({ sub, roles }));
+    const { status, body } = await call<Schemas['CurrentUserRead']>('GET', `${CURRENT}&groupids=${GROUP},${MEMBER_GROUP}`, await identityHeaders({ sub, roles }));
 
     expect(status).toBe(200);
-    expect(Object.keys(body?.data).sort()).toEqual(USER_KEYS);
+    expect(Object.keys(body?.data ?? {}).sort()).toEqual(USER_KEYS);
     expect(body?.data).toMatchObject({
       ...values,
       id: sub,
@@ -1526,19 +1533,19 @@ describe("the current user read of identity's findCurrentUser [legacy: core/mura
     ['an anonymous call', undefined],
     ['a user people holds no person of', { sub: UNKNOWN, roles: [Roles.systemUser] }],
   ])("reads a new bean under a fresh id and the call's site for %s", async (_label, user) => {
-    const { status, body } = await call('GET', `${CURRENT}&groupids=${GROUP}`, await identityHeaders(user));
+    const { status, body } = await call<Schemas['CurrentUserRead']>('GET', `${CURRENT}&groupids=${GROUP}`, await identityHeaders(user));
 
     expect(status).toBe(200);
-    expect(Object.keys(body?.data).sort()).toEqual(USER_KEYS);
+    expect(Object.keys(body?.data ?? {}).sort()).toEqual(USER_KEYS);
     expect(body?.data).toMatchObject({ siteid: SITE, isnew: 1, ispublic: 1, subtype: 'Default', type: 'user', groupid: '', fname: '', lastlogin: '' });
     expect(body?.data.userid).toMatch(CF_UUID);
     expect(body?.data.userid).not.toBe(UNKNOWN);
     expect(body?.data.id).toBe(body?.data.userid);
-    expect(body?.data.links).toEqual(linksOf(body?.data.userid));
+    expect(body?.data.links).toEqual(linksOf(body?.data.userid ?? ''));
   });
 
   it('selects the requested fields plus userid, siteid and isnew', async () => {
-    const { body } = await call('GET', `${CURRENT}&fields=fname,groupid&groupids=${GROUP}`, await identityHeaders({ sub: JANE, roles: [Roles.systemUser] }));
+    const { body } = await call<Schemas['CurrentUserRead']>('GET', `${CURRENT}&fields=fname,groupid&groupids=${GROUP}`, await identityHeaders({ sub: JANE, roles: [Roles.systemUser] }));
 
     expect(body?.data).toEqual({ fname: 'Jane', groupid: GROUP, userid: JANE, siteid: SITE, isnew: 0, id: JANE, type: 'user', entityname: 'user' });
   });
@@ -1557,12 +1564,12 @@ describe("the current user read of identity's findCurrentUser [legacy: core/mura
     ['an anonymous call', undefined, []],
     ['a user people holds no person of', { sub: UNKNOWN, roles: [Roles.systemUser] }, []],
   ])("selects getAddresses()' rows as fields=addresses for %s", async (_label, user, addresses: Record<string, unknown>[]) => {
-    const { status, body } = await call('GET', `${CURRENT}&fields=addresses`, await identityHeaders(user));
+    const { status, body } = await call<Schemas['CurrentUserRead']>('GET', `${CURRENT}&fields=addresses`, await identityHeaders(user));
 
     expect(status).toBe(200);
-    expect(Object.keys(body?.data).sort()).toEqual(['addresses', 'entityname', 'id', 'isnew', 'siteid', 'type', 'userid']);
+    expect(Object.keys(body?.data ?? {}).sort()).toEqual(['addresses', 'entityname', 'id', 'isnew', 'siteid', 'type', 'userid']);
     expect(body?.data.addresses).toEqual(addresses);
-    expect(body?.data.addresses.map((row: Record<string, unknown>) => Object.keys(row))).toEqual(addresses.map((row) => Object.keys(row)));
+    expect(body?.data.addresses?.map((row: Record<string, unknown>) => Object.keys(row))).toEqual(addresses.map((row) => Object.keys(row)));
   });
 
   it.each([

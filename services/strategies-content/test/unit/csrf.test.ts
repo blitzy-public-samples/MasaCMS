@@ -565,7 +565,7 @@ describe('reproduced bypasses', () => {
     expect([t.client.csrfConsumes, db.statements]).toEqual([[], []]);
   });
 
-  it.each([
+  it.each<{ key: string; method: 'GET' | 'POST'; url: string; form: Form }>([
     { key: 'admin:carch.update', method: 'GET', url: urlOf('/v1/raw/carch/update'), form: { contentid: C.pageTwo, topid: C.root, action: 'deleteall' } },
     {
       key: 'admin:carch.update',
@@ -579,7 +579,7 @@ describe('reproduced bypasses', () => {
       url: `/v1/sites/${SITE}/content/versions/${H.pageOneActive}/object-params`,
       form: { contenthistid: H.pageOneActive, approved: '1', regionid: '2', object: 'text', objectid: 'obj1', name: 'Box', params: '{"a":1}' },
     },
-  ] as const)('$key is withheld: no target $method route serves it and nothing is consumed or read', async ({ key, method, url, form }) => {
+  ])('$key is withheld: no target $method route serves it and nothing is consumed or read', async ({ key, method, url, form }) => {
     expect(OPENAPI['x-opt2-excluded'].map((entry) => entry.key)).toContain(key);
     const res =
       method === 'POST'

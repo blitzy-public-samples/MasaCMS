@@ -333,9 +333,11 @@ start_server() {
   # setsid keeps the JVM out of the caller's process group, which the migration service may signal on a timeout.
   # Plugin discovery and DB updates stay off, so application start-up runs neither writer.
   # MURA_BROADCASTCLUSTERCOMMANDS=false: no cluster reload commands, as the start-up guard on content units requires.
+  # The port file's Mailpit, as process_env hands it to target communications.
   PORT="$LEGACY_PORT" MURA_PING=false MURA_AUTODISCOVERPLUGINS=false MURA_APPLYDBUPDATES=false \
     MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" OPT2_HARNESS_KEY="$harness_key" \
     OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
+    SMTP_HOST=127.0.0.1 SMTP_PORT="$OPT2_TOOL_PORT_MAILPIT_SMTP" MAILPIT_API_URL="$MAILPIT_API_LOCAL" \
     setsid --wait box server start serverConfigFile="$SERVER_JSON" --noSaveSettings </dev/null >&2 ||
     die "box server start serverConfigFile=$SERVER_JSON failed"
 }

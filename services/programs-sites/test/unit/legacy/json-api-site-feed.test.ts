@@ -31,7 +31,7 @@ const ROWS: ReadonlyMap<string, SiteRow> = new Map([
 ]);
 
 const SOURCE: FeedSource = {
-  rows: async (siteIds) => siteIds.flatMap((siteId) => ROWS.get(siteId.toLowerCase()) ?? []),
+  rows: async (siteIds) => siteIds.flatMap<SiteRow>((siteId) => ROWS.get(siteId.toLowerCase()) ?? []),
   contentPool: async (siteId) => {
     const row = ROWS.get(siteId);
     return row === undefined ? undefined : String(row.contentpoolid ?? siteId);

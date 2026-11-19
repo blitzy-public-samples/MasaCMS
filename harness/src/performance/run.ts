@@ -133,6 +133,9 @@ const CONTENT_API = `/_api/json/v1/${SEED_SITE}`;
 const CUSERS_LISTUSERS_PATH = `/admin/?muraAction=cUsers.listUsers&siteid=${SEED_SITE}&ispublic=0`;
 const CSETTINGS_LIST_PATH = '/admin/?muraAction=cSettings.list';
 const CONTENT_FIND_ONE_PATH = `${CONTENT_API}/content/${HOME_CONTENT_ID}`;
+const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
+// The Site Manager tree under the home node, in the form carch/list.cfm redirects to.
+const SITE_MANAGER_TREE_PATH = `/admin/?muraAction=cArch.list&siteid=${SEED_SITE}&moduleid=${SITE_MANAGER_MODULE_ID}&topid=${HOME_CONTENT_ID}`;
 const TIMESHEET_SHEETS_PATH = `${FIXTURE_API}/timesheets/sheets?siteid=${SEED_SITE}&asOf={asOf}`;
 // GS-CO-13's rss step requests the feed API in this form.
 const FEED_READ_PATH = `/_api/feed/v1/?feedid={feedId}&siteid=${SEED_SITE}`;
@@ -197,37 +200,50 @@ export function expandCatalogueReads(scenario: Pick<Scenario, 'id' | 'sessions' 
  */
 export type ProbeSpec = { login: true } | { session: string; path: string; fixtures?: true };
 
-/** Gateway probe per restarted service; `fixtures` probes need the synthetic legacy oracle. */
-export const GATEWAY_PROBES: Readonly<Record<RestartService, ProbeSpec>> = Object.freeze({
-  identity: { login: true },
-  people: { session: 'admin', path: CUSERS_LISTUSERS_PATH },
-  'programs-sites': { session: 'admin', path: CSETTINGS_LIST_PATH },
-  'strategies-content': { session: 'anonymous', path: CONTENT_FIND_ONE_PATH },
-  communications: {
-    session: 'communications.sender',
-    path: `${FIXTURE_API}/communications/templates?siteid=${SEED_SITE}`,
-    fixtures: true,
-  },
-  reporting: { session: 'reporting.exporter', path: `${FIXTURE_API}/reporting/exports?siteid=${SEED_SITE}`, fixtures: true },
-  surveys: { session: 'surveys.manager', path: `${FIXTURE_API}/surveys/surveys?siteid=${SEED_SITE}`, fixtures: true },
-  timesheets: { session: TIMESHEETS_ROLE, path: TIMESHEET_SHEETS_PATH, fixtures: true },
-  finance: { session: 'finance.preparer', path: `${FIXTURE_API}/finance/records?siteid=${SEED_SITE}`, fixtures: true },
-  'e-signature': {
-    session: 'esignature.signer',
-    path: `${FIXTURE_API}/esignature/requests?siteid=${SEED_SITE}`,
-    fixtures: true,
-  },
+/** A service's gateway probes in preference order. */
+export type ProbeCandidates = readonly [ProbeSpec, ...ProbeSpec[]];
+
+/** Gateway probes per restarted service; `fixtures` probes need the synthetic legacy oracle. */
+export const GATEWAY_PROBES: Readonly<Record<RestartService, ProbeCandidates>> = Object.freeze({
+  identity: [{ login: true }],
+  people: [{ session: 'admin', path: CUSERS_LISTUSERS_PATH }],
+  'programs-sites': [{ session: 'admin', path: CSETTINGS_LIST_PATH }],
+  'strategies-content': [
+    { session: 'anonymous', path: CONTENT_FIND_ONE_PATH },
+    { session: 'admin', path: SITE_MANAGER_TREE_PATH },
+  ],
+  communications: [
+    {
+      session: 'communications.sender',
+      path: `${FIXTURE_API}/communications/templates?siteid=${SEED_SITE}`,
+      fixtures: true,
+    },
+  ],
+  reporting: [{ session: 'reporting.exporter', path: `${FIXTURE_API}/reporting/exports?siteid=${SEED_SITE}`, fixtures: true }],
+  surveys: [{ session: 'surveys.manager', path: `${FIXTURE_API}/surveys/surveys?siteid=${SEED_SITE}`, fixtures: true }],
+  timesheets: [{ session: TIMESHEETS_ROLE, path: TIMESHEET_SHEETS_PATH, fixtures: true }],
+  finance: [{ session: 'finance.preparer', path: `${FIXTURE_API}/finance/records?siteid=${SEED_SITE}`, fixtures: true }],
+  'e-signature': [
+    {
+      session: 'esignature.signer',
+      path: `${FIXTURE_API}/esignature/requests?siteid=${SEED_SITE}`,
+      fixtures: true,
+    },
+  ],
 });
 
 /** A probe that reads a path in a session. */
 export type SessionProbeSpec = Extract<ProbeSpec, { path: string }>;
 
-/** A service's probe under the active version; identity may borrow a target read whose fresh session it resolves. */
+/**
+ * A service's probe under the active version; identity may borrow a target read whose fresh session it resolves.
+ * `not-target` lists the route key of every candidate.
+ */
 export type ProbeChoice =
   | { kind: 'own'; spec: ProbeSpec; routeKey: string }
   | { kind: 'fresh-session'; via: RestartService; spec: SessionProbeSpec; routeKey: string }
   | { kind: 'skipped'; reason: string }
-  | { kind: 'not-target'; routeKey: string };
+  | { kind: 'not-target'; routeKeys: string[] };
 
 // The admin login post, whose route key (admin:clogin.login) stands for identity's own login probe.
 const LOGIN_REQUEST: StepRequest = { method: 'POST', route: '/admin/index.cfm', form: { muraAction: 'cLogin.login' } };
@@ -240,27 +256,37 @@ function probeUsable(spec: ProbeSpec, fixturesAvailable: boolean): boolean {
   return fixturesAvailable || !('path' in spec && spec.fixtures === true);
 }
 
-/** The probe {@link restartAndMeasure} uses for `service` under `table`. */
+/**
+ * The probe {@link restartAndMeasure} uses for `service` under `table`: its first usable target-served candidate,
+ * skipped when every target-served one needs the unavailable fixtures.
+ */
 export function chooseProbe(service: RestartService, table: CutoverTable, fixturesAvailable: boolean): ProbeChoice {
-  const spec = GATEWAY_PROBES[service];
-  const own = probeServing(table, spec);
-  if (own.servedBy === 'target') {
-    return probeUsable(spec, fixturesAvailable)
-      ? { kind: 'own', spec, routeKey: own.routeKey }
-      : { kind: 'skipped', reason: FIXTURES_UNAVAILABLE };
-  }
+  const candidates = GATEWAY_PROBES[service].map((spec) => ({ spec, ...probeServing(table, spec) }));
+  const routed = candidates.filter((candidate) => candidate.servedBy === 'target');
+  const own = routed.find((candidate) => probeUsable(candidate.spec, fixturesAvailable));
+  if (own !== undefined) return { kind: 'own', spec: own.spec, routeKey: own.routeKey };
+  if (routed.length > 0) return { kind: 'skipped', reason: FIXTURES_UNAVAILABLE };
   if (service === 'identity') {
-    const routed = RESTART_SERVICES.flatMap((via): Extract<ProbeChoice, { kind: 'fresh-session' }>[] => {
-      const candidate = GATEWAY_PROBES[via];
-      if (via === service || 'login' in candidate) return [];
-      const side = probeServing(table, candidate);
-      return side.servedBy === 'target' ? [{ kind: 'fresh-session', via, spec: candidate, routeKey: side.routeKey }] : [];
-    });
-    const usable = routed.find((choice) => probeUsable(choice.spec, fixturesAvailable));
+    const borrowed = RESTART_SERVICES.filter((via) => via !== service).flatMap((via) =>
+      GATEWAY_PROBES[via]
+        .filter((spec): spec is SessionProbeSpec => 'path' in spec)
+        .flatMap((spec): Extract<ProbeChoice, { kind: 'fresh-session' }>[] => {
+          const side = probeServing(table, spec);
+          return side.servedBy === 'target' ? [{ kind: 'fresh-session', via, spec, routeKey: side.routeKey }] : [];
+        }),
+    );
+    const usable = borrowed.find((choice) => probeUsable(choice.spec, fixturesAvailable));
     if (usable !== undefined) return usable;
-    if (routed.length > 0) return { kind: 'skipped', reason: FIXTURES_UNAVAILABLE };
+    if (borrowed.length > 0) return { kind: 'skipped', reason: FIXTURES_UNAVAILABLE };
   }
-  return { kind: 'not-target', routeKey: own.routeKey };
+  return { kind: 'not-target', routeKeys: candidates.map((candidate) => candidate.routeKey) };
+}
+
+/** Detail of the `probe-not-target` finding of `service`, whose candidate `routeKeys` are legacy-routed in `version`. */
+export function notTargetDetail(service: string, routeKeys: readonly string[], version: string): string {
+  const last = routeKeys.at(-1);
+  const keys = routeKeys.length > 1 ? `${routeKeys.slice(0, -1).join(', ')} and ${last} are` : `${last} is`;
+  return `${keys} legacy-routed in ${version}, so no gateway read reaches ${service}`;
 }
 
 /** One report finding; findings are flags, never failures. */
@@ -307,8 +333,10 @@ export type LatencyRow = ReadLabels & {
 /** Local process start to first `/healthz` 200. */
 export type ColdStartRow = { service: string; startToFirst200Ms: number | null; label: 'measured' };
 
-/** Stopped state, through cold start, to the first successful request through the gateway. */
-export type ScaleToZeroRow = { service: string; stopToFirstSuccessMs: number | null; label: 'derived' };
+/** Stopped state, through cold start, to the first successful request through the gateway; `unavailable` when none was timed. */
+export type ScaleToZeroRow =
+  | { service: string; stopToFirstSuccessMs: number; label: 'derived' }
+  | { service: string; stopToFirstSuccessMs: null; label: 'unavailable' };
 
 /** A write window longer than {@link WINDOW_THRESHOLD_MS}. */
 export type WindowOverThreshold = { windowId: string; routeKey: string; durationMs: number };
@@ -696,7 +724,10 @@ export async function restartAndMeasure(name: string, deps: ProcessDeps, probe: 
   const findings: Finding[] = [];
   const outcome = (cold: number | null, scale: number | null, unhealthy = false): RestartOutcome => ({
     coldStart: { service: name, startToFirst200Ms: cold === null ? null : round(cold, 1), label: 'measured' },
-    scaleToZero: { service: name, stopToFirstSuccessMs: scale === null ? null : round(scale, 1), label: 'derived' },
+    scaleToZero:
+      scale === null
+        ? { service: name, stopToFirstSuccessMs: null, label: 'unavailable' }
+        : { service: name, stopToFirstSuccessMs: round(scale, 1), label: 'derived' },
     findings,
     unhealthy,
   });
@@ -1116,7 +1147,8 @@ export function renderPerformanceMarkdown(report: PerformanceReport): string[] {
     '- Served by is the side the active cut-over version routes the row\'s route key to. On a `legacy` row the target columns measure the gateway proxying to legacy, and a `legacy-served` finding says so.',
     `- The request sets no latency threshold: a target p95 above ${RATIO_FINDING_THRESHOLD}x legacy and a write window over ${WINDOW_THRESHOLD_MS / 1000} s are flags, not failures.`,
     "- The legacy-direct admin and timesheet sessions log in on legacy itself, which updates that user's `tusers.LastLogin` on the legacy side.",
-    `- Cold start is measured locally (process start to the first \`/healthz\` 200); scale to zero and back is derived (stopped service, restart, first successful request through the gateway). Each poll is bounded at ${POLL_LIMIT_MS} ms.`,
+    `- Cold start is measured locally (process start to the first \`/healthz\` 200); scale to zero and back is derived (stopped service, restart, first successful request through the gateway), and \`unavailable\` where no such request was timed. Each poll is bounded at ${POLL_LIMIT_MS} ms.`,
+    "- Each service is probed only by identity's admin login or by a request that leaves the compared state unchanged: a read, or a view whose writes are idempotent. A service none of whose probe candidates the active version routes to target has an `unavailable` row and a `probe-not-target` finding naming the candidates' route keys; one whose target-routed candidates all need the absent fixtures has an `unavailable` row and a `scale-probe-skipped` finding.",
     `- Cloud measurement: ${report.cloudMeasurement}.`,
     '',
     '## Latency',
@@ -1164,8 +1196,8 @@ export function renderPerformanceMarkdown(report: PerformanceReport): string[] {
     '## Scale to zero and back (derived)',
     '',
     ...table(
-      ['Service', 'Stop to first success through the gateway (ms)'],
-      report.scaleToZero.map((row) => [row.service, row.stopToFirstSuccessMs]),
+      ['Service', 'Stop to first success through the gateway (ms)', 'Label'],
+      report.scaleToZero.map((row) => [row.service, row.stopToFirstSuccessMs, row.label]),
     ),
     '',
     `## Windows over ${WINDOW_THRESHOLD_MS / 1000} s`,
@@ -1306,9 +1338,7 @@ interface ProbeContext {
 
 function probePlan(service: RestartService, choice: ProbeChoice, ctx: ProbeContext): ProbePlan {
   if (choice.kind === 'skipped') return { skipped: choice.reason };
-  if (choice.kind === 'not-target') {
-    return { notTarget: `${choice.routeKey} is legacy-routed in ${ctx.version}, so no gateway read reaches ${service}` };
-  }
+  if (choice.kind === 'not-target') return { notTarget: notTargetDetail(service, choice.routeKeys, ctx.version) };
   const { spec } = choice;
   const fresh = (timeoutMs: number): HttpSession => createHttpSession({ baseUrl: ctx.gatewayUrl, fetch: ctx.fetch, timeoutMs });
   if ('login' in spec) {

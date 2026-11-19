@@ -1,7 +1,7 @@
 // JSON API `feed` handlers over a throwaway `content` schema. Expected shapes and verdicts follow what Masa 7.6.1 on
 // ACF 2023 answers for the same calls: feedBean.getEntityName() is `content`, so bean-object checks treat a feed as content.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { buildEnvelope, LegacyApiError, serializeResponse } from '@opt2/platform/legacy-compat';
+import { buildEnvelope, serializeResponse } from '@opt2/platform/legacy-compat';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, pgAvailable, type TenantFixture } from '@opt2/platform/testing';
 import { saveContent, type ContentSaveSite } from '../../src/domain/content.js';

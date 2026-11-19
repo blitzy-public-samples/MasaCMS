@@ -18,6 +18,9 @@
     "test": "vitest run --coverage",
     "test:contract": "vitest run test/contract",
     "test:security": "vitest run test/security",
+    "lint": "eslint .",
+    "pretypecheck": "npm run generate",
+    "typecheck": "tsc -p tsconfig.test.json",
     "auth:matrix": "node node_modules/@opt2/platform/dist/auth/cli.js matrix --app dist/app.js --export buildApp"
   },
   "dependencies": {

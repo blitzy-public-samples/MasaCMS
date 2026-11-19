@@ -44,6 +44,7 @@ A variable without a default is required by the commands under "Needed by"; the 
 | `OPT2_PG_STOP_CMD` | `down.sh` | `pg_ctlcluster 16 main stop` | Stops the PostgreSQL `up.sh` started |
 | `OPT2_LEGACY_START_TIMEOUT_S` | `up.sh`, `test-all.sh`, `down.sh` | `900` | Seconds to wait for a legacy start |
 | `MAILPIT_API_URL` | `up.sh`, `test-all.sh` | the port file's Mailpit API, `http://127.0.0.1:8025` | Mailpit API for `legacy-fixtures/load-fixtures.sh`, the service-version probe and the golden and e2e mail checks |
+| `SMTP_HOST`, `SMTP_PORT` | `up.sh` | `127.0.0.1`, the port file's Mailpit SMTP port | Mailpit SMTP listener `legacy-fixtures/load-fixtures.sh` checks; ColdFusion and target communications always get the port file's |
 | `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR` | all | see [State outside the checkout](#state-outside-the-checkout) | Run state and the pristine baseline |
 | `OPT2_REPORTS_DIR` | `up.sh`, `test-all.sh` | `opt2/reports` | Reports directory; a relative value resolves against the checkout. Also passed to the migration service and the `opt2-*` CLIs |
 | `OPT2_PORTS_FILE` | all | `repro/ports.env` | Absolute path of the port file the scripts and `src/repro/ports.ts` read; see [Ports](#ports) |
@@ -105,7 +106,7 @@ Every command takes the lock `${OPT2_LOCK_DIR:-$HOME/.opt2}/run.lock`, which rec
 - **Recovery.** `down.sh` marks `run.lock` as in teardown before it stops anything. If it fails or is interrupted, the mark stays, and every other checkout treats the stack as held until a rerun of that checkout's `down.sh` completes. Until then, that checkout's `up.sh`, `test-all.sh` and `clean-checkout-proof.sh` refuse too.
 - **Nothing to tear down.** `down.sh` in a checkout with no `run.lock` of its own, no `up.json` and no `tooling.json` reports nothing running and exits 0 without taking the lock.
 - **Commands started by another OPT-2 command.** These run under its flock. The parent exports the flock's token in `OPT2_LOCK_FLOCK_HELD`, and a child honours it only while that parent still holds the flock. `clean-checkout-proof.sh` holds it from its first `down.sh` to the clone's `down.sh`, so no other command gets in between. Any other value of `OPT2_LOCK_FLOCK_HELD` is ignored with a note.
-- **A second stack on one host.** The defaults give one stack per host. A second stack moves all of these together: `OPT2_PORTS_FILE` (every port, the tooling ports included), `OPT2_CF_SERVER_NAME`, `OPT2_LOCK_DIR`, `PORT`, `OPT2_LEGACY_SERVER_NAME`, `MURA_DATABASE`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR`, `GOOGLE_CLOUD_PROJECT`, `MAILPIT_API_URL` and, for the legacy fixtures, `SMTP_PORT`. `up.sh`, `test-all.sh`, `down.sh` and `clean-checkout-proof.sh` must all get the same values.
+- **A second stack on one host.** The defaults give one stack per host. A second stack moves all of these together: `OPT2_PORTS_FILE` (every port, the tooling ports included), `OPT2_CF_SERVER_NAME`, `OPT2_LOCK_DIR`, `PORT`, `OPT2_LEGACY_SERVER_NAME`, `MURA_DATABASE`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR`, `GOOGLE_CLOUD_PROJECT` and `MAILPIT_API_URL`. `up.sh`, `test-all.sh`, `down.sh` and `clean-checkout-proof.sh` must all get the same values.
 
 ### State outside the checkout
 
@@ -142,7 +143,7 @@ Shared tooling: Pub/Sub emulator 8085, Mailpit SMTP 1025 and API 8025. The stack
 
 ### Native processes
 
-No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY`, `OPT2_HARNESS_KEY` and `OPT2_GATEWAY_ORIGIN` on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, and it queues no cluster reload commands (the start-up guard on content units). Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`.
+No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY`, `OPT2_HARNESS_KEY`, `OPT2_GATEWAY_ORIGIN`, and `SMTP_HOST`, `SMTP_PORT` and `MAILPIT_API_URL` from the port file's Mailpit ports on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, it queues no cluster reload commands (the start-up guard on content units), and the communications fixture mails through the Mailpit target communications uses. Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`.
 
 ## Package
 

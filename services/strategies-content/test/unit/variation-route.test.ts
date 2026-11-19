@@ -27,7 +27,6 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
   paths: Record<string, Record<string, Operation>>;
 };
 const TEMPLATES = { [VARIATION_PATH]: VARIATION_PATH, [`${VARIATION_PATH}/{path}`]: `${VARIATION_PATH}/*` } as const;
-const USER_ID = 'D1E2F3A4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const SITE_A = TENANT_A.siteId;
 const HTML = 'text/html;charset=UTF-8';
 

@@ -114,7 +114,7 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
           try {
             if ('csrfContext' in spec) await adminCsrf(spec.csrfContext).call(app, request, reply);
             const out = await spec.run(request, ctx, actor);
-            const location = out.redirect === undefined ? {} : { location: out.redirect };
+            const location: Record<string, string> = out.redirect === undefined ? {} : { location: out.redirect };
             return sendLegacyResponse(reply, { status: out.status, headers: { 'content-type': out.contentType, ...location }, body: out.body });
           } catch (error) {
             if (error instanceof LegacyFaultError) return sendLegacyResponse(reply, legacyErrorResponse('server_error', { stacktrace: error.trace() }));

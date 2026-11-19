@@ -311,10 +311,16 @@ function cfStruct(value: Record<string, unknown>): Record<string, unknown> {
   );
 }
 
+/** The body of a markup or JSON render; only binary downloads carry bytes. */
+function bodyText(result: Pick<AdminRenderResult, 'body'>): string {
+  if (typeof result.body !== 'string') throw new TypeError('Expected a text body');
+  return result.body;
+}
+
 function expectLegacyResponse(result: AdminRenderResult, rec: Recorded, legacy: string): void {
   expect(result.status).toBe(rec.status);
   expect(result.contentType).toBe(rec.contentType);
-  expect(normalise(result.body)).toBe(normalise(legacy));
+  expect(normalise(bodyText(result))).toBe(normalise(legacy));
 }
 
 function expectSessionAfter(result: AdminRenderResult, rec: Recorded): void {
@@ -329,7 +335,7 @@ describe('renderSiteManagerJson against recorded carch.loadsitemanager responses
     const rec = recorded('loadsitemanager', id);
     const legacy = readText(`loadsitemanager/${id}.body`);
     const result = renderSiteManagerJson(managerModel(rec), context(rec));
-    const [mine, theirs] = [muraJsonMembers(result.body), muraJsonMembers(legacy)];
+    const [mine, theirs] = [muraJsonMembers(bodyText(result)), muraJsonMembers(legacy)];
     expect(Object.keys(mine)).toEqual(['perm', 'sortby', 'html']);
     expect(Object.keys(theirs)).toEqual(['perm', 'sortby', 'html']);
     expect([mine['perm'], mine['sortby']]).toEqual([theirs['perm'], theirs['sortby']]);
@@ -342,7 +348,7 @@ describe('renderSiteManagerJson against recorded carch.loadsitemanager responses
 
   it('omits the breadcrumb for Component, Creative and Form requests', () => {
     for (const type of ['Component', 'Creative', 'Form']) {
-      const html = String(muraJsonMembers(renderSiteManagerJson({ ...managerModel(home), type }, context(home)).body)['html']);
+      const html = String(muraJsonMembers(bodyText(renderSiteManagerJson({ ...managerModel(home), type }, context(home))))['html']);
       expect(html).not.toContain('class="breadcrumb"');
       expect(html).toContain('</div>\n </div>\n\n\n <script>');
     }
@@ -361,11 +367,13 @@ describe('renderSiteManagerJson against recorded carch.loadsitemanager responses
     };
     const html = String(
       muraJsonMembers(
-        renderSiteManagerJson(model, {
-          ...ctx,
-          config: { ...ctx.config, sortPermission: 'author' },
-          siteSettings: { ...ctx.siteSettings, hasLockableNodes: true },
-        }).body,
+        bodyText(
+          renderSiteManagerJson(model, {
+            ...ctx,
+            config: { ...ctx.config, sortPermission: 'author' },
+            siteSettings: { ...ctx.siteSettings, hasLockableNodes: true },
+          }),
+        ),
       )['html'],
     );
     expect(html).toContain('<div class="marker"></div>');
@@ -390,7 +398,7 @@ describe('renderSiteManagerJson against recorded carch.loadsitemanager responses
         displaystop: new Date(2026, 11, 31, 17, 0, 0),
       },
     };
-    const html = String(muraJsonMembers(renderSiteManagerJson(scheduled, context(forms)).body)['html']);
+    const html = String(muraJsonMembers(bodyText(renderSiteManagerJson(scheduled, context(forms))))['html']);
     expect(html).toContain('<dd class="display scheduled">');
     expect(html).toContain('<a href="#" rel="tooltip" title="12&#x2f;1&#x2f;26&amp;nbsp&#x3b;-&amp;nbsp&#x3b;12&#x2f;31&#x2f;26"></a>');
     expect(html).toContain('<a class="title" >');
@@ -402,7 +410,7 @@ describe('renderLoadSiteSection and renderRefreshSiteSection against recorded re
     const rec = recorded('loadsitesection', id);
     const legacy = readText(`loadsitesection/${id}.body`);
     const result = renderLoadSiteSection(sectionModel(rec), context(rec));
-    if (legacy !== '') expect(markupModel(String(JSON.parse(result.body).html))).toEqual(markupModel(String(JSON.parse(legacy).html)));
+    if (legacy !== '') expect(markupModel(String(JSON.parse(bodyText(result)).html))).toEqual(markupModel(String(JSON.parse(legacy).html)));
     expectLegacyResponse(result, rec, legacy);
     expectSessionAfter(result, rec);
   });
@@ -411,7 +419,7 @@ describe('renderLoadSiteSection and renderRefreshSiteSection against recorded re
     const rec = recorded('refreshsitesection', id);
     const legacy = readText(`refreshsitesection/${id}.body`);
     const result = renderRefreshSiteSection(sectionModel(rec), context(rec));
-    expect(result.body.endsWith('} ')).toBe(true);
+    expect(bodyText(result).endsWith('} ')).toBe(true);
     expectLegacyResponse(result, rec, legacy);
     expect(result.sessionEffects).toBeUndefined();
   });
@@ -480,7 +488,7 @@ describe('renderLoadDiff against recorded carch.loaddiff fragments', () => {
       ['created', new Date(2026, 0, 2, 3, 4, 6)],
       ['nav', 0],
     ]);
-    const body = renderLoadDiff(other, base, { labels }).body;
+    const body = bodyText(renderLoadDiff(other, base, { labels }));
     expect(body.match(/<h3>[^<]*<\/h3>/g)).toEqual(
       acfStructKeyOrder(['TITLE', 'created', 'notes', 'nav']).map((key) => `<h3>${key.toUpperCase()}</h3>`),
     );
@@ -537,7 +545,7 @@ describe('renderLockCheck against the recorded carch.lockcheck page', () => {
     expect(result).toMatchObject({ status: rec.status, contentType: rec.contentType, layout: true });
     expect(page).toContain(`<div class="main mura-layout-row">${result.body}</div>`);
     expect(page).toContain(`${result.ajax ?? '<none>'}\n\t</head>`);
-    expect(result.body.startsWith('\n<div id="configuratorContainer">')).toBe(true);
+    expect(bodyText(result).startsWith('\n<div id="configuratorContainer">')).toBe(true);
   });
 
   it('forwards the lock holder to the destination action', () => {
