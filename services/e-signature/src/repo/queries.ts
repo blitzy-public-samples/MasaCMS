@@ -1,5 +1,6 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Read-only queries of schema `esignature` in the fixture `esignature.cfc` order, and the audit append lock; each runs in the caller's tenant transaction, whose RLS scopes the rows. */
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified, type TableDefinition } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -57,6 +58,11 @@ interface Statements {
 // the bpchar cast keeps the comparison bpchar to bpchar, so trailing spaces are ignored and the key indexes still apply.
 const REQUEST_ID_MATCH = '"request_id" = upper($1)::bpchar';
 
+/** Whether `id` can match a stored request id under REQUEST_ID_MATCH: a CF UUID once its trailing spaces are dropped. */
+function isMatchableRequestId(id: string): boolean {
+  return isCfUuid(id.replace(/ +$/u, ''));
+}
+
 /** The quoted catalogue columns of `def`, in catalogue order; `tenant_id` and `row_version` included, as the `tables.ts` row types declare them. */
 function columnList(def: TableDefinition): string {
   return def.columns.map((column) => `"${column.name}"`).join(', ');
@@ -84,7 +90,7 @@ function statementsFor(schema: string): Statements {
   });
 }
 
-/** The request `id`, or null; `forUpdate` row-locks it. */
+/** The request `id`, or null, unqueried for an id no stored request can have; `forUpdate` row-locks it. */
 export async function findRequest(
   tx: TenantTx,
   id: string,
@@ -92,6 +98,9 @@ export async function findRequest(
 ): Promise<SignatureRequestMetadataRow | null> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [SIGNATURE_REQUEST.unit]);
+  if (!isMatchableRequestId(id)) {
+    return null;
+  }
   const { rows } = await tx.query<SignatureRequestMetadataRow>(forUpdate ? statements.requestForUpdate : statements.request, [id]);
   return rows[0] ?? null;
 }
@@ -155,12 +164,15 @@ export async function lastAuditEntry(tx: TenantTx, requestId: string): Promise<A
 
 /**
  * Row-locks request `id` until `tx` ends and reads its last audit entry, so appends on one request serialise as in
- * `synthetic.usp_audit_append`; null when the request does not exist.
+ * `synthetic.usp_audit_append`; null when the request does not exist, unqueried for an id no stored request can have.
  */
 export async function lockRequest(tx: TenantTx, id: string): Promise<LockedRequest | null> {
   const statements = statementsFor(tx.schema);
   // One wait for both units: once a gate is share-locked, a later awaitReadable cannot wait out a window and fails instead.
   await awaitReadable(tx, [SIGNATURE_REQUEST.unit, AUDIT_ENTRY.unit]);
+  if (!isMatchableRequestId(id)) {
+    return null;
+  }
   const request = (await tx.query<SignatureRequestMetadataRow>(statements.requestForUpdate, [id])).rows[0];
   if (request === undefined) {
     return null;

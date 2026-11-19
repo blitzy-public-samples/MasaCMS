@@ -1032,6 +1032,135 @@ describe('body parsing and legacy params', () => {
     ]);
   });
 
+  describe('a multipart body without its close delimiter', () => {
+    const boundary = 'opt2boundary';
+    const headers = { 'content-type': `multipart/form-data; boundary=${boundary}` };
+    const close = `--${boundary}--\r\n`;
+    const parts = multipartBody(boundary, [
+      { name: 'title', value: 'Hello' },
+      { name: 'attach', value: 'pdf-bytes', filename: 'a.pdf', type: 'application/pdf' },
+    ]).slice(0, -close.length);
+    const read = {
+      bodyIsUndefined: false,
+      isBuffer: false,
+      params: { title: 'Hello', attach: 'a.pdf' },
+      files: [{ field: 'attach', filename: 'a.pdf', mimetype: 'application/pdf', contentType: 'application/pdf', size: 9, sha256: sha256Hex('pdf-bytes'), data: 'pdf-bytes' }],
+    };
+    const nothingRead = { bodyIsUndefined: true, isBuffer: false, params: {}, files: [] };
+
+    /** Status and JSON body of `payload` posted to `/echo` through inject or a real socket. */
+    async function send(app: FastifyInstance, via: 'inject' | 'socket', payload: string): Promise<{ status: number; json: unknown }> {
+      if (via === 'inject') {
+        const res = await app.inject({ method: 'POST', url: '/echo', headers, payload });
+        return { status: res.statusCode, json: res.json() };
+      }
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const { port } = app.server.address() as AddressInfo;
+      const res = await fetch(`http://127.0.0.1:${String(port)}/echo`, { method: 'POST', headers, body: payload });
+      return { status: res.status, json: await res.json() };
+    }
+
+    /** Bodies legacy reads as complete, each sent by inject and over a real socket. */
+    const readAsComplete = [
+      { ending: 'right after a delimiter', payload: `${parts}--${boundary}`, expected: read },
+      { ending: 'inside a header block', payload: `${parts}--${boundary}\r\nbroken`, expected: read },
+      { ending: "inside a file part's header block", payload: `${parts}--${boundary}\r\nContent-Disposition: form-data; name="b"; filename="b.txt"`, expected: read },
+      { ending: 'past an empty header block', payload: `${parts}--${boundary}\r\n\r\ntrailing`, expected: read },
+      { ending: 'right after its first delimiter', payload: `--${boundary}`, expected: nothingRead },
+      { ending: 'inside its first header block', payload: `--${boundary}\r\nbroken`, expected: nothingRead },
+    ].flatMap((row) => (['inject', 'socket'] as const).map((via) => ({ ...row, via })));
+
+    it.each(readAsComplete)('hands the parts before a body end $ending to the handler, files spooled whole, sent by $via', async ({ payload, expected, via }) => {
+      const app = await echo();
+      expect(await send(app, via, payload)).toStrictEqual({ status: 200, json: expected });
+    });
+
+    it.each(readAsComplete)('hands a body ending $ending to a context parsing every body as a raw Buffer as sent, sent by $via', async ({ payload, via }) => {
+      const { app } = await build();
+      await app.register(async (raw) => {
+        raw.removeAllContentTypeParsers();
+        raw.addContentTypeParser<Buffer>('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+        raw.post('/echo', { config: { opt2: { public: true, invocationOptional: true } } }, async (request) => ({
+          body: Buffer.isBuffer(request.body) ? request.body.toString('latin1') : null,
+        }));
+      });
+      expect(await send(app, via, payload)).toStrictEqual({ status: 200, json: { body: payload } });
+    });
+
+    it.each(
+      [
+        { ending: "inside a part's content", payload: `${parts}--${boundary}\r\nContent-Disposition: form-data; name="late"\r\n\r\nunterminated` },
+        { ending: "right after a part's header block", payload: `${parts}--${boundary}\r\nContent-Disposition: form-data; name="late"\r\n\r\n` },
+      ].flatMap((row) => (['inject', 'socket'] as const).map((via) => ({ ...row, via }))),
+    )('answers a body ending $ending with the 500 server_error envelope before the handler, sent by $via', async ({ payload, via }) => {
+      const { app, lines } = await build();
+      let handled = false;
+      app.post('/echo', { config: { opt2: { public: true, invocationOptional: true } } }, async () => {
+        handled = true;
+        return 'handled';
+      });
+      expect(await send(app, via, payload)).toMatchObject({ status: 500, json: { error: { code: 'server_error', message: 'Unhandled Exception' } } });
+      expect(handled).toBe(false);
+      expect(lines.filter((line) => line.message === 'unhandled error')).toHaveLength(1);
+    });
+  });
+
+  describe('a multipart body whose header block a delimiter interrupts', () => {
+    const headers = { 'content-type': 'multipart/form-data; boundary=x' };
+    const title = '--x\r\nContent-Disposition: form-data; name="title"\r\n\r\nT\r\n';
+    const titled = { bodyIsUndefined: false, isBuffer: false, params: { title: 'T' }, files: [] };
+    const nothingRead = { bodyIsUndefined: true, isBuffer: false, params: {}, files: [] };
+    const file = '--x\r\nContent-Disposition: form-data; name="attach"; filename="a.pdf"\r\nContent-Type: application/pdf; v=1\r\n\r\npdf-bytes\r\n';
+    const fileRead = {
+      bodyIsUndefined: false,
+      isBuffer: false,
+      params: { attach: 'a.pdf' },
+      files: [{ field: 'attach', filename: 'a.pdf', mimetype: 'application/pdf', contentType: 'application/pdf; v=1', size: 9, sha256: sha256Hex('pdf-bytes'), data: 'pdf-bytes' }],
+    };
+    // Legacy reads a delimiter line inside a header block as one more header line, and a later disposition line wins.
+    const bodies = [
+      { shape: 'a delimiter line and the close', payload: '--x\r\nbroken\r\n--x--\r\n', expected: nothingRead },
+      { shape: 'the close without its CRLF', payload: '--x\r\nbroken\r\n--x--', expected: nothingRead },
+      { shape: 'a part after the delimiter line', payload: `--x\r\nbroken\r\n${title}--x--\r\n`, expected: titled },
+      { shape: 'a disposition line before the delimiter line', payload: `--x\r\nContent-Disposition: form-data; name="zzz"\r\n${title}--x--\r\n`, expected: titled },
+      { shape: 'two delimiter lines', payload: `--x\r\nbroken\r\n--x\r\nstill broken\r\n${title}--x--\r\n`, expected: titled },
+      { shape: 'a complete part before it', payload: `${title}--x\r\nbroken\r\n--x--\r\n`, expected: titled },
+      { shape: 'its end after the delimiter line', payload: '--x\r\nbroken\r\n--x\r\nbroken', expected: nothingRead },
+      { shape: 'a file part after the delimiter line', payload: `--x\r\nbroken\r\n${file}--x--\r\n`, expected: fileRead },
+      {
+        shape: 'a header block over 80 KiB before it',
+        payload: `--x\r\nContent-Disposition: form-data; name="big"\r\nX-Long: ${'y'.repeat(90 * 1024)}\r\n\r\nB\r\n--x\r\nbroken\r\n${title}--x--\r\n`,
+        expected: { ...titled, params: { big: 'B', title: 'T' } },
+      },
+    ];
+    // Sent in one chunk, a body completes only if each piece the scanner cuts reaches busboy as its own write.
+    const deliveries = [
+      { sent: 'in one chunk', size: Number.MAX_SAFE_INTEGER, via: 'inject' },
+      { sent: 'in one chunk', size: Number.MAX_SAFE_INTEGER, via: 'socket' },
+      ...[1, 3, 7].map((size) => ({ sent: `in ${String(size)}-byte chunks`, size, via: 'inject' })),
+    ] as const;
+
+    it.each(bodies.flatMap((body) => deliveries.map((delivery) => ({ ...body, ...delivery }))))(
+      'hands the form of a body with $shape to the handler, sent $sent by $via',
+      async ({ payload, expected, size, via }) => {
+        const app = await echo();
+        const bytes = Buffer.from(payload, 'latin1');
+        if (via === 'socket') {
+          await app.listen({ port: 0, host: '127.0.0.1' });
+          const { port } = app.server.address() as AddressInfo;
+          const res = await fetch(`http://127.0.0.1:${String(port)}/echo`, { method: 'POST', headers, body: bytes });
+          expect({ status: res.status, json: await res.json() }).toStrictEqual({ status: 200, json: expected });
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for (let at = 0; at < bytes.length; at += size) chunks.push(bytes.subarray(at, at + size));
+        const res = await app.inject({ method: 'POST', url: '/echo', headers, payload: chunks.length === 1 ? bytes : Readable.from(chunks) });
+        expect({ status: res.statusCode, json: res.json() }).toStrictEqual({ status: 200, json: expected });
+      },
+      5_000,
+    );
+  });
+
   it.each([
     { sent: 'by PUT with its Content-Length', method: 'PUT', kind: 'file', count: 4, mib: 75, declared: true, pulled: [0, 0] },
     { sent: 'chunked, as files', method: 'POST', kind: 'file', count: 4, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },

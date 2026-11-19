@@ -6,7 +6,7 @@ import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { requireSurvey, type DomainDeps } from './surveys.js';
 import { SURVEY_RESPONSE_GRANT } from './bulk-target.js';
 import * as queries from '../repo/queries.js';
-import { collated, findGrantor, isGrantedSurvey } from '../repo/grants.js';
+import { collated, findGrantor, isGrantedSurvey, isMatchableSurveyId } from '../repo/grants.js';
 import type { SurveysRepository } from '../repo/repository.js';
 import type { SurveyResponseRow, SurveyRow } from '../repo/tables.js';
 import { FixtureApiError, fixturePage, type FixtureListResult, type FixtureParams } from '../legacy/fixture-envelope.js';
@@ -78,6 +78,10 @@ export async function submitResponse(
   });
   if (own !== null) {
     return own;
+  }
+  // Grants name stored survey ids, so no tenant grants an id no stored survey can have.
+  if (!isMatchableSurveyId(surveyId)) {
+    throw new FixtureApiError('notFound');
   }
   const grant = { grantee: tenantId, kind: SURVEY_RESPONSE_GRANT, resourceId: surveyId };
   const grantor = await findGrantor(db, grant);

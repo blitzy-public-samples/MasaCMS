@@ -16,6 +16,7 @@ import {
   collated,
   grantOwnSurveyResponses,
   grantSurveyResponses,
+  isMatchableSurveyId,
   lockSurveyGrants,
   lockTargetKey,
   revokeOwnSurveyResponses,
@@ -155,9 +156,11 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
   const lockTargetSql = `SELECT survey_id, siteid FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE target_id = $1 FOR UPDATE`;
   const targetSitesSql = `SELECT siteid FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE survey_id = $1`;
 
-  /** Locks the survey row before any child row, the order the fixture locks them in; null when absent. */
+  /** Locks the survey row before any child row, the order the fixture locks them in; null when absent, unqueried for an id no stored survey can have. */
   function lockSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null> {
-    return base.read(tx, SURVEY.unit, async () => (await tx.query<SurveyRow>(lockSurveySql, [surveyId])).rows[0] ?? null);
+    return base.read(tx, SURVEY.unit, async () =>
+      isMatchableSurveyId(surveyId) ? ((await tx.query<SurveyRow>(lockSurveySql, [surveyId])).rows[0] ?? null) : null,
+    );
   }
 
   /** Locks the survey row that a child row of `table` belongs to; throws RepositoryError when it is absent. */

@@ -546,6 +546,31 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     expect(listed.find((row) => row.request_id === id)?.state).toBe('PENDING');
   });
 
+  // esignature.cfc's char(35) lookup matches no row for an id that is no CF UUID; one holding NUL would fail in PostgreSQL if queried.
+  const UNSTORED_IDS = ['x%00.cfm', `${MISSING_ID}%00`, `%20${MISSING_ID}`, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'];
+  const ID_ROUTES: ReadonlyArray<readonly [string, (id: string) => Promise<Injected>, string, boolean]> = [
+    ['GET {id}/audit', (id) => send('GET', `${P}/${id}/audit`, { sub: AUDITOR_USER_ID, roles: AUDITOR }), 'esignature.requests.audit', false],
+    ['GET {id}/verify', (id) => send('GET', `${P}/${id}/verify`, { sub: AUDITOR_USER_ID, roles: AUDITOR }), 'esignature.requests.verify', false],
+    ['POST {id}/verify', (id) => send('POST', `${P}/${id}/verify`, { sub: AUDITOR_USER_ID, roles: AUDITOR, payload: { entries: '[]' } }), 'esignature.requests.verify', true],
+    ['POST {id}/sign', (id) => send('POST', `${P}/${id}/sign`, { payload: { typedName: 'Jane Doe' } }), 'esignature.requests.sign', true],
+  ];
+  it.each(ID_ROUTES.flatMap(([route, request, method, write]) => UNSTORED_IDS.map((id) => [route, id, request, method, write] as const)))(
+    'answers %s with id %s as notFound after the CSRF check, logging no rejection',
+    async (_route, id, request, method, write) => {
+      const before = logLines.length;
+      const res = await request(id);
+      expect([res.statusCode, res.body]).toEqual([404, errorBody(method, 'invalid_request', 'Not Found')]);
+      expect(consumed.map(({ context }) => context)).toEqual(write ? [decodeURIComponent(id)] : []);
+      expect(logLines.slice(before).filter((line) => line.includes('"WARNING"') || line.includes('"ERROR"'))).toEqual([]);
+    },
+  );
+
+  it('reads a stored request through its id with trailing spaces, which the char(35) lookup ignores', async () => {
+    const { request_id: id } = await createRequest();
+    const res = await send('GET', `${P}/${id}%20%20/verify`, { sub: AUDITOR_USER_ID, roles: AUDITOR });
+    expect([res.statusCode, res.json().data]).toEqual([200, { valid: true, entries: 1, brokenat: 0 }]);
+  });
+
   it('logs an unhandled exception once as a valid log record, and denials with their reason', async () => {
     const before = logLines.length;
     expect((await send('GET', `${P}?pageIndex=1%D9%A1`)).statusCode).toBe(500);

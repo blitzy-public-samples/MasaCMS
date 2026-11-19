@@ -793,6 +793,11 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
       // Listed once it exists and before it is written, so the response or premature-close cleanup deletes it on every outcome.
       // Kept out of the plugin's tmpUploads, which both its response and close cleanup unlink.
       (state[UPLOADS] ??= []).push(filepath);
+      // A failed parse destroys the part it handed over, and a pipe from an ended part destroyed unread never settles.
+      if (part.file.destroyed) {
+        await file.close();
+        throw state[BODY_LIMIT] ?? new Error('multipart parse failed before its file part was read');
+      }
       const hash = createHash('sha256');
       let size = 0;
       const digest = new Transform({
@@ -849,11 +854,32 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     // Paused first, so the listener does not start the stream; multipart's pipe resumes it.
     raw.pause();
     raw.on('data', count);
-    // Ahead of multipart's own listener, so busboy hands a file part over only once its headers are scanned.
     const scanner = createMultipartHeaderScanner(request.headers['content-type']);
     if (scanner !== undefined) {
       stateOf(request)[PART_HEADERS] = scanner;
-      raw.on('data', (chunk: Buffer) => scanner.push(chunk));
+      // busboy reads the body through the scanner, which scans each chunk first and passes on the pieces it cuts, each its own write.
+      const framer = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          for (const piece of scanner.push(chunk)) this.push(piece);
+          callback();
+        },
+        // busboy fails a body without its close delimiter where legacy reads the form as complete; the scanner's close completes it.
+        flush(callback) {
+          callback(null, scanner.closing());
+        },
+      });
+      // Only multipart's own parse pipes the request; a context reading the body as a raw Buffer keeps the bytes as sent.
+      const pipe = raw.pipe.bind(raw);
+      const unpipe = raw.unpipe.bind(raw);
+      raw.pipe = (destination, options) => {
+        pipe(framer);
+        return framer.pipe(destination, options);
+      };
+      raw.unpipe = (destination) => {
+        unpipe(framer);
+        framer.unpipe(destination);
+        return raw;
+      };
     }
     done(null, payload);
   });

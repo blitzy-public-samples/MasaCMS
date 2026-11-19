@@ -435,6 +435,50 @@ export function deleteFileEntity(deps: EntityWriteDeps, tenantId: string, fileId
   return withGatedPoolTenant(deps.db, tenantId, 'file', (tx) => deps.repository.platform.delete<FileRow>(tx, FILE.table, { fileid: fileId }, write));
 }
 
+/** fileBean's persistent columns besides its key, which beanORM.save writes on every insert and update (fileBean.cfc:3-33). */
+export const FILE_BEAN_COLUMNS = [
+  'contentid',
+  'siteid',
+  'moduleid',
+  'filename',
+  'filesize',
+  'contenttype',
+  'contentsubtype',
+  'fileext',
+  'created',
+  'deleted',
+  'caption',
+  'credits',
+  'alttext',
+  'remoteid',
+  'remoteurl',
+  'remotepubdate',
+  'remotesource',
+  'remotesourceurl',
+  'exif',
+] as const satisfies readonly (keyof FileRow)[];
+
+/** A file bean's persistent columns as beanORM.save binds them. */
+export type FileBeanColumns = Pick<FileRow, (typeof FILE_BEAN_COLUMNS)[number]>;
+
+/** fileBean.save(processFile=false)'s own steps before beanORM.save (fileBean.cfc:137-157): serializeExif, then a css, js, html or htm file name's content type. */
+export function fileBeanSaveValues(exif: string, filename: string): Patch<FileRow, 'fileid'> {
+  return { exif: serializedExif(exif), ...savedContentType(filename) };
+}
+
+/** beanORM.save of a `file` without a posted file (beanORM.cfc:379-560): updates `fileId`'s row of any site, else inserts it, in one gated transaction of the actor's file pool tenant; stores no object. */
+export function saveFileEntity(deps: EntityWriteDeps, actor: Actor, fileId: string, columns: FileBeanColumns): Promise<FileRow> {
+  const write = writeContextFor(actor);
+  return withGatedPoolTenant(deps.db, actor.tenantId, 'file', async (tx) => {
+    // The existence check selects by the key alone (beanORM.cfc:424), so a row of another site of the pool is updated.
+    const stored = await deps.repository.files.readFileMeta(tx, fileId);
+    if (stored === null) return deps.repository.platform.insert<FileRow>(tx, FILE.table, { fileid: fileId, ...columns }, write);
+    const updated = await deps.repository.files.updateFile(tx, stored.fileid, columns, write);
+    if (updated === null) throw new Error(`File ${stored.fileid} vanished while it was saved`);
+    return updated;
+  });
+}
+
 /** beanORM.delete of a `fileMetaData` entity: removes the row `metaId` in one gated transaction of its content tenant `tenantId`. */
 export function deleteFileMetaDataEntity(
   deps: EntityWriteDeps,

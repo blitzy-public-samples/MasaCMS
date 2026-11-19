@@ -16,7 +16,7 @@ import { withPoolTenant } from '../../src/domain/pools.js';
 import { jsonApiEndpoint, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
 import { createContentRepository, type ContentRepository, type FileInput, type FileMetadataInput } from '../../src/repo/repository.js';
-import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { CONTENT_UNITS, type FileRow } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { fileHandler, fileMetaDataHandler } from '../../src/routes/jsonapi/file.js';
 import {
@@ -447,7 +447,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const result = await handlerOf(fileHandler, 'save')(ctx, call);
       const data = dataOf(result);
       expect(result).toMatchObject({ status: 200, serializerEntity: 'file' });
-      expect(data).toMatchObject({ isnew: 0, filename: 'report.pdf', fileext: 'pdf', contentid: CONTENT_ID, caption: 'Q2', saveErrors: '', errors: {} });
+      expect(data).toMatchObject({ isnew: 0, filename: 'report.pdf', fileext: 'pdf', contentid: CONTENT_ID, caption: 'Q2', saveErrors: false, errors: {} });
       expect(isCfUuid(String(data['fileid']))).toBe(true);
       expect(puts).toEqual([`${TENANT_B.tenantId}/${String(data['fileid'])}.pdf`]);
       expect(opened).toEqual(['report.pdf']);
@@ -496,17 +496,6 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       expect(opened).toEqual([]);
     });
 
-    it.each([
-      ['no posted part', {}, undefined],
-      ['a part under another field', {}, [part('a.pdf', 'application/pdf', 'files')]],
-      ['an empty fileField', { fileField: '' }, [part('a.pdf')]],
-    ])('fails closed for %s', async (_name, params, files) => {
-      const { call } = save({ params, ...(files === undefined ? {} : { files }) });
-      await expect(handlerOf(fileHandler, 'save')(ctx, call)).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
-      expect(puts).toEqual([]);
-      expect(opened).toEqual([]);
-    });
-
     it('reads the part posted under the fileField the request names', async () => {
       const { call } = save({ params: { fileField: 'Files' }, files: [part('named.pdf', 'application/pdf', 'files')] });
       expect(dataOf(await handlerOf(fileHandler, 'save')(ctx, call))).toMatchObject({ isnew: 0, filename: 'named.pdf' });
@@ -515,7 +504,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
     it('answers a disallowed extension with the new bean of the fresh id, storing nothing', async () => {
       config = { ...CONTENT_CONFIG_DEFAULTS, fmAllowedExtensions: 'pdf' };
       const data = dataOf(await handlerOf(fileHandler, 'save')(ctx, save({ files: [part('notes.txt', 'text/plain')] }).call));
-      expect(data).toMatchObject({ isnew: 1, filename: '', saveErrors: '', errors: {} });
+      expect(data).toMatchObject({ isnew: 1, filename: '', saveErrors: false, errors: {} });
       expect(isCfUuid(String(data['fileid']))).toBe(true);
       expect(puts).toEqual([]);
       expect(opened).toEqual([]);
@@ -525,6 +514,227 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const { call } = save({ params: { remotePubDate: '2026-05-04T03:02:01' }, files: [part('dated.pdf')] });
       const data = dataOf(await handlerOf(fileHandler, 'save')(ctx, call));
       expect(data['remotepubdate']).toEqual(new Date(2026, 4, 4, 3, 2, 1));
+    });
+
+    it.each([
+      ['yes', true],
+      ['0', false],
+    ])('answers an upload posting saveErrors %s with saveErrors %s', async (posted, expected) => {
+      const { call } = save({ params: { saveErrors: posted }, files: [part('flagged.pdf')] });
+      expect(dataOf(await handlerOf(fileHandler, 'save')(ctx, call))['saveErrors']).toBe(expected);
+    });
+
+    describe('without a posted file', () => {
+      const POOLED = { ...TENANT_A, filePoolId: TENANT_UMBRELLA.siteId };
+      // Legacy oracle (muradb tfiles): a save without a file part inserts the bean, each empty column NULL.
+      const NEW_ROW = {
+        contentid: null, siteid: TENANT_B.siteId, moduleid: SITE_TREE, filename: null, filesize: 0, contenttype: null, contentsubtype: null,
+        fileext: null, created: NOW, deleted: 0, caption: null, credits: null, alttext: null, remoteid: null, remoteurl: null,
+        remotepubdate: null, remotesource: null, remotesourceurl: null, exif: '{}', image: null, imagesmall: null, imagemedium: null,
+      };
+      // Keys of the legacy oracle's answer to a save without a file part (ACF 2023, site default).
+      const SAVED_FILE_KEYS = [
+        'alttext', 'caption', 'contentid', 'contentsubtype', 'contenttype', 'created', 'credits', 'deleted', 'entityname', 'errors', 'exif',
+        'fileext', 'filefield', 'fileid', 'filename', 'filesize', 'id', 'image', 'imagemedium', 'imagesmall', 'isnew', 'links', 'moduleid',
+        'remoteid', 'remotepubdate', 'remotesource', 'remotesourceurl', 'remoteurl', 'saveErrors', 'siteid',
+      ];
+      const STORED = {
+        siteid: TENANT_B.siteId, filename: 'qa-up.txt', filesize: 11, contenttype: 'text', contentsubtype: 'plain', fileext: 'txt',
+        caption: 'up cap', credits: 'up cred', created: new Date(2026, 0, 5, 6, 7, 8), exif: '{}',
+      };
+
+      /** The stored `content.file` row of `fileId` in `tenantId`, or null. */
+      const storedRow = (tenantId: string, fileId: string): Promise<FileRow | null> => withTenant(handle.app, tenantId, (tx) => repo.files.readFileAll(tx, fileId));
+
+      /** A save of `input`'s answer, its data and the row stored under the answered id in `tenantId`. */
+      async function beanSave(input: Omit<CallInput, 'method'>, tenantId = TENANT_B.tenantId): Promise<{ result: JsonApiResult; data: Struct; row: FileRow | null }> {
+        const result = await handlerOf(fileHandler, 'save')(ctx, save(input).call);
+        const data = dataOf(result);
+        return { result, data, row: await storedRow(tenantId, String(data['fileid'])) };
+      }
+
+      it.each<[string, Struct, UploadedFile[] | undefined, Struct]>([
+        ['an empty body', {}, undefined, {}],
+        ['text fields of a css file', { caption: 'QA cap', credits: 'QA cred', filename: 'style.css' }, undefined, { caption: 'QA cap', credits: 'QA cred', filename: 'style.css', contenttype: 'text', contentsubtype: 'css' }],
+        ['a js file name', { filename: 'app.js' }, undefined, { filename: 'app.js', contenttype: 'application', contentsubtype: 'javascript' }],
+        ['an upper-case html file name', { filename: 'Page.HTML' }, undefined, { filename: 'Page.HTML', contenttype: 'text', contentsubtype: 'html' }],
+        ['an htm file name', { filename: 'x.htm' }, undefined, { filename: 'x.htm', contenttype: 'text', contentsubtype: 'html' }],
+        ['a css file name ending in a dot', { filename: 'style.css.' }, undefined, { filename: 'style.css.', contenttype: 'text', contentsubtype: 'css' }],
+        ['another file name', { filename: 'a.txt', contenttype: 'kept' }, undefined, { filename: 'a.txt', contenttype: 'kept', contentsubtype: null }],
+        ['a part without a file name', { caption: 'empty part' }, [part('')], { caption: 'empty part' }],
+        ['a part under another field', {}, [part('a.pdf', 'application/pdf', 'files')], {}],
+        ['an empty fileField', { fileField: '' }, [part('a.pdf')], {}],
+        ['a fileField naming no value', { fileField: 'other' }, undefined, {}],
+        [
+          'the remote fields',
+          { remotepubdate: '2026-01-02 03:04:05', remoteid: 'rid', remoteurl: 'http://r.example/a/evil.exe', remotesource: 'rs', remotesourceurl: 'http://rs.example/', alttext: 'alt' },
+          undefined,
+          { remotepubdate: new Date(2026, 0, 2, 3, 4, 5), remoteid: 'rid', remoteurl: 'http://r.example/a/evil.exe', remotesource: 'rs', remotesourceurl: 'http://rs.example/', alttext: 'alt' },
+        ],
+        [
+          'the other bound columns',
+          { contentid: CONTENT_ID, moduleid: cfId('M', 3), fileext: 'TXT', deleted: '1', created: '2020-01-02 03:04:05', credits: '  padded  ', exif: '{"Make":"QA"}' },
+          undefined,
+          { contentid: CONTENT_ID, moduleid: cfId('M', 3), fileext: 'TXT', deleted: 1, created: new Date(2020, 0, 2, 3, 4, 5), credits: 'padded', exif: '{"Make":"QA"}' },
+        ],
+        ['an exif that is no JSON', { exif: 'not json' }, undefined, { exif: '{}' }],
+        ['a numeric exif', { exif: '123' }, undefined, { exif: '123' }],
+        ['dates that are no dates', { remotepubdate: 'nonsense', created: 'nonsense' }, undefined, { remotepubdate: null, created: null }],
+        ['a fractional fileSize', { filesize: '12.7' }, undefined, { filesize: 12 }],
+        ['a negative fractional fileSize', { filesize: '-3.5' }, undefined, { filesize: -4 }],
+      ])('inserts the bean of %s, storing no object', async (_name, params, files, row) => {
+        const { result, data, row: stored } = await beanSave({ params, ...(files === undefined ? {} : { files }) });
+        expect(result).toMatchObject({ status: 200, serializerEntity: 'file' });
+        expect(isCfUuid(String(data['fileid']))).toBe(true);
+        expect(data).toMatchObject({ isnew: 0, siteid: TENANT_B.siteId, filefield: 'newfile', entityname: 'file', saveErrors: false, errors: {} });
+        expect(Object.keys(data).sort()).toEqual(SAVED_FILE_KEYS);
+        expect(stored).toMatchObject({ ...NEW_ROW, ...row });
+        expect(puts).toEqual([]);
+        expect(opened).toEqual([]);
+      });
+
+      it.each<[string, string, (id: string) => Struct, Struct]>([
+        ['only a caption', cfId('ADD', 1), (id) => ({ fileid: id, caption: 'Updated cap' }), { caption: 'Updated cap' }],
+        ['a css file name', cfId('ADD', 2), (id) => ({ fileid: id, filename: 'renamed.css' }), { filename: 'renamed.css', contenttype: 'text', contentsubtype: 'css' }],
+        ['its lower-cased id', cfId('ADD', 3), (id) => ({ fileid: id.toLowerCase(), caption: 'lower id' }), { caption: 'lower id' }],
+      ])('updates the stored row with %s, keeping its other columns', async (_name, fileId, params, changed) => {
+        await insertFile(TENANT_B.tenantId, fileId, STORED);
+        const before = await fileCount(TENANT_B.tenantId);
+        const { data, row } = await beanSave({ params: params(fileId) });
+        expect(data).toMatchObject({ fileid: fileId, isnew: 0, ...STORED, ...changed });
+        expect(row).toMatchObject({ ...STORED, ...changed });
+        expect(await fileCount(TENANT_B.tenantId)).toBe(before);
+      });
+
+      it('inserts the bean under a posted CF UUID no row holds', async () => {
+        const { data, row } = await beanSave({ params: { fileid: cfId('ACE', 1), caption: 'no row' } });
+        expect(data).toMatchObject({ fileid: cfId('ACE', 1), isnew: 0, caption: 'no row' });
+        expect(row).toMatchObject({ ...NEW_ROW, caption: 'no row' });
+      });
+
+      it("stores a pooled site's bean in the file pool tenant under the site, where the site reads it", async () => {
+        const counts = [await fileCount(UMBRELLA), await fileCount(TENANT_A.tenantId)];
+        const { data, row } = await beanSave({ site: POOLED, actor: actorOf(TENANT_A), params: { caption: 'pooled cap', filename: 'p.css' } }, UMBRELLA);
+        expect(data).toMatchObject({ isnew: 0, siteid: TENANT_A.siteId, caption: 'pooled cap', contenttype: 'text', contentsubtype: 'css' });
+        expect(row).toMatchObject({ ...NEW_ROW, siteid: TENANT_A.siteId, caption: 'pooled cap', filename: 'p.css', contenttype: 'text', contentsubtype: 'css' });
+        expect([await fileCount(UMBRELLA), await fileCount(TENANT_A.tenantId)]).toEqual([(counts[0] ?? 0) + 1, counts[1]]);
+        const found = callOf({ method: 'findOne', id: String(data['fileid']), site: POOLED, actor: actorOf(TENANT_A) }).call;
+        expect(dataOf(await handlerOf(fileHandler, 'findOne')(ctx, found))).toMatchObject({ isnew: 0, caption: 'pooled cap' });
+      });
+
+      it("moves the pool site's row a pooled site names to that site, with a new bean's values", async () => {
+        await insertFile(UMBRELLA, cfId('BAD', 1), { ...STORED, siteid: TENANT_UMBRELLA.siteId });
+        const { data, row } = await beanSave({ site: POOLED, actor: actorOf(TENANT_A), params: { fileid: cfId('BAD', 1), caption: 'moved' } }, UMBRELLA);
+        expect(data).toMatchObject({ fileid: cfId('BAD', 1), isnew: 0, siteid: TENANT_A.siteId, caption: 'moved', filename: '' });
+        expect(row).toMatchObject({ ...NEW_ROW, siteid: TENANT_A.siteId, caption: 'moved' });
+      });
+
+      it.each([
+        ['credits beyond 255 characters', 'credits', 'x'.repeat(256)],
+        ['a filename beyond 200 characters', 'filename', 'y'.repeat(201)],
+        ['a contentid beyond 35 characters', 'contentid', 'x'.repeat(36)],
+        ['a deleted that is no number', 'deleted', 'abc'],
+        ['a deleted that is no integer', 'deleted', '1.5'],
+      ])('keeps a bean with %s unwritten, answering the new bean with the posted value and its error', async (_name, property, value) => {
+        const before = await fileCount(TENANT_B.tenantId);
+        const result = await handlerOf(fileHandler, 'save')(ctx, save({ params: { [property]: value } }).call);
+        expect(result).toMatchObject({ status: 403, serializerEntity: 'file' });
+        expect(dataOf(result)).toMatchObject({
+          [property]: value,
+          errors: { [property]: `The property named '${property}' is not valid` },
+          saveErrors: false,
+          isnew: 1,
+          exif: '',
+          returnformat: 'self',
+        });
+        expect(await fileCount(TENANT_B.tenantId)).toBe(before);
+      });
+
+      it('keeps a stored row unchanged when its update fails validation, answering the posted values over it', async () => {
+        await insertFile(TENANT_B.tenantId, cfId('ADD', 9), STORED);
+        const { data, row } = await beanSave({ params: { fileid: cfId('ADD', 9), credits: 'x'.repeat(256), caption: 'changed', filesize: '99', fileField: 'Other' } });
+        expect(data).toMatchObject({
+          fileid: cfId('ADD', 9),
+          isnew: 0,
+          caption: 'changed',
+          filesize: 99,
+          filefield: 'Other',
+          filename: 'qa-up.txt',
+          errors: { credits: "The property named 'credits' is not valid" },
+        });
+        expect(row).toMatchObject(STORED);
+      });
+
+      it.each([
+        ['true', true],
+        ['yes', true],
+        ['no', false],
+        ['maybe', false],
+      ])('writes the bean and answers a posted saveErrors %s as %s', async (posted, expected) => {
+        const { data, row } = await beanSave({ params: { saveErrors: posted, caption: 'flagged' } });
+        expect(data).toMatchObject({ saveErrors: expected, errors: {}, isnew: 0 });
+        expect(row).toMatchObject({ caption: 'flagged' });
+      });
+
+      it('writes a bean that fails validation under saveErrors, answering its errors', async () => {
+        const { result, data, row } = await beanSave({ params: { saveErrors: 'true', deleted: '1.5' } });
+        expect(result).toMatchObject({ status: 403 });
+        expect(data).toMatchObject({ saveErrors: true, errors: { deleted: "The property named 'deleted' is not valid" }, isnew: 0, deleted: 1 });
+        expect(row).toMatchObject({ deleted: 1 });
+      });
+
+      const SERVER_ERROR = { name: 'LegacyApiError', type: 'server_error' };
+      it.each<[string, Omit<CallInput, 'method'>, Struct]>([
+        ['a value beyond its legacy width under saveErrors', { params: { saveErrors: 'true', credits: 'x'.repeat(256) } }, { name: 'LegacyStorageError' }],
+        ['an int column that is no number under saveErrors', { params: { saveErrors: 'true', deleted: 'abc' } }, SERVER_ERROR],
+        ['a fileSize that is no number, before the tokens', { params: { filesize: 'abc' }, csrf: false }, SERVER_ERROR],
+        ['an upload whose fileSize is no number', { params: { filesize: 'abc' }, files: [part('sized.pdf')] }, SERVER_ERROR],
+        ['a complex date, before the tokens', { params: { remotepubdate: ['2026'] }, csrf: false }, SERVER_ERROR],
+      ])('fails as legacy does for %s, writing nothing', async (_name, input, error) => {
+        const before = await fileCount(TENANT_B.tenantId);
+        await expect(handlerOf(fileHandler, 'save')(ctx, save(input).call)).rejects.toMatchObject(error);
+        expect(await fileCount(TENANT_B.tenantId)).toBe(before);
+        expect(puts).toEqual([]);
+      });
+
+      it("sets a css file's content type before validating it", async () => {
+        const { data, row } = await beanSave({ params: { filename: 'b.css', contenttype: 'z'.repeat(150) } });
+        expect(data).toMatchObject({ errors: {}, contenttype: 'text' });
+        expect(row).toMatchObject({ contenttype: 'text', contentsubtype: 'css' });
+      });
+
+      it('scans no value for a restricted file without an extension list', async () => {
+        config = { ...CONTENT_CONFIG_DEFAULTS, fmAllowedExtensions: '' };
+        const { row } = await beanSave({ params: { fileField: 'other', newfile: 'http://x.example/a/b.exe' }, files: [part('a.exe', 'application/octet-stream', 'files')] });
+        expect(row).toMatchObject(NEW_ROW);
+      });
+
+      it.each<[string, Struct, UploadedFile[] | undefined]>([
+        ['a URL under fileField, which emulateUpload fetches', { fileField: 'caption', caption: 'http://example.com/a.txt' }, undefined],
+        ['a fileField naming a value the bean holds', { fileField: 'fileid' }, undefined],
+        ['a part under a file bean property', {}, [part('a.pdf', 'application/pdf', 'caption')]],
+        ['a complex value', { caption: { text: 'x' } }, undefined],
+        ['a part of a restricted extension', {}, [part('a.exe', 'application/octet-stream', 'files')]],
+        ['a URL under newfile', { fileField: 'other', newfile: 'http://x.example/a/b.exe' }, undefined],
+      ])('fails closed for %s, writing nothing', async (_name, params, files) => {
+        const before = await fileCount(TENANT_B.tenantId);
+        const { call } = save({ params, ...(files === undefined ? {} : { files }) });
+        await expect(handlerOf(fileHandler, 'save')(ctx, call)).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+        expect(await fileCount(TENANT_B.tenantId)).toBe(before);
+        expect(puts).toEqual([]);
+        expect(opened).toEqual([]);
+      });
+
+      it.each([
+        ['invalidTokens for a failed CSRF check before the permission', { actor: actorOf(TENANT_B, [Roles.member]), csrf: false }, { error: 'invalidTokens' }],
+        ['authorization without the module permission once the tokens pass', { actor: actorOf(TENANT_B, [Roles.member]) }, { error: 'authorization' }],
+      ] as const)('answers %s, writing nothing', async (_name, input, expected) => {
+        const before = await fileCount(TENANT_B.tenantId);
+        const { call, csrfCalls } = save({ ...input, params: { caption: 'denied' } });
+        await expect(handlerOf(fileHandler, 'save')(ctx, call)).resolves.toEqual(expected);
+        expect(csrfCalls()).toBe(1);
+        expect(await fileCount(TENANT_B.tenantId)).toBe(before);
+      });
     });
   });
 
@@ -609,7 +819,12 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
 
     it('save updates the stored row with the posted values only, ignoring remotePubDate', async () => {
       const result = await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', id: META_ID, params: { caption: ' Changed ', remotepubdate: '2026-01-01' } }).call);
-      expect(dataOf(result)).toMatchObject({ metaid: META_ID, caption: 'Changed', remotepubdate: '', isnew: 0, saveErrors: '', errors: {} });
+      expect(dataOf(result)).toMatchObject({ metaid: META_ID, caption: 'Changed', remotepubdate: '', isnew: 0, saveErrors: false, errors: {} });
+    });
+
+    it('save answers a posted boolean saveErrors as its value', async () => {
+      const result = await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', id: META_ID, params: { saveErrors: 'yes' } }).call);
+      expect(dataOf(result)).toMatchObject({ metaid: META_ID, saveErrors: true });
     });
 
     it('save of a new key inserts a row for the posted version and file', async () => {

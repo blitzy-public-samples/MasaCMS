@@ -369,6 +369,30 @@ describe('finance/records tenant isolation', () => {
   });
 });
 
+describe('finance/records ids no stored row has', () => {
+  // Every stored id is a CF UUID, so finance.cfc's char(35) lookup of any other id matches no row.
+  it.each(['x%00.cfm', `${MISSING_ID}%00`, `%20${MISSING_ID}`, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'])(
+    'answers id %s with notFound on every record and attachment read, never querying it',
+    async (id) => {
+      const t = await open(LIST_SEED);
+      const sent = decodeURIComponent(id);
+      for (const [path, method, table] of [
+        [`/${id}`, 'finance.records', 'record'],
+        [`/${id}/versions`, 'finance.records.versions', 'record'],
+        [`/${id}/attachments`, 'finance.records.attachments', 'record'],
+        // api.cfm appends a tail that is no CF UUID to the method, lower-cased.
+        [`/${recordId(1)}/attachments/${id}`, `finance.records.attachments.${sent.toLowerCase()}`, 'attachment'],
+      ] as const) {
+        t.db.clear();
+        const res = await get(t, path);
+        expect([res.statusCode, res.json()]).toEqual([404, errorBody(method, NOT_FOUND)]);
+        const lookups = t.db.queries().filter((q) => q.sql.includes(`FROM "finance"."${table}" WHERE`) || q.params.some((p) => p === sent || p === sent.toUpperCase()));
+        expect(lookups).toEqual([]);
+      }
+    },
+  );
+});
+
 /** Record and version reads `fn` issues in one `tenantId` transaction of `db`, as `[sql, params, tenant]`. */
 async function readsOf<T>(db: RecordingDb, tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<{ result: T; reads: unknown[][] }> {
   db.clear();

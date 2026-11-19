@@ -1,5 +1,6 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Survey-response grants over `tenant_grant`: the owner's own grant, grantees of targeted sites, their per-survey and per-target locks, writes and re-sync, and the grantor and granted-survey lookups. */
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { tenantForRegisteredSite, withMetadata, writeGrant, type GrantInput, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 
 /** Grant kind that lets a targeted site's tenant respond to the grantor's survey. */
@@ -8,6 +9,11 @@ export const SURVEY_RESPONSE_GRANT = 'survey-response' as const;
 /** SQL Server's default collation compares text case-insensitively and ignores trailing spaces. */
 export function collated(value: string): string {
   return value.replace(/ +$/, '').toLowerCase();
+}
+
+/** Whether `id` can match a stored survey id, always a CF UUID, as SQL Server compares them; a lookup of any other id finds no row. */
+export function isMatchableSurveyId(id: string): boolean {
+  return isCfUuid(collated(id));
 }
 
 const GRANT_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';

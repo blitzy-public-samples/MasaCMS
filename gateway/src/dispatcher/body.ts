@@ -35,6 +35,14 @@ export const EMPTY_BODY_PARAMS: Readonly<BodyParams> = Object.freeze({
 /** A body whose facts the gateway cannot establish as legacy reads them, or one legacy rejects before any CFML runs. */
 export class UnreadableBodyError extends Error {
   override readonly name = 'UnreadableBodyError';
+
+  /** @param legacyRejects Whether legacy's servlet container answers the body itself, before any CFML runs. */
+  constructor(
+    message: string,
+    readonly legacyRejects = true,
+  ) {
+    super(message);
+  }
 }
 
 const JSON_PREFIX = 'application/json';
@@ -165,7 +173,8 @@ const CHARSET_NAME = /^[A-Za-z0-9][A-Za-z0-9+\-:_.]*$/;
 
 function decoderFor(charset: string): Decoder {
   const decoder = CHARSET_NAME.test(charset) ? DECODERS.get(charset.toLowerCase()) : undefined;
-  if (decoder === undefined) throw new UnreadableBodyError(`charset ${JSON.stringify(charset)} is not decoded`);
+  // Legacy may read a charset the gateway lacks, so whether it rejects the body is unknown.
+  if (decoder === undefined) throw new UnreadableBodyError(`charset ${JSON.stringify(charset)} is not decoded`, false);
   return decoder;
 }
 

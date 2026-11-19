@@ -10,11 +10,11 @@ interface ScannedFilePart {
 /** A `Content-Disposition` or `Content-Type` value split as busboy's parseParams splits it: the leading value, then `[key, value]` pairs. */
 type Params = Array<string | [key: string, value: string | undefined]>;
 
-/** busboy's `headerSize` limit; past it busboy reads a truncated block, so the scan stops. */
+/** busboy's `headerSize` limit; past it busboy reads a truncated block, so the scan records no further part. */
 const MAX_HEADER_BYTES = 80 * 1024;
 /** busboy's `headerPairs` limit. */
 const MAX_HEADER_PAIRS = 2000;
-/** @fastify/multipart's default `parts` limit; past it the request fails, so the scan stops. */
+/** @fastify/multipart's default `parts` limit; past it the request fails, so the scan records no further part. */
 const MAX_PARTS = 1000;
 /** busboy's longest delimiter, `\r\n--` and the boundary. */
 const MAX_DELIMITER_BYTES = 256;
@@ -23,8 +23,10 @@ const EMPTY = Buffer.alloc(0);
 const CRLF = Buffer.from('\r\n');
 const HEADER_END = Buffer.from('\r\n\r\n');
 const ONE_DASH = Buffer.from('-');
+const CLOSE = Buffer.from('--');
 const DASH = 0x2d;
 const CR = 0x0d;
+const LF = 0x0a;
 const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/g;
 const LINE_BREAK = /[\r\n]/;
 const LATIN1_CHARSETS: ReadonlySet<string> = new Set([
@@ -247,33 +249,51 @@ export class MultipartHeaderScanner {
   private carry: Buffer = CRLF;
   private state: 'preamble' | 'dashes' | 'header' | 'body' | 'done' = 'preamble';
   private dashes = 0;
+  /** The writes busboy has received: one per chunk, and one more per cut. */
   private pushes = 0;
   /** The push whose bytes ended in a lone dash after a delimiter. */
   private dashPush = -1;
   private parts = 0;
+  /** Whether file parts are still recorded; busboy's part and header limits end it, the framing goes on. */
+  private recording = true;
   private header: Buffer[] = [];
   private headerBytes = 0;
+  /** Bytes of header blocks a delimiter interrupted since busboy last ended one, which busboy counts toward the next. */
+  private headerSpent = 0;
   /** The last bytes of the header block so far, where a split `\r\n\r\n` can start. */
   private headerTail: Buffer = EMPTY;
+  /** Whether a header block left legacy's first header line blank, which ends legacy's form there. */
+  private legacyFormEnded = false;
   private readonly files: ScannedFilePart[] = [];
 
   constructor(private readonly delimiter: Buffer) {}
 
-  /** Scans the next chunk of the body. */
-  push(chunk: Buffer): void {
-    if (this.state === 'done') return;
+  /** Scans the next chunk of the body; returns it cut into the pieces busboy must receive as separate writes. */
+  push(chunk: Buffer): Buffer[] {
+    if (this.state === 'done') return [chunk];
     this.pushes += 1;
-    const data = this.carry.length === 0 ? chunk : Buffer.concat([this.carry, chunk]);
+    const held = this.carry.length;
+    const data = held === 0 ? chunk : Buffer.concat([this.carry, chunk]);
+    const pieces: Buffer[] = [];
+    let start = 0;
     let from = 0;
     for (let at = data.indexOf(this.delimiter); at !== -1; at = data.indexOf(this.delimiter, from)) {
       this.segment(data.subarray(from, at));
+      // Dicer never finishes a part whose open header block has bytes in the write of the delimiter that interrupts it.
+      if (this.state === 'header' && at - held > start) {
+        pieces.push(chunk.subarray(start, at - held));
+        start = at - held;
+        this.pushes += 1;
+      }
       this.matched();
       from = at + this.delimiter.length;
-      if (this.isDone()) return;
+      if (this.isDone()) return [...pieces, chunk.subarray(start)];
     }
     const keep = this.partialDelimiter(data, from);
     this.segment(data.subarray(from, data.length - keep));
     this.carry = Buffer.from(data.subarray(data.length - keep));
+    pieces.push(chunk.subarray(start));
+    return pieces;
   }
 
   /** Takes the earliest untaken file part busboy names `field` with `mimetype`, and those before it, which busboy skipped; returns its `fileUpload` content type. */
@@ -283,7 +303,21 @@ export class MultipartHeaderScanner {
     return this.files.splice(0, at + 1)[at]?.contentType;
   }
 
-  /** Whether scanning has ended: the close delimiter, too many parts or an oversized header block. */
+  /**
+   * Call once the body has ended. Returns the delimiter and `--` that let busboy finish a body legacy reads as complete:
+   * one ending after a delimiter, inside a header block or past legacy's form end; undefined for any other body.
+   */
+  closing(): Buffer | undefined {
+    // Past busboy's limits the body is left to end as busboy reads it.
+    if (!this.recording) return undefined;
+    // At the end of the body the held tail is body bytes, not the start of a delimiter.
+    this.segment(this.carry);
+    this.carry = EMPTY;
+    const complete = this.state === 'dashes' || this.state === 'header' || (this.state === 'body' && this.legacyFormEnded);
+    return complete ? Buffer.concat([this.delimiter, CLOSE]) : undefined;
+  }
+
+  /** Whether the close delimiter has ended the body. */
   private isDone(): boolean {
     return this.state === 'done';
   }
@@ -305,6 +339,7 @@ export class MultipartHeaderScanner {
   }
 
   private matched(): void {
+    if (this.state === 'header') this.headerSpent += this.headerBytes;
     // Dicer drops a delimiter its search reports together with a lone dash before it, which happens when both arrive in one chunk.
     if (this.state === 'dashes' && this.dashes === 1 && this.dashPush === this.pushes) return;
     // A delimiter right after a delimiter opens a part without headers.
@@ -332,14 +367,14 @@ export class MultipartHeaderScanner {
     const dashed = this.dashes === 1;
     this.dashes = 0;
     this.startPart();
-    if (this.isDone()) return;
     if (dashed) this.headerData(ONE_DASH);
     this.headerData(bytes.subarray(at));
   }
 
   private startPart(): void {
     this.parts += 1;
-    this.state = this.parts > MAX_PARTS ? 'done' : 'header';
+    if (this.parts > MAX_PARTS) this.recording = false;
+    this.state = 'header';
     this.header = [];
     this.headerBytes = 0;
     this.headerTail = EMPTY;
@@ -353,20 +388,25 @@ export class MultipartHeaderScanner {
     const seam = Buffer.concat([tail, bytes.subarray(0, HEADER_END.length - 1)]).indexOf(HEADER_END);
     const inBytes = seam === -1 ? bytes.indexOf(HEADER_END) : -1;
     if (seam === -1 && inBytes === -1) {
-      this.header.push(Buffer.from(bytes));
+      if (this.recording) this.header.push(Buffer.from(bytes));
       this.headerBytes += bytes.length;
-      if (this.headerBytes > MAX_HEADER_BYTES) this.state = 'done';
+      if (this.headerSpent + this.headerBytes > MAX_HEADER_BYTES) this.recording = false;
       const kept = HEADER_END.length - 1;
       this.headerTail = bytes.length >= kept ? Buffer.from(bytes.subarray(-kept)) : Buffer.concat([tail, bytes]).subarray(-kept);
       return;
     }
     const length = this.headerBytes + (seam === -1 ? inBytes : seam - tail.length);
-    if (length > MAX_HEADER_BYTES) {
-      this.state = 'done';
+    const spent = this.headerSpent;
+    this.state = 'body';
+    this.headerSpent = 0;
+    if (!this.recording || spent + length > MAX_HEADER_BYTES) {
+      this.recording = false;
       return;
     }
-    this.state = 'body';
-    const part = filePartOf(Buffer.concat([...this.header, bytes]).subarray(0, length));
+    const block = Buffer.concat([...this.header, bytes]).subarray(0, length);
+    // Legacy reads the block's text as the rest of the boundary line, so a block without a line feed is followed by a blank line.
+    if (!block.includes(LF)) this.legacyFormEnded = true;
+    const part = filePartOf(block);
     if (part !== undefined) this.files.push(part);
   }
 }

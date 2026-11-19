@@ -211,11 +211,11 @@ function ormValidate(scope: Scope, bean: InstanceBean, primaryKey: string): Vali
 }
 
 /** The lower-cased names of the API site's File extend attributes, as extendManager.isFileAttribute finds them (extendManager.cfc:188-252). */
-async function siteFileAttributes(scope: Scope): Promise<ReadonlySet<string>> {
-  const { db, repository } = scope.ctx.domain;
-  return withTenant(db, scope.call.tenantId, async (tx) => {
+export async function siteFileAttributes(ctx: ContentRouteContext, call: JsonApiCall): Promise<ReadonlySet<string>> {
+  const { db, repository } = ctx.domain;
+  return withTenant(db, call.tenantId, async (tx) => {
     const names = new Set<string>();
-    for (const subtype of await repository.extend.subtypes(tx, { siteId: scope.call.siteId })) {
+    for (const subtype of await repository.extend.subtypes(tx, { siteId: call.siteId })) {
       for (const set of await repository.extend.setsForSubtype(tx, { subTypeId: subtype.subtypeid })) {
         for (const attribute of await repository.extend.attributesForSet(tx, { extendSetId: set.extendsetid })) {
           if (cfEq(attribute.type ?? '', 'file')) names.add((attribute.name ?? '').toLowerCase());
@@ -246,7 +246,7 @@ async function fileValidate(scope: Scope, bean: InstanceBean): Promise<Validatio
   if (!isSimple(site) || !sameId(simpleText(site), scope.call.siteId)) {
     throw validateHalted("A file bean's URL value under another site's attributes", 'validate-other-site');
   }
-  const fileAttributes = await siteFileAttributes(scope);
+  const fileAttributes = await siteFileAttributes(scope.ctx, scope.call);
   if (urlKeys.some((key) => fileAttributes.has(key.toLowerCase()))) {
     throw validateHalted("A File attribute's URL value read by isValid('url')", 'validate-isvalid-pattern');
   }

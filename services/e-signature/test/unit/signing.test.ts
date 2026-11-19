@@ -597,6 +597,28 @@ describe('audit chain', () => {
   });
 });
 
+describe('fixture ids no stored request has', () => {
+  // Every stored request id is a CF UUID, so esignature.cfc's char(35) lookup of any other id matches no row.
+  it.each(['x%00.cfm', `${MISSING_ID}%00`, `%20${MISSING_ID}`, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'])(
+    'answers id %s with notFound on sign, audit and verify, never querying it',
+    async (id) => {
+      const sent = decodeURIComponent(id);
+      for (const [send, method] of [
+        [() => post(`${FIXTURE}/requests/${id}/sign`, signer(), { typedName: 'Jane Doe' }), 'esignature.requests.sign'],
+        [() => get(`${FIXTURE}/requests/${id}/audit`, auditor()), 'esignature.requests.audit'],
+        [() => get(`${FIXTURE}/requests/${id}/verify`, auditor()), 'esignature.requests.verify'],
+        [() => post(`${FIXTURE}/requests/${id}/verify`, auditor(), { entries: '[]' }), 'esignature.requests.verify'],
+      ] as const) {
+        t.db.clear();
+        const res = await send();
+        expect([res.statusCode, res.json()]).toEqual([404, errorBody(method, NOT_FOUND)]);
+        const lookups = t.db.queries().filter((q) => q.sql.includes('"request_id" = upper($1)') || q.params.some((p) => p === sent || p === sent.toUpperCase()));
+        expect(lookups).toEqual([]);
+      }
+    },
+  );
+});
+
 describe('verify', () => {
   it.each(SURFACES)('answers valid over the stored chain through %s, appending no entry', async (surface, prefix) => {
     const id = await createSigned();

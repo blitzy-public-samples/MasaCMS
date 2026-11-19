@@ -672,6 +672,38 @@ describe('bodyParamsFrom with a multipart body', () => {
   });
 });
 
+describe('UnreadableBodyError.legacyRejects', () => {
+  const huge = 'b'.repeat(65531);
+  const partType = (type: string): string => `${disposition('a')}\r\nContent-Type: ${type}`;
+  it.each<[string, string, string | Buffer, boolean]>([
+    ['a missing boundary', 'multipart/form-data', A1, true],
+    ['an unclosed boundary quote', 'multipart/form-data; boundary="XyZ', A1, true],
+    ['a non-ASCII boundary', 'multipart/form-data; boundary=X\u00e9Z', multipart([[disposition('a'), '1']], 'X\u00e9Z'), true],
+    ['a body not opening with its boundary', MULTIPART, `preamble\r\n${A1.toString()}`, true],
+    ['content running to the end of the body', MULTIPART, FIRST_PART, true],
+    ['a part buffer left in an illegal state', `multipart/form-data; boundary=${huge}`, `--${huge}\r\n${disposition('a')}\r\n\r\n\n--${huge}--\r\n`, true],
+    ['a disposition other than form-data', MULTIPART, multipart([['Content-Disposition: attachment; name="x"', '1']]), true],
+    ['a disposition without a quoted name', MULTIPART, multipart([['Content-Disposition: form-data; name=bare', '1']]), true],
+    ['a name ending past the line', MULTIPART, multipart([['Content-Disposition: form-data; name="\u0130\u0130x"', '1']]), true],
+    ['a part Content-Type line without a value', MULTIPART, multipart([[`${disposition('a')}\r\nContent-Type:text/plain`, '1']]), true],
+    ['a part without a disposition', MULTIPART, multipart([['Content-Type: text/plain', '1']]), true],
+    ['a content type without a media type', '; charset=utf-8', A1, true],
+    ['an illegal request charset name', `${URLENCODED}; charset=-utf-8`, 'a=1', true],
+    ['a url-encoded request charset the gateway does not decode', `${URLENCODED}; charset=Shift_JIS`, 'a=1', false],
+    ['a multipart request charset the gateway does not decode', `${MULTIPART}; charset=Shift_JIS`, A1, false],
+    ['a part charset the gateway does not decode', MULTIPART, multipart([[partType('text/plain; charset=Shift_JIS'), 'z']]), false],
+  ])('marks a body with %s as one legacy rejects: %s', (_case, contentType, body, legacyRejects) => {
+    let refusal: unknown;
+    try {
+      bodyParamsFrom(contentType, Buffer.isBuffer(body) ? body : Buffer.from(body));
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(UnreadableBodyError);
+    expect((refusal as UnreadableBodyError).legacyRejects).toBe(legacyRejects);
+  });
+});
+
 describe('bodyParamsFrom facts for the route key', () => {
   const variants: VariantDeclaration[] = [{ route: 'admin:cusers.update', variant: 'photo', when: [PHOTO_CONDITION] }];
 

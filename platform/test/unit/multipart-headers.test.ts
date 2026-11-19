@@ -104,7 +104,7 @@ describe('MultipartHeaderScanner', () => {
     expect(takeAll(scanner, MIXED_FILES)).toEqual([undefined, undefined, undefined, 'application/pdf; name="r é"', 'image/gif']);
   });
 
-  // busboy hands none of these over as a file, except the over-long block, which it truncates and the scan does not read.
+  // busboy hands none of these over as a file, except the over-long blocks, which it truncates and the scan does not read.
   it.each<[string, Buffer]>([
     ['a part whose header block holds a delimiter', Buffer.from(`--${BOUNDARY}\r\n${disposition('a', 'a.txt')}\r\nX-Note: x\r\n--${BOUNDARY}\r\n\r\nx\r\n--${BOUNDARY}--\r\n`)],
     ['a disposition other than form-data', body([{ headers: ['Content-Disposition: attachment; name="a"; filename="a.txt"'] }])],
@@ -114,6 +114,10 @@ describe('MultipartHeaderScanner', () => {
     ['padding after the boundary', Buffer.from(`--${BOUNDARY}  \r\n${disposition('a', 'a.txt')}\r\n\r\nx\r\n--${BOUNDARY}--\r\n`)],
     ['a part after the close delimiter', Buffer.concat([body([]), body([{ headers: [disposition('a', 'a.txt')] }])])],
     ['a header block over 80 KiB', body([{ headers: [disposition('a', 'a.txt'), `X-Long: ${'x'.repeat(80 * 1024)}`] }])],
+    [
+      'a header block over 80 KiB with the one a delimiter interrupted before it',
+      Buffer.from(`--${BOUNDARY}\r\nX-Pad: ${'p'.repeat(80 * 1024 - 20)}\r\n--${BOUNDARY}\r\n${disposition('a', 'a.txt')}\r\n\r\nx\r\n--${BOUNDARY}--\r\n`),
+    ],
   ])('records no file part for %s', (_case, data) => {
     for (const size of [1, data.length]) expect(scan(data, size).take('a', 'text/plain'), String(size)).toBeUndefined();
   });
@@ -172,6 +176,45 @@ describe('MultipartHeaderScanner', () => {
     `multipart/form-data; charset=utf-8; boundary=${BOUNDARY}`,
   ])('reads the boundary of %s', (contentType) => {
     expect(scan(body([{ headers: [disposition('a', 'a.txt')] }]), 5, contentType).take('a', 'text/plain')).toBe('text/plain');
+  });
+
+  const FIELD = `--${BOUNDARY}\r\n${disposition('t')}\r\n\r\nhello\r\n`;
+  it.each<[string, string, boolean]>([
+    ['right after a delimiter', `${FIELD}--${BOUNDARY}`, true],
+    ['after a delimiter and a lone dash', `--${BOUNDARY}-`, true],
+    ['after a delimiter and a CRLF', `--${BOUNDARY}\r\n`, true],
+    ['inside a header block', `${FIELD}--${BOUNDARY}\r\nbroken`, true],
+    ['inside a header block ending like a delimiter', `--${BOUNDARY}\r\nbroken\r\n-`, true],
+    ['inside a header block ending in CRLF CR', `--${BOUNDARY}\r\n${disposition('t')}\r\n\r`, true],
+    ['right after an empty header block', `--${BOUNDARY}\r\n\r\n`, true],
+    ['in the content after an empty header block', `${FIELD}--${BOUNDARY}\r\n\r\nfoo`, true],
+    ['in a later part after an empty header block', `--${BOUNDARY}\r\n\r\nfoo\r\n${FIELD.slice(0, -2)}`, true],
+    ['in the content of a part', `--${BOUNDARY}\r\n${disposition('t')}\r\n\r\nvalue`, false],
+    ['right after a header block', `--${BOUNDARY}\r\n${disposition('t')}\r\n\r\n`, false],
+    ['in the preamble', 'preamble', false],
+    ['without a byte', '', false],
+    ['after the close delimiter', `${FIELD}--${BOUNDARY}--`, false],
+  ])('closes a body ending %s only where legacy reads the form as complete', (_case, sent, closes) => {
+    for (const size of [1, 3, Number.MAX_SAFE_INTEGER]) {
+      expect(scan(Buffer.from(sent), size).closing()?.toString(), String(size)).toBe(closes ? `\r\n--${BOUNDARY}--` : undefined);
+    }
+  });
+
+  const LONG = `--${BOUNDARY}\r\n${disposition('a')}\r\nX-Long: ${'x'.repeat(80 * 1024)}\r\n\r\nv\r\n`;
+  it.each<[string, string[], string[][]]>([
+    ['before a delimiter inside a header block', [`--${BOUNDARY}\r\nbroken\r\n--${BOUNDARY}--\r\n`], [[`--${BOUNDARY}\r\nbroken`, `\r\n--${BOUNDARY}--\r\n`]]],
+    [
+      'before each delimiter inside a header block',
+      [`${FIELD}--${BOUNDARY}\r\nbroken\r\n--${BOUNDARY}\r\nstill\r\n--${BOUNDARY}--`],
+      [[`${FIELD}--${BOUNDARY}\r\nbroken`, `\r\n--${BOUNDARY}\r\nstill`, `\r\n--${BOUNDARY}--`]],
+    ],
+    ['before one past a header block over 80 KiB', [`${LONG}--${BOUNDARY}\r\nbroken\r\n--${BOUNDARY}--`], [[`${LONG}--${BOUNDARY}\r\nbroken`, `\r\n--${BOUNDARY}--`]]],
+    ['nowhere for one opening the chunk', [`--${BOUNDARY}\r\nbroken`, `\r\n--${BOUNDARY}--`], [[`--${BOUNDARY}\r\nbroken`], [`\r\n--${BOUNDARY}--`]]],
+    ['nowhere for one the previous chunk opened', [`--${BOUNDARY}\r\nbroken\r\n-`, `-${BOUNDARY}--`], [[`--${BOUNDARY}\r\nbroken\r\n-`], [`-${BOUNDARY}--`]]],
+    ['nowhere for delimiters after the preamble, a header block or the close', [`preamble\r\n${FIELD}--${BOUNDARY}--\r\n--${BOUNDARY}\r\nbroken\r\n--${BOUNDARY}`], [[`preamble\r\n${FIELD}--${BOUNDARY}--\r\n--${BOUNDARY}\r\nbroken\r\n--${BOUNDARY}`]]],
+  ])('cuts a chunk %s, where busboy must get a separate write', (_case, chunks, expected) => {
+    const scanner = scan(Buffer.alloc(0), 1);
+    expect(chunks.map((chunk) => scanner.push(Buffer.from(chunk)).map((piece) => piece.toString()))).toEqual(expected);
   });
 
   it.each([undefined, 'multipart/form-data', 'multipart/form-data; boundary', `multipart/form-data; boundary=${'b'.repeat(253)}`])(

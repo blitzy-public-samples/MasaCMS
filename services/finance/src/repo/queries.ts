@@ -1,5 +1,6 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Read-only queries of schema `finance` in the fixture `finance.cfc` order; each runs in the caller's tenant transaction, whose RLS scopes the rows. */
+import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified, type TableDefinition } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { moneyFromNumeric, type Money } from '../domain/money.js';
@@ -171,7 +172,7 @@ async function queryPage<R extends Record<string, unknown>>(
   return { rows, total };
 }
 
-/** The record `id`, or null; `forUpdate` row-locks it so transitions on one record serialise. */
+/** The record `id`, or null, unqueried for an id other than a CF UUID; `forUpdate` row-locks it so transitions on one record serialise. */
 export async function findRecord(
   tx: TenantTx,
   id: string,
@@ -179,6 +180,9 @@ export async function findRecord(
 ): Promise<FinanceRecordRow | null> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_RECORD.unit]);
+  if (!isCfUuid(id)) {
+    return null;
+  }
   const { rows } = await tx.query<FinanceRecordRow>(forUpdate ? statements.recordForUpdate : statements.record, [id]);
   return rows[0] ?? null;
 }
@@ -204,10 +208,13 @@ export async function listAttachments(tx: TenantTx, recordId: string, paging: Re
   return queryPage<FinanceAttachmentRow>(tx, { count: statements.countAttachments, page: statements.attachmentPage }, [recordId], paging);
 }
 
-/** The attachment `attachmentId` of record `recordId`, or null when either id does not match. */
+/** The attachment `attachmentId` of record `recordId`, or null when either id does not match, unqueried when either is no CF UUID. */
 export async function findAttachment(tx: TenantTx, recordId: string, attachmentId: string): Promise<FinanceAttachmentRow | null> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_ATTACHMENT.unit]);
+  if (!isCfUuid(recordId) || !isCfUuid(attachmentId)) {
+    return null;
+  }
   const { rows } = await tx.query<FinanceAttachmentRow>(statements.attachment, [recordId, attachmentId]);
   return rows[0] ?? null;
 }

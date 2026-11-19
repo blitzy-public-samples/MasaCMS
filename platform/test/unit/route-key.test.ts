@@ -911,6 +911,34 @@ describe('remote CFC proxies, fixtures and path families', () => {
     expect(result.params).toMatchObject({ q: '1', note: 'form', amount: '5' });
   });
 
+  const FIXTURE_RECORDS = '/legacy-fixtures/cfml/api.cfm/finance/records';
+  it.each<{ name: string; method: string; url: string; extra: Partial<RouteKeyRequest>; key: string }>([
+    { name: 'a JSON null on a collection POST', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/surveys/surveys', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@post' },
+    { name: 'a JSON null on a GET', method: 'GET', url: `${FIXTURE_RECORDS}/${UUID}`, extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@get' },
+    { name: 'a JSON null on an unrouted path', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/finance', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@post' },
+    { name: 'a JSON null on the bare script', method: 'GET', url: '/legacy-fixtures/cfml/api.cfm', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@get' },
+    {
+      name: 'a JSON null under a parameterised, mixed-case JSON type and an override',
+      method: 'POST',
+      url: FIXTURE_RECORDS,
+      extra: { jsonBody: null, headers: { 'content-type': 'Application/JSON; charset=UTF-8', 'X-HTTP-Method-Override': 'put' } },
+      key: 'fixture:!server_error@put',
+    },
+    { name: 'a JSON object', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: { title: 'T' }, headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON array', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: [1, 2], headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON string', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: 'null', headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON number', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: 0, headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON false', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: false, headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON array on an unrouted path', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/finance', extra: { jsonBody: [], headers: JSON_TYPE }, key: 'fixture:!notfound@post' },
+    { name: 'a null body under a text type', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null, headers: { 'Content-Type': 'text/plain' } }, key: 'fixture:finance/records@post' },
+    { name: 'a null body under a type shorter than the JSON prefix', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null, headers: { 'Content-Type': 'application/jso' } }, key: 'fixture:finance/records@post' },
+    { name: 'a null body without a type', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON type without a parsed body', method: 'POST', url: FIXTURE_RECORDS, extra: { headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+  ])('keys a fixture request with $name as api.cfm merges its body', ({ method, url, extra, key }) => {
+    const result = resultOf(method, url, extra);
+    expect([result.family, result.key]).toEqual(['fixture', key]);
+  });
+
   const ARCHIVE = `/legacy-fixtures/cfml/api.cfm/people/persons/${UUID}/archive`;
   it.each<{ name: string; url: string; extra?: Partial<RouteKeyRequest>; siteId: string | undefined; key?: string }>([
     { name: 'a query siteid', url: `${ARCHIVE}?siteid=tenant-a`, siteId: 'tenant-a' },

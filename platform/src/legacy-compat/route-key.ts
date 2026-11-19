@@ -9,7 +9,7 @@
  *   apiother, cfm, static, opt2, bridge  `<normalised path>`; opt2 is `/opt2/**` and {@link SYNTHETIC_V1_PREFIXES}
  *   cfc        `<path>?method=<method>` | `<path>`
  *   admin      `<section>.<item>` (subsystem `core:` dropped) | `<subsystem>:<section>.<item>` | `!actioncontainsslash`
- *   fixture    `<module>/<resource>[/{id}][/<seg>…]@<httpmethod>` | `!notfound@<httpmethod>`
+ *   fixture    `<module>/<resource>[/{id}][/<seg>…]@<httpmethod>` | `!notfound@<httpmethod>` | `!server_error@<httpmethod>`
  *   page       `render` | `<doaction>[,<doaction>…]` | `saveform` | `<doaction>[,…]+saveform`
  *   reload     `application`: URL reload key, unless url `method=processAsyncObject` (onRequestStart_include.cfm:114-138)
  */
@@ -433,6 +433,11 @@ function header(headers: RouteKeyRequest['headers'], name: string): string | und
   return undefined;
 }
 
+/** Whether legacy deserializes the request body: a parsed body under a Content-Type whose first 16 characters are `application/json`, ignoring case. */
+function hasJsonBody(req: RouteKeyRequest): boolean {
+  return (header(req.headers, 'Content-Type') ?? '').slice(0, 16).toLowerCase() === 'application/json' && req.jsonBody !== undefined;
+}
+
 function lowerSetMap(record: Record<string, readonly string[]> | undefined): ReadonlyMap<string, ReadonlySet<string>> {
   const map = new Map<string, Set<string>>();
   for (const [k, names] of Object.entries(record ?? {})) map.set(k.toLowerCase(), new Set(names.map((n) => n.toLowerCase())));
@@ -738,8 +743,7 @@ function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: P
   url.delete(opts.appReloadKey);
   append(P, url);
   append(P, scopeMap(req.form));
-  const contentType = header(req.headers, 'Content-Type') ?? '';
-  if (contentType.slice(0, 16).toLowerCase() === 'application/json' && req.jsonBody !== undefined) {
+  if (hasJsonBody(req)) {
     // structAppend of a non-struct body throws into catch(Any) (jsonApiUtility.cfc:408-412).
     if (!isPlainObject(req.jsonBody)) throw new LegacyThrow('server_error');
     appendJsonBody(P, req.jsonBody);
@@ -1014,7 +1018,9 @@ function fixtureRoute(c: RouteContext, items: readonly string[]): BaseRoute {
   const params = append(queryThenForm(req), isPlainObject(req.jsonBody) ? jsonMap(req.jsonBody) : new Map());
   const httpMethod = fixtureHttpMethod(req);
   const method = httpMethod.toLowerCase();
-  const body = items.length < 2 ? '!notfound' : items.map((s, i) => (i < 2 ? s : i === 2 || isFixtureId(s) ? '{id}' : s)).join('/');
+  const path = items.length < 2 ? '!notfound' : items.map((s, i) => (i < 2 ? s : i === 2 || isFixtureId(s) ? '{id}' : s)).join('/');
+  // api.cfm's isStruct of a deserialized JSON null throws before it reads the path (api.cfm:26-34).
+  const body = hasJsonBody(req) && req.jsonBody === null ? '!server_error' : path;
   const route: BaseRoute = { family: 'fixture', body: `${body}@${method}`, params, httpMethod };
   const siteId = params.get('siteid');
   if (typeof siteId === 'string') route.siteId = siteId;

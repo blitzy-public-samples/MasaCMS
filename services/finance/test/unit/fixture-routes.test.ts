@@ -300,7 +300,7 @@ describe.skipIf(!available)('finance fixture routes', () => {
 
   it.each<[string, (id: string) => Promise<Injected>, number, string | null]>([
     ['a NUL title PostgreSQL cannot store', () => post('/records', PREPARER, { ...VALID, title: 'nul-probe\u0000title' }), 400, 'request rejected: 22021'],
-    ['a NUL record id PostgreSQL cannot look up', () => get('/records/nul-probe%00/versions'), 400, 'request rejected: 22021'],
+    ['a NUL record id, which no stored record has', () => get('/records/nul-probe%00/versions'), 404, null],
     ['no credential', () => app.inject({ url: `${P}/records` }), 401, 'request denied: missing-credential'],
     [
       'no credential on a NUL title',
@@ -345,6 +345,36 @@ describe.skipIf(!available)('finance fixture routes', () => {
     expect(`${JSON.stringify(lines)}${res.body}`).not.toMatch(/nul-probe|invalid byte sequence|0x00/);
     expect(await stored()).toBe(total);
   });
+
+  // finance.cfc's char(35) lookup matches no row for an id that is no CF UUID; one holding NUL would fail in PostgreSQL if queried.
+  const UNSTORED_IDS = ['x%00.cfm', `${MISSING_ID}%00`, '%20' + MISSING_ID, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'];
+  // api.cfm appends a tail that is no CF UUID to the method, lower-cased.
+  const ID_ROUTES: ReadonlyArray<readonly [string, (id: string, recordId: string) => Promise<Injected>, (id: string) => string, boolean]> = [
+    ['GET {id}', (id) => get(`/records/${id}`), () => 'finance.records', false],
+    ['GET {id}/versions', (id) => get(`/records/${id}/versions`), () => 'finance.records.versions', false],
+    ['GET {id}/attachments', (id) => get(`/records/${id}/attachments`), () => 'finance.records.attachments', false],
+    [
+      'GET {record}/attachments/{id}',
+      (id, recordId) => get(`/records/${recordId}/attachments/${id}`),
+      (id) => JSON.stringify(`finance.records.attachments.${decodeURIComponent(id).toLowerCase()}`).slice(1, -1),
+      false,
+    ],
+    ['POST {id}/submit', (id) => post(`/records/${id}/submit`, PREPARER), () => 'finance.records.submit', true],
+    ['POST {id}/attachments', (id) => upload(id, multipart('file', 'scan.pdf')), () => 'finance.records.attachments', true],
+  ];
+  it.each(ID_ROUTES.flatMap(([route, send, method, write]) => UNSTORED_IDS.map((id) => [route, id, send, method, write] as const)))(
+    'answers %s with id %s as notFound after the CSRF check, storing nothing',
+    async (_route, id, send, method, write) => {
+      const { record_id: recordId } = await createRecord();
+      consumed.length = 0;
+      const before = logLines.length;
+      const res = await send(id, recordId);
+      expect([res.statusCode, res.body]).toEqual([404, errorBody(method(id), 'invalid_request', 'Not Found')]);
+      expect(consumed.map(({ context }) => context)).toEqual(write ? [decodeURIComponent(id)] : []);
+      expect(logLines.slice(before).filter((line) => line.includes('"WARNING"') || line.includes('"ERROR"'))).toEqual([]);
+      expect((await get(`/records/${recordId}/attachments`)).json().data.totalitems).toBe(0);
+    },
+  );
 
   it('creates, reads, edits and moves a record through its lifecycle with one version row each, rebuilding the rollup', async () => {
     const created = await post('/records', PREPARER, VALID);

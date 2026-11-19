@@ -58,7 +58,7 @@ import {
 import type { SessionStateChecker } from '../session/state-check.js';
 import { DEFAULT_SITE_ID, type TokenCache } from '../session/token-cache.js';
 import type { SessionBarrier } from './barrier.js';
-import { UnreadableBodyError, bodyParamsFrom, type BodyParams } from './body.js';
+import { EMPTY_BODY_PARAMS, UnreadableBodyError, bodyParamsFrom, type BodyParams } from './body.js';
 import { failClosed, failContextFor, isTargetUnavailable, unavailableCauseOf, type FailCause, type FailContext } from './fail-closed.js';
 import {
   forwardToLegacy,
@@ -249,6 +249,12 @@ function keyed(outcome: MatchOutcome): RoutedOutcome {
 function loggedRouteOf(outcome: MatchOutcome): string {
   if (outcome.result === undefined) return RELAY_ALIAS_ROUTE;
   return outcome.entry?.route ?? outcome.result.key;
+}
+
+/** Whether legacy's servlet container receives a request matched as `outcome`: a legacy-bound one or one of a family legacy also serves, never a relay alias. */
+function reachesLegacyContainer(outcome: MatchOutcome): boolean {
+  if (outcome.result === undefined) return false;
+  return outcome.destination.kind === 'legacy' || !NO_LEGACY_START_FAMILIES.has(outcome.result.family);
 }
 
 /** The entry when its requests register as writes. */
@@ -876,6 +882,27 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     });
   };
 
+  /**
+   * Forwards a request whose body legacy's servlet container rejects before any CFML runs, as sent, and passes its answer
+   * through; legacy writes nothing for it, so no session mapping, CSRF claim, barrier or write window applies.
+   */
+  const toLegacyContainer = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    outcome: MatchOutcome,
+    sessionMode: SessionMode,
+    error: UnreadableBodyError,
+  ): Promise<FastifyReply> => {
+    request.log.info({ error: serializeError(error) }, 'edge body legacy rejects forwarded to legacy');
+    return forwardToLegacy(request, reply, {
+      legacyOrigin: deps.legacyOrigin,
+      headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
+      sessionMode,
+      mode: 'stream',
+      failContext: outcome.failContext,
+    });
+  };
+
   return async (request, reply) => {
     // A method or path the gateway's own routes lack answers service-kit's legacy 404, never legacy or a target.
     if (isInternalPath(request.url)) {
@@ -888,6 +915,11 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       body = bodyParamsFrom(request.headers['content-type'], Buffer.isBuffer(request.body) ? request.body : undefined, request.method);
     } catch (error) {
       if (!(error instanceof UnreadableBodyError)) throw error;
+      const active = state.active();
+      if (error.legacyRejects && active !== undefined) {
+        const bodiless = await matcher.match(request, EMPTY_BODY_PARAMS, active);
+        if (reachesLegacyContainer(bodiless)) return toLegacyContainer(request, reply, bodiless, sessionModeFor(active), error);
+      }
       // Without the body's params the route key is unknown, so neither side may serve the request.
       return failClosed(reply, failContextFor(undefined, request.url), { reason: 'request body unreadable', error, level: 'warn' });
     }

@@ -401,11 +401,97 @@ describe('gateway-served answers', () => {
     expect(h.legacy.requests).toHaveLength(0);
   });
 
-  it('fails closed on a body whose params cannot be read', async () => {
+  it('fails closed on a body in a charset the gateway does not decode', async () => {
     const h = await harness();
-    const res = await h.app.inject({ method: 'POST', url: '/admin/', headers: { 'content-type': 'multipart/form-data' }, payload: 'x' });
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/admin/',
+      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=Shift_JIS' },
+      payload: 'a=1',
+    });
     expect(res.statusCode).toBe(503);
     expect(h.legacy.requests).toHaveLength(0);
+  });
+});
+
+describe("bodies legacy's servlet container rejects", () => {
+  const MULTIPART = 'multipart/form-data; boundary=x';
+  const UNTERMINATED = '--x\r\nContent-Disposition: form-data; name="title"\r\n\r\nvalue';
+  /** The container's answer to such a body, sent before any CFML runs: none of Masa's headers. */
+  const CONTAINER_PAGE = '<html><body>Error processing request</body></html>';
+  const containerAnswer = (res: ServerResponse): void =>
+    sendBytes(res, 500, CONTAINER_PAGE, { 'content-type': 'text/html;charset=UTF-8', 'set-cookie': 'container=1; Path=/' });
+
+  it.each(
+    [
+      ['no boundary', 'multipart/form-data', 'x'],
+      ['an unclosed boundary quote', 'multipart/form-data; boundary="x', '--x--\r\n'],
+      ['a body not opening with its boundary', MULTIPART, 'preamble\r\n--x--\r\n'],
+      ['content running to the end of the body', MULTIPART, UNTERMINATED],
+      ['a header block ending the body', MULTIPART, '--x\r\nContent-Disposition: form-data; name="title"\r\n\r\n'],
+      ['a disposition other than form-data', MULTIPART, '--x\r\nContent-Disposition: attachment; name="a"\r\n\r\n1\r\n--x--\r\n'],
+      ['a disposition without a quoted name', MULTIPART, '--x\r\nContent-Disposition: form-data; name=a\r\n\r\n1\r\n--x--\r\n'],
+      ['a part without a disposition', MULTIPART, '--x\r\nContent-Type: text/plain\r\n\r\n1\r\n--x--\r\n'],
+      ['a part Content-Type line without a value', MULTIPART, '--x\r\nContent-Disposition: form-data; name="a"\r\nContent-Type:x\r\n\r\n1\r\n--x--\r\n'],
+      ['an illegal charset name', 'application/x-www-form-urlencoded; charset=@@', 'a=1'],
+    ].flatMap(([body, contentType, payload]) =>
+      [
+        { route: 'legacy-bound', script: { destination: 'legacy' } as Script },
+        { route: 'target-bound', script: { entry: { route: 'fixture:finance/records@post', kind: 'write', state: 'target' }, destination: 'target', family: 'fixture' } as Script },
+      ].map((destination) => ({ body, contentType, payload, ...destination })),
+    ),
+  )('relays a $route request with $body to legacy as sent and passes its answer through untouched', async ({ contentType, payload, script }) => {
+    const h = await harness();
+    h.setScript(() => script);
+    h.legacy.setHandler((_req, res) => containerAnswer(res));
+    const url = '/legacy-fixtures/cfml/api.cfm/finance/records?x=1';
+    const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': contentType, cookie: 'CFID=1' }, payload });
+    expect(res.statusCode).toBe(500);
+    expect(res.headers['content-type']).toBe('text/html;charset=UTF-8');
+    expect(res.headers['set-cookie']).toBe('container=1; Path=/');
+    expect(res.headers.generator).toBeUndefined();
+    expect(res.headers['strict-transport-security']).toBeUndefined();
+    expect(res.body).toBe(CONTAINER_PAGE);
+    expect(h.legacy.requests).toHaveLength(1);
+    const [received] = h.legacy.requests;
+    expect(received?.url).toBe(url);
+    expect(received?.headers['content-type']).toBe(contentType);
+    expect(received?.headers.cookie).toBe('CFID=1');
+    expect(received?.body.toString('latin1')).toBe(payload);
+    expect(h.svc.requests).toHaveLength(0);
+    // Matched once, without the body, for its family alone; no session, claim, barrier, row or window.
+    expect(h.calls).toEqual(['match:v0001']);
+    expect(vi.mocked(h.deps.matcher.match).mock.calls[0]?.[1]).toEqual({ form: {}, json: undefined, files: [] });
+    expect(h.deps.resolver.resolveLegacyBound).not.toHaveBeenCalled();
+    expect(h.deps.resolver.resolveSession).not.toHaveBeenCalled();
+  });
+
+  it("withholds legacy's session cookies from the relayed answer in target-primary, as from any legacy answer", async () => {
+    const h = await harness({ active: indexOf('v0002', [], 'target') });
+    h.legacy.setHandler((_req, res) =>
+      sendBytes(res, 500, CONTAINER_PAGE, { 'content-type': 'text/html;charset=UTF-8', 'set-cookie': ['JSESSIONID=L; Path=/', 'container=1; Path=/'] }),
+    );
+    const res = await h.app.inject({ method: 'POST', url: '/admin/', headers: { 'content-type': MULTIPART }, payload: UNTERMINATED });
+    expect(res.statusCode).toBe(500);
+    expect(res.headers['set-cookie']).toEqual(['container=1; Path=/']);
+    expect(res.body).toBe(CONTAINER_PAGE);
+  });
+
+  it.each<{ label: string; url: string; script: Script; relayed: boolean; active?: null }>([
+    { label: 'a legacy route while no version is active', url: '/admin/', script: { destination: 'legacy' }, relayed: false, active: null },
+    { label: 'a legacy static file', url: '/admin/assets/css/admin.min.css', script: { destination: 'legacy', family: 'static' }, relayed: true },
+    { label: "web's static file", url: '/_next/static/a.js', script: { entry: { route: 'static:/_next/**', kind: 'static', state: 'target' }, destination: 'target', family: 'static' }, relayed: false },
+    { label: 'a target OPT-2 path', url: '/opt2/stub/items', script: { entry: { route: 'opt2:/opt2/stub/**', kind: 'write', state: 'target' }, destination: 'target', family: 'opt2' }, relayed: false },
+    { label: 'the legacy bridge', url: '/gateway/legacy-bridge/cfml/session.cfm', script: { entry: { route: 'gateway:bridge', kind: 'read' }, destination: 'bare', family: 'bridge' }, relayed: false },
+    { label: 'the relay alias', url: '/opt2/svc/people/x', script: { destination: 'relay' }, relayed: false },
+  ])('sends such a body to $label only where legacy also serves it, failing closed elsewhere', async ({ url, script, relayed, active }) => {
+    const h = await harness(active === null ? { active } : {});
+    h.setScript(() => script);
+    h.legacy.setHandler((_req, res) => containerAnswer(res));
+    const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': MULTIPART }, payload: UNTERMINATED });
+    expect(res.statusCode).toBe(relayed ? 500 : 503);
+    expect(h.legacy.requests).toHaveLength(relayed ? 1 : 0);
+    expect(h.svc.requests).toHaveLength(0);
   });
 });
 
@@ -434,6 +520,32 @@ describe('forwarding', () => {
     expect(received?.headers['x-serverless-authorization']).toBeUndefined();
     expect([...(received?.body ?? [])]).toEqual([1, 2, 3]);
     expect(vi.mocked(h.deps.resolver.resolveLegacyBound).mock.calls[0]?.[0].query).toEqual({ a: '1,2' });
+  });
+
+  it.each(
+    [
+      { ending: 'inside its first header block', payload: '--x\r\nbroken' },
+      { ending: 'right after its first delimiter', payload: '--x' },
+    ].flatMap((body) =>
+      [
+        { route: 'legacy-bound', side: 'legacy' as const, script: { destination: 'legacy' } as Script },
+        {
+          route: 'target-bound',
+          side: 'svc' as const,
+          script: { entry: { route: 'fixture:finance/records@post', kind: 'write', state: 'target' }, destination: 'target', family: 'fixture' } as Script,
+        },
+      ].map((destination) => ({ ...body, ...destination })),
+    ),
+  )('forwards a $route multipart body ending $ending as sent, its Content-Length intact', async ({ payload, side, script }) => {
+    const h = await harness();
+    h.setScript(() => script);
+    const url = '/legacy-fixtures/cfml/api.cfm/finance/records';
+    const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': 'multipart/form-data; boundary=x' }, payload });
+    expect(res.statusCode).toBe(200);
+    expect(h[side].requests).toHaveLength(1);
+    const [received] = h[side].requests;
+    expect(received?.headers['content-length']).toBe(String(Buffer.byteLength(payload)));
+    expect(received?.body.toString('latin1')).toBe(payload);
   });
 
   it('sends a target route to its service with the session token and its own invocation credential', async () => {
@@ -1019,11 +1131,11 @@ describe('fail-closed lines', () => {
       route: 'api:r',
     },
     {
-      label: 'an unreadable body',
+      label: 'a body in a charset the gateway does not decode',
       method: 'POST',
       url: '/admin/',
-      headers: { 'content-type': 'multipart/form-data' },
-      payload: 'x',
+      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=Shift_JIS' },
+      payload: 'a=1',
       severity: 'WARNING',
       message: 'fail-closed: request body unreadable',
       route: undefined,

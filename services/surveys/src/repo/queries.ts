@@ -2,6 +2,7 @@
 /** Gated reads of schema `surveys` with the fixture `surveys.cfc` filters, order and column selection; every helper takes the caller's open tenant transaction. */
 import { createRepository, qualified, type Repository } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
+import { isMatchableSurveyId } from './grants.js';
 import { OWNER } from './repository.js';
 import {
   OWNED_TABLES,
@@ -197,9 +198,13 @@ export function listSurveys(tx: TenantTx, filters: SurveyListFilters): Promise<S
   });
 }
 
-/** The survey row with `surveyId`; null when the tenant has none. */
+/** The survey row with `surveyId`; null when the tenant has none, unqueried for an id no stored survey can have. */
 export function findSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null> {
-  return readsFor(tx).repository.findByKey<SurveyRow>(tx, SURVEY.table, { survey_id: surveyId });
+  const { repository } = readsFor(tx);
+  if (!isMatchableSurveyId(surveyId)) {
+    return repository.read(tx, SURVEY.unit, () => Promise.resolve(null));
+  }
+  return repository.findByKey<SurveyRow>(tx, SURVEY.table, { survey_id: surveyId });
 }
 
 /** The survey with its schedule and reminders in the fixture detail's columns and order, without targets; null when the tenant has no such survey. */

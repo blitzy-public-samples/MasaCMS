@@ -1,10 +1,10 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** The surveys fixture routes over a throwaway `surveys` schema: declarations, api.cfm check order, method override, envelopes and every route's answer. */
+/** The surveys fixture routes over a throwaway `surveys` schema: declarations, api.cfm check order, method override, envelopes and every route's answer; ids no stored survey has over the recording db. */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createOutbox, resetOutboxRuntimes } from '@opt2/platform/outbox';
@@ -37,6 +37,7 @@ import type { ScheduledTaskRecord } from '../../src/legacy/tasks-view.js';
 import { createSurveysRepository, type SurveysRepository } from '../../src/repo/repository.js';
 import { UNITS } from '../../src/repo/tables.js';
 import { FIXTURE_BASE, registerFixtureRoutes } from '../../src/routes/fixture.js';
+import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 
 const NOW = new Date(2026, 5, 30, 14, 5, 9);
 const MANAGER_ID = '11111111-2222-3333-4444555566667777';
@@ -587,4 +588,48 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       expect(res.json()).toMatchObject({ method: 'surveys.surveys.launch', error });
     });
   });
+});
+
+describe('surveys fixture ids no stored survey has, over the recording db', () => {
+  let harness: TestApp;
+
+  beforeEach(async () => {
+    harness = await buildTestApp();
+  });
+
+  afterEach(async () => {
+    await harness.app.close();
+  });
+
+  // Every stored survey id is a CF UUID, so surveys.cfc's lookup of any other id matches no row: notFound, or forbidden for a task callback.
+  const IDS = ['x%00.cfm', `${UNKNOWN_ID}%00`, `%20${UNKNOWN_ID}`, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'];
+  const ROUTES: ReadonlyArray<{ method: Method; tail: string; caller: string | null; body?: unknown; status: number; envelope: string; error: object }> = [
+    { method: 'GET', tail: '', caller: Roles.surveysManager, status: 404, envelope: 'surveys.surveys', error: NOT_FOUND },
+    { method: 'POST', tail: '/schedule', caller: Roles.surveysManager, body: { launchAt: '2026-07-01T09:00:00' }, status: 404, envelope: 'surveys.surveys.schedule', error: NOT_FOUND },
+    { method: 'POST', tail: '/targets/bulk', caller: Roles.surveysManager, body: { targets: [{ siteID: 'tenant-b' }] }, status: 404, envelope: 'surveys.surveys.targets.bulk', error: NOT_FOUND },
+    { method: 'GET', tail: '/responses', caller: Roles.surveysManager, status: 404, envelope: 'surveys.surveys.responses', error: NOT_FOUND },
+    { method: 'POST', tail: '/responses', caller: Roles.systemUser, body: { answers: 'a' }, status: 404, envelope: 'surveys.surveys.responses', error: NOT_FOUND },
+    { method: 'GET', tail: '/tasks', caller: Roles.surveysManager, status: 404, envelope: 'surveys.surveys.tasks', error: NOT_FOUND },
+    { method: 'GET', tail: `/launch${SITE_A}&opt2TaskToken=${TOKEN}`, caller: null, status: 403, envelope: 'surveys.surveys.launch', error: FORBIDDEN },
+    { method: 'POST', tail: `/remind${SITE_A}&opt2TaskToken=${TOKEN}&reminder=1`, caller: null, status: 403, envelope: 'surveys.surveys.remind', error: FORBIDDEN },
+  ];
+
+  it.each(ROUTES.flatMap((route) => IDS.map((id) => ({ ...route, id }))))(
+    'answers $method $tail with id $id as a lookup that matches no row, never querying the id',
+    async ({ method, tail, caller, body, status, envelope, error, id }) => {
+      const sent = decodeURIComponent(id);
+      const user = caller === null ? await gatewayInvocation() : await headersFor(caller);
+      const before = harness.db.transactions.length;
+      const res = await harness.app.inject({
+        method,
+        url: `${FIXTURE_BASE}/${id}${tail.includes('?') ? tail : `${tail}${SITE_A}`}`,
+        headers: { ...user, ...CSRF_HEADERS, ...(body === undefined ? {} : JSON_HEADERS) },
+        payload: body === undefined ? undefined : JSON.stringify(body),
+      });
+      expect([res.statusCode, res.json()]).toEqual([status, { apiversion: 'v1', method: envelope, error }]);
+      const bound = harness.db.transactions.slice(before).flatMap(({ statements }) => statements.flatMap(({ values }) => values.flat(Infinity)));
+      expect(bound.filter((value) => value === sent || value === sent.toUpperCase())).toEqual([]);
+      expect(harness.client.requests.filter((req) => req.service !== IDENTITY_SERVICE)).toEqual([]);
+    },
+  );
 });
