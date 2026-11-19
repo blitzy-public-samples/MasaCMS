@@ -119,9 +119,12 @@ const spread = (hash: number): number => (hash ^ (hash >>> 16)) & 0x7fffffff;
 
 const emptyTable = <T>(length: number): T[][] => Array.from({ length }, (): T[] => []);
 
-/** Iteration order of a default `java.util.HashMap` after putting the distinct `names` in order. */
-function javaHashMapOrder(names: readonly string[]): string[] {
-  let table = emptyTable<string>(16);
+/** `HashMap.tableSizeFor`: the smallest power of two at or above `capacity`, at least 1. */
+const tableSizeFor = (capacity: number): number => (capacity <= 1 ? 1 : 2 ** (32 - Math.clz32(capacity - 1)));
+
+/** Iteration order of a `java.util.HashMap` with `bins` initial bins after putting the distinct `names` in order. */
+function javaHashMapOrder(names: readonly string[], bins = 16): string[] {
+  let table = emptyTable<string>(bins);
   const slot = (name: string, length: number): number => spread(javaHash(name)) & (length - 1);
   names.forEach((name, index) => {
     table[slot(name, table.length)]?.push(name);
@@ -143,9 +146,9 @@ interface StructEntry {
 }
 
 /** `ConcurrentHashMap.transfer` into a table twice the size, as one thread runs it. */
-function concurrentTransfer(table: readonly StructEntry[][]): StructEntry[][] {
+function concurrentTransfer<T extends { readonly hash: number }>(table: readonly T[][]): T[][] {
   const length = table.length;
-  const grown = emptyTable<StructEntry>(length * 2);
+  const grown = emptyTable<T>(length * 2);
   table.forEach((bin, index) => {
     const first = bin[0];
     if (first === undefined) return;
@@ -165,6 +168,17 @@ function concurrentTransfer(table: readonly StructEntry[][]): StructEntry[][] {
     grown[index + length] = high;
   });
   return grown;
+}
+
+/** Iteration order of a default `ConcurrentHashMap` after putting the distinct `names` in order. */
+function concurrentHashMapOrder(names: readonly string[]): string[] {
+  let table = emptyTable<{ readonly hash: number; readonly name: string }>(16);
+  names.forEach((name, index) => {
+    const hash = spread(javaHash(name));
+    table[hash & (table.length - 1)]?.push({ hash, name });
+    while (index + 1 >= table.length - (table.length >>> 2)) table = concurrentTransfer(table);
+  });
+  return table.flat().map(({ name }) => name);
 }
 
 /** Iteration order of a CFML struct (a `ConcurrentHashMap` on upper-cased keys) after putting `pairs` in order. */
@@ -187,30 +201,35 @@ function cfStructOrder(pairs: ReadonlyArray<readonly [string, string]>): StructE
   return table.flat();
 }
 
-// Posted names that repeat, or differ only in case, read as the form scope joins them.
-/** The servlet parameters in request order: the posted fields of a POST, else the request target's query. */
-function requestParameters(req: Pick<AdminRequest, 'formScope' | 'headers' | 'currentUrl'>): Array<readonly [string, string]> {
-  const posted = Object.entries(req.formScope);
-  if (posted.length > 0) return posted;
+/** The servlet parameters in request order: the posted fields of a POST (`posted`), else the request target's query. */
+function requestParameters(req: Pick<AdminRequest, 'formFields' | 'headers' | 'currentUrl'>): {
+  readonly posted: boolean;
+  readonly parameters: ReadonlyArray<readonly [string, string]>;
+} {
+  if (req.formFields.length > 0) return { posted: true, parameters: req.formFields };
   const target = req.headers.get(ORIGINAL_URL_HEADER);
   let query: string;
   // Without the gateway's request-target header the URL scope of `rc.currentURL` stands in.
   if (target === null) query = req.currentUrl.replace(/^\.\/\??/, '');
   else query = target.includes('?') ? target.slice(target.indexOf('?') + 1) : '';
-  return [...new URLSearchParams(query)].filter(([name]) => name !== '');
+  return { posted: false, parameters: [...new URLSearchParams(query)] };
 }
 
-// Legacy walks a hash order, not the request's: the sorted parameter names fill a `HashMap`, whose entries fill the
-// struct; captures of the ACF 2023 oracle confirm this order for GET and POST requests alike.
 /**
  * `rc.qs` of `advancedSearch()`: `getParameterMap()` (first value per name) duplicated into a struct, `ispublic` and
- * `muraaction` deleted, then each remaining `name=value&` in the struct's order.
+ * `muraaction` deleted, then each remaining `name=value&` in the struct's order. The map's order: a query's sorted names
+ * through a default `HashMap`; a POST's body names, in request order, through a default `ConcurrentHashMap`, then a
+ * `HashMap` sized to them.
  */
-export function advancedSearchQueryString(req: Pick<AdminRequest, 'formScope' | 'headers' | 'currentUrl'>): string {
+export function advancedSearchQueryString(req: Pick<AdminRequest, 'formFields' | 'headers' | 'currentUrl'>): string {
+  const { posted, parameters } = requestParameters(req);
   const firstValues = new Map<string, string>();
-  for (const [name, value] of requestParameters(req)) if (!firstValues.has(name)) firstValues.set(name, value);
-  const names = [...firstValues.keys()].sort();
-  const pairs = javaHashMapOrder(names).map((name): readonly [string, string] => [name, firstValues.get(name) ?? '']);
+  for (const [name, value] of parameters) if (!firstValues.has(name)) firstValues.set(name, value);
+  const names = [...firstValues.keys()];
+  const order = posted
+    ? javaHashMapOrder(concurrentHashMapOrder(names), tableSizeFor(names.length))
+    : javaHashMapOrder(names.sort());
+  const pairs = order.map((name): readonly [string, string] => [name, firstValues.get(name) ?? '']);
   return cfStructOrder(pairs)
     .filter(({ key }) => key !== 'ISPUBLIC' && key !== 'MURAACTION')
     .map(({ name, value }) => `${name}=${value}&`)

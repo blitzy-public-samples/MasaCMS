@@ -30,6 +30,7 @@ import {
   financeError,
   financeGateway,
   financeRequest,
+  recordInState,
   rerendered,
   useFinanceEnv,
 } from './support';
@@ -43,6 +44,9 @@ const DETAIL_LOCATION = `/opt2/admin/finance/record?siteid=${SITE}&id=${RECORD_I
 const transitionPath = (action: string): `/${string}` => `${RECORD_PATH}/transitions/${action}`;
 const transitionRoute = (action: string): string => routeKey('POST', 'finance', transitionPath(action));
 const UPLOAD_ROUTE = routeKey('POST', 'finance', ATTACHMENTS_PATH);
+
+/** The detail fixture reloaded in REJECTED, a state finance allows an edit from, so a refused edit's form shows. */
+const EDITABLE_RECORD = recordInState('REJECTED');
 
 /** The posted form of a finance action on the fixture record, CSRF pair included. */
 const posted = (fields: Readonly<Record<string, string>> = {}): Record<string, string> => ({
@@ -173,7 +177,7 @@ describe('finance actions', () => {
     it('re-renders the edit form with the posted values and finance alert when it refuses them', async () => {
       const invalid = { ...EDITED, amount: '12.34567' };
       const reply = financeError(400, 'finance.records.edit', 'Invalid parameters');
-      const { result } = await submit('edit', PREPARER, invalid, { [transitionRoute('edit')]: reply });
+      const { result } = await submit('edit', PREPARER, invalid, { ...EDITABLE_RECORD, [transitionRoute('edit')]: reply });
       const { model } = rerendered(result);
 
       expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
@@ -187,7 +191,8 @@ describe('finance actions', () => {
 
     /** The re-rendered detail of an edit of `fields` refused with `reply`. */
     async function refusedEdit(fields: Readonly<Record<string, string>>, reply = INVALID) {
-      const { result } = await submit('edit', PREPARER, { ...EDITED, ...fields }, { [transitionRoute('edit')]: reply });
+      const overrides = { ...EDITABLE_RECORD, [transitionRoute('edit')]: reply };
+      const { result } = await submit('edit', PREPARER, { ...EDITED, ...fields }, overrides);
       return cheerio.load(markupOf(result), null, false);
     }
 
@@ -279,7 +284,7 @@ describe('finance actions', () => {
     });
 
     it('explains the amount format and the period totals in a standing hint', async () => {
-      const { result } = await submit('edit', PREPARER, EDITED, { [transitionRoute('edit')]: INVALID });
+      const { result } = await submit('edit', PREPARER, EDITED, { ...EDITABLE_RECORD, [transitionRoute('edit')]: INVALID });
       const $ = cheerio.load(markupOf(result), null, false);
       expect($('#amount').next().is('div.help-block-inline#amount-hint')).toBe(true);
       expect($('#amount-hint').text()).toContain('999999999999999.9999');
@@ -385,7 +390,7 @@ describe('finance actions', () => {
       'shows a refused %s alert just before its form, under the form heading, its first control focused',
       async (action, form, route, message, heading, focused) => {
         const reply = financeError(400, `finance.records.${action}`, message);
-        const { result } = await submit(action, PREPARER, FIELDS, { [route]: reply });
+        const { result } = await submit(action, PREPARER, FIELDS, { ...EDITABLE_RECORD, [route]: reply });
         const $ = cheerio.load(markupOf(result), null, false);
 
         const alert = $(form).prev();

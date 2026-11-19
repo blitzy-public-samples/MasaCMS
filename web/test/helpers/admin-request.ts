@@ -425,6 +425,7 @@ export function makeAdminRequest(
     rc,
     // The `rc` overrides are merged as the form scope, so they are posted fields unless `formScope` says otherwise.
     formScope: mergeFw1Context([], {}, definedPairs(formOverrides ?? rcOverrides)),
+    formFields: definedPairs(formOverrides ?? rcOverrides),
     // rc as though posted and left unchanged by the scan, so a relay sends it as it stands.
     relayScopes: { posted: rc, scanned: rc },
     ses: false,

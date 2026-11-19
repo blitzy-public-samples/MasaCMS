@@ -27,6 +27,8 @@ COPY gateway/contracts/openapi.yaml /repo/gateway/contracts/
 COPY core/mura/resourceBundle/resources/ /repo/core/mura/resourceBundle/resources/
 COPY core/modules/v1/core_assets/resource_bundles/ /repo/core/modules/v1/core_assets/resource_bundles/
 COPY resource_bundles/ /repo/resource_bundles/
+# Finance's exported transition table, which the record detail's transition buttons are filtered by.
+COPY opt2/reports/state-machines/finance.json /repo/opt2/reports/state-machines/
 COPY web/tsconfig.json web/next.config.ts web/instrumentation.ts web/server.ts ./
 COPY web/app/ ./app/
 COPY web/src/ ./src/

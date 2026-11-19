@@ -35,9 +35,10 @@ import {
 import {
   FINANCE_MODULE,
   PREPARER,
-  TRANSITIONS,
+  canEdit,
   financeActionUrl,
   financeStateBadge,
+  legalTransitions,
   noRecord,
   readResult,
   recordsUrl,
@@ -183,11 +184,12 @@ function attachmentRows(ctx: ScreenContext, attachment: Attachment): SafeHtml {
 }
 
 /**
- * One POST form carrying the record's CSRF pair, with a button group of the lifecycle actions whose role the user
- * holds, each button posting to its own action; null when the user holds none.
+ * One POST form carrying the record's CSRF pair, with a button group of the transitions legal from its state for the
+ * user's roles, each button posting to its own action; null when none is.
  */
-function transitionForm(ctx: ScreenContext, id: string, csrf: SafeHtml): SafeHtml | null {
-  const buttons: FormButton[] = TRANSITIONS.filter(({ role }) => canUse(ctx.req, [role])).map(({ action, label }) => ({
+function transitionForm(ctx: ScreenContext, record: FinanceRecordDetail, csrf: SafeHtml): SafeHtml | null {
+  const id = record.record_id;
+  const buttons: FormButton[] = legalTransitions(ctx, record.state).map(({ action, label }) => ({
     label: label(ctx),
     formAction: financeActionUrl(ctx, action, { id }),
   }));
@@ -208,15 +210,13 @@ function uploadForm(ctx: ScreenContext, actionUrl: string, csrf: SafeHtml, focus
   )}</form>`;
 }
 
-/**
- * The preparer's upload and edit forms, one block each, a refused one after its alert. Amounts stay the decimal text
- * finance serialized or the user typed.
- */
+/** The upload and edit blocks `shown` offers, a refused form after its alert; amounts kept as sent or typed. */
 function preparerForms(
   ctx: ScreenContext,
   record: FinanceRecordDetail,
   csrf: SafeHtml,
   rerender: RecordRerender,
+  shown: Readonly<Record<RecordForm, boolean>>,
 ): SafeHtml {
   const id = record.record_id;
   const values = rerender.edit ?? { title: record.title, amount: record.amount, period: record.period };
@@ -245,17 +245,15 @@ function preparerForms(
   const uploadRefusal = rerender.form === 'upload' ? rerender.refusal : undefined;
   const upload = uploadForm(ctx, financeActionUrl(ctx, 'upload', { id }), csrf, focusesFirst(uploadRefusal, {}));
   const edit = postForm(financeActionUrl(ctx, 'edit', { id }), editFields, opt2Label(ctx, 'Save'), { hidden: csrf });
-  return html`${block(html`<h2>Upload Attachment</h2>${alertOf('upload')}${upload}`)}${block(
-    html`<h2>Edit Record</h2>${alertOf('edit')}${edit}`,
-  )}`;
+  const uploadBlock = shown.upload ? block(html`<h2>Upload Attachment</h2>${alertOf('upload')}${upload}`) : null;
+  const editBlock = shown.edit ? block(html`<h2>Edit Record</h2>${alertOf('edit')}${edit}`) : null;
+  return html`${uploadBlock}${editBlock}`;
 }
 
 /**
- * The record detail: summary, transition buttons for the user's roles, version history, attachments with their
- * download buttons and, for a preparer, the upload and edit forms. `rerender` carries a refused write's alert, shown
- * before the form it refuses or else leading the detail in place of the read's, and the posted edit fields. Each form
- * ends its block, as legacy action rows do: legacy headings carry no top margin, so a heading after a form's buttons
- * would touch them.
+ * The record detail: summary, legal transition buttons, versions, attachments and the forms the user may post.
+ * `rerender`'s alert precedes the refused form when shown, else leads the detail. Each form ends its block, as legacy
+ * headings carry no top margin.
  */
 export function renderRecord(ctx: ScreenContext, data: RecordData, rerender: RecordRerender = {}): SafeHtml {
   const back = [{ label: 'Finance Records', href: recordsUrl(ctx) }];
@@ -267,12 +265,16 @@ export function renderRecord(ctx: ScreenContext, data: RecordData, rerender: Rec
     record.attachments.map((attachment) => attachmentRows(ctx, attachment)),
     'No attachments.',
   );
-  const preparer = canUse(ctx.req, [PREPARER]);
-  const forms = preparer ? preparerForms(ctx, record, csrf, rerender) : null;
-  const leading = preparer && rerender.form !== undefined ? undefined : rerender.alert;
+  // Upload has no state check in finance; edit is legal only where the lifecycle export allows it.
+  const shown: Readonly<Record<RecordForm, boolean>> = {
+    upload: canUse(ctx.req, [PREPARER]),
+    edit: canEdit(ctx, record.state),
+  };
+  const forms = preparerForms(ctx, record, csrf, rerender, shown);
+  const leading = rerender.form !== undefined && shown[rerender.form] ? undefined : rerender.alert;
   // A fixed header label, as legacy headers carry; the record title is the first summary row.
   return html`${pageHeader('Finance Record', back)}${block(
-    html`${leading}${summaryRows(ctx, record)}${transitionForm(ctx, record.record_id, csrf)}`,
+    html`${leading}${summaryRows(ctx, record)}${transitionForm(ctx, record, csrf)}`,
   )}${block(
     html`<h2>${opt2Label(ctx, 'Version History')}</h2>${versionGrid(ctx, record.versions)}<h2>Attachments</h2>${attachments}`,
   )}${forms}`;

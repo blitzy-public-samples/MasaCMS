@@ -197,6 +197,8 @@ export interface AdminRequest {
   readonly rc: RequestContext;
   /** CFML form scope as posted, before the start-up scan: the fields of the request body. */
   readonly formScope: RequestContext;
+  /** The request body's fields in order, names and values as posted; a file part reads as its file name. */
+  readonly formFields: ReadonlyArray<readonly [string, string]>;
   /** The scopes {@link relayContext} rebuilds an owner relay from. */
   readonly relayScopes: RelayScopes;
   /** `request.generateSES`: the request carried FW/1 path segments. */
@@ -1138,6 +1140,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     item: listLast(action, '.'),
     rc: contextView(rc),
     formScope: contextView(posted),
+    formFields: scopes.form,
     relayScopes,
     ses: scopes.pathInfo.length > 0,
     currentUrl: currentUrlOf(url),

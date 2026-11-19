@@ -1,10 +1,12 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-// finance/record: the record detail with version history, role transition buttons and attachments, inside the shell.
+// finance/record: the record detail with version history, state and role transition buttons and attachments, inside the shell.
 import * as cheerio from 'cheerio';
 import { Roles } from '@opt2/platform/auth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
+import type { AdminRequest } from '@/lib/request-context';
+import type { FinanceState } from '@/screens/opt2/finance/service';
 import { GUARDED_NATIVE_SUBMIT, GUARDED_SUBMIT } from '@/screens/opt2/shared';
 import {
   FINANCE_IDS,
@@ -12,6 +14,7 @@ import {
   financeAttachments,
   financeRecordDetail,
   financeRecordVersions,
+  financeTransitionIllegal,
   financeTransitionLegal,
 } from '../../../fixtures/opt2/finance';
 import { fragmentModel, type DomButton, type DomControl, type DomModel } from '../../../helpers/dom-model';
@@ -22,6 +25,7 @@ import {
   CSRF_HEADERS,
   LOGOUT,
   NOACCESS,
+  POSTED_CSRF,
   PREPARER,
   RECORD_ID,
   RECORD_ROUTE,
@@ -33,6 +37,7 @@ import {
   financeRequest,
   financeScreen,
   preparerApproverRequest,
+  recordInState,
   useFinanceEnv,
 } from './support';
 
@@ -61,6 +66,20 @@ const CSRF_CONTROLS: readonly DomControl[] = [
 
 const button = (text: string): DomButton => ({ text, type: 'submit', hasOnclick: false });
 
+/** Button label of each lifecycle action. */
+const TRANSITION_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  submit: 'Submit',
+  resubmit: 'Resubmit',
+  approve: 'Approve',
+  reject: 'Reject',
+});
+
+/** Form action URL of lifecycle action `action` on the fixture record. */
+const transitionUrl = (action: string): string => `/opt2/admin-actions/finance/${action}?siteid=${SITE}&id=${RECORD_ID}`;
+
+/** A gateway answering the fixture record in lifecycle state `state`. */
+const recordIn = (state: FinanceState) => financeGateway(recordInState(state));
+
 /** The version history grid of `record`: one row per version, values as finance sent them. */
 function versionTable(record = financeRecordDetail): DomModel['tables'][number] {
   return {
@@ -78,7 +97,7 @@ function versionTable(record = financeRecordDetail): DomModel['tables'][number] 
   };
 }
 
-/** The detail body's DOM model of the RE-SUBMITTED fixture record for a user seeing `buttons` and, when `preparer`, the forms. */
+/** The detail body's DOM model of the fixture record for a user seeing `buttons` and, when `preparer`, the forms. */
 function detailModel(buttons: readonly string[], preparer: boolean): DomModel {
   const record = financeRecordDetail;
   const editControls = [
@@ -160,12 +179,12 @@ describe('finance record screen', () => {
     restore();
   });
 
-  it.each([
-    ['a preparer', financeRequest(PREPARER, { id: RECORD_ID }), ['Submit', 'Resubmit'], true],
-    ['an approver', financeRequest(APPROVER, { id: RECORD_ID }), ['Approve', 'Reject'], false],
-    ['a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['Submit', 'Resubmit', 'Approve', 'Reject'], true],
-  ])('renders the record, its versions and attachments with the buttons of %s', async (_, req, buttons, preparer) => {
-    const { view, model } = await renderDetail(req);
+  it.each<[string, FinanceState, AdminRequest, string[], boolean]>([
+    ['a preparer', 'IN-PROGRESS', financeRequest(PREPARER, { id: RECORD_ID }), ['Submit'], true],
+    ['an approver', 'RE-SUBMITTED', financeRequest(APPROVER, { id: RECORD_ID }), ['Approve', 'Reject'], false],
+    ['a preparer and approver', 'REJECTED', preparerApproverRequest({ id: RECORD_ID }), ['Resubmit'], true],
+  ])('renders the record, its versions and attachments with the buttons of %s on a record in state %s', async (_, state, req, buttons, preparer) => {
+    const { view, model } = await renderDetail(req, recordIn(state));
 
     expect(view.opt2Module).toBe('finance');
     expect(model).toStrictEqual(detailModel(buttons, preparer));
@@ -216,38 +235,118 @@ describe('finance record screen', () => {
     expect(toString(view.body)).toContain('<h2>Version History</h2><div class="help-block-empty">No versions.</div>');
   });
 
-  it.each([
-    ['a preparer', financeRequest(PREPARER, { id: RECORD_ID }), ['submit', 'resubmit']],
-    ['an approver', financeRequest(APPROVER, { id: RECORD_ID }), ['approve', 'reject']],
-    ['a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['submit', 'resubmit', 'approve', 'reject']],
-  ])('groups the transitions of %s in one btn-group of one form posting the CSRF pair once', async (_, req, actions) => {
-    const { view } = await renderDetail(req);
+  it.each<[string, FinanceState, AdminRequest, string[]]>([
+    ['a preparer', 'REJECTED', financeRequest(PREPARER, { id: RECORD_ID }), ['resubmit']],
+    ['an approver', 'SUBMITTED', financeRequest(APPROVER, { id: RECORD_ID }), ['approve', 'reject']],
+    ['a preparer and approver', 'IN-PROGRESS', preparerApproverRequest({ id: RECORD_ID }), ['submit']],
+  ])('groups the transitions of %s on a record in state %s in one btn-group of one form posting the CSRF pair once', async (_, state, req, actions) => {
+    const { view } = await renderDetail(req, recordIn(state));
     const $ = cheerio.load(toString(view.body), null, false);
     const form = $('form:has(> .btn-group)');
-    const url = (action: string): string => `/opt2/admin-actions/finance/${action}?siteid=${SITE}&id=${RECORD_ID}`;
 
     expect(form).toHaveLength(1);
-    expect([form.attr('method'), form.attr('action')]).toEqual(['post', url(actions[0] ?? '')]);
+    expect([form.attr('method'), form.attr('action')]).toEqual(['post', transitionUrl(actions[0] ?? '')]);
     expect(form.children('input').toArray().map((el) => [$(el).attr('name'), $(el).attr('value')])).toEqual([
       ['csrf_token', FIXED_CSRF.token],
       ['csrf_token_expires', FIXED_CSRF.expires],
     ]);
     expect(form.find('.btn-group > *').toArray().map((el) => [el.tagName, $(el).attr('class'), $(el).attr('formaction')])).toEqual(
-      actions.map((action) => ['button', 'btn', url(action)]),
+      actions.map((action) => ['button', 'btn', transitionUrl(action)]),
     );
   });
 
-  it('leads each transition button, posted with the form CSRF pair, to its action and on to finance', async () => {
-    const { view } = await renderDetail(preparerApproverRequest({ id: RECORD_ID }));
+  it.each<[FinanceState, string, AdminRequest, string[], boolean]>([
+    ['IN-PROGRESS', 'a preparer', financeRequest(PREPARER, { id: RECORD_ID }), ['submit'], true],
+    ['IN-PROGRESS', 'an approver', financeRequest(APPROVER, { id: RECORD_ID }), [], false],
+    ['IN-PROGRESS', 'a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['submit'], true],
+    ['SUBMITTED', 'a preparer', financeRequest(PREPARER, { id: RECORD_ID }), [], false],
+    ['SUBMITTED', 'an approver', financeRequest(APPROVER, { id: RECORD_ID }), ['approve', 'reject'], false],
+    ['SUBMITTED', 'a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['approve', 'reject'], false],
+    ['RE-SUBMITTED', 'a preparer', financeRequest(PREPARER, { id: RECORD_ID }), [], false],
+    ['RE-SUBMITTED', 'an approver', financeRequest(APPROVER, { id: RECORD_ID }), ['approve', 'reject'], false],
+    ['RE-SUBMITTED', 'a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['approve', 'reject'], false],
+    ['APPROVED', 'a preparer', financeRequest(PREPARER, { id: RECORD_ID }), [], false],
+    ['APPROVED', 'an approver', financeRequest(APPROVER, { id: RECORD_ID }), [], false],
+    ['APPROVED', 'a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), [], false],
+    ['REJECTED', 'a preparer', financeRequest(PREPARER, { id: RECORD_ID }), ['resubmit'], true],
+    ['REJECTED', 'an approver', financeRequest(APPROVER, { id: RECORD_ID }), [], false],
+    ['REJECTED', 'a preparer and approver', preparerApproverRequest({ id: RECORD_ID }), ['resubmit'], true],
+  ])('offers on a record in state %s to %s only the transitions and edit form legal from that state', async (state, _, req, actions, editable) => {
+    const { view } = await renderDetail(req, recordIn(state));
+    const $ = cheerio.load(toString(view.body), null, false);
+    const preparer = req.user?.roles.includes(PREPARER) === true;
+
+    expect($('form:has(> .btn-group)')).toHaveLength(actions.length > 0 ? 1 : 0);
+    expect($('.btn-group > button').toArray().map((el) => [$(el).text(), $(el).attr('formaction')])).toEqual(
+      actions.map((action) => [TRANSITION_LABELS[action], transitionUrl(action)]),
+    );
+    // The download buttons stay in every state, the upload form for a preparer, the edit form only where it is legal.
+    expect($('h2').toArray().map((el) => $(el).text())).toEqual([
+      'Version History',
+      'Attachments',
+      ...(preparer ? ['Upload Attachment'] : []),
+      ...(editable ? ['Edit Record'] : []),
+    ]);
+    expect($('form[enctype="multipart/form-data"]').toArray().map((el) => $(el).attr('action'))).toEqual(
+      preparer ? [`/opt2/admin-actions/finance/upload?siteid=${SITE}&id=${RECORD_ID}`] : [],
+    );
+    expect($('form[name="form1"]').toArray().map((el) => $(el).attr('action'))).toEqual(
+      editable ? [transitionUrl('edit')] : [],
+    );
+    expect($('button').toArray().map((el) => $(el).text())).toEqual([
+      ...actions.map((action) => TRANSITION_LABELS[action]),
+      ...financeAttachments.map(({ file_name }) => file_name),
+      ...(preparer ? ['Upload'] : []),
+      ...(editable ? ['Save'] : []),
+    ]);
+  });
+
+  it.each<[FinanceState, boolean]>([
+    ['IN-PROGRESS', true],
+    ['SUBMITTED', false],
+    ['RE-SUBMITTED', false],
+    ['APPROVED', false],
+    ['REJECTED', true],
+  ])('shows a refused edit alert on a record reloaded in state %s before the shown edit form, else leading the detail', async (state, editable) => {
+    const edited = { title: 'Consulting services Q3', amount: '4300.5', period: '2026-07' };
+    const gateway = financeGateway({
+      ...recordInState(state),
+      [routeKey('POST', 'finance', `/v1/finance/records/${RECORD_ID}/transitions/edit`)]: financeTransitionIllegal,
+    });
+    const req = financeRequest(PREPARER, { id: RECORD_ID, ...POSTED_CSRF, ...edited });
+    const result = await financeAction('edit').submit(makeScreenContext({ req, gateway }));
+    if (result.kind !== 'render') throw new Error(`Expected a re-render, got ${result.kind}`);
+    const $ = cheerio.load(toString(result.view.body), null, false);
+    const alert = $('.alert');
+
+    expect(alert.toArray().map((el) => [$(el).attr('class'), $(el).text()])).toEqual([['alert alert-error', 'illegalTransition']]);
+    expect(alert.is($('.block-content').first().children().first())).toBe(!editable);
+    expect([alert.prev('h2').text(), alert.next('form[name="form1"]').length]).toEqual(editable ? ['Edit Record', 1] : ['', 0]);
+    expect($('form[name="form1"] input:not([type="hidden"])').toArray().map((el) => $(el).attr('value'))).toEqual(
+      editable ? [edited.title, edited.amount, edited.period] : [],
+    );
+    expect($('[autofocus]').toArray().map((el) => $(el).attr('id'))).toEqual(editable ? ['title'] : []);
+    expect($('form[enctype="multipart/form-data"]')).toHaveLength(1);
+  });
+
+  it.each<[FinanceState, string[]]>([
+    ['IN-PROGRESS', ['submit']],
+    ['SUBMITTED', ['approve', 'reject']],
+    ['RE-SUBMITTED', ['approve', 'reject']],
+    ['REJECTED', ['resubmit']],
+  ])('leads each transition button of a record in state %s, posted with the form CSRF pair, to its action and on to finance', async (state, actions) => {
+    const { view } = await renderDetail(preparerApproverRequest({ id: RECORD_ID }), recordIn(state));
     const $ = cheerio.load(toString(view.body), null, false);
     const form = $('form:has(> .btn-group)');
     const posted = Object.fromEntries(form.children('input').toArray().map((el) => [$(el).attr('name'), $(el).attr('value')]));
     const path = (action: string): `/${string}` => `/v1/finance/records/${RECORD_ID}/transitions/${action}`;
-    const buttons = form.find('.btn-group > button').toArray();
+    const urls = form
+      .find('.btn-group > button')
+      .toArray()
+      .map((button) => new URL($(button).attr('formaction') ?? '', 'http://localhost'));
 
-    expect(buttons).toHaveLength(4);
-    for (const button of buttons) {
-      const url = new URL($(button).attr('formaction') ?? '', 'http://localhost');
+    expect(urls.map((url) => url.pathname.split('/').pop())).toEqual(actions);
+    for (const url of urls) {
       const action = url.pathname.split('/').pop() ?? '';
       const gateway = financeGateway({
         [routeKey('POST', 'finance', path(action))]: { status: 200, body: financeTransitionLegal },
@@ -275,7 +374,7 @@ describe('finance record screen', () => {
   });
 
   it('reads the record once and issues the CSRF pair of its id for every form', async () => {
-    const { gateway, view } = await renderDetail();
+    const { gateway, view } = await renderDetail(undefined, recordIn('IN-PROGRESS'));
     const $ = cheerio.load(toString(view.body), null, false);
 
     expect(gateway.calls.filter(({ service }) => service === 'finance')).toEqual([
@@ -301,7 +400,7 @@ describe('finance record screen', () => {
   });
 
   it('submits the write forms once, the transitions natively for their formaction, and the downloads unguarded', async () => {
-    const { view } = await renderDetail();
+    const { view } = await renderDetail(undefined, recordIn('IN-PROGRESS'));
     const $ = cheerio.load(toString(view.body), null, false);
     const onsubmitOf = (guard: { value: string }): string | undefined =>
       cheerio.load(`<form${guard.value}></form>`, null, false)('form').attr('onsubmit');
@@ -354,7 +453,7 @@ describe('finance record screen', () => {
   });
 
   it('ends a block with each form, so no heading follows a form inside its block', async () => {
-    const { view } = await renderDetail(preparerApproverRequest({ id: RECORD_ID }));
+    const { view } = await renderDetail(preparerApproverRequest({ id: RECORD_ID }), recordIn('REJECTED'));
     const $ = cheerio.load(toString(view.body), null, false);
     const blocks = $('.block-content').toArray();
 
@@ -369,7 +468,7 @@ describe('finance record screen', () => {
   });
 
   it('puts the upload and edit buttons in in-flow action rows, with no fixed action bar and one form1', async () => {
-    const { view } = await renderDetail();
+    const { view } = await renderDetail(undefined, recordIn('IN-PROGRESS'));
     const $ = cheerio.load(toString(view.body), null, false);
 
     expect($('.mura-actions')).toHaveLength(0);
@@ -489,10 +588,6 @@ describe('finance record screen', () => {
     const { model, view } = await renderDetail(financeRequest(APPROVER, { id: FINANCE_IDS.recordApproved }), gateway);
 
     expect(shownValues(toString(view.body))).toEqual(recordValues(approved));
-    expect(model.buttons.map(({ text }) => text)).toEqual([
-      'Approve',
-      'Reject',
-      ...financeAttachments.map(({ file_name }) => file_name),
-    ]);
+    expect(model.buttons.map(({ text }) => text)).toEqual(financeAttachments.map(({ file_name }) => file_name));
   });
 });

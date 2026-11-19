@@ -9,7 +9,7 @@ import type { AdminRequest } from '@/lib/request-context';
 import { financeActions, financeScreens } from '@/screens/opt2/finance';
 import type { FinanceState } from '@/screens/opt2/finance/service';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, SubmitResult } from '@/screens/registry';
-import { FINANCE_IDS, financeAnswers } from '../../../fixtures/opt2/finance';
+import { FINANCE_IDS, financeAnswers, financeRecordDetail } from '../../../fixtures/opt2/finance';
 import { opt2RoleRequest, type AdminRequestPartial } from '../../../helpers/admin-request';
 import { fragmentModel, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
@@ -33,6 +33,11 @@ export const APPROVER: Role = Roles.financeApprover;
 export const RECORD_ID = FINANCE_IDS.recordResubmitted;
 
 export const RECORD_ROUTE = routeKey('GET', 'finance', `/v1/finance/records/${RECORD_ID}`);
+
+/** The record route answering the detail fixture in lifecycle state `state`. */
+export const recordInState = (state: FinanceState): FakeRouteTable => ({
+  [RECORD_ROUTE]: { status: 200, body: { data: { ...financeRecordDetail, state } } },
+});
 
 /** Display text of each lifecycle state, in its cells, value rows and filter options. */
 export const STATE_TEXT: Readonly<Record<FinanceState, string>> = Object.freeze({

@@ -3,9 +3,11 @@ import { Roles } from '@opt2/platform/auth';
 import type { components } from '@/generated/clients/finance';
 import { assertNotDenied, type GatewayResponse, type WebServiceName } from '@/lib/gateway-client';
 import type { SafeHtml } from '@/lib/html';
+import financeTransitions from '../../../../../opt2/reports/state-machines/finance.json';
 import type { Opt2Module, ScreenContext } from '../../registry';
 import {
   alertBox,
+  canUse,
   errorMessage,
   opt2ActionUrl,
   opt2Gate,
@@ -64,20 +66,37 @@ export function financeStateBadge(ctx: ScreenContext, state: FinanceState): Safe
   return stateBadgeOf(ctx, FINANCE_STATE_DISPLAYS, state);
 }
 
-/** A lifecycle action without fields, the role whose holders see its button, and its button label in `ctx`'s locale. */
+/** A lifecycle action without fields and its button label in `ctx`'s locale. */
 export interface Transition {
   readonly action: Exclude<Schemas['TransitionAction'], 'edit'>;
   readonly label: (ctx: ScreenContext) => Label;
-  readonly role: typeof PREPARER | typeof APPROVER;
 }
 
-/** The detail screen's transition buttons; the finance service decides whether each applies to the record. */
+/** The detail screen's transition buttons, in button order. */
 export const TRANSITIONS: readonly Transition[] = Object.freeze([
-  { action: 'submit', label: (ctx) => opt2Label(ctx, 'Submit'), role: PREPARER },
-  { action: 'resubmit', label: () => 'Resubmit', role: PREPARER },
-  { action: 'approve', label: (ctx) => opt2Label(ctx, 'Approve'), role: APPROVER },
-  { action: 'reject', label: (ctx) => opt2Label(ctx, 'Reject'), role: APPROVER },
+  { action: 'submit', label: (ctx) => opt2Label(ctx, 'Submit') },
+  { action: 'resubmit', label: () => 'Resubmit' },
+  { action: 'approve', label: (ctx) => opt2Label(ctx, 'Approve') },
+  { action: 'reject', label: (ctx) => opt2Label(ctx, 'Reject') },
 ]);
+
+/** The legal rows of finance's exported transition table, generated from its lifecycle definition. */
+const LEGAL_TRANSITIONS = Object.freeze(financeTransitions.rows.filter(({ outcome }) => outcome === 'legal'));
+
+/** Whether `action` is legal from `state` for a role the user of `ctx` holds. */
+function isLegal(ctx: ScreenContext, state: FinanceState, action: Schemas['TransitionAction']): boolean {
+  return LEGAL_TRANSITIONS.some((row) => row.from === state && row.action === action && canUse(ctx.req, [row.role]));
+}
+
+/** The buttons of the transitions legal from `state` for a role the user of `ctx` holds, in button order. */
+export function legalTransitions(ctx: ScreenContext, state: FinanceState): Transition[] {
+  return TRANSITIONS.filter(({ action }) => isLegal(ctx, state, action));
+}
+
+/** Whether the user of `ctx` may edit a record in `state`. */
+export function canEdit(ctx: ScreenContext, state: FinanceState): boolean {
+  return isLegal(ctx, state, 'edit');
+}
 
 /** A read's 2xx body, or the alert for an answer the screen shows: invalid input (400) or no such record (404). */
 export type ReadResult<T> = { readonly ok: true; readonly body: T } | { readonly ok: false; readonly alert: SafeHtml };

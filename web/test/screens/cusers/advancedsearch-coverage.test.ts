@@ -263,29 +263,84 @@ describe('cUsers.advancedSearch results and flags', () => {
 });
 
 describe('advancedSearchQueryString', () => {
-  const source = (formScope: Readonly<Record<string, string>>, target: string | null, currentUrl = './?&muraAction=cusers.advancedsearch') => ({
-    formScope,
+  const source = (
+    formFields: ReadonlyArray<readonly [string, string]>,
+    target: string | null,
+    currentUrl = './?&muraAction=cusers.advancedsearch',
+  ) => ({
+    formFields,
     headers: new Headers(target === null ? {} : { [ORIGINAL_URL_HEADER]: target }),
     currentUrl,
   });
+  const POSTED_SEARCH = [
+    ['muraAction', 'cUsers.advancedSearch'],
+    ['siteid', 'default'],
+    ['ispublic', '0'],
+  ] as const;
 
-  // Each expected value is the legacy server's rc.qs for a GET carrying the same parameters; the order depends on the
-  // names alone, so posted fields order alike.
+  // Each expected value is the legacy server's rc.qs: posted rows for a POST of those fields, request-target rows for a
+  // GET carrying the same parameters.
   it.each<[string, ReturnType<typeof source>, string]>([
     [
       'posted fields, whatever the request target',
-      source({ muraAction: 'cUsers.advancedSearch', siteid: 'default', ispublic: '0', b: '2', a: '1' }, '/admin/?x=9'),
+      source([...POSTED_SEARCH, ['b', '2'], ['a', '1']], '/admin/?x=9'),
       'a=1&b=2&siteid=default&',
     ],
-    ['the request target without a query', source({}, '/admin/'), ''],
+    [
+      'the first value of a repeated posted name',
+      source([...POSTED_SEARCH, ['b', '1'], ['b', '2'], ['a', '1']], null),
+      'a=1&b=1&siteid=default&',
+    ],
+    // getParameterMap keeps both names; the struct merges them under the first name put and the last value put.
+    ['posted names that differ only in case', source([...POSTED_SEARCH, ['A', '1'], ['a', '2']], null), 'A=2&siteid=default&'],
+    ['case variants posted in reverse order', source([...POSTED_SEARCH, ['a', '2'], ['A', '1']], null), 'a=1&siteid=default&'],
+    ['case variants in different bins, lower first', source([...POSTED_SEARCH, ['kappa', '1'], ['KAPPA', '2']], null), 'kappa=2&siteid=default&'],
+    ['case variants in different bins, upper first', source([...POSTED_SEARCH, ['KAPPA', '2'], ['kappa', '1']], null), 'kappa=2&siteid=default&'],
+    [
+      'three posted case variants',
+      source([...POSTED_SEARCH, ['zed', 'z3'], ['ZED', 'z2'], ['Zed', 'z1']], null),
+      'zed=z1&siteid=default&',
+    ],
+    [
+      'repeated and case-differing posted names',
+      source([...POSTED_SEARCH, ['b', '1'], ['B', 'x'], ['b', '2'], ['a', '1']], null),
+      'a=1&b=x&siteid=default&',
+    ],
+    [
+      'posted names past the first resize of both maps',
+      source(
+        [
+          ...POSTED_SEARCH,
+          ...[
+            'x5', 'ECHO', 'x6', 'x7', 'echo', 'kappa', 'lima', 'x8', 'hotel', 'LIMA', 'y1', 'y2',
+            'DELTA', 'foobar', 'HOTEL', 'y3', 'ALPHA', 'KAPPA', 'delta', 'ZULU', 'OSCAR', 'x4', 'x2', 'x1',
+          ].map((name, index): readonly [string, string] => [name, String(index)]),
+        ],
+        null,
+      ),
+      'x8=7&ECHO=4&DELTA=18&ALPHA=16&siteid=default&ZULU=19&HOTEL=8&OSCAR=20&lima=9&KAPPA=5&y1=10&y2=11&x1=23&y3=15&' +
+        'x2=22&foobar=13&x4=21&x5=0&x6=2&x7=3&',
+    ],
+    ['an unnamed posted field with a named one', source([...POSTED_SEARCH, ['', 'x'], ['b', '1']], null), '=x&b=1&siteid=default&'],
+    [
+      'an unnamed posted field, not the request target',
+      source([['', 'x']], '/admin/?muraAction=cUsers.advancedSearch&siteid=default&q=y'),
+      '=x&',
+    ],
+    [
+      'an unnamed target parameter',
+      source([], '/admin/?muraAction=cUsers.advancedSearch&siteid=default&q=y&=z'),
+      '=z&q=y&siteid=default&',
+    ],
+    ['the request target without a query', source([], '/admin/'), ''],
     [
       'the first value of a repeated target parameter, ISPUBLIC dropped in any case',
-      source({}, '/admin/?muraAction=cUsers.advancedSearch&siteid=default&b=1&b=2&ISPUBLIC=1&a='),
+      source([], '/admin/?muraAction=cUsers.advancedSearch&siteid=default&b=1&b=2&ISPUBLIC=1&a='),
       'a=&b=1&siteid=default&',
     ],
     [
       'the URL scope of rc.currentURL without the gateway header',
-      source({}, null, './?muraAction=cUsers.advancedSearch&siteid=default&q=x'),
+      source([], null, './?muraAction=cUsers.advancedSearch&siteid=default&q=x'),
       'q=x&siteid=default&',
     ],
   ])('reads %s', (_label, req, qs) => {

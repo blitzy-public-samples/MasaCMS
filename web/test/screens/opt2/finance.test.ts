@@ -11,7 +11,6 @@ import { rbFor } from '@/lib/resource-bundles/rb';
 import { financeActions, financeScreens } from '@/screens/opt2/finance';
 import {
   noAccessUrl,
-  opt2ActionUrl,
   opt2ScreenUrl,
   OPT2_LABEL_KEYS,
   type Opt2LabelName,
@@ -28,6 +27,7 @@ import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeReply, type FakeRouteTable } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
+import { recordInState } from './finance/support';
 
 // The registry module loads every circuit; these pages render with the only shell hooks they read.
 vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
@@ -166,10 +166,10 @@ describe('finance screens', () => {
       [ROLLUPS_ROUTE]: financeError(400, 'Bad Request'),
     }],
     [
-      'a record with every button and form',
+      'a record with transition buttons and every form',
       'record',
       () => request(PREPARER, { id: RECORD_ID }, [PREPARER, APPROVER]),
-      {},
+      recordInState('REJECTED'),
     ],
     ['a record finance does not know', 'record', () => request(PREPARER, { id: RECORD_ID }), {
       [recordRoute(RECORD_ID)]: financeError(404, 'Not Found'),
@@ -179,40 +179,6 @@ describe('finance screens', () => {
 
     expect(classes.length).toBeGreaterThan(0);
     expect(classes.filter((token) => !isLegacyClass(token))).toEqual([]);
-  });
-
-  // Buttons follow the token's roles in every state: finance's transition table alone decides legality (409).
-  it.each(
-    financeRecords
-      .filter(({ state }) => state !== financeRecordDetail.state)
-      .flatMap(({ record_id, state }) => [
-        {
-          state,
-          record_id,
-          role: PREPARER,
-          labels: ['Submit', 'Resubmit', ...DOWNLOAD_BUTTONS, 'Upload', 'Save'],
-          actions: ['submit', 'resubmit'],
-        },
-        {
-          state,
-          record_id,
-          role: APPROVER,
-          labels: ['Approve', 'Reject', ...DOWNLOAD_BUTTONS],
-          actions: ['approve', 'reject'],
-        },
-      ]),
-  )('offers $role the buttons of its role in state $state', async (row) => {
-    const detail = { ...financeRecordDetail, record_id: row.record_id, state: row.state };
-    const $ = load(
-      await documentOf(screen('record'), request(row.role, { id: row.record_id }), {
-        [recordRoute(row.record_id)]: { status: 200, body: { data: detail } },
-      }),
-    );
-
-    expect($('#mura-content button').toArray().map((button) => $(button).text())).toEqual(row.labels);
-    expect($('#mura-content .btn-group > button').toArray().map((button) => $(button).attr('formaction'))).toEqual(
-      row.actions.map((name) => opt2ActionUrl('finance', name, { siteid: SITE, id: row.record_id })),
-    );
   });
 });
 
@@ -258,7 +224,7 @@ describe('finance screens in the session locale', () => {
     {
       name: 'record',
       req: () => request(PREPARER, { id: RECORD_ID }, [PREPARER, APPROVER]),
-      routes: {},
+      routes: recordInState('IN-PROGRESS'),
       expected: () => ({
         headings: ['Finance Record', fr('Version History'), 'Attachments', 'Upload Attachment', 'Edit Record'],
         labels: [fr('File'), fr('Title'), 'Amount', 'Period'],
@@ -266,7 +232,7 @@ describe('finance screens in the session locale', () => {
           ...[fr('Title'), 'Amount', 'Period', fr('State'), fr('Version'), fr('Created'), fr('Last Update')],
           ...attachments.flatMap(() => ['File Name', fr('Content Type'), 'Size (bytes)', 'SHA-256', fr('Created')]),
         ],
-        buttons: [fr('Submit'), 'Resubmit', fr('Approve'), fr('Reject'), ...DOWNLOAD_BUTTONS, 'Upload', fr('Save')],
+        buttons: [fr('Submit'), ...DOWNLOAD_BUTTONS, 'Upload', fr('Save')],
         headers: [
           [fr('Version'), fr('Action'), fr('State'), fr('Title'), 'Amount', 'Period', 'Actor', fr('Created')],
         ],

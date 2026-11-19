@@ -693,6 +693,29 @@ describe('buildAdminRequest', () => {
       expect({ ...request.formScope }).toEqual({ fname: 'Ann', photo: 'photo.png' });
     });
 
+    const POSTED_FIELDS = [
+      ['b', '1'],
+      ['A', 'x'],
+      ['b', '2'],
+      ['a', 'y'],
+      ['', 'z'],
+      ['photo', 'p.png'],
+    ] as const;
+    const multipartFields = new FormData();
+    for (const [name, value] of POSTED_FIELDS) {
+      multipartFields.append(name, name === 'photo' ? new File([], value) : value);
+    }
+
+    it.each([
+      ['url-encoded', new URLSearchParams(POSTED_FIELDS.map(([name, value]) => [name, value]))],
+      ['multipart', multipartFields],
+    ])('keeps the %s body fields in order, names and values as posted', async (_encoding, form) => {
+      const { request } = await build({ mode: 'redirect', target: '/admin/?muraAction=cusers.advancedsearch&q=1', form });
+
+      expect(request.formFields).toEqual(POSTED_FIELDS);
+      expect({ ...request.formScope }).toEqual({ b: '1,2', A: 'x,y', photo: 'p.png' });
+    });
+
     it('takes the URL scope from the original URL when a body is given', async () => {
       const { request } = await build({
         mode: 'raw',
