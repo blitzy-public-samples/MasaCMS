@@ -123,7 +123,7 @@ export type RenderedPage =
   | { kind: 'redirect'; location: string };
 
 /** A definition rendered inside the shell. */
-type PageDefinition = PageScreen<any> | Opt2ScreenDefinition;
+type PageDefinition = PageScreen | Opt2ScreenDefinition;
 
 /** `def` when it renders inside the shell; fragment, JSON, download and redirect screens are called directly. */
 function pageDefinition(def: ScreenDefinition | Opt2ScreenDefinition): PageDefinition {

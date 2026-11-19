@@ -26,7 +26,7 @@ export const COORDINATION_SCHEMAS = Object.freeze(['gateway', 'migration'] as co
 
 type AssertNever<T extends never> = T;
 // Fails to compile when DB_SCHEMAS gains a schema that is neither a service nor a coordination schema.
-type UnclassifiedDbSchema = AssertNever<
+type _UnclassifiedDbSchema = AssertNever<
   Exclude<DbSchema, (typeof SERVICE_SCHEMAS)[number]['schema'] | (typeof COORDINATION_SCHEMAS)[number]>
 >;
 

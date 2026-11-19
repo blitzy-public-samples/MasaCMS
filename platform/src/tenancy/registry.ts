@@ -54,7 +54,8 @@ export interface SiteChangedEvent {
   aggregateType?: string;
   aggregateId?: string;
   aggregateVersion: number;
-  payload: SiteChangedPayload;
+  /** A {@link SiteChangedPayload}, read field by field. */
+  payload: unknown;
 }
 
 /** Raised when an event's tenant is not the tenant of the site it describes. */

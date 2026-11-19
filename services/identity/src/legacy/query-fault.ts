@@ -72,6 +72,11 @@ export function userInsertFault(inline: UserInline, values: Readonly<Record<stri
   return statementFault(userInsertSql(inline), 'tusers', statementValues(USER_INSERT_COLUMNS, { ...values, ...inline }), env);
 }
 
+/** The primary-key violation of `userDAO.create`'s INSERT of an id `tusers` already holds, quoting the `char(35)` key padded as stored. */
+export function userKeyFault(inline: UserInline): LegacyQueryFault {
+  return primaryKeyFault(userInsertSql(inline), 'PK_tusers', 'tusers', windows1252Text(inline.userid).padEnd(35));
+}
+
 /** The values `userDAO.update` inlines, which set no Perm but the site id. */
 export type UserUpdateInline = Omit<UserInline, 'perm'> & { siteid: string };
 

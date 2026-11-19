@@ -992,7 +992,7 @@ describe('createVersionMenuClient', () => {
     }
   });
 
-  it.each<[string, Record<string, unknown>, LegacyVersionMenu]>([
+  it.each<[string, Record<keyof LegacyVersionMenu, unknown>, LegacyVersionMenu]>([
     ['keeps text and null values', LEGACY_VERSION_MENU, LEGACY_VERSION_MENU],
     [
       'reads a Java version and the absent OS keys',

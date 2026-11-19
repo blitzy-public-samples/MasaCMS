@@ -54,8 +54,8 @@ async function readTree(dir: string): Promise<Record<string, string>> {
 
 async function importGenerated(outDir: string): Promise<GeneratedBundles> {
   const url = pathToFileURL(path.join(outDir, 'index.ts')).href;
-  const module = (await import(/* @vite-ignore */ url)) as { generatedBundles: GeneratedBundles };
-  return module.generatedBundles;
+  const imported = (await import(/* @vite-ignore */ url)) as { generatedBundles: GeneratedBundles };
+  return imported.generatedBundles;
 }
 
 const sha1Name = (base: string): string => `x_${createHash('sha1').update(base, 'utf8').digest('hex').slice(0, 12)}`;

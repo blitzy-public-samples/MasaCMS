@@ -446,6 +446,30 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect(await gated(SITE, (tx) => repo.findGroup(tx, ids.parent))).toMatchObject({ groupname: 'Parent', email: null, subtype: 'Default', tablist: null });
   });
 
+  it.each<[string, 'beta' | 'members']>([
+    ['an account of tenant-a', 'beta'],
+    ["a group of the umbrella, tenant-a's public pool", 'members'],
+  ])('answers an admin create under the id of %s with the legacy 500 naming the INSERT the tusers key refuses, and writes nothing', async (_label, holder) => {
+    vi.stubEnv('MURA_DATASOURCE', 'muradb');
+    const userid = ids[holder];
+    const stored = (): Promise<unknown[]> =>
+      Promise.all([SITE, UMBRELLA].map((site) => gated(site, async (tx) => [await repo.findGroup(tx, userid), await repo.findAccountById(tx, userid, { includePending: true })])));
+    const before = await stored();
+
+    const res = await send('POST', '/v1/groups', await admin(), { userid, groupname: 'Taken', isPublic: '0', ...csrfFields(userid) });
+
+    expect(res.statusCode).toBe(500);
+    const detail = `[Macromedia][SQLServer JDBC Driver][SQLServer]Violation of PRIMARY KEY constraint 'PK_tusers'. Cannot insert duplicate key in object 'dbo.tusers'. The duplicate key value is (${userid}).`;
+    const sql = expect.stringMatching(new RegExp(`^INSERT INTO tusers [^]*VALUES\\(\\n         '${userid}',`));
+    expect(res.json()).toEqual({
+      apiversion: 'v1',
+      method: 'invalid',
+      error: { code: 'server_error', message: 'Unhandled Exception', stacktrace: { message: 'Error Executing Database Query.', type: 'Database', datasource: 'muradb', errorcode: '23000', detail, sql } },
+    });
+    expect(before.flat().filter((row) => row !== null)).toHaveLength(1);
+    expect(await stored()).toEqual(before);
+  });
+
   it('creates under the posted id as CSRF context, forcing a non-admin to a Member group', async () => {
     const adminGroup = nextId('B');
     const editorGroup = nextId('B');

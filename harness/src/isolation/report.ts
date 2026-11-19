@@ -156,7 +156,7 @@ const CASE_RESULTS = Object.freeze(['pass', 'violation', 'inconclusive', 'skippe
 
 type AssertNever<T extends never> = T;
 // Fails to compile when the gateway matrix gains a case result this schema does not accept.
-type UnlistedCaseResult = AssertNever<Exclude<CaseResult, (typeof CASE_RESULTS)[number]>>;
+type _UnlistedCaseResult = AssertNever<Exclude<CaseResult, (typeof CASE_RESULTS)[number]>>;
 
 const count = z.number().int().nonnegative();
 

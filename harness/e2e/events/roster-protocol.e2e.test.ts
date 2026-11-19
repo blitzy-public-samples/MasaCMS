@@ -739,7 +739,7 @@ function exchangeWithheld(req: IncomingMessage, scope: AbortSignal): Promise<voi
   const { socket } = req;
   return new Promise((resolve, reject) => {
     let settled = false;
-    let out: ClientRequest | undefined;
+    let out: ClientRequest | undefined = undefined;
     let upstream: IncomingMessage | undefined;
     const settle = (error?: Error): void => {
       if (settled) return;

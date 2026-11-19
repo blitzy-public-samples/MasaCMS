@@ -73,17 +73,19 @@ jobs:
         run: |
           test "$(node -v)" = "v22.23.4"
           test "$(npm -v)" = "11.21.0"
-      - name: Install platform
-        working-directory: platform
+      # harness locks @redocly/cli; its postinstall installs platform, whose ajv the schema compile uses.
+      - name: Install harness
+        working-directory: harness
         run: npm ci
       - name: Lint OpenAPI
+        working-directory: harness
         run: |
-          mapfile -t files < <(git ls-files -- ':(glob)**/contracts/openapi.yaml')
+          mapfile -t files < <(git ls-files -- ':(top,glob)**/contracts/openapi.yaml')
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no tracked contracts/openapi.yaml found"
             exit 1
           fi
-          npx --yes @redocly/cli@2.72.1 lint "${files[@]}"
+          npx --no-install redocly lint "${files[@]}"
       - name: Compile schemas
         run: |
           mapfile -t files < <(git ls-files -- ':(glob)**/contracts/events/*.json' ':(glob)platform/contracts/*.json')

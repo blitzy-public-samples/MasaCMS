@@ -180,7 +180,7 @@ export async function resetLocalSchemas(client: SqlClient, list: readonly Schema
   const { rows } = await client.query('SELECT rolname FROM pg_roles WHERE rolname = ANY($1::text[])', [
     allRoleNames(list),
   ]);
-  const existing = new Set(rows.map((row: { rolname: string }) => row.rolname));
+  const existing = new Set((rows as { rolname: string }[]).map((row) => row.rolname));
   for (const roles of [...list].reverse()) {
     for (const statement of dropLocalSql(roles, existing)) {
       await client.query(statement);
@@ -194,7 +194,7 @@ export async function nonEmptySchemas(client: SqlClient, schemas: readonly strin
     "SELECT n.nspname FROM pg_namespace n JOIN pg_class c ON c.relnamespace = n.oid WHERE n.nspname = ANY($1::text[]) AND c.relkind IN ('r','p') GROUP BY n.nspname",
     [[...schemas]],
   );
-  const populated = new Set(rows.map((row: { nspname: string }) => row.nspname));
+  const populated = new Set((rows as { nspname: string }[]).map((row) => row.nspname));
   return schemas.filter((schema) => populated.has(schema));
 }
 

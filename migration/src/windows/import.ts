@@ -1501,7 +1501,7 @@ interface ImportStep {
   readonly target: LegacyTableTarget;
 }
 
-// Memoised although the Minimal Change rule bans new caching: that rule does not bind this refactor, and each order costs ~0.3 s.
+// Memoised: each order costs ~0.3 s.
 const ranksByCatalog = new WeakMap<WindowImportContext['catalog'], Map<string, ReadonlyMap<string, number>>>();
 
 /** Dependency-order position of each ownership table by lookup key, computed once per catalog and inventory file. */

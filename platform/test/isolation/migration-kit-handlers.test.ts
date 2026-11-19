@@ -1423,7 +1423,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect(third).toMatchObject({ published: rows.slice(4), publishedNext: rows[4]?.seq, publishedComplete: true, publishedUpTo: 4 });
   });
 
-  it.each([
+  it.each<[string, { held?: boolean; publishedAt: null }]>([
     ['an unpublished row', { publishedAt: null }],
     ['a held row', { held: true, publishedAt: null }],
   ])('stops the cursor below %s of the asked topics until it is published', async (_label, blocking) => {

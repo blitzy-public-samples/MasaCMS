@@ -291,6 +291,8 @@ Read by the service, `opt2-migrate` and `opt2-ops`, whose `--help` lists every v
 ```sh
 npm ci                  # installs and builds ../platform through postinstall
 npm run build           # generates contract types into src/generated/, then tsc -> dist/
+npm run typecheck       # tsc over src/, test/ and vitest.config.ts (test/tsconfig.json), no emit
+npm run lint            # eslint with typescript-eslint recommended (eslint.config.mjs)
 npm test                # vitest with coverage, >= 90% statements
 npm run test:contract   # test/contract
 npm run test:security   # test/security: route and role matrix through app.inject

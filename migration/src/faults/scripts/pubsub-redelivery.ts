@@ -267,7 +267,7 @@ type BarrierOutcome =
 
 async function run(env: FaultEnv, params: PubsubRedeliveryParams, ports: Ports): Promise<FaultRunOutput> {
   const { ctx } = env;
-  const { producers, drainTimeoutMs } = params;
+  const { producers } = params;
   const latest = await latestSnapshot(ctx);
   if (latest === null) return { assertions: [fail(REPLAYED, 'no snapshot', 'take S0 and backfill before this fault')], details: { producers } };
   const since = params.since ?? (await earliestSnapshot(ctx, latest)).takenAt.toISOString();

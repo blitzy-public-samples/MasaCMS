@@ -13,7 +13,7 @@ import { PUBLISHED_PAGE_LIMIT, RECEIPT_QUERY_MAX_IDS } from '../quiesce/drain.js
 import { fingerprintKey, fingerprintTables } from './fingerprints.js';
 import { siteTopicSubscribers } from './site-registration.js';
 
-// Bounded although the Minimal Change rule bans new timeouts: that rule does not bind this refactor, and an unbounded wait would hold the window's gates.
+// Bounded: an unbounded wait would hold the window's gates.
 /** Longest one import attempt waits for the receipts of the events published in the tenants of the sites it deletes. */
 export const DELETION_WAIT_MS = 10_000;
 

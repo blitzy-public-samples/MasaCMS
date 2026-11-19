@@ -131,6 +131,8 @@ Prerequisites: Node.js 22.23.4 (`engines` in `package.json`, enforced by `engine
 npm ci                # also installs and builds ../platform (postinstall)
 npm run generate      # service clients and resource bundles into src/generated/
 npm run build         # runs generate, then next build
+npm run typecheck     # tsc --noEmit over tsconfig.json (app/, src/, test/, config files); needs src/generated/
+npm run lint          # eslint with next/typescript and Next.js core-web-vitals rules (eslint.config.mjs)
 PORT=8101 npm start   # node server.ts; reads the environment below
 npm test              # runs generate, then vitest with coverage (>= 90% statements)
 ```

@@ -290,7 +290,7 @@ async function exec(client: SqlClient, statements: readonly string[]): Promise<v
 
 async function presentRoles(client: SqlClient, names: readonly string[]): Promise<Set<string>> {
   const { rows } = await client.query(ROLES_PRESENT_SQL, [[...names]]);
-  return new Set(rows.map((row: { rolname: string }) => row.rolname));
+  return new Set((rows as { rolname: string }[]).map((row) => row.rolname));
 }
 
 async function selfGrantCreatedRoles(admin: SqlClient): Promise<void> {
@@ -470,7 +470,7 @@ export async function teardown(opts: TeardownOptions): Promise<TeardownSummary> 
     const admin = await deps.connect({ kind: 'admin' });
     try {
       const { rows } = await admin.query(SCHEMAS_PRESENT_SQL, [names]);
-      const present = new Set(rows.map((row: { nspname: string }) => row.nspname));
+      const present = new Set((rows as { nspname: string }[]).map((row) => row.nspname));
       const droppedRoles = (await presentRoles(admin, allRoleNames(roles))).size;
       await resetLocalSchemas(admin, roles);
       const dropped = names.filter((schema) => present.has(schema));

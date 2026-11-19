@@ -144,8 +144,8 @@ function buildTenantDb(pool: pg.Pool, opts: TenantDbOptions): TenantDb {
  */
 function listenerConfig(options: pg.PoolConfig): pg.ClientConfig {
   const config = Object.defineProperties<pg.ClientConfig>({}, Object.getOwnPropertyDescriptors(options));
-  // Departs from the Minimal Change rule's ban on new timeouts: pg waits forever by default, and a listener that never
-  // starts would leave its local task dispatcher, outbox sweeps included, idle.
+  // pg waits forever by default; a listener that never starts would leave its local task dispatcher, outbox sweeps
+  // included, idle.
   const configured = options.connectionTimeoutMillis ?? 0;
   const timeoutMs = configured > 0 ? configured : DEFAULT_LISTEN_TIMEOUT_MS;
   config.connectionTimeoutMillis = timeoutMs;

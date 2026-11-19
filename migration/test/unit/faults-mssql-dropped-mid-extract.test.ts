@@ -2,7 +2,7 @@
 import { EventEmitter } from 'node:events';
 
 import { REDACTED } from '@opt2/platform/logging';
-import type { ConnectionPool, Request } from 'mssql';
+import type { ConnectionPool } from 'mssql';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runFeed, type FeedResult } from '../../src/apply/index.js';

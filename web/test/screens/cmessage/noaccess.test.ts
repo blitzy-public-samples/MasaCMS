@@ -57,7 +57,7 @@ function elementShapes(markup: string): string[] {
 function noaccessScreen(): PageScreen<undefined> {
   const def = cmessageScreens.find((candidate) => candidate.action === 'noaccess');
   if (def?.mode !== 'page') throw new TypeError('cmessage.noaccess is not a registered page screen');
-  return def;
+  return def as PageScreen<undefined>;
 }
 
 /** The gate's decision for `req`, with the controller's `secure()` as a spy. */

@@ -252,7 +252,7 @@ function tenantSave(
 function updatePage(ctx: ScreenContext): PageScreen<CcategoryEditData> {
   const def = findScreen('ccategory', 'update', ctx.req.rc);
   if (def?.mode !== 'page') throw new Error('cCategory.update is not a registered page');
-  return def;
+  return def as PageScreen<CcategoryEditData>;
 }
 
 /** The view the registered page renders after a save that redirects to nothing. */

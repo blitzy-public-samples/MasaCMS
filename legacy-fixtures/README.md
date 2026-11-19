@@ -275,6 +275,8 @@ Commands, from `seed/`:
 | Command | Effect |
 |---|---|
 | `npm ci && npm run build && npm test` | Install (the `postinstall` builds `../../platform`), compile, run the tests with coverage |
+| `npm run typecheck` | Type-checks `src/`, `test/` and `vitest.config.ts` through `test/tsconfig.json`, without emitting |
+| `npm run lint` | ESLint with typescript-eslint recommended over the package (`eslint.config.mjs`) |
 | `npm run test:contract` | `test/contract/`: the fixture table registry and direct mode's apply bodies against the fixture DDL |
 | `npm run test:security` | `test/security/`: credential generation and owner-only storage |
 | `npm run generate` | Writes `dataset.json`, its part files and `manifest.json` to `${OPT2_STATE_DIR}/seed/` (`--out` overrides), plus `credentials.json` there; only the default output also writes `${OPT2_STATE_DIR}/secrets/seed-credentials.json` |

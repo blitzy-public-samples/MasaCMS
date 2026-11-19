@@ -153,6 +153,8 @@ The package scripts run in `harness/`. From the repository root:
 cd harness
 npm ci              # installs, then builds ../platform through postinstall
 npm run build       # generates the gateway and migration client types, then type-checks (tsc, no emit)
+npm run typecheck   # type-checks src/, test/, e2e/ and both vitest configs without generating (tsc, no emit)
+npm run lint        # eslint with typescript-eslint recommended (test/eslint.config.mjs)
 npm test            # test/** only, with coverage (>= 90% statements); needs no legacy oracle or running stack
 npm run test:contract   # the check-pin, check-synthetic, catalogue-response-paths and route-key-parity suites of test/
 npm run test:security   # test/security and the repro:secrets suite
@@ -166,6 +168,8 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 | `postinstall` | `npm ci` and `npm run build` in `../platform` | `platform/dist/` |
 | `generate` (run by `prebuild`) | `openapi-typescript` over `gateway/contracts/openapi.yaml` and `migration/contracts/openapi.yaml` | `src/generated/clients/{gateway,migration}.ts` |
 | `build` | `tsc -p tsconfig.json` | — |
+| `typecheck` | `tsc -p tsconfig.json` | — |
+| `lint` | `eslint --config test/eslint.config.mjs .` | — |
 | `test` | `vitest.config.ts` | `coverage/` |
 | `test:contract` | `vitest.config.ts`: `test/reporting/check-pin*`, `test/reporting/check-synthetic*`, `test/golden/catalogue-response-paths*`, `test/route-key-parity*` | — |
 | `test:security` | `vitest.config.ts`: `test/security/`, `test/repro/secrets*` | — |

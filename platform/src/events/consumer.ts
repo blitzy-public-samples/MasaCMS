@@ -6,7 +6,6 @@ import {
   TenantMismatchError,
   registryEntryForTenant,
   userPoolFanoutTenants,
-  type SiteChangedPayload,
   type TenantDb,
   type TenantTx,
   type tenantRegistryConsumer,
@@ -61,7 +60,7 @@ export interface ConsumeOutcome {
 }
 
 // tsc rejects this alias if the registry consumer stops being registrable without a cast.
-type RegistryConsumerCheck<T extends ConsumerDefinition<SiteChangedPayload> = typeof tenantRegistryConsumer> = T;
+type _RegistryConsumerCheck<T extends ConsumerDefinition = typeof tenantRegistryConsumer> = T;
 
 /** The envelope tenant first, then, for a `userPool` fan-out, every registered tenant whose public or private user pool it is, sorted. */
 export async function destinationTenants(

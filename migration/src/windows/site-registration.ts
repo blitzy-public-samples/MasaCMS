@@ -11,7 +11,7 @@ import type { DataOwner } from '../owners/index.js';
 import { declaredSubscriptions } from '../quiesce/topology.js';
 import type { TableFingerprint } from './fingerprints.js';
 
-// Bounded although the Minimal Change rule bans new timeouts: that rule does not bind this refactor, and an unbounded wait would hold the window's gates.
+// Bounded: an unbounded wait would hold the window's gates.
 /** Longest one import attempt waits for the consumers to register the window's new tenants. */
 export const REGISTRATION_WAIT_MS = 10_000;
 
@@ -25,7 +25,7 @@ export interface Unregistered {
   readonly error?: unknown;
 }
 
-// Memoised although the Minimal Change rule bans new caching: that rule does not bind this refactor, and each read parses an owner's contract.
+// Memoised: each read parses an owner's contract.
 const topicsByContract = new Map<string, readonly string[]>();
 
 /** Topics `owner`'s contract declares push subscriptions to, read once per owner and package. */

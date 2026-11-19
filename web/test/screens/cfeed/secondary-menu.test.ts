@@ -42,9 +42,9 @@ function listLinks(siteid: string, permissions: boolean): DomLink[] {
     href: `./?muraAction=cfeed.edit&feedID=&siteid=${siteid}&type=${type}`,
     text,
   });
-  const module = COLLECTIONS_MODULE_ID;
+  const moduleId = COLLECTIONS_MODULE_ID;
   const perm: DomLink = {
-    href: `./?muraAction=cperm.module&contentid=${module}&moduleid=${module}&siteid=${siteid}`,
+    href: `./?muraAction=cperm.module&contentid=${moduleId}&moduleid=${moduleId}&siteid=${siteid}`,
     text: 'Permissions',
   };
   return [add('Local', 'Add Local Index'), add('Remote', 'Add Remote Feed'), ...(permissions ? [perm] : [])];
@@ -90,8 +90,8 @@ const link = (href: string, icon: string, extra: Partial<LinkAttrs> = {}): LinkA
 function listAttrs(siteid: string, permissions: boolean): LinkAttrs[] {
   const add = (type: string, title: string): LinkAttrs =>
     link(`./?muraAction=cFeed.edit&feedID=&siteid=${siteid}&type=${type}`, 'mi-plus-circle', { title });
-  const module = COLLECTIONS_MODULE_ID;
-  const perm = link(`./?muraAction=cPerm.module&contentid=${module}&siteid=${siteid}&moduleid=${module}`, 'mi-group', {
+  const moduleId = COLLECTIONS_MODULE_ID;
+  const perm = link(`./?muraAction=cPerm.module&contentid=${moduleId}&siteid=${siteid}&moduleid=${moduleId}`, 'mi-group', {
     className: 'btn ',
   });
   return [add('Local', 'Add Local Index'), add('Remote', 'Add Remote Feed'), ...(permissions ? [perm] : [])];

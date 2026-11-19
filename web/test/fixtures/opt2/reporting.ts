@@ -32,7 +32,16 @@ const OBJECT_PREFIX = `/opt2/files/reporting-exports/${TENANT_A.tenantId}`;
 const URL_EXPIRES = 1782821700;
 const URL_EXPIRES_AT = '2026-06-30T12:15:00.000Z';
 
-export const exportDefinitions: S['ExportDefinition'][] = [
+/** A seeded `synthetic.export_definition` row: the source and column list a job exports. */
+export type SeededExportDefinition = {
+  definition_id: S['CfUuid'];
+  siteid: S['SiteId'];
+  name: string;
+  source: 'timesheets.sheets' | 'finance.records' | 'broken';
+  columns: string[];
+};
+
+export const exportDefinitions: SeededExportDefinition[] = [
   {
     definition_id: REPORTING_IDS.definitionTimesheetStatus,
     siteid: TENANT_A.siteId,

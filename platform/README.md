@@ -143,6 +143,8 @@ Loading:
 ```sh
 npm ci
 npm run build           # tsc -> dist/
+npm run typecheck       # tsc over src/, test/ and vitest.config.ts (test/tsconfig.json), no emit
+npm run lint            # eslint with typescript-eslint recommended (eslint.config.mjs)
 npm test                # vitest with coverage, >= 90% statements
 npm run test:contract   # test/contract only
 ```

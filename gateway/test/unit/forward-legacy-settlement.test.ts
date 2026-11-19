@@ -720,17 +720,16 @@ describe('forwardToLegacy buffer mode holds the response in a removed request-ow
         const failure = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
         vi.spyOn(Object.getPrototypeOf(probe) as FileHandle, 'writeFile').mockRejectedValueOnce(failure);
       }
-      let client: ReturnType<typeof send> | undefined;
       const onSettled = vi.fn<OnSettled>(() => Promise.resolve());
       const onBuffered = vi.fn<OnBuffered>(async () => {
         if (leave !== 'held') return;
-        client?.req.destroy();
+        client.req.destroy();
         await delay(50);
       });
       const beforeSend = 'reject' in row ? vi.fn<LegacyBeforeSend>(() => Promise.reject(new Error('identity unavailable'))) : undefined;
       const gateway = await startGateway({ mode: 'buffer', onSettled, onBuffered, beforeSend });
 
-      client = send(gateway, WRITE_PATH, { onData: leave === 'mid-send' ? (req) => req.destroy() : undefined });
+      const client = send(gateway, WRITE_PATH, { onData: leave === 'mid-send' ? (req) => req.destroy() : undefined });
       const outcome = await client.outcome;
       await delay(SETTLE_DELAY_MS);
 

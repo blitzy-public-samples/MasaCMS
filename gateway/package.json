@@ -12,6 +12,8 @@
     "generate": "openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../services/identity/contracts/openapi.yaml -o src/generated/clients/identity.ts && openapi-typescript ../migration/contracts/openapi.yaml -o src/generated/clients/migration.ts",
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p test/tsconfig.json",
+    "lint": "eslint .",
     "start": "node dist/main.js",
     "test": "vitest run --coverage",
     "test:contract": "vitest run test/contract",

@@ -20,6 +20,7 @@ import {
 import { OperationBlockedError, withGatedTenant, type RepositoryRow } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import {
+  knownTenants,
   registeredTenants,
   registryEntryForTenant,
   siteForTenant,
@@ -39,6 +40,7 @@ import {
   addressUpdateFault,
   tagInsertFault,
   userInsertFault,
+  userKeyFault,
   userUpdateFault,
   type UserInline,
 } from '../legacy/query-fault.js';
@@ -1143,6 +1145,16 @@ function primaryAddressFault(address: GroupAddressRowInput, fields: GroupAddress
   return addressInsertFault(inline, { ...boundAddressText(address), addressname: address.addressname || 'Primary' });
 }
 
+/** Whether an account (pending included) or a group of one of `tenants` holds `userId`, which legacy keys once [legacy: core/setup/db/mssql.sql:871-875]; aborting `signal` ends the reads with its reason. */
+async function idHeld(deps: GroupDeps, userId: string, tenants: readonly string[], signal: AbortSignal): Promise<boolean> {
+  const { db, repo } = deps;
+  for (const candidate of tenants) {
+    const held = await withTenant(db, candidate, async (tx) => (await repo.findAccountById(tx, userId, { includePending: true })) !== null || (await repo.findGroup(tx, userId)) !== null, { signal });
+    if (held) return true;
+  }
+  return false;
+}
+
 /** Creates a group as `userManager.create` does [legacy: core/mura/user/userManager.cfc:563-703; core/mura/user/userDAO.cfc:300-355]. */
 export async function createGroup(deps: GroupDeps, actor: GroupActor, input: GroupSaveInput): Promise<GroupSaveResult> {
   requireSite(input);
@@ -1163,25 +1175,40 @@ export async function createGroup(deps: GroupDeps, actor: GroupActor, input: Gro
   const tags = tagWrite(userId, values.siteid, values.tags);
   const address = fromTrash ? undefined : primaryAddress(userId, addressSite, input.address);
   const fault = tags.fault ?? (address === undefined ? undefined : primaryAddressFault(address, input.address));
-  const row = await withGatedTenant(deps.db, tenantId, async (tx) => {
-    const { repo, events } = deps;
-    // Legacy leaves a deleted group's memberships, so a re-created id may already hold some.
-    const before = await repo.membershipGroupIds(tx, userId);
-    const group = await repo.insertGroup(tx, columns, auditActor(actor));
-    for (const groupId of listItems(input.groupID)) await repo.addMembership(tx, userId, groupId);
-    await repo.clearBadMemberships(tx, { userId, siteId: values.siteid, s2: values.s2, ispublic: values.ispublic });
-    const categoryIds = listItems(input.categoryID);
-    if (categoryIds.length > 0) await repo.replaceGroupInterests(tx, { groupId: userId, categoryIds, onlyCategoryIds: [] });
-    await repo.replaceGroupTags(tx, { groupId: userId, siteId: values.siteid, tags: tags.tags });
-    if (extendSetId !== '' && input.extendData !== undefined) await repo.replaceGroupExtendData(tx, { groupId: userId, rows: input.extendData });
-    if (tags.fault === undefined) {
-      // takeOut's file-version restore is strategies-content's; only identity's trash row is removed [legacy: core/mura/trash/trashManager.cfc:405-442].
-      if (fromTrash) await repo.delete(tx, GROUP_TRASH.table, { objectid: userId });
-      else if (address !== undefined && fault === undefined) await repo.insertGroupAddress(tx, address);
-    }
-    await events.publishGroupChanged(tx, group, { deleted: false });
-    await publishOwnMemberships(deps, tx, userId, values.siteid, before);
-    return group;
+  // One budget, started with withOpenAccount's own waits, ends the holder check's reads and their pool checkouts.
+  const budget = new AbortController();
+  const timer = setTimeout(() => budget.abort(new OperationBlockedError([...ACCOUNT_OPERATION_UNITS], `The holder check of ${userId} outlasted the closed-user wait`)), USER_CLOSED_WAIT_MS);
+  const row = await withOpenAccount(
+    deps.db,
+    tenantId,
+    userId,
+    async (tx) => {
+      const { repo, events } = deps;
+      // Under the exclusive account fence, so a racing create of this id in any tenant has committed or still waits.
+      // The registry is read on this connection: a registry transaction of its own would take a second one the budget cannot end.
+      const tenants = [...new Set([tenantId, ...(await knownTenants(tx)).map((entry) => entry.tenantId)])];
+      if (await idHeld(deps, userId, tenants, budget.signal)) throw userKeyFault(groupInline(userId, flags));
+      // Legacy leaves a deleted group's memberships, so a re-created id may already hold some.
+      const before = await repo.membershipGroupIds(tx, userId);
+      const group = await repo.insertGroup(tx, columns, auditActor(actor));
+      for (const groupId of listItems(input.groupID)) await repo.addMembership(tx, userId, groupId);
+      await repo.clearBadMemberships(tx, { userId, siteId: values.siteid, s2: values.s2, ispublic: values.ispublic });
+      const categoryIds = listItems(input.categoryID);
+      if (categoryIds.length > 0) await repo.replaceGroupInterests(tx, { groupId: userId, categoryIds, onlyCategoryIds: [] });
+      await repo.replaceGroupTags(tx, { groupId: userId, siteId: values.siteid, tags: tags.tags });
+      if (extendSetId !== '' && input.extendData !== undefined) await repo.replaceGroupExtendData(tx, { groupId: userId, rows: input.extendData });
+      if (tags.fault === undefined) {
+        // takeOut's file-version restore is strategies-content's; only identity's trash row is removed [legacy: core/mura/trash/trashManager.cfc:405-442].
+        if (fromTrash) await repo.delete(tx, GROUP_TRASH.table, { objectid: userId });
+        else if (address !== undefined && fault === undefined) await repo.insertGroupAddress(tx, address);
+      }
+      await events.publishGroupChanged(tx, group, { deleted: false });
+      await publishOwnMemberships(deps, tx, userId, values.siteid, before);
+      return group;
+    },
+    { exclusive: true, sleep: deps.sleep },
+  ).finally(() => {
+    clearTimeout(timer);
   });
   if (fault !== undefined) throw fault;
   return { written: true, group: recordOf(row), errors: {} };

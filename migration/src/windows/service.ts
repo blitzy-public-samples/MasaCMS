@@ -638,7 +638,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
   const running = new Set<Promise<void>>();
   let loop: { stop(): Promise<void> } | undefined;
   const fingerprintReader = options.readFingerprints ?? readFingerprints;
-  // Held although the Minimal Change rule bans new caching: that rule does not bind this refactor, and they spare each import a whole-table compare.
+  // Held so that each import is spared a whole-table compare.
   /** Row fingerprints each open window took before legacy executed, by window id, oldest first. */
   const heldFingerprints = new Map<string, WindowFingerprints>();
   /** Published-event cursors each open window holding the site unit took before legacy executed, by window id, oldest first. */
@@ -684,7 +684,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     return result;
   }
 
-  // Bounded although the Minimal Change rule bans new timeouts: that rule does not bind this refactor, and an unbounded read would hold the window's gates.
+  // Bounded: an unbounded read would hold the window's gates.
   /** Reads the row fingerprints of legacy `tables` under `scope` within `timeoutMs`, whatever the reader awaits; undefined, with a warning, when the read fails or outlasts it. */
   async function takeFingerprints(windowId: string, tables: readonly string[], scope: WindowScope, timeoutMs: number): Promise<WindowFingerprints | undefined> {
     const signal = timeoutSignal(timeoutMs);

@@ -84,8 +84,7 @@ export interface PushSubscriptionOptions<P> {
 
 /** One consumer of {@link registerConsumers} with its topic's payload schema. */
 export interface ConsumerRegistration {
-  // `any`, not `unknown`: a list mixes payload types, and consumers such as tenantRegistryConsumer type their envelope narrowly.
-  consumer: ConsumerDefinition<any>;
+  consumer: ConsumerDefinition;
   payloadSchema: object;
 }
 

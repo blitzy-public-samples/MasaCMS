@@ -6,7 +6,7 @@ import { createLogger } from '@opt2/platform/logging';
 import { OperationBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import type { Clock, ServiceClient, ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
-import { currentTransaction, tenantIdForSite, withMetadata, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { currentTransaction, tenantDbFromPool, tenantIdForSite, withMetadata, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
@@ -42,12 +42,13 @@ import {
   commitAccountOperation,
   finishAccountOperation,
   prepareAccountOperation,
+  withOpenAccount,
   type AccountOperationDeps,
 } from '../../src/domain/account-operations.js';
 import { createIdentityEvents, identityPayloadValidators } from '../../src/events/publish.js';
 import { createContentClient, type ContentClient } from '../../src/legacy/content-client.js';
 import { verifyLegacyPassword } from '../../src/legacy/hash.js';
-import { READ_PAGE_SIZE, createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
+import { READ_PAGE_SIZE, charKey, createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS, type GroupAddressRow } from '../../src/repo/tables.js';
 
 const TRASHED_AT = new Date('2026-11-11T09:41:05.000Z');
@@ -78,6 +79,22 @@ const CLOSED_POLL_TIMEOUT_MS = (USER_CLOSED_WAIT_MS / 100) * 3_000;
 /** The legacy database the query faults name, and the driver prefix of their messages. */
 const LEGACY_DATABASE = 'muradb_t';
 const DRIVER = '[Macromedia][SQLServer JDBC Driver][SQLServer]';
+
+/** Ungranted advisory locks on the account fence key `$1`. */
+const FENCE_WAITERS_SQL =
+  "SELECT count(*)::int AS waiting FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1" +
+  ' AND database = (SELECT oid FROM pg_database WHERE datname = current_database())' +
+  ' AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)';
+
+/** The columns of a private Type=1 group `groupname` of `siteid` under `userid`. */
+function groupColumns(userid: string, groupname: string, siteid: string): GroupInput {
+  return {
+    userid, groupname, fname: '', lname: '', username: '', password: '', email: '', company: '', jobtitle: '', mobilephone: '',
+    website: '', type: 1, subtype: 'Default', contactform: '', s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid,
+    subscribe: 1, notes: '', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '', imservice: '',
+    remoteid: '', tags: '', tablist: '',
+  };
+}
 
 const available = await pgAvailable();
 
@@ -266,6 +283,10 @@ describe.skipIf(!available)('groups domain', () => {
   function truncation(table: string, column: string, kept: string): string {
     return `${DRIVER}String or binary data would be truncated in table '${LEGACY_DATABASE}.dbo.${table}', column '${column}'. Truncated value: '${kept}'.`;
   }
+  /** The driver's message for an INSERT INTO tusers of the held id `userId`, quoting the key as stored. */
+  function keyViolation(userId: string): string {
+    return `${DRIVER}Violation of PRIMARY KEY constraint 'PK_tusers'. Cannot insert duplicate key in object 'dbo.tusers'. The duplicate key value is (${userId}).`;
+  }
   async function tagsOf(site: string, userId: string): Promise<string[]> {
     return withTenant(handle.app, tenantIdForSite(site), async (tx) =>
       (await tx.query<{ tag: string }>(`SELECT tag FROM ${handle.schema}.user_tag WHERE userid = $1 ORDER BY tagid`, [userId])).rows.map((r) => r.tag),
@@ -343,6 +364,106 @@ describe.skipIf(!available)('groups domain', () => {
     // createAddress follows createTags, so the failed tag leaves the group without its primary address.
     expect(await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, userId))).toEqual([]);
   });
+
+  it.each<[string, string, 'group' | 'active' | 'pending', (posted: string) => string]>([
+    ['a group of another tenant', SITE_B, 'group', (posted) => posted],
+    ['a group of its own tenant', SITE_A, 'group', (posted) => posted],
+    ['an active account of another tenant', SITE_B, 'active', (posted) => posted],
+    ['a pending account of another tenant', SITE_B, 'pending', (posted) => posted],
+    ['an account of its own tenant', SITE_A, 'active', (posted) => posted],
+    ['a group of another tenant under the id in lower case', SITE_B, 'group', (posted) => posted.toLowerCase()],
+  ])('fails a create of an id %s holds with the PK_tusers fault of its INSERT, writing nothing', async (_label, site, holder, heldId) => {
+    const userId = next('B');
+    const held = heldId(userId);
+    await gated(site, async (tx) => {
+      if (holder === 'group') await repo.insertGroup(tx, groupColumns(held, `Holder ${seq}`, site), null);
+      else await repo.insertAccount(tx, { userid: held, username: `h${seq}`, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: site, remoteid: '', tablist: '', opt2_state: holder });
+    });
+    const stored = (tx: TenantTx): Promise<unknown> => (holder === 'group' ? repo.findGroup(tx, held) : repo.findAccountById(tx, held, { includePending: true }));
+    const before = await gated(site, stored);
+    const counts = await writeCounts(SITE_A);
+
+    const created = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Taken', tags: 'kept', address: { city: 'Held' } }).catch((err: unknown) => err);
+
+    expect(created).toMatchObject({
+      name: 'LegacyQueryFault',
+      type: 'Database',
+      errorCode: '23000',
+      detail: keyViolation(userId),
+      sql: expect.stringMatching(new RegExp(`^INSERT INTO tusers [^]*VALUES\\(\\n         '${userId}',`)),
+    });
+    expect(before).not.toBeNull();
+    expect(await gated(site, stored)).toEqual(before);
+    expect(await writeCounts(SITE_A)).toEqual(counts);
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toEqual(holder === 'group' && site === SITE_A ? before : null);
+    expect(await tagsOf(SITE_A, userId)).toEqual([]);
+  });
+
+  it('lets one of two concurrent creates of one id in two tenants write, failing the other with the PK_tusers fault', async () => {
+    const userId = next('B');
+
+    const results = await Promise.allSettled([SITE_A, SITE_B].map((siteId) => createGroup(deps(), SUPER, { userId, siteId, isPublic: '0', groupName: `Twin ${siteId}` })));
+
+    expect(results.flatMap((result) => (result.status === 'fulfilled' ? [result.value.written] : []))).toEqual([true]);
+    expect(results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))).toEqual([
+      expect.objectContaining({ name: 'LegacyQueryFault', errorCode: '23000', detail: keyViolation(userId) }),
+    ]);
+    const rows = await Promise.all([SITE_A, SITE_B].map((site) => gated(site, (tx) => repo.findGroup(tx, userId))));
+    expect(rows.filter((row) => row !== null)).toHaveLength(1);
+  });
+
+  it("fails a create that queued on the account fence of another process's create of the id in another tenant, once that create commits", async () => {
+    const userId = next('B');
+    let entered: () => void = () => undefined;
+    let release: () => void = () => undefined;
+    const holding = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The other process's create: its group row commits when it ends the transaction holding the exclusive fence.
+    const other = withOpenAccount(
+      handle.app,
+      tenantIdForSite(SITE_B),
+      userId,
+      async (tx) => {
+        await repo.insertGroup(tx, groupColumns(userId, 'Other process', SITE_B), null);
+        entered();
+        await released;
+      },
+      { exclusive: true },
+    );
+    await holding;
+    let settled = false;
+    const creating = createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'This process' })
+      .catch((err: unknown) => err)
+      .finally(() => {
+        settled = true;
+      });
+    const key = `${handle.schema}.account_operation:${charKey(userId)}`;
+    while (!settled && ((await handle.adminPool.query<{ waiting: number }>(FENCE_WAITERS_SQL, [key])).rows[0]?.waiting ?? 0) === 0) await delay(5);
+    release();
+    await other;
+
+    expect(await creating).toMatchObject({ name: 'LegacyQueryFault', errorCode: '23000', detail: keyViolation(userId) });
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toBeNull();
+    expect(await gated(SITE_B, (tx) => repo.findGroup(tx, userId))).toMatchObject({ groupname: 'Other process' });
+  });
+
+  it('answers a create whose holder check gets no second connection within USER_CLOSED_WAIT_MS with the legacy 503, writing nothing', async () => {
+    // The create's own transaction holds the only connection.
+    const single = tenantDbFromPool(handle.connect('app', { max: 1 }), { schema: handle.schema });
+    const userId = next('B');
+    const from = performance.now();
+
+    const outcome = await createGroup({ ...deps(), db: single, sleep: undefined }, SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Starved' }).catch((err: unknown) => err);
+
+    expect(outcome).toBeInstanceOf(OperationBlockedError);
+    expect(outcome).toMatchObject({ reason: 'operation-blocked', message: expect.stringContaining(userId) });
+    expect(performance.now() - from).toBeLessThan(USER_CLOSED_WAIT_MS + 2_500);
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toBeNull();
+  }, USER_CLOSED_WAIT_MS * 4);
 
   it('answers an update of an unknown group id with no write and no fault, as legacy\'s UPDATE matches no row', async () => {
     expect(await updateGroup(deps(), SUPER, { userId: next('B'), siteId: SITE_A, isPublic: '0', groupName: 'Ghost', subType: 's'.repeat(51) })).toMatchObject({ written: false });
@@ -787,6 +908,24 @@ describe.skipIf(!available)('groups domain', () => {
         return { userId, username };
       }
 
+      /** A fresh id that a prepared roster create keeps closed in `siteId`'s private pool until the operation ends. */
+      async function closedId(siteId: string): Promise<{ userId: string; operationId: string }> {
+        const userId = next('B');
+        const operationId = next('C');
+        const change = { username: `closed${seq}`, password: '', s2: 0, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: null };
+        const prepared = await prepareAccountOperation(accountDeps(), { operationId, kind: 'create', userId, requestSiteId: siteId, actorUserId: SUPER.userId, siteId, actorIsSuperUser: true, change });
+        expect(prepared.outcome).toBe('prepared');
+        return { userId, operationId };
+      }
+
+      /** A timer sleep that first calls `onFirst`, so a case can start work while the poll waits. */
+      function signallingSleep(onFirst: () => void): (ms: number) => Promise<void> {
+        return (ms) => {
+          onFirst();
+          return delay(ms);
+        };
+      }
+
       /** Each change: whether the user starts as the group's member, the S2 it posts and whether it keeps or adds the group. */
       const CHANGES = {
         'removes the sole member': { member: true, s2: 0, joins: false },
@@ -865,6 +1004,91 @@ describe.skipIf(!available)('groups domain', () => {
         expect(await runRead({ ...deps(), sleep: waiting.sleep }, groupId)).toEqual(shows(outcome, userId));
         expect(waiting.slept).toEqual([100]);
       }, CLOSED_POLL_TIMEOUT_MS);
+
+      it('keeps one holder of an id a roster create and a group create of another tenant race for, refusing the other', async () => {
+        const userId = next('B');
+        const operationId = next('C');
+        const change = { username: `racer${seq}`, password: '', s2: 0, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: null };
+        const prepare = { operationId, kind: 'create', userId, requestSiteId: REPLAY_SITE, actorUserId: SUPER.userId, siteId: REPLAY_SITE, actorIsSuperUser: true, change } as const;
+
+        const [roster, group] = await Promise.allSettled([
+          prepareAccountOperation(accountDeps(), prepare),
+          createGroup(deps(), SUPER, { userId, siteId: SITE_B, isPublic: '0', groupName: `Racer ${seq}` }),
+        ]);
+
+        const rosterWon = roster.status === 'fulfilled';
+        expect(roster).toEqual(
+          rosterWon
+            ? { status: 'fulfilled', value: expect.objectContaining({ outcome: 'prepared' }) }
+            : { status: 'rejected', reason: expect.objectContaining({ name: 'LegacyApiError', type: 'badRequest' }) },
+        );
+        expect(group).toEqual(
+          rosterWon
+            ? { status: 'rejected', reason: expect.objectContaining({ name: 'LegacyQueryFault', errorCode: '23000' }) }
+            : { status: 'fulfilled', value: expect.objectContaining({ written: true }) },
+        );
+        const account = await gated(REPLAY_SITE, (tx) => repo.findAccountById(tx, userId, { includePending: true }));
+        const stored = await gated(SITE_B, (tx) => repo.findGroup(tx, userId));
+        expect({ account: account !== null, group: stored !== null }).toEqual({ account: rosterWon, group: !rosterWon });
+        if (rosterWon) expect((await abortAccountOperation(accountDeps(), operationId)).outcome).toBe('stepped');
+      });
+
+      it('answers each of two overlapping creates of ids closed in tenant-a and tenant-b with the legacy 503 within its own USER_CLOSED_WAIT_MS', async ({ annotate }) => {
+        const closed = [await closedId(SITE_A), await closedId(SITE_B)] as const;
+        let firstWaits: () => void = () => undefined;
+        const waiting = new Promise<void>((resolve) => {
+          firstWaits = resolve;
+        });
+        const timed = async (siteId: string, userId: string, sleep?: (ms: number) => Promise<void>): Promise<{ userId: string; outcome: unknown; elapsedMs: number }> => {
+          const from = performance.now();
+          const outcome = await createGroup({ ...deps(), sleep }, SUPER, { userId, siteId, isPublic: '0', groupName: `Closed ${userId}` }).catch((err: unknown) => err);
+          return { userId, outcome, elapsedMs: performance.now() - from };
+        };
+        try {
+          const first = timed(SITE_A, closed[0].userId, signallingSleep(firstWaits));
+          await waiting;
+          const second = timed(SITE_B, closed[1].userId);
+          const results = await Promise.all([first, second]);
+          await annotate(`elapsed ms: ${results.map((result) => Math.round(result.elapsedMs)).join(', ')}`);
+
+          for (const { userId, outcome, elapsedMs } of results) {
+            expect(outcome).toBeInstanceOf(OperationBlockedError);
+            expect(outcome).toMatchObject({ reason: 'operation-blocked', message: expect.stringContaining(userId) });
+            // The polls' own transactions and scheduling add to the sleeps.
+            expect(elapsedMs).toBeLessThan(USER_CLOSED_WAIT_MS + 2_500);
+          }
+          expect(await gated(SITE_A, (tx) => repo.findGroup(tx, closed[0].userId))).toBeNull();
+          expect(await gated(SITE_B, (tx) => repo.findGroup(tx, closed[1].userId))).toBeNull();
+        } finally {
+          for (const { operationId } of closed) expect((await abortAccountOperation(accountDeps(), operationId)).outcome).toBe('stepped');
+        }
+      }, USER_CLOSED_WAIT_MS * 4);
+
+      it('writes a fresh id of tenant-b while a create of an id closed in tenant-a still waits, which writes once the operation ends', async () => {
+        const { userId, operationId } = await closedId(SITE_A);
+        let blockedWaits: () => void = () => undefined;
+        const waiting = new Promise<void>((resolve) => {
+          blockedWaits = resolve;
+        });
+        let settled = false;
+        const blocked = createGroup({ ...deps(), sleep: signallingSleep(blockedWaits) }, SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: `Blocked ${seq}` })
+          .catch((err: unknown) => err)
+          .finally(() => {
+            settled = true;
+          });
+        await waiting;
+        const fresh = next('B');
+        try {
+          expect(await createGroup(deps(), SUPER, { userId: fresh, siteId: SITE_B, isPublic: '0', groupName: `Fresh ${seq}` })).toMatchObject({ written: true });
+          expect(settled).toBe(false);
+        } finally {
+          expect((await abortAccountOperation(accountDeps(), operationId)).outcome).toBe('stepped');
+        }
+
+        expect(await blocked).toMatchObject({ written: true });
+        expect(await gated(SITE_B, (tx) => repo.findGroup(tx, fresh))).toMatchObject({ siteid: SITE_B });
+        expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toMatchObject({ siteid: SITE_A });
+      }, USER_CLOSED_WAIT_MS * 4);
     });
 
     it.each([

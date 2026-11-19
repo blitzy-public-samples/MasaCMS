@@ -1,6 +1,6 @@
 /** Minimal query surface the bootstrap steps use; `pg.Client` satisfies it. */
 export interface SqlClient {
-  query(text: string, values?: unknown[]): Promise<{ rows: any[] }>;
+  query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }>;
 }
 
 /** The three role names that own, use and migrate one OPT-2 schema. */

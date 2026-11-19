@@ -69,6 +69,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p test/tsconfig.json",
+    "lint": "eslint .",
     "test": "vitest run --coverage",
     "test:contract": "vitest run test/contract"
   },

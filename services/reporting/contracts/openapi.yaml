@@ -2069,36 +2069,6 @@ components:
               const: reporting.exports
             data:
               $ref: '#/components/schemas/ExportJob'
-    ExportDefinition:
-      type: object
-      description: A `synthetic.export_definition` row, the source and column list a job exports.
-      required:
-        - definition_id
-        - siteid
-        - name
-        - source
-        - columns
-      additionalProperties: false
-      properties:
-        definition_id:
-          $ref: '#/components/schemas/CfUuid'
-        siteid:
-          $ref: '#/components/schemas/SiteId'
-        name:
-          type: string
-          maxLength: 100
-        source:
-          type: string
-          description: Rows exported; `broken` always fails the job with `source-unavailable`.
-          enum:
-            - timesheets.sheets
-            - finance.records
-            - broken
-        columns:
-          type: array
-          description: Source column names in output order, stored as JSON text.
-          items:
-            type: string
     ExportDefinitionSummary:
       type: object
       description: 'An export definition as the queue form offers it: its id and name.'
@@ -2120,7 +2090,7 @@ components:
         siteid:
           $ref: '#/components/schemas/SiteId'
         definitionId:
-          description: Id of an `ExportDefinition` of the site; an absent or foreign id answers `notFound`.
+          description: Id of an export definition of the site; an absent or foreign id answers `notFound`.
           type: string
         format:
           description: Output format; any other value answers `invalidParameters`.

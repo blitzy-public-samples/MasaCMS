@@ -2,8 +2,9 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type { z } from '@opt2/platform/service-kit';
 import { sha256Hex } from '../../src/bytes.js';
-import { loadConfig, parseConfig, roleGroupName, type SeedConfig } from '../../src/config.js';
+import { loadConfig, parseConfig, roleGroupName, type SeedConfig, type seedConfigSchema } from '../../src/config.js';
 import { fixtureKeys, specForKey, type FixtureContext, type FixtureRow, type FixtureTables } from '../../src/fixture-tables.js';
 import { buildEsignatureFixtures } from '../../src/fixtures/esignature.js';
 import { buildMasa, indexMasa, type MasaData } from '../../src/masa.js';
@@ -23,9 +24,10 @@ const ENTRIES = 'synthetic.audit_entry';
 /** Audit columns usp_audit_append assigns when the seed loads. */
 const CHAIN_COLUMNS: readonly string[] = ['seq', 'prev_hash', 'entry_hash'];
 
-type Json = Record<string, any>;
+/** `seed.config.json` as the schema reads it. */
+type RawConfig = z.input<typeof seedConfigSchema>;
 
-let raw: Json;
+let raw: RawConfig;
 let config: SeedConfig;
 let ctx: FixtureContext;
 let tables: FixtureTables;
@@ -70,7 +72,7 @@ function withTenantBSigners(keep: number): MasaData {
 }
 
 beforeAll(async () => {
-  raw = JSON.parse(await readFile(CONFIG_PATH, 'utf8')) as Json;
+  raw = JSON.parse(await readFile(CONFIG_PATH, 'utf8')) as RawConfig;
   config = await loadConfig(CONFIG_PATH);
   ctx = context(config);
   tables = buildEsignatureFixtures(ctx);

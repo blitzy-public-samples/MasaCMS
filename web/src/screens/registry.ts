@@ -170,17 +170,17 @@ export interface RedirectScreen extends ScreenBase<never> {
 
 /** Any reproduced admin action. */
 export type ScreenDefinition =
-  | PageScreen<any>
-  | FragmentScreen<any>
-  | JsonScreen<any>
-  | DownloadScreen<any>
+  | PageScreen
+  | FragmentScreen
+  | JsonScreen
+  | DownloadScreen
   | RedirectScreen;
 
 /** Synthetic module with screens under `/opt2/admin/<module>/<screen>`. */
 export type Opt2Module = 'timesheets' | 'finance' | 'e-signature' | 'reporting' | 'surveys' | 'communications';
 
 /** A synthetic-module screen rendered inside the shell. */
-export interface Opt2ScreenDefinition<D = any> {
+export interface Opt2ScreenDefinition<D = unknown> {
   module: Opt2Module;
   screen: string;
   roles: readonly Role[];
