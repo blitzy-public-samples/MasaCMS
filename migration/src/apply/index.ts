@@ -1,6 +1,6 @@
 /** Apply folder's public API: every export of the backfill, forward feed and batch modules, and the shared target hint. */
-export { runBackfill, BackfillAuthorityError } from './backfill.js';
-export type { BackfillContext, BackfillOptions, BackfillResult, BackfillTableResult } from './backfill.js';
+export { runBackfill, BackfillAuthorityError, BackfillBaselineError } from './backfill.js';
+export type { BackfillContext, BackfillOptions, BackfillResult, BackfillTableResult, HeldWatermark } from './backfill.js';
 
 export { runFeed, applyTableDiff, restartFeedFor, FeedBaselineMissingError, FeedAuthorityError } from './feed.js';
 export type {

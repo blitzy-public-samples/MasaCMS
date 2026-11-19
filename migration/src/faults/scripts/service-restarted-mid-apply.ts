@@ -15,7 +15,8 @@ const HEALTHY = 'owner-healthy';
 const RESTORED = 'owner-restored';
 const RERUN = 'rerun-idempotent';
 const RESTORE_STEP = 'restore-owner';
-const WORKLOAD_REASON = "run the deterministic legacy workload before this fault or pass {command:'backfill'}";
+const WORKLOAD_REASON = 'run the deterministic legacy workload before this fault; a backfill fault runs only before the first feed';
+const FEW_BATCHES_REASON = 'the backfill sent the owner fewer batches than `afterBatches`; pass a lower afterBatches';
 const NO_CALL_REASON = 'no call to the restarting owner failed after its restart started';
 const NO_SNAPSHOT_REASON = 'no ready snapshot to backfill from';
 const NOT_RESTORED_REASON = 'the owner was not restored, so the apply was not re-run';
@@ -195,12 +196,12 @@ function runPlan(ctx: MigrationContext, plan: Plan): Promise<FeedResult | Backfi
 }
 
 /** `apply-interrupted`: passes only when a call to the owner failed after its restart started and the run did not succeed. */
-function interruptedAssertion(stats: RestartStats, afterBatches: number, outcome: RunOutcome): FaultAssertion {
+function interruptedAssertion(command: Command, stats: RestartStats, afterBatches: number, outcome: RunOutcome): FaultAssertion {
   const { acknowledged, restartStarted, failedAfterRestart } = stats;
   const ended = outcome.ok ? { exitCode: outcome.result.exitCode } : { error: messageOf(outcome.error) };
   if (!restartStarted) {
     return outcome.ok
-      ? fail(INTERRUPTED, { acknowledged, afterBatches, ...ended }, WORKLOAD_REASON)
+      ? fail(INTERRUPTED, { acknowledged, afterBatches, ...ended }, command === 'feed' ? WORKLOAD_REASON : FEW_BATCHES_REASON)
       : fail(INTERRUPTED, { acknowledged, afterBatches, ...ended });
   }
   if (failedAfterRestart === undefined) return fail(INTERRUPTED, { acknowledged, ...ended }, NO_CALL_REASON);
@@ -320,7 +321,7 @@ export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
     } catch (error) {
       outcome = { ok: false, error };
     }
-    const assertions = [interruptedAssertion(wrapped.stats, afterBatches, outcome)];
+    const assertions = [interruptedAssertion(plan.command, wrapped.stats, afterBatches, outcome)];
     let progress: RestartState = { triggered: false, healthy: false };
     if (restart.pending === undefined) {
       assertions.push(skipped(HEALTHY, 'restart not triggered'));

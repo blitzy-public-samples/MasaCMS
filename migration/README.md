@@ -117,6 +117,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql) an
 - 1,000 rows per tenant per batch to the owner's `apply`, each with a deterministic `batchId`, so a repeated batch is a no-op. Split tables (`tusers`, `tclassextend*`, `ttrash`) go to every owner, which takes its own rows and columns.
 - `tenant_id = tenantIdForSite(siteID)`; pooled rows carry the umbrella tenant, child rows inherit their parent's, and rows with no resolvable parent load under the umbrella tenant and are reported as orphans.
 - Owners emit only `state` events for migration applies, never `process` events.
+- A backfill into owners holding a `forward` watermark from another snapshot is refused before any batch (`BackfillBaselineError`); the feed moves an already-backfilled target forward.
 
 ### Change feed (`src/apply/feed.ts`, `src/diff/`)
 

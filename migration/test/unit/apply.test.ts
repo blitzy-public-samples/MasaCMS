@@ -20,6 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 import {
   ApplyFaultConfigError,
   BackfillAuthorityError,
+  BackfillBaselineError,
   DEFAULT_BATCH_SIZE,
   FeedAuthorityError,
   applyTableDiff,
@@ -690,6 +691,39 @@ describe.skipIf(!schemaAvailable)(`backfill and feed authority over migration.sn
 
     expect(applyCount() - calls).toBe(applied.length);
     expect(appliedBatches().map(({ request }) => request.batchId)).toEqual(applied);
+  });
+
+  it('refuses a backfill of a second snapshot under v0001, naming the snapshot the owners hold, before any batch', async () => {
+    test.gateway.setActive(V0001.tableVersion);
+    const second = SNAPSHOT_SEQ + 1;
+    // SQL Server database names are case-insensitive, so the upper-cased name opens the same fake database under a name migration.snapshot has not recorded.
+    await test.ctx.db.withMetadata((tx) =>
+      tx.query(INSERT_SNAPSHOT_SQL, [
+        second,
+        SNAPSHOT.databaseName.toUpperCase(),
+        `/var/opt/mssql/backup/snap-${String(second)}.bak`,
+        SNAPSHOT.checkpointLsn,
+        SNAPSHOT.lastLsn,
+        'seed',
+        'ready',
+        false,
+        SNAPSHOT.takenAt,
+        TEST_SOURCE_SHA,
+      ]),
+    );
+    const calls = applyCount();
+
+    const error = await runBackfill(test.ctx, { snapshotSeq: second }).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(BackfillBaselineError);
+    expect((error as BackfillBaselineError).message).toContain(
+      `Backfill of snapshot ${String(second)} refused: owners hold forward watermarks from snapshot ${String(SNAPSHOT_SEQ)} for `,
+    );
+    const { held } = error as BackfillBaselineError;
+    expect(held.length).toBeGreaterThan(0);
+    expect(new Set(held.map((mark) => mark.snapshotSeq))).toEqual(new Set([SNAPSHOT_SEQ]));
+    expect(held).toEqual(expect.arrayContaining([{ owner: 'communications', table: 'tmailinglist', snapshotSeq: SNAPSHOT_SEQ }]));
+    expect(applyCount()).toBe(calls);
   });
 
   it('refuses backfill under v0002, naming every target-authoritative unit, before any batch', async () => {

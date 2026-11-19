@@ -11,7 +11,7 @@ import { TENANT_A, TENANT_B, TENANT_LIST, TENANT_UMBRELLA, businessClock } from 
 import type { ConnectionPool } from 'mssql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { BackfillAuthorityError, runBackfill } from '../../src/apply/backfill.js';
+import { BackfillAuthorityError, BackfillBaselineError, runBackfill } from '../../src/apply/backfill.js';
 import type { BackfillContext, BackfillResult } from '../../src/apply/backfill.js';
 import { batchIdFor } from '../../src/apply/batch.js';
 import type { ApplyChange, BatchDirection, TenantResolver } from '../../src/apply/batch.js';
@@ -272,6 +272,8 @@ interface World {
   readonly tables: Map<string, StoredTable>;
   readonly applies: { owner: DataOwner; request: ApplyRequest }[];
   readonly puts: { owner: DataOwner; record: WatermarkRecord }[];
+  /** Watermarks the owners hold by {@link watermarkKey}: preset by a test, put alone, or carried on an apply. */
+  readonly watermarks: Map<string, WatermarkRecord>;
   readonly targetUnits: Set<string>;
   snapshot: SnapshotRecord;
   order: readonly string[];
@@ -302,6 +304,7 @@ function createWorld(): World {
     tables: new Map(),
     applies: [],
     puts: [],
+    watermarks: new Map(),
     targetUnits: new Set(),
     snapshot: snapshotRecord(),
     order: [],
@@ -321,21 +324,34 @@ const logger = { info, warn } as unknown as Logger;
 
 const lower = (name: string): string => name.toLowerCase();
 
-const owners: Pick<OwnersClient, 'apply' | 'putWatermark'> = {
+const watermarkKey = (owner: DataOwner, legacyTable: string, direction: WatermarkRecord['direction']): string => `${owner}|${legacyTable}|${direction}`;
+
+/** Stores `record` as the owner holds it, under the table the request or put names. */
+function holdWatermark(owner: DataOwner, record: Parameters<OwnersClient['putWatermark']>[1]): WatermarkRecord {
+  const stored: WatermarkRecord = {
+    legacyTable: record.legacyTable,
+    direction: record.direction,
+    snapshotSeq: record.snapshotSeq ?? null,
+    backupLsn: record.backupLsn ?? null,
+    finishedAt: record.finishedAt,
+  };
+  world.watermarks.set(watermarkKey(owner, stored.legacyTable, stored.direction), stored);
+  return stored;
+}
+
+const owners: Pick<OwnersClient, 'apply' | 'putWatermark' | 'watermark'> = {
   apply(owner, request) {
     world.applies.push({ owner, request });
+    if (request.watermark !== undefined) holdWatermark(owner, { ...request.watermark, legacyTable: request.legacyTable });
     return Promise.resolve({ batchId: request.batchId, duplicate: false, applied: request.rows.length, skipped: 0, writePositions: new Map() });
   },
   putWatermark(owner, record) {
-    const stored: WatermarkRecord = {
-      legacyTable: record.legacyTable,
-      direction: record.direction,
-      snapshotSeq: record.snapshotSeq ?? null,
-      backupLsn: record.backupLsn ?? null,
-      finishedAt: record.finishedAt,
-    };
+    const stored = holdWatermark(owner, record);
     world.puts.push({ owner, record: stored });
     return Promise.resolve(stored);
+  },
+  watermark(owner, legacyTable, direction) {
+    return Promise.resolve(world.watermarks.get(watermarkKey(owner, legacyTable, direction)) ?? null);
   },
 };
 
@@ -779,6 +795,7 @@ describe('runBackfill deferred columns', () => {
     await runBackfill(contextFor(), { snapshotSeq: 0 });
     const first = world.applies.map(({ owner, request }) => [owner, request.batchId, request.rows]);
     world.applies.length = 0;
+    expect(new Set([...world.watermarks.values()].map((mark) => mark.snapshotSeq))).toEqual(new Set([0]));
 
     await runBackfill(contextFor(), { snapshotSeq: 0 });
 
@@ -883,5 +900,54 @@ describe('runBackfill run', () => {
     expect(caught).toBeInstanceOf(error);
     expect(caught).toMatchObject({ message });
     expect(world.applies).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "the watermarks of snapshot 0's backfill",
+      prepare: async (): Promise<void> => {
+        await runBackfill(contextFor(), { snapshotSeq: 0 });
+      },
+      held: [
+        { owner: 'identity', table: 'tusers', snapshotSeq: 0 },
+        { owner: 'people', table: 'tusers', snapshotSeq: 0 },
+        { owner: 'strategies-content', table: 'tcontent', snapshotSeq: 0 },
+      ],
+      message:
+        'Backfill of snapshot 1 refused: owners hold forward watermarks from snapshot 0 for tusers at identity, tusers at people, ' +
+        'tcontent at strategies-content; run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
+    },
+    {
+      name: 'an unrecorded and a later sequence beside its own',
+      prepare: (): Promise<void> => {
+        holdWatermark('identity', { ...forward('tusers'), snapshotSeq: null });
+        holdWatermark('people', { ...forward('tusers'), snapshotSeq: 1 });
+        holdWatermark('strategies-content', { ...forward('tcontent'), snapshotSeq: 2 });
+        return Promise.resolve();
+      },
+      held: [
+        { owner: 'identity', table: 'tusers', snapshotSeq: null },
+        { owner: 'strategies-content', table: 'tcontent', snapshotSeq: 2 },
+      ],
+      message:
+        'Backfill of snapshot 1 refused: owners hold forward watermarks from snapshot 2 and no recorded snapshot for tusers at identity, ' +
+        'tcontent at strategies-content; run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
+    },
+  ])('refuses a backfill of snapshot 1 into owners holding $name before any batch or order', async ({ prepare, held, message }) => {
+    world.order = ['tusers', 'tcontent'];
+    seed({ tcontent: [content('C1', 'tenant-a', null)], tusers: USERS });
+    await prepare();
+    world.snapshot = snapshotRecord({ seq: 1, backupPath: '/backups/snap-1.bak', checkpointLsn: '2000', lastLsn: '2000' });
+    world.applies.length = 0;
+    world.puts.length = 0;
+    vi.mocked(computeDependencyOrder).mockClear();
+
+    const caught = await runBackfill(contextFor(), { snapshotSeq: 1 }).catch((reason: unknown) => reason);
+
+    expect(caught).toBeInstanceOf(BackfillBaselineError);
+    expect(caught).toMatchObject({ message, held });
+    expect(world.applies).toEqual([]);
+    expect(world.puts).toEqual([]);
+    expect(computeDependencyOrder).not.toHaveBeenCalled();
   });
 });

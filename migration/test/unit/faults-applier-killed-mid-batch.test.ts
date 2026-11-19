@@ -33,7 +33,7 @@ vi.mock('../../src/snapshot/index.js', async (importOriginal) => ({
 }));
 
 const CLI = '/opt2/migration/dist/cli.js';
-const WORKLOAD_REASON = "run the deterministic legacy workload before this fault or pass {command:'backfill'}";
+const WORKLOAD_REASON = 'run the deterministic legacy workload before this fault; a backfill fault runs only before the first feed';
 const NOT_RESENT = 'the re-run never resent the batch the kill interrupted';
 const WATERMARK_503 = 'Owner people answered GET /internal/v1/migration/watermark with HTTP 503';
 const ctx = { name: 'migration-context' } as unknown as MigrationContext;

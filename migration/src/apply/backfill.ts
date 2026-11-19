@@ -82,6 +82,32 @@ export class BackfillAuthorityError extends Error {
   }
 }
 
+/** A `forward` watermark an owner holds for a table from a snapshot other than the backfill's; a null sequence is unrecorded. */
+export interface HeldWatermark {
+  owner: DataOwner;
+  table: string;
+  snapshotSeq: number | null;
+}
+
+/** Raised before any batch is sent when an owner already holds a `forward` watermark from another snapshot. */
+export class BackfillBaselineError extends Error {
+  override readonly name = 'BackfillBaselineError';
+  /** The watermarks from other snapshots, sorted by owner and table. */
+  readonly held: HeldWatermark[];
+
+  constructor(snapshotSeq: number, held: HeldWatermark[]) {
+    const from = [...new Set(held.map((mark) => mark.snapshotSeq))]
+      .sort((a, b) => (a ?? Number.MAX_SAFE_INTEGER) - (b ?? Number.MAX_SAFE_INTEGER))
+      .map((seq) => (seq === null ? 'no recorded snapshot' : `snapshot ${String(seq)}`));
+    const where = held.map((mark) => `${mark.table} at ${mark.owner}`);
+    super(
+      `Backfill of snapshot ${String(snapshotSeq)} refused: owners hold forward watermarks from ${from.join(' and ')} for ${where.join(', ')}; ` +
+        'run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
+    );
+    this.held = held;
+  }
+}
+
 const AFTER_BACKFILL = 'after-backfill';
 
 /** What every table of one run shares; `side` is the snapshot database that row acceptance reads. */
@@ -355,11 +381,28 @@ async function backfillFiles(ctx: BackfillContext, snapshot: SnapshotRecord): Pr
   return { status: 'halted', reason };
 }
 
+/** `forward` watermarks the owners of `tables` hold from a snapshot other than `snapshotSeq`, sorted by owner and table. */
+async function heldWatermarks(
+  ctx: Pick<BackfillContext, 'catalog' | 'owners'>,
+  tables: readonly MigratableTable[],
+  snapshotSeq: number,
+): Promise<HeldWatermark[]> {
+  const held: HeldWatermark[] = [];
+  for (const table of tables) {
+    for (const owner of ctx.catalog.ownersForLegacyTable(table.name)) {
+      const mark = await ctx.owners.watermark(owner, table.name, 'forward');
+      if (mark !== null && mark.snapshotSeq !== snapshotSeq) held.push({ owner, table: table.name, snapshotSeq: mark.snapshotSeq });
+    }
+  }
+  return held.sort((a, b) => (a.owner === b.owner ? compareTableNames(a.table, b.table) : a.owner < b.owner ? -1 : 1));
+}
+
 /**
  * Backfills the owners from snapshot `snapshotSeq`: loads every table in dependency order, then patches the deferred columns of
  * each table that has them in the same order, transfers its files and writes the `after-backfill` reconciliation; batch ids
  * repeat on a re-run, and the first failed batch fails the command.
- * @throws SnapshotError when the snapshot is not ready; BackfillAuthorityError before any batch when a unit is target-authoritative.
+ * @throws SnapshotError when the snapshot is not ready; BackfillAuthorityError before any batch when a unit is target-authoritative;
+ * BackfillBaselineError before any batch when an owner holds a `forward` watermark from another snapshot.
  */
 export async function runBackfill(ctx: BackfillContext, options: BackfillOptions): Promise<BackfillResult> {
   const snapshot = await requireSnapshot(ctx, options.snapshotSeq);
@@ -371,6 +414,8 @@ export async function runBackfill(ctx: BackfillContext, options: BackfillOptions
   const authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
   const targetUnits = units.filter((unit) => authority.isTargetAuthoritative(unit));
   if (targetUnits.length > 0) throw new BackfillAuthorityError(targetUnits);
+  const held = await heldWatermarks(ctx, tables, snapshot.seq);
+  if (held.length > 0) throw new BackfillBaselineError(snapshot.seq, held);
 
   const order = await computeDependencyOrder({
     inventory: ctx.config.paths.inventory,

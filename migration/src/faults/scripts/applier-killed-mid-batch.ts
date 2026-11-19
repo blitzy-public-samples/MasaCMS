@@ -79,7 +79,7 @@ function killedMidRun(command: Command, point: Point, batch: number, outcome: Ch
     // A clean exit means the run sent fewer than `batch` batches, so the fault never fired.
     const reason =
       command === 'feed'
-        ? "run the deterministic legacy workload before this fault or pass {command:'backfill'}"
+        ? 'run the deterministic legacy workload before this fault; a backfill fault runs only before the first feed'
         : 'the backfill sent fewer batches than `batch`; pass a lower batch';
     return fail(KILLED_MID_RUN, { exitCode, point, batch }, reason);
   }

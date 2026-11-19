@@ -277,23 +277,33 @@ describe('service-restarted-mid-apply fault script', () => {
 
   it.each([
     [
-      'fewer batches than afterBatches reached the owner',
+      'fewer batches than afterBatches reached the owner during a feed',
+      'feed',
       sending(['people', 'identity']),
       { acknowledged: 1, afterBatches: 2, exitCode: 0 },
-      "run the deterministic legacy workload before this fault or pass {command:'backfill'}",
+      'run the deterministic legacy workload before this fault; a backfill fault runs only before the first feed',
+    ],
+    [
+      'fewer batches than afterBatches reached the owner during a backfill',
+      'backfill',
+      sending(['people', 'identity']),
+      { acknowledged: 1, afterBatches: 2, exitCode: 0 },
+      'the backfill sent the owner fewer batches than `afterBatches`; pass a lower afterBatches',
     ],
     [
       'the run failed for another reason before the threshold',
+      'feed',
       async () => Promise.reject(new Error('FeedBaselineMissingError: run backfill first')),
       { acknowledged: 0, afterBatches: 2, error: 'FeedBaselineMissingError: run backfill first' },
       undefined,
     ],
-  ] as const)('fails apply-interrupted and skips owner-healthy when %s', async (_case, command, detail, reason) => {
+  ] as const)('fails apply-interrupted and skips owner-healthy when %s', async (_case, command, run, detail, reason) => {
     const h = await harness();
-    vi.mocked(runFeed).mockImplementation(command);
+    vi.mocked(command === 'feed' ? runFeed : runBackfill).mockImplementation(run);
 
-    const output = await serviceRestartedMidApply.run(h.env, { ...PARAMS, afterBatches: 2 });
+    const output = await serviceRestartedMidApply.run(h.env, { ...PARAMS, command, afterBatches: 2 });
 
+    expect(command === 'feed' ? runBackfill : runFeed).not.toHaveBeenCalled();
     const failed = reason === undefined ? { name: 'apply-interrupted', status: 'fail', detail } : { name: 'apply-interrupted', status: 'fail', detail, reason };
     expect(output.assertions).toStrictEqual([failed, { name: 'owner-healthy', status: 'skipped', reason: 'restart not triggered' }]);
     expect(output.state?.['restart']).toStrictEqual({ triggered: false, healthy: false });
