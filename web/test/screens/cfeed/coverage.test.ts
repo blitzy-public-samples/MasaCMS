@@ -6,7 +6,6 @@ import { GatewayDenialError, type ServicePath } from '@/lib/gateway-client';
 import { isSafeHtml, toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { CFEED_RC_DEFAULTS } from '@/screens/cfeed/before';
-import { feedApiEndpoint } from '@/screens/cfeed/common';
 import { cfeedEditScreen } from '@/screens/cfeed/edit';
 import { loadCfeedImport1, renderCfeedImport1, type CfeedImport1Data } from '@/screens/cfeed/import1';
 import { cfeedListScreen, loadFeedList, renderFeedList, type CfeedListData } from '@/screens/cfeed/list';
@@ -14,7 +13,13 @@ import type { ScreenContext } from '@/screens/registry';
 import { adminS2Request, editorRequest, type AdminRequestPartial } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+} from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
 
 // The screen context reads only the registry's shell hooks, so the circuit barrels stay unloaded.
@@ -24,7 +29,8 @@ const SITE = 'default';
 const LOCAL = 'F1000000-0000-0000-0000000000000001';
 const ARCHIVE = 'F1000000-0000-0000-0000000000000002';
 const REMOTE = 'F1000000-0000-0000-0000000000000003';
-const ENDPOINT = 'http://localhost:8080/_api/feed/v1/default';
+/** Legacy's feed API endpoint of `default` as the fake gateway answers it for the request host. */
+const ENDPOINT = 'http://localhost/_api/feed/v1/default';
 const URL_TOKENS = `&${CSRF_FIELD_TOKEN}=${FIXED_CSRF.token}&${CSRF_FIELD_EXPIRES}=${FIXED_CSRF.expires}`;
 const LONG_LINK = `https://example.com/${'feeds/'.repeat(12)}wire.xml`;
 
@@ -117,7 +123,7 @@ describe('cFeed.list', () => {
     it('reads both queries on the before() defaults and prefetches every row token in one identity call', async () => {
       const ctx = contextFor(
         adminOn('list'),
-        listRoute({ rsLocal: LOCAL_ROWS, rsRemote: REMOTE_ROWS, endpoint: ENDPOINT }),
+        listRoute({ rsLocal: LOCAL_ROWS, rsRemote: REMOTE_ROWS }),
       );
 
       const data = await loadFeedList(ctx);
@@ -163,13 +169,16 @@ describe('cFeed.list', () => {
       expect(identityCalls(ctx.gateway).map((call) => call.json)).toEqual([{ contexts: [LOCAL, ARCHIVE, REMOTE] }]);
     });
 
-    it("builds the site's feed API endpoint when the service returns none", async () => {
-      const ctx = contextFor(adminOn('list'), listRoute({ rsLocal: [], rsRemote: [], endpoint: '' }));
+    it("reads legacy's feed API endpoint of rc.siteid even when no Local row prints it", async () => {
+      const ctx = contextFor(adminOn('list'), listRoute({ rsLocal: [], rsRemote: [] }));
 
       const data = await loadFeedList(ctx);
 
-      expect(data).toEqual({ local: [], remote: [], endpoint: feedApiEndpoint(ctx.req) });
-      expect(data.endpoint).toMatch(/\/_api\/feed\/v1\/default$/);
+      expect(data).toEqual({ local: [], remote: [], endpoint: ENDPOINT });
+      expect(ctx.gateway.calls.find(({ path }) => path === LEGACY_SITE_PATHS_PATH)?.query).toMatchObject({
+        sessionSite: SITE,
+        feedSite: SITE,
+      });
       expect(identityCalls(ctx.gateway)).toEqual([]);
     });
 
@@ -316,7 +325,7 @@ describe('cFeed.list', () => {
 
   describe('cfeedListScreen', () => {
     it('renders the collections inside the shell for the S2 admin', async () => {
-      const ctx = contextFor(adminOn('list'), listRoute({ rsLocal: LOCAL_ROWS, rsRemote: [], endpoint: ENDPOINT }));
+      const ctx = contextFor(adminOn('list'), listRoute({ rsLocal: LOCAL_ROWS, rsRemote: [] }));
 
       const page = await renderScreenPage(cfeedListScreen, ctx);
 
@@ -566,7 +575,6 @@ describe('cfeedEditScreen', () => {
     rsUsage: [],
     useLayoutManager: true,
     defaultCollectionDisplayList: 'Date,Title,Image,Summary,Credits',
-    endpoint: ENDPOINT,
   });
 
   it.each<[string, string, string]>([

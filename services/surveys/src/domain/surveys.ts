@@ -3,7 +3,7 @@
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
-import { LegacyApiError, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, javaTrim, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import { FixtureApiError } from '../legacy/fixture-envelope.js';
 import type { SurveysRepository } from '../repo/repository.js';
 import * as queries from '../repo/queries.js';
@@ -35,7 +35,10 @@ function surveyNotFound(): FixtureApiError {
   return new FixtureApiError('notFound');
 }
 
-/** The title the fixture accepts: a simple value, non-blank once trimmed, at most 255 UTF-16 units; else `invalidParameters`. */
+/**
+ * The title the fixture accepts: a simple value, non-blank once trimmed, at most 255 UTF-16 units, its unpaired surrogates as
+ * the `?` legacy answers; else `invalidParameters`.
+ */
 function validTitle(value: unknown): string {
   // An absent or null parameter reads as ''; objects and arrays are not simple values.
   const title = value ?? '';
@@ -46,7 +49,7 @@ function validTitle(value: unknown): string {
   if (javaTrim(text) === '' || text.length > MAX_TITLE_LENGTH) {
     throw new LegacyApiError('invalidParameters');
   }
-  return text;
+  return javaUtf8Text(text);
 }
 
 /** The tenant's survey with `surveyId`; throws the fixture's `notFound` when there is none. */

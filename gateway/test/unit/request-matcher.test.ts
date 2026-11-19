@@ -457,7 +457,7 @@ describe('createMatcher target destinations', () => {
   });
 
   it.each<[url: string, key: string]>([
-    [`${FIXTURE}/finance/records/..%5C..%5Cweb.config`, `static:${FIXTURE}/finance/records/..\\..\\web.config`],
+    [`${FIXTURE}/finance/records/..%5C..%5Cweb.config`, 'cfm:/legacy-fixtures/cfml/api.cfm'],
     [`${FIXTURE}/finance/records/..%5C..%5Cweb.config/versions`, 'page:render'],
     [`${FIXTURE}/finance/records/.x/versions`, 'page:render'],
   ])('keys %s as %s, off its target fixture entry, and sends it to legacy', async (url, key) => {
@@ -848,6 +848,53 @@ describe('createMatcher Site Manager sorts under the committed v0002', () => {
     expect(outcome.destination).toMatchObject({ kind: 'target', service: 'web', responseMode: 'page' });
   });
 });
+
+describe('createMatcher Site Manager lists of an unregistered site under the committed v0002', () => {
+  const LIST = '/admin/?muraAction=cArch.list&moduleid=00000000000000000000000000000000000';
+  const REGISTERED = new Set(['default', 'tenant-a']);
+  let facts: InventoryFacts = { get: () => undefined, routes: () => [] };
+  beforeAll(async () => {
+    facts = await loadInventoryFacts(resolveGatewayPaths({}));
+  });
+  const registryMatcher = (index: RoutingIndex): Matcher =>
+    createMatcher({
+      state: { active: () => index },
+      variants: committedVariants(),
+      modes: createResponseModes(facts),
+      env: { OPT2_SERVICE_URLS: SERVICE_URLS, OPT2_STORAGE_ADAPTER: 'local', OPT2_STATE_DIR: keyedDir },
+      clock: CLOCK,
+      // The verified registry, as the gateway passes it: legacy's site ids, matched without case.
+      routeKeyOptions: { siteExists: (siteId) => REGISTERED.has(siteId.toLowerCase()) },
+    });
+
+  it.each<[string, string, Sent | undefined]>([
+    ['a url siteid', `${LIST}&siteid=nosuchsite`, undefined],
+    ['a form siteid', LIST, { method: 'POST', contentType: URLENCODED, body: 'siteid=nosuchsite' }],
+    ['a path-pair siteid', '/admin/index.cfm/carch/list/siteid/nosuchsite?moduleid=00000000000000000000000000000000000', undefined],
+  ])('serves a list whose %s names no registered site on legacy as the legacy-write of admin:carch.list', async (_label, url, sent) => {
+    const v0002 = await committedIndex('v0002');
+    const listed = v0002.entryFor('admin:carch.list');
+    const outcome = await matchOf(registryMatcher(v0002), url, sent);
+    expect(listed).toMatchObject({ state: 'target', kind: 'write', units: ['content.content'] });
+    expect(outcome).toMatchObject({ result: { key: 'admin:carch.list' }, haltVariant: 'siteid=unregistered' });
+    expect(outcome.entry).toStrictEqual({ ...listed, state: 'legacy', kind: 'legacy-write' });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+  });
+
+  it.each<[string, string]>([
+    ['a registered siteid', `${LIST}&siteid=tenant-a`],
+    ['a registered siteid in another case', `${LIST}&siteid=Tenant-A`],
+    ["an empty siteid, which takes the session's site", `${LIST}&siteid=`],
+    ['no siteid', LIST],
+  ])('keeps a list with %s on web as the target admin:carch.list', async (_label, url) => {
+    const outcome = await matchOf(registryMatcher(await committedIndex('v0002')), url);
+    expect(outcome.result?.key).toBe('admin:carch.list');
+    expect(outcome.entry).toMatchObject({ route: 'admin:carch.list', state: 'target', kind: 'write' });
+    expect(outcome).not.toHaveProperty('haltVariant');
+    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'web', responseMode: 'page' });
+  });
+});
+
 
 describe('createMatcher reload requests', () => {
   const CONTENT = 'content.content';

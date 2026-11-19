@@ -1,9 +1,10 @@
 // The carch controller's before(): the Site Manager module gate and the rc and session defaults every cArch action reads.
 import { isDeepStrictEqual } from 'node:util';
-import { cfEq, cfToBoolean, cfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, cfEq, cfIsBoolean, cfToBoolean, cfUuid } from '@opt2/platform/legacy-compat';
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
 import { scanCompactDisplay } from '@/lib/cfml';
 import {
+  LegacySessionFaultError,
   applyDefaults,
   servesRequestedSite,
   withSessionMuraValue,
@@ -153,23 +154,24 @@ function moduleTopsWithDefaults(stored: Readonly<Record<string, string>>): Recor
   return tops;
 }
 
-/** `session['m<moduleId>'].topid`, failing as ACF does when the session holds none for the module. */
-function sessionTopId(tops: Readonly<Record<string, string>>, moduleId: string): string {
+/** An rc flag in before()'s boolean tests, failing as ACF does on text it cannot convert. */
+function rcFlag(value: string): boolean {
+  if (!cfIsBoolean(value)) throw new LegacyFaultError(`cannot convert the value "${value}" to a boolean`);
+  return cfToBoolean(value);
+}
+
+/** ACF's fault reading `session['m<moduleId>'].topid` where the session holds none for the module. */
+function unsetModuleTopFault(moduleId: string): LegacyFaultError {
   const key = `m${moduleId}`;
-  const topId = tops[key];
-  if (topId === undefined) {
-    throw new TypeError(
-      `Element ${key.toUpperCase()} is undefined in a Java object of type class coldfusion.runtime.MemorySessionScope.`,
-    );
-  }
-  return topId;
+  return new LegacyFaultError(`Element ${key.toUpperCase()} is undefined in a Java object of type class coldfusion.runtime.MemorySessionScope.`);
 }
 
 /**
  * The request as carch before() leaves it: the scanned `compactDisplay`, rc defaults where a key is absent, the synced
  * module id and topid, and the changed `session.mura.objectInstanceId`, `session.moduleid` and module tops queued in
  * `sessionWrites`. Screens use the returned request in place of `req`.
- * @throws TypeError For an rc flag CFML cannot read as a boolean, or a module whose session topid is undefined.
+ * @throws LegacyFaultError For an rc flag CFML cannot read as a boolean.
+ * @throws LegacySessionFaultError For a module whose session topid is undefined, with the session values set before it.
  */
 export function applyCarchDefaults(req: AdminRequest): AdminRequest {
   // The admin set-up's request scan and rc defaults precede the controller's.
@@ -178,12 +180,12 @@ export function applyCarchDefaults(req: AdminRequest): AdminRequest {
   const ajaxRequest = rc.param('ajaxrequest', 'false');
   rc.param('moduleid', CONTENT_MODULE_ID);
   const instanceId = rc.param('instanceid', '');
-  if (cfToBoolean(ajaxRequest)) return { ...req, rc: rc.toContext() };
+  if (rcFlag(ajaxRequest)) return { ...req, rc: rc.toContext() };
 
   rc.paramAll(pageDefaults());
-  if (!cfToBoolean(rc.param('ommitPublishingTab', 'false'))) rc.paramAll(PUBLISHING_TAB_DEFAULTS);
-  if (!cfToBoolean(rc.param('ommitAdvancedTab', 'false'))) rc.paramAll(ADVANCED_TAB_DEFAULTS);
-  if (!cfToBoolean(rc.param('ommitRelatedContentTab', 'false'))) rc.paramAll(RELATED_CONTENT_TAB_DEFAULTS);
+  if (!rcFlag(rc.param('ommitPublishingTab', 'false'))) rc.paramAll(PUBLISHING_TAB_DEFAULTS);
+  if (!rcFlag(rc.param('ommitAdvancedTab', 'false'))) rc.paramAll(ADVANCED_TAB_DEFAULTS);
+  if (!rcFlag(rc.param('ommitRelatedContentTab', 'false'))) rc.paramAll(RELATED_CONTENT_TAB_DEFAULTS);
   const user = instanceId === '' ? req.session : withSessionMuraValue(req.session, 'objectInstanceId', instanceId);
   rc.paramAll(TRAILING_DEFAULTS);
 
@@ -191,16 +193,19 @@ export function applyCarchDefaults(req: AdminRequest): AdminRequest {
   // session.keywords is always defined by the request set-up.
   const moduleId = syncModuleId(rc, req.session.moduleid);
   const tops = moduleTopsWithDefaults(req.session.moduleTopIds);
-  const requestedTopId = rc.get('topid');
-  const topId = requestedTopId === undefined || requestedTopId === '' ? sessionTopId(tops, moduleId) : requestedTopId;
-  rc.set('topid', topId);
-  tops[`m${moduleId}`] = topId;
-
-  const writes: AdminSessionWrites = {
+  const changedWrites = (): AdminSessionWrites => ({
     ...(user.muraValues === req.session.muraValues ? {} : { muraValues: user.muraValues }),
     ...(moduleId === req.session.moduleid ? {} : { moduleid: moduleId }),
     ...(isDeepStrictEqual(tops, req.session.moduleTopIds) ? {} : { moduleTopIds: tops }),
-  };
+  });
+  const requestedTopId = rc.get('topid');
+  const topId = requestedTopId === undefined || requestedTopId === '' ? tops[`m${moduleId}`] : requestedTopId;
+  // The session values set so far stand when the read of the module's session topid fails.
+  if (topId === undefined) throw new LegacySessionFaultError(unsetModuleTopFault(moduleId), changedWrites());
+  rc.set('topid', topId);
+  tops[`m${moduleId}`] = topId;
+
+  const writes = changedWrites();
   if (Object.keys(writes).length === 0) return { ...req, rc: rc.toContext() };
   return {
     ...req,

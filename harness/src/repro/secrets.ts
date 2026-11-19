@@ -20,6 +20,7 @@ import path from 'node:path';
 import { LOCAL_SECRET_FILES, localSecretPath } from '@opt2/platform/auth';
 
 import { isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
+import { HARNESS_KEY_FILE } from '../lib/harness-key.js';
 import { assertOutsideRepo, secretsDir, stateDir, type EnvLike } from '../lib/paths.js';
 
 /** PostgreSQL schemas whose app and migrator role passwords are generated. */
@@ -44,11 +45,13 @@ const TOKEN_PAIR = [LOCAL_SECRET_FILES.tokenSigningPrivateKey, LOCAL_SECRET_FILE
 // Mirrors `secretPathsFor` in migration/src/db-bootstrap/index.ts, its reader; the harness does not depend on migration.
 const DB_ROLE_FILES = DB_SCHEMAS.flatMap((schema) => [`db-${schema}-app`, `db-${schema}-migrator`]);
 
-// `storage-hmac-key` is read by the platform's local storage adapter, `bridge-hmac-key` by legacy-start.sh.
+// `storage-hmac-key` is read by the platform's local storage adapter, `bridge-hmac-key` and `harness-diagnostic-key`
+// by legacy-start.sh.
 const RANDOM_FILES: readonly string[] = [
   LOCAL_SECRET_FILES.pubsubPushKey,
   'storage-hmac-key',
   'bridge-hmac-key',
+  HARNESS_KEY_FILE,
   ...DB_ROLE_FILES,
 ];
 
@@ -60,7 +63,8 @@ const HELP = `${USAGE}
 
 Writes every missing or incomplete local secret and leaves complete ones and a matching key pair unchanged:
 the token-signing RSA pair (${TOKEN_PAIR.join(', ')}), ${LOCAL_SECRET_FILES.pubsubPushKey}, storage-hmac-key,
-bridge-hmac-key and the db-<schema>-app and db-<schema>-migrator passwords of ${String(DB_SCHEMAS.length)} schemas.
+bridge-hmac-key, ${HARNESS_KEY_FILE} and the db-<schema>-app and db-<schema>-migrator passwords of
+${String(DB_SCHEMAS.length)} schemas.
 
 Options:
   --dir <secrets-dir>  directory to write (default: \${OPT2_STATE_DIR}/secrets)

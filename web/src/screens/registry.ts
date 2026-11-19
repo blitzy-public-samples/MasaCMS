@@ -293,6 +293,7 @@ export const NOT_BUILT_VARIANTS: readonly NotBuiltVariant[] = Object.freeze([
     equals('action', 'Add'),
     EXTENDED_DATA,
   ),
+  notBuilt('cusers', 'update', 'type=2,action=update', equals('type', '2'), equals('action', 'Update')),
   notBuilt(
     'cusers',
     'update',

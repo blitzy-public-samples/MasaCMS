@@ -24,7 +24,9 @@ import {
 import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { domModel, normaliseIds, type DomModel } from './dom-model';
 import {
+  LEGACY_SITE_PATHS_KEY,
   fakeGatewayClient,
+  installedSitePaths,
   routeKey,
   type FakeGatewayClient,
   type FakeReply,
@@ -67,11 +69,13 @@ function issueFixedTokens(request: RecordedRequest): FakeReply {
 
 /**
  * Replies to every call `loadShellData` and `createCsrfRenderer` make: identity's tokens, `default` as the user's only
- * site, no header prompts for `siteId` and the oracle's Version menu facts; `overrides` replace any of them.
+ * site, no header prompts for `siteId`, legacy's installed theme paths and the oracle's Version menu facts; `overrides`
+ * replace any of them.
  */
 export function shellRoutes(overrides: FakeRouteTable = {}, siteId: string = SHELL_SITE): FakeRouteTable {
   return {
     [routeKey('POST', 'identity', '/v1/csrf/tokens')]: issueFixedTokens,
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
     [routeKey('GET', 'programs-sites', '/v1/user-sites')]: { status: 200, body: { sites: [DEFAULT_USER_SITE] } },
     [routeKey('GET', 'strategies-content', `/v1/sites/${encodeURIComponent(siteId)}/header-prompts`)]: {
       status: 200,

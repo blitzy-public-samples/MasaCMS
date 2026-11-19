@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import replyFrom from '@fastify/reply-from';
 import { LEGACY_REQUEST_HEAD_LIMIT_BYTES, cfIsBoolean, cfToBoolean } from '@opt2/platform/legacy-compat';
 import {
+  Agent,
   LEGACY_POST_LIMIT_BYTES,
   baseEnvSchema,
   checkProcessEnv,
@@ -39,7 +40,13 @@ import { replyFromOptions } from './dispatcher/response-head.js';
 import { createSiteRegistry } from './dispatcher/site-registry.js';
 import { createWriteWindowClient } from './dispatcher/write-window.js';
 import { jarIdleLimitMs, sessionTimeoutMinutes, trackJarActivity } from './session/activity.js';
-import { createBridgeClient, createSiteListClient, createVersionMenuClient, type BridgeClient } from './session/bridge-client.js';
+import {
+  createBridgeClient,
+  createSiteListClient,
+  createSitePathsClient,
+  createVersionMenuClient,
+  type BridgeClient,
+} from './session/bridge-client.js';
 import { createSessionCarry } from './session/carry.js';
 import { createCsrfContinuity } from './session/csrf.js';
 import { createHydrator } from './session/hydration.js';
@@ -49,6 +56,7 @@ import { createLegacyJar } from './session/jar.js';
 import { registerMarkUsedRoute } from './session/mark-used-route.js';
 import { sessionModeFor } from './session/mode.js';
 import { createSessionResolver } from './session/resolve.js';
+import { registerSitePathsRoute } from './session/site-paths-route.js';
 import { createSessionStateChecker } from './session/state-check.js';
 import { createTokenCache } from './session/token-cache.js';
 
@@ -272,8 +280,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     sessionMode: () => sessionModeFor(state.active()),
   };
 
+  // Its own pool, since fetch cannot send the browser's Host to legacy.
+  const sitePathsDispatcher = new Agent();
+  app.addHook('onClose', async () => {
+    await sitePathsDispatcher.close();
+  });
+  const sitePaths = createSitePathsClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock, dispatcher: sitePathsDispatcher });
+
   await registerCutoverRoutes(app, { state, inflight });
   await registerMarkUsedRoute(app, { jar, bridge });
+  await registerSitePathsRoute(app, { sitePaths });
   await registerVersionMenuRoute(app, {
     versionMenu: createVersionMenuClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock }),
   });

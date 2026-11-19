@@ -2,6 +2,7 @@
 // recorded strategies-content Site Manager tree models.
 import * as cheerio from 'cheerio';
 import { Roles, moduleRole } from '@opt2/platform/auth';
+import { COMPLEX_VALUE_FAULT, LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { secure } from '@/lib/access-gate';
 import { legacySettings } from '@/lib/env';
@@ -254,6 +255,27 @@ describe('cArch.list content modules', () => {
     expect($('#arch-mod')).toHaveLength(0);
     expect($('#gridContainer').attr('class')).toBe('site-tree');
   });
+
+  // Own oracles carch-list-m0-short and carch-list-after-m99-topid.
+  it.each<[string, Readonly<Record<string, string>>, Readonly<Record<string, string>>]>([
+    ['0', { moduleid: '0' }, {}],
+    [
+      'the 36-character 099 with a topid',
+      { moduleid: '000000000000000000000000000000000099', topid: SITE_MANAGER },
+      // before()'s session writes, which the handler keeps through the fault.
+      { moduleid: '000000000000000000000000000000000099' },
+    ],
+  ])(
+    "fails module %s, which the view's cfcase matches only numerically, on list()'s nextN struct after the read",
+    async (_label, rc, writes) => {
+      const ctx = listContext(siteAdminRequest(TENANT, { ...LIST, rc }));
+      const error = await screen.load(ctx).catch((caught: unknown) => caught);
+      expect(error).toEqual(LegacyFaultError.fromTrace(COMPLEX_VALUE_FAULT));
+      expect(error).toMatchObject({ type: 'Expression', detail: COMPLEX_VALUE_FAULT.Detail });
+      expect(treeCalls(ctx)).toHaveLength(1);
+      expect(ctx.req.sessionWrites).toMatchObject(writes);
+    },
+  );
 
   it('opens the Components module without the site-tree class, its button active', async () => {
     const req = siteAdminRequest(TENANT, { ...LIST, rc: { moduleid: COMPONENTS } });

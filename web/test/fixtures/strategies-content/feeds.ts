@@ -31,6 +31,7 @@ const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
 const CHANNEL_LINK = 'https://feeds.example.test/partner/updates.rss';
 const DEFAULT_COLLECTION_DISPLAY_LIST = 'Date,Title,Image,Summary,Credits';
 
+/** Legacy's feed API endpoint of the site, kept from a first request on its own domain. */
 export const FEED_API_ENDPOINT = `http://${SITE}.example.test/_api/feed/v1/${SITE}`;
 
 // The contract serves cfeed.list and cfeed.edit from these operation paths; it names no `/cfeed/<action>` path.
@@ -356,7 +357,6 @@ const siteValues = Object.freeze({
   contentPool: Object.freeze([Object.freeze({ siteID: SITE, site: 'Tenant A' })]),
   useLayoutManager: false,
   defaultCollectionDisplayList: DEFAULT_COLLECTION_DISPLAY_LIST,
-  endpoint: FEED_API_ENDPOINT,
 });
 
 export const cfeedEditLocalData: AdminViewModel = Object.freeze({

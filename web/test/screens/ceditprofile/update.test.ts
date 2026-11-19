@@ -202,8 +202,8 @@ afterEach(() => {
 });
 
 describe('cEditProfile.update definition and gate', () => {
-  it('is the people-owned page action behind the cEditProfile gate', () => {
-    expect(ceditprofileScreens).toContain(updateProfileAction);
+  it('is the people-owned page action behind the cEditProfile gate, halted outside the barrel', () => {
+    expect(ceditprofileScreens).not.toContain(updateProfileAction);
     expect(updateProfileAction).toMatchObject({ circuit: 'ceditprofile', action: 'update', owner: 'people', mode: 'page' });
     expect(updateProfileAction.gate).toBe(ceditprofileGate);
   });

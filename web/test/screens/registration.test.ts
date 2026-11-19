@@ -64,29 +64,40 @@ const RECORDS = adminRecords();
 const keyOf = (def: ScreenDefinition): string =>
   normaliseRouteKey(`admin:${def.circuit}.${def.action}${def.variant === undefined ? '' : `{${def.variant.key}}`}`);
 
-/** A circuit barrel and its registered screens. */
+/** A circuit barrel, its registered screens, and the carried keys a halted exceptions-list entry keeps on legacy. */
 interface BarrelCase {
   readonly circuit: string;
   readonly screens: readonly ScreenDefinition[];
+  readonly halted: readonly string[];
 }
 
 const CASES: readonly BarrelCase[] = [
-  { circuit: 'cusers', screens: cusersScreens },
-  { circuit: 'ceditprofile', screens: ceditprofileScreens },
-  { circuit: 'ccategory', screens: ccategoryScreens },
-  { circuit: 'cchain', screens: cchainScreens },
-  { circuit: 'cwebservice', screens: cwebserviceScreens },
+  { circuit: 'cusers', screens: cusersScreens, halted: ['admin:cusers.update{type=2,action=update}'] },
+  { circuit: 'ceditprofile', screens: ceditprofileScreens, halted: ['admin:ceditprofile.update'] },
+  { circuit: 'ccategory', screens: ccategoryScreens, halted: [] },
+  { circuit: 'cchain', screens: cchainScreens, halted: ['admin:cchain.save'] },
+  { circuit: 'cwebservice', screens: cwebserviceScreens, halted: ['admin:cwebservice.edit', 'admin:cwebservice.save'] },
 ];
 
-describe.each(CASES)('$circuit barrel', ({ circuit, screens }) => {
+describe.each(CASES)('$circuit barrel', ({ circuit, screens, halted }) => {
   const records = RECORDS.filter((record) => record.routeKey.startsWith(`admin:${circuit}.`));
   const carried = records.filter((record) => record.disposition === 'carry');
+  const haltedByException = haltedExceptionKeys();
 
-  it('registers exactly the carried inventory keys, each once', () => {
+  it('registers exactly the carried inventory keys but the halted ones, each once', () => {
     const keys = screens.map(keyOf);
     expect(carried.length).toBeGreaterThan(0);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys.toSorted()).toEqual(carried.map((record) => record.routeKey).toSorted());
+    const required = carried.map((record) => record.routeKey).filter((key) => !halted.includes(key));
+    expect(keys.toSorted()).toEqual(required.toSorted());
+  });
+
+  it('leaves each halted key to the halted exceptions-list entry its inventory record names', () => {
+    for (const key of halted) {
+      const ref = carried.find((record) => record.routeKey === key)?.exceptionRef;
+      expect(ref, key).toBeTypeOf('string');
+      expect(haltedByException.get(ref ?? '')?.has(key), key).toBe(true);
+    }
   });
 
   it('serves each key in its inventoried mode and owner behind the controller before() gate', () => {
@@ -108,6 +119,7 @@ describe('carch barrel', () => {
   // The carried keys no carch screen registers: those a halted exceptions-list entry keeps on legacy.
   const halted = [
     'admin:carch.cropimage',
+    'admin:carch.datamanager',
     'admin:carch.edit',
     'admin:carch.flipimage',
     'admin:carch.imagedetails',

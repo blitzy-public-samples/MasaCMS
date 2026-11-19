@@ -433,7 +433,7 @@ const VALIDATING: readonly ValidatingCase[] = [
     action: 'cchangesets.removeitem',
     path: '/v1/sites/{siteid}/changesets/{changesetid}/items/{contenthistid}/remove',
     params: { changesetid: IDS.changesets.scheduledDue, contenthistid: H.pageOneDraft },
-    form: {},
+    form: { contenthistid: H.pageOneDraft },
     declared: 'rc.changesetid',
     context: IDS.changesets.scheduledDue,
     writes: writeOf('UPDATE', 'content'),

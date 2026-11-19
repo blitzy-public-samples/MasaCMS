@@ -6,7 +6,7 @@ import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { selectLayout, type ShellView } from '@/shell/document';
 import type { ScreenContext } from '../registry';
 import { renderFeedCategoriesNest } from './categories-nest';
-import { displayErrors, feedApiEndpoint } from './common';
+import { displayErrors, legacyFeedEndpoint } from './common';
 import type { FeedAdvancedParam, FeedContentFilter, FeedEditModel, FeedExtendedAttribute, FeedView } from './edit-model';
 import { renderCfeedSecondaryMenu } from './secondary-menu';
 import { renderFeedUsageTab } from './tab-usage';
@@ -35,6 +35,8 @@ interface Parts {
   readonly label: Label;
   /** Legacy `displaNamePrefix`: `instance` for a display object instance, else ''. */
   readonly prefix: string;
+  /** edit.cfm's `endpoint`: legacy's feed API endpoint of the site. */
+  readonly endpoint: string;
 }
 
 /** The labelled fields of the advanced filters (edit.cfm 84-115), before the literal ones. */
@@ -616,9 +618,9 @@ ${restrictGroupOptgroup(parts, true, 'user.membergroups')}${restrictGroupOptgrou
 
 /** The RSS tab pane; the feed URL row appears once the collection has an id. */
 function rssTab(parts: Parts): SafeHtml {
-  const { req, model, feed, label } = parts;
+  const { req, model, feed, label, endpoint } = parts;
   const urlRow = (): SafeHtml => {
-    const url = raw(`${feedApiEndpoint(req, model.endpoint)}/?feedID=${feed.feedID}`);
+    const url = raw(`${endpoint}/?feedID=${feed.feedID}`);
     return html`\t\t\t<div class="mura-control-group">
 \t\t\t <label>${label('collections.url')}</label>
 \t\t\t <a title="${label('collections.view')}" href="${url}" target="_blank">${url}</a>
@@ -669,7 +671,7 @@ ${model.siteExtranet && restrictAccess(parts)}
 
 /** The `mura-header`: the create or edit title and, outside compact display, the secondary menu. */
 function header(parts: Parts, compact: boolean, fuseaction: string): SafeHtml {
-  const { req, model, feed, rb, label } = parts;
+  const { req, feed, rb, label, endpoint } = parts;
   const title = feed.isNew
     ? 'collections.createlocalindex'
     : rcText(req, 'assignmentID') !== ''
@@ -678,7 +680,7 @@ function header(parts: Parts, compact: boolean, fuseaction: string): SafeHtml {
   const menuFeed = { feedId: feed.feedID, type: feed.type, isNew: feed.isNew, channelLink: feed.channelLink };
   const menu = compact
     ? ''
-    : html`\t\t${renderCfeedSecondaryMenu(req, rb, { fuseaction, feed: menuFeed, endpoint: model.endpoint })}
+    : html`\t\t${renderCfeedSecondaryMenu(req, rb, { fuseaction, feed: menuFeed, endpoint })}
 `;
   return html`<div class="mura-header">
 
@@ -803,7 +805,8 @@ jQuery(document).ready(function(){
  * Renders the Local branch of `cfeed/edit.cfm`: the index edit form, or the display options of a display object
  * instance (`rc.assignmentID` set), with the compact display's `cfhtmlhead` script.
  * @param req The request whose `rc` the view reads, the cfeed `before()` defaults applied.
- * @throws GatewayDenialError When identity refuses the CSRF tokens of the collection (401 or 403).
+ * @throws GatewayDenialError When identity refuses the CSRF tokens of the collection, or the gateway web's read of
+ * the feed API endpoint (401 or 403).
  */
 export async function renderFeedEditLocal(
   req: AdminRequest,
@@ -812,7 +815,8 @@ export async function renderFeedEditLocal(
   { fuseaction }: FeedEditLocalOptions,
 ): Promise<FeedEditBranchView> {
   const { feed } = model;
-  await ctx.csrf.prefetch([feed.feedID]);
+  // edit.cfm:215 reads the endpoint on every Local render, printed or not.
+  const [, endpoint] = await Promise.all([ctx.csrf.prefetch([feed.feedID]), legacyFeedEndpoint(req, ctx.gateway)]);
   const parts: Parts = {
     req,
     model,
@@ -820,6 +824,7 @@ export async function renderFeedEditLocal(
     rb: ctx.rb,
     label: (key) => raw(ctx.rb.rbKey(key)),
     prefix: model.isObjectInstance ? 'instance' : '',
+    endpoint,
   };
   // The compact layout is chosen by the same `rc.compactDisplay eq 'true'` test the view makes.
   const compact = selectLayout(req.rc) === 'compact';

@@ -291,8 +291,10 @@ describe('applySuperUserRule', () => {
     expect(values).toMatchObject({ s2, ispublic: 1 });
   });
 
-  it('throws for an s2 CFML cannot read as a boolean', () => {
-    expect(() => applySuperUserRule(bean({ s2: 'abc' }), true)).toThrow(TypeError);
+  it('throws the fault legacy raises for an s2 CFML cannot read as a boolean', () => {
+    expect(() => applySuperUserRule(bean({ s2: 'abc' }), true)).toThrow(
+      expect.objectContaining({ type: 'server_error', stacktrace: { Message: 'cannot convert the value "abc" to a boolean', Type: 'Expression' } }),
+    );
   });
 });
 

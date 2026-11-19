@@ -103,6 +103,8 @@ export async function findJob(
 export async function findDefinition(tx: TenantTx, definitionId: string): Promise<ExportDefinitionRow | null> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [EXPORT_DEFINITION.unit]);
+  // SQL Server matches no stored id to one holding a NUL, which PostgreSQL text cannot bind.
+  if (definitionId.includes('\0')) return null;
   const { rows } = await tx.query<ExportDefinitionRow>(statements.definition, [definitionId]);
   return rows[0] ?? null;
 }

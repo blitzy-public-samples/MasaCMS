@@ -29,6 +29,7 @@ import {
   type VersionMenu,
 } from '../../src/baseline/environment.js';
 import { UsageError, runCli } from '../../src/lib/cli.js';
+import { HARNESS_KEY_VARIABLE } from '../../src/lib/harness-key.js';
 import { assertReadOnlySql, type ReadOnlyMssql } from '../../src/lib/mssql.js';
 import { REPO_ROOT, type EnvLike } from '../../src/lib/paths.js';
 import type { CatalogClient } from '../../src/lib/pg.js';
@@ -52,6 +53,8 @@ const MAILPIT = 'http://mailpit.test';
 const INFO_URL = `${LEGACY}/harness/legacy-baseline/cfml/run.cfm?info=1`;
 const MAILPIT_INFO_URL = `${MAILPIT}/api/v1/info`;
 const MAILPIT_INFO = { Version: 'v1.21.0', Database: '/var/lib/mailpit/mailpit.db', Messages: 0 };
+// Test value assembled at run time, not a secret.
+const HARNESS_KEY = ['opt2', 'harness', 'environment', 'test'].join('-');
 const PINNED_NODE = `v${PLANNED_PINS.node}`;
 const LOCAL_AT = new Date('2026-06-30T08:00:00.000Z');
 const SERVICES_AT = new Date('2026-06-30T09:00:00.000Z');
@@ -193,6 +196,7 @@ function baseEnv(): EnvLike {
     OPT2_REPORTS_DIR: reportsDir,
     OPT2_PRISTINE_DIR: pristine,
     LEGACY_ORIGIN: LEGACY,
+    OPT2_HARNESS_KEY: HARNESS_KEY,
     MAILPIT_API_URL: MAILPIT,
     MURA_DBTYPE: 'mssql',
     MURA_DEFAULTHASHALGORITHM: 'CFMX_COMPAT',
@@ -636,9 +640,11 @@ describe('probeServices', () => {
       { id: 'testbox', recorded: 'enabled true; installed true', status: 'ok', detail: null },
       { id: 'coldfusion-java', recorded: '17.0.12', status: 'ok', detail: null },
     ]);
-    expect(r.fetch.mock.calls.map(([input, init]) => [String(input), init?.method])).toEqual([
-      [INFO_URL, 'GET'],
-      [MAILPIT_INFO_URL, 'GET'],
+    expect(
+      r.fetch.mock.calls.map(([input, init]) => [String(input), init?.method, new Headers(init?.headers).get('x-opt2-harness-key')]),
+    ).toEqual([
+      [INFO_URL, 'GET', HARNESS_KEY],
+      [MAILPIT_INFO_URL, 'GET', null],
     ]);
     expect(r.mssql.factory).toHaveBeenCalledWith(r.deps.env);
     expect(r.pg.factory).toHaveBeenCalledWith(r.deps.env);
@@ -776,6 +782,13 @@ describe('probeServices', () => {
     ['an HTTP 500', {}, { [INFO_URL]: () => respond('<h1>Error</h1>', 500) }, `GET ${INFO_URL} answered HTTP 500`],
     ['a JSON array', {}, { [INFO_URL]: () => respond([RUN_INFO]) }, '/harness/legacy-baseline/cfml/run.cfm?info=1 did not answer a JSON object'],
     ['no legacy origin', { LEGACY_ORIGIN: undefined, PORT: undefined }, {}, 'LEGACY_ORIGIN or PORT must name the legacy ColdFusion origin'],
+    [
+      'no harness key',
+      { OPT2_HARNESS_KEY: undefined },
+      {},
+      `no harness diagnostic key: ${HARNESS_KEY_VARIABLE} is unset and <state>/secrets/harness-diagnostic-key is missing or empty; ` +
+        'run `npm run repro:secrets` in harness/',
+    ],
   ])('marks every run.cfm row unavailable and fails coldfusion on %s', async (_name, env, routes, detail) => {
     const r = rig({ env, routes });
 
@@ -783,7 +796,7 @@ describe('probeServices', () => {
 
     expect(failed).toEqual(['coldfusion']);
     for (const id of ['coldfusion', 'coldfusion-edition', 'cfpm', 'testbox', 'coldfusion-java']) {
-      expect(probe(services, id)).toMatchObject({ recorded: null, status: 'unavailable', detail });
+      expect(probe(services, id)).toMatchObject({ recorded: null, status: 'unavailable', detail: detail.replace('<state>', stateDir) });
     }
     expect(settings).toMatchObject({
       timeZone: null,

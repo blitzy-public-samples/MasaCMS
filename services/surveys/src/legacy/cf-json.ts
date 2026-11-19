@@ -1,5 +1,6 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** JSON numbers as the fixture's ACF 2023 on JDK 17 reads them with deserializeJSON and writes them back as text. */
+/** JSON text and numbers as the fixture's ACF 2023 on JDK 17 reads them with isJSON and deserializeJSON and writes them back as text. */
+import { javaTrim } from '@opt2/platform/legacy-compat';
 
 const LONG_MIN = -(2n ** 63n);
 const LONG_MAX = 2n ** 63n - 1n;
@@ -167,6 +168,27 @@ export function cfNumberTokenText(token: string): string {
 /** Text ACF gives an already parsed JSON number, read as a long when integral and in range; the token's own form is unknown here. */
 export function cfNumberValueText(value: number): string {
   return Number.isInteger(value) && value >= -(2 ** 63) && value < 2 ** 63 ? BigInt(value).toString() : javaDoubleText(value);
+}
+
+/**
+ * `text` as JSON.parse must read it to accept what isJSON accepts of control characters: Java-trimmed, and each raw C0
+ * control inside a string literal, a NUL included, escaped, as deserializeJSON keeps it as that character.
+ */
+export function cfJsonControls(text: string): string {
+  const trimmed = javaTrim(text);
+  let out = '';
+  let inString = false;
+  for (let at = 0; at < trimmed.length; at += 1) {
+    const char = trimmed.charAt(at);
+    if (inString && char === '\\') {
+      out += char + trimmed.charAt(at + 1);
+      at += 1;
+    } else {
+      if (char === '"') inString = !inString;
+      out += inString && char < ' ' ? `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}` : char;
+    }
+  }
+  return out;
 }
 
 /** JSON.parse with every number replaced by the text ACF gives its token; throws SyntaxError for text that is not JSON. */

@@ -59,10 +59,32 @@ export function reportedMethod(method: string | undefined, ctx: ApiNameContext =
   return name.toLowerCase() === CATCH_VARIABLE || isDefinedApiName(name, ctx) ? name : 'invalid';
 }
 
-/** An exception's `Message` and `Type`, as the debugging branch of `catch (Any e)` reports it in `stacktrace` (jsonApiUtility.cfc:1396-1397). */
+/**
+ * An exception's `Message` and `Type`, as the debugging branch of `catch (Any e)` reports it in `stacktrace`
+ * (jsonApiUtility.cfc:1396-1397), and the other cfcatch fields onError's debug page prints that it has.
+ */
 export interface LegacyFaultTrace {
   readonly Message: string;
   readonly Type: string;
+  readonly DataSource?: string;
+  readonly Sql?: string;
+  readonly ErrorCode?: string;
+  readonly Detail?: string;
+  readonly ExtendedInfo?: string;
+}
+
+/** `trace` with `Message` and `Type` first, then each other field it has, in onError's heading order. */
+function traceStruct(trace: LegacyFaultTrace): LegacyFaultTrace {
+  const { Message, Type, DataSource, Sql, ErrorCode, Detail, ExtendedInfo } = trace;
+  return {
+    Message,
+    Type,
+    ...(DataSource === undefined ? {} : { DataSource }),
+    ...(Sql === undefined ? {} : { Sql }),
+    ...(ErrorCode === undefined ? {} : { ErrorCode }),
+    ...(Detail === undefined ? {} : { Detail }),
+    ...(ExtendedInfo === undefined ? {} : { ExtendedInfo }),
+  };
 }
 
 /** Options of a legacy JSON API error response. */
@@ -92,7 +114,7 @@ export function legacyErrorResponse(type: string, a: LegacyErrorResponseOptions 
     method: reportedMethod(a.method, a.methodCtx),
     params: paramsWithoutMethod(a.params ?? {}),
     // Key order follows the ACF wire bytes ({"message":…,"code":…}), so body and ETag match legacy exactly.
-    error: stacktrace === undefined ? { message, code } : { message, code, stacktrace: { Message: stacktrace.Message, Type: stacktrace.Type } },
+    error: stacktrace === undefined ? { message, code } : { message, code, stacktrace: traceStruct(stacktrace) },
   });
   // The catch blocks' unordered struct literal iterates apiversion, method, error, params on ACF.
   const response = serializeResponse(envelope, {

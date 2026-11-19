@@ -2,7 +2,9 @@
 import { closeSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
+import { harnessKeyHeaders } from '../lib/harness-key.js';
 import { createHttpSession, type FetchLike } from '../lib/http.js';
+import type { EnvLike } from '../lib/paths.js';
 import {
   computeClosure,
   extractCalls,
@@ -148,6 +150,8 @@ export type LiveEntities = z.infer<typeof liveEntitiesSchema>;
 export interface FetchLiveEntitiesDeps {
   fetch?: FetchLike;
   timeoutMs?: number;
+  /** Source of the harness key; default `process.env`. */
+  env?: EnvLike;
 }
 
 // Declaration sites of the dynamic entity families. The ids are the ones the committed traceability tables cite;
@@ -457,8 +461,9 @@ export function classCounts(entities: readonly EntityEntry[]): EntityClassCounts
 
 /** GETs and validates `run.cfm?info=entities` from the legacy origin; throws on a non-200 answer or an invalid payload. */
 export async function fetchLiveEntities(origin: string, deps: FetchLiveEntitiesDeps = {}): Promise<LiveEntities> {
+  const headers = harnessKeyHeaders(deps.env);
   const session = createHttpSession({ baseUrl: origin, fetch: deps.fetch, timeoutMs: deps.timeoutMs });
-  const res = await session.get(LIVE_ENTITIES_PATH, { query: { info: 'entities' } });
+  const res = await session.get(LIVE_ENTITIES_PATH, { query: { info: 'entities' }, headers });
   if (res.status !== 200) throw new Error(`live entity probe ${res.url} answered HTTP ${res.status}`);
   const parsed = liveEntitiesSchema.safeParse(res.json());
   if (!parsed.success) {

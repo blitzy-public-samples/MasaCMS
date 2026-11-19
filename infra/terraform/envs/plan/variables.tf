@@ -59,7 +59,7 @@ variable "legacy_db_port" {
 }
 
 variable "legacy_db_name" {
-  description = "Legacy database name (MURA_DATABASE) of migration."
+  description = "Legacy database name (MURA_DATABASE) of migration, strategies-content, identity and people."
   type        = string
 }
 

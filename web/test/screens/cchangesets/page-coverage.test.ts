@@ -1,6 +1,7 @@
 // cChangesets list, edit and save against cchangesets.cfc and its views over the strategies-content screen models.
 import * as cheerio from 'cheerio';
 import { Roles, moduleRole } from '@opt2/platform/auth';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runGate } from '@/lib/access-gate';
 import { createCsrfRenderer } from '@/lib/csrf';
@@ -724,8 +725,8 @@ describe('cChangesets.save', () => {
     ['no model', undefined],
     ['a model that is not a struct', { rc: ['changeset'] }],
   ])('fails as legacy does for a rejected token: %s', async (_case, data) => {
-    await expect(changesetSaveScreen.redirect?.(saveContext(failedSave(data)))).rejects.toThrow(
-      new TypeError('Element CHANGESET is undefined in RC.'),
+    await expect(changesetSaveScreen.redirect?.(saveContext(failedSave(data)))).rejects.toEqual(
+      new LegacyFaultError('Element CHANGESET is undefined in RC.'),
     );
   });
 

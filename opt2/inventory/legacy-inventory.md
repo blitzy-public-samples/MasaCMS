@@ -77,7 +77,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.availablechangesets` | `admin:carch.availablechangesets` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.copy` | `admin:carch.copy` | strategies-content | decision (2, withheld) (corrected; expected carry) | none | json (text/html) |
 | `ctl:carch.cropimage` | `admin:carch.cropimage` | strategies-content | carry (5, legacy-write) `EX-FILE-RENDITION` | validates `rc.fileid` | page (text/html) |
-| `ctl:carch.datamanager` | `admin:carch.datamanager` | strategies-content | carry (5) | validates `rc.responseid` | page (text/html) |
+| `ctl:carch.datamanager` | `admin:carch.datamanager` | strategies-content | carry (5, legacy-write) `EX-DATAMANAGER-STORED-PACKET` | validates `rc.responseid` | page (text/html) |
 | `ctl:carch.displayobjectmodal` | `admin:carch.displayobjectmodal` | strategies-content | legacy-served (4) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.downloaddata` | `admin:carch.downloaddata` | strategies-content | carry (5) | none | download (application/msexcel) |
 | `ctl:carch.draft` | `admin:carch.draft` | strategies-content | carry (5) | none | page (text/html) |
@@ -151,7 +151,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cchain.edit` | `admin:cchain.edit` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cchain.list` | `admin:cchain.list` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cchain.pending` | `admin:cchain.pending` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cchain.save` | `admin:cchain.save` | strategies-content | carry (5) | validates `rc.chainid` | redirect |
+| `ctl:cchain.save` | `admin:cchain.save` | strategies-content | carry (5, legacy-write) `EX-CCHAIN-SAVE-UNSCOPED-BEAN` | validates `rc.chainid` | redirect |
 | `ctl:cchain.update` | `admin:cchain.update` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cchangesets.assignments` | `admin:cchangesets.assignments` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cchangesets.delete` | `admin:cchangesets.delete` | strategies-content | carry (5) | validates `rc.changesetid` | redirect |
@@ -191,7 +191,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:ceditprofile.edit` | `admin:ceditprofile.edit` | people | carry (5) | none | page (text/html) |
 | `ctl:ceditprofile.update{photo}` | `admin:ceditprofile.update{photo}` | spans identity, people, strategies-content | decision (3, withheld) | validates | page (text/html) |
 | `ctl:ceditprofile.update{extdata}` | `admin:ceditprofile.update{extdata}` | spans identity, people, strategies-content | decision (3, withheld) (corrected; expected carry) | validates | page (text/html) |
-| `ctl:ceditprofile.update` | `admin:ceditprofile.update` | people | carry (5, legacy-write) `EX-PROFILE-ACCOUNT-KEYS` | validates | page (text/html) |
+| `ctl:ceditprofile.update` | `admin:ceditprofile.update` | people | carry (5, legacy-write) `EX-ROSTER-POOLMOVE` | validates | page (text/html) |
 | `ctl:cemail.deletebounces` | `admin:cemail.deletebounces` | communications | legacy-served (4) | none | redirect |
 | `ctl:cemail.download` | `admin:cemail.download` | communications | legacy-served (4) | none | download (application/msexcel) |
 | `ctl:cemail.edit` | `admin:cemail.edit` | communications | legacy-served (4) | none | page (text/html) |
@@ -303,16 +303,16 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cusers.update{type=1,extdata}` | `admin:cusers.update{type=1,extdata}` | spans identity, strategies-content | decision (3, withheld) (corrected; expected carry) | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=2,action=add}` | `admin:cusers.update{type=2,action=add}` | people | carry (5) | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=2,action=delete}` | `admin:cusers.update{type=2,action=delete}` | spans identity, people, strategies-content | decision (3, withheld) | validates `rc.userid` | redirect |
-| `ctl:cusers.update{type=2,action=update}` | `admin:cusers.update{type=2,action=update}` | people | carry (5) | validates `rc.userid` | redirect |
+| `ctl:cusers.update{type=2,action=update}` | `admin:cusers.update{type=2,action=update}` | people | carry (5, legacy-write) `EX-ROSTER-POOLMOVE` | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=1}` | `admin:cusers.update{type=1}` | identity | carry (5) | validates `rc.userid` | redirect |
 | `ctl:cusers.update` | `admin:cusers.update` | spans identity, people, strategies-content | decision (3, withheld) | validates `rc.userid` | redirect |
 | `ctl:cusers.updateaddress{action=delete}` | `admin:cusers.updateaddress{action=delete}` | spans people, strategies-content | decision (3, withheld) (corrected; expected carry) | validates `'updateaddress' & rc.userid` | redirect |
 | `ctl:cusers.updateaddress{extdata}` | `admin:cusers.updateaddress{extdata}` | spans people, strategies-content | decision (3, withheld) (corrected; expected carry) | validates `'updateaddress' & rc.userid` | redirect |
 | `ctl:cusers.updateaddress` | `admin:cusers.updateaddress` | people | carry (5) | validates `'updateaddress' & rc.userid` | redirect |
 | `ctl:cwebservice.delete` | `admin:cwebservice.delete` | identity | carry (5) | validates `rc.clientid` | redirect |
-| `ctl:cwebservice.edit` | `admin:cwebservice.edit` | identity | carry (5) | none | page (text/html) |
+| `ctl:cwebservice.edit` | `admin:cwebservice.edit` | identity | carry (5) `EX-USER-FEED-TIE-ORDER` | none | page (text/html) |
 | `ctl:cwebservice.list` | `admin:cwebservice.list` | identity | carry (5) | none | page (text/html) |
-| `ctl:cwebservice.save` | `admin:cwebservice.save` | identity | carry (5) | validates `rc.clientid` | page (text/html) |
+| `ctl:cwebservice.save` | `admin:cwebservice.save` | identity | carry (5, legacy-write) `EX-USER-FEED-TIE-ORDER` | validates `rc.clientid` | page (text/html) |
 | `ctl:home.redirect` | `admin:home.redirect` | identity | carry (5) | none | redirect |
 | `ctl:razuna.default` | `admin:razuna.default` | strategies-content | legacy-served (4) | none | fragment (text/html) |
 | `ctl:razuna.getnodes` | `admin:razuna.getnodes` | strategies-content | legacy-served (4) | none | fragment (text/html) |
@@ -390,7 +390,7 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | `api:changesetcategoryassignment.save` | `api:changesetcategoryassignment.save` | strategies-content | carry (5) | validates `arguments.id` | — |
 | `api:changesetcategoryassignment.validate` | `api:changesetcategoryassignment.validate` | strategies-content | carry (5) | none | `EX-CONTENT-VALIDATE` |
 | `api:checkschema` | `api:checkschema` | — | decision (2, withheld) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#tentity-declared:*` |
-| `api:comment.delete` | `api:comment.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:comment.delete` | `api:comment.delete` | strategies-content | carry (5, legacy-write) | validates `arguments.id` | `EX-COMMENT-REMOTE-SITE` |
 | `api:comment.findall` | `api:comment.findall` | strategies-content | carry (5) | none | `EX-JSONAPI-BLANK-ROW-LIMIT` |
 | `api:comment.findcrumbarray` | `api:comment.findcrumbarray` | strategies-content | carry (5) | none | — |
 | `api:comment.findmany` | `api:comment.findmany` | strategies-content | carry (5) | none | `EX-JSONAPI-BLANK-ROW-LIMIT` |
@@ -399,13 +399,13 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | `api:comment.findpermissions` | `api:comment.findpermissions` | strategies-content | carry (5) | none | — |
 | `api:comment.findproperties` | `api:comment.findproperties` | strategies-content | carry (5) | none | — |
 | `api:comment.findquery` | `api:comment.findquery` | strategies-content | carry (5) | none | `EX-JSONAPI-BLANK-ROW-LIMIT` |
-| `api:comment.save` | `api:comment.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:comment.save` | `api:comment.save` | strategies-content | carry (5, legacy-write) | validates `arguments.id` | `EX-COMMENT-REMOTE-SITE` |
 | `api:comment.validate` | `api:comment.validate` | strategies-content | carry (5) | none | `EX-CONTENT-VALIDATE` |
-| `api:comment.~delete` | `api:comment.~delete` | strategies-content | carry (5) | none | — |
-| `api:comment.~flag` | `api:comment.~flag` | strategies-content | carry (5) | none | — |
-| `api:comment.~markasspam` | `api:comment.~markasspam` | strategies-content | carry (5) | none | — |
-| `api:comment.~undelete` | `api:comment.~undelete` | strategies-content | carry (5) | none | — |
-| `api:comment.~unmarkasspam` | `api:comment.~unmarkasspam` | strategies-content | carry (5) | none | — |
+| `api:comment.~delete` | `api:comment.~delete` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
+| `api:comment.~flag` | `api:comment.~flag` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
+| `api:comment.~markasspam` | `api:comment.~markasspam` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
+| `api:comment.~undelete` | `api:comment.~undelete` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
+| `api:comment.~unmarkasspam` | `api:comment.~unmarkasspam` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
 | `api:content.delete` | `api:content.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
 | `api:content.findall` | `api:content.findall` | strategies-content | carry (5) | none | `EX-CONTENT-FEED-UNORDERED-SORT` |
 | `api:content.findcrumbarray` | `api:content.findcrumbarray` | strategies-content | carry (5) | none | — |
@@ -617,7 +617,7 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | `rest:changesetcategoryassignment.save{siteid}` | `rest:changesetcategoryassignment.save{siteid}` | strategies-content | carry (5, legacy-write) | bypassed `arguments.id` | `EX-REST-SITEID-STARTUP` |
 | `rest:changesetcategoryassignment.validate` | `rest:changesetcategoryassignment.validate` | strategies-content | carry (5) | none | `EX-CONTENT-VALIDATE` |
 | `rest:checkschema` | `rest:checkschema` | — | decision (2, withheld) (corrected; expected legacy-served) | bypassed | `opt2/decision-list.json#tentity-declared:*` |
-| `rest:comment.delete` | `rest:comment.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:comment.delete` | `rest:comment.delete` | strategies-content | carry (5, legacy-write) | bypassed `arguments.id` | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.delete{session}` | `rest:comment.delete{session}` | strategies-content | carry (5, legacy-write) | validates `arguments.id` | `EX-REST-INDEX-SESSION` |
 | `rest:comment.delete{siteid}` | `rest:comment.delete{siteid}` | strategies-content | carry (5, legacy-write) | bypassed `arguments.id` | `EX-REST-SITEID-STARTUP` |
 | `rest:comment.findall` | `rest:comment.findall` | strategies-content | carry (5) | none | `EX-JSONAPI-BLANK-ROW-LIMIT` |
@@ -628,23 +628,23 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | `rest:comment.findpermissions` | `rest:comment.findpermissions` | strategies-content | carry (5) | none | — |
 | `rest:comment.findproperties` | `rest:comment.findproperties` | strategies-content | carry (5) | none | — |
 | `rest:comment.findquery` | `rest:comment.findquery` | strategies-content | carry (5) | none | `EX-JSONAPI-BLANK-ROW-LIMIT` |
-| `rest:comment.save` | `rest:comment.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:comment.save` | `rest:comment.save` | strategies-content | carry (5, legacy-write) | bypassed `arguments.id` | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.save{session}` | `rest:comment.save{session}` | strategies-content | carry (5, legacy-write) | validates `arguments.id` | `EX-REST-INDEX-SESSION` |
 | `rest:comment.save{siteid}` | `rest:comment.save{siteid}` | strategies-content | carry (5, legacy-write) | bypassed `arguments.id` | `EX-REST-SITEID-STARTUP` |
 | `rest:comment.validate` | `rest:comment.validate` | strategies-content | carry (5) | none | `EX-CONTENT-VALIDATE` |
-| `rest:comment.~delete` | `rest:comment.~delete` | strategies-content | carry (5) | none | — |
+| `rest:comment.~delete` | `rest:comment.~delete` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.~delete{session}` | `rest:comment.~delete{session}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-INDEX-SESSION` |
 | `rest:comment.~delete{siteid}` | `rest:comment.~delete{siteid}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-SITEID-STARTUP` |
-| `rest:comment.~flag` | `rest:comment.~flag` | strategies-content | carry (5) | none | — |
+| `rest:comment.~flag` | `rest:comment.~flag` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.~flag{session}` | `rest:comment.~flag{session}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-INDEX-SESSION` |
 | `rest:comment.~flag{siteid}` | `rest:comment.~flag{siteid}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-SITEID-STARTUP` |
-| `rest:comment.~markasspam` | `rest:comment.~markasspam` | strategies-content | carry (5) | none | — |
+| `rest:comment.~markasspam` | `rest:comment.~markasspam` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.~markasspam{session}` | `rest:comment.~markasspam{session}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-INDEX-SESSION` |
 | `rest:comment.~markasspam{siteid}` | `rest:comment.~markasspam{siteid}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-SITEID-STARTUP` |
-| `rest:comment.~undelete` | `rest:comment.~undelete` | strategies-content | carry (5) | none | — |
+| `rest:comment.~undelete` | `rest:comment.~undelete` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.~undelete{session}` | `rest:comment.~undelete{session}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-INDEX-SESSION` |
 | `rest:comment.~undelete{siteid}` | `rest:comment.~undelete{siteid}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-SITEID-STARTUP` |
-| `rest:comment.~unmarkasspam` | `rest:comment.~unmarkasspam` | strategies-content | carry (5) | none | — |
+| `rest:comment.~unmarkasspam` | `rest:comment.~unmarkasspam` | strategies-content | carry (5, legacy-write) | none | `EX-COMMENT-REMOTE-SITE` |
 | `rest:comment.~unmarkasspam{session}` | `rest:comment.~unmarkasspam{session}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-INDEX-SESSION` |
 | `rest:comment.~unmarkasspam{siteid}` | `rest:comment.~unmarkasspam{siteid}` | strategies-content | carry (5, legacy-write) | none | `EX-REST-SITEID-STARTUP` |
 | `rest:content.delete` | `rest:content.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
@@ -916,11 +916,11 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | Id | Entry | Owner | Disposition (step) | CSRF | Windowed | Session effects |
 | --- | --- | --- | --- | --- | --- | --- |
 | `fe:appreload` | application reload by ?\<appreloadkey> (default appreload) or the Global Config reload link; start-up re-runs | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2, withheld, legacy-write) (corrected; expected legacy-served) `EX-SEC-APPRELOAD` | none | yes | none |
-| `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | favorites ajax endpoint deleteFavorite.cfm | people | carry (5) | none | no | none |
-| `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | favorites ajax endpoint deleteRSSFavorite.cfm | people | carry (5) | none | no | none |
-| `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | favorites ajax endpoint saveFavorite.cfm | people | carry (5) | none | no | none |
+| `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | favorites ajax endpoint deleteFavorite.cfm | people | carry (5, legacy-write) `EX-FAVORITES` | none | yes | none |
+| `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | favorites ajax endpoint deleteRSSFavorite.cfm | people | carry (5, legacy-write) `EX-FAVORITES` | none | yes | none |
+| `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | favorites ajax endpoint saveFavorite.cfm | people | carry (5, legacy-write) `EX-FAVORITES` | none | yes | none |
 | `fe:cfm:/core/modules/v1/rater/ajax/saverate.cfm` | rater ajax endpoint saveRate.cfm | strategies-content | carry (5) | none | no | none |
-| `fe:commentsproxy.flag` | commentsProxy.flag remote method | strategies-content | carry (5) | none | no | none |
+| `fe:commentsproxy.flag` | commentsProxy.flag remote method | strategies-content | carry (5, legacy-write) `EX-COMMENT-REMOTE-SITE` | none | yes | none |
 | `fe:commentsproxy.get` | commentsProxy.get remote method | strategies-content | carry (5) | none | no | none |
 | `fe:commentsproxy.getContentStats` | commentsProxy.getContentStats remote method | strategies-content | carry (5) | none | no | none |
 | `fe:commentsproxy.renderCommentsPage` | commentsProxy.renderCommentsPage remote method | strategies-content | legacy-served (4) | none | no | none |

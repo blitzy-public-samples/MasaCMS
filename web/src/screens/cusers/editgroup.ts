@@ -1,9 +1,9 @@
 // `cUsers.editGroup`: the controller's `editGroup()` and the group form of `admin/core/views/cusers/editgroup.cfm` (server-only).
-import { cfEq, cfListToArray, cfToBoolean, cfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, cfEq, cfListToArray, cfToBoolean, cfUuid } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
-import type { SiteData } from '@/lib/request-context';
+import { legacyThemeAssetPath } from '@/lib/site-paths';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { cusersGate, normaliseCusersRc, userPoolIdFor, type CusersRc, type CusersRcValue } from './gate';
@@ -48,7 +48,7 @@ export interface EditGroupData {
   readonly tempIsPublic: string;
   readonly userPoolId: string;
   readonly subTypes: readonly GroupSubType[];
-  /** `settingsManager.getSite(rc.siteid).getThemeAssetPath()`. */
+  /** `settingsManager.getSite(rc.siteid).getThemeAssetPath()`, read only when a subtype prints it, else `''`. */
   readonly themeAssetPath: string;
 }
 
@@ -164,28 +164,10 @@ async function groupBean(ctx: ScreenContext, rc: CusersRc, userid: string): Prom
   return beanOf(group, isNew, {});
 }
 
-const on = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
-
-// Web cannot read the legacy web root, so the theme is taken to be under `<webroot>/themes`, as the shell prints
-// `themepath` (EX-SHELL-THEMEPATH).
-/** `getThemeAssetPath()` of `site`: `getResourcePath(complete=0)` followed by `/themes/<theme>`. */
-export function themeAssetPath(site: SiteData, https: boolean): string {
-  const { context, serverPort } = legacySettings();
-  const { record } = site;
-  const remote = on(record.isremote);
-  const resourceDomain = record.resourceDomain ?? '';
-  if (remote && resourceDomain !== '') {
-    const useSSL = record.useSSL === null || record.useSSL === undefined ? on(record.ExtranetSSL) : on(record.useSSL);
-    const scheme = on(record.resourceSSL) || useSSL || https ? 'https' : 'http';
-    return `${scheme}://${resourceDomain}${serverPort}${context}/themes/${record.theme ?? ''}`;
-  }
-  return `${remote ? (record.remotecontext ?? '') : context}/themes/${record.theme ?? ''}`;
-}
-
 /**
- * The view's data: `editGroup()`'s bean and group type, and the view set-up's user pool and subtypes; issues the
- * form's CSRF pair. Gateway unavailability propagates.
- * @throws GatewayDenialError When identity refuses the group read (401 or 403).
+ * The view's data: `editGroup()`'s bean and group type, and the view set-up's user pool, subtypes and the theme path
+ * they print; issues the form's CSRF pair. Gateway unavailability propagates.
+ * @throws GatewayDenialError When identity refuses the group read, or the gateway the theme path read (401 or 403).
  * @throws TypeError When the request carries no site data, or a preserved bean is malformed.
  */
 export async function loadEditGroup(
@@ -208,8 +190,21 @@ export async function loadEditGroup(
     tempIsPublic: setIsPublic !== undefined && rc.isAdmin ? rcText(setIsPublic, 'setispublic') : bean.isPublic,
     userPoolId,
     subTypes,
-    themeAssetPath: themeAssetPath(site, ctx.req.https),
+    themeAssetPath: subTypes.length > 0 ? await legacyThemeAssetPath(ctx.req, ctx.gateway, rc.siteid) : '',
   };
+}
+
+/**
+ * A view's `<cfif value>` on bean or rc text.
+ * @throws LegacyFaultError The Expression fault ACF raises for text it cannot read as a boolean.
+ */
+export function cfmlCondition(value: string): boolean {
+  try {
+    return cfToBoolean(value);
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    throw new LegacyFaultError(`cannot convert the value "${value}" to a boolean`, 'Expression');
+  }
 }
 
 /** Whether `output` ends in whitespace (a char at or below U+0020, as Java trim counts it). */
@@ -372,12 +367,12 @@ function renderTabsOpen(rb: (key: string) => string): SafeHtml {
 
 /** Group type radios for an admin on a non-`Perm` group, otherwise the hidden `isPublic`; a new group shows Member. */
 function renderGroupType({ data, label }: ViewParts): SafeHtml {
-  if (!(data.rc.isAdmin && !cfToBoolean(data.bean.perm))) {
+  if (!(data.rc.isAdmin && !cfmlCondition(data.bean.perm))) {
     return html`
 \t\t\t\t\t\t<input type="hidden" name="isPublic" value="${raw(data.tempIsPublic)}">
 \t\t\t\t\t`;
   }
-  const isMember = cfToBoolean(data.tempIsPublic);
+  const isMember = cfmlCondition(data.tempIsPublic);
   return html`
 \t\t\t\t\t\t<div class="mura-control-group">
 \t\t\t\t\t\t\t<label>
@@ -446,7 +441,7 @@ function renderTabList({ data, label }: ViewParts): SafeHtml {
 function renderBasicBlock(parts: ViewParts, hasTabs: boolean): SafeHtml {
   const { data, rb, label } = parts;
   const { bean } = data;
-  const perm = cfToBoolean(bean.perm);
+  const perm = cfmlCondition(bean.perm);
   const attrLabel = (key: string): SafeHtml => raw(encodeHtmlAttr(rb(key)));
   return html`
 \t\t\t<div class="block block-bordered">

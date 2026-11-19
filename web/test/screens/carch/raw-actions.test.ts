@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LegacyFaultError, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { carchScreens } from '@/screens/carch';
 import { rawActionScreens } from '@/screens/carch/raw-actions';
@@ -211,6 +212,16 @@ describe('carch raw actions', () => {
       contentType: HTML_TYPE,
       body: Buffer.from(reply.body),
     });
+  });
+
+  it('raises the fault a 500 server_error names, which the handler answers as legacy onError', async () => {
+    const fault = new LegacyFaultError('Element CONTENTID is undefined in RC.');
+    const envelope = legacyErrorResponse('server_error', { stacktrace: fault.trace() });
+    const reply: FakeReply = { status: 500, headers: envelope.headers, body: envelope.body };
+    const ctx = screenContext('loaddiff', { [svc('GET', 'loaddiff')]: reply });
+    const error: unknown = await invoke(definition('loaddiff'), ctx).catch((err: unknown) => err);
+    expect(error).toEqual(fault);
+    expect(error).toBeInstanceOf(LegacyFaultError);
   });
 
   it.each(rawActionScreens.map((def): [string, ScreenDefinition] => [def.action, def]))(

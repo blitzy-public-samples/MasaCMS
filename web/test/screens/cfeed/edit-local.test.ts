@@ -15,7 +15,15 @@ import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/sh
 import { makeAdminRequest, type AdminRequestPartial } from '../../helpers/admin-request';
 import { fragmentModel, type DomControl } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type RecordedRequest } from '../../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  installedSitePaths,
+  routeKey,
+  type FakeGatewayClient,
+  type RecordedRequest,
+} from '../../helpers/fake-gateway';
 import type { WebTestSubjectKey } from '../../helpers/tokens';
 
 const FEED_ID = 'F1000000-0000-0000-0000000000000001';
@@ -23,6 +31,7 @@ const CONTENT_ID = 'C1000000-0000-0000-0000000000000001';
 const CATEGORY_ID = 'K1000000-0000-0000-0000000000000001';
 const GROUP_MEMBERS = 'G1000000-0000-0000-0000000000000001';
 const GROUP_EDITORS = 'G2000000-0000-0000-0000000000000002';
+/** Legacy's feed API endpoint of `default` as the fake gateway answers it for the request host. */
 const ENDPOINT = 'http://localhost/_api/feed/v1/default';
 const ZOOM = '<ul class="navZoom"><li>Home &raquo; News</li></ul>';
 
@@ -123,7 +132,6 @@ const SAVED_RC: Row = {
     },
   ],
   imageSizes: [{ name: 'Hero' }],
-  endpoint: ENDPOINT,
 };
 
 /** A screen model `rc` for a new collection; `rc` members replace the defaults. */
@@ -164,6 +172,7 @@ const INSTANCE = { ...COMPACT, assignmentID: 'ASSIGN1', regionID: '2', orderno: 
 /** A screen context whose identity issues {@link CSRF} for every requested context. */
 function context(req: AdminRequest, rb: RbLookup = rbFor(req.session.rb)): ScreenContext {
   const gateway = fakeGatewayClient({
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
     [routeKey('POST', 'identity', '/v1/csrf/tokens')]: (sent: RecordedRequest) => ({
       status: 200,
       body: {
@@ -245,6 +254,20 @@ describe('renderFeedEditLocal', () => {
     expect($('select[name="paramRelationship1"]').attr('style')).toBe('display:none;');
     expect(view.htmlHead).toBeUndefined();
   });
+
+  it("reads legacy's feed API endpoint once per render, as edit.cfm:215 does for a new index that prints none", async () => {
+    const req = request(NEW_LOCAL);
+    const ctx = context(req);
+    const gateway = ctx.gateway as FakeGatewayClient;
+
+    const view = await renderFeedEditLocal(req, ctx, feedEditModelFrom({ rc: modelRc() }, req), { fuseaction: 'edit' });
+
+    expect(toString(view.body)).not.toContain('/_api/feed/');
+    expect(gateway.calls.filter(({ path }) => path === LEGACY_SITE_PATHS_PATH).map(({ query }) => query)).toEqual([
+      { sessionSite: 'default', host: 'localhost', forwardedProto: 'http', feedSite: 'default' },
+    ]);
+  });
+
 
   it('renders a saved index with its filters, params, categories, groups, feed URL and usage tab', async () => {
     const req = request(SAVED_LOCAL, { site: { hasComments: true, extranet: true } });

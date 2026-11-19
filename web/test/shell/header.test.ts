@@ -11,6 +11,7 @@ import type { ShellContext, ShellData, ShellSite, UserPrompts } from '@/shell/ty
 import { PROMPT_TALLY_NONZERO, promptCountsNonZero as NON_ZERO, promptCountsZero as ZERO } from '../fixtures/strategies-content/prompts';
 import { adminS2Request, makeAdminRequest, unservedEditorRequest, type AdminRequestPartial } from '../helpers/admin-request';
 import { fragmentModel } from '../helpers/dom-model';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 
 const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
 const HOME_ID = '00000000000000000000000000000000001';
@@ -37,6 +38,7 @@ function shellFor(ctx: AdminRequest, data: Partial<ShellData> = {}): ShellContex
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths: INSTALLED_LEGACY_PATHS,
       now: businessClock().now(),
       ...data,
     },

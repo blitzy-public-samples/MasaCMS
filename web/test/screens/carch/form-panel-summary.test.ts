@@ -74,6 +74,7 @@ const STATE: EditFormState = {
   baseTypeList: 'Page,Folder,Calendar',
   subTypes: [],
   subtypeFilter: '',
+  themeAssetPath: '/themes/default',
   isExtended: false,
   requiresApproval: false,
   showApprovalStatus: false,

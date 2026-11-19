@@ -10,6 +10,7 @@ import {
   type UserClaims,
 } from '@opt2/platform/auth';
 import {
+  LegacyFaultError,
   appendFormScopeValue,
   cfEq,
   cfListToArray,
@@ -180,6 +181,8 @@ export interface RelayScopes {
   readonly posted: RequestContext;
   /** After the start-up scan, before the admin set-up changes rc. */
   readonly scanned: RequestContext;
+  /** Path pairs rc holds as sent, no url or form entry replacing them; every owner call names them, as no scan reads them. */
+  readonly pathPairs?: RequestContext;
 }
 
 /** Everything a shell, gate or screen reads about the current admin request. */
@@ -368,15 +371,19 @@ function javaSplit(text: string, delimiter: string): string[] {
 const listFirst = (list: string, delimiter: string): string => cfListToArray(list, delimiter)[0] ?? '';
 const listLast = (list: string, delimiter: string): string => cfListToArray(list, delimiter).at(-1) ?? '';
 
+/** FW/1's path pairs: each segment after the action names the next, or `''` when last; a later pair wins. */
+function pathPairsOf(pathInfo: readonly string[]): CfStruct {
+  const pairs = new CfStruct();
+  for (let index = 2; index < pathInfo.length; index += 2) pairs.set(pathInfo[index] ?? '', pathInfo[index + 1] ?? '');
+  return pairs;
+}
+
 /** The merged context as a mutable struct; `url` and `form` already carry their `fuseaction` override. */
 function mergeScopes(pathInfo: readonly string[], url: CfStruct, form: CfStruct): CfStruct {
   const rc = new CfStruct();
-  pathInfo.forEach((segment, index) => {
-    if (index === 0) rc.set('muraAction', segment);
-    else if (index === 1) rc.set('muraAction', `${pathInfo[0] ?? ''}.${segment}`);
-    else if (index % 2 === 0) rc.set(segment, '');
-    else rc.set(pathInfo[index - 1] ?? '', segment);
-  });
+  if (pathInfo.length > 0) rc.set('muraAction', pathInfo[0] ?? '');
+  if (pathInfo.length > 1) rc.set('muraAction', `${pathInfo[0] ?? ''}.${pathInfo[1] ?? ''}`);
+  for (const [name, value] of pathPairsOf(pathInfo).entries()) rc.set(name, value);
   for (const [name, value] of url.entries()) rc.set(name, value);
   for (const [name, value] of form.entries()) rc.set(name, value);
   return rc;
@@ -478,7 +485,8 @@ export function assignContext(rc: RequestContext, values: Readonly<Record<string
 /**
  * `rc` as a relay to an owner sends it, so the owner's own start-up scan is the request's only one: an entry the scan
  * left as `rc` holds it goes as posted, one the set-up or a screen added or changed as `rc` holds it, and a posted
- * name the scan dropped or renamed as posted; a stripped-name copy the scan made is left for the owner's scan.
+ * name the scan dropped or renamed as posted; a stripped-name copy the scan made is left for the owner's scan. A path
+ * pair goes as sent, which the call's `X-Opt2-Path-Pairs` keeps from the owner's scan.
  * @param rc The screen's effective rc; `req.rc` when omitted.
  */
 export function relayContext(
@@ -681,6 +689,19 @@ async function loadIdentitySession(
     sites: sites === undefined ? [] : okBody(sites, 'identity', 'listCurrentSessionSites').sites,
     adminState: adminState === undefined ? {} : okBody(adminState, 'identity', 'getAdminSessionState'),
   };
+}
+
+/** A fault legacy raises after setting session values no request a screen holds carries yet, which its session scope keeps. */
+export class LegacySessionFaultError extends LegacyFaultError {
+  override readonly name: string = 'LegacySessionFaultError';
+
+  constructor(
+    fault: LegacyFaultError,
+    /** The session values set before the fault. */
+    readonly sessionWrites: Readonly<AdminSessionWrites>,
+  ) {
+    super(fault.message, fault.type, fault);
+  }
 }
 
 /**
@@ -1024,9 +1045,13 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   const posted = withFuseaction(cfFormScope(scopes.form));
   const { url, form } = startupScan(postedUrl, posted, fileFieldsOf(input.form));
   const rc = mergeScopes(scopes.pathInfo, url, form);
+  const pathPairs = pathPairsOf(scopes.pathInfo)
+    .entries()
+    .filter(([name]) => !url.has(name) && !form.has(name));
   const relayScopes: RelayScopes = {
     posted: contextView(mergeScopes(scopes.pathInfo, postedUrl, posted)),
     scanned: contextView(new CfStruct(rc.entries())),
+    pathPairs: contextView(new CfStruct(pathPairs)),
   };
   const action = resolveAction(contextView(rc));
   const circuit = listLast(listFirst(action, '.'), ':');

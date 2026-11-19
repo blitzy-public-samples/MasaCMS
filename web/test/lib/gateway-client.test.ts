@@ -185,7 +185,7 @@ describe('multipartRelay', () => {
 describe('legacyVersionMenu', () => {
   const MENU_ROUTE = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
 
-  it("sends a GET to the gateway's own path with the request id and user token, and decodes the facts", async () => {
+  it("sends a GET to the gateway's own path with the request id, acting for no user, and decodes the facts", async () => {
     relay.setRoute(MENU_ROUTE, { status: 200, body: LEGACY_VERSION_MENU });
 
     const response = await createGatewayClient({ userToken: 'user-token', requestId: 'req-menu', inbound: {} }, relay).legacyVersionMenu();
@@ -196,7 +196,7 @@ describe('legacyVersionMenu', () => {
         service: 'gateway',
         method: 'GET',
         path: LEGACY_VERSION_MENU_PATH,
-        userToken: 'user-token',
+        userToken: null,
         headers: { [REQUEST_ID_HEADER]: 'req-menu' },
         rawBody: true,
       }),

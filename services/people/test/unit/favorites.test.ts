@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML, cfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, cfUuid, windows1252Text } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { withTenant, type TenantDb } from '@opt2/platform/tenancy';
@@ -31,7 +31,6 @@ import {
   saveFavorite,
   storedInteger,
   urlFieldsOf,
-  windows1252Text,
   type FavoriteDeps,
 } from '../../src/domain/favorites.js';
 import type { PersonFence } from '../../src/domain/person-fence.js';

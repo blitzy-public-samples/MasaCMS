@@ -157,6 +157,7 @@ describe.skipIf(!available)('performDayAction against PostgreSQL', () => {
     ['', null],
     [null, null],
     [' ', ' '],
+    ['ok \ud800 \ud83d\ude00\udc00', 'ok ? \ud83d\ude00?'],
   ])('stores comment %j as %j', async (comment, expected) => {
     const day = await seedDay('DRAFT');
     await act(request(day.day_id, { comment }));

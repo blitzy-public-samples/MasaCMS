@@ -348,7 +348,7 @@ function pageNextN(total: number, ctx: CusersContext): Schemas['NextN'] {
  * The `cusers.list` page `paging` selects of identity's groups [legacy: admin/core/controllers/cusers.cfc:498-518]: identity is
  * asked for that page's rows only, at most GROUP_PAGE_LIMIT per call, and nextN counts every group it lists.
  */
-async function groupsWindow(identity: IdentityClient, siteId: string, isPublic: number, paging: UsersPaging): Promise<UsersPage<UserGroupRow>> {
+async function groupsWindow(identity: IdentityClient, siteId: string, isPublic: string, paging: UsersPaging): Promise<UsersPage<UserGroupRow>> {
   // The page of the longest listing identity can page; identity's total then decides the page, re-read only when it differs.
   const reach = pageWindow(Number.MAX_SAFE_INTEGER, paging);
   const limit = (from: number, to: number): number => Math.min(Math.max(to - from, 1), GROUP_PAGE_LIMIT);
@@ -882,11 +882,12 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
     cusersHandler(async (admitted, reply): Promise<FastifyReply> => {
       admitted.abandonOnDisconnect();
       const { ctx } = admitted;
-      // userManager's numeric `isPublic` rejects a boolean word before any read [legacy: core/mura/user/userManager.cfc:119-123].
-      const isPublic = numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups');
+      // userManager's numeric `isPublic` rejects a boolean word before any read [legacy: core/mura/user/userManager.cfc:119-123];
+      // identity reads the text as getUserGroups does.
+      numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups');
       async function* pages(): AsyncGenerator<Schemas['GroupListRow'][]> {
         for (let offset: number | null = 0; offset !== null; ) {
-          const page = await identity.userGroupsPage(ctx.siteid, isPublic, { offset });
+          const page = await identity.userGroupsPage(ctx.siteid, ctx.ispublic, { offset });
           yield page.rows.map(groupListRow);
           offset = page.nextOffset;
         }
@@ -902,8 +903,8 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
     cusersHandler(async (admitted): Promise<Schemas['UserGroupsPageV2']> => {
       admitted.abandonOnDisconnect();
       const { ctx } = admitted;
-      const isPublic = numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups');
-      const page = await groupsWindow(identity, ctx.siteid, isPublic, pagingOf(ctx));
+      numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups');
+      const page = await groupsWindow(identity, ctx.siteid, ctx.ispublic, pagingOf(ctx));
       return { items: page.rows.map(groupListRow), nextn: wireNextN(page.nextn) };
     }),
   );

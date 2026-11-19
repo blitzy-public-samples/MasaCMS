@@ -9,7 +9,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { LegacyServiceUnavailableError, cfUuid, sqlServerDatetime } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfUuid, sqlServerDatetime, windows1252Text } from '@opt2/platform/legacy-compat';
 import {
   ADDRESS,
   EXTEND_ATTRIBUTE,
@@ -814,7 +814,9 @@ function binder(params: unknown[]): (value: unknown) => string {
 
 /** Builds the people repository over the platform repository of `OWNED_TABLES`. */
 export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }: PeopleRepositoryOptions = {}): PeopleRepository {
-  const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
+  // Masa binds text as cf_sql_varchar, so target writes store it in Windows-1252 as SQL Server does; the archive
+  // fixture's nvarchar values are stored names and site ids, already in that code page.
+  const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock, legacyText: windows1252Text });
   const name = (table: { table: string }): string => qualified(schema, table.table);
   const person = name(PERSON);
   const address = name(ADDRESS);
@@ -1274,10 +1276,9 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       addressemail: daoNull(input.addressemail),
       hours: daoNull(input.hours),
     };
-    // SQL Server rejects an unstorable value even when the UPDATE matches no row; the platform write keys on the stored id spelling.
-    const stored = legacyStorable(ADDRESS.table, patch);
+    // SQL Server checks the values only against the row the UPDATE's key seek finds; the platform write keys on the stored id spelling.
     const target = await lockAddress(tx, addressId);
-    return target === undefined ? null : base.update<AddressRow>(tx, ADDRESS.table, { addressid: target.addressid }, stored, ctx);
+    return target === undefined ? null : base.update<AddressRow>(tx, ADDRESS.table, { addressid: target.addressid }, legacyStorable(ADDRESS.table, patch), ctx);
   }
 
   /** Deletes every extended value stored under `baseId`. */

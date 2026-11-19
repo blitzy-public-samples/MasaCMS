@@ -22,6 +22,7 @@ import type {
   FetchLiveEntitiesDeps,
   LiveEntities,
 } from '../../src/inventory/entities.js';
+import { HARNESS_KEY_VARIABLE } from '../../src/lib/harness-key.js';
 
 type FetchLike = NonNullable<FetchLiveEntitiesDeps['fetch']>;
 
@@ -107,6 +108,9 @@ const INLINE: Readonly<Record<string, string>> = {
 };
 
 const ORIGIN = 'http://legacy.invalid:8080';
+// Test value assembled at run time, not a secret.
+const KEY = ['opt2', 'harness', 'entities', 'test'].join('-');
+const KEY_ENV = { OPT2_HARNESS_KEY: KEY };
 
 let root: string;
 let tree: SourceTree;
@@ -531,13 +535,23 @@ describe('in-memory tree edge cases', () => {
 });
 
 describe('fetchLiveEntities', () => {
-  it('GETs the entities probe from the legacy origin and keeps fields it does not read', async () => {
+  it('GETs the entities probe from the legacy origin with the harness key and keeps fields it does not read', async () => {
     const fetch = vi.fn<FetchLike>(async () => jsonResponse(LIVE_PAYLOAD));
-    const live = await fetchLiveEntities(ORIGIN, { fetch, timeoutMs: 5_000 });
+    const live = await fetchLiveEntities(ORIGIN, { fetch, timeoutMs: 5_000, env: KEY_ENV });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]?.[0]).toBe(`${ORIGIN}/harness/legacy-baseline/cfml/run.cfm?info=entities`);
     expect(fetch.mock.calls[0]?.[1].method).toBe('GET');
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get('x-opt2-harness-key')).toBe(KEY);
     expect(live).toEqual(LIVE_PAYLOAD);
+  });
+
+  it('rejects naming OPT2_HARNESS_KEY, without a request, when no key is configured', async () => {
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse(LIVE_PAYLOAD));
+    const env = { OPT2_STATE_DIR: path.join(os.tmpdir(), 'opt2-entities-no-key') };
+    await expect(fetchLiveEntities(ORIGIN, { fetch, env })).rejects.toThrow(
+      new RegExp(`^no harness diagnostic key: ${HARNESS_KEY_VARIABLE} is unset and .*harness-diagnostic-key is missing or empty`),
+    );
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each<[string, number, unknown, RegExp]>([
@@ -550,7 +564,7 @@ describe('fetchLiveEntities', () => {
     ],
   ])('rejects %s', async (_label, status, body, message) => {
     const fetch = vi.fn<FetchLike>(async () => jsonResponse(body, status));
-    await expect(fetchLiveEntities(ORIGIN, { fetch })).rejects.toThrow(message);
+    await expect(fetchLiveEntities(ORIGIN, { fetch, env: KEY_ENV })).rejects.toThrow(message);
   });
 });
 
@@ -559,7 +573,7 @@ describe('mergeLive', () => {
   let merged: EntityEntry[];
 
   beforeAll(async () => {
-    live = await fetchLiveEntities(ORIGIN, { fetch: vi.fn<FetchLike>(async () => jsonResponse(LIVE_PAYLOAD)) });
+    live = await fetchLiveEntities(ORIGIN, { fetch: vi.fn<FetchLike>(async () => jsonResponse(LIVE_PAYLOAD)), env: KEY_ENV });
     merged = mergeLive(extraction.entities, live, tree);
   });
 
@@ -722,7 +736,7 @@ describe('attachDaoWrites', () => {
           }),
         ],
       };
-      const live = await fetchLiveEntities(ORIGIN, { fetch: vi.fn<FetchLike>(async () => jsonResponse(payload)) });
+      const live = await fetchLiveEntities(ORIGIN, { fetch: vi.fn<FetchLike>(async () => jsonResponse(payload)), env: KEY_ENV });
       const ctx: ClosureContext = { tree, index: fixtureIndex(tree, { rosterdao: ROSTER_DAO }, extraction) };
       registered = attachDaoWrites(mergeLive(extraction.entities, live, tree), ctx);
     });

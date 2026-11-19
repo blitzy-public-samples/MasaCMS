@@ -8,6 +8,12 @@ const RECORDS_PER_PAGE = 25;
 const PAGE_BUFFER = 3;
 const UMBRELLA_MEMBER_COUNT = 3;
 
+/** A flag column of a stored group fixture, which never holds posted text. */
+function storedFlag(value: number | string | null | undefined): number | null {
+  if (typeof value === 'string') throw new TypeError(`Stored group flag ${value} is not a number`);
+  return value ?? null;
+}
+
 /** The `getUserGroups` row of an identity group fixture, with its pool member count (null for none). */
 function listRow(groupId: string, Counter: number | null): GroupListRow {
   const group = groupsById[groupId];
@@ -22,8 +28,8 @@ function listRow(groupId: string, Counter: number | null): GroupListRow {
     LastUpdateBy: group.LastUpdateBy ?? null,
     LastUpdateByID: group.LastUpdateByID ?? null,
     Counter,
-    Perm: group.Perm ?? null,
-    isPublic: group.isPublic ?? null,
+    Perm: storedFlag(group.Perm),
+    isPublic: storedFlag(group.isPublic),
   });
 }
 

@@ -26,6 +26,7 @@ import {
   restrictAdminInput,
   restrictProfileInput,
   splitUserValues,
+  writableFlags,
   type CfNumeric,
   type UserSite,
   type UserValues,
@@ -377,5 +378,50 @@ describe('person and account split', () => {
     expect(accountKeys.filter((key) => (PERSON_COLUMNS as readonly string[]).includes(key))).toEqual([]);
     expect(JSON.stringify(account)).not.toContain('person-');
     expect(JSON.stringify(person)).not.toMatch(/acct-|G-1/);
+  });
+});
+
+// Oracle: the legacy user adds of f3/leg-user-* and f3/leg-user-sql-* on Masa 7.6.1.
+describe('flag text CFML reads as no number', () => {
+  it('keeps a hex float keepPrivate and passedProtect as text, which isNumeric and isBoolean accept', () => {
+    const values = applyUserInput(newUserValues(CLOCK), normaliseParams({ keepPrivate: ' 0x1p3 ', passedProtect: '0x0p0' }));
+    expect(values).toMatchObject({ keepprivate: '0x1p3', passedprotect: '0x0p0' });
+  });
+
+  it.each<[string, string, CfNumeric]>([
+    ['a hex float the S2 rule reads as true', '0x1p3', 0],
+    ['a hex float the S2 rule reads as false', '0x0p0', '1'],
+  ])('reads %s', (_label, s2, ispublic) => {
+    expect(applySuperUserRule({ ...newUserValues(CLOCK), s2, ispublic: '1' }, true)).toMatchObject({ s2, ispublic });
+  });
+
+  it.each<[string, string, CfNumeric]>([
+    ['false', TENANT_A.siteId, 'false'],
+    ['NO', TENANT_A.siteId, 'NO'],
+    ['true', TENANT_UMBRELLA.siteId, 'true'],
+    ['0.', TENANT_UMBRELLA.siteId, 0],
+  ])('pools an isPublic of %j as CFML `eq 0` reads it', async (isPublic, siteId, kept) => {
+    const input = normaliseParams({ siteid: 'tenant-a' });
+    const current = applyUserInput({ ...newUserValues(CLOCK), ispublic: isPublic }, input);
+    await expect(resolveUserSite(fixtureRegistry(), TENANT_A.tenantId, input, current)).resolves.toMatchObject({ siteId, isPublic: kept });
+  });
+
+  it.each<[string, 'create' | 'update', Partial<UserValues>, Partial<UserValues>]>([
+    ['text failing its dataType rule', 'update', { perm: 'abc', inactive: 'y', ispublic: 'true', subscribe: 'x', s2: 'no', keepprivate: 'z' },
+      { perm: 0, inactive: 0, ispublic: 1, subscribe: 1, s2: 0, keepprivate: 0 }],
+    ["a create's text its INSERT fails on", 'create', { perm: 'Infinity', inactive: '', ispublic: '0x1p3', subscribe: 'NaN', s2: '-0x1p3' },
+      { perm: 0, inactive: 0, ispublic: 1, subscribe: 1, s2: 0 }],
+    ["an update's Perm, which it does not write", 'update', { perm: 'Infinity' }, { perm: 0 }],
+    ["an update's other flags, which its UPDATE fails on", 'update', { inactive: 'Infinity', subscribe: '', ispublic: '0x1p3' },
+      { inactive: 'Infinity', subscribe: '', ispublic: '0x1p3' }],
+    ['numbers and numeric text', 'create', { perm: '1', inactive: 0, ispublic: ' 1 ', subscribe: 1.5 }, { perm: '1', inactive: 0, ispublic: ' 1 ', subscribe: 1.5 }],
+  ])('splits %s at the bean defaults where the save cannot write it', (_label, operation, flags, expected) => {
+    const values = { ...newUserValues(CLOCK), siteid: TENANT_A.siteId, ...flags };
+    expect(writableFlags(values, operation)).toMatchObject(expected);
+  });
+
+  it('rejects an update of a flag its UPDATE fails on, as before the split', () => {
+    const values = writableFlags({ ...newUserValues(CLOCK), siteid: TENANT_A.siteId, inactive: 'Infinity' }, 'update');
+    expect(() => splitUserValues(values)).toThrow(TypeError);
   });
 });

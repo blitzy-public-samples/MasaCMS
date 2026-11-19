@@ -1,5 +1,5 @@
 <cfscript>
-// Masa's in-memory site registry: lists its site ids and domain bindings, and rebuilds it from tsettings after a reverse-projected tsettings batch;
+// Masa's in-memory site registry: lists its site ids and domain bindings, reads the first-touch path getters admin pages print, and rebuilds it from tsettings after a reverse-projected tsettings batch;
 // also reports the server facts the admin Version menu prints.
 app = request.opt2BridgeApp;
 try {
@@ -50,6 +50,38 @@ try {
 			"bindings": bindings,
 			"adminDomain": application.configBean.getAdminDomain()
 		};
+	} else if (compare(url.op, "paths") == 0) {
+		if (compare(cgi.request_method, "GET") != 0) {
+			app.raise(400, "badRequest", "GET required");
+		}
+		if (!structKeyExists(url, "siteid") || !len(url.siteid)) {
+			app.raise(400, "badRequest", "siteid is required");
+		}
+		if (!structKeyExists(url, "apiSite") && !structKeyExists(url, "feedSite") && !structKeyExists(url, "themeSite") && !structKeyExists(url, "initSite")) {
+			app.raise(400, "badRequest", "apiSite, feedSite, themeSite or initSite is required");
+		}
+		// admin/Application.cfc's request.muraPreviewDomain, with siteid as the session site.
+		request.muraPreviewDomain = listFirst(cgi.http_host, ":");
+		if (!len(request.muraPreviewDomain)) {
+			request.muraPreviewDomain = cgi.server_name;
+		}
+		if (!application.settingsManager.getSite(url.siteid).isValidDomain(domain = request.muraPreviewDomain, mode = "complete")) {
+			request.muraPreviewDomain = application.settingsManager.getSite(url.siteid).getDomain();
+		}
+		// The admin views' first-touch getters, in print order: cwebservice edit.cfm, cfeed edit.cfm/list.cfm, html_head.cfm, Mura.init.
+		body = {};
+		if (structKeyExists(url, "apiSite")) {
+			body["restEndpoint"] = application.settingsManager.getSite(url.apiSite).getApi("json", "v1").getEndpoint(mode = "rest");
+		}
+		if (structKeyExists(url, "feedSite")) {
+			body["feedEndpoint"] = application.settingsManager.getSite(url.feedSite).getApi("feed", "v1").getEndpoint();
+		}
+		if (structKeyExists(url, "themeSite")) {
+			body["themeAssetPath"] = application.settingsManager.getSite(url.themeSite).getThemeAssetPath();
+		}
+		if (structKeyExists(url, "initSite")) {
+			body["initThemeAssetPath"] = application.settingsManager.getSite(url.initSite).getThemeAssetPath(complete = 1);
+		}
 	} else {
 		if (compare(url.op, "refresh") != 0) {
 			app.raise(404, "notFound", "unknown op");

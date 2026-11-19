@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { formatDateTimeShort } from '@/lib/dates';
+import { resetLegacySettingsForTests } from '@/lib/env';
 import { isSafeHtml, raw, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
@@ -53,7 +54,9 @@ import {
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import {
+  LEGACY_SITE_PATHS_KEY,
   fakeGatewayClient,
+  installedSitePaths,
   routeKey,
   type FakeGatewayClient,
   type FakeReply,
@@ -329,6 +332,7 @@ function stateOf(c: ViewCase, req: AdminRequest, values: Partial<EditFormState> 
     baseTypeList: c.baseTypeList,
     subTypes: [],
     subtypeFilter: '',
+    themeAssetPath: '/themes/default',
     isExtended: false,
     requiresApproval: false,
     showApprovalStatus: false,
@@ -351,10 +355,14 @@ function issueTokens(request: RecordedRequest): FakeReply {
   return { status: 200, body: { tokens } };
 }
 
-/** The screen context of `req` over a gateway that issues tokens and answers `reply` for the edit model of `path`. */
+/**
+ * The screen context of `req` over a gateway that issues tokens, answers legacy's installed theme paths and `reply` for
+ * the edit model of `path`.
+ */
 function contextOf(req: AdminRequest, edit?: { readonly contentId: string; readonly reply: FakeReply }) {
   const gateway = fakeGatewayClient({
     [routeKey('POST', 'identity', '/v1/csrf/tokens')]: issueTokens,
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
     ...(edit === undefined
       ? {}
       : { [routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/content/${edit.contentId}`)]: edit.reply }),
@@ -874,6 +882,28 @@ describe('carch.edit view branches', () => {
 
   it('edits a stored node on a full site', async () => {
     await expectVariant('admin-home', { ...HOME_CASE, model: { rsPageCount: [{ counter: 50000 }] } });
+  });
+
+  it.each<[string, ViewCase, string]>([
+    ['the editor of a stored node', HOME_CASE, 'siteManager.loadExtendedAttributes('],
+    ['the FCKeditor loader of a full site', { ...NEW_PAGE, model: { rsPageCount: [{ counter: 50000 }] } }, 'oFCKeditor'],
+  ])("reads legacy's theme path of rc.siteid once and prints it in %s", async (_where, c, printer) => {
+    vi.stubEnv('MURA_HTMLEDITORTYPE', 'fckeditor');
+    resetLegacySettingsForTests();
+    try {
+      const req = requestOf(c);
+      const { ctx, gateway } = contextOf(req);
+      gateway.setRoute(LEGACY_SITE_PATHS_KEY, { status: 200, body: { themeAssetPath: '/sites/x/themes/legacy' } });
+      const view = await renderEditView(ctx, modelOf(c));
+      const reads = gateway.calls.filter(({ service }) => service === 'gateway');
+      expect(reads.map(({ query }) => query?.['themeSite'])).toEqual([req.rc.siteid]);
+      const printed = `${toString(view.body)}${toString(view.ajax ?? raw(''))}`;
+      expect(printed).toContain(printer);
+      expect(printed).toContain('/sites/x/themes/legacy');
+    } finally {
+      vi.unstubAllEnvs();
+      resetLegacySettingsForTests();
+    }
   });
 
   it.each([

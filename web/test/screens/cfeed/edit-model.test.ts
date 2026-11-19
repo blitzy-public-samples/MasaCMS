@@ -186,7 +186,6 @@ describe('feedEditModelFrom', () => {
       hasProxyUser: false,
       isObjectInstance: false,
       showUsageTabs: true,
-      endpoint: undefined,
       pluginMessage: '',
     } satisfies Partial<FeedEditModel>);
     expect(model.extendedAttributes).toEqual([
@@ -257,7 +256,6 @@ describe('feedEditModelFrom', () => {
         { siteID: 'default', site: 'Default' },
         { siteID: 'umbrella', site: 'Umbrella' },
       ],
-      endpoint: 'http://localhost/_api/feed/v1/default',
     });
     const req = request(SAVED_LOCAL, { site: { hasComments: true, extranet: true } });
     const model = feedEditModelFrom(source, req);
@@ -320,7 +318,6 @@ describe('feedEditModelFrom', () => {
         { siteID: 'default', site: 'Default' },
         { siteID: 'umbrella', site: 'Umbrella' },
       ],
-      endpoint: 'http://localhost/_api/feed/v1/default',
     });
   });
 

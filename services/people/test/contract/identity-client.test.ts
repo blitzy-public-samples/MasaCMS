@@ -310,7 +310,7 @@ const CASES = {
   },
   userGroupsPage: {
     operations: ['listGroups'],
-    act: ({ identity }) => identity.userGroupsPage(TENANT_A.siteId, 1, { offset: 0, limit: 10 }),
+    act: ({ identity }) => identity.userGroupsPage(TENANT_A.siteId, '1', { offset: 0, limit: 10 }),
     expected: (): UserGroupsPage => ({
       rows: [
         {

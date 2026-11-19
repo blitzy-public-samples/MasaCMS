@@ -4,7 +4,7 @@
  */
 import { AuthDenial, Roles, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import { cfEq } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { answeringQueryFault, legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
   groupListForSite,
   groupPermVerdict,
@@ -201,14 +201,14 @@ export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: 
   app.put<{ Params: ModuleParams; Reply: Schemas['ModulePermissionsResult'] }>(
     '/v1/permissions/modules/:moduleId',
     { schema: { params: MODULE_PARAMS, body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
-    (request) => saveModuleGrants(request, request.params.moduleId),
+    async (request, reply) => answeringQueryFault(reply, () => saveModuleGrants(request, request.params.moduleId)),
   );
 
   // A form action without `contentid` leaves rc.contentid '' [legacy: admin/core/controllers/cperm.cfc:84], and legacy writes under it.
   app.put<{ Reply: Schemas['ModulePermissionsResult'] }>(
     '/v1/permissions/modules',
     { schema: { body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
-    (request) => saveModuleGrants(request, ''),
+    async (request, reply) => answeringQueryFault(reply, () => saveModuleGrants(request, '')),
   );
 
   // [legacy: admin/core/controllers/cusers.cfc:106, core/mura/user/userManager.cfc:1050-1086]

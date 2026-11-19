@@ -1,7 +1,7 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Finance fixture checks of legacy-fixtures/cfml api.cfm, lib/auth.cfc and modules/finance.cfc that the platform auth hooks leave to handlers. */
 import type { AuthDenial, UserClaims } from '@opt2/platform/auth';
-import { cfNumberString, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfNumberString, javaTrim, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import { TenantMismatchError, siteForTenant, tenantForRegisteredSite, type RegistrySource, type TenantTx } from '@opt2/platform/tenancy';
 import { FIXTURE_ERROR_MAP, FixtureApiError } from './envelope.js';
 import { findProgramBinding } from '../repo/queries.js';
@@ -113,6 +113,7 @@ export async function requireProgram(tx: TenantTx, tenantId: string): Promise<Pr
 /**
  * Validates title, amount and period as finance.cfc recordFields does, returning the first failure in its order; never throws.
  * `input` holds the params finance.cfc reads, JSON-body values in their JSON types; `edit` requires every field, as finance.cfc does.
+ * The title's unpaired surrogates become `?`, as legacy answers them.
  */
 export function validateRecordInput(input: FixtureParams, mode: 'create'): RecordValidation<RecordInput>;
 export function validateRecordInput(input: FixtureParams, mode: 'edit'): RecordValidation<RecordEdit>;
@@ -124,7 +125,7 @@ export function validateRecordInput(input: FixtureParams): RecordValidation<Reco
   if (!amount.ok) return invalidField('amount');
   const period = simpleText(param(input, 'period'));
   if (!PERIOD_TEXT.test(period)) return invalidField('period');
-  return { ok: true, value: { title, amount: amount.value, period } };
+  return { ok: true, value: { title: javaUtf8Text(title), amount: amount.value, period } };
 }
 
 /** The validated record fields of `input`; throws invalidParameters for the first invalid one. */

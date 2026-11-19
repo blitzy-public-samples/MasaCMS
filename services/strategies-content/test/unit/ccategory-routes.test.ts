@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix, moduleRole } from '@opt2/platform/auth';
+import { LegacyFaultError, PATH_PAIRS_HEADER, legacyFaultOf, pathPairsHeaderValue } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER_LC, closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
@@ -257,6 +258,21 @@ describe.skipIf(!(await pgAvailable()))('ccategory admin routes', () => {
     expect(await changelogCount()).toBe(before);
   });
 
+  // Own oracle: ccategory-update-noaction-validtoken, -noaction-refusedtoken and -unknown-action-validtoken.
+  it.each<[string, boolean, Record<string, string>, string]>([
+    ['without action past a valid token', true, { categoryID: '', name: 'No Action' }, 'Element ACTION is undefined in RC.'],
+    ['without action past a refused token', false, { categoryID: '', name: 'No Action' }, 'Element RC.action is undefined in ARGUMENTS.'],
+    ['whose action no branch runs past a valid token', true, { action: 'publish', categoryID: '', name: 'Unknown' }, 'Element RC.categoryBean is undefined in ARGUMENTS.'],
+  ])('answers a save %s with the server_error naming legacy’s fault, writing nothing', async (_label, valid, form, message) => {
+    csrfValid = valid;
+    const before = await changelogCount();
+    const res = await send('POST', LIST, { form: { ...form, ...CSRF } });
+    expect(res.statusCode).toBe(500);
+    expect(legacyFaultOf(res.json())).toEqual(new LegacyFaultError(message));
+    expect(consumed).toHaveLength(1);
+    expect(await changelogCount()).toBe(before);
+  });
+
   it('skips a delete with a refused token and still redirects to the list', async () => {
     csrfValid = false;
     const res = await send('POST', LIST, { form: { action: 'delete', categoryid: child.categoryid, ...CSRF } });
@@ -305,5 +321,28 @@ describe.skipIf(!(await pgAvailable()))('ccategory admin routes', () => {
     expect(rows).toHaveLength(1);
     const edit = await send('GET', `${LIST}/${rows[0]?.categoryid ?? ''}`);
     expect(edit.json<{ rc: { categoryBean: Record<string, unknown> } }>().rc.categoryBean).toMatchObject({ categoryid: rows[0]?.categoryid, name: 'Cat ü ??' });
+  });
+
+  // Own oracle (localhost:26080): cCategory.update adds under /admin/index.cfm/ccategory/update/<pair>, whose rc holds the pair unscanned.
+  it.each<[string, Array<[string, string]>, Record<string, string>, string, string]>([
+    ['smart quotes', [['name', 'f10-cat-sq\u201Cq\u201D']], {}, 'f10-cat-sq%', 'f10-cat-sq\u201Cq\u201D'],
+    ['an onLoad word', [['name', 'f10-cat-wd-onLoad']], {}, 'f10-cat-wd%', 'f10-cat-wd-onLoad'],
+    ['a filtered tag', [['name', 'f10-cat-tg-<xss>']], {}, 'f10-cat-tg%', 'f10-cat-tg-<xss>'],
+    ['outer spaces', [['name', ' f10-cat-sp ']], {}, '%f10-cat-sp%', 'f10-cat-sp'],
+    ['a dotted name beside the posted name', [['na.me', 'f10-cat-dot-path']], { name: 'f10-cat-dot-form' }, 'f10-cat-dot%', 'f10-cat-dot-form'],
+    ['an amp; name beside the posted name', [['amp;name', 'f10-cat-amp-path']], { name: 'f10-cat-amp-form' }, 'f10-cat-amp%', 'f10-cat-amp-form'],
+  ])('stores an add whose relayed path pair holds %s as legacy stores it', async (_label, pairs, posted, like, name) => {
+    const fields: Array<[string, string]> = [['action', 'add'], ['categoryID', ''], ['isActive', '1'], ['isInterestGroup', '1'], ...pairs, ...Object.entries(posted), ...Object.entries(CSRF)];
+    const res = await app.inject({
+      method: 'POST',
+      url: LIST,
+      headers: { ...(await headersFor([Roles.siteAdmin])), ...FORM, [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue(pairs) ?? '' },
+      payload: new URLSearchParams(fields).toString(),
+    });
+    expect(res.json()).toMatchObject({ saved: true, errors: {} });
+    const rows = await withTenant(handle.app, TENANT_A.tenantId, async (tx) =>
+      (await tx.query<CategoryRow>(`SELECT name FROM ${handle.schema}.category WHERE name LIKE $1`, [like])).rows,
+    );
+    expect(rows.map((row) => row.name)).toEqual([name]);
   });
 });

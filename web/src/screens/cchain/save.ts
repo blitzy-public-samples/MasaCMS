@@ -1,4 +1,4 @@
-import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
 import { relayContext } from '@/lib/request-context';
 import type { ScreenContext, SubmitResult } from '../registry';
@@ -13,15 +13,20 @@ const LIST_REDIRECT: SubmitResult = Object.freeze({
   path: './',
 });
 
-// Bean errors take no redirect and cchain has no save view, so legacy answers its 500 page, not an edit re-render.
-// It is error.html, as the admin error surface sends; legacy's debuggingEnabled stack-trace page is not reproducible
-// (EX-ADMIN-DEBUGPAGE).
-const MISSING_VIEW_ERROR: SubmitResult = Object.freeze({
-  kind: 'raw',
-  response: Object.freeze({ status: 500, contentType: LEGACY_HTML_CONTENT_TYPE, body: LEGACY_ERROR_PAGE_HTML }),
-});
+/**
+ * FW/1's `viewNotFound()` for a save whose bean errors take no redirect, as cchain has no save view; its detail names
+ * the view under the framework base `/muraWRM/admin/` (framework.cfc:1242-1243; admin/Application.cfc:153,171-173).
+ */
+function missingViewFault(): LegacyFaultError {
+  return new LegacyFaultError("Unable to find a view for 'core:cchain.save' action.", 'FW1.viewNotFound', {
+    detail: "'/muraWRM/admin/core/views/cchain/save.cfm' does not exist.",
+  });
+}
 
-/** Relays the approval-chain save with every rc field unchanged; answers legacy's list redirect or its 500 page. */
+/**
+ * Relays the approval-chain save with every rc field unchanged; answers legacy's list redirect.
+ * @throws LegacyFaultError For bean errors, which legacy answers with onError's page.
+ */
 export async function submitCchainSave({ req, gateway }: ScreenContext): Promise<SubmitResult> {
   const service = gateway.strategiesContent;
   // `set(rc)` reads the whole context: the CSRF pair goes to the owner, and an empty groupID removes every membership.
@@ -32,5 +37,6 @@ export async function submitCchainSave({ req, gateway }: ScreenContext): Promise
   if (response.location !== undefined) return { kind: 'location', location: response.location };
   // A rejected token skips the write but still names the redirect, so only bean errors leave it null.
   const { redirect } = okBody(response, service.service, OPERATION);
-  return redirect === null ? MISSING_VIEW_ERROR : LIST_REDIRECT;
+  if (redirect === null) throw missingViewFault();
+  return LIST_REDIRECT;
 }

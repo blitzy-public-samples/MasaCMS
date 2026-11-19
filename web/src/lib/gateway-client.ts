@@ -2,7 +2,12 @@
 import { Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { InvocationMinter } from '@opt2/platform/auth';
-import { LegacyServiceUnavailableError, legacyFaultOf } from '@opt2/platform/legacy-compat';
+import {
+  LegacyServiceUnavailableError,
+  PATH_PAIRS_HEADER,
+  legacyFaultOf,
+  pathPairsHeaderValue,
+} from '@opt2/platform/legacy-compat';
 import {
   createServiceClient,
   decodeServiceBody,
@@ -51,6 +56,8 @@ const WEB_CALLER = 'web';
 const GATEWAY_LABEL = `Service ${GATEWAY_CALLEE} (called by ${WEB_CALLER})`;
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+/** Path of the gateway's `legacySitePaths`. */
+const LEGACY_SITE_PATHS = '/internal/v1/legacy-site-paths';
 
 /** A relayed service, or the gateway answering one of its own operations. */
 export type GatewayCallee = WebServiceName | typeof GATEWAY_CALLEE;
@@ -65,6 +72,8 @@ export interface GatewayCallContext {
   readonly requestId: string;
   /** Inbound request headers; their `traceparent`/`tracestate` continue the trace when no span is active. */
   readonly inbound: HeadersInit;
+  /** The admin path pairs rc holds unscanned, named to every service in `X-Opt2-Path-Pairs`. */
+  readonly pathPairs?: Readonly<Record<string, string>>;
 }
 
 /** HTTP methods of a service call. */
@@ -235,6 +244,35 @@ export function assertNotDenied(
   }
 }
 
+/**
+ * Lets any raw answer through except a 500 error envelope whose `stacktrace` names the fault legacy raises there.
+ * @throws LegacyFaultError That fault.
+ */
+export function assertNoLegacyFault(
+  response: Pick<GatewayResponse<Buffer | Readable>, 'status' | 'headers' | 'body'>,
+  service: WebServiceName,
+): void {
+  if (response.status !== 500) return;
+  // A body is a stream only for a 2xx, so a 500 arrives as bytes.
+  const body = response.body instanceof Readable ? undefined : decodeServiceBody(response.body, response.headers['content-type'], service);
+  const fault = legacyFaultOf(body);
+  if (fault !== undefined) throw fault;
+}
+
+/**
+ * Lets any raw answer of `operation` through except a 500, which legacy answers with onError's page.
+ * @throws LegacyFaultError For a 500 error envelope whose `stacktrace` names the fault legacy raises there.
+ * @throws Error For any other 500.
+ */
+export function assertNotFailed(
+  response: Pick<GatewayResponse<Buffer | Readable>, 'status' | 'headers' | 'body'>,
+  service: WebServiceName,
+  operation: string,
+): void {
+  assertNoLegacyFault(response, service);
+  if (response.status === 500) throw new Error(`${operation} answered HTTP 500`);
+}
+
 /** Web's invocation credential, minted by the auth runtime (local signer or Google ID token). */
 const webInvocationMinter: InvocationMinter = {
   async headersFor(target, opts) {
@@ -345,8 +383,8 @@ function toGatewayResponse<T>({ status, headers, body }: ServiceResponse<T>): Ga
 type BodyMode = 'decoded' | 'bytes' | 'streamed';
 
 /**
- * Sends one call relayed to `service`, or to the gateway's own path, failing closed on unavailability; every other
- * status is returned.
+ * Sends one call relayed to `service`, or to the gateway's own path acting for no user, failing closed on
+ * unavailability; every other status is returned.
  */
 async function send<T>(
   ctx: GatewayCallContext,
@@ -355,8 +393,11 @@ async function send<T>(
   mode: BodyMode,
   serviceClient: ServiceClient | undefined,
 ): Promise<GatewayResponse<T>> {
+  const own = service === GATEWAY_CALLEE;
   const headers = lowerCased(req.headers);
   headers[REQUEST_ID_HEADER] = ctx.requestId;
+  const pathPairs = own ? undefined : pathPairsHeaderValue(Object.entries(ctx.pathPairs ?? {}));
+  if (pathPairs !== undefined) headers[PATH_PAIRS_HEADER.toLowerCase()] = pathPairs;
   let body = req.body;
   if (req.json === undefined && req.form !== undefined) {
     headers['content-type'] = FORM_CONTENT_TYPE;
@@ -365,12 +406,12 @@ async function send<T>(
   const request: ServiceRequest = {
     service: GATEWAY_CALLEE,
     method: req.method,
-    path: withQuery(service === GATEWAY_CALLEE ? req.path : `${GATEWAY_SERVICE_PREFIX}/${service}${req.path}`, req.query),
+    path: withQuery(own ? req.path : `${GATEWAY_SERVICE_PREFIX}/${service}${req.path}`, req.query),
     json: req.json,
     body,
     headers,
     // Web has no request context, so null keeps an anonymous call anonymous instead of falling back to one.
-    userToken: ctx.userToken ?? null,
+    userToken: own ? null : (ctx.userToken ?? null),
     // Bytes always, so an unavailable status fails closed whatever its body; decoded below otherwise.
     rawBody: true,
     // Only a 2xx body is left unread; an unavailable status, never 2xx, still arrives as bytes.
@@ -516,7 +557,14 @@ type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 
 type GetUserPoolSitesOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/user-pool-sites', 'get'>;
 type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
 type UserSitesOperation = ProgramsSitesOperation<'/v1/user-sites', 'get'>;
+type LegacySitePathsOperation = OperationOf<GatewayPaths['/internal/v1/legacy-site-paths'], 'get'>;
 type LegacyVersionMenuOperation = OperationOf<GatewayPaths[typeof LEGACY_VERSION_MENU_PATH], 'get'>;
+
+/** The gateway's own read of legacy's live site beans. */
+export interface LegacySiteFacade {
+  /** First-touch path values legacy's site beans give a browser request with these host facts (`legacySitePaths`). */
+  paths(query: QueryOf<LegacySitePathsOperation>): Promise<OperationResponse<LegacySitePathsOperation>>;
+}
 
 /** Identity calls, plus the session and CSRF operations the shell and lib use. */
 export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
@@ -584,6 +632,7 @@ export interface GatewayClient {
     multipart: MultipartBody,
     options?: GatewayRequestOptions,
   ): Promise<GatewayResponse<T>>;
+  readonly legacySite: LegacySiteFacade;
   readonly identity: IdentityFacade;
   readonly people: ServiceFacade<PeoplePaths>;
   readonly programsSites: ProgramsSitesFacade;
@@ -710,6 +759,13 @@ export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: Ser
         headers: { ...options.headers, ...relay.headers },
         body: relay.body,
       });
+    },
+    legacySite: {
+      paths: async (query) => {
+        const request: GatewayRequest = { method: 'GET', path: LEGACY_SITE_PATHS, query };
+        const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
+        return response as OperationResponse<LegacySitePathsOperation>;
+      },
     },
     identity: identityFacade(core),
     people: serviceFacade(core, 'people'),

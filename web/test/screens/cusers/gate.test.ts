@@ -272,6 +272,12 @@ describe('normaliseCusersRc', () => {
     ['true\u0001', 'admin', '1'],
     ['"0"', 'admin', '1'],
     ['\u00a0no', 'admin', '1'],
+    ['0x1p3', 'admin', '0x1p3'],
+    [' 0x1p0 ', 'admin', '0x1p0'],
+    ['-NaN', 'admin', '-NaN'],
+    ['0xAp0', 'admin', '1'],
+    ['1e309', 'admin', '1'],
+    ['0x1p3', 'non-admin', '1'],
   ])('scrubs ispublic %j for an %s to %j', (value, who, expected) => {
     const req = who === 'admin' ? adminS2Request({ rc: { ispublic: value } }) : editorRequest({ rc: { ispublic: value } });
     expect(normaliseCusersRc(req).ispublic).toBe(expected);

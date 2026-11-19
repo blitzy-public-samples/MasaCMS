@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import {
   LEGACY_ERROR_MAP,
   getApiVersion,
+  haltedRouteKey,
   isCfUuid,
   matchRouteKey,
-  scannedRouteKey,
   type RouteKeyOptions,
 } from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
@@ -406,7 +406,7 @@ export function versionRouting(
   return {
     tableVersion: version.tableVersion,
     route(probe) {
-      const { result } = scannedRouteKey({ ...toRouteKeyRequest(probe, opts), url: probe.route }, opts);
+      const { result } = haltedRouteKey({ ...toRouteKeyRequest(probe, opts), url: probe.route }, opts);
       const route = matchRouteKey(result, entries.keys());
       const entry = route === undefined ? undefined : entries.get(route);
       return entry === undefined

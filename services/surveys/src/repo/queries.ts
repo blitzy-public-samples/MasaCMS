@@ -201,6 +201,7 @@ export function listSurveys(tx: TenantTx, filters: SurveyListFilters): Promise<S
 /** The survey row with `surveyId`; null when the tenant has none, unqueried for an id no stored survey can have. */
 export function findSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null> {
   const { repository } = readsFor(tx);
+  // An id holding a NUL, which PostgreSQL text cannot bind, is no CF UUID either; the read still waits on the gate.
   if (!isMatchableSurveyId(surveyId)) {
     return repository.read(tx, SURVEY.unit, () => Promise.resolve(null));
   }

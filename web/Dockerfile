@@ -11,7 +11,7 @@ COPY platform/contracts/ /repo/platform/contracts/
 WORKDIR /repo/web
 COPY web/package.json web/package-lock.json web/.npmrc ./
 RUN npm ci
-# Service contracts `generate:clients` compiles.
+# Service and gateway contracts `generate:clients` compiles.
 COPY services/identity/contracts/openapi.yaml /repo/services/identity/contracts/
 COPY services/people/contracts/openapi.yaml /repo/services/people/contracts/
 COPY services/programs-sites/contracts/openapi.yaml /repo/services/programs-sites/contracts/

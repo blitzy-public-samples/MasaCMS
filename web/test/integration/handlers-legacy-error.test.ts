@@ -1,5 +1,6 @@
 // Real registered screens whose request legacy fails at run time, through the handlers and the loopback gateway:
 // legacy's 500 debug page for a fault web reproduces, else its error page.
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   LEGACY_ERROR_PAGE_HTML,
@@ -28,8 +29,6 @@ vi.mock('@/lib/telemetry', async (importOriginal) => ({
 }));
 
 const SITE = 'default';
-const HOME = '00000000000000000000000000000000001';
-const FORMS_MODULE = '00000000000000000000000000000000004';
 const TOP_MODULE = '00000000000000000000000000000000000';
 const RESPONSE_ID = '75CFADFF-8ECE-DBCF-0A633A519B114133';
 const USER_ID = 'A1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D';
@@ -66,47 +65,6 @@ function sessionRoutes(routes: FakeRouteTable): FakeRouteTable {
   });
 }
 
-/** strategies-content's listFormResponses model of a form with the one response the edit panel reads. */
-const FORM_RESPONSES = {
-  status: 200,
-  body: {
-    rc: {
-      contentBean: {
-        contentID: HOME,
-        contentHistID: '6300ED69-1320-5CC3-F922E3012E2C6BAE',
-        title: 'Home',
-        body: '',
-        responseDisplayFields: '',
-        sortBy: 'orderno',
-        sortDirection: 'asc',
-        nextN: 10,
-        type: 'Page',
-        subType: 'Default',
-        active: 1,
-        filename: '',
-        parentID: '00000000000000000000000000000000END',
-        menuTitle: 'Home',
-        remoteURL: '',
-        fileID: '',
-        isNew: 0,
-        stats: { lockID: '', lockType: '' },
-      },
-      perm: 'editor',
-      hasLockableNodes: 0,
-      useLayoutManager: true,
-      rsDataInfo: { firstentered: '2026-06-01 13:05:00.0', lastentered: '2026-06-01 13:05:00.0', countentered: 1 },
-      fieldnames: 'NAME',
-      rsData: [
-        { responseID: RESPONSE_ID, entered: '2026-06-01 13:05:00.0', data: { RESPONSEID: RESPONSE_ID, FIELDNAMES: 'NAME', NAME: 'Ann' } },
-      ],
-      scheme: 'http',
-      domain: 'localhost',
-      serverPort: ':23580',
-      context: '',
-    },
-  },
-};
-
 /**
  * One carried request legacy fails at run time: how web receives it, the services' answers, the failure web logs and
  * whether that failure is the fault legacy's debug page names.
@@ -121,9 +79,11 @@ interface FailingCase {
   readonly route: string;
   readonly cause: string;
   readonly fault: boolean;
+  /** Session values the request sets before the fault, which legacy's session scope keeps. */
+  readonly kept?: Readonly<Record<string, unknown>>;
 }
 
-/** The `cUsers.update{type=2,action=update}` post with a refused token, people answering it with `reply`. */
+/** The `cUsers.update{type=2,action=add}` post with a refused token, people answering it with `reply`. */
 function refusedUserUpdate(label: string, reply: { readonly status: number; readonly body: unknown }, cause: string, fault: boolean): FailingCase {
   return {
     label,
@@ -131,11 +91,11 @@ function refusedUserUpdate(label: string, reply: { readonly status: number; read
     path: '/admin-actions/cusers/update',
     params: { circuit: 'cusers', action: 'update' },
     request: {
-      query: { muraAction: 'cUsers.update', userid: USER_ID },
+      query: { muraAction: 'cUsers.update', userid: '' },
       form: {
         type: '2',
-        action: 'Update',
-        userid: USER_ID,
+        action: 'Add',
+        userid: '',
         siteid: SITE,
         fname: 'Pat',
         lname: 'Lee',
@@ -165,32 +125,11 @@ const CASES: readonly FailingCase[] = [
     route: 'page:cperm.main',
     cause: 'The element at position 1 cannot be found.',
     fault: true,
-  },
-  {
-    label: 'cArch.datamanager editing a response without hour1 or minute1',
-    handle: handleAdminPage,
-    path: '/admin/carch/datamanager',
-    params: { circuit: 'carch', action: 'datamanager' },
-    request: {
-      query: {
-        muraAction: 'cArch.datamanager',
-        contentid: HOME,
-        siteid: SITE,
-        moduleid: FORMS_MODULE,
-        topid: FORMS_MODULE,
-        parentid: FORMS_MODULE,
-        type: 'Form',
-        action: 'edit',
-        responseid: RESPONSE_ID,
-      },
-    },
-    routes: { [routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/forms/${HOME}/responses`)]: FORM_RESPONSES },
-    route: 'page:carch.datamanager',
-    cause: 'Element HOUR1 is undefined in RC.',
-    fault: true,
+    // admin/Application.cfc:419-421.
+    kept: { moduleid: TOP_MODULE },
   },
   refusedUserUpdate(
-    "cUsers.update{type=2,action=update} under a refused token, whose 500 server_error people's stacktrace names as the unset user bean",
+    "cUsers.update{type=2,action=add} under a refused token, whose 500 server_error people's stacktrace names as the unset user bean",
     {
       status: 500,
       body: {
@@ -207,7 +146,7 @@ const CASES: readonly FailingCase[] = [
     true,
   ),
   refusedUserUpdate(
-    'cUsers.update{type=2,action=update} whose 500 server_error from people names no fault, as for a value its column cannot store',
+    'cUsers.update{type=2,action=add} whose 500 server_error from people names no fault',
     { status: 500, body: { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } } },
     'updateUser answered HTTP 500',
     false,
@@ -235,8 +174,11 @@ afterEach(async () => {
   await fake.close();
 });
 
-/** Runs `failing` through its handler and checks legacy's 500 status line and headers, one ERROR line and no session write; returns the body. */
-async function failedBody({ handle, path, params, request, routes, route, cause }: FailingCase): Promise<string> {
+/**
+ * Runs `failing` through its handler and checks legacy's 500 status line and headers, one ERROR line, and one session
+ * write holding the values a fault keeps, none for another failure; returns the body.
+ */
+async function failedBody({ handle, path, params, request, routes, route, cause, fault, kept = {} }: FailingCase): Promise<string> {
   for (const [key, reply] of Object.entries(sessionRoutes(routes))) fake.setRoute(key, reply);
 
   const response = await handle(await adminRequest(path, { user: 'admin', ...request }), params);
@@ -247,7 +189,8 @@ async function failedBody({ handle, path, params, request, routes, route, cause 
   expect(response.headers.get('generator')).toBe(legacyHeaders().Generator);
   const lines = vi.mocked(logRequest).mock.calls.map(([fields]) => fields);
   expect(lines).toEqual([expect.objectContaining({ route, statusCode: 500, error: expect.objectContaining({ message: cause }) })]);
-  expect(fake.requests.map(({ method, path: called }) => `${method} ${called}`)).not.toContain(SAVE_ADMIN_STATE);
+  const saved = fake.requests.filter(({ method, path: called }) => `${method} ${called}` === SAVE_ADMIN_STATE).map(({ json }) => json);
+  expect(saved).toEqual(fault ? [expect.objectContaining(kept)] : []);
   return response.text();
 }
 
@@ -268,4 +211,40 @@ it.each(CASES.filter(({ fault }) => fault))('answers $label with the error page 
   resetLegacySettingsForTests();
 
   expect(await failedBody(failing)).toBe(LEGACY_ERROR_PAGE_HTML);
+});
+
+/** Legacy's debug page headings of its UPDATE failing on a 255-character address1 [g5 capture of cUsers.updateAddress]. */
+const ADDRESS_UPDATE_PAGE = (
+  JSON.parse(readFileSync(new URL('../fixtures/legacy-query-fault-pages.json', import.meta.url), 'utf8')) as {
+    cases: { name: string; stacktrace: Record<string, string>; headings: string }[];
+  }
+).cases.find((c) => c.name === 'address-update-address1-255');
+
+it("answers cUsers.updateAddress whose 500 server_error from people names a failed query with legacy's debug page of that query", async () => {
+  const page = ADDRESS_UPDATE_PAGE;
+  expect(page).toBeDefined();
+  const failing: FailingCase = {
+    label: 'cUsers.updateAddress',
+    handle: handleAdminAction,
+    path: '/admin-actions/cusers/updateaddress',
+    params: { circuit: 'cusers', action: 'updateaddress' },
+    request: {
+      query: { muraAction: 'cUsers.updateAddress', userid: USER_ID, routeid: '', siteid: SITE },
+      form: { action: 'Update', addressID: RESPONSE_ID, address1: 'a'.repeat(255), csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires },
+    },
+    routes: {
+      [routeKey('POST', 'people', '/v1/users/addresses:update')]: {
+        status: 500,
+        body: { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error', stacktrace: page?.stacktrace } },
+      },
+    },
+    route: 'redirect:cusers.updateaddress',
+    cause: 'Error Executing Database Query.',
+    fault: true,
+  };
+
+  const body = await failedBody(failing);
+
+  const head = legacyDebugPageHtml({ message: '', type: '' }, encodeHtml).slice(0, -'</div>'.length);
+  expect(body).toBe(`${head}${page?.headings}</div>`);
 });

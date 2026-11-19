@@ -30,6 +30,7 @@ import {
   LegacyFaultError,
   WWW_AUTHENTICATE,
   legacyDebuggingEnabled,
+  legacyFaultOf,
   legacyRuntimeErrorResponse,
 } from '@opt2/platform/legacy-compat';
 import {
@@ -971,6 +972,11 @@ const PROBE_OVERRIDES: Readonly<Record<string, (site: string) => Probe>> = {
   'POST /v1/sites/:siteid/variation-targeting': (site) => postForm(`/v1/sites/${site}/variation-targeting`, `remoteid=authz-probe&${CSRF_FIELDS}`),
   'POST /v1/sites/:siteid/changesets': (site) =>
     postForm(`/v1/sites/${site}/changesets`, `changesetid=${IDS.changesets.scheduledFuture}&name=Future%20Release&${CSRF_FIELDS}`),
+  'POST /v1/sites/:siteid/changesets/:changesetid/items/:contenthistid/remove': (site) =>
+    postForm(
+      fillPath('/v1/sites/:siteid/changesets/:changesetid/items/:contenthistid/remove', site),
+      `contenthistid=${IDS.hist.sectionDraft}&${CSRF_FIELDS}`,
+    ),
   'POST /v1/sites/:siteid/categories': (site) =>
     postForm(`/v1/sites/${site}/categories`, `categoryid=${IDS.categories.pooledChild}&action=update&name=News&${CSRF_FIELDS}`),
 };
@@ -1208,13 +1214,19 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
       ['carch', 'refreshsitesection', 'RangeError: Element RSTOP is undefined in RC.'],
       ['carch', 'savecopyinfo', 'UndefinedLegacyElementError: Element COPYALL is undefined in RC.'],
       ['carch', 'savequickedit', 'UndefinedLegacyElementError: Element RC.attribute is undefined in ARGUMENTS.'],
-      ['cfeed', 'update', 'FeedElementUndefinedError: Element FEEDID is undefined in ARGUMENTS.RC.'],
       ['cform', 'getdataset', 'CformRequestError: Element RC.fieldID is undefined in ARGUMENTS.'],
       ['cform', 'getdialog', 'CformRequestError: Element RC.dialog is undefined in ARGUMENTS.'],
       ['cform', 'getfield', 'CformRequestError: Element RC.formID is undefined in ARGUMENTS.'],
       ['cform', 'getfieldtemplate', 'CformRequestError: Element RC.fieldtype is undefined in ARGUMENTS.'],
     ] as const
   ).map(([circuit, action, error]) => ({ routes: rawRoutes(circuit, action), status: 500, matches: threw(error) })),
+  // The probe names no feedid: the server_error naming legacy's fault, which web prints as onError's page.
+  {
+    routes: rawRoutes('cfeed', 'update'),
+    status: 500,
+    matches: (result) =>
+      /json/.test(String(result.res.headers['content-type'])) && legacyFaultOf(result.res.json())?.message === 'Element RC.feedid is undefined in ARGUMENTS.',
+  },
   { routes: ['POST /v1/sites/:siteid/forms/import'], status: 500, matches: threw('CformRequestError: Element FORMZIP is undefined in FORM.') },
   { routes: ['POST /v1/sites/:siteid/variation-targeting'], status: 500, matches: threw('UndefinedLegacyElementError: Element INITJS is undefined in RC.') },
   // RecordingDb answers every seeded row of a table, unfiltered and without joined or aliased columns, so these reads fail past admission.

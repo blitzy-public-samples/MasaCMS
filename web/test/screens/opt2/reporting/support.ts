@@ -8,7 +8,15 @@ import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import type { ScreenContext } from '@/screens/registry';
 import { LEGACY_VERSION_MENU } from '../../../fixtures/gateway/version-menu';
-import { routeKey, type FakeGatewayClient, type FakeReply, type FakeRouteTable, type RecordedRequest } from '../../../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  installedSitePaths,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+  type FakeRouteTable,
+  type RecordedRequest,
+} from '../../../helpers/fake-gateway';
 
 /** The pair identity issues for every CSRF context in these tests. */
 export const CSRF_PAIR: Readonly<CsrfTokens> = Object.freeze({
@@ -38,6 +46,7 @@ function issueTokens(request: RecordedRequest): FakeReply {
 export function shellAndCsrfRoutes(siteId: string): FakeRouteTable {
   return {
     [CSRF_ROUTE]: issueTokens,
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
     [routeKey('GET', 'programs-sites', '/v1/user-sites')]: {
       status: 200,
       body: {

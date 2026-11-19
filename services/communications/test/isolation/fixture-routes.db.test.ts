@@ -114,20 +114,21 @@ describe.skipIf(!available)(title, () => {
   it.each<[string, number, Call, { code: string; message: string }, string]>([
     ['a template name PostgreSQL cannot store', 400, { method: 'POST', url: TEMPLATES, body: NUL_TEMPLATE, headers: CSRF_HEADERS }, INVALID_PARAMETERS, 'request rejected: 22021'],
     ['an anonymous caller sending that name', 401, { method: 'POST', url: TEMPLATES, body: NUL_TEMPLATE, roles: null }, DENIED, 'request denied: authorization'],
-    // A JSON body is not script-protected, so its NUL reaches the site lookup; the Portcullis scan drops a url one.
+    // A JSON body is not script-protected, so its NUL reaches the site lookup, which registers no site id holding one, as
+    // Masa's siteExists finds; the Portcullis scan drops a url one.
     [
-      'an anonymous caller naming a site PostgreSQL cannot look up',
+      'an anonymous caller naming a site holding a NUL, which names no site',
       400,
       { method: 'POST', url: TEMPLATES, body: { siteid: 'nul-probe\u0000site' }, roles: null },
       INVALID_PARAMETERS,
-      'request rejected: 22021',
+      'request rejected: invalidParameters',
     ],
     [
-      'a sender naming a site PostgreSQL cannot look up',
+      'a sender naming a site holding a NUL, which names no site',
       400,
       { method: 'POST', url: TEMPLATES, body: { siteid: 'nul-probe\u0000site' }, headers: CSRF_HEADERS },
       INVALID_PARAMETERS,
-      'request rejected: 22021',
+      'request rejected: invalidParameters',
     ],
     [
       'an anonymous caller naming a url site whose NUL the scan drops, leaving an unknown site',

@@ -26,6 +26,7 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, type DomainDeps } from '../../src/domain/context.js';
+import { esapiEncode } from '../../src/legacy/admin-markup.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import { RATER_SAVE_PATH, registerRaterRoutes } from '../../src/routes/rater.js';
@@ -42,6 +43,35 @@ const SITE = TENANT_A.siteId;
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 const [U1, U2, U3] = [1, 2, 3].map((n) => cfId('U', n)) as [string, string, string];
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
+/** Own oracle's `MURA_DATABASE`, which SQL Server's messages qualify `tcontentratings` with. */
+const DATABASE = 'muradb_c60';
+const DRIVER = '[Macromedia][SQLServer JDBC Driver][SQLServer]';
+const NOT_NUMERIC = new LegacyFaultError('The RATE argument passed to the saveRate function is not of type numeric.', 'Application', {
+  detail:
+    'If the component name is specified as a type of this argument, it is possible that either a definition file for the component cannot be found or is not accessible.',
+});
+const INT_CONVERSION = new LegacyFaultError(`${DRIVER}Arithmetic overflow error converting expression to data type int.`, 'java.sql.SQLDataException', {
+  errorCode: '8115',
+});
+/** Msg 1007 for the decimal `literal`. */
+const precision = (literal: string): LegacyFaultError =>
+  new LegacyFaultError(`${DRIVER}The number '${literal}' is out of the range for numeric representation (maximum precision 38).`, 'java.sql.SQLDataException', {
+    errorCode: '1007',
+  });
+/** Msg 515 for the NULL `column`. */
+const nullFault = (column: string): LegacyFaultError =>
+  new LegacyFaultError(
+    `${DRIVER}Cannot insert the value NULL into column '${column}', table '${DATABASE}.dbo.tcontentratings'; column does not allow nulls. INSERT fails.`,
+    'java.sql.SQLIntegrityConstraintViolationException',
+    { errorCode: '515' },
+  );
+/** Msg 2628 for `column`, quoting `value`. */
+const truncation = (column: string, value: string): LegacyFaultError =>
+  new LegacyFaultError(
+    `${DRIVER}String or binary data would be truncated in table '${DATABASE}.dbo.tcontentratings', column '${column}'. Truncated value: '${value}'.`,
+    'java.sql.SQLException',
+    { errorCode: '2628' },
+  );
 
 // Own oracle (site default, users U1 to U3 of one item): 4 by U1, then 1 by U2, then 5 by U1 again, then 2.7 by U3.
 const ORACLE_FIRST =
@@ -143,6 +173,11 @@ function expectErrorPage(res: InjectResponse, body: string = LEGACY_ERROR_PAGE_H
   });
 }
 
+/** Expects onError's debugging-on page naming `fault`. */
+function expectFaultPage(res: InjectResponse, fault: LegacyFaultError): void {
+  expectErrorPage(res, legacyDebugPageHtml(fault, (text) => esapiEncode('html', text)));
+}
+
 /** Expects onError's debugging-on page for the undefined form field `name`, as the template reads it. */
 function expectUndefinedFieldPage(res: InjectResponse, name: string): void {
   const message = `Element ${name} is undefined in FORM.`;
@@ -191,7 +226,7 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
         pool: db,
         logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
       });
-      registerRaterRoutes(service, { domain: deps }, debuggingEnabled);
+      registerRaterRoutes(service, { domain: deps }, debuggingEnabled, DATABASE);
       await service.ready();
       return service;
     };
@@ -354,48 +389,104 @@ describe.skipIf(!(await pgAvailable()))('rater save route', () => {
     expect(await writeCount()).toBe(before);
   });
 
-  it('answers the ColdFusion error page with nothing written for a non-numeric rate', async () => {
+  it("answers legacy's debug page of the numeric rate argument with nothing written for a rate it refuses", async () => {
     const item = cfId('C', 8);
     const before = await writeCount();
     // Own oracle: the `numeric` rate argument refuses each, the repeated field joined as `3,4`.
     for (const form of ['abc', '', '1d', '0x10', '1,000', '1e309'].map((rate) => rateForm(item, U1, rate)).concat(`${rateForm(item, U1, '3')}&rate=4`)) {
-      expectErrorPage(await save(form));
+      expectFaultPage(await save(form), NOT_NUMERIC);
     }
     expect(await writeCount()).toBe(before);
   });
 
-  it.each(['3000000000', '-2147483649', '1e10', '0.000000000000000000000000000000000000001'])(
-    'answers the ColdFusion error page with nothing written for the rate %s, which SQL Server cannot store as an int',
-    async (rate) => {
-      const before = await writeCount();
-      expectErrorPage(await save(rateForm(cfId('C', 9), U1, rate)));
-      expect(await writeCount()).toBe(before);
-    },
-  );
+  // Own oracle: scratch captures saverate-rate-overflow, -negover, -exp10 and -digits39.
+  it.each([
+    ['3000000000', INT_CONVERSION],
+    ['-2147483649', INT_CONVERSION],
+    ['1e10', new LegacyFaultError(`${DRIVER}Arithmetic overflow error for type int, value = 10000000000.000000.`, 'java.sql.SQLDataException', { errorCode: '232' })],
+    [`1${'0'.repeat(38)}`, precision(`1${'0'.repeat(38)}`)],
+  ])("answers SQL Server's fault with nothing written for the rate %s, which it cannot store as an int", async (rate, fault) => {
+    const before = await writeCount();
+    expectFaultPage(await save(rateForm(cfId('C', 9), U1, rate)), fault);
+    expect(await writeCount()).toBe(before);
+  });
+
+  // Own oracle: the headings after `<h1>500 Error</h1>` of scratch captures saverate-rate-overflow and -rate-nonnumeric.
+  it.each([
+    [
+      '99999999999',
+      '<h2>&#x5b;Macromedia&#x5d;&#x5b;SQLServer JDBC Driver&#x5d;&#x5b;SQLServer&#x5d;Arithmetic overflow error converting expression to data type int.<br /></h2>' +
+        '<h3>Code:8115<br /></h3><h3>Type:java.sql.SQLDataException<br /></h3>',
+    ],
+    [
+      'abc',
+      '<h2>The RATE argument passed to the saveRate function is not of type numeric.<br /></h2><h3>Type:Application<br /></h3>' +
+        '<h3>If the component name is specified as a type of this argument, it is possible that either a definition file for the component cannot be found or is not accessible.<br /></h3>',
+    ],
+  ])('prints the headings of the debug page legacy answers the rate %j with, esapi-encoded', async (rate, headings) => {
+    const res = await save(rateForm(cfId('C', 9), U1, rate));
+    expect(res.body.endsWith(`<h1>500 Error</h1>${headings}</div>`)).toBe(true);
+  });
 
   it.each([
     ['contentID', ''],
     ['siteID', ''],
     ['userID', ''],
     ['contentID', '   '],
-  ])('answers the ColdFusion error page with nothing written for the %s %j, which the rating insert binds as NULL once trimmed', async (field, value) => {
+  ])("answers SQL Server's NULL insert fault with nothing written for the %s %j, which the rating insert binds as NULL once trimmed", async (field, value) => {
     const before = await writeCount();
     const fields = new URLSearchParams({ contentID: cfId('C', 10), siteID: SITE, userID: U1, rate: '4', [field]: value });
-    expectErrorPage(await save(fields.toString()));
+    expectFaultPage(await save(fields.toString()), nullFault(field));
     expect(await writeCount()).toBe(before);
   });
 
   // The token names the posted site, as identity mints it for the requested siteid.
   it.each([
-    ['contentID', `${cfId('C', 19)}F`],
-    ['userID', `${U1}F`],
-    ['siteID', 's'.repeat(26)],
-  ])('answers the ColdFusion error page with nothing written for the %s %j, longer than its tcontentratings column', async (field, value) => {
+    ['contentID', `${cfId('C', 19)}F`, cfId('C', 19)],
+    ['userID', `${U1}F`, U1],
+    ['siteID', 's'.repeat(26), 's'.repeat(25)],
+  ])("answers SQL Server's truncation fault with nothing written for the %s %j, longer than its tcontentratings column", async (field, value, quoted) => {
     const form = { contentID: cfId('C', 19), siteID: SITE, userID: U1, rate: '4', [field]: value };
     const tenantId = tenantIdForSite(form.siteID);
     const before = await writeCount(tenantId);
-    expectErrorPage(await save(new URLSearchParams(form).toString(), { headers: await visitorHeaders(form.siteID) }));
+    expectFaultPage(await save(new URLSearchParams(form).toString(), { headers: await visitorHeaders(form.siteID) }), truncation(field, quoted));
     expect(await writeCount(tenantId)).toBe(before);
+  });
+
+  // Own oracle: scratch captures saverate-cid36_digits41, -cid36_uidempty, -uid36_sid26, -cidempty_uid36, -cid36_rateover, -uidempty_rateover.
+  it.each([
+    ['a decimal of 41 digits before a long contentID', { contentID: 'X'.repeat(36), rate: `1${'0'.repeat(40)}` }, precision(`1${'0'.repeat(40)}`)],
+    ['a long contentID before an empty userID', { contentID: 'X'.repeat(36), userID: ' ' }, truncation('contentID', 'X'.repeat(35))],
+    ['a long userID before a long siteID', { userID: 'U'.repeat(36), siteID: 'S'.repeat(26) }, truncation('userID', 'U'.repeat(35))],
+    ['an empty contentID before a long userID', { contentID: '', userID: 'U'.repeat(36) }, nullFault('contentID')],
+    ['a long contentID before a rate outside int', { contentID: 'X'.repeat(36), rate: '99999999999' }, truncation('contentID', 'X'.repeat(35))],
+    ['an empty userID before a rate outside int', { userID: ' ', rate: '99999999999' }, nullFault('userID')],
+  ])('answers the fault SQL Server raises first for %s, as the statement compiles and then binds in insert order', async (_label, overrides, fault) => {
+    const form = { contentID: cfId('C', 22), siteID: SITE, userID: U1, rate: '4', ...overrides };
+    const before = await writeCount(tenantIdForSite(form.siteID));
+    expectFaultPage(await save(new URLSearchParams(form).toString(), { headers: await visitorHeaders(form.siteID) }), fault);
+    expect(await writeCount(tenantIdForSite(form.siteID))).toBe(before);
+  });
+
+  it("answers SQL Server's rate fault for an existing rating, whose update binds no id", async () => {
+    const item = cfId('C', 23);
+    await seedRating(item, U1, 2);
+    const before = await writeCount();
+    expectFaultPage(await save(rateForm(item, U1, '99999999999')), INT_CONVERSION);
+    expect(await writeCount()).toBe(before);
+    expect((await ratings(item)).map((row) => row.rate)).toEqual([2]);
+  });
+
+  it('answers the error page for a save SQL Server fails when debugging is off, with nothing written', async () => {
+    const before = await writeCount();
+    const res = await quietApp.inject({
+      method: 'POST',
+      url: RATER_SAVE_PATH,
+      headers: { ...FORM, ...(await visitorHeaders()) },
+      payload: rateForm(cfId('C', 24), '', '4'),
+    });
+    expectErrorPage(res);
+    expect(await writeCount()).toBe(before);
   });
 
   it.each([

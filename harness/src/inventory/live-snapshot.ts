@@ -6,6 +6,7 @@ import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
 import type { FetchLike } from '../lib/http.js';
 import type { ReadOnlyMssql } from '../lib/mssql.js';
+import type { EnvLike } from '../lib/paths.js';
 import { pinnedSha } from '../lib/pin.js';
 import { readJson, stableStringify } from '../lib/report.js';
 import { fetchLiveEntities, liveEntitiesSchema, liveEntitySchema } from './entities.js';
@@ -23,6 +24,8 @@ export interface LiveSources {
   origin: string;
   db: ReadOnlyMssql;
   fixturesLoaded: boolean;
+  /** Source of the harness key the registration probe sends. */
+  env: EnvLike;
   fetch?: FetchLike;
 }
 
@@ -84,7 +87,7 @@ function normalise(snapshot: LiveSnapshot): LiveSnapshot {
 
 /** Queries the registration probe, the catalog and the stored-procedure check, in that order, into a snapshot. */
 export async function captureLiveSnapshot(sources: LiveSources): Promise<LiveSnapshot> {
-  const probe = await fetchLiveEntities(sources.origin, { fetch: sources.fetch });
+  const probe = await fetchLiveEntities(sources.origin, { fetch: sources.fetch, env: sources.env });
   const catalog = await fetchLiveCatalog(sources.db);
   const storedProcedures = await liveCheck(sources.db, { fixturesLoaded: sources.fixturesLoaded });
   return normalise({

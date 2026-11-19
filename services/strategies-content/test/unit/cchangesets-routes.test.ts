@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, moduleRole, type Role } from '@opt2/platform/auth';
+import { LegacyFaultError, legacyFaultOf } from '@opt2/platform/legacy-compat';
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
@@ -405,9 +406,12 @@ describe('token-gated writes', () => {
     expect(t.db.statements).toEqual([]);
   });
 
-  it('fails as legacy does on a save without a change-set id, before consuming a token', async () => {
+  it('fails as legacy does on a save without a change-set id, naming its fault, before consuming a token', async () => {
     const res = await post(SAVE_URL, { siteid: SITE, name: 'Autumn' });
     expect(res.statusCode).toBe(500);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: SAVE_URL, status: 500, contentType: res.headers['content-type'], body: res.body });
+    // Own oracle: cchangesets-save-no-changesetid.
+    expect(legacyFaultOf(res.json())).toEqual(new LegacyFaultError('Element RC.changesetid is undefined in ARGUMENTS.'));
     expect([consumed, t.db.statements]).toEqual([[], []]);
   });
 
@@ -429,12 +433,32 @@ describe('token-gated writes', () => {
       redirect: { circuit: 'cChangesets', action, params: keys.map((key) => [key, { changesetID: CS, siteID: SITE, keywords: '' }[key]]) },
     });
     csrfValid = false;
-    expect((await post(url, { changesetID: CS })).json()).toEqual(expected(false));
+    expect((await post(url, { changesetID: CS, contentHistID: HIST })).json()).toEqual(expected(false));
     expect(t.db.statements).toEqual([]);
     csrfValid = true;
-    expect((await post(url, { changesetID: CS })).json()).toEqual(expected(true));
+    expect((await post(url, { changesetID: CS, contentHistID: HIST })).json()).toEqual(expected(true));
     expect(consumed.map(({ context }) => context)).toEqual([CS, CS]);
     expect(ran(write)).toBe(true);
+  });
+
+  it("fails as legacy's read of rc.contenthistID does on a removeitem without it, after consuming the valid token and writing nothing", async () => {
+    const url = `/v1/sites/${SITE}/changesets/${CS}/items/${HIST}/remove`;
+    const res = await post(url, { changesetID: CS });
+    expect(res.statusCode).toBe(500);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: url, status: 500, contentType: res.headers['content-type'], body: res.body });
+    // Own oracle: cs-removeitem-validtoken-nohist.
+    expect(legacyFaultOf(res.json())).toEqual(new LegacyFaultError('Element CONTENTHISTID is undefined in RC.'));
+    expect(consumed.map(({ context }) => context)).toEqual([CS]);
+    expect(t.db.statements).toEqual([]);
+  });
+
+  it('removes the posted rc.contenthistID, which the path only addresses', async () => {
+    const posted = 'E1F2A3B4-0002-4A5B-8C7D9E0F1A2B3C4D';
+    const res = await post(`/v1/sites/${SITE}/changesets/${CS}/items/${HIST}/remove`, { changesetID: CS, contentHistID: posted });
+    expect(res.statusCode, res.body).toBe(200);
+    const removal = t.db.statements.find((statement) => VERSION.test(statement.sql));
+    expect(flat(removal?.params ?? [])).toContain(posted);
+    expect(flat(removal?.params ?? [])).not.toContain(HIST);
   });
 
   it('fails closed, writing nothing, when a published rollback must re-save a version', async () => {

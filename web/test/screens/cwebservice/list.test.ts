@@ -5,7 +5,7 @@ import { deniedGate, secure, type GateDecision } from '@/lib/access-gate';
 import { parseLegacyDate } from '@/lib/dates';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
-import { CWEBSERVICE_RC_DEFAULTS, cwebserviceScreens } from '@/screens/cwebservice';
+import { CWEBSERVICE_RC_DEFAULTS, cwebserviceScreens, editDefinition, saveDefinition } from '@/screens/cwebservice';
 import { authModeLabel, effectiveGrantType, type WebServiceClient } from '@/screens/cwebservice/list';
 import type { PageScreen, ScreenDefinition } from '@/screens/registry';
 import { OAUTH_CLIENT_IDS, emptyOAuthClients, oauthClientRows } from '../../fixtures/identity/oauth-clients';
@@ -41,10 +41,10 @@ const deleteHref = (clientid: string): string =>
   `./?muraAction=cwebservice.delete&clientid=${clientid}&siteid=${SITE}` +
   `&csrf_token=${FIXED_CSRF.token}&csrf_token_expires=${FIXED_CSRF.expires}`;
 
-/** The registered cwebservice definition of `action`. */
+/** The cwebservice definition of `action`, the halted edit and save included. */
 function definition(action: string): ScreenDefinition {
-  const def = cwebserviceScreens.find((candidate) => candidate.action === action);
-  if (def === undefined) throw new Error(`cwebservice.${action} is not registered`);
+  const def = [...cwebserviceScreens, editDefinition, saveDefinition].find((candidate) => candidate.action === action);
+  if (def === undefined) throw new Error(`cwebservice.${action} is not defined`);
   return def;
 }
 
@@ -113,13 +113,16 @@ describe('cwebservice circuit', () => {
     });
   });
 
-  it('registers the four identity actions', () => {
-    expect(cwebserviceScreens.map(({ circuit, action, owner, mode }) => ({ circuit, action, owner, mode }))).toEqual([
+  it('registers list and delete, defining the halted edit and save outside the barrel', () => {
+    const shape = ({ circuit, action, owner, mode }: ScreenDefinition) => ({ circuit, action, owner, mode });
+    expect(cwebserviceScreens.map(shape)).toEqual([
       { circuit: 'cwebservice', action: 'list', owner: 'identity', mode: 'page' },
+      { circuit: 'cwebservice', action: 'delete', owner: 'identity', mode: 'redirect' },
+    ]);
+    expect([editDefinition, saveDefinition].map(shape)).toEqual([
       { circuit: 'cwebservice', action: 'edit', owner: 'identity', mode: 'page' },
       // save.cfm is the view of save(), so the inventory records save as a page action.
       { circuit: 'cwebservice', action: 'save', owner: 'identity', mode: 'page' },
-      { circuit: 'cwebservice', action: 'delete', owner: 'identity', mode: 'redirect' },
     ]);
   });
 

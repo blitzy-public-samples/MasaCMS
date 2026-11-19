@@ -565,6 +565,22 @@ describe('JSON API over an in-memory registry', () => {
       expect(Object.keys(dataOf(res))).toEqual(['bravo', 'whiskey', 'victor', 'echo', 'delta', 'alpha', 'charlie', 'foxtrot', 'zeta', 'yankee', 'mike', 'xray']);
     });
 
+    // Oracle (own ACF): isValid('numeric') reads Java's double grammar without a type suffix; urlDecode turns a plain '+' into a space.
+    it('checks dataType numeric as Masa 7.6.1 does for signed exponents, Infinity, NaN and hex floats', async () => {
+      const values: Record<string, string> = {
+        a: '0x1p3', b: '+NaN', c: '1e+3', d: '1E3', e: '-Infinity', f: '1e%2B3', h1: '0x.8p1', h2: '0X1P3', h3: '0x1.8p1', h4: '-0x1p3',
+        h5: '0xp3', h6: '0x1p', h7: '0x1p3d', h8: 'Infinityd', h9: '0x1p-2', h10: '%2B0x1p%2B2', h11: '0x1.p1', h12: '0x.p1', h13: '1.0e3',
+        h14: '1e3f', h15: 'NaN ', h16: '1e%2B309', h17: '-.5e-3', h18: '0x1P3', h19: '0Xa.Bp0',
+      };
+      const validations = { properties: Object.fromEntries(Object.keys(values).map((key) => [key, [{ required: true }, { dataType: 'numeric' }]])) };
+      const path = `${API}/validate?entityname=group&data=${encodeURIComponent(JSON.stringify(values))}&validations=${encodeURIComponent(JSON.stringify(validations))}`;
+
+      const res = await send(app, 'GET', path, await headersFor(S2));
+
+      const invalid = ['c', 'h5', 'h6', 'h7', 'h8', 'h12', 'h14'];
+      expect(json(res)).toEqual({ apiversion: 'v1', method: 'validate', data: Object.fromEntries(invalid.map((key) => [key, `The property named '${key}' is not valid`])) });
+    });
+
     // isPostedFile reads the scanned form after processRequest appended params to it, url values included (jsonApiUtility.cfc:845).
     it.each<[string, string, Record<string, string> | undefined]>([
       ['a form value', '', { photo: 'x.upload' }],

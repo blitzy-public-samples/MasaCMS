@@ -21,7 +21,7 @@ export interface ScannedRouteKey {
   urlScope: Record<string, string>;
   /** Whether legacy's scan throws on the url or the form scope, multipart file fields included. */
   scanFailed: boolean;
-  /** The key `result` replaces when it carries {@link SCAN_HALT_VARIANT}: the one the scopes read as the port leaves them. */
+  /** The key `result` replaces when it carries a halt variant, such as {@link SCAN_HALT_VARIANT}: the one the scopes read as the port leaves them. */
   unhalted?: RouteKeyResult;
 }
 

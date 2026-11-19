@@ -12,6 +12,7 @@ import {
   isCfUuid,
   isLegacyFindOneId,
   javaTrim,
+  javaUtf8Text,
   LegacyApiError,
 } from '@opt2/platform/legacy-compat';
 import { isUnstorableTextError } from '@opt2/platform/service-kit';
@@ -291,13 +292,14 @@ function saveErrorsOf(call: JsonApiCall): boolean {
 
 /**
  * The bean save answers when validation kept it unwritten (2041-2049): reloaded by its primary key, then each request
- * value whose key the bean holds set on it as bean.set does (null skipped, text trimmed).
+ * value whose key the bean holds set on it as bean.set does (null skipped, text trimmed), unpaired surrogates as the `?`
+ * legacy's UTF-8 answer writes.
  */
 async function unsavedValues(domain: DomainDeps, actor: Actor, call: JsonApiCall, savedId: string): Promise<Struct> {
   const values = beanValues(await findVariationTargeting(domain, actor, { targetingId: savedId, siteId: call.siteId }));
   for (const key of Object.keys(values)) {
     const value = call.params.get(key);
-    if (value !== undefined && value !== null) values[key] = javaTrim(call.params.string(key));
+    if (value !== undefined && value !== null) values[key] = javaUtf8Text(javaTrim(call.params.string(key)));
   }
   // The event holds the request site and the id the bean was saved under.
   return { ...values, siteid: call.siteId, targetingid: savedId };
@@ -317,8 +319,8 @@ async function savedValues(
   const input: VariationTargetingValues = { targetingid: savedId, siteid: call.siteId };
   for (const field of SAVED_FIELDS) {
     const value = call.params.get(field);
-    // bean.set skips null values and trims simple ones (bean.cfc:333, 427-429).
-    if (value !== undefined && value !== null) input[field] = javaTrim(call.params.string(field));
+    // bean.set skips null values and trims simple ones (bean.cfc:333, 427-429); the varchar binding stores an unpaired surrogate as `?`.
+    if (value !== undefined && value !== null) input[field] = javaUtf8Text(javaTrim(call.params.string(field)));
     else if (loaded !== undefined) input[field] = loaded[field];
   }
   const { saved, errors } = await saveVariationTargeting(domain, actor, input, { saveErrors });
@@ -335,7 +337,7 @@ const save: JsonApiHandlerFn = async (ctx, call) => {
   try {
     saved = await savedValues(ctx.domain, actor, call, saveErrors);
   } catch (err) {
-    // PostgreSQL text cannot hold a NUL, which legacy stores (EX-UNSTORABLE-TEXT-VARIATIONTARGETING).
+    // PostgreSQL text cannot hold a NUL, which legacy stores; the gateway serves such saves on legacy, so this one fails unwritten.
     if (isUnstorableTextError(err)) return { error: 'invalidParameters' };
     throw err;
   }

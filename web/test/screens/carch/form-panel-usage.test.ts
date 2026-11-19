@@ -22,6 +22,7 @@ const STATE: EditFormState = {
   baseTypeList: 'Component',
   subTypes: [],
   subtypeFilter: '',
+  themeAssetPath: '/themes/default',
   isExtended: false,
   requiresApproval: false,
   showApprovalStatus: false,

@@ -1,6 +1,7 @@
 // Admin shell entry point: layout choice of `admin/common/layouts/default.cfm`, shell data and document output (server-only).
 import {
   cfDateAdd,
+  cfEq,
   cfIsDateText,
   cfListToArray,
   cfParseDateTimeText,
@@ -12,6 +13,7 @@ import { legacySettings } from '@/lib/env';
 import { okBody, type GatewayClient } from '@/lib/gateway-client';
 import { tokenServesSite, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
+import { legacySitePaths, type LegacySitePaths } from '@/lib/site-paths';
 import { renderCompact } from './compact';
 import { loadLegacyServerInfo } from './legacy-server';
 import { resolveModuleTitle } from './module-title';
@@ -44,6 +46,9 @@ export type {
 } from './types';
 export { OPT2_NAV_MODULES } from './nav';
 
+/** The login page, whose full layout prints no inline scripts (`template.cfm` 324). */
+const LOGIN_ACTION = 'core:cLogin.main';
+
 /** CSRF context of the nav's Update Core links (`nav.cfm` 331-335, 377-381). */
 const UPDATE_CORE_CONTEXT = 'updatecore';
 
@@ -66,6 +71,19 @@ const listLast = (list: string, delimiter: string): string => cfListToArray(list
 /** The layout legacy `default.cfm` includes: `compact` when {@link isCompactDisplay}, else `template`. */
 export function selectLayout(rc: RequestContext): ShellLayout {
   return isCompactDisplay(rc.compactDisplay) ? 'compact' : 'template';
+}
+
+/** `rc.siteid` after the layouts' `cfparam rc.siteid default=session.siteID`, an empty one reading as `default`. */
+function shellSiteId(ctx: AdminRequest): string {
+  const siteId = ctx.rc.siteid ?? ctx.session.siteid;
+  return siteId === '' ? 'default' : siteId;
+}
+
+/** Legacy's layout values: `html_head.cfm`'s, and `Mura.init`'s on every page but the full layout's `clogin.main`. */
+function loadLegacyPaths(ctx: AdminRequest, gateway: GatewayClient): Promise<LegacySitePaths> {
+  const muraInit = selectLayout(ctx.rc) === 'compact' || !cfEq(ctx.action, LOGIN_ACTION);
+  const initSite = ctx.session.siteid === '' ? 'default' : ctx.session.siteid;
+  return legacySitePaths(ctx, gateway, { themeSite: shellSiteId(ctx), ...(muraInit ? { initSite } : {}) });
 }
 
 /** Services and request values {@link loadShellData} reads through. */
@@ -139,21 +157,22 @@ async function loadUserPrompts(ctx: AdminRequest, gateway: GatewayClient): Promi
 
 /**
  * The data the shell renders beyond `ctx`; site list, prompt counts, Update Core tokens and the legacy server facts are
- * loaded only when the full layout shows its nav and header, the counts only for a session site the token serves.
- * Gateway unavailability propagates.
+ * loaded only when the full layout shows its nav and header, the counts only for a session site the token serves, and
+ * legacy's layout values on every page. Gateway unavailability propagates.
  * @throws GatewayDenialError When a service or the gateway refuses a read (401 or 403).
  */
 export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Promise<ShellData> {
   const now = deps.now ?? new Date();
   const chrome =
     selectLayout(ctx.rc) === 'template' && ctx.session.siteid !== '' && ctx.isLoggedIn && ctx.isPrivateUser;
-  const [userSites, coreCsrfQuery, prompts, server] = await Promise.all([
+  const [userSites, coreCsrfQuery, prompts, server, legacyPaths] = await Promise.all([
     chrome ? loadUserSites(deps.gateway) : [],
     chrome && ctx.isS2 && legacySettings().allowAutoUpdates ? updateCoreCsrfQuery(deps.csrf) : '',
     chrome && ctx.user !== undefined && tokenServesSite(ctx.user, ctx.session.siteid)
       ? loadUserPrompts(ctx, deps.gateway)
       : NO_PROMPTS,
     chrome ? loadLegacyServerInfo(deps.gateway) : null,
+    loadLegacyPaths(ctx, deps.gateway),
   ]);
   return {
     rb: deps.rb,
@@ -166,6 +185,7 @@ export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Pro
     updateCoreCsrfQuery: coreCsrfQuery,
     // Legacy checks the export directory on its own file system, which programs-sites does not report.
     exportLocationExists: false,
+    legacyPaths,
     now,
   };
 }
@@ -190,8 +210,6 @@ export function renderAdminDocument(
     override: view.moduleTitle,
     bodyclass: view.bodyclass ?? ctx.rc.bodyclass ?? '',
   });
-  // `cfparam rc.siteid default=session.siteID` applies only when rc holds no siteid; an empty one becomes `default`.
-  const siteId = ctx.rc.siteid ?? ctx.session.siteid;
   const sc: ShellContext = {
     ctx,
     view,
@@ -202,7 +220,7 @@ export function renderAdminDocument(
     originalFuseaction,
     moduleTitle,
     bodyclass,
-    siteId: siteId === '' ? 'default' : siteId,
+    siteId: shellSiteId(ctx),
   };
   return layout === 'compact' ? renderCompact(sc) : renderTemplate(sc);
 }

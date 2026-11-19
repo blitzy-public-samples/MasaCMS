@@ -8,7 +8,7 @@ export interface ScopeSource {
   readonly query: unknown;
   /** Parsed body: form fields, multipart parts as `@fastify/multipart` attaches them, a JSON value or raw bytes. */
   readonly body: unknown;
-  /** Request headers under lower-cased names; only `content-type` is read. */
+  /** Request headers under lower-cased names; only `content-type` and {@link PATH_PAIRS_HEADER} are read. */
   readonly headers: { readonly [name: string]: unknown };
   /** Request target as sent; its query string orders the url values of names differing only in case. */
   readonly url?: string;
@@ -16,9 +16,9 @@ export interface ScopeSource {
 
 /** A request's url and form scopes as start-up leaves them, entries in scope order, and its JSON body as sent. */
 export interface LegacyScopes {
-  /** The scanned url scope; `failed` when legacy's scan throws on it. */
+  /** The scanned url scope, relayed path pairs first as sent; `failed` when legacy's scan throws on it. */
   url: PortcullisScope;
-  /** The scanned form scope: empty beside a JSON body, and as posted after a failed url scan. */
+  /** The scanned form scope, relayed path pairs first as sent: empty beside a JSON body, and as posted after a failed url scan. */
   form: PortcullisScope;
   /** Whether the body is JSON, which ColdFusion neither scans nor reads into the form scope. */
   json: boolean;
@@ -164,16 +164,45 @@ function scopeInputsOf(fields: unknown, target: string | undefined, form: boolea
   });
 }
 
-/** The url and form scopes of `source` after the start-up scan, and its JSON body as sent. */
+/** Header in which web's relay names the FW/1 path pairs its rc holds, which no start-up scan reads, as a urlencoded query string. */
+export const PATH_PAIRS_HEADER = 'X-Opt2-Path-Pairs';
+
+/** The {@link PATH_PAIRS_HEADER} value naming `pairs`; undefined for none. */
+export function pathPairsHeaderValue(pairs: Iterable<readonly [string, string]>): string | undefined {
+  const value = new URLSearchParams([...pairs].map(([name, item]): [string, string] => [name, item])).toString();
+  return value === '' ? undefined : value;
+}
+
+/** The path pairs `headers` name, lower-cased name to value; none without the header. */
+function pathPairsOf(headers: ScopeSource['headers']): ReadonlyMap<string, string> {
+  const value = headers[PATH_PAIRS_HEADER.toLowerCase()];
+  if (typeof value !== 'string') return new Map();
+  return new Map([...new URLSearchParams(value)].map(([name, item]) => [name.toLowerCase(), item] as const));
+}
+
+/**
+ * `inputs` scanned, except each relaying a path pair of `pairs` (its text under the pair's name), which is kept as sent
+ * and ahead of the rest, as FW/1 merges path pairs before the url and form scopes (admin/framework.cfc:602-618).
+ */
+function scanBesidePathPairs(inputs: readonly PortcullisInput[], pairs: ReadonlyMap<string, string>): PortcullisScope {
+  const isPair = ([key, value, opaque]: PortcullisInput): boolean => opaque !== true && typeof value === 'string' && pairs.get(key.toLowerCase()) === value;
+  const kept = inputs.filter(isPair);
+  if (kept.length === 0) return portcullisScan(inputs);
+  const scope = portcullisScan(inputs.filter((input) => !isPair(input)));
+  return { ...scope, entries: [...kept.map(([key, value]): [string, unknown] => [key, value]), ...scope.entries] };
+}
+
+/** The url and form scopes of `source` after the start-up scan, relayed path pairs kept as sent, and its JSON body as sent. */
 export function legacyScopesFrom(source: ScopeSource): LegacyScopes {
-  const url = portcullisScan(portcullisInputsOf(source.query, source.url));
+  const pairs = pathPairsOf(source.headers);
+  const url = scanBesidePathPairs(portcullisInputsOf(source.query, source.url), pairs);
   if (isJsonContentType(source.headers['content-type'])) {
     return { url, form: { entries: [], failed: false }, json: true, jsonBody: source.body };
   }
   // Admin start-up scans the form inside the url scan's guard, so a failed url scan leaves the form as posted.
   const form = url.failed
     ? { entries: formScopeInputsOf(source.body).map(([key, value]): [string, unknown] => [key, value]), failed: false }
-    : portcullisScan(formScopeInputsOf(source.body));
+    : scanBesidePathPairs(formScopeInputsOf(source.body), pairs);
   return { url, form, json: false, jsonBody: undefined };
 }
 

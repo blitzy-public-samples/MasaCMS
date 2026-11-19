@@ -703,6 +703,7 @@ describe('createHttpSession cross-origin redirects', () => {
     Authorization: 'Bearer a1',
     'Proxy-Authorization': 'Basic p1',
     'X-Serverless-Authorization': 'Bearer s1',
+    'X-Opt2-Harness-Key': 'h1',
     Cookie: 'explicit=c1',
     'X-Keep': '1',
   };
@@ -710,6 +711,7 @@ describe('createHttpSession cross-origin redirects', () => {
     authorization: 'Bearer a1',
     'proxy-authorization': 'Basic p1',
     'x-serverless-authorization': 'Bearer s1',
+    'x-opt2-harness-key': 'h1',
     cookie: 'explicit=c1',
     'x-keep': '1',
   };

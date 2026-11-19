@@ -7,6 +7,7 @@ import {
   LegacyApiError,
   UNSET_USER_BEAN_FAULT,
   cfDateTimeFormat,
+  cfEq,
   cfIsBoolean,
   cfIsNumeric,
   cfListToArray,
@@ -16,7 +17,7 @@ import {
   javaTrim,
   legacyUsersCsvStream,
 } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, sendLegacyResponse, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { answeringQueryFault, legacyParamsOf, sendLegacyResponse, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { registeredTenants, registryEntryForTenant, tenantForRegisteredSite, withTenant, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import { groupIdsByName, readMembershipIds } from '../domain/account-reads.js';
 import {
@@ -32,9 +33,9 @@ import {
   streamListedGroupMembers,
   updateGroup,
   type GroupActor,
+  type GroupBeanRecord,
   type GroupDeps,
   type GroupListRow,
-  type GroupRecord,
   type GroupSaveInput,
   type GroupSaveResult,
   type ListedGroupMember,
@@ -208,6 +209,14 @@ function poolFlag(value: unknown): number {
   return cfToBoolean(value) ? 1 : 0;
 }
 
+/**
+ * Whether `getUserGroups` reads the private pool: its numeric argument keeps the scrubbed text, which `eq 0` compares, so a
+ * hex float can name one pool while binding the other's flag [legacy: core/mura/user/userGateway.cfc:105-117].
+ */
+function readsPrivatePool(value: unknown): boolean {
+  return cfEq(String(value), '0');
+}
+
 /** Whether the save names a photo or extended attributes, the variants that stay on legacy. */
 function isWithheldSave(rc: Rc): boolean {
   const filled = (name: string): boolean => {
@@ -288,8 +297,8 @@ function localTimestamp(value: Date | null): string | null {
   return value === null ? null : cfDateTimeFormat(value, 'yyyy-mm-dd HH:nn:ss.lll').replace(' ', 'T');
 }
 
-/** A group record in `tusers` bootstrap casing; its `Password` and `PasswordCreated` are never sent. */
-function groupAccount(group: GroupRecord): Schemas['GroupAccount'] {
+/** A group record or a failed save's bean in `tusers` bootstrap casing; its `Password` and `PasswordCreated` are never sent. */
+function groupAccount(group: GroupBeanRecord): Schemas['GroupAccount'] {
   return {
     UserID: group.userid,
     GroupName: group.groupname,
@@ -487,20 +496,21 @@ export async function registerAdminGroupRoutes(app: FastifyInstance, deps: Admin
     async (request) => {
       const caller = cusersCaller(request.opt2Auth);
       const rc = legacyParamsOf(request);
-      const isPublic = poolFlag(scrubbedIsPublic(rcValue(rc, 'ispublic'), caller.isAdmin));
+      const scrubbed = scrubbedIsPublic(rcValue(rc, 'ispublic'), caller.isAdmin);
       const page = { offset: request.query.offset, limit: request.query.limit };
-      const { rows, total } = await listGroupsPage(groups, { siteId: rcSiteId(rc, caller.user), isPublic, page });
+      const input = { siteId: rcSiteId(rc, caller.user), isPublic: poolFlag(scrubbed), privatePool: readsPrivatePool(scrubbed), page };
+      const { rows, total } = await listGroupsPage(groups, input);
       return { items: rows.map(groupListItem), ...continuation(page, rows.length, total) };
     },
   );
 
   // `cUsers.update` with `type=1` and `action=Add` [legacy: admin/core/controllers/cusers.cfc:324-328]
-  app.post<{ Reply: Schemas['GroupWriteResult'] }>('/v1/groups', { config: { opt2: ROUTE_AUTH } }, async (request) => {
+  app.post<{ Reply: Schemas['GroupWriteResult'] }>('/v1/groups', { config: { opt2: ROUTE_AUTH } }, async (request, reply) => {
     const caller = cusersCaller(request.opt2Auth);
     const posted = rcValue(legacyParamsOf(request), 'userid');
     // The form posts the id its new bean generated, which is also the token's context.
     if (typeof posted !== 'string' || !isCfUuid(posted)) throw new LegacyApiError('invalidParameters');
-    return saveGroup(deps, request, caller, posted, createGroup);
+    return answeringQueryFault(reply, () => saveGroup(deps, request, caller, posted, createGroup));
   });
 
   // `cUsers.editGroup`: an unknown id reads as a new bean, whose id `getUserID()` generates [legacy: admin/core/controllers/cusers.cfc:219-230].
@@ -519,7 +529,7 @@ export async function registerAdminGroupRoutes(app: FastifyInstance, deps: Admin
   app.put<{ Params: GroupParams; Reply: Schemas['GroupWriteResult'] }>(
     '/v1/groups/:groupId',
     { schema: { params: GROUP_PARAMS }, config: { opt2: ROUTE_AUTH } },
-    async (request) => saveGroup(deps, request, cusersCaller(request.opt2Auth), request.params.groupId, updateGroup),
+    async (request, reply) => answeringQueryFault(reply, () => saveGroup(deps, request, cusersCaller(request.opt2Auth), request.params.groupId, updateGroup)),
   );
 
   // `cUsers.editGroupMembers` [legacy: admin/core/controllers/cusers.cfc:234,263-265]

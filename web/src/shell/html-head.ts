@@ -1,25 +1,14 @@
 // Global admin scripts of `admin/common/layouts/includes/html_head.cfm`, which both layouts include (server-only).
 import { legacySettings } from '@/lib/env';
 import { encodeJs, html, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
-import { siteBeanOf, sitePaths } from '@/lib/site-paths';
+import { legacySitePath } from '@/lib/site-paths';
 import { adminAssetUrl, assetUrl, type AssetUrlOptions } from '@/lib/urls';
 import type { ShellContext } from './types';
 
-/** The theme Masa start-up installs as `<webroot>/themes/default`, which the installed site uses. */
-const INSTALLED_THEME = 'default';
-
 const COREVERSION: AssetUrlOptions = { coreversion: true };
 
-/** `getThemeAssetPath()` of the request's site; the installed theme when programs-sites withholds the site data. */
-function themeAssetPath(ctx: AdminRequest): string {
-  if (ctx.site === undefined) return `${legacySettings().context}/themes/${INSTALLED_THEME}`;
-  // Web cannot reach legacy theme directories; a Masa 7.6.1 install keeps them in the web root (EX-SHELL-THEMEPATH).
-  return sitePaths(ctx, siteBeanOf(ctx.site)).themeAssetPath('webRoot', false);
-}
-
 /** The `html_head.cfm` output: favicons, admin and vendor script tags, and the admin JavaScript globals. */
-export function renderHtmlHead({ ctx }: ShellContext): SafeHtml {
+export function renderHtmlHead({ ctx, data }: ShellContext): SafeHtml {
   const { context, htmlEditorType, sessionTimeout, webroot, fileDelim } = legacySettings();
   const admin = (rel: string, options?: AssetUrlOptions): SafeHtml => raw(adminAssetUrl(rel, options));
   const vendor = (rel: string, options?: AssetUrlOptions): SafeHtml => raw(assetUrl(`/core/vendor/${rel}`, options));
@@ -78,7 +67,7 @@ export function renderHtmlHead({ ctx }: ShellContext): SafeHtml {
 	<script type="text/javascript">
 	var htmlEditorType='${raw(htmlEditorType)}';
 	var context='${raw(context)}';
-	var themepath='${raw(themeAssetPath(ctx))}';
+	var themepath='${raw(legacySitePath(data.legacyPaths, 'themeAssetPath'))}';
 	var rb='${raw(encodeJs(ctx.session.rb).toLowerCase())}';
 	var siteid='${js(ctx.session.siteid)}';
 	var sessionTimeout=${raw(String(sessionTimeout * 60))};

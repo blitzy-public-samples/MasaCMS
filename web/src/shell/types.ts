@@ -3,6 +3,7 @@
 import type { SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
+import type { LegacySitePaths } from '@/lib/site-paths';
 
 /** Circuits whose secondary menu `dsp_secondary_menu.cfm` includes. */
 export type SecondaryMenuCircuit = 'carch' | 'cchangesets' | 'ccategory' | 'cfeed';
@@ -111,6 +112,8 @@ export interface ShellData {
   /** `renderCSRFTokens(context='updatecore', format='url')`, or `''`. */
   readonly updateCoreCsrfQuery: string;
   readonly exportLocationExists: boolean;
+  /** Legacy's `themeAssetPath` of `siteId` and, where `Mura.init` prints, `initThemeAssetPath` of the session site. */
+  readonly legacyPaths: LegacySitePaths;
   readonly now: Date;
 }
 

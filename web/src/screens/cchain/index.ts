@@ -66,14 +66,16 @@ function redirectScreen(action: string, submit: (ctx: ScreenContext) => Promise<
   });
 }
 
+/** `cchain.save`, halted to legacy (EX-CCHAIN-SAVE-UNSCOPED-BEAN) and not registered. */
+export const cchainSaveScreen: RedirectScreen = redirectScreen('save', submitCchainSave);
+
 // `cchain.update` renders edit.cfm, which it includes. `dsp_secondary_menu` and `js` are partials the views include,
 // not actions.
-/** The carried cchain actions: the Approval Chains list, Pending Requests, the edit and update views, save, delete. */
+/** The carried cchain actions: the Approval Chains list, Pending Requests, the edit and update views, delete. */
 export const cchainScreens: readonly ScreenDefinition[] = Object.freeze([
   pageScreen('list', loadCchainList, renderCchainList),
   pageScreen('pending', loadCchainPending, renderCchainPending),
   pageScreen('edit', loadCchainEdit, renderCchainEdit),
   pageScreen('update', loadCchainUpdate, renderCchainUpdate),
-  redirectScreen('save', submitCchainSave),
   redirectScreen('delete', submitCchainDelete),
 ]);

@@ -1,4 +1,12 @@
 /** Content stats (contentStatsBean) and content ratings (raterManager, rateBean): reads and the rater's save. */
+import {
+  LegacyFaultError,
+  NUMERIC_PRECISION_MAX,
+  intConversionFault,
+  intOverflowFault,
+  numericLiteralPrecision,
+  numericPrecisionFault,
+} from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { AvgRatingRow, ContentRepository, TopRatedArgs, TopRatedRow } from '../repo/repository.js';
@@ -207,33 +215,40 @@ export function getAvgRating(tx: TenantTx, repository: ContentRepository, conten
 
 const INT_MIN = -2147483648;
 const INT_MAX = 2147483647;
-// SQL Server's numeric literals hold at most 38 digits, leading zeros of the integer part not counted.
-const MAX_LITERAL_DIGITS = 38;
+/** The fault of a rate the `numeric` argument of raterManager.saveRate refuses, with the detail ACF gives an argument type check. */
+const RATE_NOT_NUMERIC = 'The RATE argument passed to the saveRate function is not of type numeric.';
+const ARGUMENT_TYPE_DETAIL =
+  'If the component name is specified as a type of this argument, it is possible that either a definition file for the component cannot be found or is not accessible.';
+
+/** A posted rate as legacy takes it: refused before any statement runs, or the `int` its row stores or the write's fault. */
+export type RateOutcome = { refused: LegacyFaultError } | { stored: number | LegacyFaultError };
 
 /**
- * The `int` SQL Server stores for a rate, which rateBean.save writes into its SQL as a literal [rateBean.cfc:76,87]:
- * an exponent literal is a float and a decimal one a numeric, each truncated toward zero.
- * @returns undefined where the `numeric` rate argument refuses the text or SQL Server fails the write (out of `int`
- * range, or a decimal of more than 38 digits).
+ * The rate rateBean.save writes into its SQL as a literal [rateBean.cfc:77,92]: refused where the `numeric` rate
+ * argument rejects the text [raterManager.cfc:118] or SQL Server cannot compile a decimal of more than 38 digits;
+ * otherwise an exponent literal is a float and a decimal one a numeric, each truncated toward zero to the stored `int`,
+ * or failing the write outside its range.
  */
-export function storedRate(rate: string): number | undefined {
+export function rateOutcome(rate: string): RateOutcome {
   const text = cfTrim(rate);
   const value = cfNumeric(text);
-  if (value === undefined) return undefined;
-  let stored = Math.trunc(value);
-  if (!/[eE]/u.test(text)) {
-    const [whole = '', fraction = ''] = text.replace(/^[+-]/u, '').split('.');
-    if (whole.replace(/^0+/u, '').length + fraction.length > MAX_LITERAL_DIGITS) return undefined;
-    // The integer part as written: a double can round a long fraction up to the next integer.
-    stored = Number(`${text.startsWith('-') ? '-' : ''}${whole === '' ? '0' : whole}`);
+  if (value === undefined) return { refused: new LegacyFaultError(RATE_NOT_NUMERIC, 'Application', { detail: ARGUMENT_TYPE_DETAIL }) };
+  if (/[eE]/u.test(text)) {
+    const stored = Math.trunc(value);
+    return { stored: stored >= INT_MIN && stored <= INT_MAX ? stored + 0 : intOverflowFault(value) };
   }
-  return stored >= INT_MIN && stored <= INT_MAX ? stored + 0 : undefined;
+  const literal = text.replace(/^[+-]/u, '');
+  const [whole = ''] = literal.split('.');
+  if (numericLiteralPrecision(literal) > NUMERIC_PRECISION_MAX) return { refused: numericPrecisionFault(literal) };
+  // The integer part as written: a double can round a long fraction up to the next integer.
+  const stored = Number(`${text.startsWith('-') ? '-' : ''}${whole === '' ? '0' : whole}`);
+  return { stored: stored >= INT_MIN && stored <= INT_MAX ? stored + 0 : intConversionFault() };
 }
 
 /**
  * raterManager.saveRate [raterManager.cfc:114-151] in the caller's gated transaction, holding the item's stats lock until
  * commit so that saves of the item serialise: rateBean saves the user's rating of the item with `entered` = `now`, then its
- * stats take the average, vote count and up and down votes. `rate` is the stored integer ({@link storedRate}).
+ * stats take the average, vote count and up and down votes. `rate` is the stored integer ({@link rateOutcome}).
  * @returns the item's getAvgRating row, which the rater answers.
  */
 export async function saveRate(

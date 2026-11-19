@@ -1,7 +1,7 @@
 // Masa's start-up script protection: Portcullis.scan of the url and form scopes (core/mura/Portcullis.cfc:88-231,345-458,597-622) with
 // the tag and word filters and the settings Masa runs it with (core/appcfc/scriptProtect_include.cfm, core/mura/configBean.cfc:160-161).
-import { readAcfJson, serializeAcfJson, UNREADABLE_JSON, type AcfJsonValue } from './acf-json.js';
-import { cfIsBoolean, cfIsNumeric, javaTrim, jsonString } from './serializer.js';
+import { AcfBigDecimal, readAcfJson, serializeAcfJson, UNREADABLE_JSON, type AcfJsonValue } from './acf-json.js';
+import { cfIsBoolean, cfIsNumeric, cfNumberString, javaTrim, jsonString } from './serializer.js';
 
 /** What the filters put in place of a blocked tag or word. */
 export const PORTCULLIS_INVALID_MARKER = '[INVALID]';
@@ -164,6 +164,10 @@ function stripMSWord(text: string, depth = 0): string {
   if (json === null) throw new ScanFault('null value');
   if (typeof json === 'string') return jsonString(stripSimple(json));
   if (typeof json === 'boolean') return jsonString(json ? 'YES' : 'NO');
+  // A number isNumeric refused is stripped as text, then serialized as a string (ACF: 1e309 becomes "1e309").
+  if (json instanceof AcfBigDecimal) return jsonString(stripSimple(json.text));
+  if (typeof json === 'number') return jsonString(stripSimple(cfNumberString(json)));
+  if (typeof json === 'bigint') return jsonString(stripSimple(json.toString()));
   // stripMSWordFromStruct tests isArray, so a struct is serialized as it was read.
   return serializeAcfJson(Array.isArray(json) ? stripArray(json, depth + 1) : json);
 }

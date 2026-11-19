@@ -144,8 +144,8 @@ export interface IdentityClient {
   membershipGroupIds(userId: string, options?: IdentityCallOptions): Promise<string[]>;
   /** `listSiteGroupsV2`: every group of the site's private (`isPublic` 0) or public (1) user pool, in identity's order, read page by page. */
   siteGroups(siteId: string, isPublic: number): Promise<GroupSummary[]>;
-  /** `listGroups`: the `window` of the `cusers.list` group rows, by `Perm` descending, then group name, with the listing's total. */
-  userGroupsPage(siteId: string, isPublic: number, window: UserGroupsWindow): Promise<UserGroupsPage>;
+  /** `listGroups`: the `window` of the `cusers.list` group rows for the scrubbed `ispublic` text, by `Perm` descending, then group name, with the listing's total. */
+  userGroupsPage(siteId: string, isPublic: string, window: UserGroupsWindow): Promise<UserGroupsPage>;
   /** `getCurrentSession`: the forwarded token's login-time session user when it is `sessionId` and logged in. */
   actingUser(sessionId: string): Promise<ActingUser | undefined>;
   /** `getAdminSessionState`: the admin session values of the forwarded token's session; `{}` when it stored none. */
@@ -435,7 +435,7 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
 
     async userGroupsPage(siteId, isPublic, { offset, limit }) {
       const op = OPS.userGroupsPage;
-      const query: Record<string, string> = { siteid: siteId, ispublic: String(isPublic), offset: String(offset) };
+      const query: Record<string, string> = { siteid: siteId, ispublic: isPublic, offset: String(offset) };
       // Without a limit identity answers its default page size.
       if (limit !== undefined) query.limit = String(limit);
       const page = okBody(op, await send<Schemas['GroupList']>(op, op.path, { query }));

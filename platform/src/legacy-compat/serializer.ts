@@ -1,5 +1,6 @@
 // Port of core/mura/jsonSerializer.cfc with the key hints the JSON API installs (jsonApiUtility.cfc:46-67, 261-271).
 // Behaviour notes marked "ACF" were observed on Adobe ColdFusion 2023 running the legacy serializer.
+import { cfDoubleShape, isHexFloatLiteral, parseDecimal } from './acf-double.js';
 import { formatSerializerDate, formatSerializerUtcDate } from './dates.js';
 
 /** Data-type hint a serializer key can carry; `any` lets the parent hint fall through. */
@@ -23,9 +24,13 @@ export interface LegacyQuery {
 
 type SimpleValue = string | number | boolean | Date;
 
-const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 const VAL_PREFIX = /^[+-]?(?:\d+\.?\d*|\.\d+)/;
 const BOOLEAN_WORD = /^(?:true|false|yes|no)$/i;
+const TRUE_WORD = /^(?:true|yes)$/i;
+/** Text CFDouble hands to its parser: a digit, sign or '.' first. */
+const NUMBER_START = /^[0-9+\-.]/;
+/** Java `Double.parseDouble`'s grammar without a type suffix. */
+const JAVA_DOUBLE_TEXT = /^[+-]?(?:NaN|Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)[pP][+-]?\d+)$/;
 // POSIX [[:cntrl:]] as ACF's reReplace matches it: ASCII C0 and DEL only, not U+0080-U+009F.
 const CONTROL_CHAR = /[\u0000-\u001F\u007F]/;
 const SHORT_ESCAPES: Readonly<Record<string, string>> = {
@@ -52,47 +57,87 @@ export function javaTrim(s: string): string {
   return s.slice(start, end);
 }
 
-/** Decimal text whose double value is finite (ACF: '1e309' is not numeric, '1e-400' is). */
-function isFiniteDecimal(s: string): boolean {
-  return DECIMAL.test(s) && Number.isFinite(Number(s));
+/**
+ * Text as CFDouble reads a number: ACF's DoubleParser copy, or Java's own parser (`java`), behind its guard of a digit,
+ * sign or '.' first, no edge whitespace and no f/F/d/D suffix. Null for text it reads as no number.
+ */
+function acfDouble(text: string, java = false): number | null {
+  return NUMBER_START.test(text) && cfDoubleShape(text) ? parseDecimal(text, java) : null;
 }
 
-/** CFML isNumeric: finite numbers, and strings holding a decimal number once Java-trimmed (ACF: '12'&chr(1) is numeric). */
+/** Whether `n` is a number but an infinity; NaN counts. */
+function isNonInfinite(n: number | null): n is number {
+  return n !== null && Math.abs(n) !== Infinity;
+}
+
+/**
+ * CFML isNumeric: finite numbers, and text ACF's DoubleParser reads as finite once Java-trimmed (ACF: '12'&chr(1) and
+ * '0x1p3' are numeric; '1e309', '-NaN' and '0xAp0', whose binary exponent the copy reads from its digits, are not).
+ */
 export function cfIsNumeric(v: unknown): boolean {
   if (typeof v === 'number') return Number.isFinite(v);
-  return typeof v === 'string' && isFiniteDecimal(javaTrim(v));
+  return typeof v === 'string' && Number.isFinite(acfDouble(javaTrim(v)) ?? NaN);
 }
 
-/** CFML `==` on strings: numeric when both Java-trimmed sides are numeric and neither ends in '.', else case-insensitive (ACF: '1.' == '1' is false). */
+/** An `==` operand's number: a boolean word as 1 or 0, else text not ending in '.' ACF's DoubleParser reads as no infinity. */
+function comparedNumber(text: string): number | undefined {
+  if (BOOLEAN_WORD.test(text)) return TRUE_WORD.test(text) ? 1 : 0;
+  const n = text.endsWith('.') ? null : acfDouble(text);
+  return isNonInfinite(n) ? n : undefined;
+}
+
+/**
+ * CFML `==` on strings: numeric when both Java-trimmed sides read as numbers, else case-insensitive text (ACF: '1.' == '1'
+ * and '0x1p3' == '8' are false; ' yes' == '1', '0x1p3' == '2' are true; '-NaN' equals nothing).
+ */
 export function cfEq(a: string, b: string): boolean {
-  const x = javaTrim(a);
-  const y = javaTrim(b);
-  if (isFiniteDecimal(x) && isFiniteDecimal(y) && !x.endsWith('.') && !y.endsWith('.')) return Number(x) === Number(y);
+  const x = comparedNumber(javaTrim(a));
+  const y = comparedNumber(javaTrim(b));
+  if (x !== undefined && y !== undefined) return x === y;
   return a.toLowerCase() === b.toLowerCase();
 }
 
-/** CFML isBoolean: booleans, finite numbers, true/false/yes/no in any case, and untrimmed numeric strings (ACF: ' 1' is not boolean). */
+/** CFML isBoolean: booleans, finite numbers, true/false/yes/no in any case, and untrimmed number text but an infinity (ACF: ' 1' and '1e309' are not boolean; '-NaN' is). */
 export function cfIsBoolean(v: unknown): boolean {
   if (typeof v === 'boolean') return true;
   if (typeof v === 'number') return Number.isFinite(v);
-  return typeof v === 'string' && (BOOLEAN_WORD.test(v) || isFiniteDecimal(v));
+  return typeof v === 'string' && (BOOLEAN_WORD.test(v) || isNonInfinite(acfDouble(v)));
 }
 
-/** CFML boolean conversion: true/yes and false/no by word, numbers by non-zero; throws for a value CFML cannot convert. */
+/**
+ * CFML boolean conversion, as `<cfif>` reads a value: true/yes and false/no by word, numbers and untrimmed number text by
+ * non-zero (ACF: '1e309', '0xAp0' and '-NaN' are true; '0x10000p-1' is false); throws for a value CFML cannot convert.
+ */
 export function cfToBoolean(v: unknown): boolean {
   if (typeof v === 'boolean') return v;
-  if (!cfIsBoolean(v)) throw new TypeError(`Cannot convert ${String(v)} to a boolean`);
-  if (typeof v === 'number') return v !== 0;
-  const word = (v as string).toLowerCase();
-  if (word === 'true' || word === 'yes') return true;
-  if (word === 'false' || word === 'no') return false;
-  return Number(v) !== 0;
+  if (typeof v === 'number' && Number.isFinite(v)) return v !== 0;
+  if (typeof v === 'string') {
+    if (BOOLEAN_WORD.test(v)) return TRUE_WORD.test(v);
+    const n = acfDouble(v);
+    if (n !== null) return n !== 0;
+  }
+  throw new TypeError(`Cannot convert ${String(v)} to a boolean`);
 }
 
-/** CFML numeric conversion: a number as is, Java-trimmed decimal text as its value; throws for a value CFML cannot convert. */
+/**
+ * CFML numeric conversion of a number or number text, as arithmetic and a numeric binding read it: Java-trimmed text by
+ * Java's parser (ACF: '0x1p3' is 8, '0xAp0' 10); throws for a value CFML cannot convert or reads as NaN or an infinity.
+ */
 export function cfToNumber(v: unknown): number {
-  if (!cfIsNumeric(v)) throw new TypeError(`Cannot convert ${String(v)} to a number`);
-  return typeof v === 'number' ? v : Number(javaTrim(v as string));
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const n = typeof v === 'string' ? acfDouble(javaTrim(v), true) : null;
+  if (n === null || !Number.isFinite(n)) throw new TypeError(`Cannot convert ${String(v)} to a number`);
+  return n;
+}
+
+/** CFML `isValid('numeric')`, which a `type="numeric"` argument also checks: Java-trimmed text in Java's double grammar, of any magnitude. */
+export function cfIsValidNumeric(text: string): boolean {
+  return JAVA_DOUBLE_TEXT.test(javaTrim(text));
+}
+
+/** Whether `v` is text holding a Java hex float literal once Java-trimmed, which SQL Server reads as no number when inlined. */
+export function cfIsHexFloatText(v: unknown): boolean {
+  return typeof v === 'string' && isHexFloatLiteral(javaTrim(v));
 }
 
 /** CFML `Val`: the signed decimal (never an exponent) the Java-trimmed simple-value text starts with; else 0, overflow included. */

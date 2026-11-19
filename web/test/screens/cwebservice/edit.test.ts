@@ -2,11 +2,10 @@ import { cfUuid } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/identity';
-import { resetLegacySettingsForTests } from '@/lib/env';
 import { encodeHtml, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
-import { cwebserviceScreens } from '@/screens/cwebservice';
+import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { editDefinition } from '@/screens/cwebservice';
 import { loadEditState, renderEditView } from '@/screens/cwebservice/edit';
 import { effectiveGrantType } from '@/screens/cwebservice/list';
 import type { PageScreen } from '@/screens/registry';
@@ -23,7 +22,10 @@ import { adminS2Request, type AdminRequestPartial } from '../../helpers/admin-re
 import { domModel, fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import {
+  LEGACY_SITE_PATHS_KEY,
+  LEGACY_SITE_PATHS_PATH,
   fakeGatewayClient,
+  installedSitePaths,
   routeKey,
   type FakeGatewayClient,
   type FakeRoute,
@@ -111,9 +113,7 @@ const editRequest = (clientid: string, partial: AdminRequestPartial = {}): Admin
   adminS2Request({ ...partial, circuit: 'cwebservice', item: 'edit', rc: { clientid, siteid: SITE } });
 
 function editPage(): PageScreen<unknown> {
-  const def = cwebserviceScreens.find(({ action }) => action === 'edit');
-  if (def === undefined || def.mode !== 'page') throw new Error('cwebservice.edit is not a registered page');
-  return def;
+  return editDefinition;
 }
 
 interface RenderedEdit {
@@ -171,7 +171,6 @@ let restore: () => void;
 
 beforeEach(() => {
   restore = useTestEnv();
-  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -342,79 +341,76 @@ describe('cwebservice.edit of a stored client', () => {
   });
 });
 
-describe('cwebservice.edit endpoint first touch', () => {
-  type SitePartial = NonNullable<AdminRequestPartial['site']>;
-  /** tenant-a as seeded: domain `tenant-a.localhost` with the alias `localhost`. */
-  const TENANT_A: SitePartial = {
-    siteid: 'tenant-a',
-    domain: 'tenant-a.localhost',
-    record: { SiteID: 'tenant-a', Domain: 'tenant-a.localhost', domainAlias: 'localhost' },
-  };
-  /** `default` set up like tenant-a. */
-  const DEFAULT: SitePartial = {
-    domain: 'default.localhost',
-    record: { Domain: 'default.localhost', domainAlias: 'localhost' },
-  };
-  const endpoint = (host: string, siteid = 'tenant-a'): string => `http://${host}:21000/_api/rest/v1/${siteid}`;
+describe("cwebservice.edit endpoint from legacy's site bean", () => {
+  const LEGACY_ENDPOINT = 'https://tenant-a.example:8443/_api/rest/v1/tenant-a';
 
-  beforeEach(() => {
-    vi.stubEnv('MURA_PORT', '21000');
-    vi.stubEnv('MURA_CONTEXT', undefined);
-    vi.stubEnv('MURA_INDEXFILEINAPI', 'false');
-    resetLegacySettingsForTests();
-  });
+  /** The calls web made to the gateway's own `legacySitePaths`. */
+  const sitePathCalls = (gateway: FakeGatewayClient) =>
+    gateway.calls.filter(({ service, path }) => service === 'gateway' && path === LEGACY_SITE_PATHS_PATH);
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    resetLegacySettingsForTests();
-  });
-
-  /** The Endpoint link text of `site` for Host `host`. */
-  async function endpointOn(host: string, site: SitePartial = TENANT_A): Promise<string> {
-    const { $ } = await renderEdit(editRequest(STORED.clientid, { site, serverName: host, httpHost: `${host}:21000` }));
-    return group($, 'Endpoint').find('a').text();
+  /** Edit routes whose `legacySitePaths` answers {@link LEGACY_ENDPOINT} for an `apiSite` read. */
+  function legacyRoutes(): FakeRouteTable {
+    return {
+      ...editRoutes(existingClientEdit),
+      [LEGACY_SITE_PATHS_KEY]: (request) =>
+        request.query['apiSite'] === undefined
+          ? installedSitePaths(request)
+          : { status: 200, body: { restEndpoint: LEGACY_ENDPOINT } },
+    };
   }
 
-  it.each<[string, readonly string[], string]>([
-    ['localhost', ['127.0.0.1', 'tenant-a.localhost', 'example.test'], endpoint('localhost')],
-    ['example.test', ['localhost'], endpoint('tenant-a.localhost')],
-  ])('keeps the endpoint of a first request on %s for every later host', async (first, later, expected) => {
-    expect(await endpointOn(first)).toBe(expected);
-    for (const host of later) expect(await endpointOn(host), host).toBe(expected);
+  it("prints legacy's endpoint, read once with the request's host facts for rc.siteid", async () => {
+    const headers = new Headers({ 'x-forwarded-host': 'example.test:8443', 'x-forwarded-proto': 'https' });
+    const req = editRequest(STORED.clientid, { headers, httpHost: 'example.test:8443', https: true });
+    const { $, gateway } = await renderEdit(req, legacyRoutes());
+    const link = group($, 'Endpoint').find('a');
+
+    expect(link.attr('href')).toBe(LEGACY_ENDPOINT);
+    expect(link.text()).toBe(LEGACY_ENDPOINT);
+    expect(group($, 'OAuth Endpoint').find('a').text()).toBe(`${LEGACY_ENDPOINT}/oauth2`);
+    const reads = sitePathCalls(gateway).filter(({ query }) => query?.['apiSite'] !== undefined);
+    expect(reads).toEqual([
+      expect.objectContaining({
+        method: 'GET',
+        query: { sessionSite: SITE, host: 'example.test:8443', forwardedProto: 'https', apiSite: SITE },
+      }),
+    ]);
+    expect(reads[0]).not.toHaveProperty('userToken');
   });
 
-  it.each<[string, SitePartial, string, string]>([
-    [
-      'domain',
-      { ...TENANT_A, domain: 'tenant-a.example', record: { ...TENANT_A.record, Domain: 'tenant-a.example' } },
-      '127.0.0.1',
-      endpoint('tenant-a.example'),
-    ],
-    [
-      'alias',
-      { ...TENANT_A, record: { ...TENANT_A.record, domainAlias: 'example.test' } },
-      'example.test',
-      endpoint('example.test'),
-    ],
-    [
-      'label',
-      { ...TENANT_A, site: 'Tenant A renamed', record: { ...TENANT_A.record, Site: 'Tenant A renamed' } },
-      'example.test',
-      endpoint('tenant-a.localhost'),
-    ],
-  ])('builds the endpoint afresh once the site %s changes', async (_setting, changed, host, expected) => {
-    expect(await endpointOn('localhost')).toBe(endpoint('localhost'));
+  it("reads the session site's endpoint when rc.siteid is empty", async () => {
+    const req = adminS2Request({ circuit: 'cwebservice', item: 'edit', rc: { clientid: STORED.clientid, siteid: '' } });
+    const { gateway } = await renderEdit(req, legacyRoutes());
 
-    expect(await endpointOn(host, changed)).toBe(expected);
-    expect(await endpointOn('localhost', changed)).toBe(expected);
+    expect(sitePathCalls(gateway).map(({ query }) => query?.['apiSite'])).toContain(SITE);
   });
 
-  it("keeps each site's first endpoint apart", async () => {
-    expect(await endpointOn('localhost', DEFAULT)).toBe(endpoint('localhost', 'default'));
-    expect(await endpointOn('example.test')).toBe(endpoint('tenant-a.localhost'));
+  it('fails as legacy does when neither rc.siteid nor the session names a site', async () => {
+    const req = adminS2Request({
+      circuit: 'cwebservice',
+      item: 'edit',
+      rc: { clientid: STORED.clientid, siteid: '' },
+      session: { siteid: '' },
+    });
+    const ctx = makeScreenContext({ req, gateway: fakeGatewayClient(legacyRoutes()) });
 
-    expect(await endpointOn('example.test', DEFAULT)).toBe(endpoint('localhost', 'default'));
-    expect(await endpointOn('localhost')).toBe(endpoint('tenant-a.localhost'));
+    await expect(renderScreenPage(editPage(), ctx)).rejects.toThrow(
+      'The SiteID is not set in the current Mura Scope event.',
+    );
+    expect(sitePathCalls(ctx.gateway)).toEqual([]);
+  });
+
+  it('reads no endpoint for a new client, which prints none', async () => {
+    const { gateway } = await renderEdit(editRequest(''), { ...editRoutes(newClientEdit), ...legacyRoutes() });
+
+    expect(sitePathCalls(gateway).filter(({ query }) => query?.['apiSite'] !== undefined)).toEqual([]);
+  });
+
+  it('fails closed when the gateway cannot read legacy', async () => {
+    const routes = { ...editRoutes(existingClientEdit), [LEGACY_SITE_PATHS_KEY]: { status: 503 } };
+    const ctx = makeScreenContext({ req: editRequest(STORED.clientid), gateway: fakeGatewayClient(routes) });
+
+    await expect(renderScreenPage(editPage(), ctx)).rejects.toBeInstanceOf(GatewayUnavailableError);
   });
 });
 

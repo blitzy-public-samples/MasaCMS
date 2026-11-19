@@ -1,7 +1,14 @@
 // cArch.datamanager in the shell for tenant-a's site admin: the responses, edit and display panels, in-view writes.
 import * as cheerio from 'cheerio';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import {
+  CSRF_FIELD_EXPIRES,
+  CSRF_FIELD_TOKEN,
+  EMPTY_WDDX_PACKET_FAULT,
+  LegacyFaultError,
+  LegacyServiceUnavailableError,
+} from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LegacyHtmlHeadFaultError } from '@/lib/responses';
 import { datamanagerScreen, type DataManagerData } from '@/screens/carch/datamanager';
 import { dataDisplayHtmlHead } from '@/screens/carch/data-manager/display';
 import { carchJs } from '@/screens/carch/partials/js';
@@ -361,6 +368,33 @@ describe('cArch.datamanager edit panel', () => {
     expect(issuedContexts(ctx.gateway)).toContain(FIRST);
     expect(strategiesCalls(ctx.gateway).filter((call) => call.method === 'POST')).toEqual([]);
   });
+
+  const emptyPacket = { responseID: FIRST, entered: '2026-06-29 10:15:00.0', data: null };
+  // Own oracles datamanager-edit-missingrow, g4 datamanager-edit-wddx-empty and -null, -valid-nohour1, -noresponseid.
+  it.each<[string, Record<string, string | undefined>, Struct, LegacyFaultError]>([
+    ['a response the read finds no row of', { responseid: FIRST }, { rsData: [] }, LegacyFaultError.fromTrace(EMPTY_WDDX_PACKET_FAULT)],
+    [
+      'a response whose packet the service names empty',
+      { responseid: FIRST },
+      { rsData: [{ ...emptyPacket, dataFault: EMPTY_WDDX_PACKET_FAULT }] },
+      LegacyFaultError.fromTrace(EMPTY_WDDX_PACKET_FAULT),
+    ],
+    ['no responseid', {}, {}, new LegacyFaultError('Element RESPONSEID is undefined in RC.')],
+    ['a request without hour1', { responseid: FIRST, hour1: undefined }, {}, new LegacyFaultError('Element HOUR1 is undefined in RC.')],
+  ])("fails on %s with legacy's fault, after the view's date key", async (_label, rc, rsData, fault) => {
+    const ctx = contextFor({ ...RANGE, action: 'edit', ...rc }, Object.keys(rsData).length === 0 ? read : model(rsData));
+    const error = await shellView(ctx).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(LegacyHtmlHeadFaultError);
+    const { message, type, htmlHead } = error as LegacyHtmlHeadFaultError;
+    expect([message, type, htmlHead]).toEqual([fault.message, fault.type, ctx.req.session.dateKey.script.value]);
+  });
+
+  it('fails without a fault the target names on a packet the service cannot read and names no fault of', async () => {
+    const ctx = contextFor({ ...RANGE, action: 'edit', responseid: FIRST }, model({ rsData: [emptyPacket] }));
+    const error = await shellView(ctx).catch((caught: unknown) => caught);
+    expect(error).not.toBeInstanceOf(LegacyFaultError);
+    expect(error).toEqual(new TypeError(`The packet of response ${FIRST} is not valid WDDX`));
+  });
 });
 
 describe('cArch.datamanager display panel', () => {
@@ -421,6 +455,21 @@ describe('cArch.datamanager in-view writes', () => {
     expect(write?.form).toEqual(relayedRc);
     expect(write?.headers).toBeUndefined();
     expect($('.mura-header h1').text()).toBe('Form Data');
+  });
+
+  it("fails on the fault the write's server_error names, after the view's date key, reading nothing", async () => {
+    // Own oracle dm-setdisplay-nodetail.
+    const trace = { Message: 'Element DETAILLIST2 is undefined in RC.', Type: 'Expression' };
+    const faulted: FakeReply = {
+      status: 500,
+      body: { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error', stacktrace: trace } },
+    };
+    const ctx = contextFor({ action: 'setDisplay', summaryList2: 'email' }, model(), { [WRITE]: faulted });
+    const error = await Promise.resolve(datamanagerScreen.redirect?.(ctx)).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(LegacyHtmlHeadFaultError);
+    const { message, type, htmlHead } = error as LegacyHtmlHeadFaultError;
+    expect([message, type, htmlHead]).toEqual([trace.Message, trace.Type, ctx.req.session.dateKey.script.value]);
+    expect(strategiesCalls(ctx.gateway).map((call) => call.method)).toEqual(['POST']);
   });
 });
 

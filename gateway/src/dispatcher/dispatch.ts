@@ -9,6 +9,7 @@ import {
   type Opt2RouteConfig,
 } from '@opt2/platform/auth';
 import {
+  RAW_LOCATION_HALT_VARIANT,
   REQUEST_START_COOKIE_NAMES,
   REST_CONSUMED_PARAMS_HEADER,
   UNREGISTERED_SITEID_HEADER,
@@ -54,6 +55,7 @@ import {
   type SessionRequestInput,
   type SessionResolution,
   type SessionResolver,
+  type TokenMinter,
 } from '../session/resolve.js';
 import type { SessionStateChecker } from '../session/state-check.js';
 import { DEFAULT_SITE_ID, type TokenCache } from '../session/token-cache.js';
@@ -355,7 +357,7 @@ function targetExtraHeaders(
   unregisteredSiteId: boolean,
   fixtureAuthorization: string | undefined,
 ): Readonly<Record<string, string>> | undefined {
-  const consumed = resolution === undefined || resolution.kind === 'response' ? [] : (resolution.consumedParams ?? []);
+  const consumed = resolution?.kind === 'session' ? (resolution.consumedParams ?? []) : [];
   if (consumed.length === 0 && !unregisteredSiteId && fixtureAuthorization === undefined) return destination.extraHeaders;
   return {
     ...destination.extraHeaders,
@@ -636,6 +638,12 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     let userToken: string | undefined;
     let unregisteredSiteId = false;
     let jar: JarCookies = {};
+    /** The session's user token for the request's token site. */
+    const mintToken: TokenMinter = async (id, epoch) => {
+      const tokenSite = await tokenSiteOf(request, result, destination, id);
+      unregisteredSiteId = tokenSite.unregisteredSiteId;
+      return deps.tokenCache.get(id, tokenSite.siteId, epoch);
+    };
     // A static entry is a file, so no session is resolved for it.
     if (entry?.kind !== 'static') {
       if (mode === 'target-primary') await endOwedLegacySession(request, userAgent);
@@ -643,6 +651,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         family: result.family,
         mode,
         siteId: result.siteId,
+        mintToken,
       });
       if (resolution.kind === 'response') {
         if (identityEncoding) applyIdentityEncoding(reply);
@@ -650,13 +659,16 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       }
       // A legacy logout of the session began: unless legacy shows it kept the login, the request goes on anonymously.
       if (resolution.kind === 'session' && (await keptThroughPending(request, resolution, mode, userAgent))) {
-        const check = await deps.stateCheck.check(resolution.sessionId);
+        // The resolver checked a REST session as its credentials were exchanged, which a later read must not undo.
+        const check =
+          result.family === 'rest'
+            ? { state: 'active' as const, epoch: resolution.epoch }
+            : await deps.stateCheck.check(resolution.sessionId);
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
           jar = resolution.legacyCookies;
-          const tokenSite = await tokenSiteOf(request, result, destination, sessionId);
-          unregisteredSiteId = tokenSite.unregisteredSiteId;
-          const minted = await deps.tokenCache.get(sessionId, tokenSite.siteId, check.epoch);
+          // A REST session's token was minted with that check.
+          const minted = resolution.token ?? (await mintToken(sessionId, check.epoch));
           userToken = minted.token;
           recordLogScope(request, { tenantId: minted.claims.tid, userId: minted.claims.sub });
         } else {
@@ -864,6 +876,8 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       beforeSend: mapsSessionCookies ? beforeSend : undefined,
       onSettled,
       failContext: outcome.failContext,
+      // A login halted for its redirect bytes gets legacy's head as sent, which undici's parser refuses.
+      ...(outcome.haltVariant === RAW_LOCATION_HALT_VARIANT ? { lenientHead: true } : {}),
     };
     // Marked before legacy can log out, so an identity end that later fails stays owed; a failed mark forwards nothing.
     if (effect === 'logout' && session !== undefined) await deps.invalidation.beforeLegacyLogout(session, mode);

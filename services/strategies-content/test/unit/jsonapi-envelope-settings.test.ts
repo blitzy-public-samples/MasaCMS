@@ -1,13 +1,14 @@
-/** configBean `suppressAPIParams` and `useDataNamespaceForAPI` of the JSON API front controller, read from `MURA_<KEY>`. */
+/** configBean `suppressAPIParams`, `useDataNamespaceForAPI` and `debuggingEnabled` of the JSON API front controller, read from `MURA_<KEY>`. */
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   LEGACY_ERROR_MAP,
   LEGACY_JSON_CONTENT_TYPE,
-  REST_CONSUMED_PARAMS_HEADER,
+  LegacyFaultError,
   WWW_AUTHENTICATE,
   acfKeyOrder,
   etag,
+  legacyDebugPageHtml,
   type LegacyApiErrorType,
 } from '@opt2/platform/legacy-compat';
 import { EnvValidationError } from '@opt2/platform/service-kit';
@@ -96,6 +97,18 @@ describe('jsonApiLegacySettings', () => {
     [{ MURA_SUPPRESSAPIPARAMS: '${application.x}', MURA_USEDATANAMESPACEFORAPI: '{{application.y}}' }, true, true],
   ])('reads %j as suppressAPIParams %s and useDataNamespaceForAPI %s', (env, suppressAPIParams, useDataNamespaceForAPI) => {
     expect(jsonApiLegacySettings(env)).toMatchObject({ suppressAPIParams, useDataNamespaceForAPI });
+  });
+
+  it.each<[Record<string, string>, boolean]>([
+    [{}, true],
+    [{ MURA_DEBUGGINGENABLED: 'false' }, false],
+    [{ MURA_DEBUGGINGENABLED: 'No' }, false],
+    [{ MURA_DEBUGGINGENABLED: '0' }, false],
+    [{ MURA_DEBUGGINGENABLED: 'yes' }, true],
+    [{ MURA_DEBUGGINGENABLED: 'maybe' }, true],
+    [{ MURA_DEBUGGINGENABLED: '${application.x}' }, true],
+  ])('reads %j as debuggingEnabled %s, off only for a CFML boolean false as onError tests it', (env, debuggingEnabled) => {
+    expect(jsonApiLegacySettings(env).debuggingEnabled).toBe(debuggingEnabled);
   });
 
   it.each([
@@ -372,12 +385,12 @@ describe('the oracle under each envelope setting', () => {
     if (!CF_UUID.test(answer.text)) expect(res.headers.etag).toBe(answer.etag);
   });
 
-  it.each(REFUSED)('halts %s under the %s settings, whose answer a credential lookup decides, naming EX-JSONAPI-REST-CREDENTIALS', async (_name, setting, recorded) => {
+  it.each(REFUSED)('fails %s under the %s settings closed, whose answer a credential lookup decides', async (_name, setting, recorded) => {
     const res = await sendRecorded(recordedApi(setting), recorded.request);
     expect(res.statusCode).toBe(503);
     expect(bodyOf(res)).toMatchObject({ error: { code: 'server_error' } });
     expect(routeErrors).toEqual([expect.objectContaining({ reason: recorded.refusal })]);
-    expect(routeErrors[0]?.message).toMatch(/^REST credentials of an? [\w ]+ are verified by identity \(EX-JSONAPI-REST-CREDENTIALS\)$/);
+    expect(routeErrors[0]?.message).toMatch(/^REST credentials of an? [\w ]+ are verified by identity$/);
   });
 
   it.each(WITHHELD)('answers the withheld content save %s under the %s settings with the legacy 503, writing nothing', async (_name, setting, recorded) => {
@@ -389,18 +402,6 @@ describe('the oracle under each envelope setting', () => {
     expect(bodyOf(res)).toMatchObject({ error: { code: 'server_error' } });
     expect(routeErrors).toEqual([expect.objectContaining({ reason: 'jsonapi-content-save-not-ported' })]);
     expect(db.writes().slice(written)).toEqual([]);
-  });
-
-  it('halts a tokenless REST call whose exchanged credentials the gateway reports, naming EX-JSONAPI-REST-CREDENTIALS', async () => {
-    const request: RecordedCase['request'] = { method: 'GET', url: `/_api/rest/v1/${RECORDED.site}/content/${HOME}?probe=1` };
-    const res = await sendRecorded(recordedApi('default'), request, { [REST_CONSUMED_PARAMS_HEADER]: 'access_token' });
-    expect(res.statusCode).toBe(503);
-    expect(routeErrors).toEqual([
-      expect.objectContaining({
-        reason: 'jsonapi-rest-credentials',
-        message: 'REST credentials of a session that ended after the exchange are verified by identity (EX-JSONAPI-REST-CREDENTIALS)',
-      }),
-    ]);
   });
 
   it("echoes the data struct as validate's param and key writes leave it", async () => {
@@ -439,7 +440,7 @@ describe('the oracle under each envelope setting', () => {
 
     // The serializer raises in the answer and again in processRequest's catch block, whatever the call decided, so
     // every family answers the page; a challenge the REST credential block set before throwing stays (jsonApiUtility.cfc:553).
-    it.each<[string, 'POST' | 'DELETE', string, string, TokenSubject | undefined, string | undefined]>([
+    const FAMILIES: ReadonlyArray<[string, 'POST' | 'DELETE', string, string, TokenSubject | undefined, string | undefined]> = [
       ['an ajax variationTargeting save', 'POST', `/_api/ajax${TARGETING}`, '{"title":null}', undefined, undefined],
       ['an ajax variationTargeting delete', 'DELETE', `/_api/ajax${TARGETING}/${ABSENT_TARGETING}`, '{"title":null}', undefined, undefined],
       ['a tokenless REST variationTargeting save', 'POST', `/_api/rest${TARGETING}`, '{"title":null}', undefined, WWW_AUTHENTICATE.basic],
@@ -448,9 +449,38 @@ describe('the oracle under each envelope setting', () => {
       ['a signed-in REST variationTargeting delete', 'DELETE', `/_api/rest${TARGETING}/${ABSENT_TARGETING}`, '{"title":null}', 's2', undefined],
       ['a findOne param', 'POST', `/_api/json/v1/${RECORDED.site}/?method=findOne&entityname=content&id=${HOME}`, '{"title":null}', undefined, undefined],
       ['a validate data member', 'POST', `/_api/json/v1/${RECORDED.site}/`, '{"method":"validate","entityname":"content","data":{"entityname":"content","title":null}}', undefined, undefined],
-    ])('answers %s with the page', async (_label, method, url, body, subject, wwwAuthenticate) => {
+    ];
+
+    it.each(FAMILIES)('answers %s with the page', async (_label, method, url, body, subject, wwwAuthenticate) => {
       const signedIn = subject === undefined ? {} : await contentHeaders(subject, { site: RECORDED.site });
       expectPage(await sendRecorded(recordedApi('nosuppress-nodebug'), { method, url, headers: JSON_BODY, body }, signedIn), wwwAuthenticate);
+      expect(routeErrors).toEqual([]);
+    });
+
+    // Own oracle with debuggingEnabled=true and suppressAPIParams=false (scratch capture jsonapi-hinted-null-nosuppress-debug):
+    // 500 `An Error Occurred` under the JSON content type with Generator and HSTS and no ETag, the debug page's headings
+    // below, then the stack trace and tag context.
+    const DEBUG_HEADINGS =
+      '<h1>500 Error</h1><h2>The INPUT parameter to the serializeInput function is required but was not passed in.<br /></h2><h3>Type:Application<br /></h3>';
+
+    it.each(FAMILIES)("answers %s with onError's debug page of the serializer's fault while debugging is on", async (_label, method, url, body, subject, wwwAuthenticate) => {
+      const signedIn = subject === undefined ? {} : await contentHeaders(subject, { site: RECORDED.site });
+      const res = await sendRecorded(recordedApi('nosuppress'), { method, url, headers: JSON_BODY, body }, signedIn);
+      expect({ status: res.statusCode, message: res.statusMessage, type: res.headers['content-type'] }).toEqual({
+        status: 500,
+        message: 'An Error Occurred',
+        type: LEGACY_JSON_CONTENT_TYPE,
+      });
+      expect([res.headers.generator, res.headers['strict-transport-security'], res.headers['www-authenticate'], res.headers.etag]).toEqual([
+        'Masa CMS 7.6.1',
+        'max-age=1200',
+        wwwAuthenticate,
+        undefined,
+      ]);
+      expect(res.body).toBe(
+        legacyDebugPageHtml(new LegacyFaultError('The INPUT parameter to the serializeInput function is required but was not passed in.', 'Application'), (text) => text),
+      );
+      expect(res.body).toContain(DEBUG_HEADINGS);
       expect(routeErrors).toEqual([]);
     });
 
@@ -459,7 +489,7 @@ describe('the oracle under each envelope setting', () => {
       let db: RecordingDb;
 
       beforeAll(async () => {
-        api = await recordedSiteApi({ MURA_SUPPRESSAPIPARAMS: 'false' }, { MURA_VARIATIONS: 'true' });
+        api = await recordedSiteApi({ MURA_SUPPRESSAPIPARAMS: 'false', MURA_DEBUGGINGENABLED: 'false' }, { MURA_VARIATIONS: 'true' });
         db = api.db as RecordingDb;
       });
 

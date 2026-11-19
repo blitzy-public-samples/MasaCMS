@@ -225,6 +225,21 @@ describe('relay forwarding', () => {
     },
   );
 
+  it.each(FORMS)("the $form relay passes web's path-pair header on unchanged and strips every other X-Opt2-* header", async ({ base }) => {
+    const g = await start();
+    const pairs = 'name=f10-sq%E2%80%9Cq%E2%80%9D&na.me=onLoad';
+    const res = await g.app.inject({
+      method: 'POST',
+      url: `${base}/people${SERVICE_PATH}`,
+      headers: { ...(await callHeaders()), 'content-type': 'application/x-www-form-urlencoded', 'X-Opt2-Path-Pairs': pairs, 'x-opt2-anything': 'x' },
+      payload: 'name=f10-sq%E2%80%9Cq%E2%80%9D',
+    });
+    expect(res.statusCode).toBe(200);
+    const [received] = people(g).requests;
+    expect(received?.headers['x-opt2-path-pairs']).toBe(pairs);
+    expect(Object.keys(received?.headers ?? {}).filter((name) => name.startsWith('x-opt2-'))).toEqual(['x-opt2-path-pairs']);
+  });
+
   it.each([
     { method: 'POST', contentType: 'application/json', body: '{"fname":  "Zoë",\n"tags":["a","b"]}' },
     { method: 'POST', contentType: 'application/x-www-form-urlencoded', body: 'fname=Zo%C3%AB&tags=a&tags=b&note=a+b%26c' },

@@ -2,6 +2,7 @@
 // compact-display close document and the rejected save re-rendered inside the layout, over strategies-content.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LEGACY_ERROR_PAGE_HTML, LegacyFaultError, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
 import { GatewayDenialError, GatewayUnavailableError, type GatewayResponse } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
@@ -12,7 +13,15 @@ import { cfeedUpdateScreen } from '@/screens/cfeed/update';
 import type { RawBody, ScreenContext, ScreenRequestBody } from '@/screens/registry';
 import { makeAdminRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  keptSitePaths,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+} from '../../helpers/fake-gateway';
 import { makeScreenContext } from '../../helpers/screen-context';
 
 // The screen context reads only the registry's shell hooks, so the circuit barrels stay unloaded.
@@ -294,16 +303,31 @@ describe('cfeed.update', () => {
     expect(answer.headers).toBeUndefined();
   });
 
-  it.each([
-    ['a ColdFusion error page', 500, '<h1>500 Error</h1>'],
-    ['an empty fragment', 200, ''],
-  ])('relays %s with its status', async (_case, status, body) => {
+  it('relays an empty fragment with its status', async () => {
     const ctx = context({ action: '', feedID: FEED_ID, ...CSRF_FIELDS }, 'POST', {
-      status,
+      status: 200,
       headers: { 'Content-Type': HTML_TYPE },
-      body,
+      body: '',
     });
-    await expect(render(ctx)).resolves.toEqual({ status, contentType: HTML_TYPE, body: Buffer.from(body) });
+    await expect(render(ctx)).resolves.toEqual({ status: 200, contentType: HTML_TYPE, body: Buffer.from('') });
+  });
+
+  // Captured on the own oracle: cfeed-update-unknown-action and cfeed-update-no-feedid.
+  const FEED_BEAN_FAULT = new LegacyFaultError('Element RC.feedBean is undefined in ARGUMENTS.');
+  const faultEnvelope = legacyErrorResponse('server_error', { stacktrace: FEED_BEAN_FAULT.trace() });
+  it.each<[string, FakeReply, Error]>([
+    ['the fault its server_error names', { status: 500, headers: faultEnvelope.headers, body: faultEnvelope.body }, FEED_BEAN_FAULT],
+    [
+      'an Error for its error page',
+      { status: 500, headers: { 'Content-Type': HTML_TYPE }, body: LEGACY_ERROR_PAGE_HTML },
+      new Error(`POST ${PATH} answered HTTP 500`),
+    ],
+  ])('raises for a 500 %s, which the handler answers as legacy onError', async (_case, reply, expected) => {
+    const error: unknown = await render(context({ action: '', feedID: FEED_ID, ...CSRF_FIELDS }, 'POST', reply)).catch(
+      (err: unknown) => err,
+    );
+    expect(error).toEqual(expected);
+    expect(Object.getPrototypeOf(error)).toBe(Object.getPrototypeOf(expected));
   });
 
   describe('rejected save', () => {
@@ -419,6 +443,26 @@ describe('cfeed.update', () => {
       for (const field of ['viewalllink', 'viewalllabel', 'cssclass']) {
         expect($(`input[name=${field}]`)).toHaveLength(n);
       }
+    });
+
+    it.each([
+      ['Local', ['default']],
+      ['Remote', []],
+    ] as const)("reads legacy's kept feed API endpoint for a rejected %s update only where edit.cfm reads it", async (type, feedSites) => {
+      const kept = 'https://first.example.test/_api/feed/v1/default';
+      const channelLink = 'https://example.com/rss.xml';
+      const rc = { type, feedID: FEED_ID, action: 'update', name: 'News', lang: '', ...CSRF_FIELDS };
+      const feedBean = { ...SUBMITTED_BEAN, feedID: FEED_ID, isNew: 0, type, ChannelLink: channelLink };
+      const ctx = context(rc, 'POST', rejected({ feedBean, rsUsage: [] }));
+      ctx.gateway.setRoute(LEGACY_SITE_PATHS_KEY, keptSitePaths({ feedEndpoint: kept }));
+
+      const $ = cheerio.load(markupOf(await render(ctx)));
+
+      const reads = ctx.gateway.calls.filter(({ path, query }) => path === LEGACY_SITE_PATHS_PATH && query?.feedSite !== undefined);
+      expect(reads.map(({ query }) => query?.feedSite)).toEqual(feedSites);
+      const view = type === 'Local' ? `${kept}/?feedID=${FEED_ID}` : channelLink;
+      expect($('.nav-module-specific a[target=_blank]').attr('href')).toBe(view);
+      expect($('#tabRss a[target=_blank]').attr('href')).toBe(type === 'Local' ? view : undefined);
     });
 
     it.each(['useLayoutManager', 'defaultCollectionDisplayList'])(

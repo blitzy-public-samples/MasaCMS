@@ -441,6 +441,67 @@ describe.skipIf(!available)('surveys fixture routes', () => {
     expect(conflict.json()).toMatchObject({ method: 'surveys.surveys.schedule', error: CONFLICT });
   });
 
+  // Legacy answers of the oracle probe: no stored survey id matches one holding a NUL, siteExists, isValid and the launchAt
+  // pattern refuse one, and isJSON trims a NUL off the edges of the reminders text and keeps one inside its strings.
+  const LAUNCH = '2026-07-01T09:00:00';
+  it.each<[string, (id: string) => { tail?: string; body: Record<string, unknown> }, boolean, number, object, number[]]>([
+    ['a path id ending in a NUL', (id) => ({ tail: `${id}%00`, body: { launchAt: LAUNCH } }), true, 404, NOT_FOUND, []],
+    ['a path id holding a NUL inside', (id) => ({ tail: `${id.slice(0, 8)}%00${id.slice(8)}`, body: { launchAt: LAUNCH } }), true, 404, NOT_FOUND, []],
+    ['a path id holding a NUL, without a valid CSRF token', (id) => ({ tail: `${id}%00`, body: { launchAt: LAUNCH } }), false, 400, INVALID_TOKENS, []],
+    ['a siteid holding a NUL, before CSRF', () => ({ body: { siteid: 'tenant-a\u0000', launchAt: LAUNCH } }), true, 400, INVALID_PARAMETERS, []],
+    ['a launchAt ending in a NUL', () => ({ body: { launchAt: `${LAUNCH}\u0000` } }), true, 400, INVALID_PARAMETERS, []],
+    ['an offsetMinutes ending in a NUL', () => ({ body: { launchAt: LAUNCH, reminders: [{ offsetMinutes: '5\u0000' }] } }), true, 400, INVALID_PARAMETERS, []],
+    ['an offsetMinutes key ending in a NUL', () => ({ body: { launchAt: LAUNCH, reminders: [{ 'offsetMinutes\u0000': 5 }] } }), true, 400, INVALID_PARAMETERS, []],
+    ['reminders text holding a NUL between tokens', () => ({ body: { launchAt: LAUNCH, reminders: '[\u0000{"offsetMinutes":5}]' } }), true, 400, INVALID_PARAMETERS, []],
+    ['reminders text of only a NUL', () => ({ body: { launchAt: LAUNCH, reminders: '\u0000' } }), true, 400, INVALID_PARAMETERS, []],
+    ['reminders text holding a NUL inside a string', () => ({ body: { launchAt: LAUNCH, reminders: '[{"offsetMinutes":5,"x\u0000":"a\u0000b\tc"}]' } }), true, 200, {}, [5]],
+    ['reminders text with NULs and controls at its edges', () => ({ body: { launchAt: LAUNCH, reminders: '\u0000\u0001 [{"offsetMinutes":5},{"offsetMinutes":"60"}] \u0000' } }), true, 200, {}, [5, 60]],
+    ['an unread key and value holding a NUL', () => ({ body: { launchAt: LAUNCH, 'no\u0000te': 'a\u0000b', reminders: [{ offsetMinutes: 5, x: '\u0000' }] } }), true, 200, {}, [5]],
+  ])('answers a schedule with %s as the fixture does, binding no NUL', async (_case, build, csrf, status, error, offsets) => {
+    const id = await createSurvey('NUL schedule');
+    const { tail = id, body } = build(id);
+    calls = [];
+    csrfValid = csrf;
+    const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${tail}/schedule${SITE_A}`, body });
+    expect(res.statusCode).toBe(status);
+    if (status === 200) {
+      expect(res.json()).toMatchObject({ method: 'surveys.surveys.schedule', data: { survey_id: id, status: 'SCHEDULED' } });
+      expect((res.json() as { data: { reminders: { offset_minutes: number }[] } }).data.reminders.map((row) => row.offset_minutes)).toEqual(offsets);
+    } else {
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.schedule', error });
+      expect(await tenantA('SELECT status FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ status: 'DRAFT' }] });
+    }
+    // The site check answers before CSRF; every other case consumes the token for the path id as sent.
+    const context = decodeURIComponent(tail);
+    expect(calls.filter((call) => call.service === IDENTITY_SERVICE).map((call) => (call.json as { context: string }).context)).toEqual(error === INVALID_PARAMETERS && 'siteid' in body ? [] : [context]);
+  });
+
+  // The gateway mints for the siteid it reads, and identity grants no role on a site that is not registered.
+  it.each<[string, string[] | undefined]>([
+    ['a signed-in session', []],
+    ['an anonymous caller', undefined],
+  ])('answers a schedule whose siteid holds a NUL with invalidParameters under the token minted for that site, for %s', async (_case, roles) => {
+    const id = await createSurvey('NUL site schedule');
+    calls = [];
+    const res = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule`, roles, site: 'tenant-a\u0000', body: { siteid: 'tenant-a\u0000', launchAt: LAUNCH } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.schedule', error: INVALID_PARAMETERS });
+    expect(await tenantA('SELECT status FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ status: 'DRAFT' }] });
+    expect(calls.filter((call) => call.service === IDENTITY_SERVICE)).toEqual([]);
+  });
+
+  it.each<[string, string, boolean]>([
+    ['false then a NUL, which isBoolean refuses', 'false\u0000', true],
+    ['false', 'false', false],
+  ])('answers a schedule with a useDataNamespace of %s inside the data namespace exactly when the fixture does', async (_case, useDataNamespace, namespaced) => {
+    const id = await createSurvey('NUL namespace');
+    const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule${SITE_A}`, body: { launchAt: LAUNCH, useDataNamespace } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Record<string, unknown>;
+    expect(Object.hasOwn(body, 'data')).toBe(namespaced);
+    expect(namespaced ? body.data : body).toMatchObject({ survey_id: id, status: 'SCHEDULED' });
+  });
+
   it('bulk-targets a survey and lets a targeted site respond under the survey\'s site', async () => {
     const id = await createSurvey('Targeted');
     const bulk = await asManager({
@@ -524,6 +585,28 @@ describe.skipIf(!available)('surveys fixture routes', () => {
     expect(await tenantA('SELECT answers FROM $schema.survey_response WHERE survey_id = $1', [id])).toMatchObject({
       rows: [{ answers: '{"q1":"yes","q2":" <b>no</b> ","Q0":1.5}' }],
     });
+  });
+
+  it('stores and answers a title and answers holding a url or form NUL without it, as the legacy fixture does', async () => {
+    const titled = async (query: string, fields: Record<string, string>): Promise<string> => {
+      const res = await formPost(`${FIXTURE_BASE}${SITE_A}${query}`, fields);
+      const { survey_id: id, title } = res.json<{ data: { survey_id: string; title: string } }>().data;
+      expect(await tenantA('SELECT title FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ title }] });
+      return title;
+    };
+    expect([await titled('', { title: 'a\u0000b' }), await titled('&title=c%00d', {})]).toEqual(['ab', 'cd']);
+    const untitled = await formPost(`${FIXTURE_BASE}${SITE_A}`, { title: '\u0000' });
+    expect([untitled.statusCode, untitled.json()]).toMatchObject([400, { method: 'surveys.surveys', error: INVALID_PARAMETERS }]);
+
+    const id = await createSurvey('NUL answers');
+    const answer = (query: string, fields: Record<string, string>) => formPost(`${FIXTURE_BASE}/${id}/responses${SITE_A}${query}`, fields, [Roles.systemUser]);
+    const answered = [await answer('', { answers: 'a\u0000b' }), await answer('&answers=c%00d', {}), await answer('', { answers: '{"q1":"a\\u0000b"}' })];
+    const stored = ['ab', 'cd', '{"q1":"a\\u0000b"}'];
+    expect(answered.map((res) => [res.statusCode, res.json<{ data: { answers: string } }>().data.answers])).toEqual(stored.map((answers) => [200, answers]));
+    const rows = (await tenantA('SELECT answers FROM $schema.survey_response WHERE survey_id = $1', [id])) as { rows: { answers: string }[] };
+    expect(rows.rows.map((row) => row.answers).sort()).toEqual([...stored].sort());
+    const unanswered = await answer('', { answers: '\u0000' });
+    expect([unanswered.statusCode, unanswered.json()]).toMatchObject([400, { method: 'surveys.surveys.responses', error: INVALID_PARAMETERS }]);
   });
 
   describe('launch task callback', () => {
@@ -630,6 +713,46 @@ describe('surveys fixture ids no stored survey has, over the recording db', () =
       const bound = harness.db.transactions.slice(before).flatMap(({ statements }) => statements.flatMap(({ values }) => values.flat(Infinity)));
       expect(bound.filter((value) => value === sent || value === sent.toUpperCase())).toEqual([]);
       expect(harness.client.requests.filter((req) => req.service !== IDENTITY_SERVICE)).toEqual([]);
+    },
+  );
+
+  // The oracle's answers to a NUL path id (EX-UNSTORABLE-TEXT-NUL): no user 401, a write without a CSRF token 400, else notFound; a task callback is forbidden to every caller.
+  const NUL_IDS = ['abc%00def', `${UNKNOWN_ID}%00`, `${UNKNOWN_ID.slice(0, 8)}%00${UNKNOWN_ID.slice(8)}`];
+  const NUL_ROUTES: ReadonlyArray<{ method: Method; tail: string; body?: unknown; envelope: string; task: boolean }> = [
+    { method: 'GET', tail: '', envelope: 'surveys.surveys', task: false },
+    { method: 'GET', tail: '/responses', envelope: 'surveys.surveys.responses', task: false },
+    { method: 'GET', tail: '/tasks', envelope: 'surveys.surveys.tasks', task: false },
+    { method: 'POST', tail: '/responses', body: { answers: '{"q1":"a"}' }, envelope: 'surveys.surveys.responses', task: false },
+    { method: 'POST', tail: '/schedule', body: { launchAt: '2030-01-01T00:00:00' }, envelope: 'surveys.surveys.schedule', task: false },
+    { method: 'POST', tail: '/targets/bulk', body: { targets: [{ siteID: 'tenant-a' }] }, envelope: 'surveys.surveys.targets.bulk', task: false },
+    { method: 'GET', tail: '/launch', envelope: 'surveys.surveys.launch', task: true },
+    { method: 'POST', tail: '/launch', body: {}, envelope: 'surveys.surveys.launch', task: true },
+    { method: 'GET', tail: '/remind', envelope: 'surveys.surveys.remind', task: true },
+    { method: 'POST', tail: '/remind', body: {}, envelope: 'surveys.surveys.remind', task: true },
+  ];
+
+  it.each(NUL_ROUTES.flatMap((route) => NUL_IDS.map((id) => ({ ...route, id }))))(
+    'answers $method $tail with id $id as the oracle does for every caller',
+    async ({ method, tail, body, envelope, task, id }) => {
+      const answer = async (headers: Record<string, string>): Promise<[number, unknown]> => {
+        const res = await harness.app.inject({
+          method,
+          url: `${FIXTURE_BASE}/${id}${tail}${SITE_A}`,
+          headers: { ...headers, ...(body === undefined ? {} : JSON_HEADERS) },
+          payload: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return [res.statusCode, res.json()];
+      };
+      const expected = (status: number, error: object): [number, unknown] => [status, { apiversion: 'v1', method: envelope, error }];
+      const user = await headersFor(Roles.surveysManager);
+      const before = harness.db.transactions.length;
+
+      expect(await answer(await gatewayInvocation())).toEqual(task ? expected(403, FORBIDDEN) : expected(401, AUTHORIZATION));
+      if (method === 'POST') expect(await answer(user)).toEqual(task ? expected(403, FORBIDDEN) : expected(400, INVALID_TOKENS));
+      expect(await answer({ ...user, ...(method === 'POST' ? CSRF_HEADERS : {}) })).toEqual(task ? expected(403, FORBIDDEN) : expected(404, NOT_FOUND));
+      const sent = decodeURIComponent(id);
+      const bound = harness.db.transactions.slice(before).flatMap(({ statements }) => statements.flatMap(({ values }) => values.flat(Infinity)));
+      expect(bound.filter((value) => value === sent || value === sent.toUpperCase())).toEqual([]);
     },
   );
 });

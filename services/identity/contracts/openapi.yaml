@@ -2129,7 +2129,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/ServerError'
-          description: A missing or invalid CSRF token; nothing is written, and legacy fails on the unset user bean.
+          description: A missing or invalid CSRF token, on which legacy fails on the unset user bean, nothing written; or a value a legacy column cannot store, on which its query fails and `error.stacktrace` names the query's `DataSource`, `Sql`, `ErrorCode` and `Detail`, the writes legacy makes before that statement kept.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/groups/{groupId}:
@@ -2199,7 +2199,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/ServerError'
-          description: A missing or invalid CSRF token; nothing is written, and legacy fails on the unset user bean.
+          description: A missing or invalid CSRF token, on which legacy fails on the unset user bean, nothing written; or a value a legacy column cannot store, on which its query fails and `error.stacktrace` names the query's `DataSource`, `Sql`, `ErrorCode` and `Detail`, the writes legacy makes before that statement kept.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/groups/{groupId}/members:
@@ -2419,6 +2419,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A listed group id a `tpermissions` insert cannot store, or one repeating an earlier listed id; its query fails, `error.stacktrace` names the query's `DataSource`, `Sql`, `ErrorCode` and `Detail`, and the delete and the inserts before it are kept.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/permissions/modules/{moduleId}:
@@ -2489,6 +2492,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A listed group id a `tpermissions` insert cannot store, or one repeating an earlier listed id; its query fails, `error.stacktrace` names the query's `DataSource`, `Sql`, `ErrorCode` and `Detail`, and the delete and the inserts before it are kept.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/permissions/reverse-lookup:
@@ -4842,6 +4848,12 @@ components:
       type:
         - integer
         - 'null'
+    BeanFlag:
+      description: A numeric flag column; a failed save's bean keeps the text its form posted.
+      type:
+        - integer
+        - string
+        - 'null'
     FormValue:
       description: One form field as a CFML scope holds it; JSON callers may send numbers and booleans.
       type:
@@ -5692,7 +5704,7 @@ components:
         Admin:
           $ref: '#/components/schemas/NullableInteger'
         S2:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         LastLogin:
           $ref: '#/components/schemas/NullableTimestamp'
         LastUpdate:
@@ -5702,15 +5714,15 @@ components:
         LastUpdateByID:
           $ref: '#/components/schemas/NullableString'
         Perm:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         InActive:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         isPublic:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         SiteID:
           type: string
         Subscribe:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         notes:
           $ref: '#/components/schemas/NullableString'
         description:
@@ -5718,7 +5730,7 @@ components:
         interests:
           $ref: '#/components/schemas/NullableString'
         keepPrivate:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         photoFileID:
           $ref: '#/components/schemas/NullableString'
         IMName:

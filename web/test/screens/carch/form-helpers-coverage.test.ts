@@ -346,6 +346,7 @@ describe('carch.edit file selector include', () => {
     baseTypeList: 'Page,Folder,Calendar,Gallery,Link,File',
     subTypes: [],
     subtypeFilter: '',
+    themeAssetPath: '/themes/default',
     isExtended: false,
     requiresApproval: false,
     showApprovalStatus: false,

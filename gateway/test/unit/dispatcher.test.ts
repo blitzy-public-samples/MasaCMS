@@ -24,6 +24,7 @@ const FILES_PREFIX = 'opt2:/opt2/files/';
 const FILES_CATCH_ALL = `${FILES_PREFIX}**`;
 const STUB_NOTES = '/opt2/stub/notes';
 const BRIDGE_SESSION = '/gateway/legacy-bridge/cfml/session.cfm';
+const TEST_RELOAD_KEY = 'opt2reload';
 
 /** Inventory facts recording only these admin response modes, looked up normalised as the loader does. */
 function factsOf(modes: Readonly<Record<string, ResponseMode>>): InventoryFacts {
@@ -381,6 +382,57 @@ describe('edge dispatch', () => {
     expect(res.statusCode).toBe(404);
     expect(res.body).toBe('');
     expect(legacy.requests).toHaveLength(0);
+  });
+
+  /** OPT-2 repository files and diagnostic CFML under the web root, in spellings legacy would serve. */
+  const OPT2_FOLDER_REQUESTS: ReadonlyArray<readonly ['GET' | 'POST', string]> = [
+    ['GET', '/harness/legacy-baseline/cfml/run.cfm?info=1'],
+    ['GET', '/harness/legacy-baseline/cfml/run.cfm/x?info=1'],
+    ['GET', '/harness/legacy-baseline/cfml/run.cfm;x?info=entities'],
+    ['GET', `/harness/legacy-baseline/cfml/run.cfm?${TEST_RELOAD_KEY}&info=1`],
+    ['POST', '/harness/legacy-baseline/cfml/run.cfm'],
+    ['GET', '/harness/legacy-baseline/cfml/Application.cfc'],
+    ['GET', '/harness/legacy-baseline/expected-baseline.json'],
+    ['GET', '/gateway/cutover/versions/v0002.json'],
+    ['GET', '/services/identity/config/role-map.json'],
+    ['GET', '/services/identity/config/role-map.json;x'],
+    ['GET', '/services/identity/config/role-map.json?doaction=login'],
+    ['GET', '/migration/config/migration.config.json'],
+    ['GET', '/opt2/source-pin.json'],
+    ['GET', '/opt2;x/source-pin.json'],
+    ['GET', '/platform/package.json'],
+    ['GET', '/infra/terraform/README.md'],
+    ['GET', '/web/package.json'],
+    ['GET', '/legacy-fixtures/sql/000_schemas.sql'],
+    ['GET', '/.github/workflows/services.yml'],
+  ];
+
+  it.each(['v0001', 'v0002'] as const)('answers OPT-2 repository files with a bodiless 404 under %s, reaching no upstream', async (version) => {
+    gateway = await buildTestGateway({ version, env: { MURA_APPRELOADKEY: TEST_RELOAD_KEY } });
+    const before = receivedCounts(gateway);
+    const answers: Array<[string, number, string]> = [];
+    for (const [method, url] of OPT2_FOLDER_REQUESTS) {
+      const res = await gateway.app.inject({ method, url });
+      answers.push([`${method} ${url}`, res.statusCode, res.body]);
+    }
+    expect(answers).toEqual(OPT2_FOLDER_REQUESTS.map(([method, url]) => [`${method} ${url}`, 404, '']));
+    expect(receivedCounts(gateway)).toEqual(before);
+  });
+
+  it('still routes legacy, fixture, OPT-2 namespace and admin requests beside the closed folders under v0002', async () => {
+    gateway = await buildTestGateway({ version: 'v0002' });
+    const { app, legacy, targets } = gateway;
+    const legacyUrls = ['/legacy-fixtures/cfml/seed.cfm', '/core/tests/runner.cfm', '/admin/', '/admin/assets/css/admin.min.css'];
+    for (const url of legacyUrls) expect((await app.inject({ method: 'GET', url })).statusCode, url).toBe(200);
+    expect(forwardedToLegacy(legacy)).toEqual(legacyUrls);
+
+    expect((await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a' })).statusCode).toBe(200);
+    expect(targets.finance?.echoes().map((echo) => echo.path)).toEqual(['/legacy-fixtures/cfml/api.cfm/finance/records']);
+    expect((await app.inject({ method: 'GET', url: STUB_NOTES })).statusCode).toBe(200);
+    expect(targets.stub?.echoes().map((echo) => echo.path)).toEqual([STUB_NOTES]);
+    await app.inject({ method: 'GET', url: '/opt2/admin/finance/' });
+    expect(targets.web?.echoes().map((echo) => echo.path)).toEqual(['/opt2/admin/finance/']);
+    expect(forwardedToLegacy(legacy)).toEqual(legacyUrls);
   });
 
   it('answers the JSON API with the legacy 503 envelope while no version is active', async () => {

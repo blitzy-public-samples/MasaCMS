@@ -824,6 +824,37 @@ describe('coverageRouteKey', () => {
 
   it.each<[string, Step, string]>([
     [
+      'a JSON API body holding a NUL',
+      step({ name: 's', method: 'POST', route: '/_api/json/v1/tenant-a/', body: { title: 'a\u0000b' } }),
+      'api:entity.save{text=nul}',
+    ],
+    [
+      'a fixture body holding a NUL',
+      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a', body: { title: 'a\u0000b' } }),
+      'fixture:finance/records@post{text=nul}',
+    ],
+    [
+      'a fixture create whose title holds an unpaired surrogate',
+      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a', body: { title: '\ud800x' } }),
+      'fixture:finance/records@post{text=surrogate}',
+    ],
+    [
+      'a sign whose typed name holds an unpaired surrogate',
+      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/esignature/requests/abc/sign', body: { typedName: '\ud800' } }),
+      'fixture:esignature/requests/{id}/sign@post{text=surrogate}',
+    ],
+    [
+      'an admin create whose path pair holds a NUL',
+      step({ name: 's', method: 'POST', route: '/admin/index.cfm/cusers/update/fname/a%00b?muraAction=cUsers.update', form: { type: '2', action: 'Add' } }),
+      'admin:cusers.update{text=nul}',
+    ],
+  ])('keys %s under its text halt variant, as the gateway does', (_title, request, key) => {
+    expect(coverageRouteKey(request, OPTIONS)).toBe(key);
+    expect(coverageRouteKeys(request, OPTIONS)).toEqual([key]);
+  });
+
+  it.each<[string, Step, string]>([
+    [
       'an admin update posting its variant parameters and a placeholder id',
       step({
         name: 'create',

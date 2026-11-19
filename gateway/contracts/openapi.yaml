@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: gateway
   version: 1.0.0
-  summary: 'Gateway and compatibility dispatcher: health, cut-over control, orphan clearing, legacy-session mark-used, the legacy Version menu facts, the web relay and the dispatched edge.'
+  summary: "Gateway and compatibility dispatcher: health, cut-over control, orphan clearing, legacy-session mark-used, web's legacy site-path read, the legacy Version menu facts, the web relay and the dispatched edge."
   license:
     name: GPL-2.0-only
     url: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
@@ -266,6 +266,91 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LegacyUnavailable'
+  /internal/v1/legacy-site-paths:
+    get:
+      operationId: legacySitePaths
+      summary: "Reads the first-touch path values legacy's live site beans give a browser request, through the bridge's `site.cfm?op=paths`, sent with the request's host facts."
+      description: "Each value is evaluated only when its site is named; legacy's site-bean caches may answer it from an earlier request, as they do for legacy's own pages."
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      parameters:
+        - name: sessionSite
+          in: query
+          required: true
+          description: "The admin session's `siteid`, whose domains decide `request.muraPreviewDomain`."
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+        - name: host
+          in: query
+          required: true
+          description: The `Host` the browser request would carry to legacy.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            pattern: '^[\x21-\x7e]+$'
+        - name: forwardedProto
+          in: query
+          required: false
+          description: Its `X-Forwarded-Proto`, when it carries one.
+          schema:
+            $ref: '#/components/schemas/HeaderFieldValue'
+        - name: frontEndHttps
+          in: query
+          required: false
+          description: Its `Front-End-Https`, when it carries one.
+          schema:
+            $ref: '#/components/schemas/HeaderFieldValue'
+        - name: apiSite
+          in: query
+          required: false
+          description: "Site of `getApi('json','v1').getEndpoint(mode='rest')`; one of `apiSite`, `feedSite`, `themeSite` and `initSite` is required."
+          schema:
+            type: string
+            maxLength: 255
+        - name: feedSite
+          in: query
+          required: false
+          description: "Site of `getApi('feed','v1').getEndpoint()`."
+          schema:
+            type: string
+            maxLength: 255
+        - name: themeSite
+          in: query
+          required: false
+          description: Site of `getThemeAssetPath()`.
+          schema:
+            type: string
+            maxLength: 255
+        - name: initSite
+          in: query
+          required: false
+          description: Site of `getThemeAssetPath(complete=1)`.
+          schema:
+            type: string
+            maxLength: 255
+      responses:
+        '200':
+          description: The value of each named site.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacySitePaths'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: The legacy bridge is unreachable or answered without a requested value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyUnavailable'
   /internal/v1/relay/{service}/{path}:
     description: Web's service calls; the user token passes on only with web's invocation credential, the gateway adds its own, and `X-Opt2-Write-Position` is recorded in `gateway.session_barrier` and stripped from the response.
     parameters:
@@ -290,6 +375,12 @@ paths:
         in: path
         required: true
         description: Remainder of the callee path; may contain `/`. It must lie in the callee's public versioned API, under `/v1/` or `/v2/`.
+        schema:
+          type: string
+      - name: X-Opt2-Path-Pairs
+        in: header
+        required: false
+        description: The FW/1 path pairs web's rc holds as sent, a urlencoded query string, passed on unchanged; the callee keeps a relayed url or form entry equal to one unscanned. Every other `X-Opt2-*` header is stripped.
         schema:
           type: string
     get:
@@ -992,6 +1083,27 @@ components:
                 description: Legacy server local time, without an offset.
                 type: string
                 pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
+    HeaderFieldValue:
+      description: A header field value as legacy would receive it.
+      type: string
+      maxLength: 1024
+      pattern: '^[\t\x20-\x7e]*$'
+    LegacySitePaths:
+      type: object
+      additionalProperties: false
+      properties:
+        restEndpoint:
+          description: "`getApi('json','v1').getEndpoint(mode='rest')` of `apiSite`."
+          type: string
+        feedEndpoint:
+          description: "`getApi('feed','v1').getEndpoint()` of `feedSite`."
+          type: string
+        themeAssetPath:
+          description: '`getThemeAssetPath()` of `themeSite`.'
+          type: string
+        initThemeAssetPath:
+          description: '`getThemeAssetPath(complete=1)` of `initSite`.'
+          type: string
     LegacyVersionMenu:
       description: 'What `admin/common/layouts/includes/nav.cfm` 383-407 prints; null where legacy finds the server key absent.'
       type: object

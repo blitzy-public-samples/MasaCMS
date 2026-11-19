@@ -102,6 +102,18 @@ describe('authenticateRestRequest without a database', () => {
     expectError(outcome, 401, BODY.authorization, header);
   });
 
+  it.each([
+    ['an OAuth endpoint segment', '/_api/rest/v1/default/oauth2/token%00', '/_api/rest/v1/default/oauth2/tokenx', 'Bearer error="invalid_client_credentials"'],
+    ['the segment after a five-segment oauth2 path', '/_api/rest/v1/oauth2/x%00', '/_api/rest/v1/oauth2/x', 'Bearer error="invalid_client_credentials"'],
+    ['the site segment of an oauth path', '/_api/rest/v1/de%00fault/oauth', '/_api/rest/v1/dexfault/oauth', 'Bearer error="invalid_client_credentials"'],
+    ['a login path-pair name', '/_api/rest/v1/default/login/x%00', '/_api/rest/v1/default/login/x', 'Basic'],
+  ])('refuses no credentials on a path whose NUL sits in %s as on the path without it, as legacy does', async (_label, path, control, header) => {
+    const outcome = await authenticateRestRequest(deps, rest(path, { params: { client_secret: 'x' } }));
+
+    expectError(outcome, 401, BODY.authorization, header);
+    expect(outcome).toStrictEqual(await authenticateRestRequest(deps, rest(control, { params: { client_secret: 'x' } })));
+  });
+
   it('names the missing-credential headers by the platform constants', async () => {
     const onOAuth = answer(await authenticateRestRequest(deps, rest('/_api/rest/v1/default/oauth')));
     const offOAuth = answer(await authenticateRestRequest(deps, rest('/_api/rest/v1/default/content')));

@@ -1565,9 +1565,10 @@ legacy-inventory.json and legacy-inventory.md. Live fields come from ${LIVE_SNAP
 --live captures it, every other run replays it, and without the file they stay pending-run.
 
 Options:
-  --live          query live entity registrations (LEGACY_ORIGIN, else http://127.0.0.1:$PORT), the read-only
-                  SQL Server catalog and stored-procedure check (MURA_DB* variables), and write them to
-                  ${LIVE_SNAPSHOT_JSON} beside the inventory; not combinable with --check
+  --live          query live entity registrations (LEGACY_ORIGIN, else http://127.0.0.1:$PORT; key OPT2_HARNESS_KEY,
+                  else \${OPT2_STATE_DIR}/secrets/harness-diagnostic-key), the read-only SQL Server catalog and
+                  stored-procedure check (MURA_DB* variables), and write them to ${LIVE_SNAPSHOT_JSON} beside the
+                  inventory; not combinable with --check
   --check         generate in memory, replaying ${LIVE_SNAPSHOT_JSON} from the output directory, and compare with
                   the inventory files there; exit 1 on a difference and write nothing
   --out <dir>     output directory, where ${LIVE_SNAPSHOT_JSON} is also read and written; a relative path resolves
@@ -1586,7 +1587,7 @@ async function openLiveSources(env: EnvLike): Promise<LiveSources> {
   const origin = env.LEGACY_ORIGIN || (env.PORT ? `http://127.0.0.1:${env.PORT}` : undefined);
   if (origin === undefined) throw new UsageError('--live needs LEGACY_ORIGIN or PORT', USAGE);
   const loaded = await fixturesLoaded(env);
-  return { origin, db: await createReadOnlyMssql(env), fixturesLoaded: loaded };
+  return { origin, db: await createReadOnlyMssql(env), fixturesLoaded: loaded, env };
 }
 
 function displayPath(p: string): string {

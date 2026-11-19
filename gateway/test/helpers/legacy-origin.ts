@@ -1,4 +1,4 @@
-// Stand-in for LEGACY_ORIGIN: ColdFusion sessions, the bridge's session.cfm and site.cfm Version menu behind its assertion guard, and echoed pages.
+// Stand-in for LEGACY_ORIGIN: ColdFusion sessions, the bridge's session.cfm and site.cfm's paths and Version menu behind its assertion guard, and echoed pages.
 import { Buffer } from 'node:buffer';
 import type { ServerResponse } from 'node:http';
 import {
@@ -42,7 +42,7 @@ import {
 /** Path of the bridge's session page. */
 export const BRIDGE_SESSION_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
 
-/** Path of the bridge's site page, of which the double serves `op=versionMenu` only. */
+/** Path of the bridge's site page, of which the double serves `op=paths` and `op=versionMenu`. */
 export const BRIDGE_SITE_PATH = '/gateway/legacy-bridge/cfml/site.cfm';
 
 /** `site.cfm?op=versionMenu` as the ACF 2023 oracle answers it, without `server.java`. */
@@ -142,6 +142,13 @@ export interface BridgeCall {
   request: RecordedRequest;
 }
 
+/** One verified `site.cfm?op=paths` call and its answer. */
+export interface SitePathsCall {
+  status: number;
+  body: unknown;
+  request: RecordedRequest;
+}
+
 /** The default answer to a page request: what reached legacy, as legacy received it. */
 export interface LegacyEcho {
   method: string;
@@ -171,6 +178,8 @@ export interface LegacyResponseSpec {
   setCookies?: string[] | 'session';
   /** Milliseconds to wait before answering; `close()` cancels the wait. */
   delayMs?: number;
+  /** Headers written after `headers` byte for byte, one latin1 byte per character, bytes Node's validation refuses included. */
+  rawHeaders?: Record<string, string>;
 }
 
 /** Computes the answer to one page request from the request and the session it attached. */
@@ -204,6 +213,15 @@ export type LegacyOrigin = HttpDouble & {
   consumeTokenDuringNextRequest(legacySessionId: string, token: string): void;
   /** The session's used-token ledger in wire form. */
   usedTokens(legacySessionId: string): LegacyUsedToken[];
+  /**
+   * Verified `site.cfm?op=paths` calls. Each value is `<scheme>://<Host>` based, the scheme `https` when
+   * `X-Forwarded-Proto` is `https`, and is kept from its first call per site, as legacy's site beans keep it.
+   */
+  sitePathsCalls: SitePathsCall[];
+  /** Forgets every kept path value, as a rebuild of legacy's site beans does. */
+  resetSitePaths(): void;
+  /** Makes `op=paths` answer `status` with a `serverError` body; without an argument it answers values again. */
+  failSitePaths(status?: number): void;
   /** Programs the answer of `site.cfm?op=versionMenu`; without an argument it answers {@link LEGACY_VERSION_MENU} again. */
   setVersionMenuAnswer(answer?: { status: number; body: object }): void;
 };
@@ -233,6 +251,16 @@ interface OpContext {
   /** The session ColdFusion attached or started; undefined when none could be. */
   session: LegacySession | undefined;
   now: Date;
+}
+
+/** Stores `res`'s head, `headers` and then `raw` as given, each `raw` value one latin1 byte per character, which no header validation reads. */
+function writeRawHeaders(res: ServerResponse, status: number, headers: Record<string, string | string[]>, raw: Record<string, string>): void {
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+  const lines = Object.entries(raw).map(([name, value], index) => ({ name, value, placeholder: `opt2-raw-${String(index)}` }));
+  for (const { name, placeholder } of lines) res.setHeader(name, placeholder);
+  res.writeHead(status);
+  const stored = res as ServerResponse & { _header: string };
+  for (const { name, value, placeholder } of lines) stored._header = stored._header.replace(`${name}: ${placeholder}\r\n`, () => `${name}: ${value}\r\n`);
 }
 
 /** Bridge wire time `yyyy-mm-ddTHH:nn:ss.lll` in the process zone, as Application.cfc's formatLegacyTime writes it. */
@@ -752,6 +780,9 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
   const bridgeCalls: BridgeCall[] = [];
   const pendingTokens = new Map<string, string[]>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  const sitePathsCalls: SitePathsCall[] = [];
+  const sitePathValues = new Map<string, string>();
+  let sitePathsFailure: number | undefined;
   let responder: LegacyResponseSpec | LegacyResponder = {};
   let versionMenuAnswer: { status: number; body: object } | undefined;
   let created = 0;
@@ -913,13 +944,63 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
     const headers = withSetCookies({ 'X-Legacy-Double': '1', ...spec.headers }, setCookies, extra);
     const status = spec.status ?? 200;
     const body = spec.body ?? echoOf(req);
-    if (Buffer.isBuffer(body) || typeof body === 'string') sendBytes(res, status, body, headers);
+    if (spec.rawHeaders !== undefined) {
+      writeRawHeaders(res, status, headers, spec.rawHeaders);
+      res.end(Buffer.isBuffer(body) || typeof body === 'string' ? body : JSON.stringify(body));
+    } else if (Buffer.isBuffer(body) || typeof body === 'string') sendBytes(res, status, body, headers);
     else sendJson(res, status, body, headers);
+  };
+
+  /** Answers one `site.cfm` call: `op=paths` behind the guard, values kept per site from their first call. */
+  const sitePage = (req: RecordedRequest, res: ServerResponse): void => {
+    const header = req.headers[ASSERTION_HEADER];
+    const result = typeof header === 'string' && header !== '' ? verifyBridgeAssertion(header, bridgeKey, nonces, clock.now()) : undefined;
+    const op = queryValue(req, 'op');
+    if (result?.ok !== true || result.payload.op !== `site.${op}` || result.payload.siteId !== queryValue(req, 'siteid')) {
+      sendBytes(res, 403, '');
+      return;
+    }
+    let status = 200;
+    let body: Record<string, unknown>;
+    if (op !== 'paths') {
+      status = 404;
+      body = { error: 'notFound', message: 'unknown op' };
+    } else if (sitePathsFailure !== undefined) {
+      status = sitePathsFailure;
+      body = { error: 'serverError', message: 'coldfusion.runtime.TemplateException' };
+    } else {
+      const secure = headerText(req.headers['x-forwarded-proto'])?.toLowerCase() === 'https';
+      const root = `${secure ? 'https' : 'http'}://${headerText(req.headers.host) ?? ''}`;
+      const kept = (site: string, name: string, value: string): string => {
+        const key = `${site.toLowerCase()} ${name}`;
+        if (!sitePathValues.has(key)) sitePathValues.set(key, value);
+        return sitePathValues.get(key) ?? value;
+      };
+      body = {};
+      if (Object.hasOwn(req.query, 'apiSite')) {
+        const site = queryValue(req, 'apiSite');
+        body.restEndpoint = kept(site, 'restEndpoint', `${root}/_api/rest/v1/${site}`);
+      }
+      if (Object.hasOwn(req.query, 'feedSite')) {
+        const site = queryValue(req, 'feedSite');
+        body.feedEndpoint = kept(site, 'feedEndpoint', `${root}/_api/feed/v1/${site}`);
+      }
+      if (Object.hasOwn(req.query, 'themeSite')) {
+        body.themeAssetPath = kept(queryValue(req, 'themeSite'), 'themeAssetPath', '/themes/default');
+      }
+      if (Object.hasOwn(req.query, 'initSite')) {
+        body.initThemeAssetPath = kept(queryValue(req, 'initSite'), 'initThemeAssetPath', `${root}/themes/default`);
+      }
+    }
+    body.serverTime = formatWireTime(clock.now());
+    sitePathsCalls.push({ status, body, request: req });
+    sendJson(res, status, body);
   };
 
   const handler: DoubleHandler = async (req, res) => {
     if (req.path === BRIDGE_SESSION_PATH) bridge(req, res);
     else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'versionMenu') versionMenu(req, res);
+    else if (req.path === BRIDGE_SITE_PATH) sitePage(req, res);
     else if (req.path.startsWith(BRIDGE_PREFIX)) sendBytes(res, 404, '');
     else await page(req, res);
   };
@@ -938,13 +1019,21 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
       pendingTokens.set(legacySessionId, [...(pendingTokens.get(legacySessionId) ?? []), token]);
     },
     usedTokens: (legacySessionId) => ledgerEntries(sessionById(legacySessionId).used),
+    sitePathsCalls,
+    resetSitePaths() {
+      sitePathValues.clear();
+    },
+    failSitePaths(status) {
+      sitePathsFailure = status;
+    },
     setVersionMenuAnswer(answer) {
       versionMenuAnswer = answer;
     },
-    // Bridge calls are recorded requests too, so both records are cleared together.
+    // Bridge calls are recorded requests too, so the records are cleared together.
     clearRequests() {
       double.clearRequests();
       bridgeCalls.length = 0;
+      sitePathsCalls.length = 0;
     },
     close() {
       for (const timer of timers) clearTimeout(timer);

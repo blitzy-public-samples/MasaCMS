@@ -134,6 +134,26 @@ const LEGACY_STATIC_PREFIXES = ['/admin/assets', '/core/vendor', '/core/modules'
 const FIXTURE_TABLE = /^(?:synthetic|program_\w+)\./i;
 // A file name makes path families that key files (static) emit the path, so the glob takes the family live requests get.
 const GLOB_PROBE = 'index.js';
+// Probes whose globs take a folder's templates and components.
+const TEMPLATE_PROBE = 'probe.cfm';
+const COMPONENT_PROBE = 'probe.cfc';
+const FOLDER_PROBES = [GLOB_PROBE, TEMPLATE_PROBE, COMPONENT_PROBE];
+/**
+ * OPT-2 web-root folders whose files the gateway answers 404 for, by the probes of the families each globs; fixture
+ * templates stay legacy-served, and the longer `/opt2/**` globs keep routing.
+ */
+const CLOSED_FOLDERS: ReadonlyArray<{ readonly prefix: string; readonly probes: readonly string[] }> = [
+  { prefix: '/.github/workflows', probes: [GLOB_PROBE] },
+  { prefix: '/gateway', probes: [GLOB_PROBE] },
+  { prefix: '/harness', probes: FOLDER_PROBES },
+  { prefix: '/infra', probes: FOLDER_PROBES },
+  { prefix: '/legacy-fixtures', probes: [GLOB_PROBE] },
+  { prefix: '/migration', probes: FOLDER_PROBES },
+  { prefix: '/opt2', probes: [GLOB_PROBE] },
+  { prefix: '/platform', probes: FOLDER_PROBES },
+  { prefix: '/services', probes: FOLDER_PROBES },
+  { prefix: '/web', probes: FOLDER_PROBES },
+];
 
 /**
  * How an entry's state follows a version: `fixed` never changes; `cut-over` is legacy in the first version, then target;
@@ -187,9 +207,9 @@ export function rosterGroupSet(groups: Pick<GroupsFile, 'groups'>): string[] {
   );
 }
 
-/** `<family>:<prefix>/**` for a path prefix, with the family route-key.ts gives paths under it. */
-export function globRoute(prefix: string): string {
-  const path = `${prefix}/${GLOB_PROBE}`;
+/** `<family>:<prefix>/**` for a path prefix, with the family route-key.ts gives `probe`, a file name under it (a static file by default). */
+export function globRoute(prefix: string, probe: string = GLOB_PROBE): string {
+  const path = `${prefix}/${probe}`;
   const { family, key } = routeKeyForEntryPoint({ kind: 'path', path });
   if (key !== `${family}:${normaliseRouteKey(path)}`) {
     throw new CutoverBuildError(`${prefix}: no path family keys ${path} (got ${key})`);
@@ -330,6 +350,9 @@ function nativeEntries(ctx: ValidationContext): PlannedEntry[] {
   return [
     nativeEntry(globRoute('/opt2/stub'), 'stub', 'write', [], TARGET),
     nativeEntry(globRoute('/gateway/legacy-bridge'), 'gateway', 'static', [], TARGET),
+    ...CLOSED_FOLDERS.flatMap(({ prefix, probes }) =>
+      probes.map((probe) => nativeEntry(globRoute(prefix, probe), 'gateway', 'static', [], TARGET)),
+    ),
     nativeEntry(globRoute('/_next'), 'web', 'static', [], TARGET),
     ...LEGACY_STATIC_PREFIXES.map((prefix) => nativeEntry(globRoute(prefix), 'none', 'static', [], LEGACY, 'legacy-served')),
     ...modules,
@@ -356,7 +379,7 @@ function syntheticEntries(ctx: ValidationContext, module: SyntheticModule, writt
     return owned?.owner === module.service && owned.legacyTables.length > 0 && owned.legacyTables.every((t) => FIXTURE_TABLE.test(t));
   };
   const unwritten = ctx.groups.groups.filter((group) => !written.has(group.id) && group.units.every(fixtureBacked));
-  const routes = module.v1.map(globRoute);
+  const routes = module.v1.map((prefix) => globRoute(prefix));
   if (unwritten.length > 1) {
     throw new CutoverBuildError(`${routes.join(', ')}: fixture-backed units span groups ${unwritten.map((group) => group.id).join(', ')}`);
   }

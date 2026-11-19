@@ -1,12 +1,15 @@
 // Masa userBean and userManager value shaping of a Type=2 user before a save: defaults, setters, the user-pool rule,
 // controller input restrictions and the split into people's person columns and identity's account change.
 import {
+  LegacyApiError,
   LegacyServiceUnavailableError,
   cfEq,
   cfIsBoolean,
   cfIsDate,
   cfIsDateText,
+  cfIsHexFloatText,
   cfIsNumeric,
+  cfIsValidNumeric,
   cfLsIsDate,
   cfLsParseDateTime,
   cfNumberString,
@@ -175,7 +178,7 @@ export function normaliseParams(params: Readonly<Record<string, unknown>>): Map<
 }
 
 /** A simple value as CFML text: `''` for a NULL; throws where ACF rejects a complex value as a string. */
-function simpleText(value: unknown, name: string): string {
+export function simpleText(value: unknown, name: string): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number') return cfNumberString(value);
   if (typeof value === 'boolean') return String(value);
@@ -273,7 +276,8 @@ const SETTERS: ReadonlyMap<string, Setter> = new Map<string, Setter>([
   ['usernamenocache', assigns('username', trimmedText('Username'))],
   ['passwordnocache', assigns('password', trimmedText('Password'))],
   ['addresses', guarded('addresses', (value) => !isLegacyQuery(value))],
-  ['keepprivate', guarded('keepprivate', cfIsNumeric, cfToNumber)],
+  // A hex float literal is kept as text, which the INSERT then fails on.
+  ['keepprivate', guarded('keepprivate', cfIsNumeric, (value) => (cfIsHexFloatText(value) ? value : cfToNumber(value)))],
   ['passedprotect', guarded('passedprotect', cfIsBoolean)],
   ['type', assigns('type', legacyType)],
   ['firstname', assigns('fname', (value) => value)],
@@ -311,9 +315,14 @@ export interface UserSite {
 
 const SITE_ID_REQUIRED = "The attribute 'SITEID' is required when saving a user.";
 
-/** A numeric property as a number when CFML reads it as one, else its text. */
+/** A numeric property as a number when CFML reads it as one, else its text; a hex float literal, which the DAO inlines, stays text. */
 function numericValue(value: unknown, name: string): CfNumeric {
-  return cfIsNumeric(value) ? cfToNumber(value) : simpleText(value, name);
+  return cfIsNumeric(value) && !cfIsHexFloatText(value) ? cfToNumber(value) : simpleText(value, name);
+}
+
+/** CFML `value eq 0`. */
+function eqZero(value: CfNumeric): boolean {
+  return typeof value === 'number' ? value === 0 : cfEq(value, '0');
 }
 
 function userPool(entry: TenantRegistryEntry, isPublic: boolean): { siteId: string; tenantId: string } {
@@ -350,7 +359,7 @@ export async function resolveUserSite(
     const pool = userPool(entry, false);
     return { siteId: pool.siteId, poolTenantId: pool.tenantId, isPublic: 0, poolSwitch: 'private' };
   }
-  const pool = userPool(entry, !(typeof isPublic === 'number' && isPublic === 0));
+  const pool = userPool(entry, !eqZero(current.ispublic));
   // setSiteID keeps the current id when the pool id differs only in case [legacy: core/mura/bean/beanExtendable.cfc:131-137].
   const siteId = pool.siteId !== '' && !cfEq(javaTrim(pool.siteId), currentSite) ? javaTrim(pool.siteId) : currentSite;
   return { siteId, poolTenantId: pool.tenantId, isPublic, poolSwitch: null };
@@ -406,11 +415,22 @@ export function restrictProfileInput(
   return restricted;
 }
 
-/** `userManager` update/create: only a super user keeps `s2`, and an S2 user is never public [legacy: core/mura/user/userManager.cfc:438-445]. */
+/**
+ * `userManager` update/create: only a super user keeps `s2`, and an S2 user is never public [legacy: core/mura/user/userManager.cfc:438-445].
+ * @throws LegacyApiError Naming the fault `cfif userBean.getS2()` raises for an `s2` CFML cannot read as a boolean.
+ */
 export function applySuperUserRule(values: UserValues, actorIsSuperUser: boolean): UserValues {
   const next: UserValues = { ...values };
   if (!actorIsSuperUser) next.s2 = 0;
-  if (cfToBoolean(next.s2)) next.ispublic = 0;
+  let s2: boolean;
+  try {
+    s2 = cfToBoolean(next.s2);
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    const stacktrace = { Message: `cannot convert the value "${simpleText(next.s2, 's2')}" to a boolean`, Type: 'Expression' };
+    throw new LegacyApiError('server_error', { stacktrace });
+  }
+  if (s2) next.ispublic = 0;
   return next;
 }
 
@@ -419,9 +439,28 @@ export function nullIfEmpty(value: string | null | undefined): string | null {
   return value === undefined || value === null || value === '' ? null : value;
 }
 
-/** A flag as the DAO's inlined `#value#` lands in an int column: SQL Server truncates decimals; non-numeric text fails. */
+/** A flag as the DAO's inlined `#value#` lands in an int column: SQL Server truncates decimals; non-numeric text, a hex float included, fails. */
 function sqlInteger(value: unknown): number {
+  if (cfIsHexFloatText(value)) throw new TypeError(`SQL Server reads ${String(value)} as no number`);
   return Math.trunc(cfToNumber(value));
+}
+
+/** The bean flags a Type=2 save inlines into `tusers`. */
+const INLINE_FLAGS = ['s2', 'perm', 'inactive', 'ispublic', 'subscribe', 'keepprivate'] as const;
+
+/**
+ * `values` for {@link splitUserValues}, each flag text CFML cannot read as a number at its `userBean.init` value where
+ * the save never writes it: text failing its dataType rule fails validation, a create's INSERT fails on any other, and
+ * an update sets no Perm. Any other such flag stays, and splitUserValues rejects it.
+ */
+export function writableFlags(values: UserValues, operation: 'create' | 'update'): UserValues {
+  const next: UserValues = { ...values };
+  for (const key of INLINE_FLAGS) {
+    const value = next[key];
+    if (typeof value !== 'string' || (cfIsNumeric(value) && !cfIsHexFloatText(value))) continue;
+    if ((value !== '' && !cfIsValidNumeric(value)) || operation === 'create' || key === 'perm') next[key] = USER_BEAN_DEFAULTS[key];
+  }
+  return next;
 }
 
 /** One of people's 24 `tusers` columns. */

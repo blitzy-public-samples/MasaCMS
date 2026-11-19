@@ -2326,7 +2326,7 @@ paths:
           description: The `siteID` the form binds differs from the user token's site.
         '500':
           $ref: '#/components/responses/ErrorPage'
-          description: The ColdFusion error page of a save legacy cannot run, with nothing written. A `contentID`, `siteID`, `userID` or `rate` form field is missing, or an id is empty. The `rate` is not numeric, or SQL Server cannot store it as an `int` (out of range, or a decimal of more than 38 digits).
+          description: onError's page of a save legacy cannot run, with nothing written; with `debuggingEnabled` on, the debug page names the fault. A `contentID`, `siteID`, `userID` or `rate` form field is missing; the `rate` is not numeric; SQL Server cannot compile a decimal `rate` of more than 38 digits; a trimmed id is empty (NULL) or longer than its `tcontentratings` column, in insert order `contentID`, `userID`, `siteID`; or the `rate` is outside `int`.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/content/tree:
@@ -2691,7 +2691,7 @@ paths:
     get:
       operationId: listFormResponses
       summary: Lists the responses of a form in the data manager.
-      description: 'The url fields are every rc field of the view, which applies its `sortBy` and `sortDirection` defaults from the form. `rc` holds `contentBean` (the active form''s `getAllValues()`, with `stats`), `perm`, `hasLockableNodes`, `useLayoutManager`, `rsDataInfo` (the `getDownloadselect` row: `CountEntered`, `firstEntered`, `lastEntered`), `fieldnames` (`getFullFieldList` for `action=display`, else `getCurrentFieldList`), `rsData` (for `action=edit` the `read(responseid)` row, otherwise the `getData` rows when `minute1` is given; each `responseID`, `entered` and `data`, the deserialised packet or null where `wddx2cfml` fails) and the attachment link parts `scheme`, `domain`, `serverPort` and `context`. Dates are written as ColdFusion prints a query timestamp, `yyyy-mm-dd HH:nn:ss.S`.'
+      description: 'The url fields are every rc field of the view, which applies its `sortBy` and `sortDirection` defaults from the form. `rc` holds `contentBean` (the active form''s `getAllValues()`, with `stats`), `perm`, `hasLockableNodes`, `useLayoutManager`, `rsDataInfo` (the `getDownloadselect` row: `CountEntered`, `firstEntered`, `lastEntered`), `fieldnames` (`getFullFieldList` for `action=display`, else `getCurrentFieldList`), `rsData` (for `action=edit` the `read(responseid)` row, otherwise the `getData` rows when `minute1` is given; each `responseID`, `entered` and `data`, the deserialised packet or null where `wddx2cfml` fails; an edit row whose packet is empty or NULL also carries `dataFault`, the `stacktrace` of the fault `wddx2cfml` raises on it) and the attachment link parts `scheme`, `domain`, `serverPort` and `context`. Dates are written as ColdFusion prints a query timestamp, `yyyy-mm-dd HH:nn:ss.S`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2737,7 +2737,7 @@ paths:
     post:
       operationId: deleteFormResponses
       summary: Deletes form responses from the data manager.
-      description: 'Runs the in-view write the fields select, as datamanager.cfm:94-105 and dsp_response.cfm:162-167 do: `action=Update` or `Delete` of `responseid` (only with valid tokens for context `responseid`; invalid tokens skip the write), `setDisplay` of the form''s display fields, or, with `minute1` and a true `delete`, the deletion of every response the filter selects.'
+      description: 'Runs the in-view write the fields select, as datamanager.cfm:94-105 and dsp_response.cfm:162-167 do: `action=Update` or `Delete` of `responseid` (only with valid tokens for context `responseid`; invalid tokens skip the write), `setDisplay` of the form''s display fields, or, with `minute1` and a true `delete`, the deletion of every response the filter selects. A field the write reads and the request lacks (`detailList2`, `summaryList2`, `nextn`; for Update `formid`, `fieldlist`, `entered`) fails, before any write, with legacy''s fault as a 500 `server_error` naming it.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2762,6 +2762,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/AdminNotFound'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/files/image-details:
@@ -2948,6 +2950,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/changesets/{changesetid}:
@@ -3080,6 +3084,7 @@ paths:
     post:
       operationId: removeChangesetItem
       summary: Removes a content version from a change set.
+      description: The version removed is the form's `contenthistid`, as legacy reads `rc.contenthistID`; a valid token without that field answers the 500 naming legacy's fault, the token consumed and nothing written.
       tags: [changesets]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:014']
@@ -3105,6 +3110,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/AdminNotFound'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/comments:
@@ -3381,6 +3388,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/categories/{categoryid}:
@@ -3515,7 +3524,7 @@ paths:
     get:
       operationId: getFeed
       summary: Reads the edit screen model of a collection.
-      description: 'An id that matches no collection reads a new bean, as legacy `feedManager.read` does. `rc` holds `feedBean` (its `getAllValues()`, with `errors` and the `params` rows), `rsRestrictGroups` (`userID`, `groupName`, `isPublic`), `rslist` (the `getcontentItems` rows, each with its `zoom` markup of `dspZoomNoLinks(getCrumbArray())` and optionally `exists`), `rsExtendedAttributes` (every `tcontent` extended attribute of the site: `attributeID`, `type`, `subType`, `attribute`, `isActive` of its subtype, in legacy order), `hasCategories` (`getCategoryCount`), `categories` (the category pool rows: `categoryID`, `parentID`, `name`, `isOpen`, `permitted`), `imageSizes` (custom image size rows with `name`), `contentPool` (one `siteID`, `site` row per item of the site''s `contentPoolID` list), `rsUsage` (`getUsage` rows with `zoom` and `verdict`; required for a saved collection), `parentMenuTitle` (required when the collection has a `parentID`), `rsDisplayObject` (the `readContentObject` rows, with `object` and `params`, when `assignmentID` is given and `feedBean` is not already merged with it), `useLayoutManager` (the site content renderer''s `useLayoutManager()`), `defaultCollectionDisplayList` (the site content renderer''s `defaultCollectionDisplayList`, which `feedBean.getDisplayList()` returns for an empty stored list) and optionally `endpoint`.'
+      description: 'An id that matches no collection reads a new bean, as legacy `feedManager.read` does. `rc` holds `feedBean` (its `getAllValues()`, with `errors` and the `params` rows), `rsRestrictGroups` (`userID`, `groupName`, `isPublic`), `rslist` (the `getcontentItems` rows, each with its `zoom` markup of `dspZoomNoLinks(getCrumbArray())` and optionally `exists`), `rsExtendedAttributes` (every `tcontent` extended attribute of the site: `attributeID`, `type`, `subType`, `attribute`, `isActive` of its subtype, in legacy order), `hasCategories` (`getCategoryCount`), `categories` (the category pool rows: `categoryID`, `parentID`, `name`, `isOpen`, `permitted`), `imageSizes` (custom image size rows with `name`), `contentPool` (one `siteID`, `site` row per item of the site''s `contentPoolID` list), `rsUsage` (`getUsage` rows with `zoom` and `verdict`; required for a saved collection), `parentMenuTitle` (required when the collection has a `parentID`), `rsDisplayObject` (the `readContentObject` rows, with `object` and `params`, when `assignmentID` is given and `feedBean` is not already merged with it), `useLayoutManager` (the site content renderer''s `useLayoutManager()`) and `defaultCollectionDisplayList` (the site content renderer''s `defaultCollectionDisplayList`, which `feedBean.getDisplayList()` returns for an empty stored list).'
       tags: [feeds]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:011']
@@ -3846,6 +3855,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
     post:
@@ -3882,6 +3893,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
   /v1/raw/carch/assocfiles:
@@ -5380,6 +5393,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
     post:
@@ -5424,6 +5439,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
   /v1/raw/carch/refreshsitesection:
@@ -5850,6 +5867,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
     post:
@@ -5888,6 +5907,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
   /v1/raw/carch/unlocknode:
@@ -5928,6 +5949,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
     post:
@@ -5966,6 +5989,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
   /v1/raw/cchangesets/loadtagarray:
@@ -6399,6 +6424,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
     post:
@@ -6446,6 +6473,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/RawFault'
         '503':
           $ref: '#/components/responses/RawUnavailable'
   /v1/raw/cform/export:
@@ -8594,7 +8623,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyError'
     JsonApiServerError:
-      description: Legacy 500 `server_error`; a `comment` remote function (`delete`, `undelete`, `flag`, `markAsSpam`, `unMarkAsSpam`) answers it after it has run, as its void result fails the envelope; with `suppressAPIParams` false, onError's page instead, without an ETag, when the echoed params hold a JSON null under a serializer-hinted key.
+      description: Legacy 500 `server_error`; a `comment` remote function (`delete`, `undelete`, `flag`, `markAsSpam`, `unMarkAsSpam`) answers it after it has run, as its void result fails the envelope; with `suppressAPIParams` false, onError's page instead, without an ETag, when the echoed params hold a JSON null under a serializer-hinted key (its debug page naming the serializer's fault while `debuggingEnabled` is on, else `core/templates/error.html`).
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -8607,7 +8636,7 @@ components:
           schema:
             oneOf:
               - $ref: '#/components/schemas/LegacyError'
-              - $ref: '#/components/schemas/LegacyErrorPage'
+              - $ref: '#/components/schemas/LegacyHtml'
     Unavailable:
       description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
       headers:
@@ -8787,6 +8816,19 @@ components:
             $ref: '#/components/schemas/AdminWriteResult'
     AdminNotFound:
       description: The addressed record does not exist.
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    RawFault:
+      description: The `server_error` whose `error.stacktrace` names the fault legacy raises for the request, which web answers with onError's page.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
       content:
         application/json;charset=utf-8:
           schema:

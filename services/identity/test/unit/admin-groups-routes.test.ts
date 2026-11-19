@@ -4,11 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { consumeEnvelope } from '@opt2/platform/events';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, PATH_PAIRS_HEADER, pathPairsHeaderValue } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
@@ -216,6 +216,9 @@ afterAll(async () => {
   await handle?.drop();
   await rm(stateDir, { recursive: true, force: true });
 });
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 /** Headers of a gateway-relayed call for a `tenant-a` user holding `roles` in session `sid`; null `roles` sends no user token. */
 async function headersFor(roles: readonly string[] | null, sid?: string, sub = ADMIN_USER): Promise<Record<string, string>> {
@@ -422,18 +425,23 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
   });
 
   it.each([
-    ['an email of 256', { email: 'e'.repeat(256) }],
-    ['a subtype of 51', { subtype: 's'.repeat(51) }],
-    ['a tablist of 256', { tablist: 't'.repeat(256) }],
-  ])('answers a create and an update posting %s with the legacy 500 and writes nothing', async (_label, wide) => {
+    ['an email of 256', { email: 'e'.repeat(256) }, 'Email', 'e'.repeat(100)],
+    ['a subtype of 51', { subtype: 's'.repeat(51) }, 'subType', 's'.repeat(50)],
+    ['a tablist of 256', { tablist: 't'.repeat(256) }, 'tablist', 't'.repeat(100)],
+  ])('answers a create and an update posting %s with the legacy 500 naming the failed query and writes nothing', async (_label, wide, column, kept) => {
+    vi.stubEnv('MURA_DATABASE', 'muradb_t');
+    vi.stubEnv('MURA_DATASOURCE', 'muradb');
     const userid = nextId('B');
     const created = await send('POST', '/v1/groups', await admin(), { userid, groupname: 'Wide', isPublic: '0', ...wide, ...csrfFields(userid) });
     const updated = await send('PUT', `/v1/groups/${ids.parent}`, await admin(), { groupname: 'Parent', isPublic: '0', ...wide, ...csrfFields(ids.parent) });
 
     expect([created.statusCode, updated.statusCode]).toEqual([500, 500]);
-    expect(created.json()).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
-    // The column's refusal is the SQL Server driver's text, which no stacktrace reproduces.
-    expect(created.json()).not.toHaveProperty('error.stacktrace');
+    const detail = `[Macromedia][SQLServer JDBC Driver][SQLServer]String or binary data would be truncated in table 'muradb_t.dbo.tusers', column '${column}'. Truncated value: '${kept}'.`;
+    const fault = { message: 'Error Executing Database Query.', type: 'Database', datasource: 'muradb', errorcode: 'HY000', detail };
+    expect(created.json()).toMatchObject({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception', stacktrace: fault } });
+    expect(created.json()).toHaveProperty('error.stacktrace.sql', expect.stringMatching(new RegExp(`^INSERT INTO tusers [^]*VALUES\\(\\n         '${userid}',`)));
+    expect(updated.json()).toMatchObject({ error: { stacktrace: { ...fault, sql: expect.stringMatching(new RegExp(`WHERE UserID = '${ids.parent}'$`)) } } });
+    expect(created.headers['content-type']).toBe('application/json;charset=utf-8');
     expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
     expect(await gated(SITE, (tx) => repo.findGroup(tx, ids.parent))).toMatchObject({ groupname: 'Parent', email: null, subtype: 'Default', tablist: null });
   });
@@ -469,6 +477,18 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect(await gated(SITE, (tx) => repo.findGroup(tx, groupId))).toMatchObject({ groupname: 'Squad ??', description: 'Line 1 – ünï ??' });
     expect(await gated(SITE, (tx) => repo.findGroupByName(tx, 'Squad 😀', { siteId: SITE }))).toMatchObject({ userid: groupId });
     expect((await send('GET', `/v1/groups/${groupId}`, await admin())).json()).toMatchObject({ isNew: false, group: { GroupName: 'Squad ??' } });
+  });
+
+  // Own oracle (localhost:26080): cUsers.update under /admin/index.cfm/cusers/update/groupname/<value> stores the pair unscanned.
+  it('stores a group name a relayed path pair holds as legacy stores it, unscanned', async () => {
+    const groupId = nextId('B');
+    const groupname = 'f10-grp-sq\u201Cq\u201D-onLoad';
+    const headers = { ...(await admin()), [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue([['groupname', groupname]]) ?? '' };
+
+    const created = await send('POST', '/v1/groups', headers, { userid: groupId, groupname, isPublic: '0', ...csrfFields(groupId) });
+
+    expect(created.json()).toMatchObject({ written: true, errors: {} });
+    expect(await gated(SITE, (tx) => repo.findGroup(tx, groupId))).toMatchObject({ groupname });
   });
 
   it('keeps the login and visibility fields of an S2 group a non-superuser saves', async () => {
@@ -604,6 +624,11 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     ['[0]', 'admin', 1],
     ['\u00a00', 'admin', 1],
     [' 0 ', 'editor', 1],
+    // Oracle: cUsers.list binds a hex float by Java's reading; one ACF cannot read as a boolean scrubs to 1.
+    ['0x1p0', 'admin', 1],
+    [' 0x0p0 ', 'admin', 0],
+    ['0xAp0', 'admin', 1],
+    ['0x0p0', 'editor', 1],
   ])('lists ispublic %j for an %s as the isPublic %d pool', async (sent, who, isPublic) => {
     const res = await send('GET', `/v1/groups?${new URLSearchParams({ ispublic: sent }).toString()}`, who === 'admin' ? await admin() : await editor());
 
@@ -611,6 +636,15 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect(items.map((item) => item.GroupName)).toContain(isPublic === 0 ? 'Editors' : 'Members');
     expect(new Set(items.map((item) => item.isPublic))).toEqual(new Set([isPublic]));
     expect({ total, nextOffset }).toEqual({ total: items.length, nextOffset: null });
+  });
+
+  // Oracle: getUserGroups' numeric argument keeps the text, whose `eq 0` names the pool while Java's reading of it is the bound
+  // flag; on a site whose pools differ, 0x1p-1080 reads the member pool for isPublic 0 and 0x10000p-16 the system pool for 1.
+  it.each(['0x1p-1080', '0x10000p-16', '0x10000p-1'])('lists no group for ispublic %j, whose pool and bound flag disagree', async (sent) => {
+    const res = await send('GET', `/v1/groups?${new URLSearchParams({ ispublic: sent }).toString()}`, await admin());
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [], total: 0, nextOffset: null });
   });
 
   // The posted form field passes the same scan and scrub before `userBean.set` reads it.
@@ -626,6 +660,19 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     const res = await send('POST', '/v1/groups', await admin(), { userid: groupId, groupname: `Scanned ${groupId}`, isPublic: sent, ...csrfFields(groupId) });
 
     expect(res.json()).toMatchObject({ written: true, errors: {}, group: { UserID: groupId, isPublic, SiteID: site } });
+  });
+
+  // Oracle (fixtures/legacy-query-faults.json group-add-literal-ispublic-hex): the scrub keeps a hex float, whose inlined INSERT fails.
+  it.each(['0x0p0', ' 0x0p0 '])('answers an admin create posted with isPublic %j the legacy 500 naming the failed INSERT', async (sent) => {
+    vi.stubEnv('MURA_DATASOURCE', 'muradb');
+    const userid = nextId('B');
+    const res = await send('POST', '/v1/groups', await admin(), { userid, groupname: 'Hex', isPublic: sent, ...csrfFields(userid) });
+
+    expect(res.statusCode).toBe(500);
+    const detail = "[Macromedia][SQLServer JDBC Driver][SQLServer]Incorrect syntax near 'p0'.";
+    expect(res.json()).toMatchObject({ error: { code: 'server_error', stacktrace: { type: 'Database', errorcode: 'HY000', detail } } });
+    expect(res.json()).toHaveProperty('error.stacktrace.sql', expect.stringContaining('\t\t  0,\n\t\t  0x0p0,\n'));
+    expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
   });
 
   type Encoding = 'urlencoded' | 'multipart' | 'json';

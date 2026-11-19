@@ -6,7 +6,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
-import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_TYPE, LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { REDACTED, SEVERITY_BY_LEVEL, validateLogRecord } from '@opt2/platform/logging';
 import type { ScreenGate } from '@/lib/access-gate';
 import {
@@ -17,7 +17,7 @@ import {
   type StreamedResponse,
 } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
-import { setSessionMuraValue } from '@/lib/request-context';
+import { LegacySessionFaultError, ORIGINAL_URL_HEADER, relayContext, setSessionMuraValue } from '@/lib/request-context';
 import { adminRbFor, rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { createWebLogger, logRequest, setWebLoggerForTests, type RequestLogFields } from '@/lib/telemetry';
 import type {
@@ -33,7 +33,14 @@ import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
 import { browserMultipart } from '../helpers/requests';
-import { fakeServiceClient, routeKey, type FakeServiceClient, type RecordedRequest } from '../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  fakeServiceClient,
+  installedSitePaths,
+  routeKey,
+  type FakeServiceClient,
+  type RecordedRequest,
+} from '../helpers/fake-gateway';
 import { SUBJECTS, gatewayInvocation, serviceInvocation, userTokenFor } from '../helpers/tokens';
 
 const probe = vi.hoisted(() => ({
@@ -263,6 +270,7 @@ function installRoutes(): void {
     status: 200,
     body: promptCountsZero,
   });
+  fake.setRoute(LEGACY_SITE_PATHS_KEY, installedSitePaths);
   fake.setRoute(routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH), { status: 200, body: LEGACY_VERSION_MENU });
 }
 
@@ -381,6 +389,24 @@ describe('page mode', () => {
     expect(probe.uploads).toEqual([]);
   });
 
+  it("names the path pairs rc holds to the screen's service calls, which the set-up's own do not carry", async () => {
+    const CATEGORIES = routeKey('POST', 'strategies-content', '/v1/sites/default/categories');
+    fake.setRoute(CATEGORIES, { status: 200, body: {} });
+    probe.inspect = async (ctx) => {
+      await ctx.gateway.postForm('strategies-content', '/v1/sites/default/categories', Object.entries(relayContext(ctx.req)));
+    };
+    const target = '/admin/index.cfm/cusers/list/name/f10-sq%E2%80%9Cq%E2%80%9D/siteid/x?muraAction=cusers.list&siteid=default';
+    const headers = await forwarded('admin', { [ORIGINAL_URL_HEADER]: target });
+
+    const response = await handleAdminPage(new Request('http://web/admin/cusers/list?muraAction=cusers.list&siteid=default', { headers }), LIST);
+
+    expect(response.status).toBe(200);
+    const pairsOf = (key: string) => fake.requests.filter((r) => `${r.method} ${r.path}` === key).map((r) => r.headers['x-opt2-path-pairs']);
+    expect(pairsOf(CATEGORIES)).toEqual(['name=f10-sq%E2%80%9Cq%E2%80%9D']);
+    expect(new Set(pairsOf(CURRENT_SESSION))).toEqual(new Set([undefined]));
+    expect(fake.requests.find((r) => `${r.method} ${r.path}` === CATEGORIES)?.form).toMatchObject({ name: 'f10-sq\u201Cq\u201D', siteid: 'default' });
+  });
+
   it('hands the file parts of a multipart page POST to findScreen', async () => {
     const { body, contentType } = browserMultipart([
       { name: 'newfile', value: '' },
@@ -497,6 +523,40 @@ describe('page mode', () => {
     expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
     expect(savedStates()).toHaveLength(0);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
+  });
+
+  it.each<[string, Error, string]>([
+    ['a fault after the screen recorded them', new LegacyFaultError('Element X is undefined in RC.'), '00000000000000000000000000000000004'],
+    [
+      'a fault carrying the values set before it',
+      new LegacySessionFaultError(new LegacyFaultError('Element X is undefined in RC.'), { moduleid: '00000000000000000000000000000000003' }),
+      '00000000000000000000000000000000003',
+    ],
+  ])("persists the session writes made before %s, answering legacy's 500", async (_case, fault, moduleid) => {
+    probe.inspect = (ctx) => {
+      ctx.req = { ...ctx.req, sessionWrites: { ...ctx.req.sessionWrites, moduleid: '00000000000000000000000000000000004' } };
+      return Promise.resolve();
+    };
+    probe.renderError = fault;
+
+    const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
+
+    expect([response.status, response.statusText]).toEqual([500, LEGACY_ERROR_STATUS_TEXT]);
+    expect(savedStates().map(({ json }) => json)).toEqual([expect.objectContaining({ moduleid })]);
+    expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: fault })]);
+  });
+
+  it('answers the failure of saving the writes kept for a fault in its place', async () => {
+    probe.inspect = (ctx) => {
+      ctx.req = { ...ctx.req, sessionWrites: { ...ctx.req.sessionWrites, moduleid: '00000000000000000000000000000000004' } };
+      return Promise.resolve();
+    };
+    probe.renderError = new LegacyFaultError('Element X is undefined in RC.');
+    fake.setRoute(SAVE_ADMIN_STATE, { status: 503, body: 'down' });
+
+    const response = await handleAdminPage(await getRequest('/admin/cusers/list'), LIST);
+
+    expect(response.status).toBe(503);
   });
 
   it('persists the writes of a request a screen derived in place of its own, with the set-up writes it carries', async () => {

@@ -5,7 +5,7 @@ import {
   LEGACY_JSON_CONTENT_TYPE,
   legacyHeaders,
   legacyRuntimeErrorResponse,
-  type LegacyFaultError,
+  LegacyFaultError,
 } from '@opt2/platform/legacy-compat';
 import { negotiatesIdentityEncoding } from './accept-encoding';
 import { isCompactDisplay } from './cfml';
@@ -208,14 +208,40 @@ export function legacyUnavailable(context?: LegacyResponseContext): Response {
   return new Response(body, { status, statusText, headers: merged });
 }
 
+/** A fault raised after the view's `cfhtmlhead` calls, whose text precedes onError's debug page. */
+export class LegacyHtmlHeadFaultError extends LegacyFaultError {
+  override readonly name: string = 'LegacyHtmlHeadFaultError';
+
+  constructor(
+    fault: LegacyFaultError,
+    /** The `cfhtmlhead` text written before the fault. */
+    readonly htmlHead: string,
+  ) {
+    super(fault.message, fault.type, fault);
+  }
+}
+
+/** `run`'s result; a fault it raises is rethrown carrying `htmlHead`, the `cfhtmlhead` text written before it. */
+export async function afterHtmlHead<T>(htmlHead: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof LegacyFaultError && !(error instanceof LegacyHtmlHeadFaultError)) {
+      throw new LegacyHtmlHeadFaultError(error, htmlHead);
+    }
+    throw error;
+  }
+}
+
 /**
  * Legacy `onError`'s answer to a runtime error at 500 `An Error Occurred`: the debug page of `fault` with
- * `debuggingEnabled` on, else the error.html page.
+ * `debuggingEnabled` on, preceded by any `cfhtmlhead` text it carries, else the error.html page.
  */
 export function legacyError(context?: LegacyResponseContext, fault?: LegacyFaultError): Response {
   const { status, statusText, headers: pageHeaders, body } = legacyRuntimeErrorResponse(fault, {
     debuggingEnabled: legacySettings().debuggingEnabled,
     encodeHtml,
+    ...(fault instanceof LegacyHtmlHeadFaultError ? { htmlHead: fault.htmlHead } : {}),
   });
   const headers = baseHeaders(context);
   mergeInto(headers, pageHeaders);

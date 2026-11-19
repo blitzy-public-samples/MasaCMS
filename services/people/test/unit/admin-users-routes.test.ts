@@ -218,7 +218,7 @@ const repository = {
 
 let sessionState: AdminSessionState = {};
 const saves: AdminSessionState[] = [];
-const groupReads: Array<readonly [siteId: string, isPublic: number]> = [];
+const groupReads: Array<readonly [siteId: string, isPublic: string]> = [];
 /** The window of each identity group page read, in call order. */
 const groupWindows: UserGroupsWindow[] = [];
 /** The groups identity lists; a test may swap in a longer listing. */
@@ -602,27 +602,34 @@ describe('lists and searches', () => {
 
   // `before()` scrubs a value the admin Portcullis scan does not leave boolean, such as 'abc' or ' false' (scanned to '"NO"'),
   // to 1 [legacy: admin/core/controllers/cusers.cfc:163]; the scan trims ' 0 ' to 0.
-  it.each<[string, string, number]>(
+  it.each<[string, string, string]>(
     VERSIONS.flatMap((version) =>
       (
         [
-          ['0', 0],
-          ['0.0', 0],
-          ['1', 1],
-          ['1.0', 1],
-          ['2', 2],
-          ['-1', -1],
-          [' 1', 1],
-          [' 0 ', 0],
-          ['0\u0001', 0],
-          ['abc', 1],
-          [' false', 1],
-          ['\ttrue', 1],
-          ['"0"', 1],
+          ['0', '0'],
+          ['0.0', '0.0'],
+          ['1', '1'],
+          ['1.0', '1.0'],
+          ['2', '2'],
+          ['-1', '-1'],
+          [' 1', '1'],
+          [' 0 ', '0'],
+          ['0\u0001', '0'],
+          ['abc', '1'],
+          [' false', '1'],
+          ['\ttrue', '1'],
+          ['"0"', '1'],
+          // Oracle: getUserGroups keeps a hex float as text, whose `eq 0` names the pool and whose Java reading is the bound flag.
+          ['0x1p0', '0x1p0'],
+          [' 0x1p3 ', '0x1p3'],
+          ['0x1p-1080', '0x1p-1080'],
+          ['0x10000p-1', '0x10000p-1'],
+          ['0xAp0', '1'],
+          ['1e309', '1'],
         ] as const
-      ).map(([ispublic, flag]): [string, string, number] => [version, ispublic, flag]),
+      ).map(([ispublic, flag]): [string, string, string] => [version, ispublic, flag]),
     ),
-  )('%s reads identity groups for ispublic %j as the number %j', async (version, ispublic, flag) => {
+  )('%s reads identity groups for ispublic %j as the scrubbed text %j', async (version, ispublic, flag) => {
     expect((await call('GET', `${version}/users/groups?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN))).status).toBe(200);
     expect(groupReads).toEqual([[SITE, flag]]);
   });
@@ -649,6 +656,23 @@ describe('lists and searches', () => {
       expect([groupReads, tenantsRead]).toEqual([[], []]);
     },
   );
+
+  // Oracle: an admin's cUsers.list with these answers ACF's 500 page whose h2 is the cf_sql_numeric binding error below.
+  it.each(
+    ['-NaN', '+NaN', ' -NaN ', '0x1p1024'].flatMap((ispublic) => [
+      ['/v1/users/groups', ispublic] as const,
+      ['/v2/users/groups', ispublic] as const,
+      ['/v1/users/search', ispublic] as const,
+      ['/v2/users/search', ispublic] as const,
+    ]),
+  )('answers %s the legacy server_error 500 for ispublic %j, with the binding error off the wire, before any read', async (url, ispublic) => {
+    const res = await checked('GET', `${url}?ispublic=${encodeURIComponent(ispublic)}&search=doe`, await headersFor(SITE_ADMIN));
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ error: { message: 'Unhandled Exception', code: 'server_error' } });
+    expect(routeErrors).toHaveLength(1);
+    expect((routeErrors[0]?.cause as Error).message).toBe(`Invalid data ${ispublic.trim()} for CFSQLTYPE CF_SQL_NUMERIC.`);
+    expect([groupReads, tenantsRead]).toEqual([[], []]);
+  });
 
   it.each(VERSIONS)("%s lists the private pool's users by name with their unassigned ids", async (version) => {
     const { body } = await call('GET', `${version}/users?ispublic=0`, await headersFor(SITE_ADMIN));

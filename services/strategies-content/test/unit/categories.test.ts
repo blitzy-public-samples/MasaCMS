@@ -471,7 +471,7 @@ describe('updateCategoryAction', () => {
 
     expect(await updateCategoryAction(h.deps, A, { action: 'delete', categoryid: pooledChild }, { csrfValid: false })).toEqual(LIST_REDIRECT);
     await expect(updateCategoryAction(h.deps, A, { action: 'add', categoryid: '', siteid: POOL, name: 'Never' }, { csrfValid: false })).rejects.toThrow(
-      'Element CATEGORYBEAN is undefined in ARGUMENTS.RC.',
+      'Element RC.categoryBean is undefined in ARGUMENTS.',
     );
     expect(h.db.writes()).toEqual([]);
   });

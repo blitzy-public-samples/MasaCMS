@@ -4,6 +4,7 @@ import {
   SESSION_MANAGED_CONDITION,
   fixtureDispatchPath,
   matchRouteKey,
+  haltedRouteKey,
   parseCookieHeader,
   routeKeyForRequest,
   scannedRouteKey,
@@ -125,6 +126,8 @@ export interface RoutedOutcome {
   readonly holdRoutes?: readonly string[];
   /** True when the entry's units include writes of other routes or of request start-up, whose rows no keyScope of the entry bounds. */
   readonly tableScope?: boolean;
+  /** The halt variant that keeps the request on legacy, when one does. */
+  readonly haltVariant?: string;
 }
 
 /** Outcome of matching one request. */
@@ -210,7 +213,7 @@ function reloadRouting(reload: CutoverEntry | undefined, served: CutoverEntry | 
 }
 
 /** A request's key, the entry it routes under, the scan facts it read, the routes also holding it and its window's scope. */
-type KeyedMatch = Pick<RoutedOutcome, 'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes' | 'tableScope'>;
+type KeyedMatch = Pick<RoutedOutcome, 'result' | 'entry' | 'urlScope' | 'scanFailed' | 'holdRoutes' | 'tableScope' | 'haltVariant'>;
 
 /** A legacy-bound request's entry as the request makes it write, with the routes and window scope that come with it. */
 interface Shaped {
@@ -334,8 +337,9 @@ function shapedFields({ entry, holdRoutes, tableScope }: Shaped): Pick<KeyedMatc
 }
 
 /**
- * The scanned key of `request` under `options` and the entry it routes under in `index`, if any; `shaping`, given the
- * url scope the key read, shapes the entry of a legacy-bound request.
+ * The scanned key of `request` under `options`, halted for a scan fault or for a case the request shows the target cannot
+ * answer as legacy does, and the entry it routes under in `index`, if any; `shaping`, given the url scope the key read,
+ * shapes the entry of a legacy-bound request.
  */
 function keyedMatch(
   request: ScannedRouteKeyRequest,
@@ -343,27 +347,28 @@ function keyedMatch(
   index: RoutingIndex | undefined,
   shaping?: (urlScope: Record<string, string>) => EntryShaper,
 ): KeyedMatch {
-  const { result: keyed, urlScope, scanFailed, unhalted } = scannedRouteKey(request, options);
+  const { result: keyed, urlScope, scanFailed, unhalted } = haltedRouteKey(request, options);
   // A key the halt variant replaced has no entry, so legacy serves the request as its unhalted key's legacy entry would.
   const result = unhalted ?? keyed;
-  if (index === undefined) return { result, entry: undefined, urlScope, scanFailed };
+  const scan = { urlScope, scanFailed, ...(unhalted === undefined || keyed.variant === undefined ? {} : { haltVariant: keyed.variant }) };
+  if (index === undefined) return { result, entry: undefined, ...scan };
   const matched = entryOf(index, result);
   const shaper = shaping?.(urlScope);
   // A reload is never halted: scannedRouteKey keys it as sent.
   if (result.afterReload !== undefined) {
     const behind = entryOf(index, result.afterReload);
-    if (shaper === undefined) return { result, urlScope, scanFailed, ...reloadRouting(matched, behind) };
+    if (shaper === undefined) return { result, ...scan, ...reloadRouting(matched, behind) };
     // The route behind the reload is shaped first, so the reload's window gates what it can actually write.
     const served = shaper.served(result.afterReload, behind);
     const routing = reloadRouting(matched, served.entry);
     const holdRoutes = [...new Set([...routing.holdRoutes, ...served.holdRoutes])].filter((route) => route !== routing.entry?.route);
     const shaped = shaper.startup(result, { entry: routing.entry, holdRoutes, tableScope: served.tableScope });
-    return { result, urlScope, scanFailed, ...shapedFields(shaped) };
+    return { result, ...scan, ...shapedFields(shaped) };
   }
   const entry = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
   // A target entry routes as listed; only what legacy writes for a request depends on the request.
-  if (shaper === undefined || (entry !== undefined && entry.state !== 'legacy')) return { result, entry, urlScope, scanFailed };
-  return { result, urlScope, scanFailed, ...shapedFields(shaper.startup(result, shaper.served(result, entry))) };
+  if (shaper === undefined || (entry !== undefined && entry.state !== 'legacy')) return { result, entry, ...scan };
+  return { result, ...scan, ...shapedFields(shaper.startup(result, shaper.served(result, entry))) };
 }
 
 const SESSION_PROBE = 'opt2-session-probe';
@@ -520,7 +525,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
       const shaping = deps.requestWrites === undefined || index === undefined ? undefined : shapingFor(keyRequest, index, deps.requestWrites);
       const keyed = keyedMatch(keyRequest, options, index, shaping);
       const routed = (
-        { result, entry, urlScope, scanFailed, holdRoutes, tableScope }: KeyedMatch,
+        { result, entry, urlScope, scanFailed, holdRoutes, tableScope, haltVariant }: KeyedMatch,
         destination: RoutedOutcome['destination'],
       ): RoutedOutcome => ({
         result,
@@ -531,12 +536,14 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         scanFailed,
         ...(holdRoutes === undefined ? {} : { holdRoutes }),
         ...(tableScope === undefined ? {} : { tableScope }),
+        ...(haltVariant === undefined ? {} : { haltVariant }),
       });
 
       if (index === undefined) return routed(keyed, unavailable('no-active-version'));
       const { result, entry } = keyed;
-      // The legacy bridge is reachable only from the gateway and migration, never through the edge.
-      if (entry?.owningService === 'gateway') return routed(keyed, NOT_FOUND);
+      // The legacy bridge and OPT-2's own files are never served through the edge, a reload in front of them included.
+      const behindReload = result.afterReload === undefined ? undefined : entryOf(index, result.afterReload);
+      if (entry?.owningService === 'gateway' || behindReload?.owningService === 'gateway') return routed(keyed, NOT_FOUND);
       if (entry === undefined || entry.state === 'legacy') {
         // Legacy serves an OPT-2 namespace path as one of its own (a page, through its root front controller), so it routes as that.
         return routed(result.family === 'opt2' ? keyedMatch(keyRequest, legacyOptions, index, shaping) : keyed, LEGACY);

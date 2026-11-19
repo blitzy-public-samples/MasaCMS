@@ -5,13 +5,14 @@
  */
 import { AuthDenial, Roles, assertSiteMatches, suppliedSiteIdsOf, type DenialRenderer, type Opt2RouteConfig } from '@opt2/platform/auth';
 import {
+  DEBUGGING_ENABLED_TEMPLATE,
   IMAGE_UPLOAD_CONDITION,
   LEGACY_ERROR_PAGE_HTML,
   LEGACY_ERROR_STATUS_TEXT,
   LEGACY_JSON_CONTENT_TYPE,
   LegacyApiError,
+  LegacyFaultError,
   LegacyServiceUnavailableError,
-  REST_CONSUMED_PARAMS_HEADER,
   REST_CREDENTIAL_PARAMS,
   WWW_AUTHENTICATE,
   accessControlOriginDomains,
@@ -23,12 +24,14 @@ import {
   cfListToArray,
   cfToBoolean,
   corsHeaders,
+  debuggingEnabledOf,
   errorSpec,
   fallbackSiteId,
   isDefinedApiName,
   isGenericMethod,
   isJsonContentType,
   isValidVariableName,
+  legacyDebugPageHtml,
   legacyErrorResponse,
   legacyScopeParams,
   legacyScopeValue,
@@ -62,6 +65,7 @@ import {
 } from '@opt2/platform/service-kit';
 import { registryEntries, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import type { Actor, SiteContentSettings } from '../domain/context.js';
+import { esapiEncode } from '../legacy/admin-markup.js';
 import type { LegacySiteUrlConfig } from '../legacy/content-urls.js';
 import { contentEntities, getContentEntityConfig, isContentEntity } from '../legacy/jsonapi-entities.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../legacy/jsonapi-serializers.js';
@@ -153,6 +157,8 @@ export interface JsonApiLegacySettings {
   readonly suppressAPIParams: boolean;
   /** configBean `useDataNamespaceForAPI`: keeps a struct `data` under `data` unless the request's `useDataNamespace` says otherwise. */
   readonly useDataNamespaceForAPI: boolean;
+  /** configBean `debuggingEnabled`, as onError tests it: its debug page names an escaped fault, else error.html. */
+  readonly debuggingEnabled: boolean;
 }
 
 const BLANK = /^\s*$/;
@@ -204,6 +210,7 @@ const LEGACY_SETTINGS = z
     // No setter: serializeResponse reads the raw value with `&&` and `!`, which throw on a non-boolean (jsonApiUtility.cfc:1482,1493).
     MURA_SUPPRESSAPIPARAMS: textSetting((v) => cfIsBoolean(v), 'must be a CFML boolean'),
     MURA_USEDATANAMESPACEFORAPI: textSetting((v) => cfIsBoolean(v), 'must be a CFML boolean'),
+    MURA_DEBUGGINGENABLED: z.preprocess(literal, z.string().optional()),
   })
   .transform(
     (env): JsonApiLegacySettings => ({
@@ -223,6 +230,7 @@ const LEGACY_SETTINGS = z
       suppressAPIParams: env.MURA_SUPPRESSAPIPARAMS === undefined || cfToBoolean(env.MURA_SUPPRESSAPIPARAMS),
       // The site renderer's `useDataNamespaceForAPI` would override this (jsonApiUtility.cfc:13-15); no deployed renderer sets it.
       useDataNamespaceForAPI: env.MURA_USEDATANAMESPACEFORAPI === undefined || cfToBoolean(env.MURA_USEDATANAMESPACEFORAPI),
+      debuggingEnabled: debuggingEnabledOf(env.MURA_DEBUGGINGENABLED ?? DEBUGGING_ENABLED_TEMPLATE),
     }),
   );
 
@@ -941,16 +949,21 @@ function echoedParams(params: Struct): Struct {
 /** A JSON API answer; only onError's page sets `statusText`. */
 type JsonApiAnswer = SerializedLegacyResponse & { statusText?: string };
 
+/** The serializer's fault on a JSON null under a hinted key, which passes serializeInput no `input` (jsonSerializer.cfc:288-290). */
+const NULL_UNDER_HINT_FAULT = new LegacyFaultError('The INPUT parameter to the serializeInput function is required but was not passed in.', 'Application');
+
 /**
- * onError's page with debugging off (onError_include.cfm:138-151) for echoed params holding a JSON null under a hinted key,
- * on which the serializer raises (jsonSerializer.cfc:288-290) in the answer and again in processRequest's catch block.
- * The headers set before serializing stay; the ETag, set after it, is never sent (jsonApiUtility.cfc:1471-1511).
+ * onError's page (onError_include.cfm:138-176) for echoed params holding a JSON null under a hinted key, on which the
+ * serializer raises in the answer and again in processRequest's catch block: with debugging on its debug page naming
+ * that fault, else error.html. The headers set before serializing stay; the ETag, set after it, is never sent
+ * (jsonApiUtility.cfc:1471-1511).
  */
 function unechoableAnswer(params: Struct, serializer: LegacyJsonSerializer, settings: JsonApiLegacySettings, wwwAuthenticate?: string): JsonApiAnswer | undefined {
   if (settings.suppressAPIParams || !serializer.nullUnderHint(params)) return undefined;
   const headers: Record<string, string> = { 'Content-Type': LEGACY_JSON_CONTENT_TYPE };
   if (wwwAuthenticate !== undefined) headers['WWW-Authenticate'] = wwwAuthenticate;
-  return { status: 500, statusText: LEGACY_ERROR_STATUS_TEXT, headers, body: LEGACY_ERROR_PAGE_HTML };
+  const body = settings.debuggingEnabled ? legacyDebugPageHtml(NULL_UNDER_HINT_FAULT, (text) => esapiEncode('html', text)) : LEGACY_ERROR_PAGE_HTML;
+  return { status: 500, statusText: LEGACY_ERROR_STATUS_TEXT, headers, body };
 }
 
 /** What an error envelope reports beside its type; each defaults to the resolution's own. */
@@ -1007,10 +1020,10 @@ function credentialBlockMethod(params: CfStruct): string {
   return simpleText(requested) ?? 'invalid';
 }
 
-/** Exceptions-list entry of the credential lookups {@link restCredentialAnswer} leaves to identity. */
-const REST_CREDENTIALS_EXCEPTION = 'EX-JSONAPI-REST-CREDENTIALS';
-
-/** The REST credential block (jsonApiUtility.cfc:422-560) of a tokenless call: request-decided answers; identity's client and token lookups fail closed. */
+/**
+ * The REST credential block (jsonApiUtility.cfc:422-560) of a tokenless call: request-decided answers; identity's client and
+ * token lookups fail closed. Through the gateway no REST call arrives tokenless: identity answers every outcome but a session.
+ */
 function restCredentialAnswer(
   resolved: ResolvedJsonApiCall,
   headers: JsonApiRequestFacts['headers'],
@@ -1018,9 +1031,8 @@ function restCredentialAnswer(
   settings: JsonApiLegacySettings,
 ): JsonApiAnswer {
   const refuse = (what: string): never => {
-    throw new LegacyServiceUnavailableError(`REST credentials of ${what} are verified by identity (${REST_CREDENTIALS_EXCEPTION})`, 'auto', 'jsonapi-rest-credentials');
+    throw new LegacyServiceUnavailableError(`REST credentials of ${what} are verified by identity`, 'auto', 'jsonapi-rest-credentials');
   };
-  if (headerText(headers, REST_CONSUMED_PARAMS_HEADER) !== undefined) refuse('a session that ended after the exchange');
   const params = structOf(Object.entries(resolved.requestParams));
   for (const [header, name] of CREDENTIAL_HEADERS) {
     const value = headerText(headers, header);

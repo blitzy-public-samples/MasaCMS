@@ -2,21 +2,22 @@
 // core/mura/configBean.cfc, core/mura/content/contentServer.cfc and core/mura/content/contentRendererUtility.cfc.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLegacySettingsForTests } from '@/lib/env';
-import { siteDataOf, type SiteData } from '@/lib/request-context';
+import { GatewayDenialError } from '@/lib/gateway-client';
 import {
   createHref,
-  resetSiteFirstTouchForTests,
+  legacySitePath,
+  legacySitePaths,
+  legacyThemeAssetPath,
   siteBeanOf,
-  siteFirstTouch,
   sitePaths,
   urlStem,
   type PathRequest,
   type SiteBean,
-  type ThemeLayout,
 } from '@/lib/site-paths';
-import { adminS2Request, siteRecordFor } from '../helpers/admin-request';
+import { adminS2Request } from '../helpers/admin-request';
+import { LEGACY_SITE_PATHS_KEY, LEGACY_SITE_PATHS_PATH, fakeGatewayClient } from '../helpers/fake-gateway';
 
-/** A local site on `www.example.com` with one alias, its own pools and theme `MyTheme`. */
+/** A local site on `www.example.com` with one alias and its own pools. */
 const SITE: SiteBean = {
   siteId: 'default',
   domain: 'www.example.com',
@@ -30,7 +31,6 @@ const SITE: SiteBean = {
   resourceDomain: '',
   displayPoolID: 'default',
   filePoolID: 'default',
-  theme: 'MyTheme',
 };
 
 const ON_PRIMARY: PathRequest = { https: false, serverName: 'www.example.com', httpHost: 'www.example.com:8080' };
@@ -68,31 +68,62 @@ describe('siteBeanOf', () => {
       domain: 'localhost',
       domainAliases: ['a.test', 'b.test', 'c.test'],
       useSSL: true,
-      theme: '',
     });
   });
 });
 
-describe('themeAssetPath', () => {
-  it.each<[ThemeLayout, string, string, string]>([
-    ['site', 'default', '/cms/sites/default/themes/MyTheme', 'http://www.example.com:8080/cms/sites/default/themes/MyTheme'],
-    ['site', 'umbrella', '/cms/sites/umbrella/themes/MyTheme', 'http://www.example.com:8080/cms/sites/umbrella/themes/MyTheme'],
-    ['siteIncludes', 'default', '/cms/sites/default/includes/themes/MyTheme', 'http://www.example.com:8080/cms/sites/default/includes/themes/MyTheme'],
-    ['siteIncludes', 'umbrella', '/cms/sites/umbrella/includes/themes/MyTheme', 'http://www.example.com:8080/cms/sites/umbrella/includes/themes/MyTheme'],
-    ['webRoot', 'default', '/cms/themes/MyTheme', 'http://www.example.com:8080/cms/themes/MyTheme'],
-    ['webRoot', 'umbrella', '/cms/themes/MyTheme', 'http://www.example.com:8080/cms/themes/MyTheme'],
-    ['none', 'default', '/cms/sites/default', 'http://www.example.com:8080/cms/sites/default'],
-    ['none', 'umbrella', '/cms/sites/umbrella', 'http://www.example.com:8080/cms/sites/umbrella'],
-  ])('resolves a %s theme of display pool %s', (layout, displayPoolID, relative, complete) => {
-    const paths = pathsOf({ displayPoolID });
-    expect(paths.themeAssetPath(layout, false)).toBe(relative);
-    expect(paths.themeAssetPath(layout, true)).toBe(complete);
+describe('legacySitePaths', () => {
+  const ANSWER = { restEndpoint: 'https://cms.example.test/_api/rest/v1/default', themeAssetPath: '/themes/default' };
+
+  it("reads the named sites' values with the request's host facts, acting for no user", async () => {
+    const gateway = fakeGatewayClient({ [LEGACY_SITE_PATHS_KEY]: { status: 200, body: ANSWER } }, { userToken: 'user' });
+    const req = adminS2Request({
+      httpHost: 'cms.example.test:8443',
+      headers: new Headers({ 'x-forwarded-proto': 'https', 'front-end-https': 'on' }),
+    });
+
+    await expect(legacySitePaths(req, gateway, { apiSite: 'default', themeSite: 'tenant-a' })).resolves.toEqual(ANSWER);
+    expect(gateway.calls).toEqual([
+      {
+        service: 'gateway',
+        method: 'GET',
+        path: LEGACY_SITE_PATHS_PATH,
+        query: {
+          sessionSite: 'default',
+          host: 'cms.example.test:8443',
+          forwardedProto: 'https',
+          frontEndHttps: 'on',
+          apiSite: 'default',
+          themeSite: 'tenant-a',
+        },
+      },
+    ]);
   });
 
-  it('follows the site directory setting and the preview alias', () => {
-    useSettings({ MURA_SITEDIR: 'content' });
-    expect(pathsOf({}, ON_ALIAS).themeAssetPath('site', true)).toBe(
-      'http://alias.example.com:8080/cms/content/default/themes/MyTheme',
+  it('names the default site for an empty session site and sends only the forwarding headers present', async () => {
+    const gateway = fakeGatewayClient({ [LEGACY_SITE_PATHS_KEY]: { status: 200, body: ANSWER } });
+    const req = adminS2Request({ session: { siteid: '' }, headers: new Headers() });
+
+    await legacySitePaths(req, gateway, { initSite: 'default' });
+    expect(gateway.calls[0]?.query).toEqual({ sessionSite: 'default', host: 'localhost', initSite: 'default' });
+  });
+
+  it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i', async (status) => {
+    const gateway = fakeGatewayClient({ [LEGACY_SITE_PATHS_KEY]: { status } });
+
+    await expect(legacySitePaths(adminS2Request(), gateway, { themeSite: 'default' })).rejects.toEqual(
+      new GatewayDenialError('gateway', 'legacySitePaths', status),
+    );
+  });
+
+  it("reads one site's getThemeAssetPath() and fails on an answer without it", async () => {
+    const gateway = fakeGatewayClient({ [LEGACY_SITE_PATHS_KEY]: { status: 200, body: ANSWER } });
+
+    await expect(legacyThemeAssetPath(adminS2Request(), gateway, 'tenant-a')).resolves.toBe('/themes/default');
+    expect(gateway.calls[0]?.query).toMatchObject({ themeSite: 'tenant-a' });
+    expect(legacySitePath(ANSWER, 'restEndpoint')).toBe(ANSWER.restEndpoint);
+    expect(() => legacySitePath(ANSWER, 'initThemeAssetPath')).toThrow(
+      new TypeError('legacySitePaths answered no initThemeAssetPath'),
     );
   });
 });
@@ -164,65 +195,6 @@ describe('remote sites', () => {
     expect(paths.rootPath(false)).toBe(relative);
     expect(paths.rootPath(true)).toBe(complete);
     expect(paths.assetPath(true)).toBe(`${complete}/sites/default`);
-    expect(paths.themeAssetPath('webRoot', false)).toBe(`${relative}/themes/MyTheme`);
-  });
-});
-
-describe('siteFirstTouch', () => {
-  /** The site data programs-sites serves for `siteId`'s row with `columns` laid over it. */
-  const served = (siteId: string, columns: Partial<SiteData['record']> = {}): SiteData =>
-    siteDataOf({ ...siteRecordFor(siteId), ...columns }, 'en_US');
-  const DEFAULT = served('default');
-  const TENANT_A = served('tenant-a');
-
-  beforeEach(() => resetSiteFirstTouchForTests());
-
-  it("keeps each value's first computation per site while its record is unchanged", () => {
-    const compute = vi.fn(() => 'first');
-    expect(siteFirstTouch(DEFAULT, 'a', compute)).toBe('first');
-    expect(siteFirstTouch(served('default'), 'a', () => 'again')).toBe('first');
-    expect(compute).toHaveBeenCalledOnce();
-    expect(siteFirstTouch(DEFAULT, 'b', () => 'b')).toBe('b');
-    expect(siteFirstTouch(TENANT_A, 'a', () => 'other site')).toBe('other site');
-    expect(siteFirstTouch(DEFAULT, 'a', () => 'unused')).toBe('first');
-  });
-
-  it.each<[string, Partial<SiteData['record']>]>([
-    ['Site label', { Site: 'Renamed' }],
-    ['siteLocale', { siteLocale: 'de_DE' }],
-    ['useSSL', { useSSL: 1 }],
-  ])('starts afresh once the %s column changes, and again once it changes back', (_column, columns) => {
-    expect(siteFirstTouch(DEFAULT, 'a', () => 'first')).toBe('first');
-    expect(siteFirstTouch(served('default', columns), 'a', () => 'changed')).toBe('changed');
-    expect(siteFirstTouch(served('default', columns), 'a', () => 'unused')).toBe('changed');
-    expect(siteFirstTouch(DEFAULT, 'a', () => 'restored')).toBe('restored');
-  });
-
-  it("forgets every site's values once another site's record changes", () => {
-    const renamed = served('tenant-a', { Site: 'Renamed' });
-    expect(siteFirstTouch(DEFAULT, 'a', () => 'default')).toBe('default');
-    expect(siteFirstTouch(TENANT_A, 'a', () => 'tenant-a')).toBe('tenant-a');
-
-    expect(siteFirstTouch(renamed, 'a', () => 'renamed')).toBe('renamed');
-    expect(siteFirstTouch(DEFAULT, 'a', () => 'rebuilt')).toBe('rebuilt');
-    expect(siteFirstTouch(renamed, 'a', () => 'unused')).toBe('renamed');
-  });
-
-  it('forgets every value on reset', () => {
-    siteFirstTouch(DEFAULT, 'a', () => 'first');
-    siteFirstTouch(TENANT_A, 'a', () => 'first');
-    resetSiteFirstTouchForTests();
-
-    expect(siteFirstTouch(DEFAULT, 'a', () => 'reset')).toBe('reset');
-    expect(siteFirstTouch(TENANT_A, 'a', () => 'reset')).toBe('reset');
-  });
-
-  it('shares its values with another instance of the module', async () => {
-    siteFirstTouch(DEFAULT, 'a', () => 'first');
-    vi.resetModules();
-    const other = await import('@/lib/site-paths');
-
-    expect(other.siteFirstTouch(DEFAULT, 'a', () => 'second')).toBe('first');
   });
 });
 

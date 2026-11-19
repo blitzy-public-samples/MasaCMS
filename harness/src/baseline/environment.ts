@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
 
 import { UsageError, isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
+import { harnessKeyHeaders } from '../lib/harness-key.js';
 import { createHttpSession } from '../lib/http.js';
 import { createReadOnlyMssql } from '../lib/mssql.js';
 import { pristineDir, reportsDir, type EnvLike } from '../lib/paths.js';
@@ -522,10 +523,15 @@ async function attempt<T>(fn: () => Promise<T>): Promise<Attempt<T>> {
   }
 }
 
-/** JSON body of a 200 answer to `GET <baseUrl><pathAndQuery>`. */
-async function getJson(baseUrl: string, pathAndQuery: string, fetchImpl: EnvironmentDeps['fetch']): Promise<unknown> {
+/** JSON body of a 200 answer to `GET <baseUrl><pathAndQuery>`, sent with `headers`. */
+async function getJson(
+  baseUrl: string,
+  pathAndQuery: string,
+  fetchImpl: EnvironmentDeps['fetch'],
+  headers: Record<string, string> = {},
+): Promise<unknown> {
   const session = createHttpSession({ baseUrl, ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) });
-  const res = await session.get(pathAndQuery);
+  const res = await session.get(pathAndQuery, { headers });
   if (res.status !== 200) throw new Error(`GET ${new URL(baseUrl).origin}${pathAndQuery} answered HTTP ${res.status}`);
   return res.json();
 }
@@ -579,7 +585,7 @@ function malformedInfo(info: Record<string, unknown>): string[] {
 
 /** `harness/legacy-baseline/cfml/run.cfm?info=1`, read direct from legacy, with lower-cased keys. */
 async function legacyInfo(env: EnvLike, fetchImpl: EnvironmentDeps['fetch']): Promise<Record<string, unknown>> {
-  const info = lowerKeysDeep(await getJson(legacyOrigin(env), INFO_PATH, fetchImpl));
+  const info = lowerKeysDeep(await getJson(legacyOrigin(env), INFO_PATH, fetchImpl, harnessKeyHeaders(env)));
   if (!isRecord(info)) throw new Error(`${INFO_PATH} did not answer a JSON object`);
   return info;
 }

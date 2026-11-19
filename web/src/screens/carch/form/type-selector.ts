@@ -2,8 +2,6 @@
 import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeJs, raw, type SafeHtml } from '@/lib/html';
-// The shared site-path helper keeps the theme asset path the same as partials/js.ts prints on the edit page.
-import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import { isSuperOrAdminUser, structOf, structText } from '../model';
 import { cfListHas, type EditFormInput, type EditFormState, type SubTypeRow } from './custom-tags';
 
@@ -12,22 +10,13 @@ export interface TypeSelectorInput {
   readonly ctx: Pick<EditFormInput['ctx'], 'rb'>;
   readonly req: EditFormInput['req'];
   readonly data: EditFormInput['data'];
-  readonly state: Pick<EditFormState, 'pageLevelList' | 'baseTypeList' | 'subTypes' | 'subtypeFilter'>;
+  readonly state: Pick<EditFormState, 'pageLevelList' | 'baseTypeList' | 'subTypes' | 'subtypeFilter' | 'themeAssetPath'>;
 }
 
 // The markup is the include as ACF 2023 emits it after the panel's indentation: whitespace-only text between CFML tags
 // prints one space after non-whitespace output and nothing otherwise, and all other text is kept byte for byte. So
 // each Link, Component and Form subtype option is followed by one space and nothing else. Ids, types, subtypes and
 // labels print unencoded, as legacy prints them.
-
-/** The theme Masa start-up installs as `<webroot>/themes/default`, which the installed site uses. */
-const INSTALLED_THEME = 'default';
-
-/** `settingsManager.getSite(rc.siteID).getThemeAssetPath()` for the session site, which carch keeps as `rc.siteID`. */
-function themeAssetPath(req: TypeSelectorInput['req']): string {
-  if (req.site === undefined) return `${legacySettings().context}/themes/${INSTALLED_THEME}`;
-  return sitePaths(req, siteBeanOf(req.site)).themeAssetPath('webRoot', false);
-}
 
 /** The values every branch reads, as edit.cfm leaves them before the include. */
 interface Selector {
@@ -129,7 +118,7 @@ export function renderTypeSelector(input: TypeSelectorInput): SafeHtml {
     subTypes: state.subTypes,
     subtypeFilter: state.subtypeFilter,
     rbKey: (key) => ctx.rb.rbKey(key),
-    onchange: (siteId) => `${call}${siteId}','${legacySettings().context}','${themeAssetPath(req)}');`,
+    onchange: (siteId) => `${call}${siteId}','${legacySettings().context}','${state.themeAssetPath}');`,
   };
   if (cfListHas(state.pageLevelList, rcType, { noCase: true })) {
     return raw(pageLevelSelector(s, state.baseTypeList, isSuperOrAdminUser(req)));

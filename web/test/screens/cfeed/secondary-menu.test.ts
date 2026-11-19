@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { feedApiEndpoint } from '@/screens/cfeed/common';
 import {
   cfeedSecondaryMenu,
   renderCfeedSecondaryMenu,
@@ -218,15 +217,10 @@ describe('renderCfeedSecondaryMenu outside list', () => {
     expect(linkAttrs(markup)).toEqual([backAttrs(SITE), viewAttrs(CHANNEL_LINK)]);
   });
 
-  it('builds the local endpoint from the session site when none is given', () => {
-    const req = siteAdminRequest(SITE, EDIT);
-    const href = `${feedApiEndpoint(req)}/?feedID=${FEED_IDS.localIndex}`;
-
-    expect(href).toMatch(new RegExp(`^https?://[^/]+/_api/feed/v1/${SITE}/\\?feedID=`));
-    expect(linkAttrs(render(req, { fuseaction: 'edit', feed: savedFeed() }))).toEqual([
-      backAttrs(SITE),
-      viewAttrs(href),
-    ]);
+  it("throws legacy's undefined-variable error for a saved local index without the view's endpoint", () => {
+    expect(() => render(siteAdminRequest(SITE, EDIT), { fuseaction: 'edit', feed: savedFeed() })).toThrow(
+      new Error('Variable ENDPOINT is undefined.'),
+    );
   });
 
   it.each(['import1', 'import2', 'update'])('follows the default branch for %s', (fuseaction) => {

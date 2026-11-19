@@ -350,7 +350,7 @@ describe('route-key wiring of the legacy site registry', () => {
 
 describe('projected owners of the active version', () => {
   const ownership = loadTableOwnership(resolveGatewayPaths({}));
-  // v0003 returns only part of identity's and people's units to legacy, so it projects to the same owners as v0002.
+  // v0003 returns R to legacy, which leaves people no target-authoritative unit and identity its permission group.
   const V0002_OWNERS = [
     'communications',
     'e-signature',
@@ -367,7 +367,7 @@ describe('projected owners of the active version', () => {
   it.each<[CommittedVersion, string[]]>([
     ['v0001', []],
     ['v0002', V0002_OWNERS],
-    ['v0003', V0002_OWNERS],
+    ['v0003', V0002_OWNERS.filter((owner) => owner !== 'people')],
   ])('are the table-ownership owners of the units %s makes target-authoritative', async (version, owners) => {
     const index = await committedIndex(version);
     const projected = projectedOwnersOf((await ownership).units, () => index);

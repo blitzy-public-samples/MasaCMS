@@ -107,6 +107,8 @@ These are served in the Masa envelope under the base path `/legacy-fixtures/cfml
 
 A role denial answers as the fixture's earlier checks do: 400 `invalidParameters` when the requested site is unregistered, then 401 for a session without a login (a token with `sub` `''`), else 403. `/v1/reporting/**` applies the same two answers to the token's site.
 
+The gateway never halts the create on a NUL (`EX-UNSTORABLE-TEXT-NUL` in [`opt2/exceptions-list.md`](../../opt2/exceptions-list.md)): served by legacy, its `cfthread` job would write `reporting.export_job` after the write window closes. The route answers a NUL as the fixture does and binds none: a `siteid` holding one is unregistered (400 `invalidParameters`), no definition matches a `definitionId` holding one (404 `notFound`), and the `format` and `asOf` checks refuse one (400 `invalidParameters`).
+
 The gateway routes them by the active version in `gateway/cutover/versions/`, by route key; a `POST` answered as a `GET` carries the `GET`'s key:
 
 - `v0001`: all four route keys are `legacy`.

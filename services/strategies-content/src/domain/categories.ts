@@ -1,5 +1,6 @@
 /** Categories and category assignments: categoryManager, categoryDAO, categoryGateway, categoryBean and the ccategory.update controller. */
 import {
+  LegacyFaultError,
   LegacyServiceUnavailableError,
   cfDateTimeFormat,
   cfEq,
@@ -1118,7 +1119,7 @@ export async function updateCategoryAction(
   if (cfEq(action, 'delete')) return LIST_REDIRECT;
   if (bean === undefined) {
     // A rejected token or unknown action leaves rc.categoryBean undefined, which legacy then dereferences.
-    throw new Error('Element CATEGORYBEAN is undefined in ARGUMENTS.RC.');
+    throw new LegacyFaultError('Element RC.categoryBean is undefined in ARGUMENTS.');
   }
   if (Object.keys(bean.errors).length === 0) return LIST_REDIRECT;
   return { kind: 'rerender', bean, rsRestrictGroups: await restrictGroups(deps, actor) };

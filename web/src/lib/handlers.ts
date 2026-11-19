@@ -33,6 +33,7 @@ import {
 } from './gateway-client';
 import { isSafeHtml, toString as markupOf } from './html';
 import {
+  LegacySessionFaultError,
   assignContext,
   buildAdminRequest,
   saveSessionWrites,
@@ -210,8 +211,9 @@ function answerFailure<T>(
 /**
  * Authenticates, builds the request context, resolves and gates the screen, runs it, persists the session writes in
  * one identity call and writes the request's one log line in its span, then hands the answer over. Unavailability,
- * refused credentials and service denials become `answers` and persist nothing; any other error is logged and answered
- * with legacy's 500 error page, persisting nothing. A staged body is then removed.
+ * refused credentials and service denials become `answers` and persist nothing; a fault legacy raises persists the session
+ * writes made before it; any other error is logged and answered with legacy's 500 error page, persisting nothing. A
+ * staged body is then removed.
  */
 async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>, resolve: Resolve<T>): Promise<T> {
   markPipelineRequest();
@@ -244,11 +246,12 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
   const answerRequest = async (): Promise<T> => {
     let received: ReceivedBody | undefined;
     let outcome: Outcome<T> | undefined;
+    let persistWrites: ((writes?: AdminSessionWrites) => Promise<void>) | undefined;
     try {
       const auth = await authenticateRequest(input.headers, input.path);
       user = auth.user;
       received = input.bodySource === undefined ? undefined : await receiveRequestBody(input.bodySource);
-      const gateway = createGatewayClient({ userToken: auth.userToken, requestId, inbound: input.headers });
+      const calls = { userToken: auth.userToken, requestId, inbound: input.headers };
       const now = systemClock.now();
       const req = await buildAdminRequest({
         params: input.route,
@@ -257,10 +260,12 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         headers: input.headers,
         form: received?.form,
         auth,
-        gateway,
+        gateway: createGatewayClient(calls),
         mode: input.mode,
         now,
       });
+      // The screen's calls name the path pairs rc holds, so each owner's scan leaves them as legacy's rc does.
+      const gateway = createGatewayClient({ ...calls, pathPairs: req.relayScopes.pathPairs });
       // Read before the screen runs: its `mura` writes replace this object, which is the base identity stores them against.
       const storedMura = req.session.muraValues;
       context = {
@@ -280,18 +285,28 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         now,
         body: received?.body,
       };
+      // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
+      persistWrites = (writes = {}) => saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...writes }, storedMura);
       const decision = await runGate(req, dispatch.gate);
       outcome =
         decision.kind === 'redirect'
           ? { answer: answers.redirect(decision.location, req.pendingSetCookies, context) }
           : await dispatch.run(ctx, context);
-      // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
-      await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes }, storedMura);
+      await persistWrites(outcome.writes);
       return outcome.answer;
     } catch (error) {
       if (outcome !== undefined) answers.abandon(outcome.answer);
-      const mapped = answerFailure(error, input, answers, context);
-      if (mapped.denial === undefined) failure = error;
+      let failed = error;
+      // Legacy's session scope keeps the values a request set before the fault it raises.
+      if (outcome === undefined && error instanceof LegacyFaultError && persistWrites !== undefined) {
+        const writes = error instanceof LegacySessionFaultError ? error.sessionWrites : {};
+        failed = await persistWrites(writes).then(
+          () => error,
+          (saveError: unknown) => saveError,
+        );
+      }
+      const mapped = answerFailure(failed, input, answers, context);
+      if (mapped.denial === undefined) failure = failed;
       else denial = mapped.denial;
       return mapped.answer;
     } finally {

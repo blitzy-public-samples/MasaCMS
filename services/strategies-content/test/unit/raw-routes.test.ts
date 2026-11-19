@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { LegacyFaultError, legacyFaultOf } from '@opt2/platform/legacy-compat';
 import { TENANT_A, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
 import { CONTENT } from '../../src/repo/tables.js';
 import { adminDenial, type AdminDenial } from '../../src/routes/v1/access.js';
@@ -455,6 +456,25 @@ describe('legacy answers', () => {
     const refused = await asAdmin('POST', 'carch/lockfile');
     expect([refused.statusCode, refused.body]).toEqual([200, '']);
     expect(t.client.csrfConsumes.map(({ context }) => context)).toEqual([`${c.fileNode}lockfile`]);
+    expect(t.db.writes()).toEqual([]);
+  });
+
+  // Own oracle, debuggingEnabled=true: lockfile-, unlockfile-, unlocknode-ajax-nocontentid-get, approvalaction-no-requestid,
+  // -ajax-no-action and -reject-no-comment, each onError's page naming the fault.
+  it.each<[string, Readonly<Record<string, string>>, string]>([
+    ['carch/lockfile', { ajaxrequest: 'true' }, 'Element CONTENTID is undefined in RC.'],
+    ['carch/unlockfile', { ajaxrequest: 'true' }, 'Element CONTENTID is undefined in RC.'],
+    ['carch/unlocknode', { ajaxrequest: 'true' }, 'Element CONTENTID is undefined in RC.'],
+    ['carch/approvalaction', {}, 'Element REQUESTID is undefined in RC.'],
+    ['carch/approvalaction', { ajaxrequest: 'true', requestID: IDS.approval.request }, 'Element ACTION is undefined in RC.'],
+    ['carch/approvalaction', { requestID: IDS.approval.request, action: 'reject' }, 'Element COMMENT is undefined in RC.'],
+  ])('%s with %j answers the server_error naming the fault legacy raises, consuming no token and writing nothing', async (key, fields, message) => {
+    const res = await asAdmin('POST', key, fields);
+    expect(res.statusCode, res.body).toBe(500);
+    const contentType = String(res.headers['content-type'] ?? '');
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: `${RAW_PREFIX}${key}`, status: 500, contentType, body: contractBody(res.body, contentType) });
+    expect(legacyFaultOf(res.json())).toEqual(new LegacyFaultError(message));
+    expect(t.client.csrfConsumes).toEqual([]);
     expect(t.db.writes()).toEqual([]);
   });
 

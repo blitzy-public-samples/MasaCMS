@@ -77,6 +77,7 @@ export {
   type LegacySurface,
 } from './create-service.js';
 export { recordEventScope } from './event-scope.js';
+export { answeringQueryFault } from './query-fault.js';
 export { JSON_CONTENT_TYPE, jsonListStream } from './json-stream.js';
 export {
   csrfPreHandler,

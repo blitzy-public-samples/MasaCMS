@@ -25,7 +25,8 @@ import {
   type LegacyJar,
 } from './jar.js';
 import type { SessionMode } from './mode.js';
-import type { SessionStateChecker } from './state-check.js';
+import type { SessionStateCheck, SessionStateChecker } from './state-check.js';
+import type { SessionToken } from './token-cache.js';
 
 /** Legacy `siteid` fallback when a request names no site (contentServer.cfc:610-622). */
 const DEFAULT_SITE_ID = 'default';
@@ -66,9 +67,11 @@ export type SessionResolution =
       identityEndPending?: true;
       /** Request parameter names REST credential handling consumed, which the owning service's route key removes from params. */
       consumedParams?: string[];
+      /** A REST session's user token, minted for the session its check found. */
+      token?: SessionToken;
     }
   | { kind: 'response'; status: number; headers: Record<string, string>; body: string }
-  | { kind: 'none'; setCookies: string[]; consumedParams?: string[] };
+  | { kind: 'none'; setCookies: string[] };
 
 /** A legacy-bound request's session; `unverified` is a jar-mapped legacy-primary session whose identity state is unreadable. */
 export type LegacyBoundResolution =
@@ -87,7 +90,12 @@ export interface ResolveSessionOptions {
   mode: SessionMode;
   /** The requested legacy site id; absent or empty falls back to `default`. */
   siteId?: string | undefined;
+  /** Mints a session's user token at an epoch; a REST resolution carries the token as `token`. */
+  mintToken?: TokenMinter;
 }
+
+/** Mints the user token of a session at the epoch its check reported. */
+export type TokenMinter = (sessionId: string, epoch: number) => Promise<SessionToken>;
 
 /** Options of {@link SessionResolver.resolveLegacyBound}. */
 export interface LegacyBoundOptions {
@@ -239,6 +247,11 @@ function attachmentKey(cookies: JarCookies): string {
 
 function none(setCookies: string[] = []): SessionResolution {
   return { kind: 'none', setCookies };
+}
+
+/** Whether `token` is the checked session's: its user at its epoch. Identity mints an ended session's token anonymous at a moved-on epoch. */
+function mintedForCheck({ claims }: SessionToken, check: SessionStateCheck): boolean {
+  return claims.epoch === check.epoch && claims.sub === check.userId;
 }
 
 /** True when `error` is the service client's report that identity refused, dropped, outlasted or failed a call. */
@@ -397,7 +410,8 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
 
   /** Identity's adoption of a described legacy session, at the requested site or legacy's default. */
   function adoptInIdentity(describe: LegacyDescribe, siteId: string | undefined) {
-    return identity.adopt({ describe, siteId: siteId || DEFAULT_SITE_ID });
+    // A site id holding a NUL names no site, as Masa's siteExists finds, and identity's session row cannot hold one.
+    return identity.adopt({ describe, siteId: siteId === undefined || siteId === '' || siteId.includes('\0') ? DEFAULT_SITE_ID : siteId });
   }
 
   /**
@@ -449,12 +463,16 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     return session(adopted.sessionId, adopted.epoch, 'target-primary', row, reissue(cookies, adopted.setCookie));
   }
 
-  /** Sessionless REST: identity applies legacy's credential rules and may answer on legacy's behalf. */
-  async function restSession(
+  /**
+   * One REST credential exchange: identity's answer or its still-active session with the token `mintToken` minted for it;
+   * undefined when that session ended before its check or its token.
+   */
+  async function restExchange(
     request: SessionRequestInput,
     mode: SessionMode,
     siteId: string | undefined,
-  ): Promise<SessionResolution> {
+    mintToken: TokenMinter | undefined,
+  ): Promise<SessionResolution | undefined> {
     const outcome = await identity.authenticate({
       method: request.httpMethod,
       path: request.path,
@@ -466,12 +484,34 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     });
     if (outcome.outcome === 'denied' || outcome.outcome === 'answered') return legacyAnswer(outcome);
     if (outcome.outcome === 'anonymous' || outcome.sessionId === null) return none();
-    // Consumed credentials stay out of the service's params even when the session ended and it continues anonymously.
-    const consumed = outcome.consumedParams?.length ? { consumedParams: outcome.consumedParams } : {};
     const check = await state.check(outcome.sessionId);
-    if (check.state !== 'active') return { kind: 'none', setCookies: [], ...consumed };
+    if (check.state !== 'active') return undefined;
+    const token = await mintToken?.(outcome.sessionId, check.epoch);
+    if (token !== undefined && !mintedForCheck(token, check)) return undefined;
+    const consumed = outcome.consumedParams?.length ? { consumedParams: outcome.consumedParams } : {};
+    const minted = token === undefined ? {} : { token };
     // A REST session has no jar, so legacy receives no cookies in its place.
-    return { kind: 'session', sessionId: outcome.sessionId, epoch: check.epoch, mode, legacyCookies: {}, setCookies: [], ...consumed };
+    return { kind: 'session', sessionId: outcome.sessionId, epoch: check.epoch, mode, legacyCookies: {}, setCookies: [], ...consumed, ...minted };
+  }
+
+  /**
+   * Sessionless REST: identity applies legacy's credential rules and may answer on legacy's behalf. Legacy keeps no
+   * session a REST request could lose, so a session identity ended before its check or its token is exchanged for once
+   * more; a second ended session leaves identity holding none for the request, which fails closed.
+   */
+  async function restSession(
+    request: SessionRequestInput,
+    mode: SessionMode,
+    siteId: string | undefined,
+    mintToken: TokenMinter | undefined,
+  ): Promise<SessionResolution> {
+    const resolved =
+      (await restExchange(request, mode, siteId, mintToken)) ?? (await restExchange(request, mode, siteId, mintToken));
+    if (resolved !== undefined) return resolved;
+    throw new ServiceUnavailableError(
+      IDENTITY_SERVICE,
+      new Error('REST session ended before its check or token on both credential exchanges'),
+    );
   }
 
   /** Target-primary: identity-issued cookies name the session; otherwise describe's legacy session is adopted. */
@@ -635,11 +675,11 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
   }
 
   return {
-    async resolveSession(request, { family, mode, siteId }) {
+    async resolveSession(request, { family, mode, siteId, mintToken }) {
       // Legacy disables session management for /_api/rest/ (applicationSettings.cfm:179), so cookies are never read.
       // Every REST path is root-served, whose scan fault answers the error page ahead of the credential code
       // (onRequestStart_scriptProtect_method.cfm:80), so the owning service's start-up hook answers it.
-      if (family === 'rest') return request.scanFailed === true ? none() : restSession(request, mode, siteId);
+      if (family === 'rest') return request.scanFailed === true ? none() : restSession(request, mode, siteId, mintToken);
       return mode === 'target-primary' ? targetPrimarySession(request, siteId) : legacyPrimarySession(request, siteId);
     },
 

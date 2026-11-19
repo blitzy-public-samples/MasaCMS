@@ -180,6 +180,13 @@ describe.skipIf(!available)('survey responses against PostgreSQL', () => {
     expect(listed.list.map((r) => Buffer.from(r.answers, 'utf8'))).toEqual([Buffer.from(answers, 'utf8')]);
   });
 
+  it('stores and lists answers with unpaired surrogates as the `?` legacy answers', async () => {
+    const survey = await newSurvey();
+    const row = await submit(TENANT_A, survey.survey_id, { answers: '{"q1":"\ud800","q2":"\ud83d\ude00\udc00"}' });
+    const listed = await listResponsePage(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id, params: {} });
+    expect([row.answers, listed.list.map((r) => r.answers)]).toEqual(['{"q1":"?","q2":"\ud83d\ude00?"}', ['{"q1":"?","q2":"\ud83d\ude00?"}']]);
+  });
+
   it('lists every response by creation time and id, and only in the survey tenant', async () => {
     const survey = await newSurvey();
     await target(survey.survey_id, TENANT_B.siteId);

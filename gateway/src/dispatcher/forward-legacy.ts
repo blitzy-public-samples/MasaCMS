@@ -15,6 +15,7 @@ import type { SessionMode } from '../session/mode.js';
 import { LEGACY_CALLEE, replyFromCallee } from './callee-span.js';
 import { failClosed, neverSent, type FailContext } from './fail-closed.js';
 import { HOP_BY_HOP_HEADERS, forwardedHeaders } from './headers.js';
+import { withLenientResponse } from './lenient-response.js';
 import { withRequestTarget } from './request-target.js';
 import { recordResponseHead, writeUpstreamHead, type RawResponseHead, type ResponseHeadSlot } from './response-head.js';
 import { settlingRelay } from './settling-relay.js';
@@ -73,6 +74,8 @@ export interface LegacyForwardContext {
   failContext: FailContext;
   /** Longest wait for legacy's head, and between its body bytes; defaults to {@link LEGACY_EXCHANGE_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** True when legacy's head may hold bytes undici refuses: it is read by Node's lenient parser and relayed byte for byte. */
+  lenientHead?: boolean;
 }
 
 /** Masa's longest request time: the 7200 s `requestTimeout` of its site import, export and publish (settingsManager.cfc:701). */
@@ -448,10 +451,11 @@ export async function forwardToLegacy(
   };
 
   let forwarded: FastifyReply;
+  const send = (): FastifyReply => replyFromCallee(reply, LEGACY_CALLEE, ctx.legacyOrigin, options);
   try {
     // reply-from resolves only the origin; the gateway's agent (replyFromOptions) sends request.url as received in its place.
     forwarded = withRequestTarget(request.url, () =>
-      recordResponseHead(legacyHead, () => replyFromCallee(reply, LEGACY_CALLEE, ctx.legacyOrigin, options)),
+      recordResponseHead(legacyHead, () => (ctx.lenientHead === true ? withLenientResponse(send) : send())),
     );
   } catch (error) {
     // A synchronous reply-from rejection comes before anything is sent to legacy.

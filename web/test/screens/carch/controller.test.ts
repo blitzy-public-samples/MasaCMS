@@ -1,7 +1,8 @@
 // carch controller before() against admin/core/controllers/carch.cfc 15-109: module gate, rc defaults, session effects.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { secure, type GateDecision } from '@/lib/access-gate';
-import type { AdminRequest } from '@/lib/request-context';
+import { LegacySessionFaultError, type AdminRequest } from '@/lib/request-context';
 import { CARCH_OWNER, applyCarchDefaults, carchGate, isAjaxRequest } from '@/screens/carch/controller';
 import {
   CARCH_SESSION_MODULE_IDS,
@@ -210,11 +211,17 @@ describe('applyCarchDefaults', () => {
     expect(rc['responseChart']).toBe('0');
   });
 
+  // Own oracle: carch-list-ajax-abc, -omitpub-abc, -omitadv-x and -omitrel-2a.
   it.each([
     ['ommitPublishingTab', 'maybe'],
     ['ajaxrequest', ''],
-  ])('fails like CFML for %s=%j', (flag, value) => {
-    expect(() => applyCarchDefaults(carchRequest({ [flag]: value }))).toThrow(TypeError);
+    ['ajaxrequest', 'abc'],
+    ['ommitAdvancedTab', 'x y'],
+    ['ommitRelatedContentTab', '2a'],
+  ])('fails like CFML for %s=%j, raising its fault', (flag, value) => {
+    expect(() => applyCarchDefaults(carchRequest({ [flag]: value }))).toThrow(
+      new LegacyFaultError(`cannot convert the value "${value}" to a boolean`),
+    );
   });
 
   it('applies only the first three defaults to an ajax request', () => {
@@ -356,10 +363,22 @@ describe('module id sync and topid', () => {
     ]);
   });
 
-  it('fails as ACF does for the 36-character id without a topid', () => {
-    expect(() => applyCarchDefaults(carchRequest({ moduleid: LONG_VARIATION_ID }))).toThrow(
-      `Element M${LONG_VARIATION_ID} is undefined in a Java object of type class coldfusion.runtime.MemorySessionScope.`,
-    );
+  // Own oracle: carch-list-m99-notopid, carch-approvalaction-m99 and carch-lockfile-m99; carch-list-after-m99 faults
+  // again without a moduleid, as the session keeps the module id set before the fault.
+  it('fails as ACF does for the 36-character id without a topid, keeping the session values set before it', () => {
+    const failure = (() => {
+      try {
+        return applyCarchDefaults(carchRequest({ moduleid: LONG_VARIATION_ID, instanceid: 'I1' }, { moduleTopIds: {} }));
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(failure).toBeInstanceOf(LegacySessionFaultError);
+    expect(failure).toMatchObject({
+      message: `Element M${LONG_VARIATION_ID} is undefined in a Java object of type class coldfusion.runtime.MemorySessionScope.`,
+      type: 'Expression',
+      sessionWrites: { moduleid: LONG_VARIATION_ID, moduleTopIds: LEGACY_TOPS, muraValues: expect.objectContaining({ objectInstanceId: 'I1' }) },
+    });
   });
 });
 

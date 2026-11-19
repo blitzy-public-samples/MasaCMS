@@ -1,6 +1,6 @@
 /** Permission operations of the `cperm` screens: node verdicts, module grant replacement with its permission events, site and pool group reads, and the reverse Users-module lookup against throwaway `identity` schemas. */
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { GateClosedError, ensureUnitGates, withGatedTenant, type GateState } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
@@ -236,6 +236,9 @@ describe.skipIf(!available)('permission operations against PostgreSQL', () => {
   afterAll(async () => {
     await handle?.drop();
   });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   it('lists the private-pool groups without Admin and the public-pool groups of the pool site, each read in its pool tenant', async () => {
     const lists = await groupListForSite(deps(), SITE);
@@ -298,6 +301,41 @@ describe.skipIf(!available)('permission operations against PostgreSQL', () => {
     expect(cleared).toEqual({ rows: [], changedGroupIds: [G1, G2, G3] });
     expect(events.published.map((event) => event.rows.includes(`${moduleId}:module`))).toEqual([false, false, false]);
     expect(await moduleGroupIds(moduleId)).toEqual([]);
+  });
+
+  it.each<[string, string[], string[], string, (moduleId: string) => string]>([
+    [
+      'repeats an earlier one as the char(35) key compares it',
+      [G1, G2, `${G1.toLowerCase()}  `, G3],
+      [G1, G2],
+      '23000',
+      (moduleId) =>
+        "Violation of PRIMARY KEY constraint 'PK_tpermissions'. Cannot insert duplicate key in object 'dbo.tpermissions'." +
+        ` The duplicate key value is (${moduleId}, ${G1.toLowerCase()}, ${SITE}, module).`,
+    ],
+    [
+      'its column cannot hold',
+      [G1, `${G2}X`, G3],
+      [G1],
+      'HY000',
+      () => `String or binary data would be truncated in table 'muradb_t.dbo.tpermissions', column 'GroupID'. Truncated value: '${G2}'.`,
+    ],
+  ])('keeps the delete and the inserts before a listed group id that %s, then fails as its INSERT does', async (_label, listed, kept, errorCode, message) => {
+    vi.stubEnv('MURA_DATABASE', 'muradb_t');
+    const moduleId = nextModule();
+    await updateModulePermissions(deps(), { siteId: SITE, moduleId, groupIds: G4 });
+    const events = recordingEvents();
+
+    const outcome = await updateModulePermissions(deps(events), { siteId: SITE, moduleId, groupIds: listed }).catch((err: unknown) => err);
+
+    expect(outcome).toMatchObject({
+      name: 'LegacyQueryFault',
+      errorCode,
+      sql: expect.stringMatching(/^Insert Into tpermissions /),
+      detail: `[Macromedia][SQLServer JDBC Driver][SQLServer]${message(moduleId)}`,
+    });
+    expect(await moduleGroupIds(moduleId)).toEqual(kept);
+    expect(events.published.map((event) => event.groupId).sort()).toEqual([...kept, G4].sort());
   });
 
   it('announces every grant it deletes, including one another replacement committed after its transaction began', async () => {

@@ -1,6 +1,9 @@
-// settingsBean and configBean path getters of a site, and its content URLs, as an admin request sees them (server-only).
+// settingsBean and configBean path getters of a site, its content URLs, and the first-touch values legacy's live site
+// beans hold, as an admin request sees them (server-only).
 import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
+import type { components as GatewayComponents } from '@/generated/clients/gateway';
 import { legacySettings } from './env';
+import { okBody, type GatewayClient } from './gateway-client';
 import { urlEncodedFormat, type AdminRequest, type SiteData } from './request-context';
 import { adminPath } from './urls';
 
@@ -18,14 +21,7 @@ export interface SiteBean {
   readonly resourceDomain: string;
   readonly displayPoolID: string;
   readonly filePoolID: string;
-  readonly theme: string;
 }
-
-/**
- * The first theme directory `getThemeAssetPath` finds: `<siteDir>/<displayPoolID>/themes/<theme>` (`site`),
- * `<siteDir>/<displayPoolID>/includes/themes/<theme>` (`siteIncludes`), `<webroot>/themes/<theme>` (`webRoot`), or none.
- */
-export type ThemeLayout = 'site' | 'siteIncludes' | 'webRoot' | 'none';
 
 /** The request values the getters read. */
 export type PathRequest = Pick<AdminRequest, 'https' | 'serverName' | 'httpHost'>;
@@ -40,8 +36,6 @@ export interface SitePaths {
   readonly corePath: (complete: boolean) => string;
   readonly pluginsPath: (complete: boolean) => string;
   readonly adminPath: (complete: boolean) => string;
-  /** `getThemeAssetPath()` for the site theme (`request.altTheme` is '' on admin requests) found at `layout`. */
-  readonly themeAssetPath: (layout: ThemeLayout, complete: boolean) => string;
 }
 
 /** A stored integer flag; SQL NULL reads as the bean default 0. */
@@ -63,50 +57,59 @@ export function siteBeanOf(site: SiteData): SiteBean {
     resourceDomain: record.resourceDomain ?? '',
     displayPoolID: site.displayPoolID,
     filePoolID: site.filePoolID,
-    theme: record.theme ?? '',
   };
 }
 
-/** Values one site bean kept from their first computation, valid while the site's served record reads `fingerprint`. */
-interface FirstTouchEntry {
-  readonly fingerprint: string;
-  readonly values: Map<string, string>;
+/** The sites whose first-touch values legacy evaluates, each only when named. */
+export interface LegacySitePathSites {
+  /** Site of `getApi('json','v1').getEndpoint(mode='rest')`. */
+  readonly apiSite?: string;
+  /** Site of `getApi('feed','v1').getEndpoint()`. */
+  readonly feedSite?: string;
+  /** Site of `getThemeAssetPath()`. */
+  readonly themeSite?: string;
+  /** Site of `getThemeAssetPath(complete=1)`. */
+  readonly initSite?: string;
 }
 
-// Bundling may load this module once per layer, so the store lives on globalThis.
-const FIRST_TOUCH = Symbol.for('opt2.web.siteFirstTouch');
-
-/** The process-wide first-touch store, one entry per site id. */
-function firstTouchStore(): Map<string, FirstTouchEntry> {
-  const slots = globalThis as typeof globalThis & { [FIRST_TOUCH]?: Map<string, FirstTouchEntry> };
-  slots[FIRST_TOUCH] ??= new Map();
-  return slots[FIRST_TOUCH];
-}
+/** Legacy's value of each named site. */
+export type LegacySitePaths = GatewayComponents['schemas']['LegacySitePaths'];
 
 /**
- * `name` of `site` as this process first computed it; a changed record of any site forgets all values, as setSites
- * rebuilds every bean (unseen rebuilds: EX-SITE-FIRST-TOUCH). It mirrors legacy's cache: Minimal Change does not apply.
+ * Legacy's site-bean values for this request's host, read through the gateway; a first touch, so only where printed.
+ * @throws GatewayDenialError When the gateway refuses web's call (401 or 403).
  */
-export function siteFirstTouch(site: SiteData, name: string, compute: () => string): string {
-  const store = firstTouchStore();
-  const fingerprint = JSON.stringify(site.record);
-  let entry = store.get(site.siteid);
-  if (entry?.fingerprint !== fingerprint) {
-    if (entry !== undefined) store.clear();
-    entry = { fingerprint, values: new Map() };
-    store.set(site.siteid, entry);
-  }
-  let value = entry.values.get(name);
-  if (value === undefined) {
-    value = compute();
-    entry.values.set(name, value);
-  }
+export async function legacySitePaths(
+  req: Pick<AdminRequest, 'session' | 'httpHost' | 'headers'>,
+  gateway: Pick<GatewayClient, 'legacySite'>,
+  sites: LegacySitePathSites,
+): Promise<LegacySitePaths> {
+  const forwardedProto = req.headers.get('x-forwarded-proto');
+  const frontEndHttps = req.headers.get('front-end-https');
+  const response = await gateway.legacySite.paths({
+    sessionSite: req.session.siteid === '' ? 'default' : req.session.siteid,
+    host: req.httpHost,
+    ...(forwardedProto === null ? {} : { forwardedProto }),
+    ...(frontEndHttps === null ? {} : { frontEndHttps }),
+    ...sites,
+  });
+  return okBody(response, 'gateway', 'legacySitePaths');
+}
+
+/** `name` of an answer whose request named its site. */
+export function legacySitePath(paths: LegacySitePaths, name: keyof LegacySitePaths): string {
+  const value = paths[name];
+  if (value === undefined) throw new TypeError(`legacySitePaths answered no ${name}`);
   return value;
 }
 
-/** Forgets every first-touch value, as a rebuild of every site bean does. */
-export function resetSiteFirstTouchForTests(): void {
-  firstTouchStore().clear();
+/** `getSite(siteId).getThemeAssetPath()` as legacy's live site bean holds it for this request. */
+export async function legacyThemeAssetPath(
+  req: Pick<AdminRequest, 'session' | 'httpHost' | 'headers'>,
+  gateway: Pick<GatewayClient, 'legacySite'>,
+  siteId: string,
+): Promise<string> {
+  return legacySitePath(await legacySitePaths(req, gateway, { themeSite: siteId }), 'themeAssetPath');
 }
 
 /** The getters of `site` for `ctx` (`settingsBean.cfc` 743-849, 1395-1530; `configBean.cfc` 517-528, 1855-1914). */
@@ -166,13 +169,6 @@ export function sitePaths(ctx: PathRequest, site: SiteBean): SitePaths {
     return `${resourcePath(complete || settings.adminSSL || settings.adminDomain !== '', domain)}${settings.adminDir}`;
   };
 
-  const themeDirectory: Readonly<Record<ThemeLayout, (complete: boolean) => string>> = {
-    site: (complete) => `${assetPath(complete)}/themes/${site.theme}`,
-    siteIncludes: (complete) => `${assetPath(complete)}/includes/themes/${site.theme}`,
-    webRoot: (complete) => `${resourcePath(complete, site.domain)}/themes/${site.theme}`,
-    none: assetPath,
-  };
-
   return {
     webPath: () => webPath(),
     rootPath: (complete) => resourcePath(complete),
@@ -184,7 +180,6 @@ export function sitePaths(ctx: PathRequest, site: SiteBean): SitePaths {
     corePath: corePluginsPath(settings.corePath, '/core'),
     pluginsPath: corePluginsPath(settings.pluginsPath, '/plugins'),
     adminPath: siteAdminPath,
-    themeAssetPath: (layout, complete) => themeDirectory[layout](complete),
   };
 }
 

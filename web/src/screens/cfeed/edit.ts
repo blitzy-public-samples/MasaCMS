@@ -17,7 +17,8 @@ export interface FeedEditOptions {
 
 /**
  * Renders `edit.cfm` for the defaulted `req`: Local when `rc.type eq 'Local'`, else Remote, with `js.cfm`'s scripts.
- * @throws GatewayDenialError When identity refuses the collection's CSRF tokens (401 or 403).
+ * @throws GatewayDenialError When identity refuses the collection's CSRF tokens, or the gateway web's read of the
+ * feed API endpoint (401 or 403).
  * @throws Error Where legacy fails rendering the branch.
  */
 export async function renderFeedEdit(

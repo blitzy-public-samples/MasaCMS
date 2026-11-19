@@ -2,7 +2,7 @@
 import { legacySettings } from '@/lib/env';
 import { encodeJs, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { siteBeanOf, siteFirstTouch, sitePaths, type SiteBean } from '@/lib/site-paths';
+import { legacySitePath, siteBeanOf, sitePaths, type LegacySitePaths, type SiteBean } from '@/lib/site-paths';
 import type { ShellContext } from './types';
 
 /** Site values of the `Mura.init` call. */
@@ -18,7 +18,7 @@ interface MuraInitSite {
 }
 
 // programs-sites serves site data to private admin users for their token's site only; otherwise the session site is
-// taken to be served on the request host with its own pools and no theme, since its row cannot be read.
+// taken to be served on the request host with its own pools, since its row cannot be read.
 /** The session site's bean when no site data was served for it. */
 function unreadSiteBean(ctx: AdminRequest): SiteBean {
   const siteId = ctx.session.siteid !== '' ? ctx.session.siteid : 'default';
@@ -35,20 +35,15 @@ function unreadSiteBean(ctx: AdminRequest): SiteBean {
     resourceDomain: '',
     displayPoolID: siteId,
     filePoolID: siteId,
-    theme: '',
   };
 }
 
-/** settingsBean `get<X>Path(complete=1)` of `site` for an admin request. */
-function muraInitSite(ctx: AdminRequest, site: SiteBean): MuraInitSite {
+/** settingsBean `get<X>Path(complete=1)` of `site` for an admin request, the theme path as legacy answered it. */
+function muraInitSite(ctx: AdminRequest, site: SiteBean, legacyPaths: LegacySitePaths): MuraInitSite {
   const paths = sitePaths(ctx, site);
-  // Web cannot reach legacy theme directories; a Masa 7.6.1 install keeps them in the web root (EX-SHELL-THEMEPATH).
-  const themeAssetPath = (): string => paths.themeAssetPath('webRoot', true);
   return {
     siteId: site.siteId,
-    // settingsBean themeLookup keeps a served site's first value per theme and complete flag.
-    themeAssetPath:
-      ctx.site === undefined ? themeAssetPath() : siteFirstTouch(ctx.site, 'themeAssetPath1', themeAssetPath),
+    themeAssetPath: legacySitePath(legacyPaths, 'initThemeAssetPath'),
     assetPath: paths.assetPath(true),
     corePath: paths.corePath(true),
     fileAssetPath: paths.fileAssetPath(true),
@@ -67,7 +62,11 @@ function effectiveFrontEndProxyLoc(ctx: AdminRequest): string {
 /** The `Mura.init({…});` statement ending both layout scripts, for the session site, indented as legacy emits it. */
 export function renderMuraInit(sc: ShellContext): string {
   const { context, indexFileInAPI } = legacySettings();
-  const site = muraInitSite(sc.ctx, sc.ctx.site === undefined ? unreadSiteBean(sc.ctx) : siteBeanOf(sc.ctx.site));
+  const site = muraInitSite(
+    sc.ctx,
+    sc.ctx.site === undefined ? unreadSiteBean(sc.ctx) : siteBeanOf(sc.ctx.site),
+    sc.data.legacyPaths,
+  );
   // settingsBean has no getSitesPath, so `sitespath` is the '' its missing-method getter returns.
   return `Mura.init({
 				inAdmin:true,

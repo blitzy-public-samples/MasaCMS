@@ -2,7 +2,7 @@
 import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { decodeServiceBody } from '@opt2/platform/service-kit';
 import type { components } from '@/generated/clients/strategies-content';
-import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
+import { assertNotDenied, assertNotFailed, type GatewayResponse } from '@/lib/gateway-client';
 import { relayContext } from '@/lib/request-context';
 import { NO_CACHE_HEADERS, REDIRECT_HEADERS } from '@/lib/responses';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
@@ -73,7 +73,8 @@ async function renderRejected(ctx: ScreenContext, result: WriteResult, relayed: 
 /**
  * `cFeed.update`: the service's FW/1 redirect to `cFeed.list` (a save, a delete or a refused token) as legacy's 302,
  * a rejected save re-rendered inside the layout, and any other answer (the close document) relayed byte for byte.
- * @throws GatewayDenialError When strategies-content answers 401 or 403.
+ * @throws GatewayDenialError When strategies-content answers 401 or 403, or a call of the re-render is refused.
+ * @throws LegacyFaultError For a 500 naming the fault legacy raises; any other 500 throws `Error`.
  * @throws TypeError When a redirect has no `Location`, a body no `Content-Type`, or JSON is not a rejected save.
  */
 export const cfeedUpdateScreen: FragmentScreen = Object.freeze({
@@ -89,6 +90,7 @@ export const cfeedUpdateScreen: FragmentScreen = Object.freeze({
     const operation = `${ctx.body === undefined ? 'GET' : 'POST'} ${PATH}`;
     const response = await relay(ctx);
     assertNotDenied(response, SERVICE, operation);
+    assertNotFailed(response, SERVICE, operation);
     const relayed: RelayedCookies = response.setCookies.length > 0 ? { setCookies: [...response.setCookies] } : {};
     const { status } = response;
     if (status >= 300 && status < 400) return redirectBody(response, operation, relayed);

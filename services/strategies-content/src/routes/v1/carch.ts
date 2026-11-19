@@ -3,7 +3,10 @@ import { readFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { AuthDenial } from '@opt2/platform/auth';
 import {
+  EMPTY_WDDX_PACKET_FAULT,
   LEGACY_ADMIN_SENTINEL_ID,
+  LegacyApiError,
+  LegacyFaultError,
   LegacyServiceUnavailableError,
   cfEq,
   cfIsBoolean,
@@ -20,6 +23,7 @@ import {
   esapiUrlEncode,
   type CsrfTokens,
   type LegacyErrorSurface,
+  type LegacyFaultTrace,
 } from '@opt2/platform/legacy-compat';
 import {
   IDENTITY_SERVICE,
@@ -995,7 +999,7 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
     // datamanager.cfm gives dsp_edit.cfm the form's detail fields, not dsp_response.cfm's summary fields.
     rcSet(view, 'fieldnames', await getCurrentFieldList(ctx.domain, actor, contentId));
     const row = await readResponse(ctx.domain, actor, rcText(rc, 'responseid'));
-    rsData = row === null ? [] : [queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })];
+    rsData = row === null ? [] : [queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row), ...emptyPacketFault(row) })];
   }
   const stats = await inTenant(ctx, actor, (tx) => ctx.domain.repository.stats.readStats(tx, { contentId, siteId }));
   const site = await siteOf(request, ctx, actor);
@@ -1016,6 +1020,11 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
 /** A struct's top-level dates as ColdFusion prints a query timestamp (`yyyy-mm-dd HH:nn:ss.S`), as the data manager prints them raw. */
 function queryCells(row: object): Rc {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Date ? cfTimestampText(value) : value]));
+}
+
+/** dsp_edit.cfm:83's `wddx2cfml` fault on an empty or NULL packet as `dataFault`; none for a packet it reads or another it rejects. */
+function emptyPacketFault(row: Parameters<typeof responseValues>[0]): { dataFault?: LegacyFaultTrace } {
+  return (row.data ?? '') === '' ? { dataFault: EMPTY_WDDX_PACKET_FAULT } : {};
 }
 
 /** A packet's deserialised values, or null where `wddx2cfml` fails, as the data manager view treats it. */
@@ -1229,6 +1238,9 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
       files: uploadsOf(request),
       locale: state.locale ?? 'en_US',
       requestId: request.id,
+    }).catch((error: unknown) => {
+      // A fault legacy's view raises is answered as a `server_error` naming it, which web prints as onError's page.
+      throw error instanceof LegacyFaultError ? new LegacyApiError('server_error', { stacktrace: error.trace() }) : error;
     });
     if (rcHas(rc, 'newSearch')) await saveSession(request, { filterBy: rcText(result.rc, 'filterBy'), datakeywords: rcText(result.rc, 'keywords') });
     return {
@@ -1374,6 +1386,12 @@ function rcRequired(rc: Rc, name: string): string {
   return rcText(rc, name);
 }
 
+/** `rc.<name>` as text; where the request lacks it, the fault legacy's `rc.<name>` raises, which onError prints. */
+function rcElement(rc: Rc, name: string): string {
+  if (!rcHas(rc, name)) throw new LegacyFaultError(`Element ${name.toUpperCase()} is undefined in RC.`);
+  return rcText(rc, name);
+}
+
 /** A raw entry's rc: carch before() over the request params. */
 async function rawRc(request: FastifyRequest, actor: Actor): Promise<Rc> {
   return (await carchContext(paramsOf(request), actor, () => storedSession(request))).rc;
@@ -1478,7 +1496,7 @@ async function runSiteManagerTab(request: FastifyRequest, ctx: ContentRouteConte
 /** approvalaction.cfm: approve, cancel or reject a request; legacy's CSRF test is `true or …`, a reported defect reproduced by consuming no token. */
 async function runApprovalAction(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
   const rc = await rawRc(request, actor);
-  const input = { requestId: rcRequired(rc, 'requestID'), action: rcRequired(rc, 'action'), comment: rcRequired(rc, 'comment') };
+  const input = { requestId: rcElement(rc, 'requestID'), action: rcElement(rc, 'action'), comment: rcElement(rc, 'comment') };
   const result = await approvalAction(ctx.domain, actor, await siteOf(request, ctx, actor), input);
   return rendered(renderApprovalActionJson({ contenthistid: result.value.contenthistid, previewUrl: result.value.previewurl }));
 }
@@ -2853,9 +2871,17 @@ async function runStatusModal(request: FastifyRequest, ctx: ContentRouteContext,
   return panelResult(result);
 }
 
-/** The CSRF context of a raw action whose legacy handler validates `rc.contentid & suffix` before anything else. */
+/**
+ * The CSRF context of a raw action whose legacy handler validates `rc.contentid & suffix` before anything else; an ajax
+ * request without `contentid`, which before() leaves unset, raises legacy's fault before any token is consumed.
+ */
 function contentIdContext(suffix: string): (request: FastifyRequest) => string {
-  return (request) => `${rcText(paramsOf(request), 'contentid')}${suffix}`;
+  return (request) => {
+    const params = paramsOf(request);
+    // before() defaults `contentid` to '' outside an ajax request (carch.cfc:22-26).
+    const contentId = cfToBoolean(rcParam(params, 'ajaxrequest', false)) ? rcElement(params, 'contentid') : rcText(params, 'contentid');
+    return `${contentId}${suffix}`;
+  };
 }
 
 /** carch raw actions (`/v1/raw/carch/<action>`), each answering as the legacy fragment, JSON, download or redirect does. */

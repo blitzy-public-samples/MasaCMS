@@ -327,13 +327,15 @@ import_paused_tasks() {
 
 # Starts opt2-legacy in its own session with the start-command variables, never written to server.json.
 start_server() {
-  local key
+  local key harness_key
   key="$(secret bridge-hmac-key)" || exit 1
+  harness_key="$(secret harness-diagnostic-key)" || exit 1
   # setsid keeps the JVM out of the caller's process group, which the migration service may signal on a timeout.
   # Plugin discovery and DB updates stay off, so application start-up runs neither writer.
   # MURA_BROADCASTCLUSTERCOMMANDS=false: no cluster reload commands, as the start-up guard on content units requires.
   PORT="$LEGACY_PORT" MURA_PING=false MURA_AUTODISCOVERPLUGINS=false MURA_APPLYDBUPDATES=false \
-    MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
+    MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" OPT2_HARNESS_KEY="$harness_key" \
+    OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
     setsid --wait box server start serverConfigFile="$SERVER_JSON" --noSaveSettings </dev/null >&2 ||
     die "box server start serverConfigFile=$SERVER_JSON failed"
 }
@@ -405,7 +407,7 @@ run_original() {
     return 0
   fi
   unset MURA_PING MURA_AUTODISCOVERPLUGINS MURA_APPLYDBUPDATES MURA_BROADCASTCLUSTERCOMMANDS OPT2_BRIDGE_HMAC_KEY \
-    OPT2_GATEWAY_ORIGIN
+    OPT2_HARNESS_KEY OPT2_GATEWAY_ORIGIN
   log_step b "start the original server $name"
   PORT="$LEGACY_PORT" setsid --wait box server start name="$name" --noSaveSettings </dev/null >&2 ||
     die "box server start name=$name failed"

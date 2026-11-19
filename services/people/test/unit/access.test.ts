@@ -204,6 +204,12 @@ describe('normaliseCusersParams scrubbing', () => {
     ['+0', '+0'],
     ['.0', '.0'],
     ['0e5', '0e5'],
+    // Oracle: cUsers.list echoes these hex floats and signed NaN, which ACF reads as booleans.
+    ['0x1p3', '0x1p3'],
+    [' 0x1p0 ', '0x1p0'],
+    ['0x1p1024', '0x1p1024'],
+    ['-NaN', '-NaN'],
+    [' -NaN ', '-NaN'],
     // The scan re-serializes these as JSON, padded lowercase literals as "YES" or "NO", and none is then a boolean.
     [' true', '1'],
     [' false', '1'],
@@ -213,6 +219,9 @@ describe('normaliseCusersParams scrubbing', () => {
     ['[0]', '1'],
     [' null', '1'],
     ['0x', '1'],
+    ['0xAp0', '1'],
+    ['1e309', '1'],
+    ['NaN', '1'],
     ['\u007fno', '1'],
     ['\u00a0no', '1'],
     ['abc', '1'],

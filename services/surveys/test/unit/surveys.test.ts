@@ -135,6 +135,13 @@ describe.skipIf(!available)('surveys domain against PostgreSQL', () => {
     expect(created.survey.title).toBe(stored);
   });
 
+  it('stores a 255-unit title with unpaired surrogates as the `?` legacy answers', async () => {
+    const created = await create({ title: `\ud800Pulse \ud83d\ude00${'\udc00'.repeat(246)}` });
+
+    const stored = await getSurvey(deps, { tenantId: tenantA, surveyId: created.survey.survey_id });
+    expect([created.survey.title, stored.survey.title]).toEqual([`?Pulse \ud83d\ude00${'?'.repeat(246)}`, `?Pulse \ud83d\ude00${'?'.repeat(246)}`]);
+  });
+
   it('answers the fixture notFound with its default message for an unknown id and for another tenant\'s survey', async () => {
     const { survey } = await create({ title: 'Pulse' });
 

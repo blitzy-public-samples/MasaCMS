@@ -61,7 +61,8 @@ const listDefinition: PageScreen<WebServiceListData> = Object.freeze({
 });
 
 // A view-only action: cwebservice.cfc has no edit method, so FW/1 renders edit.cfm, which save.cfm also includes.
-const editDefinition: PageScreen<WebServiceEditState> = Object.freeze({
+/** `cwebservice.edit`, halted to legacy and not registered. */
+export const editDefinition: PageScreen<WebServiceEditState> = Object.freeze({
   ...CWEBSERVICE,
   action: 'edit',
   mode: 'page',
@@ -91,7 +92,8 @@ function renderSaved(ctx: ScreenContext): SaveView {
 }
 
 // Inventoried as a page, as save.cfm is its view: the controller step writes the posted form before the view renders.
-const saveDefinition: PageScreen<undefined> = Object.freeze({
+/** `cwebservice.save`, halted to legacy and not registered. */
+export const saveDefinition: PageScreen<undefined> = Object.freeze({
   ...CWEBSERVICE,
   action: 'save',
   mode: 'page',
@@ -106,10 +108,6 @@ const deleteDefinition: RedirectScreen = Object.freeze({
   submit: (ctx: ScreenContext) => submitDelete(afterBefore(ctx)),
 });
 
-/** The carried cwebservice actions, each identity-owned behind the cwebservice `before()`: list, edit, save, delete. */
-export const cwebserviceScreens: readonly ScreenDefinition[] = Object.freeze([
-  listDefinition,
-  editDefinition,
-  saveDefinition,
-  deleteDefinition,
-]);
+// edit and save are halted (EX-USER-FEED-TIE-ORDER), so the gateway keeps both on legacy and web registers neither.
+/** The carried cwebservice actions web serves, each identity-owned behind the cwebservice `before()`: list, delete. */
+export const cwebserviceScreens: readonly ScreenDefinition[] = Object.freeze([listDefinition, deleteDefinition]);

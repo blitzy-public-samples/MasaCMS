@@ -8,7 +8,7 @@ import {
   CSRF_FIELD_TOKEN,
   LEGACY_ERROR_MAP,
   esapiUrlEncode,
-  scannedRouteKey,
+  haltedRouteKey,
   type RouteKeyOptions,
   type ScannedRouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
@@ -747,7 +747,7 @@ function routeKeyOf(ctx: ScenarioContext, request: RecordedRequest, body: Resolv
   }
   if (body.kind === 'json') input.jsonBody = body.value;
   const base = opts.routeKeyOptions ?? defaultRouteKeyOptions();
-  return scannedRouteKey(input, { appReloadKey: appReloadKey(ctx.env), ...base }).result.key;
+  return haltedRouteKey(input, { appReloadKey: appReloadKey(ctx.env), ...base }).result.key;
 }
 
 /** Sends `shape` once in the step's session, with the step's auth and CSRF tokens, and remembers the response. */

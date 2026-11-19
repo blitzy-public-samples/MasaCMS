@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Messages as the fixture `communications.cfc` serves them: compose and queue, send over SMTP, confirm through Mailpit, list and detail. */
-import { LegacyApiError, cfDateTimeFormat, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, cfDateTimeFormat, javaTrim, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
@@ -229,7 +229,10 @@ async function recordInTenant(
   return change.message;
 }
 
-/** Composes and stores a `queued` message with its `queued` history row in one gated transaction; throws the fixture's validation errors. */
+/**
+ * Composes and stores a `queued` message with its `queued` history row in one gated transaction, unpaired surrogates of its
+ * subject and bodies as the `?` legacy answers and mails; throws the fixture's validation errors.
+ */
 export async function createMessage(
   deps: Pick<DomainDeps, 'db' | 'repository' | 'clock'>,
   args: CreateMessageArgs,
@@ -245,9 +248,9 @@ export async function createMessage(
         templateId: mail.templateId,
         toAddress: mail.to,
         fromAddress: mail.from,
-        subject: mail.subject,
-        bodyText: mail.bodyText,
-        bodyHtml: mail.bodyHtml,
+        subject: javaUtf8Text(mail.subject),
+        bodyText: javaUtf8Text(mail.bodyText),
+        bodyHtml: javaUtf8Text(mail.bodyHtml),
         state: 'queued',
         source: SEND_SOURCE,
       },

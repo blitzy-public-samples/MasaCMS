@@ -188,7 +188,7 @@ export const addUserAction: RedirectScreen = Object.freeze({
   submit: submitUser,
 });
 
-/** `cUsers.update` with `type=2` and `action=Update`: the people roster edit. */
+/** `cUsers.update` with `type=2` and `action=Update`: the people roster edit, halted to legacy and not registered. */
 export const updateUserAction: RedirectScreen = Object.freeze({
   circuit: 'cusers',
   action: 'update',
@@ -202,9 +202,5 @@ export const updateUserAction: RedirectScreen = Object.freeze({
   submit: submitUser,
 });
 
-/** The carried `cUsers.update` variants. */
-export const updateActions: readonly RedirectScreen[] = Object.freeze([
-  updateGroupAction,
-  addUserAction,
-  updateUserAction,
-]);
+/** The carried `cUsers.update` variants web serves. */
+export const updateActions: readonly RedirectScreen[] = Object.freeze([updateGroupAction, addUserAction]);

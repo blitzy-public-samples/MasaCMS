@@ -197,6 +197,8 @@ export async function registryEntryForTenant(db: RegistrySource, tenantId: strin
 
 /** The tenant of a registered legacy site id, matched case-insensitively; null when the site is unregistered. */
 export async function tenantForRegisteredSite(db: RegistrySource, siteId: string): Promise<string | null> {
+  // No site id holds a NUL, which PostgreSQL text cannot bind; Masa's siteExists answers false for one.
+  if (siteId.includes('\0')) return null;
   return read(db, async (reader) => {
     const { rows } = await reader.query<{ tenant_id: string }>(
       `SELECT tenant_id FROM ${registryTable(reader)} WHERE lower(site_id) = lower($1) AND NOT deleted`,

@@ -111,10 +111,10 @@ Every value in `plan.tfvars` points at nothing real: hosts use the reserved `.in
 | `legacy_origin` | `LEGACY_ORIGIN` of `gateway` and `migration` | `https://legacy.invalid` |
 | `legacy_db_host` | `MURA_DBHOST` of `migration`; its SQL Server certificate must be CA-trusted and name this host, as `migration` verifies it | `legacy-db.invalid` |
 | `legacy_db_port` | `MURA_DBPORT` of `migration` (default 1433) | `1433` |
-| `legacy_db_name` | `MURA_DATABASE` of `migration` | `masa` |
+| `legacy_db_name` | `MURA_DATABASE` of `migration`, `strategies-content`, `identity` and `people` | `masa` |
 | `legacy_db_username` | `MURA_DBUSERNAME` of `migration` | `opt2-migration` |
 | `operator_secret_ids` | Ids of existing secrets the operator provides (see [Secrets](#secrets)): `legacy_db_password`, `legacy_reload_key` (optional; null keeps Masa's default `appreload`), `identity_platform_api_key`. Each must be a Secret Manager id (`^[A-Za-z0-9_-]{1,255}$`) and none of the four secrets this tree creates | `opt2-legacy-db-password`, `opt2-legacy-reload-key`, `opt2-identity-platform-api-key` (ids only, never values) |
-| `legacy_settings` | Non-secret Masa `MURA_<KEY>` settings of the legacy origin (see [Legacy compatibility settings](#legacy-compatibility-settings)); default `{}` | `MURA_DBTYPE = "mssql"`, `MURA_INDEXFILEINURLS = "false"`, `MURA_SITEIDINURLS = "false"` |
+| `legacy_settings` | Non-secret Masa `MURA_<KEY>` settings of the legacy origin (see [Legacy compatibility settings](#legacy-compatibility-settings)); default `{}` | `MURA_DATASOURCE = "masa"`, `MURA_DBTYPE = "mssql"`, `MURA_INDEXFILEINURLS = "false"`, `MURA_SITEIDINURLS = "false"` |
 | `smtp_host` | `SMTP_HOST` of `communications` | `smtp.invalid` |
 | `smtp_port` | `SMTP_PORT` of `communications` | `587` |
 | `mailpit_api_url` | `MAILPIT_API_URL` of `communications` | `https://mailpit.invalid` |
@@ -125,7 +125,7 @@ Every value in `plan.tfvars` points at nothing real: hosts use the reserved `.in
 
 ### Legacy compatibility settings
 
-Masa reads each configBean setting from its `MURA_<KEY>` variable over the settings file, and the targets do the same. `legacy_settings` carries the legacy origin's non-secret settings: each service's env gets only the keys it reads, and a key left out keeps Masa's settings-template default, as on legacy. `plan.tfvars` sets the three settings the supplied legacy setup changes: `MURA_DBTYPE`, `MURA_INDEXFILEINURLS` and `MURA_SITEIDINURLS`. Secret settings are never values here; `MURA_APPRELOADKEY` and `MURA_DBPASSWORD` come from `operator_secret_ids`.
+Masa reads each configBean setting from its `MURA_<KEY>` variable over the settings file, and the targets do the same. `legacy_settings` carries the legacy origin's non-secret settings: each service's env gets only the keys it reads, and a key left out keeps Masa's settings-template default, as on legacy. `plan.tfvars` sets the four settings the supplied legacy setup changes: `MURA_DATASOURCE`, which names the datasource as `legacy_db_name` names the database, `MURA_DBTYPE`, `MURA_INDEXFILEINURLS` and `MURA_SITEIDINURLS`. Secret settings are never values here; `MURA_APPRELOADKEY` and `MURA_DBPASSWORD` come from `operator_secret_ids`.
 
 | Key | Readers | Accepted values |
 |---|---|---|
@@ -133,6 +133,7 @@ Masa reads each configBean setting from its `MURA_<KEY>` variable over the setti
 | `MURA_ADMINSSL` | `identity`, `people`, `programs-sites`, `strategies-content`, `web` | CFML boolean |
 | `MURA_CONTEXT` | `identity`, `people`, `programs-sites`, `strategies-content`, `web` | Blank, or a path from `/` without whitespace, `?` or `#` |
 | `MURA_COOKIEDOMAIN` | `gateway`, `web` | Blank, or one host name, optionally with a leading dot, without whitespace, `:`, `/`, `\`, `?`, `#`, `,` or `@` |
+| `MURA_DATASOURCE` | `identity`, `people` | Any text |
 | `MURA_EXPIREPASSWORDS` | `people`, `web` | Whole number of days |
 | `MURA_HASHURLS` | `identity`, `strategies-content`, `web` | CFML boolean |
 | `MURA_INDEXFILEINURLS` | `identity`, `strategies-content`, `web` | CFML boolean |

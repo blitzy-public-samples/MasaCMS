@@ -1,6 +1,6 @@
 /** cchangesets admin routes: change-set list, edit, assignments and actions. */
 import type { Readable } from 'node:stream';
-import { LegacyServiceUnavailableError, cfDateTimeFormat, cfNumberString } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyFaultError, LegacyServiceUnavailableError, cfDateTimeFormat, cfNumberString } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 // The edit and list views print the category tree and the assignments view each row's crumbs, which only these read.
@@ -117,6 +117,11 @@ function requestRc(request: FastifyRequest, path: Readonly<Record<string, string
     if (rcValue(rc, key) === undefined) rc[key] = value;
   }
   return rc;
+}
+
+/** The `server_error` naming the Expression fault `message`, which web answers with onError's page. */
+function legacyFault(message: string): LegacyApiError {
+  return new LegacyApiError('server_error', { stacktrace: new LegacyFaultError(message).trace() });
 }
 
 /** The legacy 503 for a branch that prints or saves site settings no verified source of this service holds. */
@@ -341,7 +346,10 @@ export async function registerChangesetRoutes(app: FastifyInstance, ctx: Content
   app.post<{ Params: SiteParams }>(LIST_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply): Promise<AdminWriteResult | FastifyReply> => {
     const actor = await requireCircuitAccess(request, ctx, CIRCUIT, request.params.siteid);
     const rc = requestRc(request, request.params);
-    if (!(await changesetTokenValid(request, reply, requiredRcText(rc, 'changesetid')))) {
+    // save() reads `arguments.rc.changesetid` as its CSRF context, failing without it (cchangesets.cfc:178).
+    const changesetId = rcText(rc, 'changesetid');
+    if (changesetId === undefined) throw legacyFault('Element RC.changesetid is undefined in ARGUMENTS.');
+    if (!(await changesetTokenValid(request, reply, changesetId))) {
       // Legacy leaves `rc.changeset` undefined, and save.cfm's include of edit.cfm fails reading it.
       return { saved: false, errors: {}, redirect: null, data: { rc: {} } };
     }
@@ -401,13 +409,21 @@ export async function registerChangesetRoutes(app: FastifyInstance, ctx: Content
     return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
-  /** cChangesets.removeitem: detaches the version once the token validates; always the assignments redirect. */
+  /**
+   * cChangesets.removeitem: detaches the posted `rc.contenthistID` once the token validates; always the assignments
+   * redirect. A valid token without that field fails as legacy's read of it does, the token consumed and nothing written.
+   */
   app.post<{ Params: ItemParams; Reply: AdminWriteResult }>(REMOVE_ITEM_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, CIRCUIT, request.params.siteid);
-    const rc = requestRc(request, request.params);
+    const { siteid, changesetid } = request.params;
+    const rc = requestRc(request, { siteid, changesetid });
     const changesetId = requiredRcText(rc, 'changesetid');
     const valid = await changesetTokenValid(request, reply, changesetId);
-    if (valid) await removeItem(ctx.domain, actor, changesetId, requiredRcText(rc, 'contenthistid'));
+    if (valid) {
+      const contentHistId = rcText(rc, 'contenthistid');
+      if (contentHistId === undefined) throw legacyFault('Element CONTENTHISTID is undefined in RC.');
+      await removeItem(ctx.domain, actor, changesetId, contentHistId);
+    }
     return redirected(valid, adminRedirect('cChangesets.assignments', rc, ['changesetID', 'siteID', 'keywords']));
   });
 }

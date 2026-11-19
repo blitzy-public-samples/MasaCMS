@@ -61,7 +61,17 @@ async function tempDir(): Promise<string> {
 const entryOf = (table: CutoverTable, route: string): CutoverEntry | undefined => table.entries.find((entry) => entry.route === route);
 const targetRoutes = (table: CutoverTable): string[] => table.entries.filter((e) => e.state === 'target').map((e) => e.route);
 const withoutState = (table: CutoverTable) => table.entries.map(({ tableVersion: _v, state: _s, ...rest }) => rest);
-const NATIVE_TARGETS = ['bridge:/gateway/legacy-bridge/**', 'opt2:/opt2/stub/**', 'static:/_next/**'];
+/** Globs of the OPT-2 web-root folders the gateway answers 404 for. */
+const CLOSED_FOLDER_GLOBS = [
+  ...['/harness', '/infra', '/migration', '/platform', '/services', '/web'].flatMap((folder) =>
+    ['cfc', 'cfm', 'static'].map((family) => `${family}:${folder}/**`),
+  ),
+  'opt2:/opt2/**',
+  'static:/.github/workflows/**',
+  'static:/gateway/**',
+  'static:/legacy-fixtures/**',
+];
+const NATIVE_TARGETS = ['bridge:/gateway/legacy-bridge/**', ...CLOSED_FOLDER_GLOBS, 'opt2:/opt2/stub/**', 'static:/_next/**'].sort();
 const HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 /** Units each synthetic module's screens read and actions write through its `/v1/` operations. */
 const SCREEN_UNITS: Readonly<Record<string, readonly string[]>> = {
@@ -292,6 +302,14 @@ describe('committed inputs', () => {
     expect(stubPaths.length).toBeGreaterThan(0);
     for (const path of stubPaths) expect(resolve(path.replaceAll(/\{[^}]+\}/g, 'x'))).toBe('opt2:/opt2/stub/**');
     expect(resolve('/gateway/legacy-bridge/cfml/session.cfm')).toBe('bridge:/gateway/legacy-bridge/**');
+    expect(resolve('/gateway/cutover/versions/v0002.json')).toBe('static:/gateway/**');
+    expect(resolve('/harness/legacy-baseline/cfml/run.cfm/x')).toBe('cfm:/harness/**');
+    expect(resolve('/harness/legacy-baseline/cfml/Application.cfc')).toBe('cfc:/harness/**');
+    expect(resolve('/opt2/source-pin.json')).toBe('opt2:/opt2/**');
+    expect(resolve('/legacy-fixtures/cfml/seed.cfm')).toBeUndefined();
+    for (const route of CLOSED_FOLDER_GLOBS) {
+      expect(entryOf(v0002, route)).toMatchObject({ owningService: 'gateway', state: 'target', kind: 'static', units: [], disposition: 'carry' });
+    }
     expect(resolve('/_next/static/chunks/main.js')).toBe('static:/_next/**');
     expect(resolve('/admin/assets/css/admin.min.css')).toBe('static:/admin/assets/**');
     expect(resolve('/opt2/files/content-files/tenant/file.png')).toBe('opt2:/opt2/files/content-files/**');
@@ -301,13 +319,15 @@ describe('committed inputs', () => {
     expect(entryOf(v0002, 'opt2:/opt2/files/content-files/**')?.units).toEqual(['content.file']);
   });
 
-  it.each([
+  it.each<[string, string, string?]>([
     ['/opt2/stub', 'opt2:/opt2/stub/**'],
     ['/core/vendor', 'static:/core/vendor/**'],
     ['/v1/finance', 'opt2:/v1/finance/**'],
     ['/v1/messages', 'opt2:/v1/messages/**'],
-  ])('derives the glob of %s from the route-key family', (prefix, key) => {
-    expect(globRoute(prefix)).toBe(key);
+    ['/harness', 'cfm:/harness/**', 'probe.cfm'],
+    ['/harness', 'cfc:/harness/**', 'probe.cfc'],
+  ])('derives the glob of %s from the route-key family', (prefix, key, probe) => {
+    expect(globRoute(prefix, probe)).toBe(key);
   });
 
   it('rejects a prefix no path family keys', () => {

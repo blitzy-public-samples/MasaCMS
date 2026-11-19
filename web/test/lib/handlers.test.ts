@@ -15,7 +15,9 @@ import { sessionPresets } from '../fixtures/session';
 import { domModel } from '../helpers/dom-model';
 import { useTestEnv } from '../helpers/env';
 import {
+  LEGACY_SITE_PATHS_KEY,
   fakeServiceClient,
+  installedSitePaths,
   routeKey,
   type FakeRoute,
   type FakeRouteTable,
@@ -115,6 +117,7 @@ const BASE_ROUTES: FakeRouteTable = {
   [USER_SITES]: { status: 200, body: { sites: [userSite(TENANT_A_ID)] } },
   [shellSiteRoute(TENANT_A_ID)]: { status: 200, body: { site: TENANT_A, isNew: 0 } },
   [headerPromptsRoute(TENANT_A_ID)]: { status: 200, body: NO_PROMPTS },
+  [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
   [VERSION_MENU]: { status: 200, body: LEGACY_VERSION_MENU },
 };
 

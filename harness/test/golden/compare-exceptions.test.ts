@@ -11,6 +11,7 @@ import { loadCatalogue, scenarioById, type Scenario } from '../../src/golden/cat
 import {
   classifyScenario,
   exceptionEntries,
+  isExcepting,
   loadExceptionsList,
   type ParityResult,
   type ScenarioVerdict,
@@ -243,11 +244,12 @@ describe('exceptions list selectors', () => {
     await expect(loadExceptionsList(file)).rejects.toThrow(/does not match its schema/);
   });
 
-  it('loads the committed list with EX-ROSTER-POOLMOVE selecting the refused update', async () => {
+  it('loads the committed list with EX-ROSTER-POOLMOVE halted, so it excuses no difference', async () => {
     const entries = exceptionEntries(await loadExceptionsList());
     const poolMove = entries.find((candidate) => candidate.id === 'EX-ROSTER-POOLMOVE');
-    expect(poolMove).toMatchObject({ scenario: 'GS-PE-02', decision: 'preserve', status: 'open' });
-    expect(poolMove?.matches).toStrictEqual([{ step: 'update', path: 'status', kind: ['status'], actual: 503 }]);
+    expect(poolMove).toMatchObject({ scenario: 'GS-PE-02', decision: 'preserve', status: 'halted' });
+    expect(poolMove?.matches).toBeUndefined();
+    expect(poolMove === undefined ? undefined : isExcepting(poolMove)).toBe(false);
   });
 });
 

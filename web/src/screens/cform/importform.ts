@@ -1,4 +1,5 @@
 // `cform.importform`: the Import Form view and its zip upload, imported by strategies-content (server-only).
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { multipartRelay, okBody } from '@/lib/gateway-client';
 import { encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import { relativeAdminUrl } from '@/lib/urls';
@@ -75,7 +76,7 @@ export async function renderImportForm(ctx: ScreenContext): Promise<SafeHtml> {
 
 /**
  * Relays a POSTed `formzip` upload unchanged to strategies-content and follows its redirect; otherwise re-renders.
- * @throws TypeError When the form scope lacks `formzip`, where legacy fails on the undefined element.
+ * @throws LegacyFaultError When the form scope lacks `formzip`, where legacy fails on the undefined element.
  * @throws GatewayDenialError When strategies-content answers 401 or 403; any other non-2xx answer throws `Error`.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
  */
@@ -83,7 +84,7 @@ export async function submitImportForm(ctx: ScreenContext): Promise<SubmitResult
   const { body, req } = ctx;
   if (body === undefined || body.form.keys().next().done === true) return rerender(ctx);
   const { formzip } = req.rc;
-  if (formzip === undefined) throw new TypeError('Element FORMZIP is undefined in FORM.');
+  if (formzip === undefined) throw new LegacyFaultError('Element FORMZIP is undefined in FORM.');
   if (formzip === '') return rerender(ctx);
   // Legacy admin reads the token pair from the form scope only, so the body carries it and no CSRF header is added.
   const relay = multipartRelay(body);

@@ -211,6 +211,11 @@ describe.each(['create', 'edit'] as const)('validateRecordInput in %s mode', (mo
     ['an untrimmed title and a trimmed amount', { ...VALID, title: '  padded  ', amount: ' 7 ' }, { title: '  padded  ', amount: 70_000n, period: '2026-06' }],
     ['a 255-character title', { ...VALID, title: 'x'.repeat(255) }, { title: 'x'.repeat(255), amount: 12_345_000n, period: '2026-06' }],
     ['a JSON number title as CFML renders it', { ...VALID, title: 2026 }, { title: '2026', amount: 12_345_000n, period: '2026-06' }],
+    [
+      'a title with unpaired surrogates, as legacy answers them',
+      { ...VALID, title: `\ud800x \ud83d\ude00 ${'\udc00'.repeat(249)}` },
+      { title: `?x \ud83d\ude00 ${'?'.repeat(249)}`, amount: 12_345_000n, period: '2026-06' },
+    ],
     ['a 15-digit amount with four decimals', { ...VALID, amount: '999999999999999.9999' }, { title: 'Q2 travel', amount: 9_999_999_999_999_999_999n, period: '2026-06' }],
   ])('accepts %s', (_case, input, value) => {
     expect(validateRecordInput(input, mode)).toStrictEqual({ ok: true, value });

@@ -189,6 +189,9 @@ const scannedRequest = (url: Fields, form: Fields | ReceivedBody['form']): Promi
 const ownerScan = (fields: Readonly<Record<string, string | string[]>>): Record<string, string> =>
   legacyScopeParams(portcullisScan(Object.entries(fields)));
 
+/** Every cUsers.update definition, the halted roster edit included. */
+const DEFINED: readonly RedirectScreen[] = [...updateActions, updateUserAction];
+
 describe('cUsers.update definitions', () => {
   it.each<{ screen: RedirectScreen; key: string; owner: string }>([
     { screen: updateGroupAction, key: 'admin:cusers.update{type=1}', owner: 'identity' },
@@ -200,8 +203,8 @@ describe('cUsers.update definitions', () => {
     expect(screen.gate).toBe(cusersGate);
   });
 
-  it('carries exactly the three inventoried variants', () => {
-    expect(updateActions).toEqual([updateGroupAction, addUserAction, updateUserAction]);
+  it('carries the group save and roster create, leaving the halted roster edit to legacy', () => {
+    expect(updateActions).toEqual([updateGroupAction, addUserAction]);
   });
 
   it.each<{ rc: Fields; matched: readonly RedirectScreen[] }>([
@@ -216,13 +219,13 @@ describe('cUsers.update definitions', () => {
     { rc: { type: '0', action: 'Add' }, matched: [] },
     { rc: { action: 'Update' }, matched: [] },
   ])('selects $matched.length variant(s) for $rc', ({ rc, matched }) => {
-    expect(updateActions.filter((screen) => screen.variant?.matches(rc))).toEqual(matched);
+    expect(DEFINED.filter((screen) => screen.variant?.matches(rc))).toEqual(matched);
   });
 
   it('reads a request context case-insensitively', () => {
     const req = updateRequest({ TYPE: '2' }, { Action: 'update' });
 
-    expect(updateActions.filter((screen) => screen.variant?.matches(req.rc))).toEqual([updateUserAction]);
+    expect(DEFINED.filter((screen) => screen.variant?.matches(req.rc))).toEqual([updateUserAction]);
   });
 });
 

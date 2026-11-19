@@ -228,6 +228,14 @@ describe.skipIf(!available)('e-signature signing domain against PostgreSQL', () 
       ]);
     });
 
+    it('stores a document name with unpaired surrogates as `?`, as legacy answers it', async () => {
+      const { request } = await inTenant((tx) =>
+        createSignatureRequest(tx, deps, { documentName: '\udc00contract\ud800.pdf', document: DOCUMENT, signerUserId: SIGNER.userId }, actor(OTHER.userId)),
+      );
+      const stored = await inTenant((tx) => getRequest(tx, request.request_id, actor(SIGNER.userId)));
+      expect([request.document_name, stored.request.document_name]).toEqual(['?contract?.pdf', '?contract?.pdf']);
+    });
+
     it.each([
       ['a user of the public user pool', POOL_SIGNER],
       ['a user stored under its pool site id in another case', UPPER_SITE_SIGNER],
@@ -281,6 +289,15 @@ describe.skipIf(!available)('e-signature signing domain against PostgreSQL', () 
       ]);
       const stored = await inTenant((tx) => getRequest(tx, request.request_id, actor(SIGNER.userId)));
       expect(stored.signature?.typed_name).toBe(typedName);
+    });
+
+    it('stores and hashes a typed name with unpaired surrogates as `?`, so its stored chain verifies', async () => {
+      const { request, audit } = await create();
+      const signed = await inTenant((tx) => signRequest(tx, deps, { requestId: request.request_id, typedName: 'Jane \ud800 \ud83d\ude00' }, actor(SIGNER.userId)));
+      const typedName = 'Jane ? \ud83d\ude00';
+      expect([signed.signature.typed_name, signed.audit.detail]).toEqual([typedName, typedName]);
+      expect(signed.audit.entry_hash).toEqual(procedureHash(audit.entry_hash, [request.request_id, 2, 'signed', SIGNER.userId, typedName, AT_TEXT]));
+      expect(await inTenant((tx) => verifyStored(tx, request.request_id, actor(SIGNER.userId)))).toEqual({ valid: true, entries: 2, brokenat: 0 });
     });
 
     it('matches the signer case-insensitively and records the acting user id as sent', async () => {

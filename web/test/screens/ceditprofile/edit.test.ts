@@ -24,7 +24,14 @@ import { INTEREST_CATEGORY_IDS, interestCategories } from '../../fixtures/strate
 import { anonymousRequest, makeAdminRequest } from '../../helpers/admin-request';
 import { domModel, fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply, type FakeRoute } from '../../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+  type FakeRoute,
+} from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
 import { SUBJECTS } from '../../helpers/tokens';
 
@@ -308,9 +315,11 @@ describe('cEditProfile.edit page of the recorded profile, as registered', () => 
     expect(reset.slice(0, 4)).toEqual([PROFILE_USER_ID, '2', 'this.value', siteTenantA.publicUserPoolID]);
     const load = callArgs($('#tabExtendedattributes script').text(), 'userManager.loadExtendedAttributes');
     expect(load.slice(0, 4)).toEqual([PROFILE_USER_ID, '2', 'Volunteer', siteTenantA.privateUserPoolID]);
-    // Both calls print the configured context and the site's theme asset path under it.
+    // Both calls print the configured context and legacy's theme asset path of the user's site.
     expect(load.slice(4)).toEqual(reset.slice(4));
-    expect(load[5]).toBe(`${load[4]}/themes/`);
+    expect(load[5]).toBe('/themes/default');
+    const themeReads = ctx.gateway.calls.filter(({ path, query }) => path === LEGACY_SITE_PATHS_PATH && !query?.['initSite']);
+    expect(themeReads.map(({ query }) => query?.['themeSite'])).toEqual([TENANT_A]);
   });
 
   it('lists the home address as primary under the add-address link', () => {

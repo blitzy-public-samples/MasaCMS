@@ -87,6 +87,58 @@ export function routeKey(method: HttpMethod, service: GatewayCallee, path: Servi
   return `${method} ${service === 'gateway' ? path : `${GATEWAY_SERVICE_PREFIX}/${service}${path}`}`;
 }
 
+/** Path of the gateway's own `legacySitePaths`. */
+export const LEGACY_SITE_PATHS_PATH = '/internal/v1/legacy-site-paths';
+
+/** Route key of the gateway's own `legacySitePaths`. */
+export const LEGACY_SITE_PATHS_KEY = `GET ${LEGACY_SITE_PATHS_PATH}`;
+
+/** legacy's layout values for the installed `default` theme on `localhost` over HTTP, as `legacySitePaths` answers. */
+export const INSTALLED_LEGACY_PATHS = Object.freeze({
+  themeAssetPath: '/themes/default',
+  initThemeAssetPath: 'http://localhost/themes/default',
+});
+
+/** The first `legacySitePaths` field `name` of `request`. */
+function queryField(request: RecordedRequest, name: string): string | undefined {
+  const value = request.query[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * gateway `legacySitePaths` as legacy answers it for the installed `default` theme in the web root: each named site's
+ * value under the scheme `forwardedProto` names and the `host` the query carries.
+ */
+export function installedSitePaths(request: RecordedRequest): FakeReply {
+  const https = queryField(request, 'forwardedProto')?.toLowerCase() === 'https';
+  const root = `${https ? 'https' : 'http'}://${queryField(request, 'host') ?? ''}`;
+  const apiSite = queryField(request, 'apiSite');
+  const feedSite = queryField(request, 'feedSite');
+  return {
+    status: 200,
+    body: {
+      ...(apiSite === undefined ? {} : { restEndpoint: `${root}/_api/rest/v1/${apiSite === '' ? 'default' : apiSite}` }),
+      ...(feedSite === undefined ? {} : { feedEndpoint: `${root}/_api/feed/v1/${feedSite === '' ? 'default' : feedSite}` }),
+      ...(queryField(request, 'themeSite') === undefined ? {} : { themeAssetPath: '/themes/default' }),
+      ...(queryField(request, 'initSite') === undefined ? {} : { initThemeAssetPath: `${root}/themes/default` }),
+    },
+  };
+}
+
+/** {@link installedSitePaths} with each requested value named in `kept` answered as legacy kept it from an earlier request. */
+export function keptSitePaths(kept: Readonly<Record<string, string>>): (request: RecordedRequest) => FakeReply {
+  return (request) => {
+    const reply = installedSitePaths(request);
+    const values = reply.body as Readonly<Record<string, string>>;
+    return { ...reply, body: Object.fromEntries(Object.entries(values).map(([name, value]) => [name, kept[name] ?? value])) };
+  };
+}
+
+/** The route key a recorded call matched. */
+export function callKey({ method, service, path }: Pick<FakeCall, 'method' | 'service' | 'path'>): string {
+  return routeKey(method, service, path as ServicePath);
+}
+
 // An empty JSON 404, which the platform client decodes to `body: undefined` and `raw` returns as no bytes.
 const NOT_FOUND: FakeReply = { status: 404, headers: { 'content-type': JSON_CONTENT_TYPE } };
 
@@ -394,6 +446,7 @@ export function fakeGatewayClient(
   const calls: FakeCall[] = [];
   const relay = fakeServiceClient(routes, (req, request) => {
     const { service, path } = calledPath(request.path);
+    const own = service === 'gateway';
     const headers = callerHeaders(req);
     calls.push({
       service,
@@ -403,7 +456,8 @@ export function fakeGatewayClient(
       ...(req.json !== undefined ? { json: req.json } : {}),
       ...(request.form !== undefined ? { form: request.form } : {}),
       ...(Object.keys(headers).length > 0 ? { headers } : {}),
-      ...(options.userToken !== undefined ? { userToken: options.userToken } : {}),
+      // The gateway's own calls act for no user.
+      ...(options.userToken !== undefined && !own ? { userToken: options.userToken } : {}),
       ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
     });
   });

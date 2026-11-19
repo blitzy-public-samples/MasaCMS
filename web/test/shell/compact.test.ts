@@ -9,6 +9,7 @@ import type { AdminRequest } from '@/lib/request-context';
 import { renderCompact, resolveFrontEndProxyLoc } from '@/shell/compact';
 import type { AdminDocument, ShellContext, ShellHooks, ShellView } from '@/shell/types';
 import { adminS2Request, buildTestAdminRequest, type AdminRequestPartial } from '../helpers/admin-request';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
 const MSIE_UA = 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1; Trident/4.0)';
@@ -65,6 +66,7 @@ function shellFor(ctx: AdminRequest, view: Partial<ShellView> = {}, hooks: Parti
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths: INSTALLED_LEGACY_PATHS,
       now: new Date(2026, 5, 30, 12),
     },
     layout: 'compact',

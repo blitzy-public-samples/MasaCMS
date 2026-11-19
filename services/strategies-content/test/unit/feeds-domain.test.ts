@@ -1,5 +1,6 @@
 /** Collections through `domain/feeds` over a throwaway `content` schema: the feed bean, cfeed gate and update action, CRUD, local feed content and the feed and category audit stamps. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, fixedClock, pgAvailable } from '@opt2/platform/testing';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createCategory, updateCategory } from '../../src/domain/categories.js';
@@ -276,7 +277,8 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
       const doomed = await createFeed(fx.deps, ADMIN, { siteid: SITE_ID, name: 'Gone', type: 'Local' });
       expect(await updateFeedAction(fx.deps, ADMIN, { siteid: SITE_ID, action: 'delete', feedid: doomed.text('feedid') })).toEqual(LIST_REDIRECT);
       expect(await feedRow(doomed.text('feedid'))).toBeUndefined();
-      await expect(updateFeedAction(fx.deps, ADMIN, { siteid: SITE_ID, action: 'other' })).rejects.toBeInstanceOf(FeedElementUndefinedError);
+      // Own oracle: cfeed-update-unknown-action.
+      await expect(updateFeedAction(fx.deps, ADMIN, { siteid: SITE_ID, action: 'other' })).rejects.toEqual(new LegacyFaultError('Element RC.feedBean is undefined in ARGUMENTS.'));
     });
   });
 

@@ -2,7 +2,6 @@
 import { legacySettings } from '@/lib/env';
 import { raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import { adminAssetUrl } from '@/lib/urls';
 import type { ScreenContext } from '../../registry';
 
@@ -50,18 +49,9 @@ const SUMMARY_CLOSE = `
   </script>
  `;
 
-/** The theme Masa start-up installs as `<webroot>/themes/default`, which the installed site uses. */
-const INSTALLED_THEME = 'default';
-
-/** `getThemeAssetPath()` of the session site, in the same form the shell prints as `themepath`. */
-function themeAssetPath(req: AdminRequest): string {
-  if (req.site === undefined) return `${legacySettings().context}/themes/${INSTALLED_THEME}`;
-  return sitePaths(req, siteBeanOf(req.site)).themeAssetPath('webRoot', false);
-}
-
 /** The FCKeditor summary loader; the theme `fckconfig.js.cfm` line is never emitted, since web cannot see theme files. */
-function fckeditor(req: AdminRequest): string {
-  const themePath = themeAssetPath(req);
+function fckeditor(req: AdminRequest, themePath: string | undefined): string {
+  if (themePath === undefined) throw new TypeError("carch js.cfm's FCKeditor loader needs getSite(rc.siteid).getThemeAssetPath()");
   return `
 \t\t   \t\tFCKeditor_OnComplete=htmlEditorOnComplete;
 \t\t     \tvar oFCKeditor = new FCKeditor( 'summary' ) ;
@@ -80,20 +70,22 @@ function fckeditor(req: AdminRequest): string {
 }
 
 /** The `editSummary` body for the configured `htmlEditorType`: empty for `none`, else the editor loader. */
-function editorLoader(req: AdminRequest): string {
+function editorLoader(req: AdminRequest, themePath: string | undefined): string {
   const editorType = legacySettings().htmlEditorType.toLowerCase();
   if (editorType === 'none') return '';
-  return EDITOR_OPEN + (editorType === 'fckeditor' ? fckeditor(req) : CKEDITOR) + EDITOR_CLOSE;
+  return EDITOR_OPEN + (editorType === 'fckeditor' ? fckeditor(req, themePath) : CKEDITOR) + EDITOR_CLOSE;
 }
 
 /**
  * The `js.cfm` `request.ajax` value, for `ShellView.ajax`.
  * @param action FW/1 item of the request (`listLast(rc.muraAction, '.')`), compared case-insensitively with `edit`.
+ * @param themeAssetPath Legacy's `getSite(rc.siteid).getThemeAssetPath()`, which the FCKeditor loader of `edit` prints.
+ * @throws TypeError When the FCKeditor loader prints and `themeAssetPath` is absent.
  */
-export function carchJs(ctx: Pick<ScreenContext, 'req'>, action: string): SafeHtml {
+export function carchJs(ctx: Pick<ScreenContext, 'req'>, action: string, themeAssetPath?: string): SafeHtml {
   const architecture = `
 \t<script src="${adminAssetUrl('js/architecture.min.js', { coreversion: true })}" type="text/javascript" ></script>
 `;
   if (action.toLowerCase() !== 'edit') return raw(architecture);
-  return raw(architecture + SUMMARY_UNLOADED + SUMMARY_OPEN + editorLoader(ctx.req) + SUMMARY_CLOSE);
+  return raw(architecture + SUMMARY_UNLOADED + SUMMARY_OPEN + editorLoader(ctx.req, themeAssetPath) + SUMMARY_CLOSE);
 }

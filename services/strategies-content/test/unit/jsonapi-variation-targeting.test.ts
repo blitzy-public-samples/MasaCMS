@@ -783,6 +783,10 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
       { id: STORED, form: { contentid: X36, isnew: '1', returnformat: 'json' }, errors: ['contentid'], data: () => ({ ...storedFirst({ contentid: X36 }), isnew: 1 }) },
     ],
     ['an overlong contentid with saveErrors=no', { form: { contentid: X36, saveErrors: 'no' }, errors: ['contentid'], data: (id) => newBean(id, { contentid: X36 }) }],
+    [
+      'a new bean with an overlong contentid and unpaired surrogates in its scripts',
+      { form: { contentid: X36, initjs: '\ud800x', targetingjs: '\ud83d\ude00\udc00' }, errors: ['contentid'], data: (id) => newBean(id, { contentid: X36, initjs: '?x', targetingjs: '\ud83d\ude00?' }) },
+    ],
   ])('save of %s answers 403 with the field errors and writes nothing', async (_label, c) => {
     const stored = (value: unknown): unknown => (value === STORED ? ids.first : value);
     const form = Object.fromEntries(Object.entries(c.form).map(([key, value]) => [key, stored(value)]));
@@ -800,7 +804,7 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect((wire(await run(ctx, 'findOne', { id: ids.first, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data).toEqual(storedFirst());
   });
 
-  // PostgreSQL text holds no NUL, which legacy stores (EX-UNSTORABLE-TEXT-VARIATIONTARGETING).
+  // PostgreSQL text holds no NUL, which legacy stores; the gateway serves such saves on legacy.
   it.each<[string, { id?: string; form: Row }]>([
     ['a NUL in initjs of a new bean', { form: { contentid: HOME_ID, initjs: 'a\u0000b' } }],
     ['a NUL in targetingjs of a stored bean', { id: STORED, form: { targetingjs: 'a\u0000b' } }],
@@ -814,9 +818,11 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
   });
 
   it('save of an unpaired surrogate stores ?, as legacy stores text outside code page 1252', async () => {
-    const result = await run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: HOME_ID, initjs: '\uD800x' } });
+    const result = await run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: HOME_ID, initjs: '\uD800x', targetingjs: 'y\uDC00' } });
     expect(result.status).toBe(200);
-    const id = String((wire(result, 'save') as { data: Row }).data['targetingid']);
+    const saved = (wire(result, 'save') as { data: Row }).data;
+    expect([saved['initjs'], saved['targetingjs']]).toEqual(['?x', 'y?']);
+    const id = String(saved['targetingid']);
     expect((wire(await run(ctx, 'findOne', { id, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data['initjs']).toBe('?x');
     expect(await run(ctx, 'delete', { id, actor: CONTENT_EDITOR })).toEqual({ data: '' });
   });

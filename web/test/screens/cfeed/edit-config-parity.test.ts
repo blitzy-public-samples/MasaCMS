@@ -13,14 +13,14 @@ import type { ScreenContext } from '@/screens/registry';
 import { adminS2Request } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type RecordedRequest } from '../../helpers/fake-gateway';
+import { LEGACY_SITE_PATHS_KEY, fakeGatewayClient, routeKey, type RecordedRequest } from '../../helpers/fake-gateway';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../../fixtures/strategies-content');
 
 /** The CSRF pair the fixtures carry in place of the captured one. */
 const CSRF = { token: 'TESTCSRFTOKEN0000000000000000000', expires: '260630150000000' } as const;
 
-/** The feed API endpoint of the capturing server's `default` site. */
+/** The feed API endpoint of the capturing server's `default` site, as `legacySitePaths` answers it. */
 const ENDPOINT = 'http://localhost:22380/_api/feed/v1/default';
 
 /** The core content renderer's `defaultCollectionDisplayList`, which the installed theme inherits. */
@@ -174,7 +174,6 @@ function screenModel(capture: Capture, config: LegacyConfig): Row {
     rsUsage: [],
     useLayoutManager: config.useLayoutManager,
     defaultCollectionDisplayList: config.defaultCollectionDisplayList,
-    endpoint: ENDPOINT,
     ...capture.model,
   };
 }
@@ -198,6 +197,7 @@ async function renderCapture(configName: ConfigName, captureName: CaptureName): 
       status: 200,
       body: { rc: screenModel(capture, config) },
     },
+    [LEGACY_SITE_PATHS_KEY]: { status: 200, body: { feedEndpoint: ENDPOINT } },
     [routeKey('POST', 'identity', '/v1/csrf/tokens')]: (sent: RecordedRequest) => ({
       status: 200,
       body: {

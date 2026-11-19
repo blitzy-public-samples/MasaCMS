@@ -1,6 +1,8 @@
 // The `cArch.list` Site Manager page of `carch/list.cfm`: the content modules' tree and flat-view tabs, and the
 // LEGACY module grid (server-only).
 import {
+  COMPLEX_VALUE_FAULT,
+  LegacyFaultError,
   cfEq,
   cfIsBoolean,
   cfIsNumeric,
@@ -390,6 +392,9 @@ async function runList(ctx: ScreenContext): Promise<ListOutcome> {
   if (listCase !== 'content') {
     return { kind: 'page', data: { listCase, model, url, startRowReset: false } };
   }
+  // list() sets rc.nextN to getNextN's struct unless listFind holds the module id (carch.cfc:224-226), and list.cfm:459
+  // compares it with 0 for an id the cfcase matches only numerically, such as `0` or the 36-character 099.
+  if (!CONTENT_CASE.includes(rcText(req.rc, 'moduleid'))) throw LegacyFaultError.fromTrace(COMPLEX_VALUE_FAULT);
   const startRowReset = applyContentSessionWrites(req, url);
   ctx.req = withActiveTab(ctx.req, model, url);
   if (lacksCrumbs(model)) return { kind: 'location', location: rootListLocation(rcText(req.rc, 'siteid')) };

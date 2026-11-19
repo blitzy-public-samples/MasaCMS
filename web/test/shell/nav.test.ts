@@ -20,6 +20,7 @@ import {
   siteAdminRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 import { siteTenantA } from '../fixtures/programs-sites/sites';
 import { SESSION_SITE_CASES } from '../helpers/requested-site';
 
@@ -73,6 +74,7 @@ function shell(
       server: ORACLE_SERVER,
       updateCoreCsrfQuery: CSRF_QUERY,
       exportLocationExists: false,
+      legacyPaths: INSTALLED_LEGACY_PATHS,
       now: new Date(2026, 5, 30, 12),
       ...data,
     },

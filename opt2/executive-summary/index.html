@@ -230,7 +230,7 @@
             <div class="kpi-note">12 tables, 40 action variants</div>
           </div>
         </div>
-        <p class="footnote">Counts are taken at the pinned source; the baseline is the expected figure. Run results read Pending run until <code>harness/repro/test-all.sh</code> completes.</p>
+        <p class="footnote">Counts are taken at the pinned source. Parity comes from a completed replay against legacy; the baseline shows expected figures, and other results read Pending run until <code>harness/repro/test-all.sh</code> completes.</p>
       </section>
 
       <section>
@@ -281,7 +281,7 @@ flowchart LR
             <tr><th>Domain</th><th>Service</th><th>Origin</th><th>Disposition</th><th>Withheld, stays on legacy</th></tr>
           </thead>
           <tbody>
-            <tr><td>Identity: login, groups, permissions, OAuth</td><td><code>identity</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Permission saves; group deletes, photo and file-attribute saves</td></tr>
+            <tr><td>Identity: login, groups, permissions, OAuth</td><td><code>identity</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Permission saves; group deletes, photo and file-attribute saves; forgot-password requests</td></tr>
             <tr><td>People: user roster, profiles, archive</td><td><code>people</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>User and address deletes; photo and file-attribute saves; public profile saves</td></tr>
             <tr><td>Programs and sites: site settings, site monitor</td><td><code>programs-sites</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Every site save: add, edit, delete, copy; class extensions; trash</td></tr>
             <tr><td>Strategies and content: content, approvals, files, feeds</td><td><code>strategies-content</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Publishing and change sets, notifications, feed import, image uploads, copies, forms</td></tr>
@@ -290,7 +290,7 @@ flowchart LR
         </table>
         <div class="chip-row" data-source="opt2/inventory/legacy-inventory.json#counts.dispositions">
           <span class="chip-label">Inventory items:</span>
-          <span class="chip"><i data-lucide="arrow-right"></i>Carry <b>806</b></span>
+          <span class="chip"><i data-lucide="arrow-right"></i>Carry <b>809</b></span>
           <span class="chip"><i data-lucide="server"></i>Legacy-served <b>150</b></span>
           <span class="chip"><i data-lucide="clipboard-list"></i>Withheld <b>170</b></span>
           <span class="chip"><i data-lucide="archive"></i>Retired <b>56</b></span>
@@ -366,7 +366,7 @@ flowchart LR
             <tr><th>Risk</th><th>Mitigation</th></tr>
           </thead>
           <tbody>
-            <tr><td>Cloud paths are untested without cloud credentials</td><td>Planned recorded-exchange adapter tests and Terraform plan, both Pending run; live cloud paths stay untested</td></tr>
+            <tr><td>Cloud paths are untested without cloud credentials</td><td>Adapter tests replay recorded cloud responses; the Terraform plan is generated, never applied; live cloud paths stay untested</td></tr>
             <tr><td>An unknown legacy writer changes moved data outside a window</td><td>Known writers prevented; overrides reviewed; every reconciliation detects divergence</td></tr>
             <tr><td>Long legacy writes, such as bundle deploys, hold windows open</td><td>Target waits or fails closed; windows over 5 s are flagged</td></tr>
             <tr><td>Withheld variants and halted cases leave scenarios unmet</td><td>Reported per scenario; the decision list awaits your approval</td></tr>
@@ -382,28 +382,28 @@ flowchart LR
       </section>
 
       <section>
-        <p class="eyebrow">Planned for later milestones; not yet usable</p>
+        <p class="eyebrow">Delivered and ready to use; final full run pending</p>
         <h2>How the team continues</h2>
         <div class="icon-row">
           <div>
             <i data-lucide="terminal"></i>
             <h3>Start and prove</h3>
-            <p><span class="pill pill-pending">Planned</span> <code>harness/repro/up.sh</code>, then <code>harness/repro/test-all.sh</code></p>
+            <p><span class="pill pill-carry">Delivered</span> <code>harness/repro/up.sh</code>, then <code>harness/repro/test-all.sh</code>; results <span class="pill pill-pending">Pending run</span></p>
           </div>
           <div>
             <i data-lucide="book-open"></i>
             <h3>Read per service</h3>
-            <p><span class="pill pill-pending">Planned</span> <code>README.md</code> and <code>TRACEABILITY.md</code></p>
+            <p><span class="pill pill-carry">Delivered</span> <code>README.md</code> and <code>TRACEABILITY.md</code></p>
           </div>
           <div>
             <i data-lucide="file-code"></i>
             <h3>Build to contracts</h3>
-            <p><span class="pill pill-pending">Partial</span> <code>contracts/openapi.yaml</code> and event schemas</p>
+            <p><span class="pill pill-carry">Delivered</span> <code>contracts/openapi.yaml</code> and event schemas</p>
           </div>
           <div>
             <i data-lucide="workflow"></i>
             <h3>Trust CI</h3>
-            <p><span class="pill pill-pending">Planned</span> <code>contracts</code>, <code>services</code>, <code>terraform</code> and <code>security</code> workflows</p>
+            <p><span class="pill pill-carry">Delivered</span> <code>contracts</code>, <code>services</code>, <code>terraform</code> and <code>security</code> workflows</p>
           </div>
         </div>
         <ul>
@@ -486,8 +486,8 @@ flowchart TB
           <h2>Behaviour kept, platform modernised</h2>
           <ul>
             <li>Approve or reject the decision list</li>
-            <li>Once delivered, run <code>harness/repro/test-all.sh</code> for final evidence</li>
-            <li>Review the Terraform plan once it runs; never apply</li>
+            <li>Run <code>harness/repro/test-all.sh</code> for the final evidence</li>
+            <li>Review the generated Terraform plan; never apply</li>
           </ul>
           <div class="brand-lockup">
             <i data-lucide="sparkles" class="brand-mark"></i>

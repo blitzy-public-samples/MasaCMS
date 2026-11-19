@@ -162,6 +162,15 @@ describe('template store', () => {
       expect(dataOf(res.json())).toMatchObject({ name: 'n'.repeat(100), subject: 's'.repeat(255) });
     });
 
+    it('stores and answers unpaired surrogates as `?`, as legacy answers them', async () => {
+      const res = await post(FIXTURE_TEMPLATES, { name: '\ud800N', subject: 'S\udc00', bodyText: '\ud83d\ude00\ud800', bodyHtml: '<b>\udfff</b>' });
+
+      expect(res.statusCode).toBe(200);
+      const stored = { name: '?N', subject: 'S?', body_text: '\ud83d\ude00?', body_html: '<b>?</b>' };
+      expect(dataOf(res.json())).toMatchObject(stored);
+      expect(ctx.db.rows('message_template')).toMatchObject([stored]);
+    });
+
     it("lists the tenant's templates by created, then template_id, in the fixture list shape", async () => {
       current = AT.getTime() + 5000;
       const latest = dataOf((await post(FIXTURE_TEMPLATES, { ...VALID, name: 'Latest' })).json()).template_id;

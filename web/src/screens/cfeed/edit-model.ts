@@ -159,8 +159,6 @@ export interface FeedEditModel {
   readonly isObjectInstance: boolean;
   /** `configBean.getValue('showUsageTabs', true)`. */
   readonly showUsageTabs: boolean;
-  /** The feed API endpoint strategies-content returned; renderers fall back to `feedApiEndpoint`. */
-  readonly endpoint?: string;
   /** `pluginManager.renderEvent('onFeedEditMessageRender')` output. */
   readonly pluginMessage: string;
 }
@@ -577,7 +575,6 @@ export function feedEditModelFrom(source: FeedEditSource, req: FeedEditRequest):
   const feed = feedViewOf(inst, req, displayAttributeNames(attributes), defaultList);
   const beanErrors = inst.get('errors');
   const saved = rcText(req.rc, 'feedID') !== '';
-  const endpoint = member(rc, 'endpoint');
   const { hasProxyServer, hasProxyUser, showUsageTabs } = legacySettings();
   return {
     feed,
@@ -611,7 +608,6 @@ export function feedEditModelFrom(source: FeedEditSource, req: FeedEditRequest):
     hasProxyUser,
     isObjectInstance,
     showUsageTabs,
-    endpoint: typeof endpoint === 'string' && endpoint !== '' ? endpoint : undefined,
     pluginMessage: PLUGIN_MESSAGE,
   };
 }

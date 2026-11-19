@@ -19,7 +19,8 @@ describe('loadLegacyServerInfo', () => {
     const gateway = fakeGatewayClient({ [VERSION_MENU]: { status: 200, body: menu } }, { userToken: 'user-token', requestId: 'req-1' });
     expect(await loadLegacyServerInfo(gateway)).toEqual(expected);
     expect(await loadLegacyServerInfo(gateway)).toEqual(expected);
-    const call = { service: 'gateway', method: 'GET', path: LEGACY_VERSION_MENU_PATH, userToken: 'user-token', requestId: 'req-1' };
+    // The gateway's own call acts for no user.
+    const call = { service: 'gateway', method: 'GET', path: LEGACY_VERSION_MENU_PATH, requestId: 'req-1' };
     expect(gateway.calls).toEqual([call, call]);
   });
 

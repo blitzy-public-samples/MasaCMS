@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, moduleRole, type Role } from '@opt2/platform/auth';
-import { LEGACY_ADMIN_SENTINEL_ID, apiUnavailableResponse, isCfUuid } from '@opt2/platform/legacy-compat';
+import { EMPTY_WDDX_PACKET_FAULT, LEGACY_ADMIN_SENTINEL_ID, LegacyFaultError, apiUnavailableResponse, isCfUuid, legacyFaultOf } from '@opt2/platform/legacy-compat';
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
@@ -1152,6 +1152,8 @@ describe('carch.datamanager', () => {
   it.each([
     ['a stored response', [packet()], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: { name: 'Ann' } }]],
     ['an unreadable packet', [packet({ data: 'x' })], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: null }]],
+    // Own oracle datamanager-edit-wddx-empty and -null: wddx2cfml names these exactly.
+    ...['', null].map((data) => [`a ${data === null ? 'NULL' : 'empty'} packet`, [packet({ data })], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: null, dataFault: EMPTY_WDDX_PACKET_FAULT }]] as const),
     [
       'a stored query packet',
       [
@@ -1222,6 +1224,26 @@ describe('carch.datamanager', () => {
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json()).toMatchObject({ saved: true, data: { outcome: 'deleted', responseid: RESPONSE } });
     expect(consumed.map(({ context }) => context)).toEqual([RESPONSE]);
+  });
+
+  const DISPLAY = { action: 'setDisplay', detailList2: 'name', summaryList2: 'email', nextn: '25', sortBy: 'name', sortDirection: 'asc' };
+  const UPDATE = { action: 'Update', responseid: RESPONSE, formid: NODE, fieldlist: 'name', entered: ENTERED_TEXT, name: 'Bo' };
+  // Own oracles dm-setdisplay-nodetail, -nosummary, -nonextn and dm-update-noformid, -nofieldlist, -noentered.
+  it.each<[string, Record<string, string>, string, string, number]>([
+    ['setDisplay', DISPLAY, 'detailList2', 'Element DETAILLIST2 is undefined in RC.', 0],
+    ['setDisplay', DISPLAY, 'summaryList2', 'Element SUMMARYLIST2 is undefined in RC.', 0],
+    ['setDisplay', DISPLAY, 'nextn', 'Element NEXTN is undefined in RC.', 0],
+    ['Update', UPDATE, 'formid', 'Element DATA.formid is undefined in ARGUMENTS.', 1],
+    ['Update', UPDATE, 'fieldlist', 'Element DATA.fieldlist is undefined in ARGUMENTS.', 1],
+    ['Update', UPDATE, 'entered', 'Element DATA.entered is undefined in ARGUMENTS.', 1],
+  ])("fails %s without %s with legacy's fault as a server_error naming it, before any write", async (_action, form, missing, message, consumes) => {
+    t.db.respond(ACTIVE, [formRow()]);
+    const posted = Object.fromEntries(Object.entries(form).filter(([name]) => name !== missing));
+    const res = await call('POST', DELETE_URL, { payload: new URLSearchParams(posted).toString(), headers: TOKEN });
+    expect(res.statusCode).toBe(500);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: DELETE_URL, status: 500, contentType: res.headers['content-type'], body: res.body });
+    expect(legacyFaultOf(res.json())).toEqual(new LegacyFaultError(message));
+    expect([consumed.length, ran(WRITE)]).toEqual([consumes, false]);
   });
 
   it('sets the display fields without a token and clears the action', async () => {

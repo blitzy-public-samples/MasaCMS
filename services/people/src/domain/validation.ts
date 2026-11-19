@@ -1,7 +1,7 @@
 // Masa's validation of a Type=2 user save on people's side (userBean.validate, addressBean.validate and
 // fileManager.requestHasRestrictedFiles) and its merge with identity's prepare errors into legacy's errors struct.
 import { domainToASCII } from 'node:url';
-import { cfEq, cfHash, cfNumberString, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfEq, cfHash, cfIsValidNumeric, cfNumberString, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
 import { EN_PEOPLE_MESSAGES, enPeopleMessages, type PeopleMessages } from './messages.js';
 import type { UserValues } from './person.js';
 
@@ -712,6 +712,32 @@ function postedClientFileName(postedFiles: ReadonlyMap<string, string>, field: s
   return undefined;
 }
 
+/** userBean's numeric properties in the order its generated rules check them, each with its bean key. */
+const NUMERIC_PROPERTIES = [
+  ['perm', 'perm'],
+  ['keepPrivate', 'keepprivate'],
+  ['type', 'type'],
+  ['subscribe', 'subscribe'],
+  ['inActive', 'inactive'],
+  ['isPublic', 'ispublic'],
+  ['s2', 's2'],
+] as const;
+
+/**
+ * The dataType errors `bean.validate` sets before userBean's own checks (bean.cfc:487-507, beanValidator.cfc:180-305):
+ * each numeric property holding non-empty text ACF `isValid('numeric')` rejects; an empty one is not checked.
+ */
+export function validateBeanTypes(values: Pick<UserValues, (typeof NUMERIC_PROPERTIES)[number][1]>): LegacyErrors {
+  const errors: LegacyErrors = {};
+  for (const [property, key] of NUMERIC_PROPERTIES) {
+    const value = values[key];
+    if (typeof value === 'string' && value !== '' && !cfIsValidNumeric(value)) {
+      errors[property] = `The property named '${property}' is not valid`;
+    }
+  }
+  return errors;
+}
+
 /**
  * People's part of userBean.validate (userBean.cfc:467-511), in the order it sets errors: `email`, `SecurityCode`
  * and `Spam`, or `siteid` alone for a blank site id. Identity's prepare answers the `password` and `username` checks.
@@ -779,6 +805,8 @@ export function requestHasRestrictedFiles(input: ReadonlyMap<string, unknown>, o
 
 /** The parts of a Type=2 save's errors struct, each in the order its producer set it. */
 export interface UserErrorParts {
+  /** validateBeanTypes' errors, which the struct holds first. */
+  bean?: Readonly<LegacyErrors>;
   /** validateExtendedData's errors. */
   extended: Readonly<LegacyErrors>;
   /** Identity's prepare errors (`password`, `username`, …), unchanged. */
@@ -792,12 +820,13 @@ export interface UserErrorParts {
 }
 
 /**
- * The errors struct of a Type=2 save, set in legacy's order (extended data, identity's checks, people's checks, the
- * restricted-file flag; userBean.cfc:458-511, userManager.cfc:476-479, 617-620) and keyed in ACF's iteration order.
- * `rb` gives the restricted-file text of the user's site bundle.
+ * The errors struct of a Type=2 save, set in legacy's order (the bean's dataType checks, extended data, identity's
+ * checks, people's checks, the restricted-file flag; userBean.cfc:458-511, userManager.cfc:476-479, 617-620) and keyed
+ * in ACF's iteration order. `rb` gives the restricted-file text of the user's site bundle.
  */
 export function mergeUserErrors(parts: UserErrorParts, rb: PeopleMessages = enPeopleMessages): LegacyErrors {
   const sequence: Array<[string, string | LegacyErrors]> = [
+    ...Object.entries(parts.bean ?? {}),
     ...acfStructOrder(Object.entries(parts.extended)),
     ...Object.entries(parts.identity ?? {}),
     ...Object.entries(parts.people),

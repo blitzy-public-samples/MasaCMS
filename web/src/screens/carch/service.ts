@@ -5,6 +5,7 @@ import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import type { components, paths } from '@/generated/clients/strategies-content';
 import { secure, type GateDecision } from '@/lib/access-gate';
 import {
+  assertNoLegacyFault,
   discardStreamed,
   okBody,
   type FormInput,
@@ -425,6 +426,7 @@ export async function toSubmitResult(
  * bytes are returned unchanged, a streamed 2xx body as it arrives, and the session values it reports set are applied to
  * `ctx.req`; a 401 or 403 becomes the controller `secure()` redirect.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
+ * @throws LegacyFaultError For a 500 naming the fault legacy raises, which onError prints; any other 500 is relayed.
  * @throws TypeError When the answer reports session values the contract does not name.
  */
 export async function relayCarchRaw(
@@ -447,6 +449,7 @@ export async function relayCarchRaw(
   if (stream) res = method === 'GET' ? await sc.stream('get', path, get()) : await sc.stream('post', path, post());
   else res = method === 'GET' ? await sc.raw('get', path, get()) : await sc.raw('post', path, post());
   if (res.status === 401 || res.status === 403) return carchRawRedirect(secureRedirect(ctx.req).location);
+  assertNoLegacyFault(res, sc.service);
   try {
     applyRelayedSessionEffects(ctx.req, firstValue(res.headers[SESSION_EFFECTS_HEADER]));
   } catch (error) {

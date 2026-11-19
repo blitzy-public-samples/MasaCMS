@@ -12,7 +12,6 @@ import {
   adminS2Request,
   anonymousRequest,
   editorRequest,
-  siteRecordFor,
   unservedEditorRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
@@ -62,8 +61,11 @@ function useSettings(vars: Record<string, string> = {}): void {
   resetLegacySettingsForTests();
 }
 
-/** A shell context around `ctx`; the head reads nothing else. */
-function shellContext(ctx: AdminRequest): ShellContext {
+/** Legacy's `getSite('default').getThemeAssetPath()` on a server with an empty context. */
+const LEGACY_THEME_PATH = '/themes/default';
+
+/** A shell context around `ctx` with legacy's `legacyPaths`; the head reads nothing else. */
+function shellContext(ctx: AdminRequest, legacyPaths: ShellContext['data']['legacyPaths']): ShellContext {
   return {
     ctx,
     view: { body: raw('') },
@@ -77,6 +79,7 @@ function shellContext(ctx: AdminRequest): ShellContext {
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths,
       now: new Date(0),
     },
     layout: 'template',
@@ -88,9 +91,12 @@ function shellContext(ctx: AdminRequest): ShellContext {
   };
 }
 
-/** The port's head markup for `ctx`. */
-function portHead(ctx: AdminRequest): string {
-  const markup = renderHtmlHead(shellContext(ctx));
+/** The port's head markup for `ctx` with legacy's `legacyPaths`. */
+function portHead(
+  ctx: AdminRequest,
+  legacyPaths: ShellContext['data']['legacyPaths'] = { themeAssetPath: LEGACY_THEME_PATH },
+): string {
+  const markup = renderHtmlHead(shellContext(ctx, legacyPaths));
   expect(isSafeHtml(markup)).toBe(true);
   return toString(markup);
 }
@@ -162,7 +168,8 @@ describe('renderHtmlHead', () => {
   ])('matches the legacy include for %s', (_, request, settings) => {
     useSettings(settings);
     const ctx = request();
-    expect(portHead(ctx)).toBe(legacyHead(ctx, `${legacySettings().context}/themes/default`));
+    const themeAssetPath = `${legacySettings().context}/themes/default`;
+    expect(portHead(ctx, { themeAssetPath })).toBe(legacyHead(ctx, themeAssetPath));
   });
 
   it('emits the legacy-rendered assets in order', () => {
@@ -236,56 +243,25 @@ describe('renderHtmlHead', () => {
 
   it('prints htmlEditorType, context and the theme path unencoded', () => {
     useSettings({ MURA_HTMLEDITORTYPE: "ck'editor", MURA_CONTEXT: '/c&m' });
-    const lines = globals(portHead(adminS2Request({ site: { record: { theme: 'my theme' } } })));
+    const lines = globals(portHead(adminS2Request(), { themeAssetPath: '/c&m/themes/my theme' }));
     expect(lines).toContain("var htmlEditorType='ck'editor';");
     expect(lines).toContain("var context='/c&m';");
     expect(lines).toContain("var themepath='/c&m/themes/my theme';");
   });
 
-  it.each<[string, Partial<ReturnType<typeof siteRecordFor>>, boolean, string]>([
-    ['a local site', { theme: 'MyTheme' }, false, '/themes/MyTheme'],
-    ['a site without a theme', { theme: null }, false, '/themes/'],
-    [
-      'a remote site without a resource domain',
-      { isremote: 1, remotecontext: '/remote', theme: 'x' },
-      false,
-      '/remote/themes/x',
-    ],
-    ['a remote site without a remote context', { isremote: 1, theme: 'x' }, false, '/themes/x'],
+  it.each<[string, () => AdminRequest]>([
     [
       'a remote site with an SSL resource domain',
-      { isremote: 1, resourceDomain: 'cdn.example.com', resourceSSL: 1, theme: 'x' },
-      false,
-      'https://cdn.example.com:8443/cms/themes/x',
+      () => adminS2Request({ site: { record: { isremote: 1, resourceDomain: 'cdn.example.com', resourceSSL: 1 } } }),
     ],
-    [
-      'a remote SSL site with a resource domain',
-      { isremote: 1, resourceDomain: 'cdn.example.com', useSSL: 1, theme: 'x' },
-      false,
-      'https://cdn.example.com:8443/cms/themes/x',
-    ],
-    [
-      'a remote site with a resource domain over HTTP',
-      { isremote: 1, resourceDomain: 'cdn.example.com', theme: 'x' },
-      false,
-      'http://cdn.example.com:8443/cms/themes/x',
-    ],
-    [
-      'a remote site with a resource domain over HTTPS',
-      { isremote: 1, resourceDomain: 'cdn.example.com', theme: 'x' },
-      true,
-      'https://cdn.example.com:8443/cms/themes/x',
-    ],
-  ])('resolves the theme path of %s', (_, record, https, themepath) => {
-    useSettings(record.resourceDomain === undefined ? {} : { MURA_CONTEXT: '/cms', MURA_PORT: '8443' });
-    const ctx = adminS2Request({ site: { record }, https });
-    expect(globals(portHead(ctx))).toContain(`var themepath='${themepath}';`);
+    ['a site whose theme lives under its own directory', () => adminS2Request({ site: { record: { theme: 'x' } } })],
+    ['a site whose data programs-sites withholds', () => unservedEditorRequest()],
+  ])("prints legacy's theme path for %s as the gateway answered it", (_, request) => {
+    const themepath = 'https://cdn.example.com:8443/cms/sites/default/themes/x';
+    expect(globals(portHead(request(), { themeAssetPath: themepath }))).toContain(`var themepath='${themepath}';`);
   });
 
-  it('assumes the installed theme when the site data is withheld', () => {
-    useSettings({ MURA_CONTEXT: '/cms' });
-    const ctx = unservedEditorRequest();
-    expect(ctx.site).toBeUndefined();
-    expect(globals(portHead(ctx))).toContain("var themepath='/cms/themes/default';");
+  it('fails when the shell data holds no theme path for the page site', () => {
+    expect(() => portHead(adminS2Request(), {})).toThrow(new TypeError('legacySitePaths answered no themeAssetPath'));
   });
 });

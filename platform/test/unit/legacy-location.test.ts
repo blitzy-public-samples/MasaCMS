@@ -1,7 +1,7 @@
-/** `cfLocationHeader` against the `Location` bytes ACF 2023 on Undertow answers for login redirects to the same URLs. */
+/** `cfLocationHeader` and `sendsNodeRefusedLocationBytes` against the `Location` bytes ACF 2023 on Undertow answers for login redirects to the same URLs. */
 import { validateHeaderValue } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { cfLocationHeader } from '../../src/legacy-compat/index.js';
+import { cfLocationHeader, sendsNodeRefusedLocationBytes } from '../../src/legacy-compat/index.js';
 
 /** handleFailure's admin target with `contentid` and the URL-encoded `returnURL` interpolated (loginManager.cfc:240). */
 const failed = (contentid: string, returnURL = ''): string =>
@@ -72,6 +72,7 @@ describe('cfLocationHeader', () => {
     expect(header).toBe(location);
     expect(() => validateHeaderValue('location', header)).not.toThrow();
     expect(() => new Headers({ location: header })).not.toThrow();
+    expect(sendsNodeRefusedLocationBytes(url)).toBe(false);
   });
 
   it.each<[string, string, string, string]>([
@@ -85,5 +86,6 @@ describe('cfLocationHeader', () => {
     expect(header).toBe(location);
     expect(() => validateHeaderValue('location', header)).not.toThrow();
     expect(() => validateHeaderValue('location', legacyBytes)).toThrow(expect.objectContaining({ code: 'ERR_INVALID_CHAR' }));
+    expect(sendsNodeRefusedLocationBytes(url)).toBe(true);
   });
 });

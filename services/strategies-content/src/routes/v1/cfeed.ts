@@ -1,9 +1,8 @@
 /** cfeed admin routes: collection list, edit and remote-feed import, and the loadsite, siteparents and update raw actions (cfeed.cfc). */
-import { LegacyServiceUnavailableError, adminUrl, cfEq } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, LegacyServiceUnavailableError, adminUrl, cfEq } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import type { Actor } from '../../domain/context.js';
 import {
-  FeedElementUndefinedError,
   FeedParamsQuery,
   defaultFetchRemote,
   previewFeedImport,
@@ -59,10 +58,10 @@ function rcText(rc: Rc, key: string): string | undefined {
   return value === undefined || value === null ? undefined : String(value);
 }
 
-/** `arguments.rc.feedid`, which update dereferences before validating the token (cfeed.cfc:118). */
+/** `arguments.rc.feedid`, which update dereferences before validating the token (cfeed.cfc:118); legacy's fault without it. */
 function feedIdOf(rc: Rc): string {
   const feedId = rcText(rc, 'feedid');
-  if (feedId === undefined) throw new FeedElementUndefinedError('feedid', 'ARGUMENTS.RC');
+  if (feedId === undefined) throw new LegacyFaultError('Element RC.feedid is undefined in ARGUMENTS.');
   return feedId;
 }
 

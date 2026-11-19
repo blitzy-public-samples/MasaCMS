@@ -1,5 +1,14 @@
 // Tests the committed cut-over versions against the generator's rules; build mechanics and the CLI are tested in ../cutover/.
-import { ROUTE_FAMILIES, matchRouteKey, normaliseRouteKey, type RouteFamily, type RouteKeyResult } from '@opt2/platform/legacy-compat';
+import {
+  NUL_TEXT_HALT_VARIANT,
+  REQUEST_HALT_VARIANTS,
+  ROUTE_FAMILIES,
+  SURROGATE_TEXT_HALT_VARIANT,
+  matchRouteKey,
+  normaliseRouteKey,
+  type RouteFamily,
+  type RouteKeyResult,
+} from '@opt2/platform/legacy-compat';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ROLLBACK_REPORT, buildVersions, rosterGroupSet } from '../../src/cutover/build-versions.js';
 import { loadGroups } from '../../src/cutover/loader.js';
@@ -16,6 +25,9 @@ const IMAGE_UPLOADS = ['admin:carch.update{upload=image}', 'admin:carch.multifil
 const SYNTHETIC_V1 = /^\w+:\/v1\//;
 const FAMILY_VARIANT = /^(\w+):\*\{([^{}]+)\}$/;
 const VARIANT_SUFFIX = /\{[^{}]*\}$/;
+const KEY_VARIANT = /^(\w+:[^*]+)\{([^{}]+)\}$/;
+/** Variants the dispatcher halts a listed key under; no version lists them. */
+const HALT_VARIANTS: readonly string[] = [NUL_TEXT_HALT_VARIANT, SURROGATE_TEXT_HALT_VARIANT, ...REQUEST_HALT_VARIANTS];
 
 const byRoute = (table: CutoverTable): Map<string, CutoverEntry> => new Map(table.entries.map((entry) => [entry.route, entry]));
 
@@ -93,10 +105,44 @@ describe('committed versions', () => {
         }
         continue;
       }
+      const [, baseKey = '', variant = ''] = KEY_VARIANT.exec(key) ?? [];
+      if (HALT_VARIANTS.includes(variant)) {
+        // The dispatcher keys such a request under its unhalted key and serves that key's entry on legacy, a writer as legacy-write.
+        expect(entries.has(key), key).toBe(false);
+        expect(entries.get(baseKey)?.kind, key).toMatch(/^(legacy-)?write$/);
+        continue;
+      }
       // A held key with no recorded write, such as the multi-file upload page, stays a read.
       const writes = (ctx.inventoryKeys.get(key)?.writeSet.length ?? 0) > 0;
       expect(entries.get(key), key).toMatchObject({ kind: writes ? 'legacy-write' : 'read', state: 'legacy' });
     }
+  });
+
+  it('serve no key of an open preserve exception from the target in any version', () => {
+    const open = ctx.exceptions.entries.filter((entry) => entry.decision === 'preserve' && entry.status === 'open');
+    expect(open.length).toBeGreaterThan(0);
+    const served: string[] = [];
+    for (const table of [versions.v0001, versions.v0002, versions.v0003]) {
+      const entries = byRoute(table);
+      const routes = table.entries.map((entry) => entry.route);
+      for (const entry of open) {
+        for (const key of [entry.routeKey, ...(entry.appliesTo ?? [])].map(normaliseRouteKey)) {
+          const [family = ''] = key.split(':', 1);
+          const variant = VARIANT_SUFFIX.exec(key)?.[0].slice(1, -1);
+          const result: RouteKeyResult = {
+            key,
+            baseKey: key.replace(VARIANT_SUFFIX, ''),
+            family: family as RouteFamily,
+            ...(variant === undefined ? {} : { variant }),
+            httpMethod: 'GET',
+            params: {},
+          };
+          const route = matchRouteKey(result, routes);
+          if (route !== undefined && entries.get(route)?.state === 'target') served.push(`${table.tableVersion} ${entry.id} ${route}`);
+        }
+      }
+    }
+    expect(served).toEqual([]);
   });
 
   it("return R's write entries and the reads over its units to legacy in v0003 and keep every other entry as in v0002", () => {

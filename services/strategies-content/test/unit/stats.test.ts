@@ -2,6 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
@@ -15,8 +16,9 @@ import {
   setCommentStat,
   setStatsValues,
   statsValues,
-  storedRate,
+  rateOutcome,
   type ContentStats,
+  type RateOutcome,
 } from '../../src/domain/stats.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, UNIT_OF } from '../../src/repo/tables.js';
@@ -117,42 +119,82 @@ describe('setStatsValues', () => {
   });
 });
 
-describe('storedRate', () => {
-  // Own oracle: the rate tcontentratings stored for each posted rate, or undefined where the save answered the error page.
-  it.each<[string, number | undefined]>([
-    ['4', 4],
-    [' 4 ', 4],
-    ['2.7', 2],
-    ['2.99999999999999999999', 2],
-    ['-3', -3],
-    ['+3', 3],
-    ['-0.5', 0],
-    ['.5', 0],
-    ['5.', 5],
-    ['00007', 7],
-    ['1e2', 100],
-    ['1E+1', 10],
-    ['4.5e0', 4],
-    ['1e-400', 0],
-    ['2147483647.9', 2147483647],
-    ['2147483647.9e0', 2147483647],
-    ['-2147483648.5', -2147483648],
-    [`${'0'.repeat(42)}1`, 1],
-    [`0.${'0'.repeat(37)}1`, 0],
-    [`0.${'0'.repeat(38)}1`, undefined],
-    [`1.${'0'.repeat(40)}`, undefined],
-    ['2147483648', undefined],
-    ['3000000000', undefined],
-    ['-2147483649', undefined],
-    ['1e10', undefined],
-    ['1e309', undefined],
-    ['abc', undefined],
-    ['', undefined],
-    ['1d', undefined],
-    ['0x10', undefined],
-    ['1,000', undefined],
-  ])('stores the rate %j as %j', (rate, expected) => {
-    expect(storedRate(rate)).toBe(expected);
+describe('rateOutcome', () => {
+  const driver = (message: string, errorCode: string): LegacyFaultError =>
+    new LegacyFaultError(`[Macromedia][SQLServer JDBC Driver][SQLServer]${message}`, 'java.sql.SQLDataException', { errorCode });
+  const notNumeric: RateOutcome = {
+    refused: new LegacyFaultError('The RATE argument passed to the saveRate function is not of type numeric.', 'Application', {
+      detail:
+        'If the component name is specified as a type of this argument, it is possible that either a definition file for the component cannot be found or is not accessible.',
+    }),
+  };
+  const precision = (literal: string): RateOutcome => ({
+    refused: driver(`The number '${literal}' is out of the range for numeric representation (maximum precision 38).`, '1007'),
+  });
+  const conversion: RateOutcome = { stored: driver('Arithmetic overflow error converting expression to data type int.', '8115') };
+  const overflow = (value: string): RateOutcome => ({ stored: driver(`Arithmetic overflow error for type int, value = ${value}.`, '232') });
+
+  // Own oracle: the rate tcontentratings stored for each posted rate, or the fault onError's debug page named
+  // (scratch captures saverate-<case>).
+  it.each<[string, RateOutcome]>([
+    ['4', { stored: 4 }],
+    [' 4 ', { stored: 4 }],
+    ['\t5', { stored: 5 }],
+    ['2.7', { stored: 2 }],
+    ['2.99999999999999999999', { stored: 2 }],
+    ['-3', { stored: -3 }],
+    ['+3', { stored: 3 }],
+    ['-0.5', { stored: 0 }],
+    ['.5', { stored: 0 }],
+    ['+.5', { stored: 0 }],
+    ['5.', { stored: 5 }],
+    ['00007', { stored: 7 }],
+    ['1e2', { stored: 100 }],
+    ['1E+1', { stored: 10 }],
+    ['4.5e0', { stored: 4 }],
+    ['1e-400', { stored: 0 }],
+    ['2147483647.9', { stored: 2147483647 }],
+    ['2147483647.9e0', { stored: 2147483647 }],
+    ['-2147483648.5', { stored: -2147483648 }],
+    ['-2147483648.9e0', { stored: -2147483648 }],
+    [`${'0'.repeat(42)}1`, { stored: 1 }],
+    [`0.${'0'.repeat(37)}1`, { stored: 0 }],
+    [`0.${'1'.repeat(38)}`, { stored: 0 }],
+    ['abc', notNumeric],
+    ['', notNumeric],
+    ['1d', notNumeric],
+    ['1e', notNumeric],
+    ['0x10', notNumeric],
+    ['1,000', notNumeric],
+    ['$5', notNumeric],
+    ['1e309', notNumeric],
+    ['-1e309', notNumeric],
+    [`1${'0'.repeat(38)}`, precision(`1${'0'.repeat(38)}`)],
+    [`1${'0'.repeat(40)}`, precision(`1${'0'.repeat(40)}`)],
+    [`-1${'0'.repeat(40)}`, precision(`1${'0'.repeat(40)}`)],
+    [`+1${'0'.repeat(40)}`, precision(`1${'0'.repeat(40)}`)],
+    [` ${'1'.repeat(41)} `, precision('1'.repeat(41))],
+    [`00${'1'.repeat(39)}`, precision(`00${'1'.repeat(39)}`)],
+    [`1.${'0'.repeat(38)}`, precision(`1.${'0'.repeat(38)}`)],
+    [`0.${'1'.repeat(39)}`, precision(`0.${'1'.repeat(39)}`)],
+    [`0.${'0'.repeat(38)}1`, precision(`0.${'0'.repeat(38)}1`)],
+    [`.${'1'.repeat(41)}`, precision(`.${'1'.repeat(41)}`)],
+    [`${'1'.repeat(38)}.5`, precision(`${'1'.repeat(38)}.5`)],
+    ['2147483648', conversion],
+    ['3000000000', conversion],
+    ['-2147483649', conversion],
+    ['99999999999', conversion],
+    ['-99999999999', conversion],
+    [`1${'0'.repeat(37)}`, conversion],
+    [`00${'1'.repeat(38)}`, conversion],
+    [`${'1'.repeat(37)}.5`, conversion],
+    ['1e10', overflow('10000000000.000000')],
+    ['-1e10', overflow('-10000000000.000000')],
+    ['2.1474836485E9', overflow('2147483648.500000')],
+    [`1${'0'.repeat(40)}e0`, overflow(`1${'0'.repeat(40)}.000000`)],
+    ['-2147483649e0', overflow('-2147483649.000000')],
+  ])('takes the rate %j as %j', (rate, expected) => {
+    expect(rateOutcome(rate)).toEqual(expected);
   });
 });
 

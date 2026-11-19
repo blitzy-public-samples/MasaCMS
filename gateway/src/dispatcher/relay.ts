@@ -9,6 +9,7 @@ import {
   type ServiceIdentity,
   type UserClaims,
 } from '@opt2/platform/auth';
+import { PATH_PAIRS_HEADER } from '@opt2/platform/legacy-compat';
 import {
   LEGACY_POST_LIMIT_BYTES,
   type BaseEnv,
@@ -153,11 +154,14 @@ export async function relayHandler(
     reply.callNotFound();
     return reply;
   }
+  // Web alone reaches the relay, so its path-pair header is the one X-Opt2-* header the callee receives from it.
+  const pathPairs = request.headers[PATH_PAIRS_HEADER.toLowerCase()];
   return forwardToTarget(request, reply, {
     service: target.service,
     serviceUrl,
     path: target.path,
     headers: stripInboundAuthHeaders(request.headers, { afterExchange: true }),
+    ...(typeof pathPairs === 'string' ? { extraHeaders: { [PATH_PAIRS_HEADER]: pathPairs } } : {}),
     userToken: target.auth.userToken,
     sessionId: target.auth.user?.sid,
     declaresWrite: !SAFE_METHODS.has(request.method),

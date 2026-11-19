@@ -13,6 +13,7 @@ import { legacySettings } from '@/lib/env';
 import { GatewayDenialError, okBody } from '@/lib/gateway-client';
 import { encodeHtmlAttr, encodeJs, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import { ORIGINAL_URL_HEADER, tokenServesSite, type AdminRequest, type SiteData } from '@/lib/request-context';
+import { legacyThemeAssetPath } from '@/lib/site-paths';
 import type { ShellView } from '@/shell/document';
 import { displayErrors, editGroupHtmlHead } from '../cusers/editgroup';
 import { renderUsersJs } from '../cusers/inc/js';
@@ -162,7 +163,7 @@ export function profileSources(ctx: ScreenContext): EditProfileSources {
 export interface ProfileSiteSettings {
   readonly publicUserPoolID: string;
   readonly privateUserPoolID: string;
-  /** `getThemeAssetPath()`. */
+  /** `getThemeAssetPath()`, read only when a subtype prints it, else `''`. */
   readonly themeAssetPath: string;
 }
 
@@ -221,23 +222,6 @@ function strongPasswordsOn(): boolean {
   return cfIsBoolean(value) && cfToBoolean(value);
 }
 
-const on = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
-
-// Mirrors cusers/editgroup.ts: web cannot read the legacy web root, so the theme is taken to be under
-// `<webroot>/themes`, as the shell prints `themepath`.
-/** `getThemeAssetPath()` of `record`: `getResourcePath(complete=0)` followed by `/themes/<theme>`. */
-function themeAssetPath(record: SiteRecord, https: boolean): string {
-  const { context, serverPort } = legacySettings();
-  const remote = on(record.isremote);
-  const resourceDomain = record.resourceDomain ?? '';
-  if (remote && resourceDomain !== '') {
-    const useSSL = record.useSSL === null || record.useSSL === undefined ? on(record.ExtranetSSL) : on(record.useSSL);
-    const scheme = on(record.resourceSSL) || useSSL || https ? 'https' : 'http';
-    return `${scheme}://${resourceDomain}${serverPort}${context}/themes/${record.theme ?? ''}`;
-  }
-  return `${remote ? (record.remotecontext ?? '') : context}/themes/${record.theme ?? ''}`;
-}
-
 /**
  * The settings programs-sites serves for `siteId`: the request's site, else a read the token admits; undefined when
  * neither serves it, as for a site other than the token's.
@@ -261,12 +245,13 @@ function userSiteFacts(
   siteId: string,
   record: SiteRecord | undefined,
   needsSettings: boolean,
+  themeAssetPath: string,
 ): ProfileSiteFacts {
   if (record !== undefined) {
     const settings: ProfileSiteSettings = {
       publicUserPoolID: record.publicUserPoolID ?? record.SiteID,
       privateUserPoolID: record.privateUserPoolID ?? record.SiteID,
-      themeAssetPath: themeAssetPath(record, ctx.req.https),
+      themeAssetPath,
     };
     return { siteId, name: text(record.Site), settings };
   }
@@ -292,7 +277,7 @@ async function poolSiteOf(
 /**
  * The view of `profile` for a request whose `rc.siteid` is `rcSiteId`.
  * @throws LegacyServiceUnavailableError When the view needs site settings, pool sites or interest groups no source serves.
- * @throws GatewayDenialError When programs-sites refuses a site read (401 or 403).
+ * @throws GatewayDenialError When programs-sites refuses a site read, or the gateway the theme path read (401 or 403).
  */
 export async function buildEditProfileView(
   ctx: ScreenContext,
@@ -302,7 +287,10 @@ export async function buildEditProfileView(
   const { rcSiteId, rc, sources = profileSources(ctx) } = opts;
   const userSiteId = profile.user.SiteID;
   const userRecord = await siteRecordOf(ctx, userSiteId);
-  const userSite = userSiteFacts(ctx, userSiteId, userRecord, profile.subTypes.length > 0);
+  const needsSettings = profile.subTypes.length > 0;
+  const themeAssetPath =
+    needsSettings && userRecord !== undefined ? await legacyThemeAssetPath(ctx.req, ctx.gateway, userSiteId) : '';
+  const userSite = userSiteFacts(ctx, userSiteId, userRecord, needsSettings, themeAssetPath);
   const rcRecord = sameId(rcSiteId, userSiteId) ? userRecord : await siteRecordOf(ctx, rcSiteId);
   if (rcRecord === undefined) throw unserved(`the private user pool of site ${rcSiteId}`, 'profile-site');
   const poolSite = await poolSiteOf(rcRecord.privateUserPoolID ?? rcRecord.SiteID, userSiteId, sources);

@@ -2,16 +2,17 @@
 import {
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
-  LEGACY_ERROR_PAGE_HTML,
-  LEGACY_HTML_CONTENT_TYPE,
+  LegacyFaultError,
   cfUuid,
+  legacyDebugPageHtml,
 } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { components } from '@/generated/clients/strategies-content';
 import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
+import { encodeHtml } from '@/lib/html';
 import { mergeFw1Context, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import { fw1RedirectTarget } from '@/lib/urls';
-import { cchainScreens, withCchainDefaults } from '@/screens/cchain';
+import { cchainSaveScreen, cchainScreens, withCchainDefaults } from '@/screens/cchain';
 import { submitCchainDelete } from '@/screens/cchain/delete';
 import { submitCchainSave } from '@/screens/cchain/save';
 import type { RedirectScreen, ScreenContext, SubmitResult } from '@/screens/registry';
@@ -38,10 +39,14 @@ const CSRF = { [CSRF_FIELD_TOKEN]: 'ABC123', [CSRF_FIELD_EXPIRES]: '260630120000
 const LIST_LOCATION = `./?muraAction=cchain.list&siteid=${SITE}`;
 const FW1_LIST = { kind: 'redirect', action: 'cchain.list', append: 'siteid', path: './' } as const;
 const SERVICE_LIST = { kind: 'redirect', action: 'cchain.list', path: './', queryString: `siteid=${SITE}` } as const;
-const MISSING_VIEW = {
-  kind: 'raw',
-  response: { status: 500, contentType: LEGACY_HTML_CONTENT_TYPE, body: LEGACY_ERROR_PAGE_HTML },
-} as const;
+// Own oracle: cchain-save-bean-errors.
+const MISSING_VIEW = new LegacyFaultError("Unable to find a view for 'core:cchain.save' action.", 'FW1.viewNotFound', {
+  detail: "'/muraWRM/admin/core/views/cchain/save.cfm' does not exist.",
+});
+/** That capture's headings after `<h1>500 Error</h1>`, up to its stack trace. */
+const MISSING_VIEW_HEADINGS =
+  '<h2>Unable to find a view for &#x27;core&#x3a;cchain.save&#x27; action.<br /></h2><h3>Type:FW1.viewNotFound<br /></h3>' +
+  '<h3>&#x27;&#x2f;muraWRM&#x2f;admin&#x2f;core&#x2f;views&#x2f;cchain&#x2f;save.cfm&#x27; does not exist.<br /></h3>';
 
 const listRedirect = (siteid: string = SITE): NonNullable<AdminWriteResult['redirect']> => ({
   circuit: 'cchain',
@@ -115,8 +120,9 @@ function locationOf(result: SubmitResult, req: AdminRequest): string {
   return fw1RedirectTarget({ action: result.action, append, queryString: result.queryString, path: result.path });
 }
 
+/** The cchain redirect definition of `action`, the halted save included. */
 function entryOf(action: Item): RedirectScreen {
-  const def = cchainScreens.find((candidate) => candidate.action === action);
+  const def = [...cchainScreens, cchainSaveScreen].find((candidate) => candidate.action === action);
   if (def?.mode !== 'redirect') throw new Error(`cchain.${action} is not a redirect-mode screen`);
   return def;
 }
@@ -176,11 +182,12 @@ describe('submitCchainSave', () => {
     expect(relayed(ctx, CCHAIN_PATHS.save)).toMatchObject({ chainid, groupid: GROUPS[0] });
   });
 
-  it('save answers the missing-view 500 on bean errors', async () => {
+  it('save raises FW/1’s missing-view fault on bean errors', async () => {
     const ctx = saveContext(editForm(CHAIN, GROUPS), written(BEAN_ERRORS));
 
-    await expect(submitCchainSave(ctx)).resolves.toEqual(MISSING_VIEW);
+    await expect(submitCchainSave(ctx)).rejects.toEqual(MISSING_VIEW);
     relayed(ctx, CCHAIN_PATHS.save);
+    expect(legacyDebugPageHtml(MISSING_VIEW, encodeHtml).endsWith(`<h1>500 Error</h1>${MISSING_VIEW_HEADINGS}</div>`)).toBe(true);
   });
 });
 
@@ -226,8 +233,9 @@ describe('gateway unavailable', () => {
 });
 
 describe('cchainScreens writes', () => {
-  it('registers only save and delete in redirect mode', () => {
-    expect(cchainScreens.filter((def) => def.mode === 'redirect').map((def) => def.action)).toEqual(['save', 'delete']);
+  it('registers only delete in redirect mode, defining the halted save outside the barrel', () => {
+    expect(cchainScreens.filter((def) => def.mode === 'redirect').map((def) => def.action)).toEqual(['delete']);
+    expect(cchainScreens).not.toContain(cchainSaveScreen);
     for (const action of ['save', 'delete'] as const) {
       expect(entryOf(action)).toMatchObject({ circuit: 'cchain', owner: SERVICE, mode: 'redirect' });
     }

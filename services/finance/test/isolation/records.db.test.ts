@@ -184,6 +184,25 @@ describe.skipIf(!available)('finance record writes', () => {
     expect(new Set(changes.map((change) => change.xid)).size).toBe(1);
   });
 
+  it("stores and answers an edited title's unpaired surrogates as `?`, where PostgreSQL would store U+FFFD", async () => {
+    const seeded = await seedRecord();
+    const probe = await withTenant(built().handle.app, TENANT_A.tenantId, (tx) => tx.query<{ text: string }>('SELECT $1::text AS text', ['\ud800x']));
+    expect(probe.rows[0]?.text).toBe('\ufffdx');
+    const headers = await headersFor('finance.preparer', { site: TENANT_A.siteId, sub: PREPARER_ID });
+
+    const res = await built().app.inject({
+      method: 'POST',
+      url: `/v1/finance/records/${seeded.record_id}/transitions/edit`,
+      headers,
+      payload: { title: '\ud800x \ud83d\ude00', amount: '1', period: '2026-06' },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ data: { title: '?x \ud83d\ude00' } });
+    const { record, versions } = await rowsFor(seeded.record_id);
+    expect([record?.title, versions.map((version) => version.title)]).toStrictEqual(['?x \ud83d\ude00', ['?x \ud83d\ude00']]);
+  });
+
   it('rolls back record, version and changelog together when the version audit fails', async () => {
     await seedRecord(sentinel);
 

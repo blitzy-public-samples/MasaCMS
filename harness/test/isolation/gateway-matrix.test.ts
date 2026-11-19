@@ -918,6 +918,11 @@ describe('versionRouting', () => {
       { routeKey: 'fixture:finance/records/{id}/edit@post', entry: 'fixture:finance/records/{id}/edit@post', state: 'target' },
     ],
     [
+      'a fixture write whose JSON body holds a NUL, under its halt variant',
+      { method: 'POST', route: `${API}/finance/records/${NEUTRAL_ID}/edit?siteid=tenant-a`, body: { title: 'a\u0000b' } },
+      { routeKey: 'fixture:finance/records/{id}/edit@post{text=nul}', state: 'legacy' },
+    ],
+    [
       'a REST save on its target entry',
       { method: 'POST', route: `/_api/rest/v1/tenant-a/content/${NEUTRAL_ID}`, form: { title: 'x' } },
       { routeKey: 'rest:content.save', entry: 'rest:content.save', state: 'target' },

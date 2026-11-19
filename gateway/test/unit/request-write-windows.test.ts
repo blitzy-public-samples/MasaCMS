@@ -18,7 +18,7 @@ const URLENCODED = 'application/x-www-form-urlencoded';
 const REMEMBER_ME = 'userid=8B5BD4AA-AB36-4E2C-8EE1A6E1E45DB3F0; userHash=0A1B2C3D';
 const IDENTITY_LOGIN = ['identity.group_account', 'identity.login_state'];
 const PAGE_LOGIN = ['identity.login_state', 'identity.user_device', 'identity.user_strike'];
-const FORM_UNITS = ['content.file', 'content.form_response_packet', 'content.form_response_question', 'identity.redirect'];
+const FORM_UNITS = ['content.file', 'identity.redirect'];
 const RATING = ['content.content_rating', 'content.content_stats'];
 const ASYNC = '/index.cfm/_api/json/v1/default/?method=processAsyncObject';
 

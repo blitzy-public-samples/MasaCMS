@@ -2,7 +2,7 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "f67add32f6959cc4cccc5cbb62f642309f6155f1f32ca04d36a86be046465006",
+    "inventorySha256": "c83c1a5a33fe742732929774bf8736cd1dc820d0b67bda177f30b60ddcb4feda",
     "tableOwnershipSha256": "bd8bb32df7f719aff9da87a78d8fdfe985dea1535571e982c6a4cacfccf1adb6"
   },
   "groups": [
@@ -140,19 +140,15 @@
         "content.file",
         "content.file_metadata",
         "content.filename_archive",
-        "content.form_response_packet",
-        "content.form_response_question",
         "content.source_map",
         "content.trash",
         "content.variation_targeting"
       ],
       "writeEntries": [
         "admin:carch.approvalaction",
-        "admin:carch.datamanager",
         "admin:carch.list",
         "admin:ccategory.update",
         "admin:cchain.delete",
-        "admin:cchain.save",
         "admin:cchangesets.delete",
         "admin:cchangesets.removeitem",
         "admin:cchangesets.save",
@@ -232,24 +228,9 @@
         "admin:ccomments.purgedeletedcomments",
         "admin:ccomments.singleedit",
         "admin:ccomments.unapprove",
-        "api:comment.delete",
-        "api:comment.save",
-        "api:comment.~delete",
-        "api:comment.~flag",
-        "api:comment.~markasspam",
-        "api:comment.~undelete",
-        "api:comment.~unmarkasspam",
         "api:stats.delete",
         "api:stats.save",
-        "cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag",
         "cfm:/core/modules/v1/rater/ajax/saverate.cfm",
-        "rest:comment.delete",
-        "rest:comment.save",
-        "rest:comment.~delete",
-        "rest:comment.~flag",
-        "rest:comment.~markasspam",
-        "rest:comment.~undelete",
-        "rest:comment.~unmarkasspam",
         "rest:stats.delete",
         "rest:stats.save"
       ],
@@ -291,6 +272,22 @@
       "id": "grp:content.extend_subtype",
       "units": [
         "content.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.form_response_packet",
+      "units": [
+        "content.form_response_packet"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.form_response_question",
+      "units": [
+        "content.form_response_question"
       ],
       "writeEntries": [],
       "hasCarryWrite": false
@@ -465,9 +462,7 @@
         "admin:cusers.updateaddress",
         "admin:cusers.update{type=1}",
         "admin:cusers.update{type=2,action=add}",
-        "admin:cusers.update{type=2,action=update}",
         "admin:cwebservice.delete",
-        "admin:cwebservice.save",
         "rest:login",
         "rest:oauth",
         "rest:oauth2",
@@ -629,12 +624,8 @@
       "units": [
         "people.user_favorite"
       ],
-      "writeEntries": [
-        "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm",
-        "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
-        "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
-      ],
-      "hasCarryWrite": true
+      "writeEntries": [],
+      "hasCarryWrite": false
     },
     {
       "id": "grp:programs_sites.directory",

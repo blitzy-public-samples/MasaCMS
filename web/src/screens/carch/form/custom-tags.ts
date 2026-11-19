@@ -47,6 +47,8 @@ export interface EditFormState {
   readonly subTypes: readonly SubTypeRow[];
   /** The parent's `getClassExtension().getAvailableSubTypes()`, a CFML list of `type/subtype`. */
   readonly subtypeFilter: string;
+  /** `settingsManager.getSite(rc.siteID).getThemeAssetPath()` as legacy's live site bean holds it; `''` unprinted. */
+  readonly themeAssetPath: string;
   readonly isExtended: boolean;
   readonly requiresApproval: boolean;
   readonly showApprovalStatus: boolean;

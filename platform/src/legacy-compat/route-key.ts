@@ -282,7 +282,7 @@ interface BaseRoute {
   httpMethod?: string;
 }
 
-const GLOB_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'static', 'cfm', 'apiother']);
+const GLOB_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'static', 'cfm', 'cfc', 'apiother']);
 /** Never reload-keyed: target serves opt2 and a legacy-bound opt2 request is re-keyed; bridge and fixture Application.cfc suppress it. */
 const NO_RELOAD_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'fixture']);
 const RELOAD_KEY = 'reload:application';
@@ -297,6 +297,23 @@ const CFM_SITE_SCOPES: ReadonlyMap<string, 'query' | 'form'> = new Map([
   ['/core/modules/v1/favorites/ajax/deleterssfavorite.cfm', 'query'],
 ]);
 const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
+/** Top-level web-root folders the OPT-2 deliverables add, none present at the pin; the container resolves them case-sensitively. */
+const OPT2_FOLDERS: readonly string[] = [
+  '/.github/workflows/',
+  '/gateway/',
+  '/harness/',
+  '/infra/',
+  '/legacy-fixtures/',
+  '/migration/',
+  '/opt2/',
+  '/platform/',
+  '/services/',
+  '/web/',
+];
+/** A segment the container runs as a template or component (its extension mapping is lower-case); later segments are path info. */
+const SCRIPT_SEGMENT = /\.cf[cm]$/;
+/** The fixture folder, whose templates stay legacy-served and key by the fixture and template rules. */
+const FIXTURES_FOLDER = '/legacy-fixtures/';
 const SYNTHETIC_V1_SEGMENTS: ReadonlyArray<readonly string[]> = Object.values(SYNTHETIC_V1_PREFIXES).flatMap((prefixes) =>
   prefixes.map((prefix) => listToArray(prefix, '/')),
 );
@@ -1079,6 +1096,31 @@ function isSyntheticV1Path(segments: readonly string[]): boolean {
   return SYNTHETIC_V1_SEGMENTS.some((prefix) => prefix.every((segment, i) => nth(segments, i + 1).toLowerCase() === segment));
 }
 
+/**
+ * A file the container serves from an OPT-2 folder, keyed on its `served` path whatever the query: a static file, or a
+ * template or component without its path info. Undefined for a directory, a fixture template, an upper-case script name
+ * and a path the opt2 namespace rule keys as sent, which key by their own rules; a fixture template's path info naming a
+ * file, which no fixture route keys, keys as the template, never as a static file.
+ */
+function opt2FolderRoute(c: RouteContext, served: string): BaseRoute | undefined {
+  if (!OPT2_FOLDERS.some((folder) => served.startsWith(folder))) return undefined;
+  const segments = listToArray(served, '/');
+  const script = segments.findIndex((segment) => SCRIPT_SEGMENT.test(segment));
+  const last = nth(segments, segments.length).toLowerCase();
+  const staticFile = !served.endsWith('/') && FILE_EXTENSION.test(last) && !last.endsWith('.cfm') && !last.endsWith('.cfc');
+  if (script === -1 && !staticFile) return undefined;
+  if (c.opts.opt2Namespaces && served.startsWith('/opt2/')) return startsNoCase(c.path, '/opt2/') ? undefined : opt2Route(c.req, served);
+  if (script === -1) return { family: 'static', body: served, params: append(scopeMap(c.req.query), scopeMap(c.req.form), false) };
+  if (served.startsWith(FIXTURES_FOLDER)) {
+    // The container runs that template, or answers the path itself; either way legacy, not the folder's static files, answers it.
+    const pathInfoFile = staticFile && script < segments.length - 1;
+    if (!pathInfoFile || fixtureItems(c.req.path, c.opts.context) !== undefined) return undefined;
+  }
+  const template = segments.slice(0, script + 1);
+  const at: RouteContext = { ...c, path: `/${template.join('/')}`, segments: template };
+  return at.path.endsWith('.cfc') ? cfcRoute(at) : cfmRoute(at);
+}
+
 /** First matching rule of the shared precedence; `rootPath` is the path the root front controller reads, `served` the one served. */
 function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: string): BaseRoute {
   const { req, path, segments } = c;
@@ -1091,6 +1133,8 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: s
   if (!frontController && startsNoCase(path, BRIDGE_PREFIX)) return { family: 'bridge', body: path, params: queryThenForm(req) };
   // Any other spelling served from the bridge directory is the bridge too, keyed on its served path.
   if (startsNoCase(`${served}/`, BRIDGE_PREFIX)) return { family: 'bridge', body: served, params: queryThenForm(req) };
+  const folderFile = opt2FolderRoute(c, served);
+  if (folderFile !== undefined) return folderFile;
   const opt2 = !frontController && c.opts.opt2Namespaces;
   if (opt2 && first === 'opt2') return opt2Route(req, path);
   if (opt2 && isSyntheticV1Path(segments)) return opt2Route(req, path);

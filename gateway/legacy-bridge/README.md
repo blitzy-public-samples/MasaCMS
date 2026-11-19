@@ -12,7 +12,7 @@ This README is the normative contract. The pages in [`cfml/`](cfml/) implement i
 | `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, shared values (carry and export), end |
 | `cfml/jobs.cfm` | Site-monitor steps, cursor, cache purge |
 | `cfml/scheduler.cfm` | ACF scheduled-task control |
-| `cfml/site.cfm` | In-memory site registry list and rebuild; the admin Version menu's server facts |
+| `cfml/site.cfm` | In-memory site registry list and rebuild; the site beans' first-touch path values; the admin Version menu's server facts |
 | `cfml/files.cfm` | Legacy file store list, get, put, delete |
 
 Every endpoint is `${LEGACY_ORIGIN}/gateway/legacy-bridge/cfml/<page>.cfm?op=<op>`, or `jobs.cfm?job=<job>`.
@@ -270,6 +270,21 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createSiteListClie
 - Reads what `contentServer.bindToDomain` binds a request host with (`core/mura/content/contentServer.cfc:170-220`): each row of `settingsManager.getList(sortBy="orderno")` in row order, with its site's `getDomain()` and its `domainAlias` lines split by `chr(13)&chr(10)` as `settingsBean.isValidDomain` splits them (`core/mura/settings/settingsBean.cfc:1189-1221`), and `configBean.getAdminDomain()`. A site whose settings fail to load keeps its place with an empty domain and no aliases, since `bindToDomain` skips it. Nothing is rebuilt or written.
 - Response: `{sites:[<siteid>], bindings:[{siteId, domain, aliases:[<alias>]}], adminDomain, serverTime}`; `sites` is in no defined order, `bindings` in bind order. ColdFusion may serialise a numeric-looking id, domain or alias as a JSON number, so callers read each one as a string.
 
+### `site.cfm?op=paths&siteid=…`
+
+Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createSitePathsClient`), for web's `GET /internal/v1/legacy-site-paths`. Assertion op `site.paths`, `siteId` equal to `siteid`.
+
+Legacy's site beans keep the first value of these getters: `getThemeAssetPath` in `themeLookup` per theme, complete flag and domain argument (`core/mura/settings/settingsBean.cfc:821-851`), and `getApi` the JSON and feed API utilities, whose endpoints their inits take from `getResourcePath(complete=1)` (`settingsBean.cfc:1249-1254`, `core/mura/client/api/json/v1/jsonApiUtility.cfc:26-29`, `core/mura/client/api/feed/v1/feedApiUtility.cfc:15-27`). This op evaluates them on the live beans, so a target page prints what the same legacy page would.
+
+- GET, no body. `siteid` (the admin session's site) is required, and at least one of `apiSite`, `feedSite`, `themeSite` and `initSite`.
+- The caller sends the browser request's `Host`, and its `X-Forwarded-Proto` and `Front-End-Https` when it carries them, so `cgi.http_host`, `cgi.server_name` and `utility.isHTTPS()` read as on that request.
+- Sets `request.muraPreviewDomain` as `admin/Application.cfc:500-507` does, `siteid` standing for `session.siteid`, then evaluates, in the order an admin page prints them:
+  - `apiSite`: `getSite(apiSite).getApi('json','v1').getEndpoint(mode='rest')` (`admin/core/views/cwebservice/edit.cfm:87,93,129`) as `restEndpoint`;
+  - `feedSite`: `getSite(feedSite).getApi('feed','v1').getEndpoint()` (`admin/core/views/cfeed/edit.cfm:215`, `list.cfm:77`) as `feedEndpoint`;
+  - `themeSite`: `getSite(themeSite).getThemeAssetPath()` (`admin/common/layouts/includes/html_head.cfm:125`) as `themeAssetPath`;
+  - `initSite`: `getSite(initSite).getThemeAssetPath(complete=1)` (`Mura.init` in `admin/common/layouts/template.cfm:544,551` and `compact.cfm:288,295`) as `initThemeAssetPath`.
+- Response: `{restEndpoint?, feedEndpoint?, themeAssetPath?, initThemeAssetPath?, serverTime}`, one key per named site.
+
 ### `site.cfm?op=versionMenu`
 
 Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createVersionMenuClient`), for its `GET /internal/v1/legacy-server/version-menu` (`getLegacyVersionMenu`), which web's full admin layout reads. Assertion op `site.versionMenu`, `siteId` `""`.
@@ -341,7 +356,7 @@ The rendered server definition, `harness/repro/server.json.template`, also sets 
 | `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, shared values around legacy admin requests, logout |
 | `jobs.cfm` | The migration service on behalf of `services/programs-sites/src/jobs/dispatch.ts`; the reverse projector (`purgeCache`) | Legacy site-monitor steps, cursor hand-off, cache purge |
 | `scheduler.cfm` | `migration/src/scheduler/` and `opt2-ops` | `up.sh`, transitions, drain and resume, `down.sh` |
-| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `versionMenu`) | After a `tsettings` batch; gateway start and every second after (`list`); each full-layout web admin page (`versionMenu`) |
+| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `paths`, `versionMenu`) | After a `tsettings` batch; gateway start and every second after (`list`); each web page that prints a first-touch path (`paths`); each full-layout web admin page (`versionMenu`) |
 | `files.cfm` | `migration/src/files/` and the reverse projector | Snapshot manifest, transfer, reverse projection |
 
 ## Smoke check

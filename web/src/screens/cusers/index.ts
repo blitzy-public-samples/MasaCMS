@@ -23,8 +23,9 @@ import { updateAddressAction } from './updateaddress';
 export { renderUsersJs } from './inc/js';
 
 // Each definition applies the cUsers `before()` gate and rc defaults itself. The withheld `update` and
-// `updateaddress` variants are refused by the registry's not-built list before these are matched.
-/** Every carried cUsers action and `update` variant. */
+// `updateaddress` variants and the halted roster edit `update{type=2,action=update}` are refused by the registry's
+// not-built list before these are matched.
+/** Every carried cUsers action and `update` variant web serves. */
 export const cusersScreens: readonly ScreenDefinition[] = Object.freeze([
   addToGroupAction,
   advancedSearchScreen,

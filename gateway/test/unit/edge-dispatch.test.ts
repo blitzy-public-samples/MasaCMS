@@ -555,7 +555,7 @@ describe('forwarding', () => {
     const res = await h.app.inject({
       method: 'GET',
       url: '/_api/json/v1/default/content/x',
-      headers: { authorization: 'Basic dTpw', 'x-opt2-thing': '1', 'x-serverless-authorization': 'Bearer forged' },
+      headers: { authorization: 'Basic dTpw', 'x-opt2-thing': '1', 'x-opt2-path-pairs': 'title=onLoad', 'x-serverless-authorization': 'Bearer forged' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['set-cookie']).toEqual(['CFID=1;path=/;', ...REQUEST_START_COOKIES]);
@@ -563,6 +563,8 @@ describe('forwarding', () => {
     expect(received?.headers.authorization).toBe('Bearer user-token-1');
     expect(received?.headers['x-serverless-authorization']).toMatch(/^Bearer (?!forged)/);
     expect(received?.headers['x-opt2-thing']).toBeUndefined();
+    // Only web's relay may name path pairs; a client's own header would keep its values from the owner's scan.
+    expect(received?.headers['x-opt2-path-pairs']).toBeUndefined();
     expect(h.deps.tokenCache.get).toHaveBeenCalledWith(SESSION_ID, 'default', 3);
     expect(h.legacy.requests).toHaveLength(0);
   });
@@ -652,7 +654,6 @@ describe('forwarding', () => {
       { kind: 'session', sessionId: SESSION_ID, epoch: 3, mode: 'legacy-primary', legacyCookies: {}, setCookies: [], consumedParams: ['access_token', 'client_id'] },
       'access_token,client_id',
     ],
-    ['the anonymous continuation of its ended session', { kind: 'none', setCookies: [], consumedParams: ['access_token', 'client_id'] }, 'access_token,client_id'],
     ['a session that consumed nothing', session('legacy-primary'), undefined],
   ])('forwards a REST continuation in %s unchanged, naming only the params identity consumed', async (_label, resolution, consumed) => {
     const h = await harness();
@@ -682,6 +683,25 @@ describe('forwarding', () => {
     await h.app.inject({ method: 'GET', url: '/_api/json/v1/default/content/x' });
     expect(h.calls).toContain(`afterTargetLogout:${SESSION_ID}`);
     expect(h.svc.requests[0]?.headers.authorization).toBeUndefined();
+  });
+
+  it.each<[string, string | null, string]>([
+    ['naming no site', null, 'default'],
+    ['naming its site', 'tenant-a', 'tenant-a'],
+  ])("forwards a REST request %s with the token its resolution minted at the request's token site, never reading its state again", async (_label, siteId, tokenSite) => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'rest:content', kind: 'read', state: 'target' }, destination: 'target', family: 'rest', siteId }));
+    vi.mocked(h.deps.resolver.resolveSession).mockImplementationOnce(async (_input, { mintToken }) => {
+      if (mintToken === undefined) throw new TypeError('the dispatcher passed no token minter');
+      return { ...session('legacy-primary'), token: await mintToken(SESSION_ID, 3) };
+    });
+    vi.mocked(h.deps.stateCheck.check).mockResolvedValue({ state: 'ended', epoch: 4, userId: '', siteId: '', epochChanged: true });
+    const res = await h.app.inject({ method: 'GET', url: '/_api/rest/v1/default/content' });
+    expect(res.statusCode).toBe(200);
+    expect(h.deps.stateCheck.check).not.toHaveBeenCalled();
+    expect(vi.mocked(h.deps.tokenCache.get).mock.calls).toEqual([[SESSION_ID, tokenSite, 3]]);
+    expect(h.svc.requests[0]?.headers.authorization).toBe('Bearer user-token-1');
+    expect(h.calls).not.toContain(`afterTargetLogout:${SESSION_ID}`);
   });
 
   it('maps target session Set-Cookie onto the jar in target-primary, keeping deletions and other cookies', async () => {

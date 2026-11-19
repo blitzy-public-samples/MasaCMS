@@ -359,6 +359,13 @@ describe('tenantForRegisteredSite', () => {
 
     await expect(tenantForRegisteredSite(h.db, 'tenant-z')).resolves.toBeNull();
   });
+
+  it.each(['tenant-a\u0000', '\u0000tenant-a', 'ten\u0000ant-a', '\u0000'])('returns null for %j, holding a NUL, without reading the registry', async (siteId) => {
+    const h = setup({ [SQL.tenantForSite]: [{ tenant_id: TENANT_A }] });
+
+    await expect(tenantForRegisteredSite(h.db, siteId)).resolves.toBeNull();
+    expect([h.connect.mock.calls.length, h.client.calls]).toEqual([0, []]);
+  });
 });
 
 describe('siteForTenant', () => {

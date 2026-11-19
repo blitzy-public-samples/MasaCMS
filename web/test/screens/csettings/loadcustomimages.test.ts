@@ -16,7 +16,13 @@ import { SITE_IDS } from '../../fixtures/programs-sites/sites';
 import { siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeRouteTable } from '../../helpers/fake-gateway';
+import {
+  callKey,
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeRouteTable,
+} from '../../helpers/fake-gateway';
 import { makeScreenContext } from '../../helpers/screen-context';
 
 // The registry loads every circuit's screens; the screen context reads only its shell hooks.
@@ -50,8 +56,7 @@ const sizeRoutes = (list: SizeList): FakeRouteTable => ({
   [LIST_ROUTE]: { status: 200, body: list },
 });
 
-const callKeys = (gateway: FakeGatewayClient): string[] =>
-  gateway.calls.map(({ method, service, path }) => routeKey(method, service, path as `/${string}`));
+const callKeys = (gateway: FakeGatewayClient): string[] => gateway.calls.map(callKey);
 
 /** The fragment the admin-raw handler serves for the dialog's post of `rc`: load, then render. */
 async function serve(rc: Fields, list: SizeList = IMAGE_SIZE_LIST_TENANT_A) {

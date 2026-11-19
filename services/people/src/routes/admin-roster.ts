@@ -18,6 +18,7 @@ import {
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import {
+  answeringQueryFault,
   csrfPreHandler,
   legacyParamsOf,
   multipartFilesOf,
@@ -104,13 +105,16 @@ const ADDRESS_SAVES: ReadonlyArray<readonly [action: string, save: typeof create
   ['Add', createAddress],
 ]);
 
+/** A bean column's wire kind: text, integer, timestamp, or a numeric flag, which keeps the text a failed save posted. */
+type WireKind = 's' | 'i' | 't' | 'f';
+
 /** The `tusers` values a user bean holds, in bootstrap casing without `Password` and `PasswordCreated`, with the kind each takes on the wire. */
-const BEAN_COLUMNS: ReadonlyArray<readonly [name: string, kind: 's' | 'i' | 't']> = Object.freeze([
+const BEAN_COLUMNS: ReadonlyArray<readonly [name: string, kind: WireKind]> = Object.freeze([
   ['UserID', 's'], ['GroupName', 's'], ['Fname', 's'], ['Lname', 's'], ['UserName', 's'],
   ['Email', 's'], ['Company', 's'], ['JobTitle', 's'], ['mobilePhone', 's'], ['Website', 's'], ['Type', 'i'],
-  ['subType', 's'], ['ContactForm', 's'], ['S2', 'i'], ['LastLogin', 't'], ['LastUpdate', 't'], ['LastUpdateBy', 's'],
-  ['LastUpdateByID', 's'], ['Perm', 'i'], ['InActive', 'i'], ['isPublic', 'i'], ['SiteID', 's'], ['Subscribe', 'i'],
-  ['notes', 's'], ['description', 's'], ['interests', 's'], ['keepPrivate', 'i'], ['photoFileID', 's'],
+  ['subType', 's'], ['ContactForm', 's'], ['S2', 'f'], ['LastLogin', 't'], ['LastUpdate', 't'], ['LastUpdateBy', 's'],
+  ['LastUpdateByID', 's'], ['Perm', 'f'], ['InActive', 'f'], ['isPublic', 'f'], ['SiteID', 's'], ['Subscribe', 'f'],
+  ['notes', 's'], ['description', 's'], ['interests', 's'], ['keepPrivate', 'f'], ['photoFileID', 's'],
   ['photoFileExt', 's'], ['IMName', 's'], ['IMService', 's'], ['created', 't'], ['remoteID', 's'], ['tags', 's'],
   ['tablist', 's'],
 ] as const);
@@ -210,10 +214,15 @@ function localTimestamp(date: Date): string {
   return cfDateTimeFormat(date, 'yyyy-mm-dd HH:nn:ss.lll').replace(' ', 'T');
 }
 
-/** A bean value in its column's wire form: a date not yet parsed, text that is no integer, or a complex value is NULL. */
-function wireValue(value: unknown, kind: 's' | 'i' | 't'): string | number | null {
+/**
+ * A bean value in its column's wire form: a date not yet parsed, an integer column's text that is no integer, or a
+ * complex value is NULL; a flag that is no integer is its CFML text.
+ */
+function wireValue(value: unknown, kind: WireKind): string | number | null {
   if (kind === 't') return value instanceof Date ? localTimestamp(value) : null;
-  if (kind === 'i') return cfIsNumeric(value) && Number.isInteger(cfToNumber(value)) ? cfToNumber(value) : null;
+  const integer = cfIsNumeric(value) && Number.isInteger(cfToNumber(value));
+  if (kind === 'i') return integer ? cfToNumber(value) : null;
+  if (kind === 'f' && integer) return cfToNumber(value);
   if (typeof value === 'number') return cfNumberString(value);
   return typeof value === 'string' ? value : null;
 }
@@ -346,7 +355,7 @@ export async function registerAdminRosterRoutes(app: FastifyInstance, deps: Admi
         csrfPreHandler({ contextOf: (request) => admittedOf(admittedSaves, request).ctx.userid, onReject: failOnUnsetUserBean }),
       ],
     },
-    async (request) => saveUser(roster, expirePasswords, request),
+    async (request, reply) => answeringQueryFault(reply, () => saveUser(roster, expirePasswords, request)),
   );
 
   app.post<{ Reply: RouteResult }>(
@@ -358,6 +367,6 @@ export async function registerAdminRosterRoutes(app: FastifyInstance, deps: Admi
         csrfPreHandler({ contextOf: (request) => `updateaddress${admittedOf(admittedAddresses, request).ctx.userid}`, onReject: skipAddressWrite }),
       ],
     },
-    async (request) => saveAddress(addresses, roster, request),
+    async (request, reply) => answeringQueryFault(reply, () => saveAddress(addresses, roster, request)),
   );
 }

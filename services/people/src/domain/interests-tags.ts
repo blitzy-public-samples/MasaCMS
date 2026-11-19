@@ -1,6 +1,7 @@
 /** The `tusersinterests` and `tuserstags` writes of a Type=2 user save [legacy: core/mura/user/userDAO.cfc:583-616,895-922]. */
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
+import { tagInsertFault } from '../legacy/query-fault.js';
 import type { PeopleRepository } from '../repo/repository.js';
 import type { InterestRow, TagRow } from '../repo/tables.js';
 import type { UserValues } from './person.js';
@@ -64,12 +65,23 @@ export async function writeInterests(
   return repo.replaceInterests(tx, userId, categoryIds, scope, ctx);
 }
 
-/** Replaces the user's tags as `deleteTags` then `createTags` do, under the user's (pool) site id; returns the inserted rows. */
+/**
+ * Replaces the user's tags as `deleteTags` then `createTags` do, under the user's (pool) site id; returns the inserted rows.
+ * @throws LegacyQueryFault For a tag its column cannot hold, once the tags before it are written.
+ */
 export async function writeTags(
   repo: PeopleRepository,
   tx: TenantTx,
   user: Pick<UserValues, 'userid' | 'siteid' | 'tags'>,
   ctx: WriteContext,
 ): Promise<TagRow[]> {
+  const rows = tagRowsFor(user.userid, user.siteid, user.tags);
+  for (const [index, row] of rows.entries()) {
+    const fault = tagInsertFault(row);
+    if (fault === undefined) continue;
+    // Each insert commits on its own, so the tags before the failing one stay.
+    await repo.replaceTags(tx, { userId: user.userid, siteId: user.siteid, tags: rows.slice(0, index).map(({ tag }) => tag).join(',') }, ctx);
+    throw fault;
+  }
   return repo.replaceTags(tx, { userId: user.userid, siteId: user.siteid, tags: user.tags }, ctx);
 }

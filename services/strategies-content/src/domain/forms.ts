@@ -4,6 +4,7 @@
  */
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 import {
+  LegacyFaultError,
   cfEq,
   cfIsBoolean,
   cfIsNumeric,
@@ -113,6 +114,20 @@ function rcText(rc: LegacyRc, key: string): string {
   return simpleText(rcValue(rc, key));
 }
 
+/** datamanager.cfm's `rc.<key>`; a missing key raises the fault legacy's read raises, which onError prints. */
+function viewRcValue(rc: LegacyRc, key: string): unknown {
+  const value = rcGet(rc, key);
+  if (value === undefined) throw new LegacyFaultError(`Element ${key.toUpperCase()} is undefined in RC.`);
+  return value;
+}
+
+/** dataCollectionManager.update's `arguments.data.<key>`, `key` as legacy spells it; a missing key raises legacy's fault. */
+function dataValue(data: LegacyRc, key: string): unknown {
+  const value = rcGet(data, key);
+  if (value === undefined) throw new LegacyFaultError(`Element DATA.${key} is undefined in ARGUMENTS.`);
+  return value;
+}
+
 /** `rc.<key>` as text, or `fallback` when absent (a key the controller or view `cfparam`s). */
 function rcTextOr(rc: LegacyRc, key: string, fallback: string): string {
   return rcHas(rc, key) ? rcText(rc, key) : fallback;
@@ -195,6 +210,7 @@ async function storeAttachment(deps: ContentDeps, actor: Actor, file: UploadedFi
  * response from `data.fieldlist`, keeping `data.entered`. Questions and packet are written in one gated transaction.
  * @param files Posted file parts; an attachment field with a part of its name stores it (non-image only).
  * @throws ImageUploadHaltedError for an image attachment, whose renditions stay legacy-written.
+ * @throws LegacyFaultError legacy's `Element DATA.<key> is undefined in ARGUMENTS.` for a missing key it reads, before any write.
  */
 export async function updateResponse(
   deps: ContentDeps,
@@ -207,8 +223,8 @@ export async function updateResponse(
   const put = (key: string, value: unknown): void => {
     values[rcKey(values, key) ?? key] = value;
   };
-  const formId = rcText(values, 'formid');
-  const siteId = rcText(values, 'siteid');
+  const formId = simpleText(dataValue(values, 'formid'));
+  const siteId = simpleText(dataValue(values, 'siteid'));
   const info = new InfoStruct();
   info.set('fieldnames', '');
 
@@ -220,9 +236,9 @@ export async function updateResponse(
 
   const update = rcHas(values, 'responseid');
   const responseId = update ? rcText(values, 'responseid') : cfUuid();
-  const fieldList = rcText(values, update ? 'fieldlist' : 'fieldnames');
+  const fieldList = simpleText(dataValue(values, update ? 'fieldlist' : 'fieldnames'));
   // Bound before any write: legacy binds `entered` last, after its non-transactional delete and question inserts.
-  const entered = update ? cfTimestampParam(rcValue(values, 'entered')) : deps.clock.now();
+  const entered = update ? cfTimestampParam(dataValue(values, 'entered')) : deps.clock.now();
   info.set('responseid', responseId);
 
   const questions: { formfield: string; formvalue: string }[] = [];
@@ -550,6 +566,7 @@ export interface DataManagerResult {
  * carch.datamanager's writes (datamanager.cfm:76-106, dsp_response.cfm:162-167): `Update`/`Delete` of `rc.responseid`
  * with valid tokens, `setDisplay`, then the response view's filtered delete with `rc.minute1` and a true `rc.delete`.
  * @param rc Request values carrying carch.before's defaults.
+ * @throws LegacyFaultError legacy's fault for an `rc` or `arguments.data` element a write reads and the request lacks.
  */
 export async function dataManagerAction(deps: ContentDeps, actor: Actor, rc: LegacyRc, opts: DataManagerOptions): Promise<DataManagerResult> {
   const locale = opts.locale ?? DEFAULT_LOCALE;
@@ -566,8 +583,8 @@ export async function dataManagerAction(deps: ContentDeps, actor: Actor, rc: Leg
     await deleteResponse(deps, actor, rcText(view, 'responseid'), true, opts);
     outcome = 'deleted';
   } else if (cfEq(action, 'setDisplay')) {
-    bean.setValue('responseDisplayFields', `${rcText(view, 'detailList2')}~${rcText(view, 'summaryList2')}`);
-    bean.setValue('nextN', rcValue(view, 'nextn'));
+    bean.setValue('responseDisplayFields', `${simpleText(viewRcValue(view, 'detailList2'))}~${simpleText(viewRcValue(view, 'summaryList2'))}`);
+    bean.setValue('nextN', viewRcValue(view, 'nextn'));
     bean.setValue('sortBy', rcValue(view, 'sortBy'));
     bean.setValue('sortDirection', rcValue(view, 'sortDirection'));
     await setDisplay(deps, actor, bean, opts);

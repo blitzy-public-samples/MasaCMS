@@ -1,5 +1,5 @@
 /** The cUsers roster writes over a throwaway `people` schema: `cUsers.update` Type=2 Add and Update and `cUsers.updateAddress` through `app.inject` with the identity double. */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { adminUrl, cfUuid } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
 import type { PeopleEnv } from '../../src/app.js';
@@ -35,9 +35,23 @@ import {
 } from '../helpers/roster-posts.js';
 
 const CATEGORY_3 = cfUuid();
+/** The legacy database and datasource names the query faults print. */
+const LEGACY_DATABASE = 'muradb_t';
+const LEGACY_DATASOURCE = 'muradb';
+const DRIVER = '[Macromedia][SQLServer JDBC Driver][SQLServer]';
 const USERNAME_TAKEN = "The username 'robin.roster' that you entered is being used by another user.";
 /** The installed super-user working in tenant-a's admin. */
 const S2_ON_A: TestActor = Object.freeze({ ...ADMIN_S2, site: SITE });
+
+/** A legacy `server_error` envelope naming a failed cfquery, its keys lower-cased as the API serializer writes them. */
+interface QueryFaultBody {
+  error: { code: string; stacktrace: { message: string; type: string; datasource: string; sql: string; errorcode: string; detail: string } };
+}
+
+/** The truncation detail SQL Server raises for `column` of `table`, quoting `value`. */
+function truncation(table: string, column: string, value: string): string {
+  return `${DRIVER}String or binary data would be truncated in table '${LEGACY_DATABASE}.dbo.${table}', column '${column}'. Truncated value: '${value}'.`;
+}
 
 interface UpdateResult {
   written: boolean;
@@ -49,6 +63,16 @@ interface UpdateResult {
 
 describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
   type PeopleDb = PgTestApp['db'];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** Names the legacy database and datasource as the people process reads them. */
+  function stubLegacyNames(): void {
+    vi.stubEnv('MURA_DATABASE', LEGACY_DATABASE);
+    vi.stubEnv('MURA_DATASOURCE', LEGACY_DATASOURCE);
+  }
   type PersonTable = 'person' | 'user_address' | 'user_interest' | 'user_tag';
 
   /** Runs `fn` against people, built with `env` when given, over a fresh throwaway schema holding the fixture seed and the S2 target. */
@@ -139,22 +163,145 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
     }));
 
   it.each<[string, Record<string, string>, number, string]>([
-    ['answers the legacy 500', {}, 500, 'legacy-storage'],
+    ['answers the query fault of its INSERT', {}, 500, 'legacy-storage'],
     ['answers the validation errors of another field, as legacy validates before its insert', { email: '' }, 200, 'validation'],
   ])("adds a user posting a username of 256, beyond identity's legacy column, and %s, writing nothing on either side", (_label, extra, expected, error) =>
     onPeople(async ({ app, identity, db }) => {
+      stubLegacyNames();
       const userId = cfUuid();
       const fields = userForm('Add', { usernameNoCache: 'u'.repeat(256), ...extra });
 
-      const { status, body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(userId) });
+      const { status, body } = await send<UpdateResult & QueryFaultBody>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(userId) });
 
       expect(status).toBe(expected);
       if (expected === 200) expect(body).toMatchObject({ written: false, errors: { email: expect.any(String) } });
+      else expect(body.error.stacktrace).toMatchObject({ errorcode: 'HY000', detail: truncation('tusers', 'UserName', 'u'.repeat(100)) });
       expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare']);
       expect(identity.account(userId)).toBeUndefined();
       expect(await rowsOf(db, 'person', userId)).toEqual([]);
       const operations = await db.withTenant(TENANT_A.tenantId, async (tx) => (await tx.query(`SELECT state, error FROM ${tx.schema}.roster_operation WHERE user_id = $1`, [userId])).rows);
       expect(operations).toEqual([{ state: 'rolled-back', error }]);
+    }));
+
+  it("adds a user posting a 60-character lname, answering the query fault legacy's INSERT raises, writing nothing on either side", () =>
+    onPeople(async ({ app, identity, db }) => {
+      stubLegacyNames();
+      const userId = cfUuid();
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Add', { lname: 'L'.repeat(60) }), query: userQuery(userId) });
+
+      expect(status).toBe(500);
+      expect(body.error).toMatchObject({
+        code: 'server_error',
+        stacktrace: {
+          message: 'Error Executing Database Query.',
+          type: 'Database',
+          datasource: LEGACY_DATASOURCE,
+          errorcode: 'HY000',
+          detail: truncation('tusers', 'Lname', 'L'.repeat(50)),
+          sql: expect.stringContaining(`VALUES(\n         '${userId}',\n\t\t  (param 1) ,\n\t\t 0,`),
+        },
+      });
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare', 'abort']);
+      expect(identity.account(userId)).toBeUndefined();
+      expect(await rowsOf(db, 'person', userId)).toEqual([]);
+      const operations = await db.withTenant(TENANT_A.tenantId, async (tx) => (await tx.query(`SELECT state, error FROM ${tx.schema}.roster_operation WHERE user_id = $1`, [userId])).rows);
+      expect(operations).toEqual([{ state: 'rolled-back', error: 'legacy-storage' }]);
+    }));
+
+  it.each<[string, Record<string, string>, string, string[], number]>([
+    ['its second tag beyond its column, keeping the tag before it and no address', { tags: `ok1,${'T'.repeat(101)},ok3` }, truncation('tuserstags', 'tag', 'T'.repeat(100)), ['ok1'], 0],
+    ['an address1 beyond its column, keeping its tags and no address', { address1: 'A'.repeat(51) }, truncation('tuseraddresses', 'address1', 'A'.repeat(50)), ['alpha', 'gamma'], 0],
+  ])('adds a user posting %s, as each legacy statement commits on its own, and answers the query fault', (_label, extra, detail, tags, addresses) =>
+    onPeople(async ({ app, identity, db }) => {
+      stubLegacyNames();
+      const userId = cfUuid();
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Add', extra), query: userQuery(userId) });
+
+      expect(status).toBe(500);
+      expect(body.error.stacktrace).toMatchObject({ errorcode: 'HY000', detail });
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare', 'commit', 'finish']);
+      expect(identity.account(userId)).toMatchObject({ username: 'robin.roster' });
+      expect(await columnOf(db, 'person', 'lname', userId)).toEqual(['Roster']);
+      expect(await columnOf(db, 'user_interest', 'categoryid', userId)).toEqual([CATEGORY_1, CATEGORY_2].sort());
+      expect(await columnOf(db, 'user_tag', 'tag', userId)).toEqual(tags);
+      expect(await rowsOf(db, 'user_address', userId)).toHaveLength(addresses);
+    }));
+
+  it("answers a super user's add posting an s2 CFML cannot read as a boolean with the fault legacy's S2 rule raises, writing nothing", () =>
+    onPeople(async ({ app, identity, db }) => {
+      const userId = cfUuid();
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_USER, S2_ON_A, { fields: userForm('Add', { s2: 'abc' }), query: userQuery(userId) });
+
+      expect(status).toBe(500);
+      expect(body.error.stacktrace).toEqual({ message: 'cannot convert the value "abc" to a boolean', type: 'Expression' });
+      expect(accountSteps(identity)).toEqual([]);
+      expect(await rowsOf(db, 'person', userId)).toEqual([]);
+    }));
+
+  // Oracle: the legacy user adds of f3/leg-user-{perm-abc,subscribe-x,inactive-abc,ispublic-true,s2-yes,multi}.
+  it.each<[string, TestActor, Record<string, string>, string[], Record<string, unknown>]>([
+    ['a perm', SITE_ADMIN_A, { perm: 'abc' }, ['perm'], { Perm: 'abc', isPublic: 0 }],
+    ['a subscribe', SITE_ADMIN_A, { subscribe: 'x' }, ['subscribe'], { Subscribe: 'x' }],
+    ['an InActive', SITE_ADMIN_A, { InActive: 'abc' }, ['inActive'], { InActive: 'abc' }],
+    ["an admin's isPublic boolean word", SITE_ADMIN_A, { isPublic: 'true' }, ['isPublic'], { isPublic: 'true' }],
+    ["a super user's s2 boolean word, which also makes the user private,", S2_ON_A, { s2: 'yes', isPublic: '1' }, ['s2'], { S2: 'yes', isPublic: 0 }],
+    [
+      'text in every flag',
+      S2_ON_A,
+      { perm: 'true', subscribe: 'x', InActive: 'y', isPublic: 'yes', s2: 'no' },
+      ['perm', 'inActive', 'isPublic', 'subscribe', 's2'],
+      { Perm: 'true', Subscribe: 'x', InActive: 'y', isPublic: 'yes', S2: 'no' },
+    ],
+  ])("adds a user posting %s the bean's numeric dataType rejects, answering legacy's errors with the posted text and writing nothing", (_label, actor, extra, errorKeys, flags) =>
+    onPeople(async ({ app, identity, db }) => {
+      const userId = cfUuid();
+
+      const { status, body } = await send<UpdateResult>(app, UPDATE_USER, actor, { fields: userForm('Add', extra), query: userQuery(userId) });
+
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ written: false, userBean: { UserID: userId, ...flags } });
+      expect(Object.keys(body.errors)).toEqual(errorKeys);
+      for (const key of errorKeys) expect(body.errors[key]).toBe(`The property named '${key}' is not valid`);
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare', 'abort']);
+      expect(identity.account(userId)).toBeUndefined();
+      for (const table of ['person', 'user_address', 'user_interest', 'user_tag'] as const) expect(await rowsOf(db, table, userId)).toEqual([]);
+    }));
+
+  it.each<[string, Record<string, string>]>([
+    ['a non-numeric keepPrivate, which its setter drops', { keepPrivate: 'abc' }],
+    ['a non-boolean isPublic, which the scrub reads as Member', { isPublic: 'abc' }],
+    ['a signed perm, which CFML reads as a number', { perm: '+1' }],
+  ])('adds a user posting %s, saving it', (_label, extra) =>
+    onPeople(async ({ app, identity }) => {
+      const { body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Add', extra), query: userQuery('') });
+      expect(body.written).toBe(true);
+      expect(soleOperation(identity).steps).toEqual(['prepare', 'commit', 'finish']);
+    }));
+
+  // Oracle: f3/leg-user-sql-*, the legacy debug pages of these adds.
+  it.each<[string, TestActor, Record<string, string>, string, string, string]>([
+    ['perm Infinity', SITE_ADMIN_A, { perm: 'Infinity' }, '42S22', "Invalid column name 'Infinity'.", '\t\t  Infinity,\n'],
+    ['subscribe NaN', SITE_ADMIN_A, { subscribe: 'NaN' }, '42S22', "Invalid column name 'NaN'.", '\t\t  NaN,\n'],
+    ['a hex float perm', SITE_ADMIN_A, { perm: '0x1p3' }, 'HY000', "Incorrect syntax near 'p3'.", '\t\t  0x1p3,\n'],
+    ['a negative hex float InActive', SITE_ADMIN_A, { InActive: '-0x1p3' }, 'HY000', 'Invalid operator for data type. Operator equals minus, type equals varbinary.', '\t\t -0x1p3,\n'],
+    ['a hex float keepPrivate', SITE_ADMIN_A, { keepPrivate: '0x1p3' }, 'HY000', "Incorrect syntax near 'p3'.", '\t\t0x1p3,\n'],
+    ["a super user's hex float s2 (the user made private)", S2_ON_A, { s2: '0x1p3', isPublic: '1' }, 'HY000', "Incorrect syntax near 'p3'.", '\t\t 0x1p3,\n'],
+    ['an empty perm', SITE_ADMIN_A, { perm: '' }, 'HY000', "Incorrect syntax near ','.", '\t\t  ,\n'],
+  ])("adds a user posting %s, which passes validation, answering the query fault legacy's INSERT raises and writing nothing", (_label, actor, extra, errorcode, message, inlined) =>
+    onPeople(async ({ app, identity, db }) => {
+      stubLegacyNames();
+      const userId = cfUuid();
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_USER, actor, { fields: userForm('Add', extra), query: userQuery(userId) });
+
+      expect(status).toBe(500);
+      expect(body.error.stacktrace).toMatchObject({ errorcode: errorcode, detail: `${DRIVER}${message}`, sql: expect.stringContaining(inlined) });
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare', 'abort']);
+      expect(identity.account(userId)).toBeUndefined();
+      expect(await rowsOf(db, 'person', userId)).toEqual([]);
     }));
 
   it('updates a stored user, replacing its interests and tags, leaving its addresses, then lists the users', () =>
@@ -342,12 +489,96 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       expect(after.find((row) => row.addressid === work.addressid)).toMatchObject({ addressname: 'Cabin', address1: '1 Fjord Lane', city: 'Voss', zip: '5700' });
     }));
 
-  it('writes nothing for an Update of an address no row holds, and still redirects', () =>
+  it.each<[string, Record<string, string>, string | undefined]>([
+    ['the form posts', {}, undefined],
+    ['an address1 beyond its column, which SQL Server checks only on a row the UPDATE matches', { address1: 'A'.repeat(255) }, undefined],
+    ['an address1 beyond its column for a stored user, whose UPDATE also matches no row', { address1: 'A'.repeat(255) }, STORED_USER],
+  ])('writes nothing for an Update of an address no row holds, posting %s, and still redirects', (_label, extra, owner) =>
     onPeople(async ({ app, db }) => {
-      const stranger = cfUuid();
-      const { body } = await send<RouteResult>(app, UPDATE_ADDRESS, SITE_ADMIN_A, { fields: addressForm('Update', { addressID: cfUuid() }), query: addressQuery(stranger) });
-      expect(body).toEqual({ written: false, redirect: { action: 'cUsers.edituser', params: { siteid: SITE, userid: stranger, routeid: '' } } });
-      expect(await rowsOf(db, 'user_address', stranger)).toEqual([]);
+      stubLegacyNames();
+      const userid = owner ?? cfUuid();
+      const before = await rowsOf(db, 'user_address', userid);
+      const { body } = await send<RouteResult>(app, UPDATE_ADDRESS, SITE_ADMIN_A, { fields: addressForm('Update', { addressID: cfUuid(), ...extra }), query: addressQuery(userid) });
+      expect(body).toEqual({ written: false, redirect: { action: 'cUsers.edituser', params: { siteid: SITE, userid, routeid: '' } } });
+      expect(await rowsOf(db, 'user_address', userid)).toEqual(before);
+    }));
+
+  it.each<[string, 'Add' | 'Update']>([
+    ['a new address', 'Add'],
+    ['the stored address', 'Update'],
+  ])("answers %s posting a 255-character address1 with the query fault legacy's statement raises, writing nothing", (_label, action) =>
+    onPeople(async ({ app, db }) => {
+      stubLegacyNames();
+      const before = await rowsOf(db, 'user_address', STORED_USER);
+      const work = before.find((row) => row.addressname === 'Work');
+      if (work === undefined) throw new Error('the seed holds no Work address');
+      const addressID = action === 'Update' ? String(work.addressid) : '';
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_ADDRESS, SITE_ADMIN_A, {
+        fields: addressForm(action, { addressID, address1: 'A'.repeat(255) }),
+        query: addressQuery(STORED_USER),
+      });
+
+      expect(status).toBe(500);
+      expect(body.error.stacktrace).toMatchObject({
+        message: 'Error Executing Database Query.',
+        datasource: LEGACY_DATASOURCE,
+        errorcode: 'HY000',
+        detail: truncation('tuseraddresses', 'address1', 'A'.repeat(50)),
+        sql: expect.stringMatching(action === 'Add' ? /^INSERT INTO tuseraddresses / : /^UPDATE tuseraddresses SET/),
+      });
+      expect(await rowsOf(db, 'user_address', STORED_USER)).toEqual(before);
+    }));
+
+  // Oracle: the legacy address adds of f3/leg-addr-add-* and the debug page f3/leg-addr-add-lon-hex.html.
+  it.each<[string, Record<string, string>, Record<string, unknown>]>([
+    ['an isPrimary, longitude and latitude CFML reads as no number', { isPrimary: 'abc', longitude: 'Infinity', latitude: 'true' }, { isprimary: 0, longitude: 0, latitude: 0 }],
+    ['a NaN isPrimary', { isPrimary: 'NaN' }, { isprimary: 0 }],
+    ['a signed-exponent latitude', { latitude: '1e+3' }, { latitude: 1000, longitude: 0 }],
+    // Oracle: cUsers.updateAddress Add of a hex float isNumeric refuses stores the setter's init value.
+    ['a hex float longitude and isPrimary ACF reads as no number', { longitude: '0xAp0', isPrimary: '0xAp0' }, { isprimary: 0, longitude: 0 }],
+  ])('adds an address posting %s, which the setters keep only when numeric', (_label, extra, stored) =>
+    onPeople(async ({ app, db }) => {
+      const before = await rowsOf(db, 'user_address', STORED_USER);
+      const { body } = await send<RouteResult>(app, UPDATE_ADDRESS, SITE_ADMIN_A, { fields: addressForm('Add', extra), query: addressQuery(STORED_USER) });
+      expect(body.written).toBe(true);
+      const added = (await rowsOf(db, 'user_address', STORED_USER)).filter((row) => !before.some((old) => old.addressid === row.addressid));
+      expect(added).toEqual([expect.objectContaining({ addressname: 'Cabin', ...stored })]);
+    }));
+
+  it.each<[string, 'Add' | 'Update', Record<string, string>, string]>([
+    ['a new address', 'Add', { longitude: '0x1p3' }, "Incorrect syntax near 'p3'."],
+    ['a new address', 'Add', { latitude: '0x1.8p1' }, "Incorrect syntax near '.8'."],
+    ['a new address', 'Add', { longitude: '0x1p1024' }, "Incorrect syntax near 'p1024'."],
+    ['the stored address', 'Update', { longitude: '-0x1p3' }, 'Invalid operator for data type. Operator equals minus, type equals varbinary.'],
+  ])("answers %s posting a hex float coordinate with the query fault legacy's statement raises, writing nothing", (_label, action, extra, message) =>
+    onPeople(async ({ app, db }) => {
+      stubLegacyNames();
+      const before = await rowsOf(db, 'user_address', STORED_USER);
+      const work = before.find((row) => row.addressname === 'Work');
+      if (work === undefined) throw new Error('the seed holds no Work address');
+      const addressID = action === 'Update' ? String(work.addressid) : '';
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_ADDRESS, SITE_ADMIN_A, { fields: addressForm(action, { addressID, ...extra }), query: addressQuery(STORED_USER) });
+
+      expect(status).toBe(500);
+      expect(body.error.stacktrace).toMatchObject({ errorcode: 'HY000', detail: `${DRIVER}${message}` });
+      expect(await rowsOf(db, 'user_address', STORED_USER)).toEqual(before);
+    }));
+
+  // Oracle: f3/leg-user-sql-lon-hex, whose tusers row legacy keeps without an address.
+  it("adds a user posting a hex float longitude, keeping the user as legacy's committed INSERT does and answering the address INSERT's fault", () =>
+    onPeople(async ({ app, identity, db }) => {
+      stubLegacyNames();
+      const userId = cfUuid();
+
+      const { status, body } = await send<QueryFaultBody>(app, UPDATE_USER, SITE_ADMIN_A, { fields: userForm('Add', { longitude: '0x1p3' }), query: userQuery(userId) });
+
+      expect(status).toBe(500);
+      expect(body.error.stacktrace).toMatchObject({ errorcode: 'HY000', detail: `${DRIVER}Incorrect syntax near 'p3'.`, sql: expect.stringMatching(/^INSERT INTO tuseraddresses /) });
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare', 'commit', 'finish']);
+      expect(await columnOf(db, 'person', 'lname', userId)).toEqual(['Roster']);
+      expect(await rowsOf(db, 'user_address', userId)).toEqual([]);
     }));
 
   it.each<[string, string]>([

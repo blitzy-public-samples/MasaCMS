@@ -15,6 +15,7 @@ import {
   mergeUserErrors,
   requestHasRestrictedFiles,
   validateAddressValues,
+  validateBeanTypes,
   validatePersonValues,
   type LegacyErrors,
   type RestrictedFilesOptions,
@@ -141,6 +142,8 @@ describe('validatePersonValues', () => {
     ['no captcha posted', { email: 'a@b.c', hkey: '', ukey: CAPTCHA_KEY }, {}],
     ['a failed form protection', { email: 'a@b.c', passedprotect: 'no' }, { Spam: PEOPLE_MESSAGES.captchaSpam }],
     ['a passed form protection', { email: 'a@b.c', passedprotect: 'yes' }, {}],
+    ['a failed form protection as a hex float', { email: 'a@b.c', passedprotect: '0x0p0' }, { Spam: PEOPLE_MESSAGES.captchaSpam }],
+    ['a passed form protection as a hex float', { email: 'a@b.c', passedprotect: '0x1p0' }, {}],
   ])('reports %s', (_name, overrides, expected) => {
     expect(validatePersonValues(person(overrides))).toEqual(expected);
   });
@@ -247,6 +250,34 @@ describe('mergeUserErrors', () => {
     const errors = mergeUserErrors({ extended: JSON.parse('{"__proto__":"bad"}') as Record<string, string>, people: {} });
     expect(Object.keys(errors)).toEqual(['__proto__']);
     expect(Object.getPrototypeOf(errors)).toBe(Object.prototype);
+  });
+});
+
+// Oracle: the numeric isValid probes of f3/numprobe on the legacy server, and its user add of every flag (leg-user-multi).
+describe('validateBeanTypes', () => {
+  it.each<[string, unknown]>([
+    ['abc', 'abc'], ['a boolean word', 'true'], ['a type suffix', '1d'], ['a hex integer', '0x1F'], ['a grouped number', '1,000'],
+    ['a currency', '$12'], ['a fractional exponent', '1e3.5'], ['a lower-case infinity', 'infinity'], ['a bare exponent', 'e3'],
+    ['a hex float without digits', '0xp3'], ['an overflowing exponent the scan quotes', '"1e309"'],
+  ])('rejects %s', (_label, perm) => {
+    expect(validateBeanTypes(newPerson({ perm: perm as string }))).toEqual({ perm: "The property named 'perm' is not valid" });
+  });
+
+  it.each<[string, unknown]>([
+    ['an empty value, which is not checked', ''], ['a signed integer', '+1'], ['a trailing dot', '1.'], ['a leading dot', '.5'],
+    ['a signed exponent', '1e+3'], ['Infinity', 'Infinity'], ['a signed NaN', '-NaN'], ['a hex float', '0x1p3'],
+    ['an underflowing exponent', '1e-400'], ['a number', 1], ['a JSON boolean', true],
+  ])('accepts %s', (_label, perm) => {
+    expect(validateBeanTypes(newPerson({ perm: perm as string }))).toEqual({});
+  });
+
+  it('sets each rejected flag, which the merged struct keys in the order legacy shows them', () => {
+    const values = newPerson({ email: 'a@b.c', perm: 'true', subscribe: 'x', inactive: 'y', ispublic: 'yes', s2: 'no', keepprivate: 0, type: 2 });
+    const bean = validateBeanTypes(values);
+    expect(Object.keys(bean)).toEqual(['perm', 'subscribe', 'inActive', 'isPublic', 's2']);
+    const errors = mergeUserErrors({ bean, extended: {}, people: validatePersonValues(values) });
+    expect(Object.keys(errors)).toEqual(['perm', 'inActive', 'isPublic', 'subscribe', 's2']);
+    expect(Object.values(errors)).toEqual(['perm', 'inActive', 'isPublic', 'subscribe', 's2'].map((p) => `The property named '${p}' is not valid`));
   });
 });
 

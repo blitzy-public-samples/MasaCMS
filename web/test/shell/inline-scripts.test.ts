@@ -2,8 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { legacySettings, resetLegacySettingsForTests } from '@/lib/env';
 import { encodeJs, isSafeHtml, raw, toString, type SafeHtml } from '@/lib/html';
-import { siteDataOf, type AdminRequest, type SiteData } from '@/lib/request-context';
-import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
+import type { AdminRequest } from '@/lib/request-context';
 import { resolveFrontEndProxyLoc } from '@/shell/compact';
 import { renderHtmlHead } from '@/shell/html-head';
 import { renderCompactScripts, renderMuraInit, renderTemplateScripts } from '@/shell/inline-scripts';
@@ -16,6 +15,7 @@ import {
   unservedEditorRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 
 const HOSTILE = {
   siteid: `a'b</script>"c`,
@@ -85,8 +85,12 @@ function tenantARequest(theme: string | null = null): AdminRequest {
   });
 }
 
-/** A shell context around `ctx` in `layout`; the scripts and head read nothing else. */
-function shellContext(ctx: AdminRequest, layout: ShellLayout = 'template'): ShellContext {
+/** A shell context around `ctx` in `layout` with legacy's `legacyPaths`; the scripts and head read nothing else. */
+function shellContext(
+  ctx: AdminRequest,
+  layout: ShellLayout = 'template',
+  legacyPaths: ShellContext['data']['legacyPaths'] = INSTALLED_LEGACY_PATHS,
+): ShellContext {
   return {
     ctx,
     view: { body: raw('') },
@@ -100,6 +104,7 @@ function shellContext(ctx: AdminRequest, layout: ShellLayout = 'template'): Shel
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths,
       now: new Date(0),
     },
     layout,
@@ -125,7 +130,8 @@ const compactScripts = (ctx: AdminRequest, frontEndProxyLoc?: string): string =>
   );
 };
 
-const headMarkup = (ctx: AdminRequest): string => markupOf(renderHtmlHead(shellContext(ctx)));
+const headMarkup = (ctx: AdminRequest, themeAssetPath: string = INSTALLED_LEGACY_PATHS.themeAssetPath): string =>
+  markupOf(renderHtmlHead(shellContext(ctx, 'template', { themeAssetPath })));
 
 /** `key` and value text of each `Mura.init` member, in order. */
 function initMembers(script: string): Array<[string, string]> {
@@ -136,9 +142,9 @@ function initMembers(script: string): Array<[string, string]> {
 
 const quoted = (value: string): string => `'${encodeJs(value)}'`;
 
-/** The members legacy prints for site `siteId` served under `root` with display and file pool `pool`, no theme. */
-function expectedMembers(siteId: string, root: string, pool: string): Array<[string, string]> {
-  const themepath = quoted(`${root}/themes/`);
+/** The members legacy prints for site `siteId` served under `root` with pool `pool` and legacy's `theme` path. */
+function expectedMembers(siteId: string, root: string, pool: string, theme: string): Array<[string, string]> {
+  const themepath = quoted(theme);
   return [
     ['inAdmin', 'true'],
     ['context', "''"],
@@ -164,7 +170,6 @@ function globals(markup: string): string[] {
 
 beforeEach(() => {
   useSettings();
-  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -221,11 +226,17 @@ describe('renderMuraInit', () => {
     expect(initMembers(renderMuraInit(shellContext(tenantARequest()))).map(([key]) => key)).toEqual(INIT_KEYS);
   });
 
-  it.each<[string, () => AdminRequest, Array<[string, string]>]>([
+  it.each<[string, () => AdminRequest, string, Array<[string, string]>]>([
     [
       'the served tenant-a site',
       () => tenantARequest(),
-      expectedMembers(SITE_IDS.tenantA, `http://${siteTenantA.Domain}`, siteTenantA.displayPoolID),
+      `http://${siteTenantA.Domain}/themes/`,
+      expectedMembers(
+        SITE_IDS.tenantA,
+        `http://${siteTenantA.Domain}`,
+        siteTenantA.displayPoolID,
+        `http://${siteTenantA.Domain}/themes/`,
+      ),
     ],
     [
       'an empty, unserved session site',
@@ -233,10 +244,11 @@ describe('renderMuraInit', () => {
         const ctx = unservedEditorRequest();
         return { ...ctx, session: { ...ctx.session, siteid: '' } };
       },
-      expectedMembers(SITE_IDS.default, 'http://localhost', SITE_IDS.default),
+      INSTALLED_LEGACY_PATHS.initThemeAssetPath,
+      expectedMembers(SITE_IDS.default, 'http://localhost', SITE_IDS.default, INSTALLED_LEGACY_PATHS.initThemeAssetPath),
     ],
-  ])('prints encoded single-quoted values for %s', (_, request, expected) => {
-    expect(initMembers(renderMuraInit(shellContext(request())))).toEqual(expected);
+  ])('prints encoded single-quoted values for %s', (_, request, initThemeAssetPath, expected) => {
+    expect(initMembers(renderMuraInit(shellContext(request(), 'template', { initThemeAssetPath })))).toEqual(expected);
   });
 
   it('pins the encoded tenant-a site id and the hostile unserved site id', () => {
@@ -256,59 +268,40 @@ describe('renderMuraInit', () => {
     expect(init).toContain("\tcontext:'',\n");
   });
 
-  describe('themepath first touch', () => {
+  describe("legacy's themepath", () => {
     const HOST_KEYS = ['assetpath', 'corepath', 'adminpath', 'rootpath'];
 
-    /** tenant-a on theme `default`, served with `columns` laid over its row. */
-    function relaid(columns: Partial<SiteData['record']>): AdminRequest {
-      const ctx = tenantARequest('default');
-      return ctx.site === undefined ? ctx : { ...ctx, site: siteDataOf({ ...ctx.site.record, ...columns }, 'en_US') };
-    }
-
-    /** The `Mura.init` members of `request()` on Host `host`. */
-    const membersOn = (host: string, request: () => AdminRequest = () => tenantARequest('default')) =>
-      initMembers(renderMuraInit(shellContext({ ...request(), httpHost: host, serverName: host })));
+    /** The `Mura.init` members of tenant-a on Host `host`, legacy answering `initThemeAssetPath`. */
+    const membersOn = (host: string, initThemeAssetPath: string) => {
+      const ctx = { ...tenantARequest('default'), httpHost: host, serverName: host };
+      return initMembers(renderMuraInit(shellContext(ctx, 'template', { initThemeAssetPath })));
+    };
     const valuesOf = (members: Array<[string, string]>, keys: readonly string[]): string[] =>
       members.filter(([key]) => keys.includes(key)).map(([, value]) => value);
     /** The host-following members legacy prints for tenant-a under `root`. */
     const hostPaths = (root: string): string[] =>
       [`${root}/sites/${siteTenantA.displayPoolID}`, `${root}/core`, `${root}/admin`, root].map(quoted);
 
-    it.each<[string, readonly string[], string]>([
-      ['localhost', ['127.0.0.1', 'tenant-a.localhost', 'example.test'], 'http://localhost'],
-      ['example.test', ['localhost'], `http://${siteTenantA.Domain}`],
-    ])('keeps the themepath of a first request on %s while the other paths follow the host', (first, later, root) => {
-      for (const host of [first, ...later]) {
-        const members = membersOn(host);
-        const hostRoot = host === 'localhost' ? 'http://localhost' : `http://${siteTenantA.Domain}`;
+    it.each<[string, string]>([
+      ['localhost', 'http://localhost'],
+      ['example.test', `http://${siteTenantA.Domain}`],
+    ])('prints the value legacy kept on Host %s while the other paths follow the host', (host, hostRoot) => {
+      const kept = 'http://localhost/themes/default';
+      const members = membersOn(host, kept);
 
-        expect(valuesOf(members, ['themepath']), host).toEqual(Array(2).fill(quoted(`${root}/themes/default`)));
-        expect(valuesOf(members, HOST_KEYS), host).toEqual(hostPaths(hostRoot));
-      }
+      expect(valuesOf(members, ['themepath'])).toEqual([quoted(kept), quoted(kept)]);
+      expect(valuesOf(members, HOST_KEYS)).toEqual(hostPaths(hostRoot));
     });
 
-    it.each<[string, () => AdminRequest, string, string]>([
-      ['theme', () => tenantARequest('other'), 'example.test', `http://${siteTenantA.Domain}/themes/other`],
-      ['alias', () => relaid({ domainAlias: 'example.test' }), 'example.test', 'http://example.test/themes/default'],
-      [
-        'label',
-        () => relaid({ Site: 'Tenant A renamed' }),
-        'example.test',
-        `http://${siteTenantA.Domain}/themes/default`,
-      ],
-    ])('starts afresh once the site %s changes', (_setting, changed, host, themepath) => {
-      expect(valuesOf(membersOn('localhost'), ['themepath'])[0]).toBe(quoted('http://localhost/themes/default'));
-
-      expect(valuesOf(membersOn(host, changed), ['themepath'])[0]).toBe(quoted(themepath));
-      expect(valuesOf(membersOn('localhost', changed), ['themepath'])[0]).toBe(quoted(themepath));
+    it('encodes the value legacy answered', () => {
+      expect(valuesOf(membersOn('localhost', "https://cdn.example/th'emes"), ['themepath'])).toEqual(
+        Array(2).fill("'https\\x3A\\x2F\\x2Fcdn.example\\x2Fth\\x27emes'"),
+      );
     });
 
-    it('follows the host for an unserved session site', () => {
-      for (const host of ['localhost', 'example.test']) {
-        expect(valuesOf(membersOn(host, unservedEditorRequest), ['themepath'])[0], host).toBe(
-          quoted(`http://${host}/themes/`),
-        );
-      }
+    it('fails when the shell data holds no Mura.init theme path', () => {
+      const sc = shellContext(tenantARequest(), 'template', { themeAssetPath: '/themes/default' });
+      expect(() => renderMuraInit(sc)).toThrow(new TypeError('legacySitePaths answered no initThemeAssetPath'));
     });
   });
 });
@@ -372,11 +365,11 @@ describe('renderHtmlHead globals', () => {
   });
 
   it.each<[string, () => AdminRequest, string]>([
-    ['the withheld session site', () => hostileRequest(), '/c-ms/themes/default'],
+    ['the withheld session site', () => hostileRequest(), "/c-ms/themes/de'fault"],
     ['the served tenant-a site', () => tenantARequest('tenant-a'), '/c-ms/themes/tenant-a'],
-  ])('prints htmlEditorType, context and the theme path of %s unencoded', (_, request, themepath) => {
+  ])("prints htmlEditorType, context and legacy's theme path of %s unencoded", (_, request, themepath) => {
     useSettings({ MURA_HTMLEDITORTYPE: 'ck-editor', MURA_CONTEXT: '/c-ms' });
-    const lines = globals(headMarkup(request()));
+    const lines = globals(headMarkup(request(), themepath));
     expect(lines).toContain("var htmlEditorType='ck-editor';");
     expect(lines).toContain("var context='/c-ms';");
     expect(lines).toContain(`var themepath='${themepath}';`);

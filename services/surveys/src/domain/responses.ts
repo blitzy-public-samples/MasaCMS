@@ -2,7 +2,7 @@
 /** Survey responses as the fixture `surveys.cfc` stores and lists them; another site's respondent reaches a survey only through its `survey-response` grant. */
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { hasGrant, withTenant, type TenantTx } from '@opt2/platform/tenancy';
-import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import { requireSurvey, type DomainDeps } from './surveys.js';
 import { SURVEY_RESPONSE_GRANT } from './bulk-target.js';
 import * as queries from '../repo/queries.js';
@@ -62,8 +62,8 @@ async function writeResponse(
   if (typeof answers !== 'string' || answers === '') {
     throw new LegacyApiError('invalidParameters');
   }
-  // insertResponse assigns the CF UUID and `created` from the repository clock and stores `answers` unchanged.
-  return repository.insertResponse(tx, { survey, respondentSiteId: site, respondentUserId: userId, answers });
+  // insertResponse assigns the CF UUID and `created` from the repository clock; `answers` keeps all but its unpaired surrogates, as legacy answers them.
+  return repository.insertResponse(tx, { survey, respondentSiteId: site, respondentUserId: userId, answers: javaUtf8Text(answers) });
 }
 
 /** Stores a response to the token tenant's survey, or to a survey whose grantor granted that tenant `survey-response`; returns the stored row, else throws forbidden for another tenant's survey and notFound for an unknown one. */

@@ -19,6 +19,7 @@ import {
   type AdminRequestPartial,
 } from '../helpers/admin-request';
 import { fragmentModel, type DomAlert } from '../helpers/dom-model';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 import { SESSION_SITE_CASES } from '../helpers/requested-site';
 
 type SiteAlerts = Readonly<Record<string, AdminAlert>>;
@@ -63,6 +64,7 @@ function shellFor(ctx: AdminRequest, user: Partial<ShellUser> = {}): ShellContex
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths: INSTALLED_LEGACY_PATHS,
       now: businessClock().now(),
     },
     layout: 'template',

@@ -3118,7 +3118,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/ServerError'
-          description: A missing or invalid CSRF token, on which legacy fails on the unset user bean, or a value a legacy column cannot store, on which its query fails; nothing is written on either side.
+          description: A missing or invalid CSRF token, on which legacy fails on the unset user bean, nothing written on either side; or a value a legacy column cannot store, on which its query fails and `error.stacktrace` names the query's `DataSource`, `Sql`, `ErrorCode` and `Detail`, the writes legacy makes before that statement kept.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A withheld branch, or a roster write-protocol step with identity that did not complete; nothing is written on either side.
@@ -3194,6 +3194,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A value a legacy column cannot store in a stored or new address, on which its query fails; `error.stacktrace` names the query's `DataSource`, `Sql`, `ErrorCode` and `Detail`, and nothing is written.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A withheld branch; nothing is written.
@@ -5082,6 +5085,12 @@ components:
     NullableInteger:
       type:
         - integer
+        - 'null'
+    BeanFlag:
+      description: A numeric flag column; a failed save's bean keeps the text its form posted.
+      type:
+        - integer
+        - string
         - 'null'
     FormValue:
       description: One form field as a CFML scope holds it; JSON callers may send numbers and booleans.
@@ -7071,7 +7080,7 @@ components:
         Admin:
           $ref: '#/components/schemas/NullableInteger'
         S2:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         LastLogin:
           $ref: '#/components/schemas/NullableTimestamp'
         LastUpdate:
@@ -7081,15 +7090,15 @@ components:
         LastUpdateByID:
           $ref: '#/components/schemas/NullableString'
         Perm:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         InActive:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         isPublic:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         SiteID:
           type: string
         Subscribe:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         notes:
           $ref: '#/components/schemas/NullableString'
         description:
@@ -7097,7 +7106,7 @@ components:
         interests:
           $ref: '#/components/schemas/NullableString'
         keepPrivate:
-          $ref: '#/components/schemas/NullableInteger'
+          $ref: '#/components/schemas/BeanFlag'
         photoFileID:
           $ref: '#/components/schemas/NullableString'
         photoFileExt:

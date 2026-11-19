@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acfStructKeyOrder, readAcfJson, serializeAcfJson, UNREADABLE_JSON } from '../../src/legacy-compat/acf-json.js';
+import { AcfBigDecimal, acfStructKeyOrder, readAcfJson, serializeAcfJson, UNREADABLE_JSON } from '../../src/legacy-compat/acf-json.js';
 import {
   PORTCULLIS_EXCEPTION_FIELDS,
   PORTCULLIS_INVALID_MARKER,
@@ -96,6 +96,26 @@ const VALUE_CASES: ReadonlyArray<readonly [sent: string, scanned: string]> = [
   ["\"a\" \"b\"", "\"a\" \"b\""],
   ["[1.7976931348623157e309]", "[1.7976931348623157e309]"],
   ["[1E400]", "[1E400]"],
+  ["1e309", "\"1e309\""],
+  [" 1E400 ", "\"1E400\""],
+  ["-1e309", "\"-1e309\""],
+  ["-1.8e308", "\"-1.8e308\""],
+  ["1.7976931348623159e308", "\"1.7976931348623159e308\""],
+  [`1${"0".repeat(309)}`, `"1${"0".repeat(309)}"`],
+  [`0.${"0".repeat(400)}1e400`, "\"0.1\""],
+  ["1e2147483647", "\"1e2147483647\""],
+  ["1e2147483648", "\"1e2147483648\""],
+  ["[ 1e309 ]", "[1e309]"],
+  ["[1e309,\" a \"]", "[1e309,\"a\"]"],
+  ["{\"b\":1E400,\"a\":2}", "{\"a\":2,\"b\":1E400}"],
+  ["[ 1.5e308 ]", "[1.5E308]"],
+  ["[1e2147483647]", "[1e2147483647]"],
+  ["[1e99999999999]", "\"[1e99999999999]\""],
+  ["+1e309", "+1e309"],
+  [" 0x1p3 ", "0x1p3"],
+  ["0xAp0", "0xAp0"],
+  ["0x1p3d", "0x1p3d"],
+  [" -NaN ", "-NaN"],
   ["[1e]", "\"[1e]\""],
   ["{\"a\":1e}", "\"{\\\"a\\\":1e}\""],
   ["1e", "1e"],
@@ -374,7 +394,8 @@ describe('ACF JSON round trip', () => {
     expect(readAcfJson(' [1, -0, 1.5] ')).toStrictEqual([1n, 0n, 1.5]);
     expect(readAcfJson('[1e]')).toBe(UNREADABLE_JSON);
     expect(readAcfJson('1e')).toBeUndefined();
-    expect(readAcfJson('[1E400]')).toBeUndefined();
+    expect(readAcfJson('[1E400, -1e309]')).toStrictEqual([new AcfBigDecimal('1E400'), new AcfBigDecimal('-1e309')]);
+    expect(readAcfJson('[1e2147483648]')).toBe(UNREADABLE_JSON);
   });
 
   it('serializes a struct in ACF key order with its first spelling of each key', () => {

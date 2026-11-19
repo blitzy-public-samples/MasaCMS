@@ -655,7 +655,8 @@ describe('FW/1 preserved contexts of target post-actions on legacy-served landin
   const EDITED_USER = '3BEC10FC-F5B5-5517-7E7F2072657EFB68';
   const REMOVE_FROM_GROUP = '/admin/?muraAction=cUsers.removeFromGroup&userid=U1&groupid=G1&siteid=default';
   const UPDATE = '/admin/?muraAction=cUsers.update&userid=' + EDITED_USER + '&routeid=';
-  const FORM = 'type=2&action=Update&siteid=default&fname=QA&lname=Editor&usernameNoCache=admin';
+  // A roster create, a target write in v0002; the roster edit is halted on legacy (EX-ROSTER-POOLMOVE).
+  const FORM = 'type=2&action=Add&siteid=default&fname=QA&lname=Editor&usernameNoCache=admin';
   const ERRORS = { username: "The username 'admin' that you entered is being used by another user." };
 
   let gateway: TestGateway | undefined;
@@ -732,7 +733,7 @@ describe('FW/1 preserved contexts of target post-actions on legacy-served landin
     const values = legacy.sessions.get(hydrated)?.values ?? {};
     expect(values.__fw1NextPreserveKey).toBe(3);
     expect(values.__fw11).toEqual({ groupid: 'G1', siteid: 'default' });
-    expect(values.__fw12).toMatchObject({ userid: EDITED_USER, action: 'Update', usernameNoCache: 'admin' });
+    expect(values.__fw12).toMatchObject({ userid: EDITED_USER, action: 'Add', usernameNoCache: 'admin' });
     expect((values.__fw12 as Record<string, unknown>).userBean).toEqual({
       posted: { muraAction: 'cUsers.update', userid: EDITED_USER, routeid: '', ...Object.fromEntries(new URLSearchParams(FORM)) },
       errors: ERRORS,

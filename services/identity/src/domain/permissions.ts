@@ -1,5 +1,6 @@
 /** Content-node and module grants of `identity.permission` for the `cperm` screens and the reverse Users-module lookup, ported from Masa. */
 import type { UserClaims } from '@opt2/platform/auth';
+import { windows1252Text, type LegacyQueryFault } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
   registryEntryForTenant,
@@ -10,6 +11,7 @@ import {
   type TenantTx,
 } from '@opt2/platform/tenancy';
 import type { IdentityEvents } from '../events/publish.js';
+import { permissionInsertFault, permissionKeyFault } from '../legacy/query-fault.js';
 import { charKey, type IdentityRepository } from '../repo/repository.js';
 import type { GroupAccountRow, PermissionRow } from '../repo/tables.js';
 import { moduleGrantHeld, modulePermByRole, type TokenRoleSite } from './roles.js';
@@ -121,25 +123,44 @@ export function groupPermVerdict(rows: readonly Pick<PermissionRow, 'groupid' | 
   return granted === undefined ? 'none' : (granted.toLowerCase() as PermissionVerdict);
 }
 
-/** Replaces every grant of the module in the site with one `module` row per listed group, in one transaction [legacy: core/mura/permission.cfc:643-669]. */
+/** The group ids `updateModule` inserts before SQL Server fails one, and that insert's failure: a value its column cannot hold, else a repeated key. */
+function moduleInserts(moduleId: string, siteId: string, groupIds: readonly string[]): { inserted: string[]; fault?: LegacyQueryFault } {
+  // The module and site are the same in every row, so the key repeats with its group id, compared as stored.
+  const keys = new Set<string>();
+  for (const [index, groupId] of groupIds.entries()) {
+    const row = { contentid: moduleId, groupid: groupId, siteid: siteId };
+    const key = charKey(windows1252Text(groupId));
+    const fault = permissionInsertFault(row) ?? (keys.has(key) ? permissionKeyFault(row) : undefined);
+    if (fault !== undefined) return { inserted: groupIds.slice(0, index), fault };
+    keys.add(key);
+  }
+  return { inserted: [...groupIds] };
+}
+
+/**
+ * Replaces every grant of the module in the site with one `module` row per listed group, in one transaction [legacy: core/mura/permission.cfc:643-669].
+ * @throws LegacyQueryFault For an insert SQL Server fails, once the delete and the inserts before it are stored, as legacy's own statements commit.
+ */
 export async function updateModulePermissions(deps: PermissionDeps, input: ModulePermissionsInput): Promise<ModulePermissionsResult> {
   const { siteId, moduleId } = input;
   const tenant = await tenantForRegisteredSite(deps.db, siteId);
   if (tenant === null) {
     throw new Error(`Site ${siteId} is not registered, so its module grants have no tenant`);
   }
-  const groupIds = listItems(input.groupIds);
-  return withGatedTenant(
+  const { inserted, fault } = moduleInserts(moduleId, siteId, listItems(input.groupIds));
+  const result = await withGatedTenant(
     deps.db,
     tenant,
     async (tx) => {
-      const { rows, removed } = await deps.repo.replaceModulePermissions(tx, { moduleId, siteId, groupIds });
+      const { rows, removed } = await deps.repo.replaceModulePermissions(tx, { moduleId, siteId, groupIds: inserted });
       const changedGroupIds = distinctGroupIds([...rows, ...removed]);
       await publishGroupStates(deps, tx, siteId, changedGroupIds);
       return { rows, changedGroupIds };
     },
     gateBudget(deps),
   );
+  if (fault !== undefined) throw fault;
+  return result;
 }
 
 /** The site's private-pool groups other than `Admin` and its public-pool groups, read in each pool's tenant [legacy: core/mura/permission.cfc:600-621]. */

@@ -3,6 +3,7 @@
 import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { harnessKeyHeaders } from '../lib/harness-key.js';
 import { createHttpSession, type FetchLike } from '../lib/http.js';
 import { createReadOnlyMssql, type ReadOnlyMssql } from '../lib/mssql.js';
 import { isInsideRepo, pristineDir, REPO_ROOT, reportsDir, type EnvLike } from '../lib/paths.js';
@@ -21,9 +22,7 @@ import {
   type LiveCheck,
 } from './stored-procedures.js';
 
-// ---------------------------------------------------------------------------------------------------------------
 // Fixed wording
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Status of a row whose live evidence has not been gathered. */
 export const PENDING_RUN = 'pending-run';
@@ -171,9 +170,7 @@ const PROGRAM_SCHEMA = /^Program_(\d+)$/i;
 const SITE_MONITOR_JOB = 'job:sitemonitor';
 const PRISTINE_TEXT = '`${OPT2_PRISTINE_DIR}/native-tasks.json`';
 
-// ---------------------------------------------------------------------------------------------------------------
 // Inputs
-// ---------------------------------------------------------------------------------------------------------------
 
 const sourceRefSchema = z.object({ path: z.string(), lines: z.array(z.number()) });
 
@@ -283,9 +280,7 @@ export interface LiveEvidence {
   nativeTasks: NativeTasksCapture | null;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Evaluation
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Evidence items of one side of a row; `refutations` are the items that refute the assumption. */
 interface Evidence {
@@ -718,9 +713,7 @@ export function summarise(rows: readonly AssumptionRow[]): { confirmed: number; 
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // Live gathering
-// ---------------------------------------------------------------------------------------------------------------
 
 /** Base tables of the legacy database. */
 export const CATALOG_TABLES_SQL =
@@ -771,8 +764,9 @@ async function readNativeTasks(env: EnvLike): Promise<NativeTasksCapture | null>
 }
 
 async function probeLegacy(sources: LiveSources): Promise<LegacyMonitorInfo> {
+  const headers = harnessKeyHeaders(sources.env);
   const session = createHttpSession({ baseUrl: sources.origin, fetch: sources.fetch });
-  const res = await session.get(INFO_PATH, { query: { info: '1' } });
+  const res = await session.get(INFO_PATH, { query: { info: '1' }, headers });
   const url = `${sources.origin}${INFO_PATH}?info=1`;
   if (res.status !== 200) throw new Error(`${url} answered HTTP ${res.status}`);
   const body = res.json<unknown>();
@@ -815,9 +809,7 @@ export async function gatherLiveEvidence(sources: LiveSources): Promise<LiveEvid
   };
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // CLI
-// ---------------------------------------------------------------------------------------------------------------
 
 const USAGE = 'inventory:assumptions [--live]';
 const HELP = `${USAGE} [--help]
@@ -827,7 +819,8 @@ Verifies the AAP 0.2.3 assumptions against ${INVENTORY_PATH} and writes ${REPORT
 
 Options:
   --live  add live evidence: read-only SQL Server queries (MURA_DB* variables), ${INFO_PATH}?info=1 on
-          LEGACY_ORIGIN (else http://127.0.0.1:$PORT) and \${OPT2_PRISTINE_DIR}/${NATIVE_TASKS_FILE}
+          LEGACY_ORIGIN (else http://127.0.0.1:$PORT; key OPT2_HARNESS_KEY, else
+          \${OPT2_STATE_DIR}/secrets/harness-diagnostic-key) and \${OPT2_PRISTINE_DIR}/${NATIVE_TASKS_FILE}
   --help  print this help and exit 0
 `;
 

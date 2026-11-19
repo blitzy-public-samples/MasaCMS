@@ -3,7 +3,14 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
-import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
+import {
+  LegacyFaultError,
+  PATH_PAIRS_HEADER,
+  apiUnavailableResponse,
+  legacyErrorResponse,
+  legacyFaultOf,
+  pathPairsHeaderValue,
+} from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
@@ -95,7 +102,8 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
     });
     registerWritePositionHeader(app);
     await registerFeedAdminRoutes(app, ctx);
-    // The raw flow of ./raw.ts: gate, then the CSRF consume where the entry names a context, then the entry.
+    // The raw flow of ./raw.ts: gate, then the CSRF consume where the entry names a context, then the entry; a legacy
+    // fault answers the server_error naming it.
     for (const [action, spec] of Object.entries(cfeedRawActions)) {
       app.route({
         method: ['GET', 'POST'],
@@ -103,10 +111,15 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
         config: circuitRouteConfig('cfeed'),
         handler: async (request, reply) => {
           const actor = await requireCircuitAccess(request, ctx, 'cfeed', rawSiteId(request));
-          if ('csrfContext' in spec) await adminCsrf(spec.csrfContext).call(app, request, reply);
-          const out = await spec.run(request, ctx, actor);
-          const location = out.redirect === undefined ? {} : { location: out.redirect };
-          return sendLegacyResponse(reply, { status: out.status, headers: { 'content-type': out.contentType, ...location }, body: out.body });
+          try {
+            if ('csrfContext' in spec) await adminCsrf(spec.csrfContext).call(app, request, reply);
+            const out = await spec.run(request, ctx, actor);
+            const location = out.redirect === undefined ? {} : { location: out.redirect };
+            return sendLegacyResponse(reply, { status: out.status, headers: { 'content-type': out.contentType, ...location }, body: out.body });
+          } catch (error) {
+            if (error instanceof LegacyFaultError) return sendLegacyResponse(reply, legacyErrorResponse('server_error', { stacktrace: error.trace() }));
+            throw error;
+          }
         },
       });
     }
@@ -404,6 +417,24 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
       expect(rc.rsLocal.find((row) => row.feedid === feed.text('feedid'))).toMatchObject({ name: stored });
     });
 
+    // Own oracle (localhost:26080): cFeed.update under /admin/index.cfm/cfeed/update/name/<value> stores the pair unscanned.
+    it('stores a collection name a relayed path pair holds as legacy stores it, unscanned', async () => {
+      const name = 'f10-feed-sq\u201Cq\u201D-onLoad';
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/raw/cfeed/update?siteid=${SITE_ID}`,
+        headers: {
+          ...(await headersFor([Roles.s2])),
+          'content-type': 'application/x-www-form-urlencoded',
+          [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue([['name', name]]) ?? '',
+        },
+        payload: new URLSearchParams({ siteid: SITE_ID, feedID: '', action: 'add', name, type: 'Local', csrf_token: 'good', csrf_token_expires: '1' }).toString(),
+      });
+      expect([response.statusCode, response.headers.location]).toEqual([302, LIST_LOCATION]);
+      const feed = await readFeed(fx.deps, ADMIN, { siteId: SITE_ID, name });
+      expect(await feedRow(feed.text('feedid'))).toMatchObject({ name });
+    });
+
     it('refuses a save that fails validation, which wrote nothing, as its form needs site values', async () => {
       const feedId = await newFeed('Valid');
       const response = await update({ feedID: feedId, action: 'update', name: 'Not Saved', lang: '', csrf_token: 'good', csrf_token_expires: '1' });
@@ -424,10 +455,24 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
     it.each([
       ['without a token', {}],
       ['with a token', { csrf_token: 'good', csrf_token_expires: '1' }],
-    ])('fails as legacy does on a request without feedid, %s, consuming nothing', async (_label, token) => {
+    ])('fails as legacy does on a request without feedid, %s, naming its fault and consuming nothing', async (_label, token) => {
       const response = await update({ action: 'delete', ...token });
       expect(response.statusCode).toBe(500);
+      contract(response, 'POST', '/v1/raw/cfeed/update');
+      // Own oracle: cfeed-update-no-feedid.
+      expect(legacyFaultOf(response.json())).toEqual(new LegacyFaultError('Element RC.feedid is undefined in ARGUMENTS.'));
       expect(consumed).toEqual([]);
+    });
+
+    it.each(['', 'bogus'])('fails as legacy does on action %j, which a valid token runs no branch of, writing nothing', async (action) => {
+      const feedId = await newFeed('Untouched');
+      const response = await update({ feedID: feedId, action, csrf_token: 'good', csrf_token_expires: '1' });
+      expect(response.statusCode).toBe(500);
+      contract(response, 'POST', '/v1/raw/cfeed/update');
+      // Own oracle: cfeed-update-empty-action and cfeed-update-unknown-action.
+      expect(legacyFaultOf(response.json())).toEqual(new LegacyFaultError('Element RC.feedBean is undefined in ARGUMENTS.'));
+      expect(consumed.map((call) => call.context)).toEqual([feedId]);
+      expect(await feedRow(feedId)).toMatchObject({ name: 'Untouched' });
     });
   });
 });

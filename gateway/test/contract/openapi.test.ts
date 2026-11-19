@@ -123,6 +123,7 @@ const GATEWAY_OPERATION_IDS = [
   'inflightClearOrphans',
   'legacySessionMarkUsed',
   'getLegacyVersionMenu',
+  'legacySitePaths',
   'relayGet',
   'relayPost',
   'relayPut',
@@ -187,6 +188,17 @@ const V1_INFLIGHT_KEYS = ['count', 'instanceId', 'oldestStartedAt', 'route', 'si
 /** Route of the live instance's running and abandoned writes, one v1 group and two v2 groups. */
 const SPLIT_ROUTE = 'page:saverate';
 const markUsedUrl = (sid: string): string => `/internal/v1/legacy-sessions/${sid}:mark-used`;
+const sitePathsUrl = (query: Record<string, string>): string => `/internal/v1/legacy-site-paths?${new URLSearchParams(query).toString()}`;
+/** A browser request on an https alias asking for every first-touch value of `default`. */
+const SITE_PATHS_QUERY = {
+  sessionSite: 'default',
+  host: 'cms.example.test:8443',
+  forwardedProto: 'https',
+  apiSite: 'default',
+  feedSite: 'default',
+  themeSite: 'default',
+  initSite: 'default',
+};
 
 const NO_VERSION: Start = {};
 const V0001: Start = { version: 'v0001' };
@@ -827,6 +839,44 @@ const CONTROL_CASES: Case[] = [
     verify: (_res, _body, tg) => expect(tg.legacy.bridgeCalls.at(-1)).toMatchObject({ op: 'markUsed', status: 409 }),
   },
   ...credentialCases('legacySessionMarkUsed', markUsedUrl(MARKED_SESSION), 'POST', { tokens: [tokenEntry(MARKED_TOKEN)] }, 'operator', V0002),
+  {
+    operationId: 'legacySitePaths',
+    status: '200',
+    title: "legacy's values, read with the browser's host facts",
+    start: V0002,
+    before: (tg) => tg.legacy.resetSitePaths(),
+    request: async () => ({ method: 'GET', url: sitePathsUrl(SITE_PATHS_QUERY), headers: await webServiceHeaders() }),
+    verify: (_res, body, tg) => {
+      expect(body).toEqual({
+        restEndpoint: 'https://cms.example.test:8443/_api/rest/v1/default',
+        feedEndpoint: 'https://cms.example.test:8443/_api/feed/v1/default',
+        themeAssetPath: '/themes/default',
+        initThemeAssetPath: 'https://cms.example.test:8443/themes/default',
+      });
+      expect(tg.legacy.sitePathsCalls.at(-1)?.request.headers).toMatchObject({ host: 'cms.example.test:8443', 'x-forwarded-proto': 'https' });
+    },
+  },
+  {
+    operationId: 'legacySitePaths',
+    status: '400',
+    title: 'no site named',
+    start: V0002,
+    before: (tg) => {
+      legacyBefore = tg.legacy.requests.length;
+    },
+    request: async () => ({ method: 'GET', url: sitePathsUrl({ sessionSite: 'default', host: 'localhost' }), headers: await webServiceHeaders() }),
+    verify: (_res, _body, tg) => expect(tg.legacy.requests).toHaveLength(legacyBefore),
+  },
+  ...credentialCases('legacySitePaths', sitePathsUrl(SITE_PATHS_QUERY), 'GET', undefined, 'identity', V0002),
+  {
+    operationId: 'legacySitePaths',
+    status: '503',
+    title: 'the bridge answering 500',
+    start: V0002,
+    before: (tg) => tg.legacy.failSitePaths(500),
+    after: (tg) => tg.legacy.failSitePaths(),
+    request: async () => ({ method: 'GET', url: sitePathsUrl(SITE_PATHS_QUERY), headers: await webServiceHeaders() }),
+  },
   {
     operationId: 'getLegacyVersionMenu',
     status: '200',

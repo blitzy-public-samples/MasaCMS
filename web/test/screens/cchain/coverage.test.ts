@@ -2,8 +2,7 @@
 import {
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
-  LEGACY_ERROR_PAGE_HTML,
-  LEGACY_HTML_CONTENT_TYPE,
+  LegacyFaultError,
   cfUuid,
   legacyScopeParams,
   portcullisScan,
@@ -13,7 +12,7 @@ import { CORE_VERSION } from '@/lib/env';
 import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { isSafeHtml, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { CCHAIN_RC_DEFAULTS, cchainScreens, withCchainDefaults } from '@/screens/cchain';
+import { CCHAIN_RC_DEFAULTS, cchainSaveScreen, cchainScreens, withCchainDefaults } from '@/screens/cchain';
 import { submitCchainDelete } from '@/screens/cchain/delete';
 import { loadCchainEdit, renderCchainEdit, type CchainEditData } from '@/screens/cchain/edit';
 import { submitCchainSave } from '@/screens/cchain/save';
@@ -96,9 +95,10 @@ function contextFor(
   return makeScreenContext({ req, gateway: fakeGatewayClient(routes) });
 }
 
+/** The cchain definition of `action`, the halted save included. */
 function screenOf<T extends PageScreen<CchainEditData> | RedirectScreen>(action: string): T {
-  const def = cchainScreens.find((candidate) => candidate.action === action);
-  if (def === undefined) throw new Error(`cchain.${action} is not registered`);
+  const def = [...cchainScreens, cchainSaveScreen].find((candidate) => candidate.action === action);
+  if (def === undefined) throw new Error(`cchain.${action} is not defined`);
   return def as T;
 }
 
@@ -455,13 +455,14 @@ describe('cchain.save', () => {
     expect(ctx.gateway.calls).toHaveLength(1);
   });
 
-  it("answers legacy's 500 page when bean errors leave no redirect, since cchain has no save view", async () => {
+  it("raises FW/1's missing-view fault when bean errors leave no redirect, since cchain has no save view", async () => {
     const ctx = saveContext(written(null));
 
-    await expect(submitCchainSave(ctx)).resolves.toEqual({
-      kind: 'raw',
-      response: { status: 500, contentType: LEGACY_HTML_CONTENT_TYPE, body: LEGACY_ERROR_PAGE_HTML },
-    });
+    await expect(submitCchainSave(ctx)).rejects.toEqual(
+      new LegacyFaultError("Unable to find a view for 'core:cchain.save' action.", 'FW1.viewNotFound', {
+        detail: "'/muraWRM/admin/core/views/cchain/save.cfm' does not exist.",
+      }),
+    );
   });
 
   it('passes a service Location through', async () => {

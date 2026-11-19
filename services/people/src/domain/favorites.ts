@@ -1,6 +1,6 @@
 // Masa's favorites templates (core/modules/v1/favorites/ajax): a person's `tusersfavorites` save, delete and RSS delete.
 import { unescape as unescapeQuery } from 'node:querystring';
-import { LegacyServiceUnavailableError, cfIsNumeric, cfUuid, javaTrim, sqlServerDatetime } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfIsNumeric, cfUuid, javaTrim, sqlServerDatetime, windows1252Text } from '@opt2/platform/legacy-compat';
 import { DEFAULT_UMBRELLA_SITE_ID, type WriteContext } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import { registryEntries, tenantIdForSite, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
@@ -35,22 +35,6 @@ const JS_STRING_ESCAPES: Readonly<Record<string, string>> = {
   '\f': '\\f',
   '\b': '\\b',
 };
-/** The 27 characters Windows-1252 places at 0x80-0x9F. */
-const CP1252_HIGH: ReadonlySet<string> = new Set(
-  '\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178',
-);
-
-/** Text as a `tusersfavorites` varchar column (collation SQL_Latin1_General_CP1_CI_AS) stores it: each UTF-16 code unit outside Windows-1252 as `?`. */
-export function windows1252Text(text: string): string {
-  let stored = '';
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    const unit = text.charAt(i);
-    stored += code < 0x80 || (code >= 0xa0 && code <= 0xff) || CP1252_HIGH.has(unit) ? unit : '?';
-  }
-  return stored;
-}
-
 /** A condition legacy's template fails on, which it answers with the ColdFusion error page. */
 export class FavoriteTemplateError extends Error {
   override readonly name: string = 'FavoriteTemplateError';

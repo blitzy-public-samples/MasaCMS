@@ -7,6 +7,7 @@ import { mergeFw1Context } from '@/lib/request-context';
 import {
   HTML_CONTENT_TYPE,
   JSON_CONTENT_TYPE,
+  LegacyHtmlHeadFaultError,
   NO_CACHE_HEADERS,
   contentLanguage,
   downloadResponse,
@@ -346,6 +347,17 @@ describe('responses', () => {
     const body = await res.text();
     if (headings === '') expect(body).toBe(LEGACY_ERROR_PAGE_HTML);
     else expect(body.endsWith(`<h1>500 Error</h1>${headings}`)).toBe(true);
+  });
+
+  it('legacyError puts the cfhtmlhead text a fault carries ahead of its debug page', async () => {
+    vi.stubEnv('MURA_DEBUGGINGENABLED', 'true');
+    resetLegacySettingsForTests();
+    const fault = new LegacyFaultError('Element HOUR1 is undefined in RC.');
+    const head = '<script type="text/javascript">var dtExample="11/315/2024";</script>';
+    const page = await legacyError(undefined, fault).text();
+
+    expect(page).toContain('<h1>500 Error</h1>');
+    await expect(legacyError(undefined, new LegacyHtmlHeadFaultError(fault, head)).text()).resolves.toBe(head + page);
   });
 
   it('notFound answers an empty 404', async () => {

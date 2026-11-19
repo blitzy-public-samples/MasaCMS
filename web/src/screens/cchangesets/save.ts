@@ -1,4 +1,5 @@
 // The `cChangesets.save` action: the strategies-content save, then FW/1's list redirect or the edit view re-rendered.
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
 import { relayContext } from '@/lib/request-context';
 import type { PageControllerRedirect, PageRedirect, PageScreen, ScreenContext } from '../registry';
@@ -27,7 +28,7 @@ const isStruct = (value: unknown): value is Readonly<Record<string, unknown>> =>
  * `save()`: posts every rc field, the CSRF pair included, for the owner to validate and save. A save without errors
  * answers the list redirect with the `rc` values the owner's redirect names, the new `changesetID` among them;
  * otherwise the edit model is kept for the view.
- * @throws TypeError When the owner returns no saved bean (a rejected token), where legacy's view reads `rc.changeset`.
+ * @throws LegacyFaultError When the owner returns no saved bean (a refused token), where legacy's view reads `rc.changeset`.
  * @throws GatewayDenialError When strategies-content answers 401 or 403; any other non-2xx answer throws `Error`.
  */
 async function saveChangeset(ctx: ScreenContext): Promise<PageControllerRedirect | undefined> {
@@ -41,7 +42,7 @@ async function saveChangeset(ctx: ScreenContext): Promise<PageControllerRedirect
   if (redirect !== null) return { ...LIST_REDIRECT, rc: Object.fromEntries(redirect.params) };
   const model = data?.rc;
   if (!isStruct(model) || !Object.keys(model).some((key) => key.toLowerCase() === 'changeset')) {
-    throw new TypeError('Element CHANGESET is undefined in RC.');
+    throw new LegacyFaultError('Element CHANGESET is undefined in RC.');
   }
   const view = changesetEditData(model);
   // The contract hands the bean's error struct over at the top level, in struct order.

@@ -7,12 +7,13 @@ import { resetLegacySettingsForTests } from '@/lib/env';
 import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
 import {
   CWEBSERVICE_RC_DEFAULTS,
   applyCwebserviceDefaults,
   cwebserviceGate,
   cwebserviceScreens,
+  editDefinition,
+  saveDefinition,
 } from '@/screens/cwebservice';
 import { loadEditState, renderEditView, type WebServiceEditState } from '@/screens/cwebservice/edit';
 import { submitSave } from '@/screens/cwebservice/save';
@@ -82,9 +83,10 @@ function contextFor(
   });
 }
 
+/** The cwebservice page definition of `action`, the halted edit and save included. */
 function pageOf(action: string): PageScreen<unknown> {
-  const def = cwebserviceScreens.find((candidate) => candidate.action === action);
-  if (def === undefined || def.mode !== 'page') throw new Error(`cwebservice.${action} is not a registered page`);
+  const def = [...cwebserviceScreens, editDefinition, saveDefinition].find((candidate) => candidate.action === action);
+  if (def === undefined || def.mode !== 'page') throw new Error(`cwebservice.${action} is not a defined page`);
   return def;
 }
 
@@ -110,7 +112,6 @@ beforeEach(() => {
   for (const name of ['MURA_PORT', 'MURA_CONTEXT', 'MURA_INDEXFILEINURLS']) vi.stubEnv(name, undefined);
   vi.stubEnv('MURA_INDEXFILEINAPI', 'false');
   resetLegacySettingsForTests();
-  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -342,35 +343,16 @@ describe('renderEditView', () => {
     const model = fragmentModel(await render(STORED_STATE, req));
 
     expect(model.alerts).toEqual([]);
-    expect(model.links.find(({ text }) => text.endsWith('/_api/rest/v1/default'))?.text).toBe(
-      'https://localhost/_api/rest/v1/default',
-    );
   });
 
-  it.each<[string, Record<string, string | undefined>, string]>([
-    [
-      'the index file when the API URLs carry it',
-      { MURA_INDEXFILEINAPI: 'true' },
-      'http://localhost/index.cfm/_api/rest/v1/default',
-    ],
-    [
-      'the configured port and context',
-      { MURA_PORT: '8888', MURA_CONTEXT: '/cms' },
-      'http://localhost:8888/cms/_api/rest/v1/default',
-    ],
-  ])('builds the endpoint with %s', async (_label, env, endpoint) => {
-    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+  it("prints legacy's endpoint whatever web's settings and site data", async () => {
+    vi.stubEnv('MURA_INDEXFILEINAPI', 'true');
+    vi.stubEnv('MURA_PORT', '8888');
+    vi.stubEnv('MURA_CONTEXT', '/cms');
     resetLegacySettingsForTests();
+    const req: AdminRequest = { ...adminOn('edit', { clientid: STORED }), site: undefined };
 
-    expect(fragmentModel(await render(STORED_STATE)).links[2]?.text).toBe(endpoint);
-  });
-
-  it('builds the endpoint from the request host and rc.siteid when no site data is served', async () => {
-    const req: AdminRequest = { ...adminOn('edit', { clientid: STORED }), site: undefined, https: true };
-
-    expect(fragmentModel(await render(STORED_STATE, req)).links[2]?.text).toBe(
-      'https://localhost/_api/rest/v1/default',
-    );
+    expect(fragmentModel(await render(STORED_STATE, req)).links[2]?.text).toBe(REST_ENDPOINT);
   });
 });
 
@@ -500,32 +482,31 @@ describe('cwebservice.save', () => {
       'identity PUT',
       'identity GET',
       'people GET',
+      'gateway GET',
       'identity POST',
     ]);
   });
 
-  it("re-renders the endpoint the site's first rendered form built, whatever the save's host", async () => {
-    const aliased = { site: { domain: 'default.localhost', record: { domainAlias: 'localhost' } } } as const;
+  it("re-renders the endpoint legacy answers for the save's own host", async () => {
     const endpointOf = (markup: string): string | undefined =>
       fragmentModel(markup).links.find(({ text }) => text.endsWith('/_api/rest/v1/default'))?.text;
-    const edit = adminS2Request({ circuit: 'cwebservice', item: 'edit', rc: { clientid: STORED }, ...aliased });
-    expect(endpointOf(toString((await renderEditView(contextFor(edit), STORED_STATE)).body))).toBe(
-      'http://localhost/_api/rest/v1/default',
-    );
-
     const save = adminS2Request({
       circuit: 'cwebservice',
       item: 'save',
       rc: FORM,
-      ...aliased,
       serverName: 'example.test',
       httpHost: 'example.test',
     });
-    const outcome = await submitSave(contextFor(save, saveRoutes(saved(saveErrors))));
+    const ctx = contextFor(save, saveRoutes(saved(saveErrors)));
+    const outcome = await submitSave(ctx);
 
     expect(outcome.kind).toBe('render');
     if (outcome.kind !== 'render') return;
-    expect(endpointOf(toString(outcome.view.body))).toBe('http://localhost/_api/rest/v1/default');
+    expect(endpointOf(toString(outcome.view.body))).toBe('http://example.test/_api/rest/v1/default');
+    expect(ctx.gateway.calls.find(({ service }) => service === 'gateway')?.query).toMatchObject({
+      host: 'example.test',
+      apiSite: SITE,
+    });
   });
 
   it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i', async (status) => {
@@ -541,7 +522,7 @@ describe('cwebservice.save', () => {
     );
   });
 
-  describe('as the registered page', () => {
+  describe('as the page definition', () => {
     const save = (): PageScreen<unknown> => pageOf('save');
 
     it('answers the list redirect from its controller step when identity reports no errors', async () => {

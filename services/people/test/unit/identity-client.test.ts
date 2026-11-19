@@ -347,7 +347,7 @@ describe('identity reads', () => {
     const sparse = { UserID: 'G2', GroupName: 'Editors', Counter: null, Perm: 0, isPublic: 0 };
     const reply = { status: 200, body: { items: [full, sparse], total: 2, nextOffset: null } };
     const { identity, requests } = identityWith(reply);
-    const page = await identity.userGroupsPage('tenant-a', 0, { offset: 0 });
+    const page = await identity.userGroupsPage('tenant-a', '0', { offset: 0 });
     expect(page).toMatchObject({ total: 2, nextOffset: null });
     expect(page.rows).toEqual([
       {
@@ -389,7 +389,7 @@ describe('identity reads', () => {
     const reply = { status: 200, body: { items: Array.from({ length: 500 }, (_, n) => row(n)), total: 2001, nextOffset: 1500 } };
     const { identity, requests } = identityWith(reply);
 
-    const page = await identity.userGroupsPage('tenant-a', 1, { offset: 1000, limit: 500 });
+    const page = await identity.userGroupsPage('tenant-a', '1', { offset: 1000, limit: 500 });
 
     expect(page.rows.map((group) => group.userId)).toEqual(Array.from({ length: 500 }, (_, n) => groupId(1000 + n)));
     expect(page).toMatchObject({ total: 2001, nextOffset: 1500 });
@@ -422,7 +422,7 @@ describe('identity reads', () => {
 
   it.each([403, 503])('fails closed when a read answers %i', async (status) => {
     const { identity } = identityWith({ status });
-    await expect(identity.userGroupsPage('tenant-a', 1, { offset: 0 })).rejects.toMatchObject(unavailableFrom('listGroups', status));
+    await expect(identity.userGroupsPage('tenant-a', '1', { offset: 0 })).rejects.toMatchObject(unavailableFrom('listGroups', status));
   });
 
   it.each(pagedGroupReads)('%s fails closed when a later page of %s answers 503, returning no partial list', async (_method, operationId, read, row) => {

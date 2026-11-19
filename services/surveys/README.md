@@ -90,6 +90,8 @@ Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answ
 | `GET`, `POST` | `/{id}/launch` | `surveys.surveys.launch` | Task token in `X-Opt2-Fixture-Authorization` | Launch callback: marks the survey `LAUNCHED` once |
 | `GET`, `POST` | `/{id}/remind` | `surveys.surveys.remind` | Task token in `X-Opt2-Fixture-Authorization` | Reminder callback for `reminder=<n>`: stamps its `sent_at` once |
 
+The gateway never halts the schedule on a NUL (`EX-UNSTORABLE-TEXT-NUL` in [`opt2/exceptions-list.md`](../../opt2/exceptions-list.md)): served by legacy, it would register ACF tasks after the transition paused and adopted them. The route answers a NUL as the fixture does and binds none: a `siteid` holding one is unregistered (400 `invalidParameters`), no survey matches a path id holding one (404 `notFound`, after the CSRF check), the `launchAt` pattern and the integer check of `offsetMinutes` refuse one (400 `invalidParameters`), and `reminders` text is read as `isJSON` and `deserializeJSON` read it (`cfJsonControls` in `src/legacy/cf-json.ts`): NULs and other characters up to U+0020 are trimmed off its edges, a NUL or other C0 control inside a string or key is kept, and one between tokens answers 400 `invalidParameters`.
+
 ### `/v1` APIs
 
 Used by the OPT-2 screens at `/opt2/admin/surveys/*`, which `web/` renders. Transport `service`; every route requires `surveys.manager`. Each `POST` first has identity consume the CSRF token of the survey id context, as the fixture's writes do; a missing, foreign or replayed token answers 400 `invalidTokens` and writes nothing.

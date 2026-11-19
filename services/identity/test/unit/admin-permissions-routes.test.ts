@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN } from '@opt2/platform/legacy-compat';
@@ -203,6 +203,9 @@ afterAll(async () => {
 beforeEach(() => {
   relay.calls.length = 0;
   events.published.length = 0;
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 /** Headers of a gateway-relayed call for a `site` user holding `roles` in session `sid`; null `roles` sends no user token, null `caller` no invocation credential. */
@@ -496,6 +499,37 @@ describe.skipIf(!available)('cperm screens against PostgreSQL', () => {
     expect(reused.json()).toEqual({ written: false, redirect });
     expect(events.published).toEqual([]);
     expect((await moduleGrants(moduleId))[0]).toEqual({ authors: true, Editors: false });
+  });
+
+  it('answers a post repeating a group id with the 500 naming the failed INSERT, keeping the grants written before it', async () => {
+    vi.stubEnv('MURA_DATASOURCE', 'muradb');
+    const moduleId = '00000000000000000000000000000000011';
+    const headers = await headersFor([Roles.s2], await newSession());
+    const form = new URLSearchParams([['groupid', groups.authors], ['groupid', groups.members], ['groupid', groups.authors.toLowerCase()], ['moduleid', moduleId], ...Object.entries(csrfFields(moduleId))]);
+
+    const res = await send('PUT', moduleUrl(moduleId), headers, form);
+
+    expect(res.statusCode).toBe(500);
+    const key = `${moduleId}, ${groups.authors.toLowerCase()}, ${SITE}, module`;
+    expect(res.json()).toMatchObject({
+      apiversion: 'v1',
+      method: 'invalid',
+      error: {
+        code: 'server_error',
+        message: 'Unhandled Exception',
+        stacktrace: {
+          message: 'Error Executing Database Query.',
+          type: 'Database',
+          datasource: 'muradb',
+          errorcode: '23000',
+          detail: `[Macromedia][SQLServer JDBC Driver][SQLServer]Violation of PRIMARY KEY constraint 'PK_tpermissions'. Cannot insert duplicate key in object 'dbo.tpermissions'. The duplicate key value is (${key}).`,
+        },
+      },
+    });
+    expect(await moduleGrants(moduleId)).toEqual([
+      { authors: true, Editors: false },
+      { Admin: false, Members: true },
+    ]);
   });
 
   it('save a JSON body with a groupid array and the token in headers, and clear every grant when no groupid is posted', async () => {

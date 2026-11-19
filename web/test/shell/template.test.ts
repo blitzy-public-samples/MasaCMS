@@ -18,6 +18,7 @@ import {
   noSitesRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
 const Z = '00000000000000000000000000000000';
@@ -93,6 +94,7 @@ function shellFor(ctx: AdminRequest, view: Partial<ShellView> = {}, hooks: Parti
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths: INSTALLED_LEGACY_PATHS,
       now: new Date(2026, 5, 30, 12),
     },
     layout: 'template',

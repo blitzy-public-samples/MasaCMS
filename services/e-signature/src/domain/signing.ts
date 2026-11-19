@@ -2,7 +2,7 @@
 /** Signature requests as esignature.cfc handles them: create, typed-name sign, the hash-chained audit append, and the chain reads and verifications. */
 import { Buffer } from 'node:buffer';
 import { subtle } from 'node:crypto';
-import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_MAP, cfUuid, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import { registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
@@ -200,7 +200,8 @@ function appendAfter(
 }
 
 /**
- * Creates a PENDING request for a pool user and appends its `created` entry, whose detail is the document SHA-256.
+ * Creates a PENDING request for a pool user and appends its `created` entry, whose detail is the document SHA-256; the
+ * document name's unpaired surrogates are stored as the `?` legacy answers.
  * Throws `invalidParameters` when the signer is not a Type 2 user of the site's user pools.
  */
 export async function createSignatureRequest(
@@ -220,7 +221,7 @@ export async function createSignatureRequest(
       tenant_id: tx.tenantId,
       request_id: cfUuid(),
       siteid: actor.siteId,
-      document_name: input.documentName,
+      document_name: javaUtf8Text(input.documentName),
       document_sha256: documentSha256,
       document: input.document,
       signer_user_id: signerUserId,
@@ -242,7 +243,8 @@ export async function createSignatureRequest(
 }
 
 /**
- * Signs request `input.requestId` as its signer and appends its `signed` entry, whose detail is the typed name.
+ * Signs request `input.requestId` as its signer and appends its `signed` entry, whose detail is the typed name; the typed
+ * name is stored and hashed with its unpaired surrogates as `?`, which the gateway sends to legacy instead.
  * Throws, in esignature.cfc order: `notFound`, `forbidden` for another user, `invalidParameters` for a blank or
  * over-long typed name, then `conflict` with `already-signed` once the request is SIGNED.
  */
@@ -258,6 +260,7 @@ export async function signRequest(tx: TenantTx, deps: EsignatureDomainDeps, inpu
   const now = roundAt(deps.clock.now());
   const ctx = writeContext(actor);
   const requestId = locked.request.request_id;
+  const typedName = javaUtf8Text(input.typedName);
   const request = await deps.repository.updateRequest(tx, requestId, { state: SIGNED }, ctx);
   if (request === null) throw new EsignatureDomainError('notFound');
   const signature = await deps.repository.insertSignature(
@@ -266,7 +269,7 @@ export async function signRequest(tx: TenantTx, deps: EsignatureDomainDeps, inpu
       tenant_id: tx.tenantId,
       signature_id: cfUuid(),
       request_id: requestId,
-      typed_name: input.typedName,
+      typed_name: typedName,
       signer_user_id: actor.userId,
       signed_at: now,
     },
@@ -276,7 +279,7 @@ export async function signRequest(tx: TenantTx, deps: EsignatureDomainDeps, inpu
     tx,
     deps,
     locked.last,
-    { requestId, action: AUDIT_ACTIONS.signed, actorUserId: actor.userId, detail: input.typedName, at: now },
+    { requestId, action: AUDIT_ACTIONS.signed, actorUserId: actor.userId, detail: typedName, at: now },
     ctx,
   );
   return { request, signature, audit };

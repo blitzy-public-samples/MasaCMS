@@ -1,5 +1,6 @@
 // The `cArch.datamanager` page: the view's in-place response writes, then the form data manager panels (server-only).
 import {
+  EMPTY_WDDX_PACKET_FAULT,
   LegacyFaultError,
   LegacyServiceUnavailableError,
   cfEq,
@@ -9,11 +10,13 @@ import {
   cfLsIsDate,
   cfToBoolean,
   cfUuid,
+  legacyFaultOfTrace,
 } from '@opt2/platform/legacy-compat';
 // `application.coreversion`, which web keeps with its legacy settings rather than restating it here.
 import { CORE_VERSION } from '@/lib/env';
 import { join, raw, type SafeHtml } from '@/lib/html';
 import { assignContext, type AdminRequest } from '@/lib/request-context';
+import { afterHtmlHead } from '@/lib/responses';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, Rc, ScreenContext } from '../registry';
 import { CARCH_OWNER, applyCarchDefaults, carchGate } from './controller';
@@ -146,6 +149,7 @@ function ormFormFlag(body: string): boolean | undefined {
  * params, the selected write, the page model and, for a filtered response list, its bulk delete.
  * @throws LegacyServiceUnavailableError For an ORM-entity form, whose `dsp_ormform.cfm` include is absent at the pin.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
+ * @throws LegacyHtmlHeadFaultError For a fault a write raises, carrying the date key printed before it.
  */
 async function prepare(ctx: ScreenContext): Promise<Prepared> {
   ctx.req = applyCarchDefaults(ctx.req);
@@ -160,9 +164,12 @@ async function prepare(ctx: ScreenContext): Promise<Prepared> {
   const standIn = rcText(rc, 'contentid') === '' ? cfUuid() : undefined;
   const serviceRc = (): Rc => (standIn === undefined ? ctx.req.rc : assignContext(ctx.req.rc, { contentid: standIn }));
 
+  // The writes run after line 78's cfhtmlhead, so a fault they raise prints after the date key.
+  const viewWrite = (): ReturnType<typeof carchWrite> =>
+    afterHtmlHead(ctx.req.session.dateKey.script.value, () => carchWrite(ctx, 'datamanager', { rc: serviceRc() }));
   const action = rcText(rc, 'action');
   if (selectsInViewWrite(rc, action)) {
-    const written = settled(await carchWrite(ctx, 'datamanager', { rc: serviceRc() }), 'write');
+    const written = settled(await viewWrite(), 'write');
     if (written.kind !== 'ok') return written;
     if (cfEq(action, 'setDisplay')) ctx.req = withRc(ctx.req, { action: '' });
   }
@@ -192,7 +199,7 @@ async function prepare(ctx: ScreenContext): Promise<Prepared> {
   if (rows.length === 0 || remove === undefined || !cfIsBoolean(remove) || !cfToBoolean(remove)) {
     return { kind: 'ready', data: { ...base, results: { kind: 'rows', rows } } };
   }
-  const deleted = settled(await carchWrite(ctx, 'datamanager', { rc: serviceRc() }), 'bulk delete');
+  const deleted = settled(await viewWrite(), 'bulk delete');
   if (deleted.kind !== 'ok') return deleted;
   return { kind: 'ready', data: { ...base, results: { kind: 'deleted', count: rows.length } } };
 }
@@ -223,12 +230,17 @@ function menuContent(bean: CarchStruct): CarchMenuContent {
 /** dsp_edit.cfm: the `read(rc.responseid)` row in the form that posts back Update or Delete. */
 function editPanel(ctx: ScreenContext, model: CarchPageModel): Promise<SafeHtml> {
   const { rc, session } = ctx.req;
-  const responseId = rcText(rc, 'responseid');
+  // Line 78's `read(rc.responseid)` fails first without it.
+  rcText(rc, 'responseid');
   const [row] = rowsOf(model.rc, 'rsData');
-  if (row === undefined) throw new TypeError(`${SERVICE} returned no response ${responseId} for carch.datamanager`);
+  // Line 83 deserialises the packet outside any cftry; a read without rows gives it an empty packet.
+  if (row === undefined) throw LegacyFaultError.fromTrace(EMPTY_WDDX_PACKET_FAULT);
   const { responseId: id, data } = responseRow(row);
-  // dsp_edit.cfm deserialises the packet outside any cftry, so legacy fails on one wddx2cfml rejects.
-  if (data === null) throw new TypeError(`The packet of response ${id} is not valid WDDX`);
+  if (data === null) {
+    // The service names the fault of an empty or NULL packet; another unreadable packet has no fault the target names.
+    const fault = legacyFaultOfTrace(structValue(row, 'dataFault'));
+    throw fault ?? new TypeError(`The packet of response ${id} is not valid WDDX`);
+  }
   const entered = dateOf(row, 'entered');
   return renderDataEdit(ctx, {
     fieldnames: presentText(model.rc, 'fieldnames'),
@@ -363,13 +375,13 @@ async function renderDataManager(ctx: ScreenContext, data: DataManagerData): Pro
       `\n\t\t\t</div> <!-- /.block-content -->\n\t\t</div> <!-- /.block-bordered -->` +
       `\n\t</div> <!-- /.block-constrain -->\n`,
   );
+  return { body, ajax: carchJs(ctx, req.item), htmlHead: htmlHeadOf(req, branch) };
+}
+
+/** The view's `cfhtmlhead` text, accumulated in call order: line 78's date key, then dsp_display.cfm's script. */
+function htmlHeadOf(req: AdminRequest, branch: Branch): SafeHtml {
   const dateKey = req.session.dateKey.script;
-  return {
-    body,
-    ajax: carchJs(ctx, req.item),
-    // cfhtmlhead text accumulates in call order: the view's date key, then dsp_display.cfm's script.
-    htmlHead: branch === 'display' ? join([dateKey, dataDisplayHtmlHead(CORE_VERSION)]) : dateKey,
-  };
+  return branch === 'display' ? join([dateKey, dataDisplayHtmlHead(CORE_VERSION)]) : dateKey;
 }
 
 /** The `cArch.datamanager` admin action: its in-view writes run as the controller step, before the page renders. */
@@ -393,5 +405,7 @@ export const datamanagerScreen: PageScreen<DataManagerData> = Object.freeze({
     PREPARED.delete(ctx);
     return Promise.resolve(data);
   },
-  render: renderDataManager,
+  // The view's output follows its cfhtmlhead calls, so a fault while rendering prints after their text.
+  render: (ctx: ScreenContext, data: DataManagerData) =>
+    afterHtmlHead(htmlHeadOf(ctx.req, data.branch).value, () => renderDataManager(ctx, data)),
 });

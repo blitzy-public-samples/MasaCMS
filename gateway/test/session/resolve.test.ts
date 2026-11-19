@@ -19,8 +19,10 @@ import {
   type LegacyBoundResolution,
   type SessionRequestInput,
   type SessionResolution,
+  type TokenMinter,
 } from '../../src/session/resolve.js';
 import type { SessionStateCheck, SessionStateChecker } from '../../src/session/state-check.js';
+import type { SessionToken } from '../../src/session/token-cache.js';
 
 const NOW = new Date(Date.UTC(2026, 5, 30, 12));
 const ADOPTED_ID = 'identity-session-adopted';
@@ -36,7 +38,8 @@ const LEGACY_CFID = setCookieLegacy(
   NOW,
 );
 
-type ActiveStates = Record<string, { state: 'active' | 'ended'; epoch: number }>;
+/** Identity's state per session; `userId` defaults to `U1`. */
+type ActiveStates = Record<string, { state: 'active' | 'ended'; epoch: number; userId?: string }>;
 
 /** T1, the identity session of the target-primary jar a switch back restores, still active. */
 const T1_ACTIVE: ActiveStates = { T1: { state: 'active', epoch: 4 } };
@@ -81,6 +84,25 @@ function describeBody(sessionId: string): LegacyDescribe {
     usedTokens: [],
     siteId: 'default',
     serverTime: '2026-06-30T12:00:00.000',
+  };
+}
+
+/** A REST session's user token as identity mints it, for `minted`'s user at its epoch. */
+function restToken(sessionId: string, minted: { sub: string; epoch: number }): SessionToken {
+  return {
+    token: `token-${sessionId}`,
+    claims: {
+      iss: 'opt2-local-identity',
+      aud: 'opt2-local',
+      sid: sessionId,
+      tid: '00000000-0000-4000-8000-0000000000a1',
+      site: 'default',
+      roles: [],
+      s2: false,
+      iat: 1_700_000_000,
+      exp: 1_700_000_300,
+      ...minted,
+    },
   };
 }
 
@@ -209,7 +231,7 @@ function setup(fakes: Fakes = {}) {
       const known = fakes.states?.[sessionId] ?? { state: 'ended', epoch: 0 };
       const changed = fakes.epochChanges?.indexOf(sessionId) ?? -1;
       if (changed >= 0) fakes.epochChanges?.splice(changed, 1);
-      return Promise.resolve({ ...known, userId: 'U1', siteId: 'default', epochChanged: changed >= 0 });
+      return Promise.resolve({ userId: 'U1', siteId: 'default', ...known, epochChanged: changed >= 0 });
     },
     forget() {},
   };
@@ -328,29 +350,140 @@ describe('sessionless REST', () => {
     expect(s.authenticated[0]?.siteId).toBe('default');
   });
 
-  it.each<[string, string[], ActiveStates, SessionResolution]>([
+  it.each<[string, string[], SessionResolution]>([
     [
       'its active session',
       ['access_token'],
-      { R1: { state: 'active', epoch: 3 } },
       { kind: 'session', sessionId: 'R1', epoch: 3, mode: 'target-primary', legacyCookies: {}, setCookies: [], consumedParams: ['access_token'] },
     ],
-    ['the anonymous continuation of its ended session', ['client_id', 'client_secret'], {}, { kind: 'none', setCookies: [], consumedParams: ['client_id', 'client_secret'] }],
-    ['its session, when nothing was consumed', [], { R1: { state: 'active', epoch: 3 } }, { kind: 'session', sessionId: 'R1', epoch: 3, mode: 'target-primary', legacyCookies: {}, setCookies: [] }],
-  ])('an authenticated outcome carries the params it consumed into %s', async (_label, consumedParams, states, expected) => {
-    const s = setup({ authenticate: () => ({ outcome: 'authenticated', sessionId: 'R1', consumedParams }), states });
+    ['its session, when nothing was consumed', [], { kind: 'session', sessionId: 'R1', epoch: 3, mode: 'target-primary', legacyCookies: {}, setCookies: [] }],
+  ])('an authenticated outcome carries the params it consumed into %s after one exchange', async (_label, consumedParams, expected) => {
+    const s = setup({ authenticate: () => ({ outcome: 'authenticated', sessionId: 'R1', consumedParams }), states: { R1: { state: 'active', epoch: 3 } } });
     expect(await s.resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary' })).toStrictEqual(expected);
+    expect(s.calls).toEqual(['authenticate', 'check:R1']);
   });
 
-  it('an anonymous outcome or an ended session is no session', async () => {
+  it('an anonymous outcome is no session', async () => {
     expect(await setup().resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary' })).toEqual({
       kind: 'none',
       setCookies: [],
     });
-    const ended = setup({ authenticate: () => ({ outcome: 'session', sessionId: 'R2' }) });
-    expect((await ended.resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary' })).kind).toBe(
-      'none',
-    );
+  });
+
+  const INVALID_TOKEN = { status: 401, headers: { 'WWW-Authenticate': 'Bearer error="invalid_token"' }, body: '{"error":{}}' };
+  it.each<[string, RestAuthOutcome, SessionResolution, string[]]>([
+    ['the legacy answer of its credentials', { outcome: 'denied', sessionId: null, legacyResponse: INVALID_TOKEN }, { kind: 'response', ...INVALID_TOKEN }, []],
+    [
+      'the new active session with the params it consumed',
+      { outcome: 'authenticated', sessionId: 'R2', consumedParams: ['client_id', 'client_secret'] },
+      { kind: 'session', sessionId: 'R2', epoch: 6, mode: 'target-primary', legacyCookies: {}, setCookies: [], consumedParams: ['client_id', 'client_secret'] },
+      ['check:R2'],
+    ],
+  ])('a session ended before its check is exchanged for once more, resolving to %s', async (_label, second, expected, after) => {
+    const outcomes: RestAuthOutcome[] = [{ outcome: 'authenticated', sessionId: 'R1', consumedParams: ['client_id', 'client_secret'] }, second];
+    const s = setup({ authenticate: () => outcomes.shift() ?? { outcome: 'anonymous', sessionId: null }, states: { R2: { state: 'active', epoch: 6 } } });
+    const sent = request(undefined, { path: '/_api/rest/v1/default/content', query: { client_id: 'C1' }, params: { client_id: 'C1', title: 't' } });
+    expect(await s.resolver.resolveSession(sent, { family: 'rest', mode: 'target-primary' })).toStrictEqual(expected);
+    expect(s.calls).toEqual(['authenticate', 'check:R1', 'authenticate', ...after]);
+    expect(s.authenticated[1]).toStrictEqual(s.authenticated[0]);
+  });
+
+  it('a session ended on both exchanges is identity unavailable, after exactly two exchanges', async () => {
+    let exchanges = 0;
+    const s = setup({ authenticate: () => ({ outcome: 'session', sessionId: `R${(exchanges += 1)}` }) });
+    const failure = await s.resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary' }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ServiceUnavailableError);
+    expect((failure as ServiceUnavailableError).service).toBe(IDENTITY_SERVICE);
+    expect(s.calls).toEqual(['authenticate', 'check:R1', 'authenticate', 'check:R2']);
+  });
+
+  /** A minter answering each session's token for `minted(sessionId, epoch)`, logging `mint:<session>@<epoch>`. */
+  function minter(s: ReturnType<typeof setup>, minted: (sessionId: string, epoch: number) => { sub: string; epoch: number }): TokenMinter {
+    return (sessionId, epoch) => {
+      s.calls.push(`mint:${sessionId}@${epoch}`);
+      return Promise.resolve(restToken(sessionId, minted(sessionId, epoch)));
+    };
+  }
+
+  it.each([
+    ['its signed-in user', 'U1'],
+    ['an anonymous session', ''],
+  ])('the token minted for the checked session of %s rides on its resolution after one exchange', async (_label, userId) => {
+    const s = setup({ authenticate: () => ({ outcome: 'authenticated', sessionId: 'R1' }), states: { R1: { state: 'active', epoch: 3, userId } } });
+    const mintToken = minter(s, (_sessionId, epoch) => ({ sub: userId, epoch }));
+    expect(await s.resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary', mintToken })).toStrictEqual({
+      kind: 'session',
+      sessionId: 'R1',
+      epoch: 3,
+      mode: 'target-primary',
+      legacyCookies: {},
+      setCookies: [],
+      token: restToken('R1', { sub: userId, epoch: 3 }),
+    });
+    expect(s.calls).toEqual(['authenticate', 'check:R1', 'mint:R1@3']);
+  });
+
+  it.each<[string, { sub: string; epoch: number }]>([
+    ['anonymous at the epoch its end moved on to', { sub: '', epoch: 4 }],
+    ['anonymous at epoch 0, as for a session identity no longer holds', { sub: '', epoch: 0 }],
+    ['for its user at another epoch', { sub: 'U1', epoch: 4 }],
+  ])('a session whose token identity minted %s after its check is exchanged for once more', async (_label, first) => {
+    const outcomes: RestAuthOutcome[] = [
+      { outcome: 'authenticated', sessionId: 'R1', consumedParams: ['client_id'] },
+      { outcome: 'authenticated', sessionId: 'R2', consumedParams: ['client_id'] },
+    ];
+    const s = setup({
+      authenticate: () => outcomes.shift() ?? { outcome: 'anonymous', sessionId: null },
+      states: { R1: { state: 'active', epoch: 3 }, R2: { state: 'active', epoch: 6 } },
+    });
+    const mintToken = minter(s, (sessionId, epoch) => (sessionId === 'R1' ? first : { sub: 'U1', epoch }));
+    const sent = request(undefined, { path: '/_api/rest/v1/default/content', query: { client_id: 'C1' }, params: { client_id: 'C1' } });
+    expect(await s.resolver.resolveSession(sent, { family: 'rest', mode: 'target-primary', mintToken })).toStrictEqual({
+      kind: 'session',
+      sessionId: 'R2',
+      epoch: 6,
+      mode: 'target-primary',
+      legacyCookies: {},
+      setCookies: [],
+      consumedParams: ['client_id'],
+      token: restToken('R2', { sub: 'U1', epoch: 6 }),
+    });
+    expect(s.calls).toEqual(['authenticate', 'check:R1', 'mint:R1@3', 'authenticate', 'check:R2', 'mint:R2@6']);
+    expect(s.authenticated[1]).toStrictEqual(s.authenticated[0]);
+  });
+
+  it("a session whose token identity minted anonymous resolves to identity's answer to the repeated exchange", async () => {
+    const outcomes: RestAuthOutcome[] = [
+      { outcome: 'authenticated', sessionId: 'R1' },
+      { outcome: 'denied', sessionId: null, legacyResponse: INVALID_TOKEN },
+    ];
+    const s = setup({ authenticate: () => outcomes.shift() ?? { outcome: 'anonymous', sessionId: null }, states: { R1: { state: 'active', epoch: 3 } } });
+    const mintToken = minter(s, () => ({ sub: '', epoch: 4 }));
+    expect(await s.resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary', mintToken })).toStrictEqual({
+      kind: 'response',
+      ...INVALID_TOKEN,
+    });
+    expect(s.calls).toEqual(['authenticate', 'check:R1', 'mint:R1@3', 'authenticate']);
+  });
+
+  it.each<[string, ActiveStates, string[]]>([
+    ['before its check, then before its token', { R2: { state: 'active', epoch: 6 } }, ['authenticate', 'check:R1', 'authenticate', 'check:R2', 'mint:R2@6']],
+    ['before its token, then before its check', { R1: { state: 'active', epoch: 3 } }, ['authenticate', 'check:R1', 'mint:R1@3', 'authenticate', 'check:R2']],
+    [
+      'before its token on both exchanges',
+      { R1: { state: 'active', epoch: 3 }, R2: { state: 'active', epoch: 6 } },
+      ['authenticate', 'check:R1', 'mint:R1@3', 'authenticate', 'check:R2', 'mint:R2@6'],
+    ],
+  ])('a session ended %s is identity unavailable, after exactly two exchanges', async (_label, states, calls) => {
+    let exchanges = 0;
+    const s = setup({ authenticate: () => ({ outcome: 'authenticated', sessionId: `R${(exchanges += 1)}` }), states });
+    const mintToken = minter(s, (_sessionId, epoch) => ({ sub: '', epoch: epoch + 1 }));
+    const failure = await s.resolver
+      .resolveSession(request(), { family: 'rest', mode: 'target-primary', mintToken })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ServiceUnavailableError);
+    expect((failure as ServiceUnavailableError).service).toBe(IDENTITY_SERVICE);
+    expect(s.calls).toEqual(calls);
   });
 
   it('an answer without its legacy response is identity unavailable', async () => {

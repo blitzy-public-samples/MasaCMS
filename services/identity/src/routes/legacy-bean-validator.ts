@@ -4,6 +4,7 @@ import {
   LegacyServiceUnavailableError,
   cfIsDateText,
   cfIsNumeric,
+  cfIsValidNumeric,
   cfListToArray,
   cfParseDateTimeText,
   cfToNumber,
@@ -193,7 +194,7 @@ function isValidType(type: string, value: CfValue): boolean {
       return true;
     case 'numeric':
     case 'float':
-      return typeof simple !== 'string' || isNumberText(text);
+      return typeof simple !== 'string' || cfIsValidNumeric(text);
     case 'integer':
       if (typeof simple === 'boolean') return false;
       if (simple instanceof CfNumber) return Number.isInteger(simple.value) && simple.value >= INT_MIN && simple.value <= INT_MAX;

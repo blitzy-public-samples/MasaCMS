@@ -1,5 +1,6 @@
 // cChangesets.save against cchangesets.cfc save(), save.cfm's include of edit.cfm and FW/1 redirect().
 import * as cheerio from 'cheerio';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { TENANT_A } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { components } from '@/generated/clients/strategies-content';
@@ -173,7 +174,8 @@ describe('cChangesets.save forwarding', () => {
     const rc = postedRc({ csrf_token: STALE_TOKEN });
     const { ctx, received } = saveContext(rc, savedResult(CHANGESET_IDS.scheduled));
 
-    await expect(saveStep(ctx)).rejects.toThrow(new TypeError('Element CHANGESET is undefined in RC.'));
+    // Own oracle: cchangesets-save-used-token and -missing-token.
+    await expect(saveStep(ctx)).rejects.toEqual(new LegacyFaultError('Element CHANGESET is undefined in RC.'));
     expect(received).toHaveLength(1);
     expect(received[0]?.form).toMatchObject({ csrf_token: STALE_TOKEN, csrf_token_expires: FIXED_CSRF.expires });
     expect(received[0]?.body).toBe(new URLSearchParams(Object.entries(ctx.req.rc)).toString());

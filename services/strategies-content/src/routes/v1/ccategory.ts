@@ -1,6 +1,6 @@
 /** ccategory admin routes: category list, edit and update. */
 import type { Readable } from 'node:stream';
-import { cfEq, cfNumberString } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyFaultError, cfEq, cfNumberString } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
   readCategory,
@@ -147,12 +147,23 @@ export async function registerCategoryRoutes(app: FastifyInstance, ctx: ContentR
       const rc = controllerRc(request, request.params.siteid);
       const csrfValid = !csrfRejected(request);
       const action = rcText(rc, 'action');
+      // Without `action` legacy fails reading it: in the switch past a valid token, else in the redirect test (ccategory.cfc:101,116).
+      if (action === undefined) {
+        const fault = new LegacyFaultError(csrfValid ? 'Element ACTION is undefined in RC.' : 'Element RC.action is undefined in ARGUMENTS.');
+        throw new LegacyApiError('server_error', { stacktrace: fault.trace() });
+      }
       // A refused token leaves rc.categoryBean undefined, which legacy dereferences (ccategory.cfc:116). The contract
       // answers that failure as a model without categoryBean, so the domain call, which throws for it, is skipped.
-      if (!csrfValid && action !== undefined && !cfEq(action, 'delete')) {
+      if (!csrfValid && !cfEq(action, 'delete')) {
         return { saved: false, errors: {}, redirect: null, data: { rc: {} } };
       }
-      const outcome = await updateCategoryAction(ctx.domain, actor, rc, { csrfValid });
+      let outcome: Awaited<ReturnType<typeof updateCategoryAction>>;
+      try {
+        outcome = await updateCategoryAction(ctx.domain, actor, rc, { csrfValid });
+      } catch (error) {
+        if (error instanceof LegacyFaultError) throw new LegacyApiError('server_error', { stacktrace: error.trace() });
+        throw error;
+      }
       if (outcome.kind === 'redirect') {
         return { saved: csrfValid, errors: {}, redirect: adminRedirect(outcome.action, rc, outcome.append) };
       }

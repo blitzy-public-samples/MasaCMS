@@ -4,20 +4,21 @@ import {
   cfEq,
   cfListToArray,
   cfLsTimeFormat,
-  cfToBoolean,
   cfUuid,
 } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/people';
+import { cfEq as cfLooseEq } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw } from '@/lib/html';
 import { relayFields, siteDataOf, urlEncodedFormat, type SiteData } from '@/lib/request-context';
+import { legacyThemeAssetPath } from '@/lib/site-paths';
 import { buildUrl } from '@/lib/urls';
 import { privateInterestGroups, type PrivateInterestGroupRow } from '../ceditprofile/edit';
 import type { PageScreen, ScreenContext } from '../registry';
 import { renderUserCategoriesNest, type InterestCategoryLoader, type InterestCategoryRow } from './dsp_categories_nest';
-import { displayErrors, editGroupHtmlHead, jsStringFormat, themeAssetPath } from './editgroup';
+import { cfmlCondition, displayErrors, editGroupHtmlHead, jsStringFormat } from './editgroup';
 import { cusersGate, normaliseCusersRc, userPoolIdFor, type CusersRc, type CusersRcValue } from './gate';
 
 // The markup is written as ACF 2023 emits the view: the template text between two CFML constructs is copied byte for
@@ -157,7 +158,7 @@ export interface EditUserData {
   readonly subTypes: readonly string[];
   readonly sites: readonly EditUserSite[];
   readonly userPoolId: string;
-  /** `settingsManager.getSite(rc.siteid).getThemeAssetPath()`. */
+  /** `settingsManager.getSite(rc.siteid).getThemeAssetPath()`, read only when a subtype prints it, else `''`. */
   readonly themeAssetPath: string;
   /** `getSite(bean.siteid)` of the photo URL; the request's site when there is no photo. */
   readonly photoSite: SiteData;
@@ -369,8 +370,9 @@ async function siteList(ctx: ScreenContext): Promise<readonly EditUserSite[]> {
 
 /**
  * The view's data: `editUser()`'s bean, user type and groups from people, the site list from programs-sites, and the
- * view set-up's user pool, subtypes and strike block; issues the form's CSRF pairs. Gateway unavailability propagates.
- * @throws GatewayDenialError When people, programs-sites or strategies-content refuses a read (401 or 403).
+ * view set-up's user pool, subtypes, the theme path they print and strike block; issues the form's CSRF pairs. Gateway
+ * unavailability propagates.
+ * @throws GatewayDenialError When people, programs-sites, strategies-content or the gateway refuses a read (401 or 403).
  * @throws LegacyServiceUnavailableError When an owner is unavailable, a photo file name is unserved, a pooled user's photo
  * site is not served by programs-sites, or the interest groups are another site's.
  * @throws TypeError When the request carries no site data, or a preserved bean is malformed.
@@ -400,10 +402,11 @@ export async function loadEditUser(
   const exists = !edit.isNew;
   const addresses = edit.addresses.map(addressOf);
   const contexts = hasDeleteLink(rc, addresses) ? [bean.userId, addressCsrfContext(rc)] : [bean.userId];
-  const [interestCategories, webServiceTokens, sites] = await Promise.all([
+  const [interestCategories, webServiceTokens, sites, themeAssetPath] = await Promise.all([
     sources.interestCategories(rc.siteid),
     exists ? sources.webServiceTokens(ctx, bean.userId) : Promise.resolve([]),
     siteList(ctx),
+    edit.subTypes.length > 0 ? legacyThemeAssetPath(ctx.req, ctx.gateway, rc.siteid) : '',
     ctx.csrf.prefetch(contexts),
   ]);
   return {
@@ -420,7 +423,7 @@ export async function loadEditUser(
     subTypes: edit.subTypes.map(({ subType }) => subType),
     sites,
     userPoolId: userPoolIdFor({ site }, rc),
-    themeAssetPath: themeAssetPath(site, ctx.req.https),
+    themeAssetPath,
     photoSite,
     interestCategories,
     webServiceTokens,
@@ -1009,7 +1012,7 @@ function renderUserType(o: CfOutput, v: View): void {
     o.t('\n\t\t\t\t\t\t\t\t<input name="isPublic" type="hidden" value="1">\n\t\t\t\t\t\t\t');
     return;
   }
-  const isPublic = cfToBoolean(data.tempIsPublic);
+  const isPublic = cfmlCondition(data.tempIsPublic);
   o.t('\n\t\t\t\t\t\t\t\t<div class="mura-control-group">\n\t\t\t\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t\t\t\t');
   o.e(v.rb('user.usertype'));
   o.t('\n\t\t\t\t\t\t\t\t\t</label>\n\n\t\t\t\t\t\t\t\t\t\t<label class="radio inline">\n\t\t\t\t\t\t\t\t\t\t\t<input ');
@@ -1032,7 +1035,7 @@ function renderPrivateGroups(o: CfOutput, v: View): void {
   const { data } = v;
   if (!v.rc.isAdmin) return;
   o.t('\n\t\t\t\t\t\t\t\t\t<div id="privateGroupsList" class="mura-control-group"');
-  if (cfToBoolean(data.tempIsPublic)) o.t(' style="display:none"');
+  if (cfmlCondition(data.tempIsPublic)) o.t(' style="display:none"');
   o.t('>\n\t\t\t\t\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t\t\t\t\t');
   o.e(v.rb('user.admingroups'));
   o.t('\n\t\t\t\t\t\t\t\t\t\t</label>\n\n\t\t\t\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\t');
@@ -1125,11 +1128,11 @@ function renderAccountFlags(o: CfOutput, v: View): void {
     o.t('\n\t\t\t\t\t\t\t\t<div class="mura-control-group">\n\t\t\t\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t\t\t\t\t');
     o.e(v.rb('user.superadminaccount'));
     o.t('\n\t\t\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t\t\t\t<label class="radio inline"><input name="s2" type="radio" class="radio inline" value="1" ');
-    if (cfEq(bean.s2, '1')) o.t('Checked');
+    if (cfLooseEq(bean.s2, '1')) o.t('Checked');
     o.t('>\n\t\t\t\t\t\t\t\t\t\t\t\t');
     o.e(v.rb('user.yes'));
     o.t('\n\t\t\t\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t\t\t\t<label class="radio inline"><input name="s2" type="radio" class="radio inline" value="0" ');
-    if (cfEq(bean.s2, '0')) o.t('Checked');
+    if (cfLooseEq(bean.s2, '0')) o.t('Checked');
     o.t('>\n\t\t\t\t\t\t\t\t\t\t\t\t');
     o.e(v.rb('user.no'));
     o.t('\n\t\t\t\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t');
@@ -1139,11 +1142,11 @@ function renderAccountFlags(o: CfOutput, v: View): void {
     o.t('\n\t\t\t\t\t\t\t<div class="mura-control-group">\n\t\t\t\t\t\t\t\t<label>');
     o.e(v.rb('user.emailbroadcaster'));
     o.t('</label>\n\t\t\t\t\t\t\t\t<label class="radio inline">\n\t\t\t\t\t\t\t\t\t<input name="subscribe" type="radio" class="radio inline" value="1"');
-    if (cfEq(bean.subscribe, '1')) o.t('Checked');
+    if (cfLooseEq(bean.subscribe, '1')) o.t('Checked');
     o.t('>\n\t\t\t\t\t\t\t\t\t');
     o.e(v.rb('user.yes'));
     o.t('\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t<label class="radio inline">\n\t\t\t\t\t\t\t\t\t<input name="subscribe" type="radio" class="radio inline" value="0"');
-    if (cfEq(bean.subscribe, '0')) o.t('Checked');
+    if (cfLooseEq(bean.subscribe, '0')) o.t('Checked');
     o.t('>\n\t\t\t\t\t\t\t\t\t');
     o.e(v.rb('user.no'));
     o.t('\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t');
@@ -1158,13 +1161,13 @@ function renderActiveAndSite(o: CfOutput, v: View): void {
   o.t('\n\t\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t\t\t<label class="radio inline">\n\t\t\t\t\t\t\t\t\t\t\t<input ');
   if (data.lockedSuper) o.t('disabled ');
   o.t('name="InActive" type="radio" class="radio inline" value="0"');
-  if (cfEq(bean.inActive, '0')) o.t('Checked');
+  if (cfLooseEq(bean.inActive, '0')) o.t('Checked');
   o.t('>\n\t\t\t\t\t\t\t\t\t\t\t');
   o.e(v.rb('user.yes'));
   o.t('\n\t\t\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t\t\t<label class="radio inline">\n\t\t\t\t\t\t\t\t\t\t\t<input ');
   if (data.lockedSuper) o.t('disabled ');
   o.t('name="InActive" type="radio" class="radio inline" value="1"');
-  if (cfEq(bean.inActive, '1')) o.t('Checked');
+  if (cfLooseEq(bean.inActive, '1')) o.t('Checked');
   o.t('>\n\t\t\t\t\t\t\t\t\t\t\t');
   o.e(v.rb('user.no'));
   o.t('\n\t\t\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t\t\t</div>\n\n\t\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t');

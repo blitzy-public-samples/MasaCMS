@@ -7,7 +7,9 @@ import {
   cfEq,
   cfIsBoolean,
   cfIsDate,
+  cfIsHexFloatText,
   cfIsNumeric,
+  cfIsValidNumeric,
   cfNumberString,
   cfToBoolean,
   cfToNumber,
@@ -173,7 +175,12 @@ describe('CFML predicates', () => {
     ['NaN', false], ['--5', false], ['1 2', false], ['', false], [' ', false], ['1,000', false], ['$5', false],
     ['1.2.3', false], ['5\u00a0', false], ['\u00a05', false], ['5\u007f', false], ['1e308', true],
     ['1.7976931348623157e308', true], ['1e-400', true], ['1e10', true], ['1.8e308', false], ['1e309', false],
-    ['-1e400', false],
+    ['-1e400', false], ['0x1p3', true], ['-0x1.8p1', true], ['0X1P3', true], ['+0x1p3', true], ['0x.8p1', true],
+    ['0x1.p1', true], [' 0x1p3 ', true], ['0x1p3\u0001', true], ['0x1p1024', true], ['-0x1p1024', true],
+    ['0x1p99999999999', true], ['0x3p1023', true], ['0x1000p0', true], ['0x10000p-1', true], ['0x0p0', true],
+    ['0xp1', false], ['0x1p', false], ['0x.p0', false], ['0x1p3d', false], ['0xAp0', false], ['0xep0', false],
+    ['0x1fp0', false], ['0x10000p0', false], ['0x2147483647p0', false], ['00x1p0', false], ['-.0x1p0', false],
+    ['-NaN', false], ['+Infinity', false], [`0.${'0'.repeat(400)}1e400`, false], [`1${'0'.repeat(400)}e-400`, true],
   ])('cfIsNumeric(%j) is %s', (value, expected) => {
     expect(cfIsNumeric(value)).toBe(expected);
   });
@@ -188,6 +195,13 @@ describe('CFML predicates', () => {
     ['1.0', '1', true], ['1e0', '1', true], ['1.e0', '1', true], ['+1', '1', true], ['.5', '0.5', true],
     ['1', '00000000000000000000000000000000001', true], ['1.', '00000000000000000000000000000000001', false],
     ['Update', 'update', true], ['abc', 'ABC', true], [' abc', 'abc', false],
+    ['0x1p3', '2', true], ['0x1p3', '8', false], ['+0x1p3', '2', true], [' 0x1p3', '2', true], ['0x1p3', '0x1p3 ', true],
+    ['0x1p3', '2.', false], ['0x1p0', '1', false], ['0x1.0p0', '1024', true], ['0x1p-3', '0.5', true], ['0x1p-1080', '0', false],
+    ['0x1p1024', '2', true], ['0xAp0', '10', false], ['0xAp0', '0xap0', true], ['0xAp0', '0xBp0', false], ['-0x0p0', '0', true],
+    ['false', '0', true], ['yes', '1', true], [' yes', '1', true], ['yes', 'true', true], ['no', 'false', true], ['0', 'false ', true],
+    ['true', '1.0', true], ['yes', '2', false], ['YES', '-1', false], ['yes', '1.', false], ['no', '', false], ['on', '1', false],
+    ['true', '0x1p0', false], ['-NaN', '-NaN', false], ['-Infinity', '-Infinity', true], ['-Infinity', '-1e309', false],
+    ['1e309', '1E309', true], ['1e309', '1e310', false], ['1e309', '1e309 ', false], [`0.${'0'.repeat(400)}1e400`, '0.1', false],
   ])('cfEq(%j, %j) is %s', (a, b, expected) => {
     expect(cfEq(a, b)).toBe(expected);
   });
@@ -197,30 +211,56 @@ describe('CFML predicates', () => {
     ['0.0', true], ['-1', true], [false, true], [2, true], [' yes', false], ['yes ', false], [' 1', false], ['on', false],
     ['off', false], ['y', false], ['', false], ['12\u0001', false], [Infinity, false], [LOCAL, false], ['1e308', true],
     ['1.7976931348623157e308', true], ['1e-400', true], ['1e10', true], ['1.8e308', false], ['1e309', false],
-    ['-1e400', false],
+    ['-1e400', false], ['0x1p3', true], ['0x1p1024', true], ['0x10000p-1', true], [' 0x1p3', false], ['0x1p3 ', false],
+    ['0xAp0', false], ['-NaN', true], ['+NaN', true], ['NaN', false], ['-NaN ', false], ['-Infinity', false], ['+Infinity', false],
   ])('cfIsBoolean(%j) is %s', (value, expected) => {
     expect(cfIsBoolean(value)).toBe(expected);
   });
 
   it.each<[unknown, boolean]>([
     ['YES', true], ['true', true], ['no', false], ['False', false], ['0.0', false], ['-1', true], [0, false], [7, true], [false, false],
+    ['0x1p3', true], ['0x0p0', false], ['0x1p-1080', true], ['0x10000p-1', false], ['0xAp0', true], ['1e309', true], ['-1e309', true],
+    ['1.e309', true], ['1e-400', false], ['+Infinity', true], ['-Infinity', true], ['-NaN', true], [`0.${'0'.repeat(400)}1e400`, true],
   ])('cfToBoolean(%j) is %s', (value, expected) => {
     expect(cfToBoolean(value)).toBe(expected);
   });
 
-  it('cfToBoolean rejects a value CFML cannot convert', () => {
-    expect(() => cfToBoolean('maybe')).toThrow(TypeError);
-  });
+  it.each<unknown>(['maybe', ' 1', '1 ', ' yes', 'Infinity', 'NaN', '-nan', '1d', '0x1p', '0x1p3d', '.e1', '', NaN, null])(
+    'cfToBoolean rejects %j, which CFML cannot convert',
+    (value) => {
+      expect(() => cfToBoolean(value)).toThrow(TypeError);
+    },
+  );
 
   it.each<[unknown, number]>([
     [' 1 ', 1], ['\t7\n', 7], ['12\u0001', 12], ['-.5', -0.5], ['1e1', 10], [3, 3], ['1e308', 1e308],
-    ['1.7976931348623157e308', Number.MAX_VALUE], ['1e-400', 0], ['1e10', 1e10],
+    ['1.7976931348623157e308', Number.MAX_VALUE], ['1e-400', 0], ['1e10', 1e10], ['0x1p3', 8], [' 0x1p3\t', 8], ['-0x1.8p1', -3],
+    ['0xAp0', 10], ['0x10000p-1', 32768], ['0x1p-1080', 0], ['0x1p-1074', 5e-324], [`0.${'0'.repeat(400)}1e400`, 0.1],
   ])('cfToNumber(%j) is %s', (value, expected) => {
     expect(cfToNumber(value)).toBe(expected);
   });
 
-  it.each(['abc', '\u00a05', '1.8e308', '1e309', '-1e400'])('cfToNumber rejects %j, which CFML cannot convert', (value) => {
-    expect(() => cfToNumber(value)).toThrow(TypeError);
+  it.each(['abc', '\u00a05', '1.8e308', '1e309', '-1e400', '0x1p1024', '0x3p1023', 'NaN', '-NaN', '-Infinity', '1d', '0x1p3d', 'yes'])(
+    'cfToNumber rejects %j, which CFML cannot convert',
+    (value) => {
+      expect(() => cfToNumber(value)).toThrow(TypeError);
+    },
+  );
+
+  // Oracle: ACF 2023 isValid('numeric', text), which a type="numeric" argument also applies.
+  it.each<[string, boolean]>([
+    ['1', true], [' 1', true], ['1.', true], ['1e309', true], ['NaN', true], ['-NaN', true], ['-Infinity', true], ['0xAp0', true],
+    ['0x1p1024', true], [' 0x1p3\t', true], ['0x1p3d', false], ['0x.p0', false], ['0xp1', false], ['.e1', false], ['yes', false],
+    ['abc', false], ['', false], ['1d', false], ['0x1p3 x', false],
+  ])('cfIsValidNumeric(%j) is %s', (value, expected) => {
+    expect(cfIsValidNumeric(value)).toBe(expected);
+  });
+
+  it.each<[unknown, boolean]>([
+    ['0x1p3', true], [' -0x.8p1 ', true], ['0xa.Bp0', true], ['0x1p1024', true], ['0x1p3d', false], ['0x1p', false], ['1e3', false],
+    ['0x1F', false], [8, false],
+  ])('cfIsHexFloatText(%j) is %s', (value, expected) => {
+    expect(cfIsHexFloatText(value)).toBe(expected);
   });
 
   // Oracle: ACF 2023 `toString(Val(text))`, which prints 12 significant digits. A leading U+000B, which Val skips, kept the

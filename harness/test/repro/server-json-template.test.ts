@@ -227,3 +227,36 @@ describe('legacy-start.sh reset_legacy_tmp', () => {
     expect(run.stderr).toContain(`opt2: cannot create the legacy temp directory ${dir}\n`);
   });
 });
+
+describe('server.json.template directory rule', () => {
+  const template = JSON.parse(readFileSync(repoPath('harness/repro/server.json.template'), 'utf8')) as { web: { rules: string[] } };
+  const [rule = ''] = template.web.rules;
+  // Undertow's regex predicate with case-sensitive=false.
+  const directory = new RegExp(/pattern='([^']*)'/.exec(rule)?.[1] ?? '(?!)', 'i');
+
+  it('answers a bodiless 404 for a matched directory', () => {
+    expect(rule).toMatch(/ and is-directory\(\) -> \{ error-file\( file='\/dev\/null', response-codes=\{ 404 \} \); response-code\( 404 \) \}$/);
+  });
+
+  it.each([
+    '/gateway/',
+    '/legacy-fixtures',
+    '/harness/legacy-baseline/',
+    '/services/identity/',
+    '/migration/',
+    '/platform/',
+    '/infra/terraform/',
+    '/web/',
+    '//OPT2/reports/',
+    '/.github/workflows/',
+  ])('matches the OPT-2 folder directory %s', (dir) => {
+    expect(directory.test(dir)).toBe(true);
+  });
+
+  it.each(['/', '/admin/', '/core/', '/sites/', '/.github/', '/.github/ISSUE_TEMPLATE/', '/webx/', '/opt2x/'])(
+    'leaves the directory %s to legacy',
+    (dir) => {
+      expect(directory.test(dir)).toBe(false);
+    },
+  );
+});

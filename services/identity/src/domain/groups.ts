@@ -1,17 +1,21 @@
 /** Group saves, reads and memberships: Masa `tusers` Type=1 rows and their child rows, each write one gated identity transaction. */
 import { setTimeout as timerSleep } from 'node:timers/promises';
 import {
+  LegacyApiError,
   LegacyServiceUnavailableError,
   cfEq,
   cfHash,
   cfIsBoolean,
+  cfIsHexFloatText,
   cfIsNumeric,
   cfListToArray,
+  cfNumberString,
   cfToBoolean,
   cfToNumber,
   cfUuid,
   javaTrim,
   type CfHashAlgorithm,
+  type LegacyQueryFault,
 } from '@opt2/platform/legacy-compat';
 import { OperationBlockedError, withGatedTenant, type RepositoryRow } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
@@ -31,9 +35,17 @@ import type { IdentityEvents } from '../events/publish.js';
 import type { ContentClient } from '../legacy/content-client.js';
 import { hashNewPassword, type LegacyPasswordConfig } from '../legacy/hash.js';
 import {
+  addressInsertFault,
+  addressUpdateFault,
+  tagInsertFault,
+  userInsertFault,
+  userUpdateFault,
+  type UserInline,
+} from '../legacy/query-fault.js';
+import {
   READ_PAGE_SIZE,
   charKey,
-  legacyStorable,
+  lastUpdateInfo,
   type AuditActor,
   type GroupAddressInput as GroupAddressRowInput,
   type GroupAddressUpdate,
@@ -47,7 +59,9 @@ import {
   type ListPage,
 } from '../repo/repository.js';
 import type { GroupFeedQuery } from '../repo/group-feed.js';
-import { GROUP_ACCOUNT, GROUP_TRASH, type GroupAccountRow, type GroupAddressRow } from '../repo/tables.js';
+import { GROUP_TRASH, type GroupAccountRow, type GroupAddressRow } from '../repo/tables.js';
+import { CfNumber, CfStruct, type CfValue } from '../routes/cfml-struct.js';
+import { errorsObject, validateUserBean, type ValidatedBean, type ValidationContext } from '../routes/legacy-bean-validator.js';
 import { ACCOUNT_OPERATION_UNITS, DEFAULT_ACCOUNT_SETTINGS, USER_CLOSED_WAIT_MS, randomPassword, withOpenAccount, type LegacyErrors } from './account-operations.js';
 
 export type { GroupMemberRow };
@@ -87,7 +101,7 @@ export interface GroupTextFields {
   tablist?: string;
 }
 
-/** Posted numeric flags; a value CFML cannot read as a number fails the save, as legacy's SQL does. */
+/** Posted numeric flags: '' fails the DAO's SQL, the S2 rule reads `s2`, and text that is no number fails the bean's dataType rule. */
 export interface GroupFlagFields {
   isPublic?: GroupFormValue;
   inActive?: GroupFormValue;
@@ -150,10 +164,13 @@ export interface GroupSaveInput extends GroupTextFields, GroupFlagFields {
 /** A group row without its tenant and event version. */
 export type GroupRecord = Omit<GroupAccountRow, 'tenant_id' | 'row_version'>;
 
+/** A group as the bean holds it after `set`: a posted flag keeps its text. */
+export type GroupBeanRecord = Omit<GroupRecord, FlagColumn> & Record<FlagColumn, number | string | null>;
+
 /** A save's outcome: the stored group, or nothing written and the posted values echoed with legacy's validation errors. */
 export interface GroupSaveResult {
   written: boolean;
-  group: GroupRecord;
+  group: GroupBeanRecord;
   errors: LegacyErrors;
 }
 
@@ -239,7 +256,6 @@ export class GroupSaveHaltedError extends LegacyServiceUnavailableError {
 }
 
 const SITE_REQUIRED = "The attribute 'SITEID' is required when saving a user.";
-const SITE_MISSING = "The 'SiteID' variable is missing.";
 const GROUP_TYPE = 1;
 const CLOSED_POLL_MS = 100;
 
@@ -265,7 +281,8 @@ type TextColumn =
   | 'tags'
   | 'tablist';
 type FlagField = Exclude<keyof GroupFlagFields, 'keepPrivate'>;
-type FlagColumn = 's2' | 'perm' | 'inactive' | 'ispublic' | 'subscribe' | 'keepprivate';
+/** The numeric `tusers` columns a group save sets. */
+export type FlagColumn = 's2' | 'perm' | 'inactive' | 'ispublic' | 'subscribe' | 'keepprivate';
 type AddressTextField = Exclude<keyof GroupAddressFields, 'addressID' | 'longitude' | 'latitude'>;
 type AddressTextColumn = Exclude<keyof GroupAddressUpdate, 'userid' | 'siteid' | 'longitude' | 'latitude'>;
 
@@ -363,20 +380,55 @@ function storedGroupValues(row: GroupAccountRow): GroupValues {
   return { ...texts, ...flags, userid: row.userid, siteid: text(row.siteid) };
 }
 
-/** `userBean.set` of the posted fields over `base` [legacy: core/mura/user/userBean.cfc:202-225]. */
-function withPosted(base: GroupValues, input: GroupSaveInput): GroupValues {
+/** A flag as the bean holds it: posted text, or the stored or init number. */
+type FlagValue = string | number;
+
+/** The bean's flags, which `userDAO` inlines into its SQL. */
+type BeanFlags = Record<FlagColumn, FlagValue>;
+
+/** A posted scalar as the bean keeps a flag: a number as is, anything else as its text. */
+function flagValue(value: GroupFormValue): FlagValue {
+  return typeof value === 'number' ? value : String(value);
+}
+
+/** A flag as CFML text, which `userDAO` inlines. */
+function flagText(value: FlagValue): string {
+  return typeof value === 'number' ? cfNumberString(value) : value;
+}
+
+/** CFML `value eq 0`. */
+function eqZero(value: FlagValue): boolean {
+  return typeof value === 'number' ? value === 0 : cfEq(value, '0');
+}
+
+/** A kept flag's bean number; a hex float literal, whose inlined statement fails, keeps only its `eq 0` reading. */
+function flagNumber(value: string | number | boolean): number {
+  if (typeof value === 'string' && cfIsHexFloatText(value)) return eqZero(value) ? 0 : 1;
+  return cfToNumber(value);
+}
+
+/** `userBean.set` of the posted fields over `base`, with the bean's flags [legacy: core/mura/user/userBean.cfc:202-225,541-547]. */
+function withPosted(base: GroupValues, input: GroupSaveInput): { values: GroupValues; flags: BeanFlags } {
   const values = { ...base };
+  const flags = Object.fromEntries(FLAG_COLUMNS.map((column) => [column, base[column]])) as BeanFlags;
   for (const [field, column] of TEXT_FIELDS) {
     const posted = input[field];
     if (posted !== undefined) values[column] = javaTrim(posted);
   }
   for (const [field, column] of FLAG_FIELDS) {
     const posted = input[field];
-    if (posted !== undefined) values[column] = cfToNumber(scalar(posted));
+    if (posted === undefined) continue;
+    const value = scalar(posted);
+    flags[column] = flagValue(value);
+    // Other text fails the dataType rule or the DAO's SQL, so only a number reaches a write.
+    if (cfIsNumeric(value)) values[column] = flagNumber(value);
   }
   const keepPrivate = input.keepPrivate === undefined ? undefined : scalar(input.keepPrivate);
-  if (keepPrivate !== undefined && cfIsNumeric(keepPrivate)) values.keepprivate = cfToNumber(keepPrivate);
-  return values;
+  if (keepPrivate !== undefined && cfIsNumeric(keepPrivate)) {
+    flags.keepprivate = flagValue(keepPrivate);
+    values.keepprivate = flagNumber(keepPrivate);
+  }
+  return { values, flags };
 }
 
 /** A group save read from merged legacy params, whose names CFML matches ignoring case. */
@@ -444,23 +496,49 @@ async function addressSiteId(source: RegistrySource, input: GroupSaveInput): Pro
   return (cfEq(isPublic, '0') ? entry?.privateUserPoolId : entry?.publicUserPoolId) ?? '';
 }
 
+// The admin and JSON API saves set no validation context, so every rule reads the bean's own value [legacy: core/mura/bean/beanValidator.cfc:436-456].
+const BEAN_CONTEXT: ValidationContext = { data: new CfStruct(), isPostedFile: () => false };
+
+/** The group bean `validate()` reads: its flags, Type 1, and text otherwise; dates and `addresses` always pass their rules. */
+function groupBean(values: GroupValues, flags: BeanFlags): ValidatedBean {
+  const flagOf = (property: string): CfValue | undefined => {
+    const value = (flags as Partial<Record<string, FlagValue>>)[property];
+    if (value === undefined) return undefined;
+    return typeof value === 'number' ? new CfNumber(cfNumberString(value), value) : value;
+  };
+  const textOf = (property: string): string => {
+    const value = (values as Partial<Record<string, unknown>>)[property];
+    return typeof value === 'string' ? value : '';
+  };
+  return {
+    value: (property) => {
+      const key = property.toLowerCase();
+      if (key === 'type') return new CfNumber(String(GROUP_TYPE), GROUP_TYPE);
+      return flagOf(key) ?? textOf(key);
+    },
+    hasProperty: () => true,
+  };
+}
+
 /** `userBean.validate` of a group [legacy: core/mura/user/userBean.cfc:447-522]; identity holds no class-extension definitions, so there are no extended-data errors. */
-function validateGroup(deps: GroupDeps, values: GroupValues, input: GroupSaveInput): LegacyErrors {
-  if (values.siteid === '') return { siteid: SITE_MISSING };
-  const errors: LegacyErrors = {};
-  const rb = deps.rb ?? ((_siteId: string, key: GroupMessageKey) => EN_GROUP_MESSAGES[key]);
-  const hKey = text(input.hKey);
-  if (hKey !== '' && !cfEq(hKey, cfHash(text(input.uKey), (deps.settings ?? DEFAULT_GROUP_SETTINGS).hashAlgorithm))) {
-    errors.SecurityCode = rb(values.siteid, 'captcha.error');
+function validateGroup(deps: GroupDeps, values: GroupValues, flags: BeanFlags, input: GroupSaveInput): LegacyErrors {
+  const errors = validateUserBean(groupBean(values, flags), BEAN_CONTEXT, { siteId: values.siteid });
+  if (values.siteid !== '') {
+    const rb = deps.rb ?? ((_siteId: string, key: GroupMessageKey) => EN_GROUP_MESSAGES[key]);
+    const hKey = text(input.hKey);
+    if (hKey !== '' && !cfEq(hKey, cfHash(text(input.uKey), (deps.settings ?? DEFAULT_GROUP_SETTINGS).hashAlgorithm))) {
+      errors.set('SecurityCode', rb(values.siteid, 'captcha.error'));
+    }
+    // setPassedProtect keeps the init true unless the posted value is boolean [legacy: core/mura/user/userBean.cfc:557-562].
+    const passed = input.passedProtect === undefined ? true : scalar(input.passedProtect);
+    if (cfIsBoolean(passed) && !cfToBoolean(passed)) errors.set('Spam', rb(values.siteid, 'captcha.spam'));
   }
-  // setPassedProtect keeps the init true unless the posted value is boolean [legacy: core/mura/user/userBean.cfc:557-562].
-  const passed = input.passedProtect === undefined ? true : scalar(input.passedProtect);
-  if (cfIsBoolean(passed) && !cfToBoolean(passed)) errors.Spam = rb(values.siteid, 'captcha.spam');
-  return errors;
+  return errorsObject(errors) as LegacyErrors;
 }
 
 interface PreparedSave {
   values: GroupValues;
+  flags: BeanFlags;
   errors: LegacyErrors;
   /** Tenant of the resolved user pool; null when the save has no site. */
   tenantId: string | null;
@@ -473,7 +551,7 @@ function requireSite(input: GroupSaveInput): void {
 
 /** The bean values after `set`, the S2 rules and `validate` [legacy: core/mura/user/userManager.cfc:432-447,576-588]. */
 async function prepareSave(deps: GroupDeps, actor: GroupActor, input: GroupSaveInput, base: GroupValues): Promise<PreparedSave> {
-  const values = withPosted(base, input);
+  const { values, flags } = withPosted(base, input);
   const site = text(input.siteId);
   let tenantId: string | null = null;
   if (site === '') {
@@ -481,17 +559,44 @@ async function prepareSave(deps: GroupDeps, actor: GroupActor, input: GroupSaveI
   } else {
     const resolved = await resolveGroupSite(deps.db, {
       siteId: site,
-      isPublic: values.ispublic,
+      // The pool rule tests `ispublic eq 0` on the bean's value, posted text included.
+      isPublic: eqZero(flags.ispublic) ? 0 : values.ispublic,
       switchToPublic: input.switchToPublic,
       switchToPrivate: input.switchToPrivate,
     });
     values.ispublic = resolved.isPublic;
+    if (isOne(input.switchToPublic) || isOne(input.switchToPrivate)) flags.ispublic = resolved.isPublic;
     values.siteid = resolved.poolSiteId ?? '';
     tenantId = resolved.tenantId;
   }
-  if (!actor.isSuperUser) values.s2 = 0;
-  if (values.s2 !== 0) values.ispublic = 0;
-  return { values, errors: validateGroup(deps, values, input), tenantId };
+  if (!actor.isSuperUser) {
+    values.s2 = 0;
+    flags.s2 = 0;
+  } else if (cfIsNumeric(flags.s2) && !cfIsHexFloatText(flags.s2)) {
+    values.s2 = cfToNumber(flags.s2);
+  } else {
+    // `cfif userBean.getS2()` fails on text CFML cannot read as a boolean; a boolean word fails the dataType rule and a
+    // hex float the DAO's SQL, so neither reaches a write.
+    values.s2 = s2Condition(flags.s2) ? 1 : 0;
+  }
+  if (values.s2 !== 0) {
+    values.ispublic = 0;
+    flags.ispublic = 0;
+  }
+  return { values, flags, errors: validateGroup(deps, values, flags, input), tenantId };
+}
+
+/**
+ * `cfif userBean.getS2()` of a kept s2.
+ * @throws LegacyApiError The Expression fault ACF raises for text it cannot read as a boolean.
+ */
+function s2Condition(s2: FlagValue): boolean {
+  try {
+    return cfToBoolean(s2);
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    throw new LegacyApiError('server_error', { stacktrace: { Message: `cannot convert the value "${flagText(s2)}" to a boolean`, Type: 'Expression' } });
+  }
 }
 
 function auditActor(actor: GroupActor): AuditActor {
@@ -520,6 +625,11 @@ function echoRecord(values: GroupValues, stored: GroupAccountRow | null, now: Da
   };
 }
 
+/** A failed save's bean: `echoRecord` with the bean's flags, posted text included. */
+function beanEcho(values: GroupValues, flags: BeanFlags, stored: GroupAccountRow | null, now: Date): GroupBeanRecord {
+  return { ...echoRecord(values, stored, now), ...flags };
+}
+
 /** The values of a new group bean, as the Edit Group screen shows an unknown id. */
 export function newGroupRecord(clock: Clock, userId: string = cfUuid()): GroupRecord {
   return echoRecord(newGroupValues(userId), null, clock.now());
@@ -527,27 +637,36 @@ export function newGroupRecord(clock: Clock, userId: string = cfUuid()): GroupRe
 
 /** The row columns `userDAO.create` and `userDAO.update` write; `password` is the stored value, '' for none. */
 function groupColumns(values: GroupValues, password: string): GroupInput {
-  return { ...values, type: GROUP_TYPE, password };
+  // SQL Server truncates an inline fraction converting it to an integer column.
+  const flags = Object.fromEntries(FLAG_COLUMNS.map((column) => [column, Math.trunc(values[column])])) as Record<FlagColumn, number>;
+  return { ...values, ...flags, type: GROUP_TYPE, password };
 }
 
 function passwordConfig(deps: GroupDeps): LegacyPasswordConfig {
   return (deps.settings ?? DEFAULT_GROUP_SETTINGS).password;
 }
 
-/** A posted coordinate, `addressBean`'s init 0 when absent. */
-function coordinate(posted: GroupFormValue | undefined, stored: number | null | undefined): number {
-  return posted === undefined ? (stored ?? 0) : cfToNumber(scalar(posted));
+/** A posted coordinate as `setLongitude`/`setLatitude` keep it: text `isNumeric` reads, else the stored value or the init 0. */
+function coordinateText(posted: GroupFormValue | undefined, stored: number | null | undefined): string {
+  const value = posted === undefined ? undefined : scalar(posted);
+  return value !== undefined && cfIsNumeric(value) ? String(value) : cfNumberString(stored ?? 0);
+}
+
+/** A kept coordinate as its row stores it; a hex float literal, which fails its statement, leaves the row unwritten. */
+function coordinateValue(posted: GroupFormValue | undefined, stored: number | null | undefined): number {
+  const kept = coordinateText(posted, stored);
+  return cfIsNumeric(kept) && !cfIsHexFloatText(kept) ? cfToNumber(kept) : (stored ?? 0);
 }
 
 /** The primary address `userManager.create` adds [legacy: core/mura/user/userManager.cfc:601-611]. */
 function primaryAddress(groupId: string, siteId: string, fields: GroupAddressFields = {}): GroupAddressRowInput {
   const row: GroupAddressRowInput = {
     userid: groupId,
-    addressid: text(fields.addressID),
+    addressid: text(fields.addressID) || cfUuid(),
     siteid: siteId,
     isprimary: 1,
-    longitude: coordinate(fields.longitude, 0),
-    latitude: coordinate(fields.latitude, 0),
+    longitude: coordinateValue(fields.longitude, 0),
+    latitude: coordinateValue(fields.latitude, 0),
   };
   for (const [field, column] of ADDRESS_TEXT_FIELDS) row[column] = text(fields[field]);
   return row;
@@ -558,8 +677,8 @@ function addressUpdate(groupId: string, siteId: string, stored: GroupAddressRow 
   const row: GroupAddressUpdate = {
     userid: groupId,
     siteid: siteId,
-    longitude: coordinate(fields.longitude, stored?.longitude),
-    latitude: coordinate(fields.latitude, stored?.latitude),
+    longitude: coordinateValue(fields.longitude, stored?.longitude),
+    latitude: coordinateValue(fields.latitude, stored?.latitude),
   };
   for (const [field, column] of ADDRESS_TEXT_FIELDS) {
     const posted = fields[field];
@@ -668,9 +787,16 @@ export interface GroupListPage {
   total: number;
 }
 
-/** The `page` window of `listGroups`' listing in its order and the listing's total, the window counted and closed as `listGroups` counts and closes it. */
-export async function listGroupsPage(deps: GroupDeps, input: { siteId: string; isPublic: number; page: ListPage }): Promise<GroupListPage> {
-  const { poolSiteId, tenantId } = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: input.isPublic });
+/**
+ * The `page` window of `listGroups`' listing in its order and the listing's total, the window counted and closed as `listGroups`
+ * counts and closes it; `privatePool`, when given, names the pool apart from the `isPublic` flag the rows match.
+ */
+export async function listGroupsPage(
+  deps: GroupDeps,
+  input: { siteId: string; isPublic: number; privatePool?: boolean; page: ListPage },
+): Promise<GroupListPage> {
+  const poolIsPublic = (input.privatePool ?? input.isPublic === 0) ? 0 : 1;
+  const { poolSiteId, tenantId } = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: poolIsPublic });
   if (poolSiteId === null || tenantId === null) return { rows: [], total: 0 };
   return readUnclosed(deps, async () => {
     const { groups, total, closed } = await withTenant(deps.db, tenantId, (tx) => deps.repo.pageCountedGroups(tx, poolSiteId, input.isPublic, input.page));
@@ -979,38 +1105,96 @@ async function originGroupIds(deps: GroupDeps, tenantId: string, groupId: string
   return groups.filter((group) => (group.siteid ?? '').toLowerCase() === originId.toLowerCase()).map((group) => group.userid);
 }
 
+/** The `tusers` text `userDAO.create` and `userDAO.update` bind for a group, with `setLastUpdateInfo`'s audit pair. */
+function boundGroupText(values: GroupValues, actor: GroupActor): Record<string, string> {
+  const audit = lastUpdateInfo(auditActor(actor), { userid: values.userid, fname: values.fname, lname: values.lname });
+  const bound: Record<string, string> = { userid: values.userid, siteid: values.siteid, ...audit };
+  for (const [, column] of TEXT_FIELDS) bound[column] = values[column];
+  return bound;
+}
+
+/** The flags as `userDAO` inlines a group's. */
+function groupInline(userId: string, flags: BeanFlags): UserInline {
+  const texts = Object.fromEntries(FLAG_COLUMNS.map((column) => [column, flagText(flags[column])])) as Record<FlagColumn, string>;
+  return { ...texts, userid: userId, type: String(GROUP_TYPE) };
+}
+
+/** The tags `createTags` inserts before the first its column cannot hold, and that insert's failure [legacy: core/mura/user/userDAO.cfc:895-914]. */
+function tagWrite(groupId: string, siteId: string, tags: string): { tags: string; fault?: LegacyQueryFault } {
+  const items = tags.split(',').map((item) => javaTrim(item)).filter((item) => item !== '');
+  for (const [index, tag] of items.entries()) {
+    const fault = tagInsertFault({ userid: groupId, siteid: siteId, tag });
+    if (fault !== undefined) return { tags: items.slice(0, index).join(','), fault };
+  }
+  return { tags };
+}
+
+/** The bound address text of `createAddress` and `updateAddress`. */
+function boundAddressText(address: GroupAddressRowInput): Record<string, string | null | undefined> {
+  const values: Record<string, string | null | undefined> = { addressid: address.addressid, userid: address.userid, siteid: address.siteid };
+  for (const [, column] of ADDRESS_TEXT_FIELDS) values[column] = address[column];
+  return values;
+}
+
+/** The failure of `createAddress`' INSERT of a new group's primary address, named 'Primary' when blank; undefined when it fits. */
+function primaryAddressFault(address: GroupAddressRowInput, fields: GroupAddressFields = {}): LegacyQueryFault | undefined {
+  const addressid = address.addressid ?? '';
+  const inline = { addressid, userid: address.userid, isprimary: '1', longitude: coordinateText(fields.longitude, 0), latitude: coordinateText(fields.latitude, 0) };
+  return addressInsertFault(inline, { ...boundAddressText(address), addressname: address.addressname || 'Primary' });
+}
+
 /** Creates a group as `userManager.create` does [legacy: core/mura/user/userManager.cfc:563-703; core/mura/user/userDAO.cfc:300-355]. */
 export async function createGroup(deps: GroupDeps, actor: GroupActor, input: GroupSaveInput): Promise<GroupSaveResult> {
   requireSite(input);
   const userId = input.userId !== undefined && input.userId !== '' ? input.userId : cfUuid();
-  const { values, errors, tenantId } = await prepareSave(deps, actor, input, newGroupValues(userId));
+  const { values, flags, errors, tenantId } = await prepareSave(deps, actor, input, newGroupValues(userId));
   if (tenantId === null || Object.keys(errors).length > 0) {
-    return { written: false, group: echoRecord(values, null, deps.clock.now()), errors };
+    return { written: false, group: beanEcho(values, flags, null, deps.clock.now()), errors };
   }
   const fromTrash = input.fromMuraTrash === true;
   const addressSite = fromTrash ? '' : await addressSiteId(deps.db, input);
   const posted = text(input.password);
   const password = (await hashNewPassword(posted === '' ? randomPassword() : posted, passwordConfig(deps))) ?? '';
   const extendSetId = text(input.extendSetID);
+  const columns = groupColumns(values, password);
+  const insertFault = userInsertFault(groupInline(userId, flags), boundGroupText(values, actor));
+  if (insertFault !== undefined) throw insertFault;
+  // Each legacy statement commits on its own, so a failing tag or address insert keeps the writes before it.
+  const tags = tagWrite(userId, values.siteid, values.tags);
+  const address = fromTrash ? undefined : primaryAddress(userId, addressSite, input.address);
+  const fault = tags.fault ?? (address === undefined ? undefined : primaryAddressFault(address, input.address));
   const row = await withGatedTenant(deps.db, tenantId, async (tx) => {
     const { repo, events } = deps;
     // Legacy leaves a deleted group's memberships, so a re-created id may already hold some.
     const before = await repo.membershipGroupIds(tx, userId);
-    const group = await repo.insertGroup(tx, groupColumns(values, password), auditActor(actor));
+    const group = await repo.insertGroup(tx, columns, auditActor(actor));
     for (const groupId of listItems(input.groupID)) await repo.addMembership(tx, userId, groupId);
     await repo.clearBadMemberships(tx, { userId, siteId: values.siteid, s2: values.s2, ispublic: values.ispublic });
     const categoryIds = listItems(input.categoryID);
     if (categoryIds.length > 0) await repo.replaceGroupInterests(tx, { groupId: userId, categoryIds, onlyCategoryIds: [] });
-    await repo.replaceGroupTags(tx, { groupId: userId, siteId: values.siteid, tags: values.tags });
+    await repo.replaceGroupTags(tx, { groupId: userId, siteId: values.siteid, tags: tags.tags });
     if (extendSetId !== '' && input.extendData !== undefined) await repo.replaceGroupExtendData(tx, { groupId: userId, rows: input.extendData });
-    // takeOut's file-version restore is strategies-content's; only identity's trash row is removed [legacy: core/mura/trash/trashManager.cfc:405-442].
-    if (fromTrash) await repo.delete(tx, GROUP_TRASH.table, { objectid: userId });
-    else await repo.insertGroupAddress(tx, primaryAddress(userId, addressSite, input.address));
+    if (tags.fault === undefined) {
+      // takeOut's file-version restore is strategies-content's; only identity's trash row is removed [legacy: core/mura/trash/trashManager.cfc:405-442].
+      if (fromTrash) await repo.delete(tx, GROUP_TRASH.table, { objectid: userId });
+      else if (address !== undefined && fault === undefined) await repo.insertGroupAddress(tx, address);
+    }
     await events.publishGroupChanged(tx, group, { deleted: false });
     await publishOwnMemberships(deps, tx, userId, values.siteid, before);
     return group;
   });
+  if (fault !== undefined) throw fault;
   return { written: true, group: recordOf(row), errors: {} };
+}
+
+/** The failure of `updateAddress`' UPDATE of the stored group address; undefined when it fits. */
+function storedAddressFault(addressId: string, address: GroupAddressUpdate, stored: GroupAddressRow, fields: GroupAddressFields = {}): LegacyQueryFault | undefined {
+  const inline = {
+    siteid: javaTrim(address.siteid ?? ''),
+    longitude: coordinateText(fields.longitude, stored.longitude),
+    latitude: coordinateText(fields.latitude, stored.latitude),
+  };
+  return addressUpdateFault(inline, { ...boundAddressText({ ...address, addressid: addressId }), siteid: inline.siteid });
 }
 
 /** Updates a group as `userManager.update` does; without an id it creates one [legacy: core/mura/user/userManager.cfc:404-561; core/mura/user/userDAO.cfc:404-500]. */
@@ -1020,10 +1204,9 @@ export async function updateGroup(deps: GroupDeps, actor: GroupActor, input: Gro
   requireSite(input);
   const located = await locateGroup(deps, groupId, text(input.siteId));
   const base = located === null ? newGroupValues(groupId) : storedGroupValues(located.group);
-  const { values, errors, tenantId } = await prepareSave(deps, actor, input, base);
-  const echo = echoRecord(values, located?.group ?? null, deps.clock.now());
-  // Legacy's UPDATE of an unknown id changes no row yet fails on a value the columns it sets (all but Perm) cannot store.
-  if (located === null && tenantId !== null && Object.keys(errors).length === 0) legacyStorable(GROUP_ACCOUNT.table, { ...groupColumns(values, ''), perm: null });
+  const { values, flags, errors, tenantId } = await prepareSave(deps, actor, input, base);
+  const echo = beanEcho(values, flags, located?.group ?? null, deps.clock.now());
+  // Legacy's UPDATE of an unknown id matches no row, so SQL Server checks none of its values.
   if (located === null || tenantId === null || Object.keys(errors).length > 0) return { written: false, group: echo, errors };
   // A pool switch would move the row and its children to another tenant, which no single transaction can write.
   if (tenantId !== located.tenantId) throw new GroupSaveHaltedError(groupId, 'pool-move');
@@ -1043,28 +1226,43 @@ export async function updateGroup(deps: GroupDeps, actor: GroupActor, input: Gro
   const extendSetId = text(input.extendSetID);
   const primaryAddressId = text(input.primaryAddressID);
   const tokens = listItems(input.removeToken);
-  return withGatedTenant(deps.db, tenantId, async (tx): Promise<GroupSaveResult> => {
+  const columns = groupColumns(values, password);
+  const updateFault = userUpdateFault({ ...groupInline(values.userid, flags), siteid: javaTrim(values.siteid) }, password !== '', boundGroupText(values, actor));
+  const tags = tagWrite(groupId, values.siteid, values.tags);
+  const outcome = await withGatedTenant(deps.db, tenantId, async (tx): Promise<{ result: GroupSaveResult; fault?: LegacyQueryFault }> => {
     const { repo, events } = deps;
     const before = await repo.membershipGroupIds(tx, groupId);
-    // Written first: the update locks the row, so a concurrent delete leaves this transaction without writes.
-    const row = await repo.updateGroup(tx, groupId, groupColumns(values, password), auditActor(actor));
-    if (row === null) return { written: false, group: echo, errors: {} };
-    if (extendSetId !== '' && input.extendData !== undefined) await repo.replaceGroupExtendData(tx, { groupId, rows: input.extendData });
-    if (addressId !== '') {
-      const stored = (await repo.listGroupAddresses(tx, groupId)).find((address) => charKey(address.addressid) === charKey(addressId));
-      await repo.updateGroupAddress(tx, addressId, addressUpdate(groupId, addressSite, stored, input.address));
+    const stored = addressId === '' ? undefined : (await repo.listGroupAddresses(tx, groupId)).find((address) => charKey(address.addressid) === charKey(addressId));
+    const address = addressId === '' ? undefined : addressUpdate(groupId, addressSite, stored, input.address);
+    // updateAddress runs before userDAO.update, and SQL Server checks an UPDATE's values only on a row it matches.
+    const addressFault = address !== undefined && stored !== undefined ? storedAddressFault(addressId, address, stored, input.address) : undefined;
+    const statementFault = addressFault ?? updateFault;
+    if (statementFault !== undefined) {
+      // The extended data save precedes both statements.
+      if (extendSetId !== '' && input.extendData !== undefined) await repo.replaceGroupExtendData(tx, { groupId, rows: input.extendData });
+      if (addressFault === undefined && address !== undefined) await repo.updateGroupAddress(tx, addressId, address);
+      return { result: { written: false, group: echo, errors: {} }, fault: statementFault };
     }
+    // Written first: the update locks the row, so a concurrent delete leaves this transaction without writes.
+    const row = await repo.updateGroup(tx, groupId, columns, auditActor(actor));
+    if (row === null) return { result: { written: false, group: echo, errors: {} } };
+    if (extendSetId !== '' && input.extendData !== undefined) await repo.replaceGroupExtendData(tx, { groupId, rows: input.extendData });
+    if (address !== undefined) await repo.updateGroupAddress(tx, addressId, address);
     if (groupIds !== null) await repo.replaceMemberships(tx, { userId: groupId, groupIds, onlyGroupIds });
     if (updateGroups) await repo.clearBadMemberships(tx, { userId: groupId, siteId: values.siteid, s2: values.s2, ispublic: values.ispublic });
     if (categoryIds !== null) await repo.replaceGroupInterests(tx, { groupId, categoryIds });
     if (primaryAddressId !== '') await repo.setPrimaryGroupAddress(tx, groupId, primaryAddressId);
-    await repo.replaceGroupTags(tx, { groupId, siteId: values.siteid, tags: values.tags });
-    if (tokens.length > 0) await repo.deleteTokensByUser(tx, groupId, tokens);
-    await repo.removePrevRedirects(tx, groupId);
+    await repo.replaceGroupTags(tx, { groupId, siteId: values.siteid, tags: tags.tags });
+    if (tags.fault === undefined) {
+      if (tokens.length > 0) await repo.deleteTokensByUser(tx, groupId, tokens);
+      await repo.removePrevRedirects(tx, groupId);
+    }
     await events.publishGroupChanged(tx, row, { deleted: false });
     await publishOwnMemberships(deps, tx, groupId, values.siteid, before);
-    return { written: true, group: recordOf(row), errors: {} };
+    return { result: { written: true, group: recordOf(row), errors: {} }, ...(tags.fault === undefined ? {} : { fault: tags.fault }) };
   });
+  if (outcome.fault !== undefined) throw outcome.fault;
+  return outcome.result;
 }
 
 /** The tenant and pool site of a user or group id, searched across the registered tenants. */

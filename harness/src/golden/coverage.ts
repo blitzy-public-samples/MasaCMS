@@ -3,9 +3,9 @@ import path from 'node:path';
 import {
   ROUTE_FAMILIES,
   esapiUrlEncode,
+  haltedRouteKey,
   matchRouteKey,
   normaliseRouteKey,
-  scannedRouteKey,
   type RouteFamily,
   type RouteKeyOptions,
   type RouteKeyRequest,
@@ -328,7 +328,7 @@ export function fromRouteKeyRequest(req: RouteKeyRequest): Step {
 /** Route key of `step`'s request (its first matrix combination). */
 export function coverageRouteKey(step: StepRequest, opts: RouteKeyOptions = defaultRouteKeyOptions()): string {
   const [first = {}] = matrixCombinations(step.matrix);
-  return scannedRouteKey(scannedKeyRequest(withMatrix(step, first), opts.appReloadKey ?? DEFAULT_RELOAD_KEY), opts).result.key;
+  return haltedRouteKey(scannedKeyRequest(withMatrix(step, first), opts.appReloadKey ?? DEFAULT_RELOAD_KEY), opts).result.key;
 }
 
 // Capture sends each candidate until legacy answers as expected, so candidates exercise their routes as the step does.
@@ -340,7 +340,7 @@ export function coverageRouteResults(
   const reloadKey = opts.appReloadKey ?? DEFAULT_RELOAD_KEY;
   const shapes: StepRequest[] = [step, ...(step.candidates ?? []).map((c) => ({ ...c, auth: step.auth }))];
   return matrixCombinations(step.matrix).flatMap((combo) =>
-    shapes.map((shape) => scannedRouteKey(scannedKeyRequest(withMatrix(shape, combo), reloadKey), opts).result),
+    shapes.map((shape) => haltedRouteKey(scannedKeyRequest(withMatrix(shape, combo), reloadKey), opts).result),
   );
 }
 

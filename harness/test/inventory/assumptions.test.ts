@@ -35,6 +35,7 @@ import type {
 import type { LegacyInventory } from '../../src/inventory/generate.js';
 import { LIVE_CHECK_SQL } from '../../src/inventory/stored-procedures.js';
 import type { LiveCheck, StaticMatch } from '../../src/inventory/stored-procedures.js';
+import { HARNESS_KEY_VARIABLE } from '../../src/lib/harness-key.js';
 import { isInsideRepo, opt2Path } from '../../src/lib/paths.js';
 import type { EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
@@ -55,6 +56,8 @@ const PRISTINE_NOTE = '`${OPT2_PRISTINE_DIR}/native-tasks.json`';
 const DDL_REF = { path: 'core/setup/db/mssql.sql', lines: [1, 2] };
 const MONITOR_URL = 'http://localhost:8080/index.cfm/_api/sitemonitor/';
 const LEGACY = 'http://legacy.test';
+// Test value assembled at run time, not a secret.
+const HARNESS_KEY = ['opt2', 'harness', 'assumptions', 'test'].join('-');
 
 const ZERO_OBJECTS: LiveCheck = {
   procedures: 0,
@@ -206,14 +209,16 @@ function catalogAnswers(
   ]);
 }
 
-/** Fetch fake answering every request with `body` as JSON and recording the requested URLs. */
-function probeFetch(status: number, body: unknown): { fetch: Fetch; urls: string[] } {
+/** Fetch fake answering every request with `body` as JSON and recording the requested URLs and harness keys. */
+function probeFetch(status: number, body: unknown): { fetch: Fetch; urls: string[]; keys: (string | null)[] } {
   const urls: string[] = [];
-  const fetch: Fetch = async (input) => {
+  const keys: (string | null)[] = [];
+  const fetch: Fetch = async (input, init) => {
     urls.push(input);
+    keys.push(new Headers(init.headers).get('x-opt2-harness-key'));
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   };
-  return { fetch, urls };
+  return { fetch, urls, keys };
 }
 
 async function reportLines(file: string): Promise<{ text: string; lines: string[] }> {
@@ -782,7 +787,7 @@ describe('main', () => {
   }
 
   function liveEnv(reports: string, pristine = path.join(tempDir, 'no-capture')): EnvLike {
-    return { OPT2_REPORTS_DIR: reports, OPT2_PRISTINE_DIR: pristine, LEGACY_ORIGIN: LEGACY };
+    return { OPT2_REPORTS_DIR: reports, OPT2_PRISTINE_DIR: pristine, LEGACY_ORIGIN: LEGACY, OPT2_HARNESS_KEY: HARNESS_KEY };
   }
 
   it('writes the static report into the stubbed reports directory and nowhere in the repository', async () => {
@@ -848,6 +853,7 @@ describe('main', () => {
       ...LIVE_CHECK_SQL,
     ]);
     expect(probe.urls).toEqual([`${LEGACY}${INFO_PATH}?info=1`]);
+    expect(probe.keys).toEqual([HARNESS_KEY]);
     const { lines } = await reportLines(file);
     expect(lines.slice(3, 6)).toEqual([
       'Status: complete',
@@ -869,7 +875,12 @@ describe('main', () => {
     answers.set(SITE_ID_TABLES_SQL, []);
     const { db, sent, closed } = fakeDb(answers);
     const probe = probeFetch(200, { ping: true, siteMonitorTask: 'siteMonitor', siteMonitorTaskRegistered: true });
-    const env = { OPT2_REPORTS_DIR: reports, OPT2_PRISTINE_DIR: path.join(tempDir, 'no-capture'), PORT: '25980' };
+    const env = {
+      OPT2_REPORTS_DIR: reports,
+      OPT2_PRISTINE_DIR: path.join(tempDir, 'no-capture'),
+      PORT: '25980',
+      OPT2_HARNESS_KEY: HARNESS_KEY,
+    };
     const outcome = await main(['--live'], env, { inventoryPath: MINI, openDb: async () => db, fetch: probe.fetch });
     expect(outcome.summary).toMatchObject({ confirmed: 5, refuted: 0, pendingRun: 0, live: true });
     expect(probe.urls).toEqual([`http://127.0.0.1:25980${INFO_PATH}?info=1`]);
@@ -903,6 +914,20 @@ describe('main', () => {
     const { db, closed } = fakeDb(catalogAnswers(LIVE_TABLES));
     const deps = { inventoryPath: MINI, openDb: async () => db, fetch: probeFetch(c.status, c.body).fetch, clock };
     await expect(main(['--live'], liveEnv(reports), deps)).rejects.toThrow(c.message);
+    expect(closed()).toBe(true);
+    expect(await readdir(reports)).toEqual([]);
+  });
+
+  it('closes the database, sends no probe and writes nothing when no harness key is configured', async () => {
+    const reports = await reportsCase();
+    const { db, closed } = fakeDb(catalogAnswers(LIVE_TABLES));
+    const probe = probeFetch(200, probeBody);
+    const env = { ...liveEnv(reports), OPT2_HARNESS_KEY: undefined, OPT2_STATE_DIR: path.join(tempDir, 'no-state') };
+    const deps = { inventoryPath: MINI, openDb: async () => db, fetch: probe.fetch, clock };
+    await expect(main(['--live'], env, deps)).rejects.toThrow(
+      `no harness diagnostic key: ${HARNESS_KEY_VARIABLE} is unset and ${path.join(tempDir, 'no-state', 'secrets', 'harness-diagnostic-key')}`,
+    );
+    expect(probe.urls).toEqual([]);
     expect(closed()).toBe(true);
     expect(await readdir(reports)).toEqual([]);
   });

@@ -57,6 +57,13 @@ const DB_CONNECTION: Record<string, string> = {
   MURA_DATASOURCE: 'synthetic_dsn',
 };
 
+/** The connection names a process other than migration receives, which its legacy error pages print. */
+const DB_NAME_READERS: Partial<Record<PackageName, readonly string[]>> = {
+  'strategies-content': ['MURA_DATABASE'],
+  identity: ['MURA_DATASOURCE', 'MURA_DATABASE'],
+  people: ['MURA_DATASOURCE', 'MURA_DATABASE'],
+};
+
 /** Masa credentials no target process receives. */
 const CREDENTIALS: Record<string, string> = {
   MURA_ADMIN_USERNAME: 'synthetic-admin',
@@ -180,7 +187,8 @@ describe('process_env Masa settings', () => {
     'withholds the database connection and every credential from %s',
     (name) => {
       const env = envOf(name);
-      for (const key of [...Object.keys(DB_CONNECTION), ...Object.keys(CREDENTIALS)]) {
+      const handed = DB_NAME_READERS[name] ?? [];
+      for (const key of [...Object.keys(DB_CONNECTION), ...Object.keys(CREDENTIALS)].filter((key) => !handed.includes(key))) {
         expect(env, key).not.toHaveProperty(key);
       }
       const text = Object.values(env).join('\n');
@@ -189,6 +197,14 @@ describe('process_env Masa settings', () => {
       }
     },
   );
+
+  it('hands strategies-content the database name, which its SQL Server error messages name', () => {
+    expect(envOf('strategies-content').MURA_DATABASE).toBe(DB_CONNECTION.MURA_DATABASE);
+  });
+
+  it.each(['identity', 'people'] as const)('hands %s the datasource and database names, which the debug page of a failed legacy query prints', (name) => {
+    expect(envOf(name)).toMatchObject({ MURA_DATASOURCE: DB_CONNECTION.MURA_DATASOURCE, MURA_DATABASE: DB_CONNECTION.MURA_DATABASE });
+  });
 
   it('hands migration the database connection and no other credential', () => {
     const env = envOf('migration');

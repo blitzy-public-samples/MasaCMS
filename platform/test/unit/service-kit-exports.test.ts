@@ -15,6 +15,7 @@ import * as eventScope from '../../src/service-kit/event-scope.js';
 import * as signalBoundFetch from '../../src/service-kit/fetch.js';
 import * as kit from '../../src/service-kit/index.js';
 import * as jsonStream from '../../src/service-kit/json-stream.js';
+import * as queryFault from '../../src/service-kit/query-fault.js';
 import {
   baseEnvSchema,
   createService,
@@ -99,6 +100,7 @@ const VALUE_EXPORTS = {
     ],
   ],
   './event-scope.js': [eventScope, ['recordEventScope']],
+  './query-fault.js': [queryFault, ['answeringQueryFault']],
   './json-stream.js': [jsonStream, ['JSON_CONTENT_TYPE', 'jsonListStream']],
   './csrf-hook.js': [csrfHook, ['csrfPreHandler', 'csrfTokenFrom', 'CSRF_CONSUME_PATH', 'IDENTITY_SERVICE']],
   undici: [undici, ['Agent']],

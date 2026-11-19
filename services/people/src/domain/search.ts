@@ -7,6 +7,7 @@ import {
   cfIsBoolean,
   cfIsDateText,
   cfIsNumeric,
+  cfIsValidNumeric,
   cfListToArray,
   cfLsIsDate,
   cfLsParseDateTime,
@@ -872,10 +873,14 @@ function isZero(value: unknown): boolean {
   return eqFlag(value, 0);
 }
 
-/** A numeric `cfqueryparam` of a request value; throws ACF's binding error for non-numeric text. */
+/** A numeric `cfqueryparam` of a request value, by Java's reading; throws ACF's binding error for text it reads as no finite number. */
 function numericParam(value: unknown, sqlType: string): number {
-  if (cfIsNumeric(value)) return cfToNumber(value);
-  throw queryError(`Invalid data ${text(value)} for CFSQLTYPE CF_SQL_${sqlType}.`);
+  try {
+    return cfToNumber(value);
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    throw queryError(`Invalid data ${text(value)} for CFSQLTYPE CF_SQL_${sqlType}.`);
+  }
 }
 
 /** 1 or 0 for a Java-trimmed `true|yes|false|no` word in any case, as ACF reads it in `eq` and an integer binding. */
@@ -886,10 +891,15 @@ function booleanWordValue(value: unknown): 0 | 1 | undefined {
   return word === 'false' || word === 'no' ? 0 : undefined;
 }
 
-/** A `type="numeric"` function argument; throws ACF's argument-type error for a non-numeric value. */
+/**
+ * A `type="numeric"` argument as its function's cf_sql_numeric binding reads it; throws ACF's argument-type error for a
+ * value `isValid('numeric')` rejects, then the binding's for one it reads as no finite number (ACF: '-NaN', '0x1p1024').
+ */
 export function numericArgument(value: unknown, argument: string, fn: string): number {
-  if (cfIsNumeric(value)) return cfToNumber(value);
-  throw queryError(`The ${argument.toUpperCase()} argument passed to the ${fn} function is not of type numeric.`);
+  if (typeof value !== 'number' && !(typeof value === 'string' && cfIsValidNumeric(value))) {
+    throw queryError(`The ${argument.toUpperCase()} argument passed to the ${fn} function is not of type numeric.`);
+  }
+  return numericParam(value, 'NUMERIC');
 }
 
 /** One user pool: the legacy pool site and the tenant holding its rows. */

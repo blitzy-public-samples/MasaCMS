@@ -214,8 +214,8 @@ describe('cEditProfile before()', () => {
     expect(decision).toEqual({ kind: 'redirect', location: loginLocation('edit') });
   });
 
-  it('registers edit and update behind the same gate, both owned by people', () => {
-    expect(ceditprofileScreens).toEqual([editProfileScreen, updateProfileAction]);
+  it('registers edit and defines the halted update outside the barrel, behind the same gate, both owned by people', () => {
+    expect(ceditprofileScreens).toEqual([editProfileScreen]);
     expect(editProfileScreen).toMatchObject({ circuit: 'ceditprofile', action: 'edit', mode: 'page', owner: 'people' });
     expect(updateProfileAction).toMatchObject({ circuit: 'ceditprofile', action: 'update', mode: 'page', owner: 'people' });
     expect(editProfileScreen.gate).toBe(ceditprofileGate);
@@ -237,7 +237,7 @@ describe('cEditProfile.edit load', () => {
       userSite: {
         siteId: 'default',
         name: 'Default',
-        settings: { publicUserPoolID: 'default', privateUserPoolID: 'default', themeAssetPath: '/themes/' },
+        settings: { publicUserPoolID: 'default', privateUserPoolID: 'default', themeAssetPath: '' },
       },
       sessionUserId: USER_ID,
       queryString: 'muraAction=ceditprofile.edit',
@@ -279,37 +279,16 @@ describe('cEditProfile.edit load', () => {
     expect(view.strongPasswords).toBe(strong);
   });
 
-  it.each<[string, Fields, AdminRequestPartial, string]>([
-    ['a local theme under the context', { MURA_CONTEXT: '/ctx' }, { site: { record: { theme: 'Masa' } } }, '/ctx/themes/Masa'],
-    [
-      'a remote site without a resource domain',
-      { MURA_CONTEXT: '/ctx' },
-      { site: { record: { theme: 'Masa', isremote: 1, remotecontext: '/remote' } } },
-      '/remote/themes/Masa',
-    ],
-    [
-      'a remote resource domain over SSL',
-      { MURA_PORT: '8080' },
-      { site: { record: { theme: 'Masa', isremote: 1, resourceDomain: 'cdn.example.test', useSSL: 1 } } },
-      'https://cdn.example.test:8080/themes/Masa',
-    ],
-    [
-      'a remote resource domain falling back to ExtranetSSL',
-      {},
-      { site: { record: { theme: 'Masa', isremote: 1, resourceDomain: 'cdn.example.test', useSSL: null, ExtranetSSL: 0 } } },
-      'http://cdn.example.test/themes/Masa',
-    ],
-    [
-      'a remote resource domain on an https request',
-      {},
-      { https: true, site: { record: { theme: 'Masa', isremote: 1, resourceDomain: 'cdn.example.test', resourceSSL: 0 } } },
-      'https://cdn.example.test/themes/Masa',
-    ],
-  ])('prints the theme asset path of %s', async (_case, vars, partial, path) => {
-    useSettings(vars);
-    const view = await loadEditProfileView(contextFor(editRequest({}, partial)));
+  it.each<[string, ProfileData['subTypes'], string | undefined]>([
+    ['an active subtype prints it', [{ subTypeID: 'ST000000-0000-0000-0000000000000002', subType: 'Gold' }], 'default'],
+    ['no subtype prints none', [], undefined],
+  ])("reads legacy's theme asset path of the user's site when %s", async (_case, subTypes, themeSite) => {
+    const ctx = contextFor(editRequest({}, { site: { record: { theme: 'Masa', isremote: 1 } } }), profileOf({ subTypes }));
+    const view = await loadEditProfileView(ctx);
 
-    expect(view.userSite.settings?.themeAssetPath).toBe(path);
+    expect(view.userSite.settings?.themeAssetPath).toBe(themeSite === undefined ? '' : '/themes/default');
+    const reads = ctx.gateway.calls.filter(({ service }) => service === 'gateway').map(({ query }) => query?.['themeSite']);
+    expect(reads).toEqual(themeSite === undefined ? [] : [themeSite]);
   });
 
   it("asks programs-sites for the user's site when the session is on another site the token does not serve", async () => {
@@ -326,7 +305,7 @@ describe('cEditProfile.edit load', () => {
     });
 
     expect(ctx.gateway.calls).toEqual([{ service: 'programs-sites', method: 'GET', path: '/v1/sites/default/shell' }]);
-    expect(view.userSite.settings).toEqual({ publicUserPoolID: 'default', privateUserPoolID: 'pool-x', themeAssetPath: '/themes/Masa' });
+    expect(view.userSite.settings).toEqual({ publicUserPoolID: 'default', privateUserPoolID: 'pool-x', themeAssetPath: '' });
     expect(view.poolSite).toEqual({ siteId: 'pool-x', name: 'Pool X' });
   });
 
@@ -558,10 +537,10 @@ describe('cEditProfile.edit view', () => {
       { value: 'default', label: 'default', selected: false },
     ]);
     expect($('select[name="subtype"]').attr('onchange')).toBe(
-      `resetExtendedAttributes('${USER_ID}','2',this.value,'pub','/ctx','/ctx/themes/Masa');`,
+      `resetExtendedAttributes('${USER_ID}','2',this.value,'pub','/ctx','/themes/default');`,
     );
     expect($('#tabExtendedattributes script').text().trim()).toBe(
-      `userManager.loadExtendedAttributes('${USER_ID}','2','gold','default','/ctx','/ctx/themes/Masa');`,
+      `userManager.loadExtendedAttributes('${USER_ID}','2','gold','default','/ctx','/themes/default');`,
     );
   });
 

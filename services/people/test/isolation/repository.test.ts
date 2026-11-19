@@ -263,6 +263,18 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect([stored.company, stored.email]).toEqual(['c'.repeat(50), 'e'.repeat(255)]);
     });
 
+    // Oracle readback of tusers/tuseraddresses/tuserstags after cUsers.update Add: each UTF-16 code unit outside
+    // Windows-1252 is '?', with no best fit, U+0081 and U+008D included.
+    it('stores person, address and tag text in code page 1252 as legacy stores it', async () => {
+      const stored = await addPerson({ fname: 'CP\u00e9\u20ac\u2013\u0100\u0142\u0155\u0081\u008d\u00a0e\u0301\u65e5\u{1F600}', company: '\u00c9moji \u{1F600} Co \u2713' });
+      expect([stored.fname, stored.company]).toEqual(['CP\u00e9\u20ac\u2013?????\u00a0e????', '\u00c9moji ?? Co ?']);
+      const address = await inTenant((tx) => repo.insertAddress(tx, { addressid: cfUuid(), userid: stored.userid, siteid: 'tenant-a', city: 'Z\u00fcrich \u65e5\u672c \u2713' }));
+      expect(address.city).toBe('Z\u00fcrich ?? ?');
+      const tags = await inTenant((tx) => repo.replaceTags(tx, { userId: stored.userid, siteId: 'tenant-a', tags: '\u65e5\u672c,caf\u00e9' }));
+      expect(tags.map((row) => row.tag)).toEqual(['??', 'caf\u00e9']);
+      expect(await inTenant((tx) => repo.findPerson(tx, stored.userid))).toMatchObject({ fname: stored.fname, company: stored.company });
+    });
+
     it('finds persons in input order, omitting missing ids and repeats', async () => {
       const [first, second] = [await addPerson(), await addPerson()];
       const found = await inTenant((tx) => repo.findPersons(tx, [second.userid, cfUuid(), first.userid, second.userid]));
@@ -444,11 +456,13 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.listAddresses(tx, userid))).toEqual([]);
     });
 
-    it('rejects an over-width update, keeping the stored address', async () => {
+    it('rejects an over-width update of a stored address, keeping it, and changes no row for an unknown id, as legacy\'s UPDATE matches none', async () => {
       const stored = await inTenant((tx) => repo.insertAddress(tx, { userid: cfUuid(), city: 'Oslo' }));
       const update = { userid: stored.userid ?? '', city: 'c'.repeat(51) };
       await rejectsStorage((tx) => repo.updateAddress(tx, stored.addressid, update), 'user_address', 'city', 'width');
-      await rejectsStorage((tx) => repo.updateAddress(tx, cfUuid(), update), 'user_address', 'city', 'width');
+      const unknown = cfUuid();
+      expect(await inTenant((tx) => repo.updateAddress(tx, unknown, update))).toBeNull();
+      expect(await inTenant((tx) => repo.findAddress(tx, unknown))).toBeNull();
       expect(await inTenant((tx) => repo.findAddress(tx, stored.addressid))).toEqual(stored);
     });
 

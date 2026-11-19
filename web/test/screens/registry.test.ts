@@ -12,7 +12,6 @@ import { cchangesetsSecondaryMenu } from '@/screens/cchangesets/secondary-menu';
 import { cfeedSecondaryMenu } from '@/screens/cfeed/secondary-menu';
 import { cloginScreens } from '@/screens/clogin';
 import { homeRedirectScreen } from '@/screens/clogin/home-redirect';
-import { cwebserviceGate } from '@/screens/cwebservice';
 import {
   NOT_BUILT_VARIANTS,
   allOpt2Actions,
@@ -104,16 +103,9 @@ interface IncludedView {
   readonly gate: ScreenGate;
 }
 
-// save.cfm includes cwebservice/edit.cfm, update.cfm includes cchain/edit.cfm and list.cfm includes carch/scaffold.cfm
-// as its Custom Entities tab; each included view is an action of its own.
+// update.cfm includes cchain/edit.cfm and list.cfm includes carch/scaffold.cfm as its Custom Entities tab; each included
+// view is an action of its own.
 const INCLUDED_VIEWS: readonly IncludedView[] = [
-  {
-    key: normaliseRouteKey('admin:cwebservice.edit'),
-    circuit: 'cwebservice',
-    action: 'edit',
-    owner: 'identity',
-    gate: cwebserviceGate,
-  },
   {
     key: normaliseRouteKey('admin:cchain.edit'),
     circuit: 'cchain',
@@ -196,10 +188,16 @@ describe('registered admin screens', () => {
       expect.arrayContaining(
         [
           'admin:carch.cropimage',
+          'admin:carch.datamanager',
           'admin:carch.edit',
           'admin:carch.imagedetails',
           'admin:carch.multifileupload',
           'admin:carch.search',
+          'admin:cchain.save',
+          'admin:ceditprofile.update',
+          'admin:cusers.update{type=2,action=update}',
+          'admin:cwebservice.edit',
+          'admin:cwebservice.save',
         ].map(normaliseRouteKey),
       ),
     );
@@ -341,6 +339,7 @@ const REFUSED: readonly LookupCase[] = [
     rc: { status: 'SENDLOGIN' },
   },
   { label: 'a roster delete', circuit: 'cusers', action: 'update', rc: { type: '2', action: 'Delete' } },
+  { label: 'a roster edit', circuit: 'cUsers', action: 'update', rc: { TYPE: '2', action: 'update' } },
   {
     label: 'a roster edit with a photo',
     circuit: 'cusers',
@@ -354,6 +353,7 @@ const REFUSED: readonly LookupCase[] = [
     rc: { type: '1', removePhotoFile: 'true' },
   },
   { label: 'a profile save with a photo', circuit: 'ceditprofile', action: 'update', rc: { newFile: 'me.png' } },
+  { label: 'a profile save', circuit: 'ceditprofile', action: 'update', rc: {} },
   { label: 'site add', circuit: 'csettings', action: 'updatesite', rc: { action: 'Add' } },
   { label: 'site delete', circuit: 'csettings', action: 'updatesite', rc: { action: 'Delete' } },
   { label: 'site update', circuit: 'csettings', action: 'updatesite', rc: { action: 'Update' } },
@@ -433,14 +433,6 @@ const RESOLVED: readonly ResolvedCase[] = [
     owner: 'people',
   },
   {
-    label: 'a roster edit',
-    circuit: 'cusers',
-    action: 'update',
-    rc: { type: '2', action: 'Update' },
-    key: 'admin:cusers.update{type=2,action=update}',
-    owner: 'people',
-  },
-  {
     label: 'an MFA challenge on the login action',
     circuit: 'clogin',
     action: 'login',
@@ -497,14 +489,6 @@ const RESOLVED: readonly ResolvedCase[] = [
     uploads: [],
     key: 'admin:cform.importform',
     owner: 'strategies-content',
-  },
-  {
-    label: 'a profile save',
-    circuit: 'ceditprofile',
-    action: 'update',
-    rc: {},
-    key: 'admin:ceditprofile.update',
-    owner: 'people',
   },
   {
     label: 'a subsystem-qualified action',

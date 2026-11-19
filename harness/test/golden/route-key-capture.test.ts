@@ -112,6 +112,11 @@ const ROSTER_CREATE = {
 const VARIANT_CASES: KeyCase[] = [
   { label: 'a roster create', step: ROSTER_CREATE, key: 'admin:cusers.update{type=2,action=add}' },
   {
+    label: 'a roster create whose path pair holds a NUL',
+    step: { ...ROSTER_CREATE, route: `/admin/index.cfm/cusers/update/fname/a%00b?muraAction=cUsers.update&userid=${ID}` },
+    key: 'admin:cusers.update{text=nul}',
+  },
+  {
     label: 'a roster edit',
     step: {
       name: 'edit',

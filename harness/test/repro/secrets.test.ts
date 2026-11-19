@@ -205,16 +205,17 @@ describe('secret file catalogue', () => {
     ]);
   });
 
-  it('names the key pair, the three keys and an app and migrator password per schema, sorted and frozen', () => {
+  it('names the key pair, the four keys and an app and migrator password per schema, sorted and frozen', () => {
     const expected = [
       ...PEM_PAIR,
       LOCAL_SECRET_FILES.pubsubPushKey,
       'storage-hmac-key',
       'bridge-hmac-key',
+      'harness-diagnostic-key',
       ...DB_SCHEMAS.flatMap((schema) => [`db-${schema}-app`, `db-${schema}-migrator`]),
     ].sort();
     expect(SECRET_FILES).toEqual(expected);
-    expect(SECRET_FILES).toHaveLength(31);
+    expect(SECRET_FILES).toHaveLength(32);
     expect(new Set(SECRET_FILES).size).toBe(SECRET_FILES.length);
     expect(Object.isFrozen(SECRET_FILES)).toBe(true);
   });
@@ -296,6 +297,7 @@ describe('ensureLocalSecrets', { timeout: SLOW_TEST_MS }, () => {
 
   it.each([
     { removed: 'bridge-hmac-key', recreated: ['bridge-hmac-key'] },
+    { removed: 'harness-diagnostic-key', recreated: ['harness-diagnostic-key'] },
     { removed: 'db-people-migrator', recreated: ['db-people-migrator'] },
     { removed: PUBLIC_PEM, recreated: [...PEM_PAIR].sort() },
     { removed: PRIVATE_PEM, recreated: [...PEM_PAIR].sort() },

@@ -723,6 +723,50 @@ describe('communications fixture routes over the recording database', () => {
       expect(t.db.rows('message_template')).toContainEqual(expect.objectContaining({ tenant_id: TENANT_A.tenantId, template_id: id, name: 'Digest' }));
     });
 
+    /** A sender's form-encoded POST of `payload` to `resource`, `query` appended to the site query string. */
+    async function postForm(resource: string, query: string, payload: string): Promise<Sent> {
+      const [mark, callMark] = [t.db.transactions.length, t.client.requests.length];
+      const res = await t.app.inject({
+        method: 'POST',
+        url: `${FIXTURE_PREFIX}/${resource}${SITE_A}${query}`,
+        headers: { ...tokens.sender, ...CSRF, 'content-type': 'application/x-www-form-urlencoded' },
+        payload,
+      });
+      const writes = t.db.transactions.slice(mark).flatMap((tx) => tx.statements.map((statement) => statement.text));
+      const csrfCalls = t.client.requests.slice(callMark).filter((req) => req.path === CSRF_CONSUME_PATH).length;
+      return { status: res.statusCode, body: res.body, headers: res.headers, writes: writes.filter((text) => WRITE_STATEMENT.test(text)), csrfCalls };
+    }
+
+    it.each<[string, string, string, Record<string, string>]>([
+      ['form fields', '', 'name=a%00b&subject=s%00&bodyText=t%00x&bodyHtml=%3Cp%3Eh%00%3C%2Fp%3E', { name: 'ab', subject: 's', body_text: 'tx', body_html: '<p>h</p>' }],
+      ['a query-string name', '&name=u%00v', 'subject=s&bodyText=t', { name: 'uv', subject: 's', body_text: 't', body_html: '' }],
+    ])('stores and answers a template whose %s hold a NUL without it, as legacy start-up leaves them', async (_case, query, payload, stored) => {
+      const res = await postForm('templates', query, payload);
+      const { data } = JSON.parse(res.body) as { data: { template_id: string } };
+
+      expect([res.status, data]).toMatchObject([200, { siteid: TENANT_A.siteId, ...stored }]);
+      expect(t.db.rows('message_template')).toContainEqual(expect.objectContaining({ tenant_id: TENANT_A.tenantId, template_id: data.template_id, ...stored }));
+    });
+
+    it('answers a template whose form name is only a NUL with invalidParameters, writing nothing', async () => {
+      const res = await postForm('templates', '', 'name=%00&subject=s&bodyText=t');
+
+      expectFixtureResponse(res, 400, errorBody(TEMPLATES_METHOD, rowOf('invalidParameters')));
+      expect(res.writes).toEqual([]);
+    });
+
+    it.each<[string, string, Record<string, string>]>([
+      ['subject and text body', 'to=bob%40example.com&subject=a%00b&bodyText=x%00y', { to_address: 'bob@example.com', subject: 'ab', body_text: 'xy' }],
+      ['recipient', 'to=bob%00%40example.com&subject=a&bodyText=x', { to_address: 'bob@example.com', subject: 'a', body_text: 'x' }],
+    ])('sends, stores and answers a message whose form %s hold a NUL without it', async (_case, payload, stored) => {
+      const res = await postForm('messages', '', payload);
+      const { data } = JSON.parse(res.body) as { data: { message_id: string } };
+
+      expect([res.status, data]).toMatchObject([200, { from_address: 'noreply@opt2.local', body_html: '', state: 'delivered', ...stored }]);
+      expect(t.db.rows('message')).toContainEqual(expect.objectContaining({ tenant_id: TENANT_A.tenantId, message_id: data.message_id, ...stored }));
+      expect(t.mail.sent.at(-1)).toMatchObject({ to: stored.to_address, subject: stored.subject, text: stored.body_text, messageId: data.message_id });
+    });
+
     it('sends a templated message and answers its detail, history queued, sent, delivered, as a later read does', async () => {
       const body = { templateId: TEMPLATE_A1, to: 'bob@example.com', variables: { name: 'Bob' } };
       const res = await send({ method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender', body, headers: CSRF });

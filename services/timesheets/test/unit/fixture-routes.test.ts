@@ -472,6 +472,11 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     ['url', ' <iframe src=x></iframe>ok ', '[INVALID]ok', 'resubmit', EMPLOYEE, 'RETURNED', 'RESUBMITTED'],
     ['form', '   ', null, 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
     ['form', '[1," a "]', '[1,"a"]', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+    ['form', 'a\u0000b', 'ab', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+    ['url', 'c\u0000d', 'cd', 'primary-approve', PRIMARY, 'SUBMITTED', 'PRIMARY_APPROVED'],
+    ['form', '\u0000', null, 'return', SECONDARY, 'PRIMARY_APPROVED', 'RETURNED'],
+    ['form', 'e\u0000f', 'ef', 'resubmit', EMPLOYEE, 'RETURNED', 'RESUBMITTED'],
+    ['url', 'g\u0000h', 'gh', 'secondary-approve', SECONDARY, 'PRIMARY_APPROVED', 'APPROVED'],
     ['json', '<script>alert(1)</script>note', '<script>alert(1)</script>note', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
     ['json', '  padded  ', '  padded  ', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
   ])('stores a %s comment %j as %j, as the script-protected legacy fixture does', async (via, comment, expected, action, roles, from, to) => {

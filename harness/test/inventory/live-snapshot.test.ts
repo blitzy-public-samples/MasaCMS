@@ -19,6 +19,8 @@ import { readPin } from '../../src/lib/pin.js';
 import { stableStringify } from '../../src/lib/report.js';
 
 const ORIGIN = 'http://legacy.invalid:25180';
+// Test value assembled at run time, not a secret.
+const KEY = ['opt2', 'harness', 'snapshot', 'test'].join('-');
 const HOST_FILE = '/srv/masa-webroot/core/modules/v1/filebrowser/model/beans/filebrowser.cfc';
 
 // The probe as run.cfm answers it: fields the inventory reads plus host-specific ones it does not.
@@ -86,10 +88,14 @@ function fakeDb(procedures: readonly unknown[] = []): { db: ReadOnlyMssql; calls
   return { db, calls };
 }
 
-function sources(procedures: readonly unknown[] = []): LiveSources & { calls: string[] } {
+function sources(procedures: readonly unknown[] = []) {
   const { db, calls } = fakeDb(procedures);
-  const fetch = vi.fn(async () => new Response(JSON.stringify(PROBE), { status: 200, headers: { 'content-type': 'application/json' } }));
-  return { origin: ORIGIN, db, fixturesLoaded: false, fetch, calls };
+  const fetch = vi.fn(
+    async (_input: string, _init: RequestInit) =>
+      new Response(JSON.stringify(PROBE), { status: 200, headers: { 'content-type': 'application/json' } }),
+  );
+  const live: LiveSources = { origin: ORIGIN, db, fixturesLoaded: false, env: { OPT2_HARNESS_KEY: KEY }, fetch };
+  return { ...live, fetch, calls };
 }
 
 const pin = readPin();
@@ -136,7 +142,7 @@ describe('captureLiveSnapshot', () => {
     expect(Number.isNaN(Date.parse(captured.storedProcedures.checkedAt))).toBe(false);
   });
 
-  it('keeps only the registration fields the inventory reads, so no host path or origin is recorded', () => {
+  it('keeps only the registration fields the inventory reads, so no host path, origin or key is recorded', () => {
     expect(captured.entities.entities).toEqual([
       {
         name: 'filebrowser',
@@ -151,13 +157,14 @@ describe('captureLiveSnapshot', () => {
     ]);
     expect(Object.keys(captured.entities.entities[0] ?? {}).sort()).toEqual(Object.keys(liveEntitySchema.shape).sort());
     const text = stableStringify(captured);
-    for (const hostValue of [HOST_FILE, ORIGIN, 'legacy.invalid', '25180', 'muradb_c51']) expect(text).not.toContain(hostValue);
+    for (const hostValue of [HOST_FILE, ORIGIN, 'legacy.invalid', '25180', 'muradb_c51', KEY]) expect(text).not.toContain(hostValue);
   });
 
-  it('queries the probe, then the catalog, then the stored-procedure check, all read-only', async () => {
+  it('queries the probe with the harness key, then the catalog, then the stored-procedure check, all read-only', async () => {
     const s = sources();
     await captureLiveSnapshot(s);
     expect(s.fetch).toHaveBeenCalledTimes(1);
+    expect(new Headers(s.fetch.mock.calls[0]?.[1].headers).get('x-opt2-harness-key')).toBe(KEY);
     expect(s.calls.slice(0, 3).map((sql) => /INFORMATION_SCHEMA\.(\w+)/.exec(sql)?.[1])).toEqual(['TABLES', 'COLUMNS', 'TABLE_CONSTRAINTS']);
     expect(s.calls.slice(3)).toEqual(LIVE_CHECK_SQL);
   });

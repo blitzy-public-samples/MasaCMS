@@ -138,7 +138,7 @@ describe('carch js.cfm request.ajax', () => {
   it('loads FCKeditor with the context, the session site theme and the session bundle in lower case', () => {
     useSettings({ MURA_HTMLEDITORTYPE: 'FCKeditor', MURA_CONTEXT: '/cms' });
     const req = adminS2Request({ circuit: 'cArch', item: 'edit', site: { record: { theme: 'mytheme' } }, session: { rb: 'de_DE' } });
-    const out = toString(carchJs(ctxOf(req), 'edit'));
+    const out = toString(carchJs(ctxOf(req), 'edit', '/cms/themes/mytheme'));
     expect(out.startsWith(architecture('/cms') + UNLOADED + OPEN)).toBe(true);
     expect(out).toContain('\t\t   \t\tFCKeditor_OnComplete=htmlEditorOnComplete;\n');
     expect(out).toContain('\t\t\t\toFCKeditor.BasePath\t\t= "/cms/wysiwyg/";\n');
@@ -149,10 +149,19 @@ describe('carch js.cfm request.ajax', () => {
     expect(out).not.toContain('ckeditor(');
   });
 
-  it('points FCKeditor at the installed theme when programs-sites served no session site', () => {
+  it("points FCKeditor at legacy's theme path whether or not programs-sites served the session site", () => {
     useSettings({ MURA_HTMLEDITORTYPE: 'fckeditor' });
     const req = { ...adminS2Request({ circuit: 'cArch', item: 'edit' }), site: undefined };
-    expect(toString(carchJs(ctxOf(req), 'edit'))).toContain("oFCKeditor.Config.EditorAreaCSS\t= '/themes/default/css/editor.css';");
+    expect(toString(carchJs(ctxOf(req), 'edit', '/sites/default/themes/t'))).toContain(
+      "oFCKeditor.Config.EditorAreaCSS\t= '/sites/default/themes/t/css/editor.css';",
+    );
+  });
+
+  it('fails when the FCKeditor loader prints without a theme path', () => {
+    useSettings({ MURA_HTMLEDITORTYPE: 'fckeditor' });
+    expect(() => carchJs(ctxOf(), 'edit')).toThrow(
+      new TypeError("carch js.cfm's FCKeditor loader needs getSite(rc.siteid).getThemeAssetPath()"),
+    );
   });
 });
 

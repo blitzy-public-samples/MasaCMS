@@ -5,6 +5,7 @@ import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { harnessKeyHeaders } from '../lib/harness-key.js';
 import { createHttpSession } from '../lib/http.js';
 import { stateDir, type EnvLike } from '../lib/paths.js';
 import { stableStringify } from '../lib/report.js';
@@ -28,10 +29,11 @@ Options:
   --help  print this help and exit 0
 
 Environment:
-  LEGACY_ORIGIN   legacy ColdFusion origin (default: http://127.0.0.1:\${PORT}); one of the two is required
-  PORT            legacy ColdFusion port, used when LEGACY_ORIGIN is unset
-  OPT2_STATE_DIR  state directory (default: $HOME/.opt2/state); the responses are saved as
-                  <state>/baseline/official.json and <state>/baseline/diagnostic.json
+  LEGACY_ORIGIN     legacy ColdFusion origin (default: http://127.0.0.1:\${PORT}); one of the two is required
+  PORT              legacy ColdFusion port, used when LEGACY_ORIGIN is unset
+  OPT2_STATE_DIR    state directory (default: $HOME/.opt2/state); the responses are saved as
+                    <state>/baseline/official.json and <state>/baseline/diagnostic.json
+  OPT2_HARNESS_KEY  diagnostic runner key (default: <state>/secrets/harness-diagnostic-key)
 
 Output: one JSON summary line on stdout with each runner's HTTP status and spec count.
 Exit: 0 both responses saved, 1 failure, 2 usage error or neither LEGACY_ORIGIN nor PORT set.
@@ -132,12 +134,15 @@ async function callRunner(
   const env = deps.env ?? process.env;
   const now = deps.now ?? (() => new Date());
   const dir = baselineStateDir(env);
+  const origin = legacyOrigin(env);
+  // Only the diagnostic runner checks the key; the official runner is untouched Masa code.
+  const headers = runner === 'diagnostic' ? harnessKeyHeaders(env) : {};
   await mkdir(dir, { recursive: true });
-  const session = createHttpSession({ baseUrl: legacyOrigin(env), fetch: deps.fetch ?? longRequestFetch });
+  const session = createHttpSession({ baseUrl: origin, fetch: deps.fetch ?? longRequestFetch });
 
   const started = now();
   // The session's own deadline is the only bound; a caller signal could not extend its 300 s default.
-  const result = await session.get(path, { timeoutMs: deps.timeoutMs ?? DIAGNOSTIC_TIMEOUT_MS });
+  const result = await session.get(path, { headers, timeoutMs: deps.timeoutMs ?? DIAGNOSTIC_TIMEOUT_MS });
   const durationMs = now().getTime() - started.getTime();
 
   let parsed: Pick<SavedRunnerResponse, 'bodyKind' | 'body'>;

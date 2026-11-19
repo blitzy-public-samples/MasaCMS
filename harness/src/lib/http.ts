@@ -142,7 +142,7 @@ const BODY_KINDS = ['form', 'json', 'multipart', 'body'] as const;
 // Fetch-standard request-body-header names, removed when a redirect drops the body.
 const BODY_HEADERS = ['content-type', 'content-encoding', 'content-language', 'content-location'];
 // Removed for the rest of the exchange once a redirect leaves the current origin.
-const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'x-serverless-authorization'];
+const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'x-serverless-authorization', 'x-opt2-harness-key'];
 const ERROR_CODE = /^[A-Z][A-Z0-9_]*$/;
 const MAX_CAUSE_DEPTH = 8;
 

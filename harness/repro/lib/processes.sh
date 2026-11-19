@@ -215,6 +215,17 @@ process_env() {
       _opt2_env_line SMTP_PORT "$OPT2_TOOL_PORT_MAILPIT_SMTP"
       _opt2_env_line MAILPIT_API_URL "$MAILPIT_API_LOCAL"
       ;;
+    strategies-content)
+      # The database name alone, which the SQL Server messages of its legacy error pages qualify a table with.
+      require_env MURA_DATABASE
+      _opt2_env_line MURA_DATABASE "$MURA_DATABASE"
+      ;;
+    identity | people)
+      # The datasource and database names alone, which the debug page of a failed legacy query prints.
+      require_env MURA_DATABASE
+      _opt2_env_line MURA_DATABASE "$MURA_DATABASE"
+      if [[ -n ${MURA_DATASOURCE:-} ]]; then _opt2_env_line MURA_DATASOURCE "$MURA_DATASOURCE"; fi
+      ;;
   esac
 }
 

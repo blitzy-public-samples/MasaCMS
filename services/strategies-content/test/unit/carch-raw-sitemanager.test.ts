@@ -1,7 +1,7 @@
 /** carch raw Site Manager actions of `routes/v1/carch.ts` over the recording pool and an identity double: locks, quick edits, clipboard, approvals, trees, flat view, prompts and their fragments. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
-import { LEGACY_ADMIN_SENTINEL_ID, LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { LEGACY_ADMIN_SENTINEL_ID, LEGACY_ERROR_PAGE_HTML, LegacyFaultError } from '@opt2/platform/legacy-compat';
 import {
   CSRF_CONSUME_PATH,
   legacyParamsOf,
@@ -13,7 +13,6 @@ import {
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
-import { UndefinedLegacyElementError } from '../../src/domain/content.js';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
@@ -286,6 +285,18 @@ describe('raw entry table', () => {
       ['unlocknode', 'AbC-1unlocknode'],
     ]);
   });
+
+  it.each(['lockfile', 'unlockfile', 'unlocknode'] as const)(
+    'gives %s the context of the empty contentid before() sets outside ajax, and legacy’s fault in an ajax request',
+    (action) => {
+      const spec = carchRawActions[action];
+      const requestOf = (query: Record<string, string>) => ({ query, headers: {} }) as unknown as FastifyRequest;
+      expect(spec.csrfContext(requestOf({}))).toBe(action);
+      expect(spec.csrfContext(requestOf({ ajaxrequest: 'false' }))).toBe(action);
+      expect(() => spec.csrfContext(requestOf({ ajaxrequest: 'true' }))).toThrow(new LegacyFaultError('Element CONTENTID is undefined in RC.'));
+      expect(spec.csrfContext(requestOf({ ajaxrequest: 'true', contentid: 'AbC-1' }))).toBe(`AbC-1${action}`);
+    },
+  );
 });
 
 describe('savequickedit', () => {
@@ -347,11 +358,11 @@ describe('lockfile', () => {
     expect(ran(/^(INSERT INTO|UPDATE) "content"\."content_stats"/)).toBe(false);
   });
 
-  it('fails as legacy does on an ajax request without a contentid', async () => {
-    const { res, error } = await raw('lockfile', { ajaxrequest: 'true' }, { headers: TOKEN });
+  it('fails as legacy does on an ajax request without a contentid, before consuming its token', async () => {
+    const { res } = await raw('lockfile', { ajaxrequest: 'true' }, { headers: TOKEN });
     expect(res.statusCode).toBe(500);
-    expect(error).toBeInstanceOf(UndefinedLegacyElementError);
-    expect((error as Error).message).toBe('Element CONTENTID is undefined in RC.');
+    expect(consumed).toEqual([]);
+    expect(dataStatements()).toEqual([]);
   });
 });
 

@@ -3,7 +3,7 @@ import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
-import { isCfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyFaultError, isCfUuid } from '@opt2/platform/legacy-compat';
 import type { components as IdentitySchemas } from '@/generated/clients/identity';
 import { isSafeHtml, toString } from '@/lib/html';
 import { buildUrl } from '@/lib/urls';
@@ -11,6 +11,7 @@ import {
   CONTENT_TAB_LIST,
   GROUP_BEAN_RC_KEY,
   NO_GROUP_SUBTYPES,
+  cfmlCondition,
   displayErrors,
   editGroupScreen,
   loadEditGroup,
@@ -501,27 +502,23 @@ describe('group subtypes', () => {
     ]);
   });
 
-  it.each<[string, AdminRequestPartial['site'], RegExp]>([
-    ['a local theme', { record: { theme: 'MasaBootstrap5' } }, /^[^:]*\/themes\/MasaBootstrap5$/],
-    ['a remote context', { record: { isremote: 1, remotecontext: '/remote', theme: 'T' } }, /^\/remote\/themes\/T$/],
-    [
-      'a remote resource domain',
-      { record: { isremote: 1, resourceDomain: 'cdn.example.test', resourceSSL: 1, theme: 'T' } },
-      /^https:\/\/cdn\.example\.test.*\/themes\/T$/,
-    ],
-    [
-      'a remote resource domain over the site SSL flag',
-      { record: { isremote: 1, resourceDomain: 'cdn.example.test', useSSL: null, ExtranetSSL: 0, theme: 'T' } },
-      /^http:\/\/cdn\.example\.test.*\/themes\/T$/,
-    ],
-  ])('passes the theme asset path of %s to the extended-attribute loader', async (_, site, expected) => {
-    const { data, markup } = await render(
-      adminEdit({ userid: GROUP_IDS.defaultEditor }, { site }),
+  it("passes legacy's theme asset path of rc.siteid to the extended-attribute loader", async () => {
+    const { data, markup, gateway } = await render(
+      adminEdit({ userid: GROUP_IDS.defaultEditor }, { site: { record: { isremote: 1, theme: 'T' } } }),
       editRoutes,
       withSubTypes('Default', 'Department'),
     );
-    expect(data.themeAssetPath).toMatch(expected);
-    expect(markup).toContain(`'${data.themeAssetPath}');`);
+    expect(data.themeAssetPath).toBe('/themes/default');
+    expect(markup).toContain(`'/themes/default');`);
+    expect(gateway.calls.filter(({ service }) => service === 'gateway').map(({ query }) => query)).toEqual([
+      expect.objectContaining({ themeSite: data.rc.siteid }),
+    ]);
+  });
+
+  it('reads no theme asset path for a pool without group subtypes, which prints none', async () => {
+    const { data, gateway } = await render(adminEdit({ userid: GROUP_IDS.defaultEditor }), editRoutes);
+    expect(data.themeAssetPath).toBe('');
+    expect(gateway.calls.filter(({ service }) => service === 'gateway')).toEqual([]);
   });
 
   it('submits Add through the global submitForm in the tabbed form', async () => {
@@ -585,6 +582,66 @@ describe('a re-rendered group with errors', () => {
     ],
   ])('rejects a preserved bean %s', async (_, value) => {
     await expect(render(adminEdit({ [GROUP_BEAN_RC_KEY]: value }))).rejects.toThrow(TypeError);
+  });
+});
+
+describe('a re-rendered group holding posted flag text', () => {
+  const invalid = (property: string): GroupErrors => ({ [property]: `The property named '${property}' is not valid` });
+  const failedWith = (flags: Partial<GroupAccount>, errors: GroupErrors): string =>
+    preservedBean({ written: false, group: { ...editorGroup, Perm: 0, isPublic: 1, ...flags }, errors, isNew: true });
+
+  it.each<[string, Partial<GroupAccount>, Array<[string, boolean]>, string]>([
+    ['isPublic=true', { isPublic: 'true' }, [['1', true], ['0', false]], 'ispublic=true'],
+    ['isPublic=false', { isPublic: 'false' }, [['1', false], ['0', true]], 'ispublic=false'],
+    ['isPublic=yes', { isPublic: 'yes' }, [['1', true], ['0', false]], 'ispublic=yes'],
+  ])('reads %s as the boolean the radios show and returns to the list with the text', async (_, flags, expected, query) => {
+    const { model, $ } = await render(
+      adminEdit({ userid: GROUP_IDS.defaultEditor, [GROUP_BEAN_RC_KEY]: failedWith(flags, invalid('isPublic')) }),
+    );
+    expect(radios(model)).toEqual(expected);
+    expect($('input[name="returnurl"]').attr('value')).toBe(buildUrl('cUsers.list', undefined, query));
+    expect(model.alerts).toEqual([{ text: "The property named 'isPublic' is not valid", className: 'alert alert-error' }]);
+  });
+
+  it('treats Perm=true as a Perm group: hidden group type and read-only name', async () => {
+    const { model, $ } = await render(
+      adminEdit({ userid: GROUP_IDS.defaultEditor, [GROUP_BEAN_RC_KEY]: failedWith({ Perm: 'true' }, invalid('perm')) }),
+    );
+    expect(radios(model)).toEqual([]);
+    expect(hiddenFields($, 'form[name="form1"]')[0]).toEqual(['isPublic', '1']);
+    expect($('input[name="groupname"]').attr('readonly')).toBe('readonly');
+  });
+
+  it.each([
+    ['an admin', adminEdit],
+    ['a non-admin editor', grantedEditorEdit],
+  ])('fails for %s as the view fails on a Perm it cannot read as a boolean', async (_, edit) => {
+    const req = edit({ userid: GROUP_IDS.defaultEditor, [GROUP_BEAN_RC_KEY]: failedWith({ Perm: 'abc' }, invalid('perm')) });
+    const failure = render(req);
+    await expect(failure).rejects.toBeInstanceOf(LegacyFaultError);
+    await expect(failure).rejects.toMatchObject({ message: 'cannot convert the value "abc" to a boolean', type: 'Expression' });
+  });
+});
+
+describe('cfmlCondition', () => {
+  it.each<[string, boolean]>([
+    ['1', true],
+    ['0', false],
+    ['yes', true],
+    ['FALSE', false],
+    ['0.5', true],
+    ['0x1p0', true],
+    ['0x0p0', false],
+    ['-0x.8p1', true],
+    ['0x0.0p3', false],
+  ])('reads %s as %s', (value, expected) => {
+    expect(cfmlCondition(value)).toBe(expected);
+  });
+
+  it.each(['abc', '', 'x'])('fails on %j as ACF does', (value) => {
+    expect(() => cfmlCondition(value)).toThrow(
+      expect.objectContaining({ message: `cannot convert the value "${value}" to a boolean`, type: 'Expression' }),
+    );
   });
 });
 

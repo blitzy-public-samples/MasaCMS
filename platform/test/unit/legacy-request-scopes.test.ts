@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PATH_PAIRS_HEADER,
   appendFormScopeValue,
   formScopeInputsOf,
   isJsonContentType,
   legacyScopeParams,
   legacyScopeValue,
   legacyScopesFrom,
+  pathPairsHeaderValue,
   portcullisInputsOf,
   type LegacyScopes,
   type PortcullisScope,
@@ -218,6 +220,55 @@ describe('legacyScopesFrom', () => {
       json: false,
       jsonBody: undefined,
     });
+  });
+
+  // Own-oracle probes (admin/index.cfm/ccategory/update/<pair>): legacy stores a path pair raw, and a posted name beside a
+  // pair name the scan would rename or strip onto it.
+  it.each<[string, Array<[string, string]>, Record<string, string>, Record<string, string>]>([
+    ['smart quotes', [['name', 'f10-sq\u201Cq\u201D']], { name: 'f10-sq\u201Cq\u201D' }, { name: 'f10-sq\u201Cq\u201D' }],
+    ['an onLoad word', [['name', 'f10-wd-onLoad']], { name: 'f10-wd-onLoad' }, { name: 'f10-wd-onLoad' }],
+    ['a filtered tag', [['name', 'f10-tg-<xss>']], { name: 'f10-tg-<xss>' }, { name: 'f10-tg-<xss>' }],
+    ['outer spaces', [['name', ' f10-sp ']], { name: ' f10-sp ' }, { name: ' f10-sp ' }],
+    ['a dotted name beside the posted name', [['na.me', 'path']], { 'na.me': 'path', name: 'form' }, { 'na.me': 'path', name: 'form' }],
+    ['an amp; name beside the posted name', [['amp;name', 'path']], { 'amp;name': 'path', name: 'form' }, { 'amp;name': 'path', name: 'form' }],
+    ['a NUL name beside the posted name', [['na\0me', 'path']], { 'na\0me': 'path', name: 'form' }, { 'na\0me': 'path', name: 'form' }],
+    ['a name without a name character', [['-', 'x']], { '-': 'x', q: ' y ' }, { '-': 'x', q: 'y' }],
+    ['a value the relay changed, which is scanned', [['name', 'path']], { name: ' onLoad ' }, { name: '[INVALID]' }],
+    ['a name the relay did not send', [['other', 'onLoad']], { name: 'onLoad' }, { name: '[INVALID]' }],
+  ])('keeps a relayed path pair with %s as sent, in either scope', (_label, pairs, sent, params) => {
+    const headers = { [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue(pairs) };
+    const url = legacyScopesFrom({ query: sent, body: undefined, headers }).url;
+    const form = legacyScopesFrom({ query: {}, body: sent, headers: { ...FORM, ...headers } }).form;
+    expect([url.failed, form.failed]).toEqual([false, false]);
+    expect(legacyScopeParams(url)).toStrictEqual(Object.assign(Object.create(null) as object, params));
+    expect(legacyScopeParams(form)).toStrictEqual(Object.assign(Object.create(null) as object, params));
+  });
+
+  it('keeps relayed path pairs ahead of the scanned entries, which a stripped copy of a posted name then replaces', () => {
+    const headers = { ...FORM, [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue([['Name', 'p\u201C']]) };
+    expect(legacyScopesFrom({ query: {}, body: { 'na-me': 'f', name: 'p\u201C' }, headers }).form).toStrictEqual({
+      entries: [['name', 'p\u201C'], ['na-me', 'f'], ['name', 'f']],
+      failed: false,
+    });
+  });
+
+  it('passes a file part and a JSON body as before, and scans every entry of a request without the header', () => {
+    const pairs = { [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue([['up', 'a\u201C.png'], ['q', 'onLoad']]) };
+    expect(legacyScopesFrom({ query: {}, body: { up: file('up', 'a\u201C.png'), q: 'onLoad' }, headers: pairs }).form.entries).toStrictEqual([
+      ['q', 'onLoad'],
+      ['up', 'a\u201C.png'],
+    ]);
+    const json = legacyScopesFrom({ query: { q: 'onLoad' }, body: { q: 'onLoad' }, headers: { ...JSON_TYPE, ...pairs } });
+    expect([json.url.entries, json.form.entries, json.jsonBody]).toStrictEqual([[['q', 'onLoad']], [], { q: 'onLoad' }]);
+    expect(legacyScopesFrom({ query: { q: 'onLoad' }, body: { q: 'onLoad' }, headers: FORM })).toMatchObject({
+      url: { entries: [['q', '[INVALID]']] },
+      form: { entries: [['q', '[INVALID]']] },
+    });
+  });
+
+  it('names path pairs in a urlencoded header value, none for no pairs', () => {
+    expect(pathPairsHeaderValue([['na.me', 'a b\u201C&'], ['x', '\0']])).toBe('na.me=a+b%E2%80%9C%26&x=%00');
+    expect(pathPairsHeaderValue([])).toBeUndefined();
   });
 });
 

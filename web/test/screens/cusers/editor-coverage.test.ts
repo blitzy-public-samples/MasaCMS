@@ -461,7 +461,8 @@ describe('cUsers.editUser subtypes', () => {
     const edit = editData({ user: { ...EDITOR, subType }, subTypes: subTypes('Default', 'default', 'Gold') });
     const ctx = contextFor(editUserRequest({ userid: EDITOR_ID }), edit);
     const site = ctx.req.site!;
-    const theme = `/themes/${site.record.theme ?? ''}`;
+    // Legacy's getSite(rc.siteid).getThemeAssetPath(), as the shell routes answer it.
+    const theme = '/themes/default';
 
     const body = await formOf(ctx);
 

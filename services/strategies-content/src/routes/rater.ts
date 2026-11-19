@@ -6,11 +6,13 @@ import {
   javaTrim,
   legacyDebuggingEnabled,
   legacyRuntimeErrorResponse,
+  nullInsertFault,
+  truncationFault,
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { legacyScopesOf, sendLegacyResponse, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { actorFromClaims, writeContextFor, type DomainDeps } from '../domain/context.js';
-import { saveRate, storedRate } from '../domain/stats.js';
+import { rateOutcome, saveRate } from '../domain/stats.js';
 import { esapiEncode } from '../legacy/admin-markup.js';
 import { muraJsonEncode } from '../legacy/cfjson.js';
 
@@ -32,14 +34,13 @@ const AVG_RATING_COLUMNS: readonly string[] = Object.freeze(['DOWNVOTES', 'THEAV
 /** The form fields the template passes to raterManager.saveRate, in its order (saveRate.cfm:78-82). */
 const RATE_FORM_FIELDS: readonly string[] = Object.freeze(['contentID', 'siteID', 'userID', 'rate']);
 
-/** Widths of the `tcontentratings` key columns: contentID and userID char(35), siteID char(25). */
-const ID_LENGTH = 35;
-const SITE_ID_LENGTH = 25;
-
-/** Whether a trimmed id can be inserted into a key column of `width` characters: neither empty (NULL) nor longer. */
-function fitsKeyColumn(id: string, width: number): boolean {
-  return id !== '' && id.length <= width;
-}
+/** The ratings table and the key columns its insert binds, in its order, with their widths [rateBean.cfc:87-91]. */
+const RATING_TABLE = 'tcontentratings';
+const RATING_KEY_COLUMNS: ReadonlyArray<readonly [column: 'contentID' | 'userID' | 'siteID', width: number]> = Object.freeze([
+  ['contentID', 35],
+  ['userID', 35],
+  ['siteID', 25],
+]);
 
 /** The form fields the template passes to raterManager.saveRate, with the rate as SQL Server stores it. */
 interface RateFields {
@@ -50,30 +51,37 @@ interface RateFields {
 }
 
 /**
- * The template's `form.contentID`, `form.siteID`, `form.userID` and `form.rate`, read ignoring case. Where legacy fails the
- * save: the fault of the first missing field, read in that order; undefined for an engine error, a rate {@link storedRate}
- * refuses or a trimmed id that is empty, which the rating insert binds as NULL, or longer than its key column, which SQL
- * Server refuses.
+ * The template's `form.contentID`, `form.siteID`, `form.userID` and `form.rate`, read ignoring case, or the fault legacy
+ * fails the save with: the first missing field, read in that order; a rate {@link rateOutcome} refuses; then, as the
+ * rating insert binds them, the first trimmed id that is empty, bound as NULL, or longer than its column; then the rate
+ * outside `int`. `database` names the legacy database in SQL Server's messages.
  */
-function rateFields(request: FastifyRequest): RateFields | LegacyFaultError | undefined {
+function rateFields(request: FastifyRequest, database: string): RateFields | LegacyFaultError {
   const form = new Map(legacyScopesOf(request).form.entries.map(([name, value]) => [name.toLowerCase(), String(value)]));
   const missing = RATE_FORM_FIELDS.find((name) => !form.has(name.toLowerCase()));
   if (missing !== undefined) return new LegacyFaultError(`Element ${missing.toUpperCase()} is undefined in FORM.`);
   const [contentId = '', siteId = '', userId = '', rateText = ''] = RATE_FORM_FIELDS.map((name) => form.get(name.toLowerCase()));
-  const rate = storedRate(rateText);
-  const keys: ReadonlyArray<readonly [string, number]> = [[contentId, ID_LENGTH], [siteId, SITE_ID_LENGTH], [userId, ID_LENGTH]];
-  if (rate === undefined || keys.some(([id, width]) => !fitsKeyColumn(javaTrim(id), width))) return undefined;
-  return { contentId, siteId, userId, rate };
+  const rate = rateOutcome(rateText);
+  if ('refused' in rate) return rate.refused;
+  const ids = { contentID: contentId, userID: userId, siteID: siteId };
+  for (const [column, width] of RATING_KEY_COLUMNS) {
+    const id = javaTrim(ids[column]);
+    if (id === '') return nullInsertFault(database, RATING_TABLE, column);
+    if (id.length > width) return truncationFault(database, RATING_TABLE, column, id, width);
+  }
+  return rate.stored instanceof LegacyFaultError ? rate.stored : { contentId, siteId, userId, rate: rate.stored };
 }
 
 /**
  * Registers `GET` and `POST` of the rater's save, as the template answers any method, written in the verified token's tenant.
  * @param debuggingEnabled configBean `debuggingEnabled`, which selects onError's page for a save legacy cannot run.
+ * @param database the legacy database `MURA_DATABASE` names, which SQL Server's messages qualify the table with.
  */
 export function registerRaterRoutes(
   app: FastifyInstance,
   ctx: RaterRouteContext,
   debuggingEnabled: boolean = legacyDebuggingEnabled(),
+  database: string = process.env.MURA_DATABASE ?? '',
 ): void {
   const { domain } = ctx;
   const errorPage = { debuggingEnabled, encodeHtml: (text: string) => esapiEncode('html', text) };
@@ -83,11 +91,9 @@ export function registerRaterRoutes(
     url: RATER_SAVE_PATH,
     config: { opt2: ROUTE_AUTH },
     async handler(request, reply) {
-      const fields = rateFields(request);
+      const fields = rateFields(request, database);
       // Legacy writes nothing for a save it cannot run.
-      if (fields === undefined || fields instanceof LegacyFaultError) {
-        return sendLegacyResponse(reply, legacyRuntimeErrorResponse(fields, errorPage));
-      }
+      if (fields instanceof LegacyFaultError) return sendLegacyResponse(reply, legacyRuntimeErrorResponse(fields, errorPage));
       const claims = request.opt2Auth.user;
       if (claims === undefined) throw AuthDenial.unauthenticated('missing-credential');
       assertSiteMatches(fields.siteId, claims);

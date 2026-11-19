@@ -5,7 +5,6 @@ import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/document';
 import { MODULE_IDS } from '@/shell/nav';
-import { feedApiEndpoint } from './common';
 
 /** The collection a cFeed view loaded (`rc.feedBean`). */
 export interface CfeedMenuFeed {
@@ -21,11 +20,14 @@ export interface CfeedMenuOptions {
   readonly fuseaction: string;
   /** `rc.feedBean`; absent where legacy leaves it undefined. */
   readonly feed?: CfeedMenuFeed;
-  /** The feed API endpoint; built from the session site when a saved Local feed needs it and none is given. */
+  /** The view's `endpoint`, which a saved Local feed's View Feed link prints; absent where legacy leaves it undefined. */
   readonly endpoint?: string;
 }
 
-/** Renders the `nav-module-specific` button group; labels and hrefs are emitted unencoded, as legacy writes them. */
+/**
+ * Renders the `nav-module-specific` button group; labels and hrefs are emitted unencoded, as legacy writes them.
+ * @throws Error When a saved Local feed's link needs `endpoint` and none is given, as legacy's undefined variable throws.
+ */
 export function renderCfeedSecondaryMenu(
   req: AdminRequest,
   rb: RbLookup,
@@ -70,7 +72,8 @@ export function renderCfeedSecondaryMenu(
     );
     if (feed !== undefined && !feed.isNew) {
       const local = feed.type.toLowerCase() === 'local';
-      const href = raw(local ? `${feedApiEndpoint(req, endpoint)}/?feedID=${feed.feedId}` : feed.channelLink);
+      if (local && endpoint === undefined) throw new Error('Variable ENDPOINT is undefined.');
+      const href = raw(local ? `${endpoint}/?feedID=${feed.feedId}` : feed.channelLink);
       links.push(
         html`\n\t\t\t\t\t<a class="btn" title="${label('collections.view')}" href="${href}" target="_blank">${content('mi-rss', 'collections.viewfeed')}</a>\n\t\t\t\t`,
       );

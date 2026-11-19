@@ -1,5 +1,6 @@
 /** Collections: feedBean, feedManager, feedDAO, feedUtility.doImport and the cfeed controller over `repo.feeds` and `legacy/remote-feed`. */
 import {
+  LegacyFaultError,
   LegacyServiceUnavailableError,
   cfDateTimeFormat,
   cfEq,
@@ -1105,9 +1106,9 @@ export async function updateFeedAction(deps: FeedDeps, actor: Actor, rc: FeedDat
   if (cfEq(action, 'delete')) await deleteFeed(deps, actor, feedIdOf(), opts);
   if (cfEq(action, 'add')) bean = await createFeed(deps, actor, input, opts);
   const isDelete = cfEq(action, 'delete');
-  // An unknown action leaves rc.feedBean undefined, which legacy then dereferences.
+  // An unknown action leaves rc.feedBean undefined, which legacy then dereferences (cfeed.cfc:136).
   const withErrors = (): FeedBean | null => {
-    if (bean === undefined) throw new FeedElementUndefinedError('feedBean', 'ARGUMENTS.RC');
+    if (bean === undefined) throw new LegacyFaultError('Element RC.feedBean is undefined in ARGUMENTS.');
     return Object.keys(bean.errors).length > 0 ? bean : null;
   };
   if (!cfEq(text('closecompactdisplay'), 'true') && !(!isDelete && withErrors() !== null)) return LIST_REDIRECT;

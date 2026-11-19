@@ -41,7 +41,9 @@ import { loaddiffRelay, loadsitemanagerRelay } from '../fixtures/strategies-cont
 import { writeResultReRender } from '../fixtures/strategies-content/write-results';
 import { useTestEnv } from '../helpers/env';
 import {
+  LEGACY_SITE_PATHS_KEY,
   inMemoryGateway,
+  installedSitePaths,
   routeKey,
   type FakeRoute,
   type FakeRouteTable,
@@ -146,12 +148,13 @@ const issueCsrfTokens: FakeRoute = (request) => {
   return { status: 200, body: { tokens } };
 };
 
-/** Shell, site and CSRF answers every logged-in admin request reads, for each fixture site. */
+/** Shell, site, CSRF and legacy layout answers every logged-in admin request reads, for each fixture site. */
 function baseRoutes(): FakeRouteTable {
   const sites = Object.values(siteById);
   return {
     [SAVE_ADMIN_STATE]: (request) => ({ status: 200, body: request.json ?? {} }),
     [CSRF_TOKENS]: issueCsrfTokens,
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
     [USER_SITES]: {
       status: 200,
       body: {
@@ -297,7 +300,7 @@ describe('admin page mode', () => {
     });
   });
 
-  it('POST cEditProfile.update with an empty newFile file part saves through people and redirects home', async () => {
+  it('POST cEditProfile.update answers 404 for the halted profile save, which stays on legacy, unrelayed', async () => {
     install({
       ...sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession),
       [UPDATE_PROFILE]: { status: 200, body: profileUpdateSuccess },
@@ -310,11 +313,9 @@ describe('admin page mode', () => {
     });
 
     expectLegacyHeaders(response);
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('./');
-    expect(relayed(toService('people'))).toEqual([UPDATE_PROFILE]);
-    const save = gateway.requests.find((recorded) => `${recorded.method} ${recorded.path}` === UPDATE_PROFILE);
-    expect(save?.form).toMatchObject({ ...fields, newFile: '' });
+    expect(response.status).toBe(404);
+    expect(relayed(toService('people'))).toEqual([]);
+    expect(relayed((recorded) => recorded.method !== 'GET')).toEqual([]);
   });
 });
 
@@ -333,16 +334,17 @@ describe('admin-actions redirect mode', () => {
     expect(relayed(toService('identity'))).toContain(LOGOUT);
   });
 
-  it('POST cUsers.update relays the edit to people with the posted CSRF pair, then routes to listusers', async () => {
+  it('POST cUsers.update relays a roster create to people with the posted CSRF pair, then routes to listusers', async () => {
     install({
       ...sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession),
       [UPDATE_USER]: { status: 200, body: savedUser },
       [ROUTE_USER]: { status: 200, body: routeToListUsersResult },
     });
+    const fields = { ...JANE_SMITH_UPDATE, action: 'Add', userid: '' };
 
     const { request, response } = await send('/admin-actions/cusers/update', {
       user: SUBJECTS.siteAdmin,
-      form: formWithCsrf(JANE_SMITH_UPDATE, POSTED_CSRF),
+      form: formWithCsrf(fields, POSTED_CSRF),
     });
 
     expectLegacyHeaders(response);
@@ -351,7 +353,7 @@ describe('admin-actions redirect mode', () => {
     const write = gateway.requests.find((recorded) => `${recorded.method} ${recorded.path}` === UPDATE_USER);
     expect(write?.path.startsWith(`${SERVICE_PREFIX}people/`)).toBe(true);
     expect(write?.form).toMatchObject({
-      ...JANE_SMITH_UPDATE,
+      ...fields,
       [CSRF_FIELD_TOKEN]: POSTED_CSRF.token,
       [CSRF_FIELD_EXPIRES]: POSTED_CSRF.expires,
     });
@@ -369,7 +371,7 @@ describe('admin-actions redirect mode', () => {
 
     const { response } = await send('/admin-actions/cusers/update', {
       user: SUBJECTS.siteAdmin,
-      form: formWithCsrf(JANE_SMITH_UPDATE, POSTED_CSRF),
+      form: formWithCsrf({ ...JANE_SMITH_UPDATE, action: 'Add', userid: '' }, POSTED_CSRF),
     });
 
     expectLegacyHeaders(response);
@@ -381,11 +383,12 @@ describe('admin-actions redirect mode', () => {
     expect(saved).toHaveLength(1);
     const { flash } = saved[0]?.json as { readonly flash: Readonly<Record<string, Readonly<Record<string, string>>>> };
     expect(Object.keys(flash)).toEqual([preserveKey]);
-    expect(flash[preserveKey]).toMatchObject({ userid: PERSON_IDS.janeSmith, siteid: SITE });
+    expect(flash[preserveKey]).toMatchObject({ userid: '', siteid: SITE, username: 'jane_smith' });
     expect(relayed(toService('people'))).toEqual([UPDATE_USER]);
   });
 
   it.each<[string, AdminRequestOptions]>([
+    ['a halted user edit', { form: formWithCsrf(JANE_SMITH_UPDATE, POSTED_CSRF) }],
     ['a user delete', { form: formWithCsrf({ ...JANE_SMITH_UPDATE, action: 'Delete' }, POSTED_CSRF) }],
     ['a photo removal', { form: formWithCsrf({ ...JANE_SMITH_UPDATE, removePhotoFile: 'true' }, POSTED_CSRF) }],
     [

@@ -1,6 +1,7 @@
 /** `/v1/raw/<circuit>/<action>`: the content admin actions answered as the legacy fragment, JSON or download bytes. */
 import type { Readable } from 'node:stream';
 import type { Opt2RouteConfig } from '@opt2/platform/auth';
+import { LegacyFaultError, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import {
   defaultSurfaceOf,
   legacyParamsOf,
@@ -153,7 +154,10 @@ export function rawSurfaceOf(request: FastifyRequest): LegacySurface {
   return request.url.startsWith('/v1/raw/') ? 'admin' : defaultSurfaceOf(request);
 }
 
-/** The handler of one raw entry: circuit gate, the entry's CSRF consume, then its legacy bytes unchanged. */
+/**
+ * The handler of one raw entry: circuit gate, the entry's CSRF consume, then its legacy bytes unchanged. A fault legacy
+ * raises there is answered as a `server_error` whose `stacktrace` names it, which web renders as onError's page.
+ */
 function rawHandler(
   app: FastifyInstance,
   ctx: ContentRouteContext,
@@ -163,8 +167,14 @@ function rawHandler(
   const csrf = spec.csrfContext === undefined ? undefined : adminCsrf(spec.csrfContext);
   return async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, circuit, siteIdOf(request));
-    if (csrf !== undefined) await csrf.call(app, request, reply);
-    const out = await spec.run(request, ctx, actor);
+    let out: RawActionResult;
+    try {
+      if (csrf !== undefined) await csrf.call(app, request, reply);
+      out = await spec.run(request, ctx, actor);
+    } catch (error) {
+      if (error instanceof LegacyFaultError) return sendLegacyResponse(reply, legacyErrorResponse('server_error', { stacktrace: error.trace() }));
+      throw error;
+    }
     const headers: Record<string, string> = { 'content-type': out.contentType };
     // A cflocation result names its target in `redirect`; a `Location` the entry sets itself wins.
     if (out.redirect !== undefined) headers.location = out.redirect;

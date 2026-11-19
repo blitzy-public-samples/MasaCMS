@@ -3,7 +3,12 @@ import { javaDoubleToString } from './java-double.js';
 import { javaTrim, jsonString } from './serializer.js';
 
 /** A deserialized JSON value: a Java long as bigint, a Java double as number, a struct, an array, text, a boolean or null. */
-export type AcfJsonValue = string | boolean | bigint | number | null | AcfJsonValue[] | AcfStruct;
+export type AcfJsonValue = string | boolean | bigint | number | null | AcfBigDecimal | AcfJsonValue[] | AcfStruct;
+
+/** A number beyond the double range, which deserializeJSON keeps as written (coldfusion.runtime.CFBigDecimal). */
+export class AcfBigDecimal {
+  constructor(readonly text: string) {}
+}
 
 /** Java String.hashCode. */
 function javaHash(s: string): number {
@@ -86,8 +91,10 @@ export const UNREADABLE_JSON: unique symbol = Symbol('acf-json.unreadable');
 
 const LONG_MIN = -(2n ** 63n);
 const LONG_MAX = 2n ** 63n - 1n;
+/** The largest exponent BigDecimal reads. */
+const BIG_DECIMAL_EXPONENT_MAX = 2n ** 31n - 1n;
 /** The JSON number syntax isJSON accepts: leading zeros, `-.5`, and an exponent without digits. */
-const NUMBER_TOKEN = /(?:-?\d+(?:\.\d+)?|-\.\d+)(?:[eE][+-]?(\d*))?/y;
+const NUMBER_TOKEN = /(?:-?\d+(?:\.\d+)?|-\.\d+)(?:[eE]([+-]?)(\d*))?/y;
 const INTEGER_TOKEN = /^-?\d+$/;
 const TEXT_RUN = /[^"\\]*/y;
 const HEX4 = /^[0-9A-Fa-f]{4}$/;
@@ -146,23 +153,24 @@ class AcfJsonReader {
     return this.#number();
   }
 
-  #number(): bigint | number {
+  #number(): bigint | number | AcfBigDecimal {
     NUMBER_TOKEN.lastIndex = this.#at;
     const match = NUMBER_TOKEN.exec(this.text);
     if (match === null) throw new NotJson();
-    const [token, exponentDigits] = match;
+    const [token, exponentSign, exponentDigits] = match;
     this.#at += token.length;
     // The text ending right after the exponent letter is no JSON to isJSON, though `1e]` or a final `1e+` is.
     if (/[eE]$/.test(token) && this.#at === this.text.length) throw new NotJson();
-    const emptyExponent = exponentDigits === '';
-    // isJSON reads an exponent without digits as 0 and rejects a value beyond the double range.
-    if (!Number.isFinite(Number(emptyExponent ? `${token}0` : token))) throw new NotJson();
-    if (emptyExponent) this.unreadable = true;
+    // isJSON accepts an exponent without digits, which deserializeJSON cannot read.
+    if (exponentDigits === '') this.unreadable = true;
     if (INTEGER_TOKEN.test(token)) {
       const long = BigInt(token);
       if (long >= LONG_MIN && long <= LONG_MAX) return long;
     }
-    return Number(token);
+    const double = Number(token);
+    if (Number.isFinite(double) || this.unreadable) return double;
+    if (exponentSign !== '-' && exponentDigits !== undefined && BigInt(exponentDigits) > BIG_DECIMAL_EXPONENT_MAX) this.unreadable = true;
+    return new AcfBigDecimal(token);
   }
 
   #string(): string {
@@ -244,13 +252,14 @@ export function readAcfJson(text: string): AcfJsonValue | typeof UNREADABLE_JSON
   return reader.unreadable ? UNREADABLE_JSON : value;
 }
 
-/** ACF serializeJSON of a deserialized value: longs as digits, doubles as Java prints them, structs in ACF key order. */
+/** ACF serializeJSON of a deserialized value: longs as digits, doubles as Java prints them, big decimals as written, structs in ACF key order. */
 export function serializeAcfJson(value: AcfJsonValue): string {
   if (value === null) return 'null';
   if (typeof value === 'string') return jsonString(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'number') return javaDoubleToString(value);
+  if (value instanceof AcfBigDecimal) return value.text;
   if (Array.isArray(value)) return `[${value.map(serializeAcfJson).join(',')}]`;
   return `{${value
     .entries()

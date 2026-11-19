@@ -2,8 +2,18 @@
 // userDAO.cfc:749-869) over people's `people.user_address` rows of Type=2 users.
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import { registryEntryForTenant, type RegistrySource, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { LegacyServiceUnavailableError, cfEq, cfIsNumeric, cfNumberString, cfToNumber, cfUuid, javaTrim } from '@opt2/platform/legacy-compat';
+import {
+  LegacyServiceUnavailableError,
+  cfEq,
+  cfIsNumeric,
+  cfNumberString,
+  cfToNumber,
+  cfUuid,
+  javaTrim,
+  type LegacyQueryFault,
+} from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
+import { addressInsertFault, addressUpdateFault } from '../legacy/query-fault.js';
 import type { AddressInput, AddressUpdate, PeopleRepository } from '../repo/repository.js';
 import { ADDRESS, type AddressRow } from '../repo/tables.js';
 import type { PersonFence } from './person-fence.js';
@@ -123,7 +133,7 @@ function setChanged(values: Record<string, unknown>, key: string, value: string)
 
 type Setter = (values: Record<string, unknown>, value: unknown) => void;
 
-/** A setter assigning a numeric argument only, as `setIsPrimary`, `setLongitude` and `setLatitude` do. */
+/** A setter assigning a numeric argument only, as `setIsPrimary`, `setLongitude` and `setLatitude` do; a hex float, which the statement then fails on, included. */
 function numericOnly(key: string): Setter {
   return (values, value) => {
     if (cfIsNumeric(value)) values[key] = value;
@@ -217,8 +227,27 @@ function textColumns(address: AddressValues): Record<(typeof TEXT_COLUMNS)[numbe
   return columns;
 }
 
-/** Inserts the address as `userDAO.createAddress` does (userDAO.cfc:776-805); SQL Server truncates the inlined `isPrimary`. */
-export function insertAddressInTx(repo: PeopleRepository, tx: TenantTx, address: AddressValues, ctx: WriteContext = {}): Promise<AddressRow> {
+/** The truncation `userDAO.createAddress` fails on for `address`; undefined when every value fits. */
+export function addressInsertFaultOf(address: AddressValues): LegacyQueryFault | undefined {
+  const addressid = simpleText(address.addressid, 'addressid');
+  const userid = simpleText(address.userid, 'userid');
+  const inline = {
+    addressid,
+    userid,
+    isprimary: simpleText(address.isprimary, 'isprimary'),
+    longitude: simpleText(address.longitude, 'longitude'),
+    latitude: simpleText(address.latitude, 'latitude'),
+  };
+  return addressInsertFault(inline, { ...textColumns(address), addressid, userid });
+}
+
+/**
+ * Inserts the address as `userDAO.createAddress` does (userDAO.cfc:776-805); SQL Server truncates the inlined `isPrimary`.
+ * @throws LegacyQueryFault For a value its column cannot hold, writing nothing.
+ */
+export async function insertAddressInTx(repo: PeopleRepository, tx: TenantTx, address: AddressValues, ctx: WriteContext = {}): Promise<AddressRow> {
+  const fault = addressInsertFaultOf(address);
+  if (fault !== undefined) throw fault;
   const row: AddressInput = {
     ...textColumns(address),
     addressid: simpleText(address.addressid, 'addressid'),
@@ -230,15 +259,23 @@ export function insertAddressInTx(repo: PeopleRepository, tx: TenantTx, address:
   return repo.insertAddress(tx, row, ctx);
 }
 
-/** Updates the address `address.addressid` as `userDAO.updateAddress` does (userDAO.cfc:749-774), leaving `isPrimary`; null when absent. */
-export function updateAddressInTx(repo: PeopleRepository, tx: TenantTx, address: AddressValues, ctx: WriteContext = {}): Promise<AddressRow | null> {
-  const patch: AddressUpdate = {
-    ...textColumns(address),
-    userid: simpleText(address.userid, 'userid'),
-    longitude: cfToNumber(address.longitude),
-    latitude: cfToNumber(address.latitude),
-  };
-  return repo.updateAddress(tx, simpleText(address.addressid, 'addressid'), patch, ctx);
+/**
+ * Updates the address `address.addressid` as `userDAO.updateAddress` does (userDAO.cfc:749-774), leaving `isPrimary`; null when absent.
+ * @throws LegacyQueryFault For a value its column cannot hold when the address exists, writing nothing.
+ */
+export async function updateAddressInTx(repo: PeopleRepository, tx: TenantTx, address: AddressValues, ctx: WriteContext = {}): Promise<AddressRow | null> {
+  const addressId = simpleText(address.addressid, 'addressid');
+  const text = textColumns(address);
+  const userid = simpleText(address.userid, 'userid');
+  const inline = { siteid: javaTrim(text.siteid), longitude: simpleText(address.longitude, 'longitude'), latitude: simpleText(address.latitude, 'latitude') };
+  const fault = addressUpdateFault(inline, { ...text, siteid: inline.siteid, userid });
+  // SQL Server checks a value only against the rows an UPDATE changes.
+  if (fault !== undefined) {
+    if ((await repo.findAddress(tx, addressId)) !== null) throw fault;
+    return null;
+  }
+  const patch: AddressUpdate = { ...text, userid, longitude: cfToNumber(address.longitude), latitude: cfToNumber(address.latitude) };
+  return repo.updateAddress(tx, addressId, patch, ctx);
 }
 
 /** Makes `addressId` the user's only primary address (userDAO.cfc:845-857). */

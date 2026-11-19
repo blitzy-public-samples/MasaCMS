@@ -14,7 +14,7 @@ import { lsDateFormatString } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import { ORIGINAL_URL_HEADER, assignContext, type AdminRequest, type RequestContext } from '@/lib/request-context';
-import { siteBeanOf, sitePaths } from '@/lib/site-paths';
+import { legacyThemeAssetPath } from '@/lib/site-paths';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, ScreenContext } from '../registry';
 import { CARCH_OWNER, applyCarchDefaults, carchGate } from './controller';
@@ -95,9 +95,6 @@ const TYPE_MODULES: Readonly<Record<string, string>> = Object.freeze({
 
 /** `nodeLevelList`. */
 const NODE_LEVEL = NODE_LEVEL_LIST.join(',');
-
-/** The theme Masa start-up installs as `<webroot>/themes/default`, which the installed site uses. */
-const INSTALLED_THEME = 'default';
 
 /** Lines 139-146: the save-as-draft exit guard up to its prompt. */
 const CONFIRM_EXIT_OPEN = `
@@ -681,12 +678,6 @@ function cgiQueryString(req: AdminRequest): string {
   return queryAt < 0 ? '' : target.slice(queryAt + 1);
 }
 
-/** `settingsManager.getSite(rc.siteID).getThemeAssetPath()` for the session site, which carch keeps as `rc.siteID`. */
-function themeAssetPath(req: AdminRequest): string {
-  if (req.site === undefined) return `${legacySettings().context}/themes/${INSTALLED_THEME}`;
-  return sitePaths(req, siteBeanOf(req.site)).themeAssetPath('webRoot', false);
-}
-
 // ---- The view's setters ----
 
 /** contentBean `setType`: Portal reads as Folder; a listed new type replaces the bean's and files a module type. */
@@ -898,6 +889,7 @@ function editScope(ctx: ScreenContext, data: CarchPageModel): EditScope {
       pageLevelList: pageLevel,
       ...extensionState(model, type, pageLevel, extended, subtypeFilter),
       subtypeFilter,
+      themeAssetPath: '',
       requiresApproval,
       showApprovalStatus,
       hasChangesets,
@@ -1247,7 +1239,7 @@ function formScript(o: ViewOutput, s: EditScope, panels: EditPanelsResult): void
       structText(bean, 'subType'),
       rcText(rc, 'siteid'),
       legacySettings().context,
-      themeAssetPath(s.req),
+      s.state.themeAssetPath,
     ];
     o.t(args.join("','")).t("');\n");
   }
@@ -1326,7 +1318,15 @@ function withinPageLimit(s: EditScope): boolean {
  * @throws TypeError When the request or the edit model lacks a value the view or an include reads.
  */
 export async function renderEditView(ctx: ScreenContext, data: CarchPageModel): Promise<ShellView> {
-  const s = editScope(ctx, data);
+  const scope = editScope(ctx, data);
+  const muraAction = cfListToArray(rcText(scope.rc, 'muraAction'), '.').at(-1) ?? '';
+  const fckeditorLoader = cfEq(muraAction, 'edit') && cfEq(legacySettings().htmlEditorType, 'fckeditor');
+  // Only the editor's panels and script and js.cfm's FCKeditor loader print the theme path.
+  const themeAssetPath =
+    withinPageLimit(scope) || fckeditorLoader
+      ? await legacyThemeAssetPath(scope.req, ctx.gateway, rcText(scope.rc, 'siteid'))
+      : undefined;
+  const s = themeAssetPath === undefined ? scope : { ...scope, state: { ...scope.state, themeAssetPath } };
   ctx.req = s.req;
   const o = new ViewOutput();
   lockScript(o, s);
@@ -1352,8 +1352,8 @@ export async function renderEditView(ctx: ScreenContext, data: CarchPageModel): 
     o.t('\n\t<div>\n\t\t\n').t(renderSiteFull().value).t('\n\t</div>\n');
   }
   o.ws();
-  const muraAction = cfListToArray(rcText(s.rc, 'muraAction'), '.').at(-1) ?? '';
-  return { body: raw(o.toString()), ajax: carchJs(ctx, muraAction), ...(htmlHead === undefined ? {} : { htmlHead }) };
+  const ajax = carchJs(ctx, muraAction, themeAssetPath);
+  return { body: raw(o.toString()), ajax, ...(htmlHead === undefined ? {} : { htmlHead }) };
 }
 
 // ---- Controller ----

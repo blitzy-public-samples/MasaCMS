@@ -565,6 +565,41 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     },
   );
 
+  // The oracle's answers to a NUL path id on every id route (EX-UNSTORABLE-TEXT-NUL): no user 401, a write without a CSRF token 400, else notFound.
+  const NUL_ID_ROUTES: ReadonlyArray<readonly ['GET' | 'POST', string, Record<string, unknown> | undefined, string]> = [
+    ['GET', '/audit', undefined, 'esignature.requests.audit'],
+    ['GET', '/verify', undefined, 'esignature.requests.verify'],
+    ['POST', '/verify', { entries: '[]' }, 'esignature.requests.verify'],
+    ['POST', '/sign', { typedName: 'Jane Doe' }, 'esignature.requests.sign'],
+  ];
+  const NUL_IDS: ReadonlyArray<readonly [string, (requestId: string) => string]> = [
+    ['in an id no request has', () => 'abc%00def'],
+    ['after a stored id', (requestId) => `${requestId}%00`],
+    ['inside a stored id', (requestId) => `${requestId.slice(0, 8)}%00${requestId.slice(8)}`],
+  ];
+  it.each(NUL_ID_ROUTES.flatMap(([method, tail, payload, envelope]) => NUL_IDS.map(([where, idOf]) => [method, tail, where, idOf, payload, envelope] as const)))(
+    'answers %s {id}%s with a NUL %s as the oracle does, storing nothing',
+    async (method, tail, _where, idOf, payload, envelope) => {
+      const { request_id: requestId } = await createRequest();
+      const audited = (await auditItems(requestId)).length;
+      const id = idOf(requestId);
+      const url = `${P}/${id}${tail}?siteid=${TENANT_A.siteId}`;
+      const roles = [Roles.systemUser, Roles.esignatureSigner, Roles.esignatureAuditor];
+      consumed.length = 0;
+
+      const anonymous = await sendAnonymous(method, url, payload);
+      expect([anonymous.statusCode, anonymous.body]).toEqual([401, errorBody(envelope, 'invalid_request', 'Insufficient Account Permissions')]);
+      if (method === 'POST') {
+        const tokenless = await send(method, url, { roles, payload, csrf: false });
+        expect([tokenless.statusCode, tokenless.body]).toEqual([400, errorBody(envelope, 'invalid_request', 'Invalid CSRF tokens')]);
+      }
+      const res = await send(method, url, { roles, payload });
+      expect([res.statusCode, res.body]).toEqual([404, errorBody(envelope, 'invalid_request', 'Not Found')]);
+      expect(consumed.map(({ context }) => context)).toEqual(method === 'POST' ? [decodeURIComponent(id)] : []);
+      expect((await auditItems(requestId)).length).toBe(audited);
+    },
+  );
+
   it('reads a stored request through its id with trailing spaces, which the char(35) lookup ignores', async () => {
     const { request_id: id } = await createRequest();
     const res = await send('GET', `${P}/${id}%20%20/verify`, { sub: AUDITOR_USER_ID, roles: AUDITOR });
@@ -670,6 +705,25 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     const [, entry] = await auditItems(id);
     expect(entry).toMatchObject({ seq: 2, detail: kept, entry_hash: stored.entry_hash.toString('hex') });
     expect(stored.entry_hash.toString('hex')).toBe(signedEntryHash(id, stored.prev_hash, kept, String(entry?.at)));
+    expect((await send('GET', `${P}/${id}/verify`)).json().data).toEqual({ valid: true, entries: 2, brokenat: 0 });
+  });
+
+  it.each<'form' | 'url'>(['form', 'url'])('stores, hashes and answers a document name and typedName holding a NUL in the %s scope without it', async (carrier) => {
+    const post = (url: string, fields: Record<string, string>, field: string): Promise<Injected> => {
+      if (carrier === 'form') return send('POST', url, { payload: fields, encoding: 'form' });
+      const { [field]: value = '', ...rest } = fields;
+      return send('POST', `${url}?${field}=${encodeURIComponent(value)}`, { payload: rest, encoding: 'form' });
+    };
+    const created = await post(P, { ...CREATE, documentName: 'a\u0000b.pdf' }, 'documentName');
+    expect([created.statusCode, created.json().data.document_name]).toEqual([200, 'ab.pdf']);
+    const id: string = created.json().data.request_id;
+    const signed = await post(`${P}/${id}/sign`, { typedName: 'F4\u0000Probe' }, 'typedName');
+    expect([signed.statusCode, signed.json().data]).toEqual([200, { ...created.json().data, state: 'SIGNED' }]);
+
+    const stored = await storedSigning(id);
+    expect(stored).toMatchObject({ document_name: 'ab.pdf', typed_name: 'F4Probe', detail: 'F4Probe' });
+    const [, entry] = await auditItems(id);
+    expect(stored.entry_hash.toString('hex')).toBe(signedEntryHash(id, stored.prev_hash, 'F4Probe', String(entry?.at)));
     expect((await send('GET', `${P}/${id}/verify`)).json().data).toEqual({ valid: true, entries: 2, brokenat: 0 });
   });
 

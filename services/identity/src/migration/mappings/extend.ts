@@ -23,7 +23,7 @@ const BY_SUBTYPE_BASE_TABLE: SplitRule = { by: 'baseTable', value: IDENTITY_BASE
 // Ownership resolves these tables as siteID-or-umbrella, so every owner of a subtype places its rows in the same tenant.
 const SITE_ID: TenantSource = { kind: 'site', column: 'siteID' };
 
-// Each mapping module keeps its own copy: the barrel re-exports every export, so mapping modules export only mappings.
+// Kept per module: mapping modules export only mappings, which the barrel re-exports.
 /** Mapping columns for `legacy` (live-catalog spelling and order), each with the target name and canonical type of its column in `definition`. */
 function columnsOf(legacyTable: string, definition: IdentityUnitTableDefinition, legacy: readonly string[]): MappingColumn[] {
   return legacy.map((name): MappingColumn => {

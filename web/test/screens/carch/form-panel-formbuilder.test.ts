@@ -64,6 +64,7 @@ const STATE: EditFormState = Object.freeze({
   baseTypeList: '',
   subTypes: [],
   subtypeFilter: '',
+  themeAssetPath: '/themes/default',
   isExtended: false,
   requiresApproval: false,
   showApprovalStatus: false,

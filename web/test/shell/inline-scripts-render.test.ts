@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { encodeJs, isSafeHtml, raw, toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { resetSiteFirstTouchForTests } from '@/lib/site-paths';
 import { renderCompactScripts, renderMuraInit, renderTemplateScripts } from '@/shell/inline-scripts';
 import type { ShellContext, ShellLayout } from '@/shell/types';
 import { tenantASiteAdminSession } from '../fixtures/session';
@@ -17,6 +16,7 @@ import {
   unservedEditorRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
+import { INSTALLED_LEGACY_PATHS } from '../helpers/fake-gateway';
 
 const LAYOUTS = fileURLToPath(new URL('../../../admin/common/layouts/', import.meta.url));
 
@@ -177,8 +177,12 @@ function installed(partial: AdminRequestPartial = {}): AdminRequest {
   });
 }
 
-/** A shell context around `ctx` in `layout`; the scripts read nothing else. */
-function shellContext(ctx: AdminRequest, layout: ShellLayout = 'template'): ShellContext {
+/** A shell context around `ctx` in `layout`, legacy answering `themepath` for Mura.init; the scripts read nothing else. */
+function shellContext(
+  ctx: AdminRequest,
+  layout: ShellLayout = 'template',
+  themepath: string = INSTALLED_LEGACY_PATHS.initThemeAssetPath,
+): ShellContext {
   return {
     ctx,
     view: { body: raw('') },
@@ -192,6 +196,7 @@ function shellContext(ctx: AdminRequest, layout: ShellLayout = 'template'): Shel
       server: null,
       updateCoreCsrfQuery: '',
       exportLocationExists: false,
+      legacyPaths: { ...INSTALLED_LEGACY_PATHS, initThemeAssetPath: themepath },
       now: new Date(0),
     },
     layout,
@@ -209,13 +214,14 @@ function markupOf(rendered: SafeHtml): string {
   return toString(rendered);
 }
 
-const templateScripts = (ctx: AdminRequest): string => markupOf(renderTemplateScripts(shellContext(ctx)));
+const templateScripts = (ctx: AdminRequest, themepath?: string): string =>
+  markupOf(renderTemplateScripts(shellContext(ctx, 'template', themepath)));
 
-const compactScripts = (ctx: AdminRequest, frontEndProxyLoc?: string): string =>
+const compactScripts = (ctx: AdminRequest, frontEndProxyLoc?: string, themepath?: string): string =>
   markupOf(
     frontEndProxyLoc === undefined
-      ? renderCompactScripts(shellContext(ctx, 'compact'))
-      : renderCompactScripts(shellContext(ctx, 'compact'), frontEndProxyLoc),
+      ? renderCompactScripts(shellContext(ctx, 'compact', themepath))
+      : renderCompactScripts(shellContext(ctx, 'compact', themepath), frontEndProxyLoc),
   );
 
 /** One single-quoted `Mura.init` member holding only ESAPI-encoded characters. */
@@ -223,7 +229,6 @@ const ENCODED_MEMBER = /^\t{4}\w+:'(?:[\w,.]|\\x[0-9A-F]{2}|\\u[0-9A-F]{4})*',$/
 
 beforeEach(() => {
   useSettings();
-  resetSiteFirstTouchForTests();
 });
 
 afterEach(() => {
@@ -232,8 +237,8 @@ afterEach(() => {
 });
 
 describe('renderMuraInit', () => {
-  it.each<[string, Record<string, string>, AdminRequestPartial, string]>([
-    ['the installed admin', ORACLE_SETTINGS, {}, ORACLE_INIT],
+  it.each<[string, Record<string, string>, AdminRequestPartial, string, string]>([
+    ['the installed admin', ORACLE_SETTINGS, {}, 'http://localhost:8080/themes/default', ORACLE_INIT],
     [
       'the installed admin under a file asset path',
       FILE_ASSET_ORACLE_SETTINGS,
@@ -241,11 +246,12 @@ describe('renderMuraInit', () => {
         httpHost: 'localhost:22380',
         site: { record: { domainAlias: 'alias.c23.test', enforcePrimaryDomain: 1 } },
       },
+      'http://localhost:22380/themes/default',
       FILE_ASSET_ORACLE_INIT,
     ],
-  ])('prints the statement the legacy oracle printed for %s', (_, settings, partial, expected) => {
+  ])('prints the statement the legacy oracle printed for %s', (_, settings, partial, themepath, expected) => {
     useSettings(settings);
-    expect(renderMuraInit(shellContext(installed(partial)))).toBe(expected);
+    expect(renderMuraInit(shellContext(installed(partial), 'template', themepath))).toBe(expected);
   });
 
   const ADMIN_DOMAIN = { MURA_PORT: '8080', MURA_ADMINDOMAIN: 'admin.example.com' } as const;
@@ -535,7 +541,7 @@ describe('renderMuraInit', () => {
     ],
   ])('matches the legacy getters for %s', (_, settings, request, expected) => {
     useSettings(settings);
-    expect(renderMuraInit(shellContext(request()))).toBe(legacyInit(expected));
+    expect(renderMuraInit(shellContext(request(), 'template', expected.themepath))).toBe(legacyInit(expected));
   });
 
   it.each<[Record<string, string>, InitValues['indexfileinapi']]>([
@@ -556,7 +562,7 @@ describe('renderMuraInit', () => {
   it('encodes every untrusted value with the ESAPI JavaScript codec', () => {
     useSettings({ MURA_CONTEXT: "/c'ms" });
     const init = renderMuraInit(
-      shellContext(installed({ session: { siteid: 'x"y</script>' }, site: { record: { theme: "it's" } } })),
+      shellContext(installed({ session: { siteid: 'x"y</script>' } }), 'template', "http://localhost/c'ms/themes/it's"),
     );
     expect(init).toContain("\t\t\t\tcontext:'\\x2Fc\\x27ms',\n");
     expect(init).toContain("\t\t\t\tsiteid:'x\\x22y\\x3C\\x2Fscript\\x3E',\n");
@@ -608,7 +614,7 @@ describe('renderTemplateScripts', () => {
     ],
   ])('matches the legacy template script for %s', (_, settings, request, values) => {
     useSettings(settings);
-    expect(templateScripts(request())).toBe(legacyScript('template', values));
+    expect(templateScripts(request(), values.init.themepath)).toBe(legacyScript('template', values));
   });
 
   it('dismisses alerts for the session site and opens with the legacy handlers', () => {
@@ -628,7 +634,7 @@ describe('renderTemplateScripts', () => {
   it('sends an empty alert site and initialises the default site when the session holds no site', () => {
     const ctx = unservedEditorRequest();
     const blank: AdminRequest = { ...ctx, session: { ...ctx.session, siteid: '' } };
-    const markup = templateScripts(blank);
+    const markup = templateScripts(blank, 'http://localhost/themes/');
     expect(markup).toBe(
       legacyScript('template', {
         init: under('http://localhost', { themepath: 'http://localhost/themes/' }),
@@ -683,7 +689,7 @@ describe('renderCompactScripts', () => {
     ],
   ])('matches the legacy compact script for %s', (_, settings, request, values) => {
     useSettings(settings);
-    expect(compactScripts(request())).toBe(legacyScript('compact', values));
+    expect(compactScripts(request(), undefined, values.init.themepath)).toBe(legacyScript('compact', values));
   });
 
   it.each<[string, string | undefined, string, string]>([

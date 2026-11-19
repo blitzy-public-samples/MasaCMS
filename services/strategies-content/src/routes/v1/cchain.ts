@@ -229,7 +229,7 @@ export async function registerChainRoutes(app: FastifyInstance, ctx: ContentRout
       groupId: rcText(rc, 'groupid'),
     });
     const saved = Object.keys(errors).length === 0;
-    // With errors legacy takes no redirect and renders cchain.save, which has no view (EX-ADMIN-DEBUGPAGE).
+    // With errors legacy takes no redirect and renders cchain.save, which has no view.
     return { saved, errors, redirect: saved ? listRedirect(siteid) : null };
   });
 

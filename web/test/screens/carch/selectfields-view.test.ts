@@ -117,8 +117,9 @@ describe('cArch.selectfields', () => {
     expect(html).toContain(fixture('selectfields-displaylist.html'));
     expect(html).toContain(ARCHITECTURE_SCRIPT);
     expect(page.kind === 'document' ? page.doc.layout : undefined).toBe('compact');
-    expect(ctx.gateway.calls).toHaveLength(1);
-    expect(ctx.gateway.calls[0]).toMatchObject({
+    const serviceCalls = ctx.gateway.calls.filter(({ service }) => service !== 'gateway');
+    expect(serviceCalls).toHaveLength(1);
+    expect(serviceCalls[0]).toMatchObject({
       service: 'strategies-content',
       method: 'GET',
       path: FIELDS_PATH,

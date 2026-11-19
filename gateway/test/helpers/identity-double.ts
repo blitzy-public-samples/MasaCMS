@@ -104,6 +104,9 @@ export type AuthenticateHandler = (
   input: Schemas['AuthenticateRequest'],
 ) => Schemas['AuthenticateResponse'] | Promise<Schemas['AuthenticateResponse']>;
 
+/** Runs before `mintUserToken` answers, so a suite can change the session identity mints for. */
+export type MintHook = (input: Schemas['TokenRequest']) => void | Promise<void>;
+
 /** Answers `adoptSession` in place of the default adoption. */
 export type AdoptHandler = (
   input: Schemas['AdoptSessionRequest'],
@@ -148,6 +151,8 @@ export interface IdentityDouble extends HttpDouble {
   failNext(operation: IdentityOperationId, failure: IdentityFailure): void;
   /** Replaces, or with `undefined` restores, the default `authenticateRequest` answer. */
   onAuthenticate(handler: AuthenticateHandler | undefined): void;
+  /** Replaces, or with `undefined` removes, the hook run before each `mintUserToken` answer. */
+  onMint(hook: MintHook | undefined): void;
   /** Replaces, or with `undefined` restores, the default `adoptSession` answer. */
   onAdopt(handler: AdoptHandler | undefined): void;
 }
@@ -295,6 +300,7 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
   let adminSite = '';
   let invocation: InvocationVerifier | undefined;
   let authenticateHandler: AuthenticateHandler | undefined;
+  let mintHook: MintHook | undefined;
   let adoptHandler: AdoptHandler | undefined;
 
   const callerOf = async (req: RecordedRequest): Promise<string | undefined> => {
@@ -499,9 +505,12 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
 
   const serve = async (id: IdentityOperationId, sid: string, req: RecordedRequest, res: ServerResponse): Promise<void> => {
     switch (id) {
-      case 'mintToken':
-        answer(req, res, await mint(json<Schemas['TokenRequest']>(req)));
+      case 'mintToken': {
+        const body = json<Schemas['TokenRequest']>(req);
+        await mintHook?.(body);
+        answer(req, res, await mint(body));
         return;
+      }
       case 'authenticate': {
         const body = json<Schemas['AuthenticateRequest']>(req);
         authentications.push(body);
@@ -612,6 +621,9 @@ export async function startIdentityDouble(opts: IdentityDoubleOptions = {}): Pro
     },
     onAuthenticate(handler) {
       authenticateHandler = handler;
+    },
+    onMint(hook) {
+      mintHook = hook;
     },
     onAdopt(handler) {
       adoptHandler = handler;

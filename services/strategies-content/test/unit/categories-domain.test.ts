@@ -664,8 +664,8 @@ describe.skipIf(!(await pgAvailable()))('domain/categories operations', () => {
     });
 
     it.each<[string, CategoryInput, CategoryActionOptions, string]>([
-      ['a rejected token on add', { action: 'add', siteid: POOL, name: 'Token Add' }, { csrfValid: false }, 'Element CATEGORYBEAN is undefined in ARGUMENTS.RC.'],
-      ['an unknown action', { action: 'publish', siteid: POOL, name: 'Unknown' }, {}, 'Element CATEGORYBEAN is undefined in ARGUMENTS.RC.'],
+      ['a rejected token on add', { action: 'add', siteid: POOL, name: 'Token Add' }, { csrfValid: false }, 'Element RC.categoryBean is undefined in ARGUMENTS.'],
+      ['an unknown action', { action: 'publish', siteid: POOL, name: 'Unknown' }, {}, 'Element RC.categoryBean is undefined in ARGUMENTS.'],
       ['a missing action', { siteid: POOL, name: 'No Action' }, {}, 'Element ACTION is undefined in RC.'],
       ['a delete without a category id', { action: 'delete', siteid: POOL }, {}, 'Element CATEGORYID is undefined in RC.'],
     ])('updateCategoryAction fails on %s as legacy dereferences the missing value', async (_label, rc, opts, message) => {

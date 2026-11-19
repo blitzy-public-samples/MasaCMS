@@ -258,6 +258,19 @@ describe.skipIf(!available)('finance fixture routes', () => {
     ['existence: an unknown record', () => get(`/records/${MISSING_ID}/versions`), 404, 'finance.records.versions', 'Not Found'],
     ['existence: an unknown attachment', (id) => get(`/records/${id}/attachments/${MISSING_ID}`), 404, 'finance.records.attachments', 'Not Found'],
     ['validation: an edit missing fields', (id) => post(`/records/${id}/edit`, PREPARER, { title: 'Only a title' }), 400, 'finance.records.edit', 'Invalid parameters'],
+    [
+      'validation: a create whose form title is only a NUL',
+      async () =>
+        app.inject({
+          method: 'POST',
+          url: `${P}/records`,
+          headers: { ...(await headersFor(PREPARER)), ...CSRF, 'content-type': 'application/x-www-form-urlencoded' },
+          payload: 'title=%00&amount=1&period=2026-06',
+        }),
+      400,
+      'finance.records',
+      'Invalid parameters',
+    ],
     ['validation: a JSON number amount', () => post('/records', PREPARER, { ...VALID, amount: 1250.5 }), 400, 'finance.records', 'Invalid parameters'],
     ['validation: a part that is not a file', (id) => upload(id, multipart('file')), 400, 'finance.records.attachments', 'Invalid parameters'],
     ['validation: a zero page size', (id) => get(`/records/${id}/attachments?itemsPerPage=0`), 400, 'finance.records.attachments', 'Invalid parameters'],
@@ -376,6 +389,48 @@ describe.skipIf(!available)('finance fixture routes', () => {
     },
   );
 
+  // The oracle's answers to a NUL path id on every id route (EX-UNSTORABLE-TEXT-NUL): no user 401, a write without a CSRF token 400, else notFound.
+  const NUL_ID_ROUTES: ReadonlyArray<readonly ['GET' | 'POST', string, string]> = [
+    ['GET', '', 'finance.records'],
+    ['GET', '/versions', 'finance.records.versions'],
+    ['GET', '/attachments', 'finance.records.attachments'],
+    ['GET', `/attachments/${MISSING_ID}`, 'finance.records.attachments'],
+    ['POST', '/submit', 'finance.records.submit'],
+    ['POST', '/approve', 'finance.records.approve'],
+    ['POST', '/reject', 'finance.records.reject'],
+    ['POST', '/resubmit', 'finance.records.resubmit'],
+    ['POST', '/edit', 'finance.records.edit'],
+    ['POST', '/attachments', 'finance.records.attachments'],
+  ];
+  const NUL_IDS: ReadonlyArray<readonly [string, (recordId: string) => string]> = [
+    ['in an id no record has', () => 'abc%00def'],
+    ['after a stored id', (recordId) => `${recordId}%00`],
+    ['inside a stored id', (recordId) => `${recordId.slice(0, 8)}%00${recordId.slice(8)}`],
+  ];
+  it.each(NUL_ID_ROUTES.flatMap(([method, tail, envelope]) => NUL_IDS.map(([where, idOf]) => [method, tail, where, idOf, envelope] as const)))(
+    'answers %s {id}%s with a NUL %s as the oracle does, storing nothing',
+    async (method, tail, _where, idOf, envelope) => {
+      const { record_id: recordId } = await createRecord();
+      const id = idOf(recordId);
+      const url = `${P}/records/${id}${tail}?siteid=${TENANT_A.siteId}`;
+      const payload = method === 'POST' ? { payload: tail === '/edit' ? VALID : {} } : {};
+      const user = await headersFor([Roles.systemUser, ...BOTH]);
+      const answer = async (headers: Record<string, string>): Promise<[number, string]> => {
+        const res = await app.inject({ method, url, headers, ...payload });
+        return [res.statusCode, res.body];
+      };
+      consumed.length = 0;
+
+      expect(await answer({ [INVOCATION_HEADER]: user[INVOCATION_HEADER] ?? '' })).toEqual([401, errorBody(envelope, 'invalid_request', 'Insufficient Account Permissions')]);
+      if (method === 'POST') expect(await answer(user)).toEqual([400, errorBody(envelope, 'invalid_request', 'Invalid CSRF tokens')]);
+      expect(await answer({ ...user, ...(method === 'POST' ? CSRF : {}) })).toEqual([404, errorBody(envelope, 'invalid_request', 'Not Found')]);
+      expect(consumed.filter(({ token }) => token === GOOD_TOKEN).map(({ context }) => context)).toEqual(method === 'POST' ? [decodeURIComponent(id)] : []);
+      const after = (await get(`/records/${recordId}`)).json().data;
+      expect([after.state, after.version]).toEqual(['IN-PROGRESS', 1]);
+      expect((await get(`/records/${recordId}/attachments`)).json().data.totalitems).toBe(0);
+    },
+  );
+
   it('creates, reads, edits and moves a record through its lifecycle with one version row each, rebuilding the rollup', async () => {
     const created = await post('/records', PREPARER, VALID);
     expect(created.json()).toMatchObject({ method: 'finance.records', data: { siteid: 'tenant-a', amount: '1250.5000', state: 'IN-PROGRESS', version: 1 } });
@@ -462,6 +517,12 @@ describe.skipIf(!available)('finance fixture routes', () => {
       ['a form onerror attribute', 'form', {}, { ...FIELDS, title: '<img src=x onerror=alert(1)>' }, '<img src=x [INVALID]=alert(1)>'],
       ['a form javascript: scheme', 'form', {}, { ...FIELDS, title: 'javascript:alert(1)' }, '[INVALID]alert(1)'],
       ['a form object tag', 'form', {}, { ...FIELDS, title: '<object data=x>' }, '[INVALID]'],
+      ['a form title holding a NUL', 'form', {}, { ...FIELDS, title: 'a\u0000b' }, 'ab'],
+      ['a query-string title holding a NUL', 'form', { title: 'c\u0000d' }, UNTITLED, 'cd'],
+      ['a form period holding a NUL', 'form', {}, { ...FIELDS, period: '2027\u0000-03' }, 'P'],
+      ['a form title under a NUL-holding name', 'form', {}, { ...UNTITLED, 'ti\u0000tle': 'Named title' }, 'Named title'],
+      ['a query-string title under a NUL-holding name', 'form', { 'ti%00tle': 'Query named' }, UNTITLED, 'Query named'],
+      ['a form title of JSON text escaping a NUL', 'form', {}, { ...FIELDS, title: '{"k":"a\\u0000b"}' }, '{"k":"a\\u0000b"}'],
       ['a padded, script-bearing JSON title', 'json', {}, { ...FIELDS, title: '  <script>x</script>  ' }, '  <script>x</script>  '],
       ['a padded query-string title beside a JSON body', 'json', { title: '  Query title  ' }, UNTITLED, 'Query title'],
     ])('answers and stores %s as legacy leaves it', async (_case, body, query, fields, title) => {

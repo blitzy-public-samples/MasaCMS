@@ -7,6 +7,7 @@ import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
 import {
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
+  LegacyQueryFault,
   cfQueryCellText,
   cfQueryColumnOrder,
   generateCsrfToken,
@@ -407,6 +408,79 @@ describe('group save validation and halts [userBean.cfc:447-522]', () => {
     expect(h.db.writes()).toEqual([]);
   });
 
+  // Oracle: Masa 7.6.1 Edit Group saves posting these flags redirect to cUsers.editgroup with exactly these messages.
+  it.each<[string, Partial<GroupSaveInput>, string[], Record<string, string | number>]>([
+    ['a perm that is no number', { perm: 'abc' }, ['perm'], { perm: 'abc' }],
+    ['a subscribe that is no number', { subscribe: 'x' }, ['subscribe'], { subscribe: 'x' }],
+    ['an inActive boolean word', { inActive: 'true' }, ['inActive'], { inactive: 'true' }],
+    ['an isPublic boolean word', { isPublic: 'false' }, ['isPublic'], { ispublic: 'false' }],
+    ['an s2 boolean word, which also makes the group private', { s2: 'yes' }, ['s2'], { s2: 'yes', ispublic: 0 }],
+    ['a hex number Java reads without its exponent', { subscribe: '0x1F' }, ['subscribe'], { subscribe: '0x1F' }],
+    ['every flag at once, in the struct order legacy lists them', { perm: 'true', subscribe: 'x', inActive: 'y', isPublic: 'yes', s2: 'no' }, ['perm', 'inActive', 'isPublic', 'subscribe', 's2'], { perm: 'true', ispublic: 'yes' }],
+  ])('writes nothing and echoes the posted text for %s, which fails its dataType rule [beanValidator.cfc:262-275]', async (_case, flags, failed, echoed) => {
+    for (const save of [createGroup, updateGroup]) {
+      h.reset();
+      const userId = save === createGroup ? NEW_GROUP : EDITORS.userid;
+      const result = await save(h.deps, SUPER, { userId, siteId: SITE_A, groupName: 'Rejected', isPublic: 0, ...flags });
+
+      expect(result).toMatchObject({ written: false, group: { userid: userId, groupname: 'Rejected', ...echoed } });
+      expect(Object.keys(result.errors)).toEqual(failed);
+      expect(Object.values(result.errors)).toEqual(failed.map((property) => `The property named '${property}' is not valid`));
+      expect(h.store.writes()).toEqual([]);
+    }
+  });
+
+  it.each<[string, Partial<GroupSaveInput>]>([
+    ['an exponent with a sign', { perm: '1e+0' }],
+    ['a fraction CFML truncates', { subscribe: '+.5' }],
+    ['a padded number', { inActive: ' 1 ' }],
+  ])('saves %s, which passes its dataType rule', async (_case, flags) => {
+    const result = await createGroup(h.deps, SUPER, { userId: NEW_GROUP, siteId: SITE_A, groupName: 'Numbered', isPublic: 0, ...flags });
+
+    expect(result).toMatchObject({ written: true, errors: {} });
+  });
+
+  // Oracle: the debug page of each Masa 7.6.1 save whose inlined literal SQL Server refuses (fixtures/legacy-query-faults.json).
+  it.each<[string, (typeof createGroup | typeof updateGroup), Partial<GroupSaveInput>, string]>([
+    ['Infinity in Perm', createGroup, { perm: 'Infinity' }, "Invalid column name 'Infinity'."],
+    ['NaN in InActive of an update', updateGroup, { inActive: 'NaN' }, "Invalid column name 'NaN'."],
+    ['a hex float S2 a super user posts', createGroup, { s2: '0x1p3' }, "Incorrect syntax near 'p3'."],
+    ['a negated hex float keepPrivate', createGroup, { keepPrivate: '-0x1p3' }, 'Invalid operator for data type. Operator equals minus, type equals varbinary.'],
+    ['a hex float with a fraction in Subscribe of an update', updateGroup, { subscribe: '0x1.8p1' }, "Incorrect syntax near '.8'."],
+    ['a hex float isPublic', createGroup, { isPublic: '0x0p0' }, "Incorrect syntax near 'p0'."],
+    ['a hex float S2 the S2 rule reads as true, though no boolean', createGroup, { s2: '0xAp0' }, "Incorrect syntax near 'p0'."],
+    ['an overflowing hex float keepPrivate', createGroup, { keepPrivate: '0x1p1024' }, "Incorrect syntax near 'p1024'."],
+  ])('fails the statement on %s, which passes its dataType rule, writing nothing', async (_case, save, flags, detail) => {
+    const userId = save === createGroup ? NEW_GROUP : EDITORS.userid;
+    const saving = save(h.deps, SUPER, { userId, siteId: SITE_A, groupName: 'Literal', isPublic: 0, ...flags });
+
+    await expect(saving).rejects.toBeInstanceOf(LegacyQueryFault);
+    await expect(saving).rejects.toMatchObject({ detail: `[Macromedia][SQLServer JDBC Driver][SQLServer]${detail}` });
+    expect(h.store.writes()).toEqual([]);
+  });
+
+  // Oracle: a super user's group save posting these S2 values answers ACF's Expression fault (the scan quotes 1e309).
+  it.each(['abc', '"1e309"'])('fails the S2 rule on %j, which `cfif` cannot read, writing nothing', async (s2) => {
+    const saving = createGroup(h.deps, SUPER, { userId: NEW_GROUP, siteId: SITE_A, groupName: 'Unread', isPublic: 0, s2 });
+
+    await expect(saving).rejects.toMatchObject({ type: 'server_error', stacktrace: { Message: `cannot convert the value "${s2}" to a boolean`, Type: 'Expression' } });
+    expect(h.store.writes()).toEqual([]);
+  });
+
+  it('keeps the group row and fails the primary address insert on a hex float longitude [userManager.cfc:601-611,656-660]', async () => {
+    const saving = createGroup(h.deps, SUPER, { userId: NEW_GROUP, siteId: SITE_A, groupName: 'Mapped', isPublic: 0, address: { longitude: '0x1p3' } });
+
+    await expect(saving).rejects.toMatchObject({ detail: "[Macromedia][SQLServer JDBC Driver][SQLServer]Incorrect syntax near 'p3'.", sql: expect.stringMatching(/^INSERT INTO tuseraddresses/) });
+    expect(rowsOf(h.store, GROUP_ACCOUNT.table, 'userid', NEW_GROUP)).toHaveLength(1);
+    expect(rowsOf(h.store, GROUP_ADDRESS.table, 'userid', NEW_GROUP)).toEqual([]);
+  });
+
+  it('updates a group posting Infinity in Perm, which its UPDATE does not set [userDAO.cfc:404-455]', async () => {
+    const result = await updateGroup(h.deps, SUPER, { userId: EDITORS.userid, siteId: SITE_A, groupName: 'Infinite', isPublic: 0, perm: 'Infinity' });
+
+    expect(result).toMatchObject({ written: true, errors: {}, group: { groupname: 'Infinite', perm: EDITORS.perm } });
+  });
+
   it('throws before saving a group posted without a site id [userManager.cfc:597-599]', async () => {
     await expect(createGroup(h.deps, SUPER, { groupName: 'Siteless' })).rejects.toThrow("The attribute 'SITEID' is required when saving a user.");
     expect(h.store.writes()).toEqual([]);
@@ -623,6 +697,21 @@ describe('cUsers group routes over the memory repository', () => {
     expect(own.json()).toMatchObject({ written: true, errors: {}, group: { UserID: EDITORS.userid, GroupName: 'Renamed', Type: 1, isPublic: 0, LastUpdateBy: 'Admin User' } });
     expect(groupName(EDITORS.userid)).toBe('Renamed');
     expect(outboxEvents(db, GROUP_CHANGED_TOPIC)).toHaveLength(1);
+  });
+
+  it('answers a save posting a perm that is no number with its errors and the bean echoing the posted text, writing nothing [cusers.cfc:316-348]', async () => {
+    const headers = await callerHeaders(S2_ROLES);
+
+    const res = await send('POST', '/v1/groups', headers, { userid: NEW_GROUP, groupname: 'Rejected', isPublic: 'true', perm: 'abc', ...csrfFor(NEW_GROUP) });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      written: false,
+      group: { UserID: NEW_GROUP, GroupName: 'Rejected', Perm: 'abc', isPublic: 'true', InActive: '0' },
+      errors: { perm: "The property named 'perm' is not valid", isPublic: "The property named 'isPublic' is not valid" },
+    });
+    // Only the token is spent, as legacy spends it before the save.
+    expect(repo.writes().map((write) => write.table)).toEqual(['csrf_claim']);
   });
 
   it('refuses the photo variants before any write and saves a posted type=2 as a Type=1 group, never a user account', async () => {

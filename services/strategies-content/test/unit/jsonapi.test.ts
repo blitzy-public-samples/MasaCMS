@@ -777,6 +777,46 @@ describe.each(['variationtargeting', 'variationtargetings'])('variationTargeting
     expect(api.db.writes().filter((statement) => TARGETING_WRITE.test(statement.sql)).map((statement) => statement.sql.split(' ')[0])).toEqual(['INSERT']);
   });
 
+  it.each<[string, string, Readonly<Record<string, string>>, Struct]>([
+    ['form values holding a NUL', '', { initjs: 'a\u0000b', targetingjs: 'c\u0000' }, { initjs: 'ab', targetingjs: 'c' }],
+    ['a url value holding a NUL', '?initjs=a%00b', { targetingjs: 'c\u0000' }, { initjs: 'ab', targetingjs: 'c' }],
+    ['a form value that is only a NUL', '', { initjs: '\u0000', targetingjs: 'x' }, { initjs: '', targetingjs: 'x' }],
+    ['a form name holding a NUL', '', { 'init\u0000js': 'a', targetingjs: 'c' }, { initjs: 'a', targetingjs: 'c' }],
+    ['a url name holding a NUL', '?init%00js=a', { targetingjs: 'c' }, { initjs: 'a', targetingjs: 'c' }],
+  ])('saves %s for an s2 admin with the NUL removed, as legacy start-up leaves them', async (_label, query, fields, saved) => {
+    api.db.clear();
+    const res = await send(api, {
+      method: 'POST',
+      url: `${ENTITY}${query}`,
+      subject: 's2',
+      headers: { 'content-type': FORM },
+      payload: formBody({ contentid: PAGE_ONE, ...fields, csrf_token: 'form-csrf-token', csrf_token_expires: 'form-csrf-expiry' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(bodyOf(res)).toMatchObject({ method: 'save', data: { contentid: PAGE_ONE, ...saved, isnew: 0, errors: {} } });
+    const inserts = api.db.writes().filter((statement) => TARGETING_WRITE.test(statement.sql) && statement.sql.startsWith('INSERT'));
+    expect(inserts).toHaveLength(1);
+    // Legacy stores an empty script as NULL.
+    for (const value of Object.values(saved)) expect(inserts[0]?.params).toContainEqual(value === '' ? null : value);
+    expect(inserts[0]?.params).not.toContain('');
+    expect(JSON.stringify(inserts[0]?.params)).not.toContain('\\u0000');
+  });
+
+  it('answers a REST save holding a form NUL as the same save without it, as legacy does', async () => {
+    const save = async (initjs: string) => {
+      api.db.clear();
+      const res = await send(api, {
+        method: 'POST',
+        url: `/_api/rest/v1/${SITE}/${segment}/`,
+        subject: 's2',
+        headers: { 'content-type': FORM },
+        payload: formBody({ contentid: PAGE_ONE, initjs, targetingjs: 'c' }),
+      });
+      return { status: res.statusCode, body: res.body.replace(/[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}/g, '<id>'), writes: api.db.writes().length };
+    };
+    expect(await save('a\u0000b')).toEqual(await save('ab'));
+  });
+
   it('answers a save PostgreSQL refuses as unstorable text with the invalidParameters row', async () => {
     // The refusal node-postgres raises for a NUL (SQLSTATE 22021).
     const unstorable = Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), { code: '22021', severity: 'ERROR' });
@@ -800,6 +840,43 @@ describe.each(['variationtargeting', 'variationtargetings'])('variationTargeting
     } finally {
       await refusing.close();
     }
+  });
+});
+
+describe('path NULs no param takes', () => {
+  const CATEGORY = IDS.categories.pooledParent;
+  const CSRF_HEADERS = { 'x-csrf_token': 'json-csrf-token', 'x-csrf_token_expires': 'json-csrf-expiry' };
+  /** A CF UUID in either case, as new ids are minted, or a request's own UUID. */
+  const VOLATILE_ID = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-(?:[0-9A-F]{16}|[0-9A-F]{4}-[0-9A-F]{12})/gi;
+
+  /** The answer and recorded writes of `request` for an s2 admin, ids as placeholders, and whether any statement binds a NUL. */
+  async function served(request: ApiCall) {
+    api.db.clear();
+    const res = await send(api, { ...request, subject: 's2', headers: { ...CSRF_HEADERS, ...request.headers } });
+    const text = ({ sql, params }: { sql: string; params: unknown }): string => JSON.stringify({ sql, params });
+    return {
+      status: res.statusCode,
+      body: res.body.replace(VOLATILE_ID, '<id>'),
+      writes: api.db.writes().map((statement) => text(statement).replace(VOLATILE_ID, '<id>')),
+      bindsNul: api.db.statements.some((statement) => text(statement).includes('\\u0000')),
+    };
+  }
+
+  it.each<[string, HttpMethod, string, string | undefined]>([
+    ['segments after a 35-character id, which processRequest never reads', 'DELETE', `/category/${CATEGORY}/x/y`, undefined],
+    ['a segment after a remote function', 'POST', '/comment/flag/x', ''],
+  ])('answers a request whose NUL sits in %s as the request without it, binding no NUL', async (_label, method, path, payload) => {
+    const headers: Record<string, string> = payload === undefined ? {} : { 'content-type': FORM };
+    const withNul = await served({ method, url: `${API}${path}%00`, headers, payload });
+    expect(withNul.bindsNul).toBe(false);
+    expect(withNul).toStrictEqual(await served({ method, url: `${API}${path}`, headers, payload }));
+  });
+
+  it('answers a save whose path-pair name holds a NUL as the save of the name parseParamsFromPath strips it to', async () => {
+    const request = (name: string): ApiCall => ({ method: 'POST', url: `${API}/save/entityname/category/${name}/f7`, headers: { 'content-type': FORM }, payload: '' });
+    const withNul = await served(request('na%00me'));
+    expect(withNul.bindsNul).toBe(false);
+    expect(withNul).toStrictEqual(await served(request('name')));
   });
 });
 

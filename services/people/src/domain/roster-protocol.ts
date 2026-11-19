@@ -2,7 +2,7 @@
 // identity's commit and the finish, for every Type=2 save whose closure includes identity units (userManager.cfc:372-700).
 import { setTimeout as timerSleep } from 'node:timers/promises';
 import type { UserClaims } from '@opt2/platform/auth';
-import { LegacyApiError, LegacyServiceUnavailableError, cfEq, cfUuid, isCfUuid, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyQueryFault, LegacyServiceUnavailableError, cfEq, cfUuid, isCfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import {
   OperationBlockedError,
   endOperation,
@@ -28,6 +28,7 @@ import type {
   IdentityClient,
   PrepareOutcome,
 } from '../legacy/identity-client.js';
+import { userInsertFault } from '../legacy/query-fault.js';
 import {
   ID_WIDTH,
   LegacyStorageError,
@@ -58,6 +59,7 @@ import {
   type TrashRow,
 } from '../repo/tables.js';
 import {
+  addressInsertFaultOf,
   applyAddressInput,
   insertAddressInTx,
   primaryAddressFor,
@@ -89,7 +91,9 @@ import {
   resolveUserSite,
   restrictAdminInput,
   restrictProfileInput,
+  simpleText,
   splitUserValues,
+  writableFlags,
   type AccountWrite,
   type PersonWrite,
   type UserValues,
@@ -102,6 +106,7 @@ import {
   hasErrors,
   mergeUserErrors,
   requestHasRestrictedFiles,
+  validateBeanTypes,
   validatePersonValues,
   type LegacyErrors,
 } from './validation.js';
@@ -319,7 +324,7 @@ function poolMove(userId: string): LegacyServiceUnavailableError {
 
 /** `err` when it already carries a legacy answer, else the legacy 503 of a failure at `step`. */
 function asUnavailable(err: unknown, step: string): unknown {
-  if (err instanceof LegacyServiceUnavailableError || err instanceof LegacyApiError || err instanceof LegacyStorageError) return err;
+  if (err instanceof LegacyServiceUnavailableError || err instanceof LegacyApiError || err instanceof LegacyStorageError || err instanceof LegacyQueryFault) return err;
   const unavailable = new LegacyServiceUnavailableError(`Roster operation failed at ${step}`, 'auto', `roster-${step}`);
   unavailable.cause = err;
   return unavailable;
@@ -544,7 +549,7 @@ interface ShapedSave {
   values: UserValues;
   account: AccountWrite;
   person: PersonWrite;
-  errors: { extended: Record<string, string>; people: LegacyErrors; restrictedFiles: boolean };
+  errors: { bean: LegacyErrors; extended: Record<string, string>; people: LegacyErrors; restrictedFiles: boolean };
   saveExtended: boolean;
   /** A create's primary address; undefined for a user restored from the trash. */
   primaryAddress?: AddressValues;
@@ -634,7 +639,7 @@ async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarge
   const values = applySuperUserRule(pooled, claims.s2);
   // splitUserValues takes the values before the S2 rule: identity applies it from the token, and isPublic must stay the pool's.
   const controls = operation === 'update' ? { updateGroups: input.kind !== 'profile-update', poolSwitch: site.poolSwitch } : { poolSwitch: site.poolSwitch };
-  const { person, account } = splitUserValues(pooled, controls);
+  const { person, account } = splitUserValues(writableFlags(pooled, operation), controls);
   return {
     operation,
     userId,
@@ -680,7 +685,7 @@ async function validateSave(
     const addressPoolSite = await resolveAddressPoolSite(tx, input.claims.tid, params);
     const primaryAddress = operation === 'create' ? primaryAddressFor(values.userid, params, addressPoolSite) : undefined;
     return {
-      errors: { extended, people: validatePersonValues(values, deps.rb), restrictedFiles },
+      errors: { bean: validateBeanTypes(values), extended, people: validatePersonValues(values, deps.rb), restrictedFiles },
       saveExtended,
       ...(primaryAddress === undefined ? {} : { primaryAddress }),
       ...(addressPoolSite === undefined ? {} : { addressPoolSite }),
@@ -810,6 +815,59 @@ async function fenceMovedAddress(repo: PeopleRepository, tx: TenantTx, shaped: S
   if (open !== undefined) throw new PersonClosedSignal(open.user_id.replace(/ +$/, ''), open.operation_id);
 }
 
+/** The person columns `userDAO` writes for the save, with `setLastUpdateInfo`'s audit pair. */
+function personColumns(input: RosterInput, shaped: ShapedSave): { audit: { lastupdateby: string; lastupdatebyid: string }; columns: PersonInput } {
+  const { userId, values } = shaped;
+  const audit = lastUpdateInfo(auditActorFor(input.claims, input.acting), { userid: userId, fname: values.fname, lname: values.lname });
+  return { audit, columns: { ...shaped.person, ...audit, userid: userId, siteid: values.siteid } };
+}
+
+/** `err` when it is a LegacyQueryFault; rethrows anything else. */
+function queryFaultOf(err: unknown): LegacyQueryFault {
+  if (err instanceof LegacyQueryFault) return err;
+  throw err;
+}
+
+/** The truncation `userDAO.create`'s INSERT fails on for a create's person and account values; undefined when all fit. */
+function userInsertFaultOf(input: RosterInput, shaped: ShapedSave): LegacyQueryFault | undefined {
+  // The values after userManager.create's S2 rule, as its INSERT inlines them.
+  const { values } = shaped;
+  const flag = (name: 's2' | 'type' | 'inactive' | 'perm' | 'ispublic' | 'subscribe' | 'keepprivate'): string => simpleText(values[name], name);
+  const inline = {
+    userid: shaped.userId,
+    s2: flag('s2'),
+    type: flag('type'),
+    inactive: flag('inactive'),
+    perm: flag('perm'),
+    ispublic: flag('ispublic'),
+    subscribe: flag('subscribe'),
+    keepprivate: flag('keepprivate'),
+  };
+  const { columns } = personColumns(input, shaped);
+  const { account } = shaped.account;
+  return userInsertFault(inline, {
+    userid: columns.userid,
+    remoteid: javaTrim(account.remoteID),
+    fname: columns.fname,
+    lname: columns.lname,
+    email: columns.email,
+    groupname: columns.groupname,
+    subtype: columns.subtype,
+    lastupdateby: columns.lastupdateby,
+    lastupdatebyid: columns.lastupdatebyid,
+    username: javaTrim(account.UserName),
+    company: columns.company,
+    jobtitle: columns.jobtitle,
+    siteid: columns.siteid,
+    website: columns.website,
+    mobilephone: columns.mobilephone,
+    photofileid: columns.photofileid,
+    imname: columns.imname,
+    imservice: columns.imservice,
+    tablist: typeof account.tablist === 'string' ? javaTrim(account.tablist) : account.tablist,
+  });
+}
+
 /** Step 3: people's writes of `userManager.update`/`create` in one fenced, gated transaction, the held person event and state `people-committed`; fence waits draw on `budget`. */
 async function commitPeople(
   deps: RosterDeps,
@@ -818,11 +876,10 @@ async function commitPeople(
   operationId: string,
   budget: Budget,
   write: WriteContext,
-): Promise<{ operation: RosterOperationRow; audit: { lastupdateby: string; lastupdatebyid: string } }> {
+): Promise<{ operation: RosterOperationRow; audit: { lastupdateby: string; lastupdatebyid: string }; fault?: LegacyQueryFault }> {
   const { repo } = deps;
   const { userId, values } = shaped;
-  const audit = lastUpdateInfo(auditActorFor(input.claims, input.acting), { userid: userId, fname: values.fname, lname: values.lname });
-  const columns: PersonInput = { ...shaped.person, ...audit, userid: userId, siteid: values.siteid };
+  const { audit, columns } = personColumns(input, shaped);
   const data = normaliseParams(values);
   const config = deps.extendConfig ?? EXTEND_CONFIG_DEFAULTS;
   const commit = async (tx: TenantTx) => {
@@ -832,12 +889,18 @@ async function commitPeople(
       await saveExtendedData(repo, tx, userId, data, { siteId: values.siteid, config, write, ...(deps.locale === undefined ? {} : { locale: deps.locale }) });
     }
     let person: PersonRow | null;
+    let fault: LegacyQueryFault | undefined;
     if (shaped.operation === 'create') {
       person = await repo.insertPerson(tx, columns, write);
       await writeInterests(repo, tx, userId, values.categoryid, { updateInterests: true }, write);
-      await writeTags(repo, tx, values, write);
-      await takeOut(repo, tx, userId, shaped.params, { write });
-      if (shaped.primaryAddress !== undefined) await insertAddressInTx(repo, tx, shaped.primaryAddress, write);
+      // Legacy's statements commit one by one, so a failing tag or address insert keeps every write before it.
+      fault = await writeTags(repo, tx, values, write).then(() => undefined, queryFaultOf);
+      const primary = shaped.primaryAddress;
+      if (fault === undefined) {
+        await takeOut(repo, tx, userId, shaped.params, { write });
+        fault = primary === undefined ? undefined : addressInsertFaultOf(primary);
+        if (primary !== undefined && fault === undefined) await insertAddressInTx(repo, tx, primary, write);
+      }
     } else {
       const stored = shaped.addressId === '' ? null : await repo.findAddress(tx, shaped.addressId);
       if (stored !== null) {
@@ -853,7 +916,7 @@ async function commitPeople(
     await deps.events.publishPersonChanged(tx, person, { operationId });
     const operation = await repo.setRosterOperationState(tx, operationId, { state: 'people-committed', beforeImage: JSON.stringify(before) }, write);
     if (operation === null) throw new Error(`Roster operation ${operationId} is missing from its tenant`);
-    return { operation, audit };
+    return { operation, audit, ...(fault === undefined ? {} : { fault }) };
   };
   return runPersonsOpen(deps.db, input.tenantId, commit, reserving(budget, IDENTITY_CALL_RESERVE_MS));
 }
@@ -950,9 +1013,13 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
 
   const errors = mergeUserErrors({ ...shaped.errors, identity: unstorable || prepared.ok ? {} : prepared.errors, siteId: shaped.values.siteid }, deps.rb);
   // Legacy validates before the insert that fails on the value, so validation errors answer first.
-  if (unstorable && !hasErrors(errors)) {
-    await guarded('prepare', () => closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'legacy-storage' }, write));
-    throw prepared;
+  const fault = !hasErrors(errors) && shaped.operation === 'create' ? userInsertFaultOf(input, shaped) : undefined;
+  if (fault !== undefined || (unstorable && !hasErrors(errors))) {
+    await guarded('prepare', async () => {
+      if (!unstorable && prepared.ok) await deps.identity.abort(userId, operationId, callOptions(budget, 'abort'));
+      await closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'legacy-storage' }, write);
+    });
+    throw fault ?? prepared;
   }
   if (hasErrors(errors)) {
     await guarded('validation', async () => {
@@ -1002,6 +1069,8 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
     }),
   );
   await finishOperation(deps, tenantId, userId, operationId, budget, write);
+  // Both sides hold the writes legacy made before its failing statement.
+  if (committed.fault !== undefined) throw committed.fault;
   const values = { ...shaped.values, ...committed.audit, isnew: 0, errors: {} };
   return { ok: true, userId, values };
 }

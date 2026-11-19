@@ -8,6 +8,7 @@ import { createCsrfRenderer } from '@/lib/csrf';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
+import { buildUrl } from '@/lib/urls';
 import type { CategoryTreeNode } from '@/screens/ccategory/dsp-nest';
 import { renderUserCategoriesNest, type InterestCategoryRow } from '@/screens/cusers/dsp_categories_nest';
 import {
@@ -457,6 +458,41 @@ describe('cusers.edituser failed save', () => {
     if (page.kind !== 'document') throw new Error(`Redirected to ${page.location}`);
     expect(page.html).toContain(`<div class="alert alert-error"><span> ${messages.join(' <br> ')} </span></div>`);
     expect(valuesOf(model, ['usernameNoCache', 'email'])).toEqual({ usernameNoCache: userBean.UserName, email: userBean.Email });
+  });
+
+  // Oracle: the follow-up edituser pages of f3/leg-user-{s2-yes,inactive-abc,ispublic-true,multi} on the legacy server.
+  it.each<[string, Partial<PersonRecord>, string, Record<string, Array<[string, boolean]>>, string]>([
+    ['s2=yes', { S2: 'yes', isPublic: 0 }, 's2', { s2: [['1', true], ['0', false]], isPublic: [['1', false], ['0', true]], InActive: [['0', true], ['1', false]] }, 'ispublic=0'],
+    ['InActive=abc', { InActive: 'abc' }, 'inActive', { InActive: [['0', false], ['1', false]], isPublic: [['1', true], ['0', false]] }, 'ispublic=1'],
+    ['isPublic=true', { isPublic: 'true' }, 'isPublic', { isPublic: [['1', true], ['0', false]] }, 'ispublic=true'],
+    ['isPublic=yes', { isPublic: 'yes', InActive: 'y' }, 'isPublic', { isPublic: [['1', true], ['0', false]], InActive: [['0', false], ['1', false]] }, 'ispublic=yes'],
+  ])('re-renders a bean holding the posted flag text %s with the radios CFML `eq` and `cfif` check', async (_label, flags, property, radios, query) => {
+    const errors = { [property]: `The property named '${property}' is not valid` };
+    const edit: UserEditData = { ...newUserEditData, user: { ...newUserEditData.user, SiteID: 'default', ...flags }, errors, retained: true };
+    const ctx = makeScreenContext({
+      req: adminS2Request({ circuit: 'cusers', item: 'edituser', rc: { userid: '', siteid: 'default' } }),
+      gateway: fakeGatewayClient(routes(edit)),
+    });
+
+    const model = await renderScreenModel(editUserScreen, ctx);
+
+    expect(model.alerts.filter(({ className }) => className === 'alert alert-error')).toEqual([{ text: errors[property], className: 'alert alert-error' }]);
+    for (const [name, expected] of Object.entries(radios)) {
+      expect(named(model, name).filter(({ type }) => type === 'radio').map(({ value, checked }) => [value, checked])).toEqual(expected);
+    }
+    expect(valuesOf(model, ['returnurl'])).toEqual({ returnurl: buildUrl('cUsers.listUsers', undefined, query) });
+  });
+
+  it('fails as the view does on a user type it cannot read as a boolean', async () => {
+    const edit: UserEditData = { ...newUserEditData, user: { ...newUserEditData.user, SiteID: 'default', isPublic: 'abc' }, retained: true };
+    const ctx = makeScreenContext({
+      req: adminS2Request({ circuit: 'cusers', item: 'edituser', rc: { userid: '', siteid: 'default' } }),
+      gateway: fakeGatewayClient(routes(edit)),
+    });
+    await expect(renderScreenModel(editUserScreen, ctx)).rejects.toMatchObject({
+      message: 'cannot convert the value "abc" to a boolean',
+      type: 'Expression',
+    });
   });
 });
 

@@ -30,6 +30,8 @@ const CAPTURES: Readonly<Record<string, Capture>> = JSON.parse(
 ) as Record<string, Capture>;
 
 const PAGE_LEVEL_LIST = 'Page,Folder,Calendar';
+/** Legacy's `getSite('default').getThemeAssetPath()` on the capture server. */
+const LEGACY_THEME_PATH = '/themes/default';
 const ROWS: readonly SubTypeRow[] = CAPTURES['admin-page-default']?.subTypes ?? [];
 
 /** The request of `user` on `default`, whose served site uses the installed theme. */
@@ -43,7 +45,12 @@ const baseTypeListOf = (rcType: string): string =>
   ['component', 'file', 'link', 'form', 'variation'].includes(rcType.toLowerCase()) ? rcType : PAGE_LEVEL_LIST;
 
 /** The selector's input for a new node of `c.rcType`; `rc.type` comes from the request. */
-function inputFor(c: Omit<Capture, 'html' | 'user'>, req: AdminRequest, rb: RbLookup = rbFor('en')): TypeSelectorInput {
+function inputFor(
+  c: Omit<Capture, 'html' | 'user'>,
+  req: AdminRequest,
+  rb: RbLookup = rbFor('en'),
+  themeAssetPath: string = LEGACY_THEME_PATH,
+): TypeSelectorInput {
   return {
     ctx: { rb },
     req,
@@ -57,6 +64,7 @@ function inputFor(c: Omit<Capture, 'html' | 'user'>, req: AdminRequest, rb: RbLo
       baseTypeList: baseTypeListOf(c.rcType),
       subTypes: c.subTypes,
       subtypeFilter: c.subtypeFilter,
+      themeAssetPath,
     },
   };
 }
@@ -73,13 +81,15 @@ interface NodeOptions {
   readonly subtypeFilter?: string;
   readonly req?: AdminRequest;
   readonly rb?: RbLookup;
+  readonly themeAssetPath?: string;
 }
 
 /** A new node of `rcType` with `subTypes`, rendered for `req` (admin by default). */
 function renderNode(rcType: string, subTypes: readonly SubTypeRow[], options: NodeOptions = {}): string {
   const req = options.req ?? requestFor('admin', { type: rcType });
   const node = { rcType, subType: options.subType ?? 'Default', contentId: 'CID', contentHistId: 'CHID' };
-  return render(inputFor({ ...node, subtypeFilter: options.subtypeFilter ?? '', subTypes }, req, options.rb));
+  const c = { ...node, subtypeFilter: options.subtypeFilter ?? '', subTypes };
+  return render(inputFor(c, req, options.rb, options.themeAssetPath));
 }
 
 const row = (type: string, subtype: string, adminonly = 0): SubTypeRow => ({ type, subtype, adminonly });
@@ -183,11 +193,14 @@ describe('carch.edit type selector', () => {
     expect(renderNode('Page', rows)).toContain('<option value="Folder^Product" >Folder  / Product</option>');
   });
 
-  it('prints the installed theme path when programs-sites serves no site', () => {
+  it("prints legacy's theme path whether or not programs-sites serves the site", () => {
     vi.stubEnv('MURA_CONTEXT', '/masa');
     resetLegacySettingsForTests();
     const req = unservedEditorRequest({ rc: { type: 'Page' } });
     expect(req.site).toBeUndefined();
-    expect(renderNode('Page', [], { req })).toContain(",this.value,'default','/masa','/masa/themes/default');");
+    const themeAssetPath = '/masa/sites/default/themes/custom';
+    expect(renderNode('Page', [], { req, themeAssetPath })).toContain(
+      ",this.value,'default','/masa','/masa/sites/default/themes/custom');",
+    );
   });
 });

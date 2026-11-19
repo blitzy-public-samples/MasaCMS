@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEBUGGING_ENABLED_TEMPLATE,
+  EMPTY_WDDX_PACKET_FAULT,
   LEGACY_ERROR_PAGE_HTML,
   LegacyFaultError,
+  type LegacyFaultFields,
   UNSET_USER_BEAN_FAULT,
   debuggingEnabledOf,
   legacyDebugPageHtml,
   legacyDebuggingEnabled,
   legacyErrorResponse,
   legacyFaultOf,
+  legacyFaultOfTrace,
   legacyRuntimeErrorResponse,
 } from '../../src/legacy-compat/index.js';
 
@@ -34,6 +37,21 @@ describe('legacyDebugPageHtml', () => {
     ['', '', '</div>'],
   ])('encodes message %j and type %j, writing a heading only for a non-empty value', (message, type, tail) => {
     const page = legacyDebugPageHtml({ message, type }, marked);
+    expect(page.endsWith(`<h1>500 Error</h1>${tail}`)).toBe(true);
+  });
+
+  it.each<[string, LegacyFaultFields, string]>([
+    [
+      'every field',
+      { dataSource: 'muradb', sql: 'INSERT', errorCode: 'HY000', detail: 'cut', extendedInfo: 'more' },
+      '<h2>[m]<br /></h2><h3>Datasource:[muradb]<br /></h3><h4>SQL:[INSERT]<br /></h4><h3>Code:[HY000]<br /></h3>' +
+        '<h3>Type:[Database]<br /></h3><h3>[cut]<br /></h3><h3>[more]<br /></h3></div>',
+    ],
+    ['a code alone', { errorCode: '2628' }, '<h2>[m]<br /></h2><h3>Code:[2628]<br /></h3><h3>Type:[Database]<br /></h3></div>'],
+    ['a detail alone', { detail: 'd' }, '<h2>[m]<br /></h2><h3>Type:[Database]<br /></h3><h3>[d]<br /></h3></div>'],
+    ['empty fields', { dataSource: '', sql: '', errorCode: '', detail: '', extendedInfo: '' }, '<h2>[m]<br /></h2><h3>Type:[Database]<br /></h3></div>'],
+  ])("prints %s in onError's heading order", (_label, fields, tail) => {
+    const page = legacyDebugPageHtml(new LegacyFaultError('m', 'Database', fields), marked);
     expect(page.endsWith(`<h1>500 Error</h1>${tail}`)).toBe(true);
   });
 });
@@ -75,6 +93,18 @@ describe('LegacyFaultError', () => {
     expect(LegacyFaultError.fromTrace({ Message: 'm', Type: 'Application' })).toMatchObject({ message: 'm', type: 'Application' });
   });
 
+  it('carries its other fields through its stacktrace in heading order, leaving out the ones it lacks', () => {
+    const fault = new LegacyFaultError('m', 'Database', { detail: 'd', errorCode: '515', sql: 'S' });
+    expect(Object.entries(fault.trace())).toStrictEqual([
+      ['Message', 'm'],
+      ['Type', 'Database'],
+      ['Sql', 'S'],
+      ['ErrorCode', '515'],
+      ['Detail', 'd'],
+    ]);
+    expect(LegacyFaultError.fromTrace(fault.trace())).toEqual(fault);
+  });
+
   it("names cusers.cfc's unset user bean", () => {
     expect(Object.isFrozen(UNSET_USER_BEAN_FAULT)).toBe(true);
     expect(UNSET_USER_BEAN_FAULT).toStrictEqual({ Message: 'Element RC.userBean is undefined in ARGUMENTS.', Type: 'Expression' });
@@ -91,6 +121,14 @@ describe('legacyFaultOf', () => {
     expect(legacyFaultOf({ ERROR: { StackTrace: { Message: 'm', TYPE: 'Application' } } })).toMatchObject({ message: 'm', type: 'Application' });
   });
 
+  it('reads each other field the stacktrace legacyErrorResponse writes, and of any key case, as text only', () => {
+    const fault = new LegacyFaultError('m', 'Database', { dataSource: 'muradb', sql: 'S', errorCode: 'HY000', detail: 'd', extendedInfo: 'x' });
+    const written: unknown = JSON.parse(legacyErrorResponse('server_error', { stacktrace: fault.trace() }).body);
+    expect(legacyFaultOf(written)).toEqual(fault);
+    const lower = { error: { stacktrace: { message: 'm', type: 'Database', datasource: 'muradb', errorcode: 2628, DETAIL: 'd' } } };
+    expect(legacyFaultOf(lower)).toEqual(new LegacyFaultError('m', 'Database', { dataSource: 'muradb', detail: 'd' }));
+  });
+
   it.each<[string, unknown]>([
     ['no body', undefined],
     ['a text body', 'Unhandled Exception'],
@@ -102,17 +140,31 @@ describe('legacyFaultOf', () => {
   ])('reads no fault from %s', (_label, body) => {
     expect(legacyFaultOf(body)).toBeUndefined();
   });
+
+  it('reads a bare stacktrace struct as the envelope reads it, and none from a value that is not one', () => {
+    expect(legacyFaultOfTrace(EMPTY_WDDX_PACKET_FAULT)).toEqual(LegacyFaultError.fromTrace(EMPTY_WDDX_PACKET_FAULT));
+    expect(legacyFaultOfTrace({ message: 'm', TYPE: 'Application', sql: 'S' })).toEqual(new LegacyFaultError('m', 'Application', { sql: 'S' }));
+    expect([undefined, null, 'trace', { Message: 'm' }].map(legacyFaultOfTrace)).toEqual([undefined, undefined, undefined, undefined]);
+  });
 });
 
 describe('legacyRuntimeErrorResponse', () => {
   const fault = new LegacyFaultError('Element CONTENTID is undefined in FORM.');
 
-  it.each<[string, LegacyFaultError | undefined, boolean, string]>([
-    ['a fault with debugging on', fault, true, SAVE_RATE_PAGE],
-    ['a fault with debugging off', fault, false, LEGACY_ERROR_PAGE_HTML],
-    ['an error the target cannot name, debugging on', undefined, true, LEGACY_ERROR_PAGE_HTML],
-  ])('answers %s at 500 An Error Occurred', (_label, error, debuggingEnabled, body) => {
-    expect(legacyRuntimeErrorResponse(error, { debuggingEnabled, encodeHtml: (text) => text })).toStrictEqual({
+  const htmlHead = '<script type="text/javascript">var dtExample="11/315/2024";</script>';
+
+  it.each<[string, LegacyFaultError | undefined, boolean, string | undefined, string]>([
+    ['a fault with debugging on', fault, true, undefined, SAVE_RATE_PAGE],
+    ['a fault with debugging off', fault, false, undefined, LEGACY_ERROR_PAGE_HTML],
+    ['an error the target cannot name, debugging on', undefined, true, undefined, LEGACY_ERROR_PAGE_HTML],
+    // Own oracle datamanager-edit-valid-nohour1: the view's cfhtmlhead text precedes the page.
+    ['a fault after cfhtmlhead with debugging on', fault, true, htmlHead, htmlHead + SAVE_RATE_PAGE],
+    // cfcontent reset discards it (probe: cfhtmlhead, then a fault whose onError resets and includes error.html).
+    ['a fault after cfhtmlhead with debugging off', fault, false, htmlHead, LEGACY_ERROR_PAGE_HTML],
+    ['an error the target cannot name after cfhtmlhead', undefined, true, htmlHead, LEGACY_ERROR_PAGE_HTML],
+  ])('answers %s at 500 An Error Occurred', (_label, error, debuggingEnabled, head, body) => {
+    const opts = { debuggingEnabled, encodeHtml: (text: string) => text, ...(head === undefined ? {} : { htmlHead: head }) };
+    expect(legacyRuntimeErrorResponse(error, opts)).toStrictEqual({
       status: 500,
       statusText: 'An Error Occurred',
       headers: { 'Content-Type': 'text/html;charset=UTF-8' },

@@ -9,6 +9,14 @@
   "planned": {
     "halted": [
       {
+        "exceptionId": "EX-USER-FEED-TIE-ORDER",
+        "routeKeys": [
+          "admin:cwebservice.edit",
+          "admin:cwebservice.save"
+        ],
+        "scenario": "GS-ID-08"
+      },
+      {
         "exceptionId": "EX-CARCH-EDIT-FORM",
         "routeKeys": [
           "admin:carch.edit"

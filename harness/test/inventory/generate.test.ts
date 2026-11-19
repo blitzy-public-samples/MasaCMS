@@ -1026,6 +1026,8 @@ describe('live run', () => {
     },
     close: () => Promise.resolve(),
   };
+  // Test value assembled at run time, not a secret.
+  const env = { OPT2_HARNESS_KEY: ['opt2', 'harness', 'generate', 'test'].join('-') };
   let inv: LegacyInventory;
   let liveResult: GenerateResult;
   let liveDir = '';
@@ -1049,7 +1051,7 @@ describe('live run', () => {
     );
     const fetch = vi.fn(async () => new Response(JSON.stringify(PROBE), { status: 200, headers: { 'content-type': 'application/json' } }));
     probe = fetch;
-    liveResult = await run({ sourceTree: openSourceTree(liveDir), live: { origin: 'http://legacy.invalid:8080', db, fixturesLoaded: false, fetch } });
+    liveResult = await run({ sourceTree: openSourceTree(liveDir), live: { origin: 'http://legacy.invalid:8080', db, fixturesLoaded: false, env, fetch } });
     inv = liveResult.inventory;
   });
 
@@ -1117,7 +1119,7 @@ describe('live run', () => {
 
   it('takes live sources or a snapshot, not both', async () => {
     await expect(
-      run({ sourceTree: openSourceTree(liveDir), live: { origin: 'http://legacy.invalid:8080', db, fixturesLoaded: false }, liveSnapshot: liveResult.liveSnapshot }),
+      run({ sourceTree: openSourceTree(liveDir), live: { origin: 'http://legacy.invalid:8080', db, fixturesLoaded: false, env }, liveSnapshot: liveResult.liveSnapshot }),
     ).rejects.toThrow('generateInventory takes live sources or a live snapshot, not both');
   });
 });
@@ -1352,9 +1354,20 @@ describe('main', () => {
     const snapshotFile = path.join(out, LIVE_SNAPSHOT_JSON);
     const liveDb = { readOnlyQuery: () => Promise.resolve([]), close: vi.fn(() => Promise.resolve()) } as ReadOnlyMssql & { close: ReturnType<typeof vi.fn> };
     vi.mocked(createReadOnlyMssql).mockResolvedValue(liveDb);
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ generatedAt: '2026-11-13T00:00:00Z', bundleableBeans: [], versionedBeans: [], entities: [] })));
+    const liveFetch = vi.fn(async (_input: string, _init: RequestInit) =>
+      Response.json({ generatedAt: '2026-11-13T00:00:00Z', bundleableBeans: [], versionedBeans: [], entities: [] }),
+    );
+    vi.stubGlobal('fetch', liveFetch);
+    // Test value assembled at run time, not a secret.
+    const key = ['opt2', 'harness', 'main', 'test'].join('-');
     try {
-      expect(await main(['--live', '--out', out], { LEGACY_ORIGIN: 'http://legacy.invalid:8080', OPT2_STATE_DIR: path.join(tempRoot, 'state') })).toEqual({
+      expect(
+        await main(['--live', '--out', out], {
+          LEGACY_ORIGIN: 'http://legacy.invalid:8080',
+          OPT2_STATE_DIR: path.join(tempRoot, 'state'),
+          OPT2_HARNESS_KEY: key,
+        }),
+      ).toEqual({
         summary: expect.objectContaining({
           liveStatus: 'live',
           liveSnapshot: snapshotFile,
@@ -1364,6 +1377,7 @@ describe('main', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+    expect(liveFetch.mock.calls.map(([, init]) => new Headers(init.headers).get('x-opt2-harness-key'))).toEqual([key]);
     expect(liveDb.close).toHaveBeenCalledTimes(1);
     const check = (): Promise<unknown> => main(['--check', '--out', out]);
     expect(await check()).toMatchObject({

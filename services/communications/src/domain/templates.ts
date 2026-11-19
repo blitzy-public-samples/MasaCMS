@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Template store as the fixture `communications.cfc` answers it: create with the fixture's checks, and the paged site list. */
-import { LegacyApiError, cfNumberString, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, cfNumberString, javaTrim, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { fixturePage, type FixtureListResult } from '../legacy/fixture-envelope.js';
@@ -61,7 +61,10 @@ export function textParam(params: Readonly<Record<string, unknown>>, name: strin
   return simpleText(value);
 }
 
-/** Stores a template of `siteId` (the token's `site`) after the fixture's checks; returns the row or throws `invalidParameters`. */
+/**
+ * Stores a template of `siteId` (the token's `site`) after the fixture's checks, unpaired surrogates as the `?` legacy answers;
+ * returns the row or throws `invalidParameters`.
+ */
 export async function createTemplate(
   tx: TenantTx,
   deps: Pick<DomainDeps, 'repository' | 'clock'>,
@@ -79,7 +82,7 @@ export async function createTemplate(
   // so `userId` (the token's `sub`) is recorded as the changelog actor; a caller context overrides it.
   return deps.repository.insertTemplate(
     tx,
-    { siteId: args.siteId, name, subject, bodyText, bodyHtml },
+    { siteId: args.siteId, name: javaUtf8Text(name), subject: javaUtf8Text(subject), bodyText: javaUtf8Text(bodyText), bodyHtml: javaUtf8Text(bodyHtml) },
     { actorUserId: args.userId, ...args.context },
   );
 }

@@ -186,6 +186,20 @@ describe.skipIf(!available)('message domain against PostgreSQL', () => {
     expect((await inTenant((tx) => getMessage(tx, row.message_id))).history.map((h) => h.status)).toEqual(['queued']);
   });
 
+  it('stores, answers and mails the unpaired surrogates of literal and filled content as `?`', async () => {
+    const literal = await submit({ to: TO, subject: 'Hi \ud800', bodyText: '\udc00 \ud83d\ude00', bodyHtml: '<p>\ud800</p>' });
+    const templateId = await newTemplate('Hi {{name}}', 'Text {{name}}');
+    const filled = await submit({ templateId, to: TO, variables: { name: '\ud800x' } });
+
+    expect(literal).toMatchObject({ subject: 'Hi ?', body_text: '? \ud83d\ude00', body_html: '<p>?</p>' });
+    expect(filled).toMatchObject({ subject: 'Hi ?x', body_text: 'Text ?x' });
+    expect(sent.map((mail) => [mail.subject, mail.text, mail.html])).toEqual([
+      ['Hi ?', '? \ud83d\ude00', '<p>?</p>'],
+      ['Hi ?x', 'Text ?x', ''],
+    ]);
+    expect(await storedRow(filled.message_id)).toMatchObject({ subject: 'Hi ?x', body_text: 'Text ?x' });
+  });
+
   it('fills a template case-sensitively in one pass and keeps the template id', async () => {
     const templateId = await newTemplate('Hi {{name}} {{Name}}', 'x {{missing}} {{name}}', '<b>{{name}}</b>');
 

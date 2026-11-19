@@ -969,6 +969,8 @@ describe('remote CFC proxies, fixtures and path families', () => {
   const RECORDS = '/legacy-fixtures/cfml/api.cfm/finance/records';
   const RECORDS_KEY = 'fixture:finance/records@get';
   const ID_KEY = 'fixture:finance/records/{id}@get';
+  // The container answers these paths itself, before api.cfm runs; keyed as the template, never as a fixture folder file.
+  const API_CFM_KEY = 'cfm:/legacy-fixtures/cfml/api.cfm';
   it.each<[string, string, string, string | undefined, RouteKeyOptions?]>([
     ['the canonical spelling', RECORDS, RECORDS_KEY, RECORDS],
     ['a doubled slash before the directory', '//legacy-fixtures/cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
@@ -998,17 +1000,17 @@ describe('remote CFC proxies, fixtures and path families', () => {
     ['a dot directory segment', '/legacy-fixtures/cfml/./api.cfm/finance/records', 'page:render', undefined],
     ['an encoded dot directory segment', '/legacy-fixtures/%2E/cfml/api.cfm/finance/records', 'page:render', undefined],
     ['an encoded dot id', `${RECORDS}/%2e`, 'page:render', undefined],
-    ['a dot-led id', `${RECORDS}/.x`, `static:${RECORDS}/.x`, undefined],
-    ['a path parameter segment before a dot-led one', `${RECORDS}/a;b/.y`, `static:${RECORDS}/a;b/.y`, undefined],
-    ['an encoded-backslash traversal id', `${RECORDS}/..%5C..%5Cweb.config`, `static:${RECORDS}/..\\..\\web.config`, undefined],
+    ['a dot-led id', `${RECORDS}/.x`, API_CFM_KEY, undefined],
+    ['a path parameter segment before a dot-led one', `${RECORDS}/a;b/.y`, API_CFM_KEY, undefined],
+    ['an encoded-backslash traversal id', `${RECORDS}/..%5C..%5Cweb.config`, API_CFM_KEY, undefined],
     ['an encoded-backslash traversal id before an action', `${RECORDS}/..%5C..%5Cweb.config/versions`, 'page:render', undefined],
     ['an encoded-backslash traversal survey id', '/legacy-fixtures/cfml/api.cfm/surveys/surveys/..%5C..%5Cweb.config/responses', 'page:render', undefined],
     ['an encoded-backslash traversal request id', '/legacy-fixtures/cfml/api.cfm/esignature/requests/..%5C..%5Cweb.config/audit', 'page:render', undefined],
-    ['a sensitive file name in mixed case', `${RECORDS}/Web.Config`, `static:${RECORDS}/web.config`, undefined],
+    ['a sensitive file name in mixed case', `${RECORDS}/Web.Config`, API_CFM_KEY, undefined],
     ['a sensitive file name before an action', `${RECORDS}/x/Package-Lock.json/versions`, 'page:render', undefined],
-    ['an Axis suffix in upper case', `${RECORDS}/x.JWS`, `static:${RECORDS}/x.jws`, undefined],
-    ['an Axis suffix before a path parameter', `${RECORDS}/x.jws;a`, 'page:render', undefined],
-    ['a flash remoting suffix', `${RECORDS}/x.cfswf`, `static:${RECORDS}/x.cfswf`, undefined],
+    ['an Axis suffix in upper case', `${RECORDS}/x.JWS`, API_CFM_KEY, undefined],
+    ['an Axis suffix before a path parameter', `${RECORDS}/x.jws;a`, API_CFM_KEY, undefined],
+    ['a flash remoting suffix', `${RECORDS}/x.cfswf`, API_CFM_KEY, undefined],
     ['backslash separators, which the container rejects', '/legacy-fixtures\\cfml\\api.cfm/finance/records', 'page:render', undefined],
     ['a backslash in an id', `${RECORDS}/a\\b`, 'page:render', undefined],
     ['an encoded slash before a dot-dot item', '/legacy-fixtures/cfml/api.cfm/finance/records%2F..', 'page:render', undefined],
@@ -1089,6 +1091,48 @@ describe('legacy bridge spellings', () => {
     const result = resultOf('GET', url);
     expect(result.family).not.toBe('bridge');
     expect(matchRouteKey(result, [BRIDGE_ROUTE])).toBeUndefined();
+  });
+});
+
+describe('OPT-2 folder spellings', () => {
+  const RUNNER = 'cfm:/harness/legacy-baseline/cfml/run.cfm';
+  const ROLE_MAP = 'static:/services/identity/config/role-map.json';
+
+  it.each<[string, string, string]>([
+    ['path info after a template', '/harness/legacy-baseline/cfml/run.cfm/x?info=1', RUNNER],
+    ['a slash after a template', '/harness/legacy-baseline/cfml/run.cfm/', RUNNER],
+    ['a file name as path info', '/harness/legacy-baseline/cfml/run.cfm/x.json', RUNNER],
+    ['a template path parameter', '/harness/legacy-baseline/cfml/run.cfm;x?info=1', RUNNER],
+    ['a directory path parameter', '/harness;x/legacy-baseline/cfml/run.cfm', RUNNER],
+    ['dot-dot and doubled slashes', '/x/..//harness/legacy-baseline/cfml/run.cfm', RUNNER],
+    ['backslash separators', '/harness\\legacy-baseline\\cfml\\run.cfm', RUNNER],
+    ['a component path parameter', '/harness/legacy-baseline/cfml/Application.cfc;x', 'cfc:/harness/legacy-baseline/cfml/application.cfc'],
+    ['a static file path parameter', '/services/identity/config/role-map.json;x', ROLE_MAP],
+    ['a doubled leading slash', '//services/identity/config/role-map.json', ROLE_MAP],
+    ['a doaction on a static file', '/services/identity/config/role-map.json?doaction=login', ROLE_MAP],
+    ['a saveform on a static file', '/services/identity/config/role-map.json?saveform=1', ROLE_MAP],
+    ['a workflow file path parameter', '/.github/workflows/services.yml;x', 'static:/.github/workflows/services.yml'],
+    ['a doaction on a fixture SQL file', '/legacy-fixtures/sql/000_schemas.sql?doaction=login', 'static:/legacy-fixtures/sql/000_schemas.sql'],
+    ['a fixture folder file', '/legacy-fixtures/README.md', 'static:/legacy-fixtures/readme.md'],
+    ['a file name as a fixture template path info', '/legacy-fixtures/cfml/seed.cfm/x.js', 'cfm:/legacy-fixtures/cfml/seed.cfm'],
+    ['a file name as a fixture component path info', '/legacy-fixtures/cfml/modules/finance.cfc/x.js', 'cfc:/legacy-fixtures/cfml/modules/finance.cfc'],
+    ['a fixture front controller path the container answers, naming a file', '/legacy-fixtures/cfml/api.cfm/finance/records/..%5C..%5Cweb.config', 'cfm:/legacy-fixtures/cfml/api.cfm'],
+    ['a namespace file behind a doubled slash', '//opt2/source-pin.json', 'opt2:/opt2/source-pin.json'],
+    ['a namespace file behind a path parameter', '/opt2;x/source-pin.json', 'opt2:/opt2/source-pin.json'],
+  ])('keys %s on the file the container serves', (_label, url, key) => {
+    expect(keyOf('GET', url)).toBe(key);
+  });
+
+  it.each<[string, string, string, RouteKeyOptions?]>([
+    ['a namespace path as sent', '/opt2/stub//notes', 'opt2:/opt2/stub//notes'],
+    ['a namespace file without the namespaces', '//opt2/source-pin.json', 'static:/opt2/source-pin.json', { opt2Namespaces: false }],
+    ['a fixture template with path info', '/legacy-fixtures/cfml/seed.cfm/x', 'page:render'],
+    ['a folder directory', '/harness/', 'page:render'],
+    ['an upper-case folder, which the container does not find', '/HARNESS/legacy-baseline/cfml/run.cfm/x', 'page:render'],
+    ['a legacy template with path info', '/core/tests/runner.cfm/x', 'page:render'],
+    ['a doaction on a file outside the workflows folder', '/.github/ISSUE_TEMPLATE/bug.md?doaction=login', 'page:login'],
+  ])('keys %s by the other rules', (_label, url, key, opts) => {
+    expect(keyOf('GET', url, {}, opts)).toBe(key);
   });
 });
 
@@ -1539,6 +1583,7 @@ describe('matchRouteKey', () => {
     ['/gateway/legacy-bridge/session.cfm', 'bridge:/gateway/legacy-bridge/**'],
     ['/core/assets/css/admin.css', 'static:/core/assets/**'],
     ['/legacy-fixtures/cfml/seed.cfm', 'cfm:/legacy-fixtures/**'],
+    ['/harness/legacy-baseline/cfml/Application.cfc?method=x', 'cfc:/harness/**'],
     ['/_api/other/thing', 'apiother:/_api/**'],
   ])('globs %s under %s', (url, route) => {
     expect(matchRouteKey(resultOf('GET', url), [route])).toBe(route);

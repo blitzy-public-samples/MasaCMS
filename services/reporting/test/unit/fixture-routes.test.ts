@@ -357,6 +357,50 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(enqueued).toHaveLength(0);
   });
 
+  // Legacy answers of the oracle probe: no stored definition id matches one holding a NUL, siteExists, isValid and the
+  // fixture's format and asOf patterns refuse one, and isBoolean refuses a useDataNamespace holding one.
+  it.each<[string, (def: string) => Record<string, unknown>, Record<string, string>, number, string, number]>([
+    ['a definitionId ending in a NUL', (def) => ({ definitionId: `${def}\u0000`, format: 'csv' }), CSRF, 404, 'Not Found', 1],
+    ['a definitionId whose NUL follows its 34th character', (def) => ({ definitionId: `${def.slice(0, 34)}\u0000`, format: 'csv' }), CSRF, 404, 'Not Found', 1],
+    ['a definitionId of trailing spaces then a NUL', (def) => ({ definitionId: `${def} \u0000`, format: 'csv' }), CSRF, 404, 'Not Found', 1],
+    ['a siteid holding a NUL, before CSRF', (def) => ({ siteid: `${TENANT_A.siteId}\u0000`, definitionId: def, format: 'csv' }), CSRF, 400, 'Invalid parameters', 0],
+    ['a format ending in a NUL', (def) => ({ definitionId: def, format: 'csv\u0000' }), CSRF, 400, 'Invalid parameters', 1],
+    ['an asOf ending in a NUL', (def) => ({ definitionId: def, format: 'csv', asOf: '2026-06-30\u0000' }), CSRF, 400, 'Invalid parameters', 1],
+    ['a body CSRF token holding a NUL', (def) => ({ definitionId: def, format: 'csv', csrf_token: `${GOOD_TOKEN}\u0000`, csrf_token_expires: '991231235959000' }), {}, 400, 'Invalid CSRF tokens', 1],
+  ])('answers a create with %s as the fixture does, binding no NUL', async (_name, build, extra, status, message, csrfCalls) => {
+    const res = await create(build(defs[TENANT_A.siteId] as string), extra);
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', message));
+    expectEtag(res);
+    expect([consumed.length, enqueued.length]).toStrictEqual([csrfCalls, 0]);
+  });
+
+  // The gateway mints for the siteid it reads, and identity grants no role on a site that is not registered.
+  it.each<[string, () => Promise<Record<string, string>>]>([
+    ['a signed-in session', () => headers([], `${TENANT_A.siteId}\u0000`)],
+    ['an anonymous session', () => anonymousHeaders(`${TENANT_A.siteId}\u0000`)],
+  ])('answers a create whose siteid holds a NUL with invalidParameters under the token minted for that site, for %s', async (_name, headersOf) => {
+    const payload = { siteid: `${TENANT_A.siteId}\u0000`, definitionId: defs[TENANT_A.siteId], format: 'csv' };
+    const res = await app.inject({ method: 'POST', url: P, headers: { ...(await headersOf()), ...CSRF }, payload });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid parameters'));
+    expect([consumed.length, enqueued.length]).toStrictEqual([0, 0]);
+  });
+
+  it.each<[string, Record<string, unknown>, boolean]>([
+    ['an unread key and value holding a NUL', { 'no\u0000te': 'a\u0000b' }, true],
+    ['a useDataNamespace of false then a NUL, which isBoolean refuses', { useDataNamespace: 'false\u0000' }, true],
+    ['a useDataNamespace of false', { useDataNamespace: 'false' }, false],
+  ])('queues a job for a create with %s, answered inside the data namespace exactly when the fixture does', async (_name, extra, namespaced) => {
+    const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv', ...extra });
+    expect(res.statusCode).toBe(200);
+    expectEtag(res);
+    const body = res.json<Record<string, unknown>>();
+    expect(namespaced ? body.data : body).toMatchObject({ siteid: 'tenant-a', definition_id: defs[TENANT_A.siteId], format: 'csv', state: 'queued' });
+    expect(Object.hasOwn(body, 'data')).toBe(namespaced);
+    expect(enqueued).toHaveLength(1);
+  });
+
   it('rejects create without a valid CSRF token', async () => {
     const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' }, { 'x-csrf_token': 'BAD', 'x-csrf_token_expires': '1' });
     expect(res.statusCode).toBe(400);
@@ -392,10 +436,10 @@ describe.skipIf(!available)('reporting fixture routes', () => {
   });
 
   it.each<[string, () => Promise<Awaited<ReturnType<FastifyInstance['inject']>>>, number, string | null]>([
-    ['a definition id PostgreSQL cannot look up', () => create({ definitionId: 'nul-probe\u0000', format: 'csv' }), 400, 'request rejected: 22021'],
+    ['a definition id holding a NUL, which no stored id matches', () => create({ definitionId: 'nul-probe\u0000', format: 'csv' }), 404, null],
     ['a NUL job id PostgreSQL cannot look up', async () => app.inject({ url: `${P}/nul-probe%00`, headers: await headers() }), 400, 'request rejected: 22021'],
     // Legacy's scan drops a url or form NUL, not a JSON one (probe.py url 'siteid=nul-probe%00' -> nul-probe).
-    ['a JSON-body NUL siteid PostgreSQL cannot look up', () => create({ siteid: 'nul-probe\u0000', definitionId: defs[TENANT_A.siteId], format: 'csv' }), 400, 'request rejected: 22021'],
+    ['a JSON-body siteid holding a NUL, which names no site', () => create({ siteid: 'nul-probe\u0000', definitionId: defs[TENANT_A.siteId], format: 'csv' }), 400, 'request rejected: invalidParameters'],
     ['a url siteid naming no site once its NUL is dropped', async () => app.inject({ url: `${P}?siteid=nul-probe%00`, headers: await headers() }), 400, 'request rejected: invalidParameters'],
     ['an anonymous caller', () => app.inject({ url: P }), 401, 'request denied: missing-credential'],
     [

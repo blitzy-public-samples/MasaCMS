@@ -1,7 +1,13 @@
 // Tests of the legacy admin request set-up: FW/1 context, admin session, site data, cookies and request flags.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthDenial, INVOCATION_HEADER, Roles, assertSiteMatches, moduleRole } from '@opt2/platform/auth';
-import { legacyScopeParams, portcullisScan } from '@opt2/platform/legacy-compat';
+import {
+  PATH_PAIRS_HEADER,
+  legacyScopeParams,
+  legacyScopesFrom,
+  pathPairsHeaderValue,
+  portcullisScan,
+} from '@opt2/platform/legacy-compat';
 import type { MintUserTokenInput } from '@opt2/platform/testing';
 import { secure } from '@/lib/access-gate';
 import { authenticateRequest, type WebAuth } from '@/lib/auth';
@@ -853,6 +859,7 @@ describe('buildAdminRequest', () => {
         ['x-y', '<script>z</script>'],
         ['amp;ren', ' r '],
         ['notes', ' <b>b</b> <script>s</script> '],
+        ['n\0b', ' w '],
       ];
       const { request } = await build(carrying('form', pairs));
 
@@ -864,8 +871,10 @@ describe('buildAdminRequest', () => {
         xy: '<script>z</script>',
         ren: 'r',
         notes: '<b>b</b> [INVALID]',
+        'n\0b': 'w',
+        nb: 'w',
       });
-      const scanned = ['groupname', 'x-y', 'xy', 'ren', 'notes'].map((name) => [name, request.rc[name]]);
+      const scanned = ['groupname', 'x-y', 'xy', 'ren', 'notes', 'n\0b', 'nb'].map((name) => [name, request.rc[name]]);
       expect(owner).toMatchObject(Object.fromEntries(scanned));
     });
 
@@ -913,6 +922,42 @@ describe('buildAdminRequest', () => {
         groupname: request.rc.groupname,
         xy: request.rc.xy,
       });
+    });
+
+    it('names the path pairs no url or form entry replaced, nor one the form scan renamed onto', async () => {
+      const { request } = await build({
+        mode: 'redirect',
+        target: '/admin/index.cfm/ccategory/update/name/p/na-me/q/siteid/x/flag/y/Na-Me/r/odd?siteid=default',
+        form: new URLSearchParams([['name', 'f'], ['amp;flag', '1']]),
+      });
+
+      expect({ ...request.relayScopes.pathPairs }).toEqual({ 'na-me': 'r', odd: '' });
+      expect(request.rc).toMatchObject({ name: 'f', 'na-me': 'r', siteid: 'default', flag: '1', odd: '' });
+    });
+
+    // Own-oracle probes on localhost:26080: cCategory.update adds with these path pairs stored these names.
+    it.each<[string, string, Readonly<Record<string, string>>, string]>([
+      ['smart quotes', 'name/f10-cat-sq%E2%80%9Cq%E2%80%9D', {}, 'f10-cat-sq\u201Cq\u201D'],
+      ['an onLoad word', 'name/f10-cat-wd-onLoad', {}, 'f10-cat-wd-onLoad'],
+      ['a filtered tag', 'name/f10-cat-tg-%3Cxss%3E', {}, 'f10-cat-tg-<xss>'],
+      ['a dotted name beside the posted name', 'na.me/f10-cat-dot-path', { name: 'f10-cat-dot-form' }, 'f10-cat-dot-form'],
+      ['an amp; name beside the posted name', 'amp%3Bname/f10-cat-amp-path', { name: 'f10-cat-amp-form' }, 'f10-cat-amp-form'],
+      ['a pair the posted name replaces', 'name/f10-cat-ov-path', { name: 'f10-cat-ov-onLoad' }, 'f10-cat-ov-[INVALID]'],
+    ])("leaves the owner's scan of a relayed path pair with %s where legacy's rc holds it", async (_label, pair, posted, stored) => {
+      const { request } = await build({
+        mode: 'redirect',
+        target: `/admin/index.cfm/ccategory/update/${pair}?muraAction=cCategory.update&siteid=default`,
+        form: new URLSearchParams({ categoryID: '', action: 'add', ...posted }),
+      });
+      const headers = {
+        'content-type': 'application/x-www-form-urlencoded',
+        [PATH_PAIRS_HEADER.toLowerCase()]: pathPairsHeaderValue(Object.entries(request.relayScopes.pathPairs ?? {})),
+      };
+
+      const owner = legacyScopeParams(legacyScopesFrom({ query: {}, body: { ...relayContext(request) }, headers }).form);
+
+      expect([request.rc.name, owner.name]).toEqual([stored, stored]);
+      expect(Object.keys(owner).filter((name) => name.toLowerCase() === 'name')).toEqual(['name']);
     });
 
     it('reads the forwarded target as posted beside its scanned URL scope', () => {

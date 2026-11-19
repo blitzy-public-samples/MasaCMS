@@ -108,14 +108,18 @@ const DEFAULT_REST = '/_api/rest/v1/default';
 
 describe("remote-function keys through the gateway's route-key options", () => {
   it.each<[string, RouteKeyConflictCase, EntryKind]>([
-    ['a dotted method in the query', apiCall('POST', `${DEFAULT_API}/`, { query: { method: 'comment.flag', commentid: 'X' } }, 'api:comment.~flag'), 'write'],
-    ['its REST twin', apiCall('POST', `${DEFAULT_REST}/`, { query: { method: 'comment.flag', commentid: 'X' } }, 'rest:comment.~flag'), 'write'],
+    [
+      'a dotted method in the query',
+      apiCall('POST', `${DEFAULT_API}/`, { query: { method: 'comment.flag', commentid: 'X' } }, 'api:comment.~flag'),
+      'legacy-write',
+    ],
+    ['its REST twin', apiCall('POST', `${DEFAULT_REST}/`, { query: { method: 'comment.flag', commentid: 'X' } }, 'rest:comment.~flag'), 'legacy-write'],
     [
       'a dotted form method against a path entity',
       apiCall('POST', `${DEFAULT_API}/content/`, { form: { method: 'comment.markAsSpam' } }, 'api:comment.~markasspam'),
-      'write',
+      'legacy-write',
     ],
-    ['the entity path form', apiCall('POST', `${DEFAULT_API}/comment/undelete`, {}, 'api:comment.~undelete'), 'write'],
+    ['the entity path form', apiCall('POST', `${DEFAULT_API}/comment/undelete`, {}, 'api:comment.~undelete'), 'legacy-write'],
     ['a mixed-case function name', apiCall('GET', `${DEFAULT_API}/`, { query: { method: 'user.pollState' } }, 'api:user.~pollstate'), 'read'],
     [
       'a file browser form call',

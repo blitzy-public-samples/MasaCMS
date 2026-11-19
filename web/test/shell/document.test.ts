@@ -39,7 +39,15 @@ import {
 } from '../helpers/admin-request';
 import { domModel } from '../helpers/dom-model';
 import { useTestEnv } from '../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeCall, type FakeGatewayClient } from '../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  installedSitePaths,
+  routeKey,
+  type FakeCall,
+  type FakeGatewayClient,
+} from '../helpers/fake-gateway';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
 const Z = '00000000000000000000000000000000';
@@ -119,10 +127,11 @@ const DEFAULT_SITES = [listed('default', 'Default')];
 
 /**
  * An in-memory gateway answering the user's sites with `sites`, identity's Update Core token pair, no `default` prompt
- * and the oracle's Version menu facts.
+ * legacy's installed theme paths and the oracle's Version menu facts.
  */
 function shellGateway(sites: readonly unknown[] = DEFAULT_SITES): FakeGatewayClient {
   return fakeGatewayClient({
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
     [USER_SITES]: { status: 200, body: { sites } },
     [ISSUE_TOKENS]: { status: 200, body: { tokens: [CSRF_UPDATECORE] } },
     [HEADER_PROMPTS]: { status: 200, body: promptCountsZero },
@@ -145,6 +154,14 @@ const $of = (doc: AdminDocument) => cheerio.load(serializeAdminDocument(doc));
 
 /** `ctx` with the session site emptied, as before the set-up switched to one. */
 const withoutSessionSite = (ctx: AdminRequest): AdminRequest => ({ ...ctx, session: { ...ctx.session, siteid: '' } });
+
+/** The calls of `gateway`, without its own reads of legacy's layout values. */
+const callsBesidePaths = (gateway: FakeGatewayClient): FakeCall[] =>
+  gateway.calls.filter(({ path }) => path !== LEGACY_SITE_PATHS_PATH);
+
+/** The queries of `gateway`'s reads of legacy's layout values. */
+const legacyPathQueries = (gateway: FakeGatewayClient) =>
+  gateway.calls.filter(({ path }) => path === LEGACY_SITE_PATHS_PATH).map(({ query }) => query);
 
 let restoreEnv: () => void;
 
@@ -204,7 +221,7 @@ describe('loadShellData', () => {
   ])('loads no site list, prompt counts, tokens or server facts for $name', async ({ ctx }) => {
     const gateway = shellGateway();
     const data = await load(ctx(), gateway);
-    expect(gateway.calls).toEqual([]);
+    expect(callsBesidePaths(gateway)).toEqual([]);
     expect(data.userSites).toEqual([]);
     expect(data.prompts).toEqual(promptCountsZero);
     expect(data.updateCoreCsrfQuery).toBe('');
@@ -219,8 +236,10 @@ describe('loadShellData', () => {
     ]);
     const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: { record: { showDashboard: 1 } } });
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toHaveLength(4);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, UPDATE_CORE_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
+    expect(callsBesidePaths(gateway)).toHaveLength(4);
+    expect(callsBesidePaths(gateway)).toEqual(
+      expect.arrayContaining([USER_SITES_CALL, UPDATE_CORE_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]),
+    );
     expect(data.userSites).toEqual([
       { siteId: 'default', site: 'Default', showDashboard: false },
       { siteId: 'tenant-a', site: 'Tenant A', showDashboard: true },
@@ -234,8 +253,8 @@ describe('loadShellData', () => {
     resetLegacySettingsForTests();
     const gateway = shellGateway();
     const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway);
-    expect(gateway.calls).toHaveLength(3);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
+    expect(callsBesidePaths(gateway)).toHaveLength(3);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
     expect(data.updateCoreCsrfQuery).toBe('');
   });
 
@@ -248,8 +267,8 @@ describe('loadShellData', () => {
       listed('zeta', 'Zeta'),
     ]);
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toHaveLength(3);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
+    expect(callsBesidePaths(gateway)).toHaveLength(3);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
     expect(data.userSites).toEqual([
       { siteId: 'a', site: 'Alpha', showDashboard: false },
       { siteId: 'b', site: 'beta', showDashboard: true },
@@ -262,8 +281,8 @@ describe('loadShellData', () => {
   it('lists no site for a private user the owner lists none for', async () => {
     const gateway = shellGateway([]);
     const data = await load(noSitesRequest({ s2IsPrivate: true }, { circuit: 'cArch', item: 'list' }), gateway);
-    expect(gateway.calls).toHaveLength(2);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
+    expect(callsBesidePaths(gateway)).toHaveLength(2);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
     expect(data.userSites).toEqual([]);
   });
 
@@ -321,7 +340,7 @@ describe('loadShellData', () => {
     gateway.setRoute(HEADER_PROMPTS, { status: 200, body: promptCountsNonZero });
     const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: CHANGESET_SITE });
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toContainEqual(HEADER_PROMPTS_CALL);
+    expect(callsBesidePaths(gateway)).toContainEqual(HEADER_PROMPTS_CALL);
     expect(data.prompts).toEqual(promptCountsNonZero);
     const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
     expect($('#user-tools-selector .dropdown-toggle .badge').text()).toBe(String(PROMPT_TALLY_NONZERO));
@@ -361,8 +380,8 @@ describe('loadShellData', () => {
   it('loads no prompt counts for a session site the token does not serve', async () => {
     const gateway = shellGateway();
     const data = await load(unservedEditorRequest({ circuit: 'cArch', item: 'list' }), gateway);
-    expect(gateway.calls).toHaveLength(2);
-    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
+    expect(callsBesidePaths(gateway)).toHaveLength(2);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
     expect(data.prompts).toEqual(promptCountsZero);
   });
 
@@ -371,6 +390,48 @@ describe('loadShellData', () => {
     gateway.setRoute(HEADER_PROMPTS, { status: 403, body: {} });
     await expect(load(editorRequest({ circuit: 'cArch', item: 'list' }), gateway)).rejects.toBeInstanceOf(
       GatewayDenialError,
+    );
+  });
+
+  it.each([
+    {
+      name: 'the full layout',
+      ctx: () => adminS2Request({ circuit: 'cUsers', item: 'list', rc: { siteid: 'tenant-a' } }),
+      query: { themeSite: 'tenant-a', initSite: 'default' },
+    },
+    {
+      name: 'the full layout of clogin.main, which prints no Mura.init',
+      ctx: () => anonymousRequest({ circuit: 'cLogin', item: 'main' }),
+      query: { themeSite: 'default' },
+    },
+    {
+      name: 'the compact layout of clogin.main',
+      ctx: () => anonymousRequest({ circuit: 'cLogin', item: 'main', rc: { compactDisplay: 'true' } }),
+      query: { themeSite: 'default', initSite: 'default' },
+    },
+    {
+      name: 'a session without a site and an empty rc.siteid',
+      ctx: () => withoutSessionSite(adminS2Request({ circuit: 'cUsers', item: 'list', rc: { siteid: '' } })),
+      query: { themeSite: 'default', initSite: 'default' },
+    },
+  ])("reads legacy's layout values once for $name", async ({ ctx, query }) => {
+    const gateway = shellGateway();
+    const request = ctx();
+    const data = await load(request, gateway);
+    expect(legacyPathQueries(gateway)).toEqual([
+      { sessionSite: request.session.siteid || 'default', host: 'localhost', forwardedProto: 'http', ...query },
+    ]);
+    expect(data.legacyPaths).toEqual({
+      themeAssetPath: '/themes/default',
+      ...('initSite' in query ? { initThemeAssetPath: 'http://localhost/themes/default' } : {}),
+    });
+  });
+
+  it("rejects when the gateway refuses legacy's layout values", async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(LEGACY_SITE_PATHS_KEY, { status: 401 });
+    await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toEqual(
+      new GatewayDenialError('gateway', 'legacySitePaths', 401),
     );
   });
 

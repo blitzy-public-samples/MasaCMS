@@ -27,7 +27,7 @@ import { renderFeedUsageTab, type FeedUsageRow } from '@/screens/cfeed/tab-usage
 import { adminS2Request, siteAdminRequest, type AdminRequestPartial } from '../../helpers/admin-request';
 import { domModel, fragmentModel, normaliseIds, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
+import { LEGACY_SITE_PATHS_KEY, fakeGatewayClient, keptSitePaths, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenModel, renderScreenPage } from '../../helpers/screen-context';
 import { CONTENT_HIST_IDS, CONTENT_IDS } from '../../fixtures/strategies-content/carch';
 import { CATEGORY_IDS } from '../../fixtures/strategies-content/categories';
@@ -106,11 +106,12 @@ function editRequest(rc: Readonly<Record<string, string>>, subject: Subject = 's
   return subject === 's2' ? adminS2Request({ ...partial, session: { siteid: SITE } }) : siteAdminRequest(SITE, partial);
 }
 
-/** The screen context of `req` over a gateway answering `getFeed` at `path` with `data`. */
+/** The screen context of `req` over a gateway answering `getFeed` at `path` with `data`, and legacy's kept endpoint. */
 function contextFor(req: AdminReq, path?: ServicePath, data?: AdminViewModel): Context {
   const routes =
     path === undefined ? {} : { [routeKey('GET', 'strategies-content', path)]: { status: 200, body: data } };
-  return makeScreenContext({ req, gateway: fakeGatewayClient(routes) });
+  const gateway = fakeGatewayClient({ ...routes, [LEGACY_SITE_PATHS_KEY]: keptSitePaths({ feedEndpoint: FEED_API_ENDPOINT }) });
+  return makeScreenContext({ req, gateway });
 }
 
 interface Rendered {
@@ -224,7 +225,6 @@ describe('loadFeedEditModel', () => {
       categoryID: CATEGORY_IDS.topicsNews,
     });
     expect(model.isObjectInstance).toBe(false);
-    expect(model.endpoint).toBe(FEED_API_ENDPOINT);
   });
 
   it('relays the display object instance fields of an instance edit', async () => {

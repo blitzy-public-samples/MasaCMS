@@ -586,12 +586,15 @@ scenarios:
         method: GET
         route: /admin/?muraAction=cwebservice.list&siteid=tenant-a
         as: admin
+      # The Connected Account select reaches the 1000-account cap inside a last-name tie (EX-USER-FEED-TIE-ORDER).
       - name: new
         method: GET
         route: /admin/?muraAction=cwebservice.edit&clientid=&siteid=tenant-a
         as: admin
         extract:
           clientid: {from: dom, selector: 'form[name=form1] input[name=clientid]', attr: value}
+        expected: halted
+        exceptionId: EX-USER-FEED-TIE-ORDER
       - name: save
         method: POST
         route: /admin/?muraAction=cwebservice.save
@@ -613,6 +616,8 @@ scenarios:
         extract:
           csrfToken: {from: dom, selector: 'form[name=form1] input[name=csrf_token]', attr: value}
           csrfExpires: {from: dom, selector: 'form[name=form1] input[name=csrf_token_expires]', attr: value}
+        expected: halted
+        exceptionId: EX-USER-FEED-TIE-ORDER
       - name: delete
         method: GET
         route: /admin/?muraAction=cwebservice.delete&clientid=${new.clientid}&siteid=tenant-a&csrf_token=${edit-existing.csrfToken}&csrf_token_expires=${edit-existing.csrfExpires}

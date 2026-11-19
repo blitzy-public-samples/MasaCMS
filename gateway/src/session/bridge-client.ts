@@ -1,6 +1,6 @@
-// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list and Version menu facts.
+// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, shared values, end) and site.cfm's site list, path values and Version menu facts.
 import { BRIDGE_ASSERTION_HEADER, isLegacySessionCookie, signBridgeAssertion } from '@opt2/platform/legacy-compat';
-import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
+import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock, type Dispatcher } from '@opt2/platform/service-kit';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
 
 export type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
@@ -160,6 +160,50 @@ export interface SiteListing {
 export interface SiteListClient {
   /** `op=list`: the registered site ids and their domain bindings. */
   listSites(): Promise<SiteListing>;
+}
+
+/** What legacy's path getters read of a browser request: `cgi.http_host`, `cgi.server_name` and `utility.isHTTPS()`. */
+export interface LegacyRequestFacts {
+  /** The `Host` the request would carry to legacy. */
+  host: string;
+  /** Its `X-Forwarded-Proto`, when it carries one. */
+  forwardedProto?: string;
+  /** Its `Front-End-Https`, when it carries one. */
+  frontEndHttps?: string;
+}
+
+/** The sites whose first-touch values `op=paths` evaluates; each value is evaluated only when its site is named. */
+export interface SitePathsQuery {
+  /** `session.siteid`, whose domains decide `request.muraPreviewDomain`. */
+  sessionSite: string;
+  /** Site of `getApi('json','v1').getEndpoint(mode='rest')`. */
+  apiSite?: string;
+  /** Site of `getApi('feed','v1').getEndpoint()`. */
+  feedSite?: string;
+  /** Site of `getThemeAssetPath()`. */
+  themeSite?: string;
+  /** Site of `getThemeAssetPath(complete=1)`. */
+  initSite?: string;
+}
+
+/** `op=paths` answer: the value of each named site. */
+export interface SitePaths {
+  restEndpoint?: string;
+  feedEndpoint?: string;
+  themeAssetPath?: string;
+  initThemeAssetPath?: string;
+}
+
+/** The gateway's read of legacy's live site-bean values through `site.cfm?op=paths`. */
+export interface SitePathsClient {
+  /** `op=paths`: the values legacy's site beans give a request with `facts`, which their caches may keep from an earlier one. */
+  paths(query: SitePathsQuery, facts: LegacyRequestFacts): Promise<SitePaths>;
+}
+
+/** Construction options of {@link createSitePathsClient}. */
+export interface SitePathsClientOptions extends Omit<BridgeClientOptions, 'fetch'> {
+  /** Sends the request; undici, unlike fetch, sends the given `Host`. */
+  dispatcher: Dispatcher;
 }
 
 /** `op=versionMenu` answer: what the admin Version menu prints (`nav.cfm` 383-407); null where legacy finds the server key absent. */
@@ -364,6 +408,80 @@ export function createSiteListClient(opts: BridgeClientOptions): SiteListClient 
         throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.list answered no list of sites and bindings'));
       }
       return listing;
+    },
+  };
+}
+
+/** Each `op=paths` site parameter with the answer key of the value it names, in the bridge's evaluation order. */
+const SITE_PATH_VALUES = [
+  ['apiSite', 'restEndpoint'],
+  ['feedSite', 'feedEndpoint'],
+  ['themeSite', 'themeAssetPath'],
+  ['initSite', 'initThemeAssetPath'],
+] as const satisfies ReadonlyArray<readonly [keyof SitePathsQuery, keyof SitePaths]>;
+
+/** The value of each site `query` names from an `op=paths` body; undefined when one is missing or not text. */
+function sitePathsOf(body: unknown, query: SitePathsQuery): SitePaths | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const values: SitePaths = {};
+  for (const [param, key] of SITE_PATH_VALUES) {
+    if (query[param] === undefined) continue;
+    const value = wireText((body as Record<string, unknown>)[key]);
+    if (value === undefined) return undefined;
+    values[key] = value;
+  }
+  return values;
+}
+
+/** Creates the signed `site.cfm?op=paths` client; it sends the browser's host facts, and a body lacking a named value fails closed. */
+export function createSitePathsClient(opts: SitePathsClientOptions): SitePathsClient {
+  const base = new URL(opts.legacyOrigin);
+  const prefix = base.pathname.replace(/\/+$/, '');
+
+  return {
+    async paths(query, facts) {
+      let path = `${prefix}${BRIDGE_DIR}/site.cfm?op=paths&siteid=${encodeURIComponent(query.sessionSite)}`;
+      for (const [param] of SITE_PATH_VALUES) {
+        const site = query[param];
+        if (site !== undefined) path += `&${param}=${encodeURIComponent(site)}`;
+      }
+      const headers: Record<string, string> = { accept: 'application/json', host: facts.host, 'user-agent': BOT_USER_AGENT };
+      if (facts.forwardedProto !== undefined) headers['x-forwarded-proto'] = facts.forwardedProto;
+      if (facts.frontEndHttps !== undefined) headers['front-end-https'] = facts.frontEndHttps;
+      headers[BRIDGE_ASSERTION_HEADER] = signBridgeAssertion(
+        { op: 'site.paths', siteId: query.sessionSite, ttlSeconds: ASSERTION_TTL_SECONDS, now: opts.clock.now() },
+        opts.hmacKey,
+      );
+
+      let status: number;
+      let text: string;
+      try {
+        // undici follows no redirect, so the single-use assertion is never replayed.
+        const response = await opts.dispatcher.request({
+          origin: base.origin,
+          path,
+          method: 'GET',
+          headers,
+          signal: AbortSignal.timeout(SERVICE_CALL_TIMEOUT_MS),
+        });
+        status = response.statusCode;
+        text = await response.body.text();
+      } catch (err) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, err);
+      }
+      if (status < 200 || status > 299) throw httpFailure('site.paths', status, errorToken(text));
+
+      let body: unknown;
+      try {
+        body = JSON.parse(text) as unknown;
+      } catch (err) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, err);
+      }
+      const values = sitePathsOf(body, query);
+      if (values === undefined) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.paths answered without a requested value'));
+      }
+      return values;
     },
   };
 }

@@ -1,7 +1,7 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** One lifecycle action on one timesheet day, as `[Program_N].usp_timesheet_day_action` applies it, decided by `timesheetsLifecycle`. */
 import { applyTransition } from '@opt2/platform/state-machine';
-import { cfUuid } from '@opt2/platform/legacy-compat';
+import { cfUuid, javaUtf8Text } from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { timesheetsLifecycle, type TimesheetAction, type TimesheetState } from './lifecycle.transitions.js';
@@ -14,7 +14,7 @@ export interface DayActionInput {
   action: TimesheetAction;
   roles: readonly string[];
   actorUserId: string;
-  /** Stored as NULL when null or empty, as timesheets.cfc binds it. */
+  /** Stored as NULL when null or empty, as timesheets.cfc binds it, and with its unpaired surrogates as the `?` legacy answers. */
   comment: string | null;
   now: ApprovalActionRow['created'];
 }
@@ -54,7 +54,7 @@ export async function performDayAction(tx: TenantTx, repo: TimesheetsRepository,
           from_state: from,
           to_state: to,
           actor_user_id: input.actorUserId,
-          comment: input.comment === '' ? null : input.comment,
+          comment: input.comment === '' || input.comment === null ? null : javaUtf8Text(input.comment),
           created: input.now,
           legacy_program_id: found.day.legacy_program_id,
         },

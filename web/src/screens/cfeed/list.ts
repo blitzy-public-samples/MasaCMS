@@ -4,7 +4,7 @@ import { encodeHtml, encodeJs, encodeUrl, html, raw, type SafeHtml } from '@/lib
 import type { ShellView } from '@/shell/document';
 import type { PageScreen, ScreenContext } from '../registry';
 import { applyCfeedDefaults, cfeedGate } from './before';
-import { cfTruthy, feedApiEndpoint, yesNoFormat, type CfFlag } from './common';
+import { cfTruthy, legacyFeedEndpoint, yesNoFormat, type CfFlag } from './common';
 import { renderCfeedSecondaryMenu } from './secondary-menu';
 
 const SERVICE = 'strategies-content';
@@ -80,9 +80,9 @@ function feedRowsOf(rc: Struct, query: string): CfeedListRow[] {
 }
 
 /**
- * cfeed `before()` defaults, then the site's Local and Remote collections with their delete tokens prefetched.
- * Gateway unavailability propagates.
- * @throws GatewayDenialError When strategies-content refuses the read (401 or 403).
+ * cfeed `before()` defaults, then the site's Local and Remote collections with their delete tokens prefetched, and
+ * legacy's feed API endpoint. Gateway unavailability propagates.
+ * @throws GatewayDenialError When strategies-content refuses the read, or the gateway web's endpoint read (401 or 403).
  * @throws TypeError When the screen model lacks `rsLocal` or `rsRemote` rows.
  */
 export async function loadFeedList(ctx: ScreenContext): Promise<CfeedListData> {
@@ -92,8 +92,8 @@ export async function loadFeedList(ctx: ScreenContext): Promise<CfeedListData> {
   const rc: Struct = okBody(response, SERVICE, OPERATION).rc;
   const local = feedRowsOf(rc, 'rsLocal');
   const remote = feedRowsOf(rc, 'rsRemote');
-  // The view reads the endpoint before either table, so it is settled even when no Local row links to it.
-  const endpoint = feedApiEndpoint(ctx.req, structValue(rc, 'endpoint'));
+  // list.cfm:77 reads the endpoint before either table, so it is read even when no Local row links to it.
+  const endpoint = await legacyFeedEndpoint(ctx.req, ctx.gateway);
   await ctx.csrf.prefetch([...local, ...remote].map((feed) => feed.feedId));
   return { local, remote, endpoint };
 }

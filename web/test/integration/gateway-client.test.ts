@@ -36,6 +36,7 @@ import {
 import { legacyUnavailable } from '@/lib/responses';
 import { useTestEnv } from '../helpers/env';
 import {
+  LEGACY_SITE_PATHS_KEY,
   routeKey,
   startFakeGateway,
   type FakeGateway,
@@ -621,6 +622,55 @@ describe('credentials and request headers', () => {
     expect(headers.traceparent).toBe(traceparent);
     expect(headers.tracestate).toBe(tracestate);
     expect(headers.cookie).toBeUndefined();
+  });
+
+  it.each<[string, Readonly<Record<string, string>> | undefined, string | undefined]>([
+    ['the path pairs urlencoded', { name: 'f10-sq\u201Cq\u201D', 'na.me': 'onLoad' }, 'name=f10-sq%E2%80%9Cq%E2%80%9D&na.me=onLoad'],
+    ['nothing for no path pairs', {}, undefined],
+    ['nothing without path pairs', undefined, undefined],
+  ])("names to a service %s, and never to the gateway's own path", async (_label, pathPairs, sent) => {
+    fake.setRoute(LEGACY_SITE_PATHS_KEY, jsonReply({}));
+    const client = createGatewayClient({ requestId: 'req-pairs', inbound: {}, ...(pathPairs === undefined ? {} : { pathPairs }) });
+
+    await client.postForm('strategies-content', '/v1/sites/default/categories', [['name', 'x']]);
+    await client.legacySite.paths({ sessionSite: 'default', host: 'h', forwardedProto: 'http', themeSite: 'default' });
+
+    expect(fake.requests.map(({ headers }) => headers['x-opt2-path-pairs'])).toEqual([sent, undefined]);
+  });
+});
+
+describe("the gateway's own legacySitePaths", () => {
+  const QUERY = { sessionSite: 'default', host: 'cms.example.test:8443', forwardedProto: 'https', themeSite: 'default' };
+
+  it("reads the gateway's own path with web's credential, acting for no user", async () => {
+    const token = await adminToken();
+    fake.setRoute(LEGACY_SITE_PATHS_KEY, jsonReply({ themeAssetPath: '/themes/default' }));
+
+    const client = createGatewayClient({ userToken: token, requestId: 'req-paths', inbound: {} });
+    await expect(client.legacySite.paths(QUERY)).resolves.toMatchObject({
+      ok: true,
+      status: 200,
+      body: { themeAssetPath: '/themes/default' },
+    });
+
+    const request = onlyRequest();
+    expect(requestLine(request)).toBe(LEGACY_SITE_PATHS_KEY);
+    expect(request.query).toEqual(QUERY);
+    expect(request.headers.authorization).toBeUndefined();
+    expect(request.headers[REQUEST_ID_HEADER]).toBe('req-paths');
+    await expect(
+      testVerifier('gateway').invocationVerifier.verify(request.headers[INVOCATION_HEADER] ?? ''),
+    ).resolves.toMatchObject({ name: 'web' });
+  });
+
+  it('fails closed, naming the gateway, when legacy cannot answer', async () => {
+    fake.setRoute(LEGACY_SITE_PATHS_KEY, jsonReply({}, 503));
+
+    const error = await createGatewayClient(ANONYMOUS)
+      .legacySite.paths(QUERY)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GatewayUnavailableError);
+    expect(error).toMatchObject({ service: 'gateway', status: 503 });
   });
 });
 

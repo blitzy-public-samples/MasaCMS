@@ -22,6 +22,7 @@ import {
   type SavedRunnerResponse,
 } from '../../src/baseline/run.js';
 import { UsageError, runCli } from '../../src/lib/cli.js';
+import { HARNESS_KEY_VARIABLE } from '../../src/lib/harness-key.js';
 import { HttpRequestError } from '../../src/lib/http.js';
 import { REPO_ROOT, type EnvLike } from '../../src/lib/paths.js';
 import { stableStringify } from '../../src/lib/report.js';
@@ -44,10 +45,14 @@ const OFFICIAL_FIXTURE = JSON.parse(
 ) as SavedRunnerResponse;
 const DIAGNOSTIC_TEXT = await fs.readFile(new URL('../fixtures/testbox/diagnostic-match.json', import.meta.url), 'utf8');
 const DIAGNOSTIC_BODY = JSON.parse(DIAGNOSTIC_TEXT) as Record<string, unknown>;
+// Test value assembled at run time, not a secret.
+const KEY = ['opt2', 'harness', 'run', 'test'].join('-');
 
 interface Sent {
   url: string;
   method: string | undefined;
+  /** The X-Opt2-Harness-Key header sent, if any. */
+  key: string | undefined;
 }
 
 interface FakeFetch {
@@ -92,7 +97,7 @@ let exchanges: Exchange[];
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'opt2-baseline-run-'));
-  env = { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: LEGACY };
+  env = { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: LEGACY, OPT2_HARNESS_KEY: KEY };
   exchanges = [];
 });
 
@@ -114,12 +119,12 @@ function diagnosticResponse(text: string = DIAGNOSTIC_TEXT, status = 200): Respo
   return new Response(text, { status, headers: { 'content-type': 'application/json' } });
 }
 
-/** Fake fetch recording each URL and method; `answer` builds the response for a URL. */
+/** Fake fetch recording each URL, method and harness key; `answer` builds the response for a URL. */
 function recordingFetch(answer: (url: string) => Response | Promise<Response>): FakeFetch {
   const sent: Sent[] = [];
   const fetchFake = vi.fn<typeof fetch>(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
-    sent.push({ url, method: init?.method });
+    sent.push({ url, method: init?.method, key: new Headers(init?.headers).get('x-opt2-harness-key') ?? undefined });
     return answer(url);
   });
   return { fetch: fetchFake, sent };
@@ -235,7 +240,7 @@ describe('runOfficial', () => {
 
     const result = await runOfficial({ env, fetch, now: tickingClock('2026-06-30T00:00:00.000Z', 412) });
 
-    expect(sent).toEqual([{ url: `${LEGACY}${OFFICIAL_RUNNER_PATH}`, method: 'GET' }]);
+    expect(sent).toEqual([{ url: `${LEGACY}${OFFICIAL_RUNNER_PATH}`, method: 'GET', key: undefined }]);
     const { text, saved } = await readSaved('official.json');
     expect(saved).toEqual(result);
     expect(text).toBe(stableStringify(result));
@@ -289,6 +294,7 @@ describe('runDiagnostic', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.method).toBe('GET');
     expect(sent[0]?.url.endsWith(DIAGNOSTIC_RUNNER_PATH)).toBe(true);
+    expect(sent[0]?.key).toBe(KEY);
     const { text, saved } = await readSaved('diagnostic.json');
     expect(text).toBe(stableStringify(result));
     expect(saved).toMatchObject({
@@ -400,6 +406,17 @@ describe('runDiagnostic', () => {
 
     await expect(runDiagnostic({}, { env: { OPT2_STATE_DIR: tmp }, fetch })).rejects.toBeInstanceOf(UsageError);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects naming OPT2_HARNESS_KEY and the key file, before any request or write, when no key is configured', async () => {
+    const { fetch } = routedFetch();
+    const keyFile = path.join(tmp, 'secrets', 'harness-diagnostic-key');
+
+    await expect(runDiagnostic({}, { env: { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: LEGACY }, fetch })).rejects.toThrow(
+      `no harness diagnostic key: ${HARNESS_KEY_VARIABLE} is unset and ${keyFile} is missing or empty`,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await exists(path.join(tmp, 'baseline'))).toBe(false);
   });
 
   it('rejects before any request or write when the state directory is inside the checkout', async () => {
@@ -611,9 +628,9 @@ describe('main', () => {
       diagnostic: { httpStatus: 200, specs: 683, durationMs: 412 },
       savedTo: path.join(tmp, 'baseline'),
     });
-    expect(sent.map((request) => request.url)).toEqual([
-      `${LEGACY}${OFFICIAL_RUNNER_PATH}`,
-      `${LEGACY}${DIAGNOSTIC_RUNNER_PATH}`,
+    expect(sent.map((request) => [request.url, request.key])).toEqual([
+      [`${LEGACY}${OFFICIAL_RUNNER_PATH}`, undefined],
+      [`${LEGACY}${DIAGNOSTIC_RUNNER_PATH}`, KEY],
     ]);
     expect(await exists(path.join(tmp, 'baseline', 'official.json'))).toBe(true);
     expect(await exists(path.join(tmp, 'baseline', 'diagnostic.json'))).toBe(true);
@@ -630,7 +647,7 @@ describe('main', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('prints the help text naming LEGACY_ORIGIN, PORT and OPT2_STATE_DIR for --help, exits 0 and sends nothing', async () => {
+  it('prints the help text naming LEGACY_ORIGIN, PORT, OPT2_STATE_DIR and OPT2_HARNESS_KEY for --help, exits 0 and sends nothing', async () => {
     const { fetch } = routedFetch();
     const chunks: string[] = [];
     const exits: number[] = [];
@@ -646,7 +663,7 @@ describe('main', () => {
     expect(code).toBe(0);
     expect(exits).toEqual([0]);
     expect(text.startsWith(`${USAGE}\n`)).toBe(true);
-    for (const name of ['LEGACY_ORIGIN', 'PORT', 'OPT2_STATE_DIR', '--help']) expect(text).toContain(name);
+    for (const name of ['LEGACY_ORIGIN', 'PORT', 'OPT2_STATE_DIR', 'OPT2_HARNESS_KEY', '--help']) expect(text).toContain(name);
     expect(text).not.toMatch(/^\{/m);
     expect(fetch).not.toHaveBeenCalled();
     expect(await exists(path.join(tmp, 'baseline'))).toBe(false);
@@ -676,12 +693,13 @@ describe('main', () => {
       res.finish(official ? (OFFICIAL_FIXTURE.body as string) : DIAGNOSTIC_TEXT);
     });
 
-    const outcome = await main([], { env: { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: LEGACY } });
+    const outcome = await main([], { env });
 
     expect(exchanges.map(({ transport, method, url }) => ({ transport, method, url }))).toEqual([
       { transport: 'http', method: 'GET', url: `${LEGACY}${OFFICIAL_RUNNER_PATH}` },
       { transport: 'http', method: 'GET', url: `${LEGACY}${DIAGNOSTIC_RUNNER_PATH}` },
     ]);
+    expect(exchanges.map(({ headers }) => headers['x-opt2-harness-key'])).toEqual([undefined, KEY]);
     expect(outcome.code).toBe(0);
     expect(outcome.summary).toMatchObject({
       official: { httpStatus: 500, specs: 0 },

@@ -6,6 +6,7 @@ import type { TenantTx } from '@opt2/platform/tenancy';
 import { LegacyApiError, cfDateAdd, cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import { writeSurveyScheduled } from '../events/survey-scheduled.js';
 import type { SurveyScheduledPayload } from '../generated/events/surveys.survey.scheduled.v1.js';
+import { cfJsonControls } from '../legacy/cf-json.js';
 import { FixtureApiError, parseCfInteger } from '../legacy/fixture-envelope.js';
 import * as queries from '../repo/queries.js';
 import type { ReminderInput, SurveysRepository } from '../repo/repository.js';
@@ -71,7 +72,7 @@ function reminderList(value: unknown): unknown[] {
   let list: unknown = value;
   if (typeof value === 'string') {
     try {
-      list = JSON.parse(value);
+      list = JSON.parse(cfJsonControls(value));
     } catch {
       throw invalidParameters();
     }

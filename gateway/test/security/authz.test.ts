@@ -59,6 +59,7 @@ const STATUS_URL = '/internal/v1/cutover/status';
 const STATUS_V2_URL = '/internal/v2/cutover/status';
 const CLEAR_ORPHANS_URL = '/internal/v1/inflight::clear-orphans';
 const MARK_USED_URL = '/internal/v1/legacy-sessions/:sid(.+)::mark-used';
+const SITE_PATHS_URL = '/internal/v1/legacy-site-paths';
 const VERSION_MENU_URL = '/internal/v1/legacy-server/version-menu';
 const RELAY_URL = '/internal/v1/relay/:service/*';
 const EDGE_URL = '/*';
@@ -130,6 +131,14 @@ const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
     siteCheck: true,
   },
   {
+    operationId: 'legacySitePaths',
+    method: 'GET',
+    url: SITE_PATHS_URL,
+    transport: 'service',
+    requires: [serviceRole('web')],
+    siteCheck: true,
+  },
+  {
     operationId: 'getLegacyVersionMenu',
     method: 'GET',
     url: VERSION_MENU_URL,
@@ -178,7 +187,8 @@ const PROBES: Readonly<Record<string, Probe>> = {
   [CLEAR_ORPHANS_URL]: { admitted: 200 },
   // No jar maps the probe's sid, so an admitted call answers the legacy 404.
   [MARK_USED_URL]: { admitted: 404 },
-  // An admitted call reads the facts from the bridge's site.cfm.
+  // An admitted call of either reads the values from the bridge's site.cfm.
+  [SITE_PATHS_URL]: { admitted: 200, reaches: 'legacy' },
   [VERSION_MENU_URL]: { admitted: 200, reaches: 'legacy' },
   [RELAY_URL]: { admitted: 200, reaches: 'people' },
   [EDGE_URL]: { admitted: 200, reaches: 'legacy' },
@@ -207,6 +217,8 @@ function requestFor(row: ExpectedRoute): ProbeRequest {
       };
     case MARK_USED_URL:
       return { method, url: MARK_USED_PROBE_PATH, payload: { tokens: [{ token: PROBE_TOKEN, usedAt: '2026-06-30T12:00:00.000' }] } };
+    case SITE_PATHS_URL:
+      return { method, url: `${SITE_PATHS_URL}?sessionSite=default&host=localhost&themeSite=default` };
     case RELAY_URL:
       return { method, url: RELAY_PROBE_PATH, ...(JSON_BODY_METHODS.has(row.method) ? { payload: {} } : {}) };
     case EDGE_URL:
@@ -589,7 +601,7 @@ describe('route declarations', () => {
 
   it('the table has one row per contract operation, declared as the contract declares it', async () => {
     const ids = EXPECTED_ROUTES.map((row) => row.operationId);
-    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 21, unique: 21 });
+    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 22, unique: 22 });
     expect(tableOperations()).toEqual(await contractOperations());
   });
 
@@ -792,6 +804,8 @@ describe('with v0002 active', () => {
       ['GET', '/gateway/legacy-bridge/cfml/session.cfm?op=describe', 'session.describe'],
       ['POST', '/gateway/legacy-bridge/cfml/session.cfm?op=markUsed', 'session.markUsed'],
       ['GET', '/gateway/legacy-bridge/cfml/site.cfm?op=list', 'site.list'],
+      ['GET', '/gateway/legacy-bridge/cfml/site.cfm?op=paths&siteid=default&themeSite=default', 'site.paths'],
+      ['GET', '/gateway/legacy-bridge/cfml/site.cfm?op=versionMenu', 'site.versionMenu'],
     ] as const)('answers %s %s with a validly signed assertion from outside as 404, reaching nothing', async (method, url, op) => {
       const { res, before, after } = await observed({
         method,
@@ -861,6 +875,29 @@ describe('with v0002 active', () => {
       } finally {
         target('people').setWritePosition();
       }
+    });
+  });
+
+  describe('legacy site paths trust boundary', () => {
+    const url = `${SITE_PATHS_URL}?sessionSite=default&host=localhost&themeSite=default`;
+
+    it.each<[string, () => Promise<Headers>, number]>([
+      ["web's credential", () => invocationHeaders('web'), 200],
+      [
+        "web's credential beside a user token, which the route does not act for",
+        async () => ({ authorization: `Bearer ${await mintUserToken({ sub: 'paths-user', site: SITE_A, roles: [Roles.systemUser] })}`, ...(await invocationHeaders('web')) }),
+        200,
+      ],
+      [
+        "a user token claiming web's role beside the gateway's own credential",
+        async () => ({ authorization: `Bearer ${await mintUserToken({ sub: 'paths-forger', site: SITE_A, roles: [serviceRole('web')] })}`, ...(await invocationHeaders(SERVICE_NAME)) }),
+        403,
+      ],
+      ["web's credential addressed to people", () => invocationHeaders('web', 'people'), 401],
+      ['no credential', async () => ({}), 401],
+    ])('with %s', async (_label, credentials, status) => {
+      const { res, before, after } = await observed({ method: 'GET', url, headers: await credentials() });
+      expect({ status: res.statusCode, reached: reached(before, after) }).toEqual({ status, reached: status === 200 ? ['legacy'] : [] });
     });
   });
 

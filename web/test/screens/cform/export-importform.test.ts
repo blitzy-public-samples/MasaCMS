@@ -1,6 +1,7 @@
 // cform.export and cform.importform for the tenant-a site admin: the relayed zip, the Import Form view and its upload.
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { toString } from '@/lib/html';
 import { exportForm } from '@/screens/cform/export';
@@ -282,6 +283,7 @@ describe('submitImportForm', () => {
     ]);
   });
 
+  // Own oracle: cform-importform-no-formzip.
   it('fails as legacy does when the form scope has no formzip', async () => {
     const gateway = fakeGatewayClient();
     const body: ScreenRequestBody = {
@@ -291,7 +293,7 @@ describe('submitImportForm', () => {
     };
 
     await expect(submitImportForm(contextFor('importform', { title: 'Imported Form' }, gateway, body))).rejects.toEqual(
-      new TypeError('Element FORMZIP is undefined in FORM.'),
+      new LegacyFaultError('Element FORMZIP is undefined in FORM.'),
     );
     expect(serviceCalls(gateway)).toEqual([]);
   });

@@ -36,6 +36,7 @@ operator_secret_ids = {
   identity_platform_api_key = "opt2-identity-platform-api-key"
 }
 legacy_settings = {
+  MURA_DATASOURCE      = "masa"
   MURA_DBTYPE          = "mssql"
   MURA_INDEXFILEINURLS = "false"
   MURA_SITEIDINURLS    = "false"

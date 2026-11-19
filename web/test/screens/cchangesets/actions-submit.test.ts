@@ -1,5 +1,6 @@
 // cChangesets rollback, delete and removeitem against legacy cchangesets.cfc: the owner's write, then FW/1's redirect.
 import { describe, expect, it } from 'vitest';
+import { LegacyFaultError } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
@@ -55,6 +56,8 @@ interface ActionCase {
   readonly written: WriteRedirect;
   /** What `submit` answers for a 200 carrying `written`. */
   readonly result: SubmitResult;
+  /** What `submit` raises without `rc.changesetid`. */
+  readonly unsetId: Error;
 }
 
 const idParams = (): Array<[string, string]> => [
@@ -70,7 +73,11 @@ const ROLLBACK: ActionCase = {
   rc: { changesetID: CHANGESET_ID },
   written: { circuit: 'cChangesets', action: 'edit', params: idParams() },
   result: EDIT_REDIRECT,
+  unsetId: new TypeError('Element CHANGESETID is undefined in RC.'),
 };
+
+// Own oracle: cs-delete-post-nocsid, cs-removeitem-post-nocsid.
+const UNSET_ID_FAULT = new LegacyFaultError('Element RC.changesetid is undefined in ARGUMENTS.');
 
 const ACTIONS: readonly ActionCase[] = [
   ROLLBACK,
@@ -82,6 +89,7 @@ const ACTIONS: readonly ActionCase[] = [
     rc: { changesetID: CHANGESET_ID },
     written: { circuit: 'cChangesets', action: 'list', params: idParams() },
     result: LIST_REDIRECT,
+    unsetId: UNSET_ID_FAULT,
   },
   {
     action: 'removeitem',
@@ -96,6 +104,7 @@ const ACTIONS: readonly ActionCase[] = [
       path: './',
       queryString: `changesetID=${CHANGESET_ID}&siteID=default&keywords=`,
     },
+    unsetId: UNSET_ID_FAULT,
   },
 ];
 
@@ -156,9 +165,9 @@ describe.each(ACTIONS)('cChangesets.$action', (c) => {
   it('errors before any call without rc.changesetid, as legacy does', async () => {
     const gateway = fakeGatewayClient({ [route]: writeResult(true, c.written) });
 
-    await expect(c.submit(contextFor(withoutRc(tokenRequest(), 'changesetid'), gateway))).rejects.toBeInstanceOf(
-      TypeError,
-    );
+    const error: unknown = await c.submit(contextFor(withoutRc(tokenRequest(), 'changesetid'), gateway)).catch((err: unknown) => err);
+    expect(error).toEqual(c.unsetId);
+    expect(Object.getPrototypeOf(error)).toBe(Object.getPrototypeOf(c.unsetId));
     expect(gateway.calls).toEqual([]);
   });
 

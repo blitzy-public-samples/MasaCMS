@@ -1,7 +1,7 @@
 /** Group saves and memberships against a throwaway `identity` schema: pools, legacy defaults and validation, create, update, membership changes and reads. */
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createLogger } from '@opt2/platform/logging';
 import { OperationBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
@@ -75,6 +75,10 @@ const WHOLE = { offset: 0, limit: 1000 };
 /** Timeout of a case whose read polls a closed user until its sleeps total USER_CLOSED_WAIT_MS: a transaction per 100 ms poll, 3 s each under load. */
 const CLOSED_POLL_TIMEOUT_MS = (USER_CLOSED_WAIT_MS / 100) * 3_000;
 
+/** The legacy database the query faults name, and the driver prefix of their messages. */
+const LEGACY_DATABASE = 'muradb_t';
+const DRIVER = '[Macromedia][SQLServer JDBC Driver][SQLServer]';
+
 const available = await pgAvailable();
 
 describe.skipIf(!available)('groups domain', () => {
@@ -136,6 +140,9 @@ describe.skipIf(!available)('groups domain', () => {
   });
   afterAll(async () => {
     await handle?.drop();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it.each([
@@ -255,34 +262,90 @@ describe.skipIf(!available)('groups domain', () => {
     });
   }
 
-  it.each<[string, (addressID: string) => Partial<GroupSaveInput>, string]>([
-    ['an email of 256', () => ({ email: 'e'.repeat(256) }), 'email'],
-    ['a subtype of 51', () => ({ subType: 's'.repeat(51) }), 'subtype'],
-    ['a tablist of 256', () => ({ tablist: 't'.repeat(256) }), 'tablist'],
-    ['an address city of 51', (addressID) => ({ address: { addressID, city: 'c'.repeat(51) } }), 'city'],
-    ['a tag of 101', () => ({ tags: `ok,${'t'.repeat(101)}` }), 'tag'],
-  ])('fails a create and an update posting %s as legacy does, after validation and with nothing written', async (_label, posted, column) => {
+  /** The driver's message for a value its column cuts, quoting the first 100 characters kept, as legacy's debug page shows it. */
+  function truncation(table: string, column: string, kept: string): string {
+    return `${DRIVER}String or binary data would be truncated in table '${LEGACY_DATABASE}.dbo.${table}', column '${column}'. Truncated value: '${kept}'.`;
+  }
+  async function tagsOf(site: string, userId: string): Promise<string[]> {
+    return withTenant(handle.app, tenantIdForSite(site), async (tx) =>
+      (await tx.query<{ tag: string }>(`SELECT tag FROM ${handle.schema}.user_tag WHERE userid = $1 ORDER BY tagid`, [userId])).rows.map((r) => r.tag),
+    );
+  }
+
+  it.each<[string, Partial<GroupSaveInput>, string, string]>([
+    ['an email of 256', { email: 'e'.repeat(256) }, 'Email', 'e'.repeat(100)],
+    ['a subtype of 51', { subType: 's'.repeat(51) }, 'subType', 's'.repeat(50)],
+    ['a tablist of 256', { tablist: 't'.repeat(256) }, 'tablist', 't'.repeat(100)],
+  ])('fails a create and an update posting %s with the query fault of its statement, after validation and with nothing written', async (_label, posted, column, kept) => {
+    vi.stubEnv('MURA_DATABASE', LEGACY_DATABASE);
+    const userId = next('B');
+    const stored = next('B');
+    await createGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Stored' });
+    const before = await writeCounts(SITE_A);
+
+    const created = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Wide', ...posted }).catch((err: unknown) => err);
+    const updated = await updateGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Renamed', ...posted }).catch((err: unknown) => err);
+
+    const detail = truncation('tusers', column, kept);
+    expect(created).toMatchObject({ name: 'LegacyQueryFault', type: 'Database', errorCode: 'HY000', detail, sql: expect.stringMatching(/^INSERT INTO tusers /) });
+    expect(updated).toMatchObject({ name: 'LegacyQueryFault', errorCode: 'HY000', detail, sql: expect.stringMatching(new RegExp(`^UPDATE tusers SET[^]*WHERE UserID = '${stored}'$`)) });
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toBeNull();
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, stored))).toMatchObject({ groupname: 'Stored', row_version: '1' });
+    expect(await writeCounts(SITE_A)).toEqual(before);
+    const invalid = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Wide', hKey: 'abc', uKey: 'def', ...posted });
+    expect(invalid).toMatchObject({ written: false, errors: { SecurityCode: expect.any(String) } });
+  });
+
+  it('keeps a created group without its primary address the INSERT of which fails, and fails a stored address UPDATE writing nothing', async () => {
+    vi.stubEnv('MURA_DATABASE', LEGACY_DATABASE);
     const userId = next('B');
     const stored = next('B');
     await createGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Stored' });
     const [primary] = await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, stored));
+    const city = 'c'.repeat(51);
+
+    const created = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'NoAddress', tags: 'kept', address: { city } }).catch((err: unknown) => err);
+    expect(created).toMatchObject({ name: 'LegacyQueryFault', detail: truncation('tuseraddresses', 'city', 'c'.repeat(50)), sql: expect.stringMatching(/^INSERT INTO tuseraddresses /) });
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toMatchObject({ groupname: 'NoAddress' });
+    expect(await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, userId))).toEqual([]);
+    expect(await tagsOf(SITE_A, userId)).toEqual(['kept']);
+    expect((await outbox(SITE_A)).filter((e) => e.payload.groupId === userId).map((e) => e.topic)).toEqual(['identity.group.changed.v1']);
+
     const before = await writeCounts(SITE_A);
-
-    const created = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Wide', ...posted('') }).catch((err: unknown) => err);
-    const saved = { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Renamed', ...posted(primary?.addressid ?? '') };
-    const updated = await updateGroup(deps(), SUPER, saved).catch((err: unknown) => err);
-
-    for (const outcome of [created, updated]) expect(outcome).toMatchObject({ name: 'LegacyStorageError', column });
-    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toBeNull();
+    const updated = await updateGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Renamed', address: { addressID: primary?.addressid, city } }).catch((err: unknown) => err);
+    expect(updated).toMatchObject({ name: 'LegacyQueryFault', detail: truncation('tuseraddresses', 'city', 'c'.repeat(50)), sql: expect.stringMatching(/^UPDATE tuseraddresses SET/) });
     expect(await gated(SITE_A, (tx) => repo.findGroup(tx, stored))).toMatchObject({ groupname: 'Stored', row_version: '1' });
     expect(await writeCounts(SITE_A)).toEqual(before);
-    const invalid = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Wide', hKey: 'abc', uKey: 'def', ...posted('') });
-    expect(invalid).toMatchObject({ written: false, errors: { SecurityCode: expect.any(String) } });
   });
 
-  it('fails an update of an unknown group id posting a subtype of 51, as legacy\'s UPDATE does on no row', async () => {
-    const outcome = await updateGroup(deps(), SUPER, { userId: next('B'), siteId: SITE_A, isPublic: '0', groupName: 'Ghost', subType: 's'.repeat(51) }).catch((err: unknown) => err);
-    expect(outcome).toMatchObject({ name: 'LegacyStorageError', table: 'group_account', column: 'subtype', violation: 'width', limit: 50 });
+  it('keeps the address update a group UPDATE failing after it leaves, and the writes before a tag the tag INSERT of which fails', async () => {
+    vi.stubEnv('MURA_DATABASE', LEGACY_DATABASE);
+    const stored = next('B');
+    await createGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Stored', tags: 'old', address: { city: 'Old City' } });
+    const [primary] = await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, stored));
+
+    const wide = { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Renamed', subType: 's'.repeat(51), address: { addressID: primary?.addressid, city: 'New City' } };
+    expect(await updateGroup(deps(), SUPER, wide).catch((err: unknown) => err)).toMatchObject({ name: 'LegacyQueryFault', detail: truncation('tusers', 'subType', 's'.repeat(50)) });
+    expect(await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, stored))).toMatchObject([{ city: 'New City' }]);
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, stored))).toMatchObject({ groupname: 'Stored', row_version: '1' });
+
+    const tag = 't'.repeat(101);
+    const tagged = await updateGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Tagged', tags: `one,${tag},three` }).catch((err: unknown) => err);
+    expect(tagged).toMatchObject({ name: 'LegacyQueryFault', detail: truncation('tuserstags', 'tag', 't'.repeat(100)), sql: expect.stringMatching(/^insert into tuserstags /) });
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, stored))).toMatchObject({ groupname: 'Tagged', row_version: '2' });
+    expect(await tagsOf(SITE_A, stored)).toEqual(['one']);
+
+    const userId = next('B');
+    const created = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'NewTagged', tags: `one,${tag}` }).catch((err: unknown) => err);
+    expect(created).toMatchObject({ name: 'LegacyQueryFault', detail: truncation('tuserstags', 'tag', 't'.repeat(100)) });
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toMatchObject({ groupname: 'NewTagged' });
+    expect(await tagsOf(SITE_A, userId)).toEqual(['one']);
+    // createAddress follows createTags, so the failed tag leaves the group without its primary address.
+    expect(await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, userId))).toEqual([]);
+  });
+
+  it('answers an update of an unknown group id with no write and no fault, as legacy\'s UPDATE matches no row', async () => {
+    expect(await updateGroup(deps(), SUPER, { userId: next('B'), siteId: SITE_A, isPublic: '0', groupName: 'Ghost', subType: 's'.repeat(51) })).toMatchObject({ written: false });
     expect(await updateGroup(deps(), SUPER, { userId: next('B'), siteId: SITE_A, isPublic: '0', groupName: 'Ghost', perm: '300' })).toMatchObject({ written: false });
   });
 

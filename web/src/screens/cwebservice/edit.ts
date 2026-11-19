@@ -2,12 +2,10 @@
 import { cfEq, cfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import type { components as IdentityComponents } from '@/generated/clients/identity';
 import type { components as PeopleComponents } from '@/generated/clients/people';
-import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { attr, encodeHtml, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
-import { relayFields, type AdminRequest } from '@/lib/request-context';
-// site-paths holds the settingsBean path getters the shell's `Mura.init` uses; the endpoint must match that root path.
-import { siteBeanOf, siteFirstTouch, sitePaths } from '@/lib/site-paths';
+import { relayFields } from '@/lib/request-context';
+import { legacySitePath, legacySitePaths, siteBeanOf } from '@/lib/site-paths';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageScreen, ScreenContext } from '../registry';
@@ -127,23 +125,15 @@ async function loadAccounts(ctx: ScreenContext): Promise<readonly ConnectedAccou
   return okBody(response, 'people', 'listUserFeed').items;
 }
 
-/** `settingsBean.getResourcePath(complete=1)` of the request's site, else of the request host as the shell takes it. */
-function completeResourcePath(req: AdminRequest): string {
-  if (req.site !== undefined) {
-    const site = siteBeanOf(req.site);
-    // jsonApiUtility's init builds the endpoint once, on the first request that asks the site bean for its API.
-    return siteFirstTouch(req.site, 'restRootPath', () => sitePaths(req, site).rootPath(true));
-  }
-  const { serverPort, context } = legacySettings();
-  return `${req.https ? 'https' : 'http'}://${req.serverName}${serverPort}${context}`;
-}
-
-/** `siteConfig().getApi('json','v1').getEndpoint(mode='rest')` on an admin request. */
-function restEndpoint(req: AdminRequest): string {
-  const siteid = req.site?.siteid ?? req.rc.siteid ?? '';
-  const indexFile = legacySettings().indexFileInAPI ? '/index.cfm' : '';
-  // CFML `replace` swaps only the first `/json/`.
-  return `${completeResourcePath(req)}${indexFile}/_api/json/v1/${siteid}`.replace('/json/', '/rest/');
+/**
+ * `rc.$.siteConfig().getApi('json','v1').getEndpoint(mode='rest')` as legacy's live site bean holds it.
+ * @throws GatewayDenialError When the gateway refuses web's call (401 or 403).
+ */
+async function loadRestEndpoint({ req, gateway }: ScreenContext): Promise<string> {
+  const rcSiteId = req.rc.siteid ?? '';
+  const siteid = rcSiteId !== '' ? rcSiteId : req.session.siteid;
+  if (siteid === '') throw new Error('The SiteID is not set in the current Mura Scope event.');
+  return legacySitePath(await legacySitePaths(req, gateway, { apiSite: siteid }), 'restEndpoint');
 }
 
 /** userBean `getFullName()` of a person: trimmed first and last name. */
@@ -184,8 +174,7 @@ function accountOptions(accounts: readonly ConnectedAccount[], userid: string): 
 }
 
 /** The Endpoint through Example Usage groups of a stored client. */
-function endpointGroups(req: AdminRequest, { clientid, clientsecret }: WebServiceEditState): SafeHtml {
-  const endpoint = restEndpoint(req);
+function endpointGroups(endpoint: string, { clientid, clientsecret }: WebServiceEditState): SafeHtml {
   const basicHeader = Buffer.from(`${clientid}:${clientsecret}`, 'utf8').toString('base64');
   return html`
             <div class="mura-control-group">
@@ -254,10 +243,14 @@ function actionButtons(ctx: ScreenContext, { clientid, siteid, exists }: WebServ
             <button class="btn mura-primary" type="button" onclick="submitForm(document.forms.form1,'save');"><i class="mi-check-circle"></i> Update</button>`;
 }
 
-/** The edit view body for `state`, with the Connected Account choices and the client id's CSRF tokens it fetches. */
+/** The edit view body for `state`, with the Connected Account choices, endpoint and CSRF tokens it fetches. */
 export async function renderEditView(ctx: ScreenContext, state: WebServiceEditState): Promise<ShellView> {
-  const [accounts] = await Promise.all([loadAccounts(ctx), ctx.csrf.prefetch([state.clientid])]);
   const { clientid, exists, granttype } = state;
+  const [accounts, endpoint] = await Promise.all([
+    loadAccounts(ctx),
+    exists ? loadRestEndpoint(ctx) : '',
+    ctx.csrf.prefetch([clientid]),
+  ]);
   const useSSL = ctx.req.site !== undefined && siteBeanOf(ctx.req.site).useSSL;
   // Legacy's back link has a stray `&siteid=&`: the URL-encoded `rc.siteid` follows `siteid=` as a bare segment.
   const backHref = raw(
@@ -321,7 +314,7 @@ ${errorAlert}${sslAlert}
           <label>Redirect_URI</label>
           <textarea name="redirectURL" rows="5">${state.redirecturl}</textarea>
       </div>
-${exists ? endpointGroups(ctx.req, state) : ''}
+${exists ? endpointGroups(endpoint, state) : ''}
       <div class="mura-actions">
         <div class="form-actions">${actionButtons(ctx, state)}
           <input type="hidden" id="siteid" name="siteid" value="${state.siteid}">

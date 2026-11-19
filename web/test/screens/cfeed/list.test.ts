@@ -4,15 +4,21 @@ import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isSafeHtml, toString } from '@/lib/html';
 import { cfeedGate } from '@/screens/cfeed/before';
-import { feedApiEndpoint } from '@/screens/cfeed/common';
 import { cfeedListScreen, loadFeedList, renderFeedList } from '@/screens/cfeed/list';
 import type { ScreenContext } from '@/screens/registry';
 import type { ShellView } from '@/shell/document';
-import { CFEED_PATHS, FEED_IDS, cfeedListData } from '../../fixtures/strategies-content/feeds';
+import { CFEED_PATHS, FEED_API_ENDPOINT, FEED_IDS, cfeedListData } from '../../fixtures/strategies-content/feeds';
 import { siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, normaliseIds, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  keptSitePaths,
+  routeKey,
+  type FakeGatewayClient,
+} from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenModel } from '../../helpers/screen-context';
 
 // The registry module loads every circuit; screen suites stand in for it with the shell hooks this page renders with.
@@ -47,7 +53,11 @@ const CHANNEL_LINK = String(REMOTE_ROW.channellink);
 /** The site admin on `cfeed.list` of tenant-a, whose site has the feed manager, with listFeeds answering `rc`. */
 function listContext(rc: Row = cfeedListData.rc): ListContext {
   const req = siteAdminRequest(SITE, { circuit: 'cfeed', item: 'list', site: { hasFeedManager: true } });
-  return makeScreenContext({ req, gateway: fakeGatewayClient({ [LIST_ROUTE]: { status: 200, body: { rc } } }) });
+  const gateway = fakeGatewayClient({
+    [LIST_ROUTE]: { status: 200, body: { rc } },
+    [LEGACY_SITE_PATHS_KEY]: keptSitePaths({ feedEndpoint: FEED_API_ENDPOINT }),
+  });
+  return makeScreenContext({ req, gateway });
 }
 
 interface RenderedList {
@@ -133,13 +143,14 @@ describe('cfeedListScreen', () => {
 });
 
 describe('loadFeedList', () => {
-  it('reads the site collections once and issues every row token in one identity call', async () => {
+  it("reads the site collections once, legacy's feed API endpoint, then every row token in one identity call", async () => {
     const ctx = listContext();
 
     const data = await loadFeedList(ctx);
 
     expect(ctx.gateway.calls.map(({ service, method, path }) => `${method} ${service} ${path}`)).toEqual([
       `GET strategies-content ${CFEED_PATHS.list}`,
+      `GET gateway ${LEGACY_SITE_PATHS_PATH}`,
       'POST identity /v1/csrf/tokens',
     ]);
     expect(identityCalls(ctx).map(({ json }) => json)).toEqual([{ contexts: [LOCAL_ID, REMOTE_ID] }]);
@@ -168,9 +179,13 @@ describe('loadFeedList', () => {
           channelLink: CHANNEL_LINK,
         },
       ],
-      endpoint: feedApiEndpoint(ctx.req),
+      endpoint: FEED_API_ENDPOINT,
     });
-    expect(data.endpoint).toMatch(/\/_api\/feed\/v1\/tenant-a$/);
+    expect(ctx.gateway.calls.find(({ path }) => path === LEGACY_SITE_PATHS_PATH)?.query).toMatchObject({
+      sessionSite: SITE,
+      host: 'localhost',
+      feedSite: SITE,
+    });
   });
 });
 
@@ -216,7 +231,7 @@ describe('renderFeedList', () => {
   });
 
   it('links a Local row to its edit, RSS and delete actions', async () => {
-    const { $, ctx } = await renderList();
+    const { $ } = await renderList();
     const row = dataRow($, 0);
     const editHref = `./?muraAction=cFeed.edit&feedID=${LOCAL_ID}&siteid=${SITE}&type=Local`;
 
@@ -228,7 +243,7 @@ describe('renderFeedList', () => {
     ).toEqual(['edit', 'rss', 'delete']);
     expect(itemLink(row, 'edit')).toEqual({ href: editHref, text: 'Edit' });
     expect(itemLink(row, 'rss')).toEqual({
-      href: `${feedApiEndpoint(ctx.req)}/?feedID=${LOCAL_ID}`,
+      href: `${FEED_API_ENDPOINT}/?feedID=${LOCAL_ID}`,
       target: '_blank',
       text: 'View RSS',
     });

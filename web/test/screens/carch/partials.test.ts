@@ -30,7 +30,7 @@ import { USER_IDS } from '../../fixtures/session';
 import { adminS2Request, editorRequest, siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, normaliseAdminUrl } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient } from '../../helpers/fake-gateway';
+import { INSTALLED_LEGACY_PATHS, fakeGatewayClient } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext } from '../../helpers/screen-context';
 
 const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
@@ -273,7 +273,8 @@ describe('carchJs', () => {
   const architecture = (): string =>
     `\n\t<script src="${adminRoot()}/assets/js/architecture.min.js?coreversion=7.6.1" ` +
     'type="text/javascript" ></script>\n';
-  const js = (action: string): string => markupOf(carchJs(contextFor(adminS2Request()), action));
+  const js = (action: string): string =>
+    markupOf(carchJs(contextFor(adminS2Request()), action, INSTALLED_LEGACY_PATHS.themeAssetPath));
 
   it.each(['list', 'draft', 'hist'])('renders only the architecture script for %s', (action) => {
     expect(js(action)).toBe(architecture());
@@ -305,6 +306,7 @@ describe('carchJs', () => {
     expect(markup).toContain(`oFCKeditor.BasePath\t\t= "${legacySettings().context}/wysiwyg/";`);
     expect(markup).toContain('oFCKeditor.ToolbarSet\t\t\t= "Summary";');
     expect(markup).toContain("oFCKeditor.Config.DefaultLanguage='en_us';");
+    expect(markup).toContain("oFCKeditor.Config.EditorAreaCSS\t= '/themes/default/css/editor.css';");
     expect(markup).not.toContain('ckeditor(');
     expect(markup).not.toContain('fckconfig.js.cfm');
   });

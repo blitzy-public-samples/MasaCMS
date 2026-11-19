@@ -140,9 +140,21 @@ afterEach(() => {
   resetLegacySettingsForTests();
 });
 
+// Oracle: cUsers.list compares a hex float by ACF's DoubleParser, which reads 0x1p0 as 2 and 0x10000p-1 as 0, and echoes it.
+const HEX_TEXT: readonly TabCase[] = [
+  ['0x1p0', null],
+  ['0x1p3', null],
+  ['0x1p-1080', null],
+  ['0x10000p-1', 0],
+];
+
 describe('renderGroupList tabs', () => {
-  it.each(NUMERIC_TEXT)('ispublic=%j: active tab %j', async (ispublic, active) => {
+  it.each([...NUMERIC_TEXT, ...HEX_TEXT])('ispublic=%j: active tab %j', async (ispublic, active) => {
     expect(tabsOf(await groupList({ siteid: SITE, ispublic }))).toEqual(expectedTabs(active));
+  });
+
+  it.each(HEX_TEXT)('ispublic=%j is echoed in the search form', async (ispublic) => {
+    expect((await groupList({ siteid: SITE, ispublic }))('input[type="hidden"][name="ispublic"]').first().attr('value')).toBe(ispublic);
   });
 });
 

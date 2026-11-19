@@ -5,7 +5,7 @@ import type { components } from '@/generated/clients/identity';
 import { GatewayUnavailableError, isUnavailable } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { cwebserviceScreens } from '@/screens/cwebservice';
+import { saveDefinition } from '@/screens/cwebservice';
 import { submitSave } from '@/screens/cwebservice/save';
 import type { PageControllerRedirect, PageScreen, ScreenContext, SubmitResult } from '@/screens/registry';
 import { CSRF_CWEBSERVICE } from '../../fixtures/identity/csrf';
@@ -92,12 +92,10 @@ function contextFor(req: AdminRequest, routes: FakeRouteTable): ScreenContext & 
 }
 
 function saveScreen(): PageScreen<unknown> {
-  const def = cwebserviceScreens.find((candidate) => candidate.action === 'save');
-  if (def === undefined || def.mode !== 'page') throw new Error('cwebservice.save is not a registered page');
-  return def;
+  return saveDefinition;
 }
 
-/** The registered save's controller step, as the page handler runs it. */
+/** The save definition's controller step, as the page handler runs it. */
 async function runSave(ctx: ScreenContext): Promise<PageControllerRedirect | undefined> {
   return saveScreen().redirect?.(ctx);
 }
