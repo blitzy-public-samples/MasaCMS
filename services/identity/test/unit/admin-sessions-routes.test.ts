@@ -11,7 +11,7 @@ import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/aut
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, deleteCookieLegacy } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
-import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, type QueryConfig, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   assertResponseMatchesOpenApi,
@@ -94,8 +94,11 @@ function recordingRegistryDb(db: TenantDb): TenantDb {
   };
 }
 
-/** Login-mail settings answering each site by name, recording the site ids asked for. */
-function recordingMailSettings(): LoginMailDeps['settings'] & { sitesAsked: string[] } {
+/** A test's replacement answer for a site's settings, given the settings answered by default. */
+type SiteAnswer = (siteId: string, settings: LoginMailSiteSettings) => Promise<LoginMailSiteSettings>;
+
+/** Login-mail settings answering each site by name, or by `answer` when a test sets it, recording the site ids asked for. */
+function recordingMailSettings(): LoginMailDeps['settings'] & { sitesAsked: string[]; answer: SiteAnswer | undefined } {
   const sitesAsked: string[] = [];
   const site = (siteId: string): LoginMailSiteSettings => ({
     site: `Site ${siteId}`,
@@ -108,15 +111,17 @@ function recordingMailSettings(): LoginMailDeps['settings'] & { sitesAsked: stri
     context: '',
     extranetPublicRegNotify: '',
   });
-  return {
+  const source: ReturnType<typeof recordingMailSettings> = {
     sitesAsked,
+    answer: undefined,
     global: () => ({ ...DEFAULT_LOGIN_MAIL_GLOBAL_SETTINGS, title: 'Masa Admin' }),
     site: (siteId) => {
       sitesAsked.push(siteId);
-      return site(siteId);
+      return source.answer === undefined ? site(siteId) : source.answer(siteId, site(siteId));
     },
     urlStem: (siteId, filename) => `/${siteId}/${filename}`,
   };
+  return source;
 }
 
 /** Login-mail events recorded by payload. */
@@ -195,6 +200,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   mailSettings.sitesAsked.length = 0;
+  mailSettings.answer = undefined;
   mailEvents.payloads.length = 0;
   registryReads.length = 0;
 });
@@ -610,6 +616,57 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     });
     expect(editor.json()).toEqual({ sites: [{ siteID: SITE_A, site: `Site ${SITE_A}` }] });
     expect(anonymous.json()).toEqual({ sites: [] });
+  });
+
+  const programsSitesDown = new ServiceUnavailableError('programs-sites', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+
+  // Each site's name lookup settles after `ms`, failing with `error` when given; `asked` are the sites looked up, all at once.
+  it.each<['siteadmin' | 'editor', string, Readonly<Record<string, { ms: number; error?: Error }>>, string[], number, unknown]>([
+    [
+      'siteadmin',
+      'lists them in registry order when they settle in reverse',
+      { [DEFAULT]: { ms: 30 }, [SITE_A]: { ms: 20 }, [UMBRELLA]: { ms: 10 } },
+      [DEFAULT, SITE_A, UMBRELLA],
+      200,
+      { sites: [DEFAULT, SITE_A, UMBRELLA].map((siteID) => ({ siteID, site: `Site ${siteID}` })) },
+    ],
+    [
+      'siteadmin',
+      'fails with the first failure in registry order, not the earliest',
+      { [DEFAULT]: { ms: 1 }, [SITE_A]: { ms: 20, error: programsSitesDown }, [UMBRELLA]: { ms: 1, error: new Error('programs-sites answered no mail settings') } },
+      [DEFAULT, SITE_A, UMBRELLA],
+      503,
+      expect.objectContaining({ apiversion: 'v1', error: expect.objectContaining({ message: 'Unhandled Exception' }) }),
+    ],
+    [
+      'editor',
+      'looks up no site whose access check denies it',
+      { [DEFAULT]: { ms: 1 }, [SITE_A]: { ms: 10 }, [UMBRELLA]: { ms: 1 } },
+      [SITE_A],
+      200,
+      { sites: [{ siteID: SITE_A, site: `Site ${SITE_A}` }] },
+    ],
+  ])('reads the %s session sites names together and %s', async (username, _label, answers, asked, status, body) => {
+    const { sid } = await loginAs(username);
+    const token = username === 'siteadmin' ? { roles: [Roles.s2], sub: users.admin, site: DEFAULT } : { roles: [Roles.systemUser], sub: users.editor, site: SITE_A };
+    let inFlight = 0;
+    let mostInFlight = 0;
+    mailSettings.answer = async (siteId, settings) => {
+      inFlight += 1;
+      mostInFlight = Math.max(mostInFlight, inFlight);
+      const { ms, error } = answers[siteId] ?? { ms: 0 };
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      inFlight -= 1;
+      if (error !== undefined) throw error;
+      return settings;
+    };
+
+    const res = await send('GET', '/v1/sessions/current/sites', await headersFor(token.roles, { sid, sub: token.sub, site: token.site }));
+
+    expect(mailSettings.sitesAsked).toEqual(asked);
+    expect(mostInFlight).toBe(asked.length);
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toEqual(body);
   });
 
   it.each<[string, 'editor' | 'none', readonly string[], string[]]>([

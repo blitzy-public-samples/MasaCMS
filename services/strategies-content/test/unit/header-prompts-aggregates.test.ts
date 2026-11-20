@@ -1,4 +1,4 @@
-/** `loadHeaderPrompts` over a throwaway `content` schema: its counts against the distinct ids of the listed rows, and its round trips as rows grow. */
+/** `loadHeaderPrompts` over a throwaway `content` schema: its counts against the distinct ids of the listed rows, its round trips as rows grow, and its indexed count reads. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Roles, moduleRole, type UserClaims } from '@opt2/platform/auth';
 import { cfDateAdd } from '@opt2/platform/legacy-compat';
@@ -280,6 +280,35 @@ describe.skipIf(!(await pgAvailable()))('loadHeaderPrompts aggregates', () => {
     const counts = await loadHeaderPrompts(deps, claims);
     expect(counts).toEqual(expected);
     expect(counts).toEqual(await listedCounts(deps, claims, groupIds));
+  });
+
+  it.each<[string, string, (tx: TenantTx, claims: UserClaims) => Promise<number>]>([
+    [
+      'drafts',
+      'content_tenant_siteid_active_lastupdate_draft_idx',
+      (tx, claims) => deps.repository.content.draftCount(tx, { siteId: claims.site, userId: claims.sub, startDate: cfDateAdd('m', -3, NOW) }),
+    ],
+    ['expiring items', 'content_tenant_siteid_expires_idx', (tx, claims) => deps.repository.content.expiringCount(tx, { siteId: claims.site, userId: claims.sub, today: NOW })],
+  ])('reads the %s count through %s, which forced RLS leaves seekable', async (_label, index, count) => {
+    const claims = superUser(PARITY_SITE);
+    await handle.adminPool.query(`ANALYZE ${handle.schema}.content`);
+    const plan = await withTenant(handle.app, claims.tid, async (tx) => {
+      const statements: Array<{ text: string; values: unknown[] | undefined }> = [];
+      const recording: TenantTx = {
+        ...tx,
+        query: (text, values) => {
+          statements.push({ text: typeof text === 'string' ? text : text.text, values });
+          return tx.query(text, values);
+        },
+      };
+      await count(recording, claims);
+      const counted = statements.at(-1);
+      if (counted === undefined) throw new Error('the count ran no statement');
+      // Without the sequential scan the planner takes the cheapest index whose conditions RLS lets it apply.
+      await tx.query('SET LOCAL enable_seqscan = off');
+      return (await tx.query(`EXPLAIN (FORMAT JSON) ${counted.text}`, counted.values)).rows;
+    });
+    expect(JSON.stringify(plan)).toContain(`"Index Name":"${index}"`);
   });
 
   it('counts the expiring items of the first LEGACY_MAX_ROWS rows only', async () => {

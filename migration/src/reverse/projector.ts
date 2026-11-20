@@ -198,6 +198,11 @@ export interface ProjectorLoop {
   runOnce(): Promise<CycleResult>;
   /** Holds the base cadence until the returned release runs; on a started loop the next cycle starts at once. */
   demand(): () => void;
+  /**
+   * Wakes a started loop, unless its last cycle failed or did not run, and resolves once the next cycle settles or after
+   * `ms`, whichever comes first; on a loop not running, after `ms`.
+   */
+  wakeAndWait(ms: number): Promise<void>;
   /** Tenants of the last cycle that read the live `tsettings`; null before the first. */
   lastTenants(): readonly string[] | null;
 }
@@ -1711,6 +1716,10 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
   let wakeOnSettle = false;
   /** The scheduled cycles' current failure streak; undefined while they succeed. */
   let failing: FailureState | undefined;
+  /** False after a cycle that failed or did not run, which a woken cycle would repeat at the speed of one query. */
+  let lastRan = true;
+  /** Resolvers of `wakeAndWait` calls, each run once the next cycle settles. */
+  const settleWaiters = new Set<() => void>();
 
   const runOnce = (): Promise<CycleResult> => {
     if (inflight === undefined) {
@@ -1731,10 +1740,22 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
           memory,
         }),
       );
-      inflight = cycle.finally(() => {
-        inflight = undefined;
-        probe(skipped);
-      });
+      inflight = cycle
+        .then(
+          (result) => {
+            lastRan = result.ran;
+            return result;
+          },
+          (error: unknown) => {
+            lastRan = false;
+            throw error;
+          },
+        )
+        .finally(() => {
+          inflight = undefined;
+          probe(skipped);
+          for (const settled of [...settleWaiters]) settled();
+        });
     }
     return inflight;
   };
@@ -1844,6 +1865,18 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
         held = false;
         demands -= 1;
       };
+    },
+    wakeAndWait(ms) {
+      if (lastRan) wake();
+      return new Promise<void>((resolve) => {
+        const settled = (): void => {
+          clearTimeout(deadline);
+          settleWaiters.delete(settled);
+          resolve();
+        };
+        const deadline = setTimeout(settled, ms);
+        if (running) settleWaiters.add(settled);
+      });
     },
     lastTenants: () => tenants,
   };

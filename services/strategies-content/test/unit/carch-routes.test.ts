@@ -106,6 +106,8 @@ const wddx = (fields: Record<string, string>): string =>
 let t: ContentTestApp;
 let ctx: ContentRouteContext;
 const calls: ServiceRequest[] = [];
+/** How many statements the pool had run when each service call was made. */
+const statementsAtCall = new Map<ServiceRequest, number>();
 const saved: Json[] = [];
 const consumed: CsrfConsumeRequest[] = [];
 /** The errors the routes raised, as the error handler receives them. */
@@ -117,6 +119,7 @@ const sites = { flags: SEEDED_SITE_FLAGS as SiteConfigFlagValues, status: 200 };
 /** identity's admin session store, CSRF consume and session struct, and programs-sites' site flags; any other service call fails the test. */
 function identityDouble<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
   calls.push(req);
+  statementsAtCall.set(req, t.db.statements.length);
   const answer = (status: number, body: unknown): Promise<ServiceResponse<T>> => Promise.resolve({ status, headers: {}, body: body as T });
   if (req.service === 'programs-sites' && req.path === SITE_CONFIG_FLAGS_PATH && req.method === 'POST') {
     return sites.status === 200 ? Promise.resolve(siteConfigFlagsAnswer(sites.flags)(req) as ServiceResponse<T>) : answer(sites.status, {});
@@ -268,6 +271,7 @@ afterAll(async () => {
 beforeEach(() => {
   t.db.reset();
   calls.length = 0;
+  statementsAtCall.clear();
   saved.length = 0;
   consumed.length = 0;
   routeErrors.length = 0;
@@ -603,6 +607,34 @@ describe('carch.list', () => {
     t.db.respond(TOP, [topRow()]);
     sites.status = 500;
     expect((await call('GET', `${TREE_URL}?topid=${NODE}`)).statusCode).toBe(503);
+  });
+
+  const SESSION_PATH = '/v1/sessions/current/admin-state';
+
+  it.each([
+    ['the Site Manager', `topid=${NODE}`, [SITE_CONFIG_FLAGS_PATH, SESSION_PATH]],
+    ['a module outside the content modules', `moduleid=${LONG_VARIATIONS}&topid=${NODE}`, [SITE_CONFIG_FLAGS_PATH]],
+  ] as const)('asks once for the site flags, and for a content module the session, before the tree reads of %s', async (_name, query, paths) => {
+    t.db.respond(TOP, [topRow()]);
+    await rcOf(`${TREE_URL}?${query}`);
+    const reads = calls.filter((req) => (req.method === 'POST' && req.path === SITE_CONFIG_FLAGS_PATH) || (req.method === 'GET' && req.path === SESSION_PATH));
+    const firstTreeRead = t.db.statements.findIndex((statement) => TOP.test(statement.sql));
+    expect(reads.map((req) => req.path)).toEqual(paths);
+    expect(reads.map((req) => (statementsAtCall.get(req) ?? Number.POSITIVE_INFINITY) < firstTreeRead)).toEqual(paths.map(() => true));
+  });
+
+  it.each([
+    ['the tree read before the site flags and the session', true, 500, 'tree read failed'],
+    ['the site flags before the session', false, 503, 'Service programs-sites unavailable (HTTP_500)'],
+  ] as const)('fails with %s, in the order list() reads them, when each fails', async (_name, treeFails, status, message) => {
+    t.db.respond(TOP, () => {
+      if (treeFails) throw new Error('tree read failed');
+      return [topRow()];
+    });
+    sites.status = 500;
+    identity.status = 500;
+    expect((await call('GET', `${TREE_URL}?topid=${NODE}`)).statusCode).toBe(status);
+    expect(routeErrors.map((error) => error.message)).toEqual([message]);
   });
 });
 

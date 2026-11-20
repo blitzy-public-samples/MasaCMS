@@ -51,11 +51,14 @@ function worstCase(spec: CatalogColumn): number | undefined {
   return spec.maxLength === null || spec.maxLength < 0 ? undefined : 4 + spec.maxLength * unit;
 }
 
-const CHUNK = /HASHBYTES\('SHA2_256', ((?:ISNULL\(CAST\(DATALENGTH\(\[[^\]]+\]\) AS binary\(4\)\) \+ CAST\(\[[^\]]+\] AS varbinary\(8000\)\), 0xFFFFFFFF\)(?: \+ )?)+)\)/g;
+/** One value's hashed form: its 4-byte length then its bytes as `binary`, or the 0xFFFFFFFF NULL marker. */
+const term = (expr: string, binary: 'varbinary(8000)' | 'varbinary(max)'): string => `ISNULL(CAST(DATALENGTH(${expr}) AS binary(4)) + CAST(${expr} AS ${binary}), 0xFFFFFFFF)`;
+
+const CHUNK = /\(((?:ISNULL\(CAST\(DATALENGTH\(\[[^\]]+\]\) AS binary\(4\)\) \+ CAST\(\[[^\]]+\] AS varbinary\(8000\)\), 0xFFFFFFFF\)(?: \+ )?)+)\)/g;
 const TERM_COLUMN = /DATALENGTH\(\[([^\]]+)\]\)/g;
 
 describe('fingerprintSql', () => {
-  it('hashes every column once in catalog order, in chunks whose worst case stays within 8,000 bytes', () => {
+  it('hashes every column once in catalog order with one HASHBYTES per row, in chunks whose worst case stays within 8,000 bytes', () => {
     const columns = [
       column('tcontent_ID', 'int'),
       column('ContentID', 'char', 35),
@@ -65,18 +68,19 @@ describe('fingerprintSql', () => {
       column('Body', 'nvarchar', -1),
       column('LastUpdate', 'datetime'),
     ];
-    const text = fingerprintSql(tableOf(columns, ['tcontent_ID']), ' WHERE ([SiteID] IN (@p0))');
+    const text = fingerprintSql(tableOf(columns, ['tcontent_ID']), ' WHERE ([SiteID] IN (@p0))') ?? '';
 
-    const chunks = [...(text ?? '').matchAll(CHUNK)].map(([, body = '']) => [...body.matchAll(TERM_COLUMN)].map(([, name = '']) => name));
+    const chunks = [...text.matchAll(CHUNK)].map(([group = '', body = '']) => ({ group, names: [...body.matchAll(TERM_COLUMN)].map(([, name = '']) => name) }));
     expect(chunks.length).toBeGreaterThan(2);
     const byName = new Map(columns.map((spec) => [spec.name, spec]));
-    for (const chunk of chunks) {
-      expect(chunk.reduce((sum, name) => sum + (worstCase(byName.get(name) as CatalogColumn) ?? Number.NaN), 0)).toBeLessThanOrEqual(8000);
+    for (const { names } of chunks) {
+      expect(names.reduce((sum, name) => sum + (worstCase(byName.get(name) as CatalogColumn) ?? Number.NaN), 0)).toBeLessThanOrEqual(8000);
     }
-    expect(chunks.flat()).toEqual(columns.filter((spec) => worstCase(spec) !== undefined).map((spec) => spec.name));
-    expect(text).toContain('ISNULL(CAST(DATALENGTH([Body]) AS binary(4)) + CAST([Body] AS varbinary(max)), 0xFFFFFFFF)');
-    expect(text).toMatch(/^SELECT TOP \(250001\) \[tcontent_ID\] AS \[k0\], CAST\(HASHBYTES\('SHA2_256', CAST\(HASHBYTES\('SHA2_256', /);
-    expect(text).toMatch(/\) AS binary\(16\)\) AS \[h\] FROM \[dbo\]\.\[tsample\] WHERE \(\[SiteID\] IN \(@p0\)\)$/);
+    expect(chunks.flatMap(({ names }) => names)).toEqual(columns.filter((spec) => worstCase(spec) !== undefined).map((spec) => spec.name));
+    expect(text.match(/HASHBYTES/g)).toHaveLength(1);
+    const [first, ...rest] = chunks.map(({ group }) => group);
+    const row = [`CAST(${first ?? ''} AS varbinary(max))`, ...rest, term('[Body]', 'varbinary(max)')].join(' + ');
+    expect(text).toBe(`SELECT TOP (250001) [tcontent_ID] AS [k0], CAST(HASHBYTES('SHA2_256', ${row}) AS binary(16)) AS [h] FROM [dbo].[tsample] WHERE ([SiteID] IN (@p0))`);
   });
 
   it.each([
@@ -91,16 +95,30 @@ describe('fingerprintSql', () => {
     ['nvarchar', 4000, '[Doc]'],
   ] as [string, number | null, string][])('hashes a %s(%s) column whole through %s', (sqlType, maxLength, read) => {
     const text = fingerprintSql(tableOf([column('ID', 'int'), column('Doc', sqlType, maxLength)], ['ID']), '');
-    expect(text).toContain(`CAST(HASHBYTES('SHA2_256', ISNULL(CAST(DATALENGTH([ID]) AS binary(4)) + CAST([ID] AS varbinary(8000)), 0xFFFFFFFF)) AS varbinary(max))`);
-    expect(text).toContain(` + ISNULL(CAST(DATALENGTH(${read}) AS binary(4)) + CAST(${read} AS varbinary(max)), 0xFFFFFFFF))`);
+    expect(text).toBe(
+      `SELECT TOP (250001) [ID] AS [k0], CAST(HASHBYTES('SHA2_256', CAST((${term('[ID]', 'varbinary(8000)')}) AS varbinary(max)) + ${term(read, 'varbinary(max)')}) AS binary(16)) AS [h] FROM [dbo].[tsample]`,
+    );
   });
 
-  it('hashes a table of large objects only from its first whole column on', () => {
-    const text = fingerprintSql(tableOf([column('Doc', 'ntext'), column('Blob', 'image')]), '');
-    expect(text).toBe(
-      'SELECT TOP (250001) CAST(HASHBYTES(\'SHA2_256\', CAST(ISNULL(CAST(DATALENGTH(CAST([Doc] AS nvarchar(max))) AS binary(4)) + CAST(CAST([Doc] AS nvarchar(max)) AS varbinary(max)), 0xFFFFFFFF) AS varbinary(max))' +
-        ' + ISNULL(CAST(DATALENGTH([Blob]) AS binary(4)) + CAST([Blob] AS varbinary(max)), 0xFFFFFFFF)) AS binary(16)) AS [h] FROM [dbo].[tsample]',
-    );
+  it.each([
+    [
+      'large objects only, from its first whole column on',
+      [column('Doc', 'ntext'), column('Blob', 'image')],
+      'CAST(ISNULL(CAST(DATALENGTH(CAST([Doc] AS nvarchar(max))) AS binary(4)) + CAST(CAST([Doc] AS nvarchar(max)) AS varbinary(max)), 0xFFFFFFFF) AS varbinary(max))' +
+        ' + ISNULL(CAST(DATALENGTH([Blob]) AS binary(4)) + CAST([Blob] AS varbinary(max)), 0xFFFFFFFF)',
+    ],
+    [
+      'text columns only, in one chunk',
+      [column('ContentID', 'char', 35), column('Title', 'nvarchar', 255)],
+      `CAST((${term('[ContentID]', 'varbinary(8000)')} + ${term('[Title]', 'varbinary(8000)')}) AS varbinary(max))`,
+    ],
+    [
+      'text columns only, over two chunks',
+      [column('Summary', 'nvarchar', 3000), column('Notes', 'nvarchar', 3000)],
+      `CAST((${term('[Summary]', 'varbinary(8000)')}) AS varbinary(max)) + (${term('[Notes]', 'varbinary(8000)')})`,
+    ],
+  ] as [string, CatalogColumn[], string][])('hashes a keyless table of %s', (_label, columns, row) => {
+    expect(fingerprintSql(tableOf(columns), '')).toBe(`SELECT TOP (250001) CAST(HASHBYTES('SHA2_256', ${row}) AS binary(16)) AS [h] FROM [dbo].[tsample]`);
   });
 
   it.each(['sql_variant', 'timestamp', 'geography', 'hierarchyid'])('reads no fingerprint of a table with a %s column', (sqlType) => {

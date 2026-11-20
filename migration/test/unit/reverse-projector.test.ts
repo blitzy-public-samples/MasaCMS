@@ -31,7 +31,7 @@ import { createFaultRegistry } from '../../src/faults/registry.js';
 import { BridgeError, Opt2SyncUnavailableError, STARTUP_COUNT_SQL } from '../../src/legacy/index.js';
 import { OwnerCallError, loadUnitCatalog, type DataOwner } from '../../src/owners/index.js';
 import type { LegacyEffect } from '../../src/reverse/apply-legacy.js';
-import { ProjectionTimeoutError, createAwaiter } from '../../src/reverse/await.js';
+import { ProjectionTimeoutError, createAwaiter, type AwaitProjectionResult } from '../../src/reverse/await.js';
 import { createProjector } from '../../src/reverse/index.js';
 import { HeldSpanChangedError, OperationTracker, ROSTER_PARTICIPANTS } from '../../src/reverse/operations.js';
 import {
@@ -44,6 +44,7 @@ import {
   type OperationChangePoint,
   type ProjectorContext,
   type ProjectorHooks,
+  type ProjectorLoop,
   type StartupGuardRunner,
   type StreamMemory,
 } from '../../src/reverse/projector.js';
@@ -2343,6 +2344,146 @@ describe('createProjectorLoop', () => {
       await projector.stop();
 
       expect(peopleReads()).toBe(reads + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each<[string, () => Fakes, (h: ReturnType<typeof harness>) => void, boolean, number[]]>([
+    ['ran wakes the loop and resolves once the woken cycle settles', () => ({}), () => undefined, true, [idlePollMs, idlePollMs * 2, 0, idlePollMs, idlePollMs * 4]],
+    ['another instance led keeps the schedule and resolves after its bound', () => ({ db: fakeDb(false) }), () => undefined, false, [idlePollMs, idlePollMs * 2, idlePollMs]],
+    [
+      'failed keeps the schedule and resolves after its bound',
+      () => ({}),
+      (h) => h.gateway.status.mockRejectedValue(new Error('Service gateway unavailable (ECONNREFUSED)')),
+      false,
+      [idlePollMs, idlePollMs * 2, idlePollMs],
+    ],
+  ])('a wait for the next cycle after a cycle that %s', async (_label, fakes, arrange, wakes, expected) => {
+    await withTimers(async (delays) => {
+      const h = harness(fakes());
+      arrange(h);
+      const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+      loop.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+
+      let resolved = false;
+      const waited = loop.wakeAndWait(idlePollMs).then(() => {
+        resolved = true;
+      });
+      await vi.advanceTimersByTimeAsync(idlePollMs - 1);
+      expect(resolved).toBe(wakes);
+      await vi.advanceTimersByTimeAsync(1);
+      await waited;
+      await loop.stop();
+
+      expect(delays()).toEqual(expected);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('resolves a wait issued while a cycle is in flight once that cycle settles, well before its bound, and starts the next cycle right after', async () => {
+    await withTimers(async (delays) => {
+      let open: () => void = () => undefined;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const h = harness();
+      const loop = createProjectorLoop(h.ctx, { hooks: { beforeFirstBatch: () => opened }, startupGuard: refuseGuard });
+      loop.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+
+      let resolved = false;
+      const waited = loop.wakeAndWait(idlePollMs).then(() => {
+        resolved = true;
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(resolved).toBe(false);
+      open();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolved).toBe(true);
+      expect(h.gateway.status).toHaveBeenCalledTimes(2);
+      await waited;
+      await loop.stop();
+
+      // The first cycle, the wait's bound, the next cycle at once after the first settles, then the idle back-off.
+      expect(delays()).toEqual([idlePollMs, idlePollMs, 0, idlePollMs * 2]);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it.each<[string, boolean, (loop: ProjectorLoop) => Promise<void>]>([
+    ['the loop was never started', false, async () => undefined],
+    [
+      'the loop has stopped',
+      false,
+      async (loop) => {
+        loop.start();
+        await vi.advanceTimersByTimeAsync(idlePollMs);
+        await loop.stop();
+      },
+    ],
+    [
+      'the cycle in flight outlasts it',
+      true,
+      async (loop) => {
+        loop.start();
+        await vi.advanceTimersByTimeAsync(idlePollMs);
+      },
+    ],
+  ])('resolves a wait for the next cycle after its bound when %s', async (_label, hold, arrange) => {
+    await withTimers(async () => {
+      let open: () => void = () => undefined;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const h = harness();
+      const loop = createProjectorLoop(h.ctx, { hooks: hold ? { beforeFirstBatch: () => opened } : {}, startupGuard: refuseGuard });
+      await arrange(loop);
+      const cycles = h.gateway.status.mock.calls.length;
+
+      let resolved = false;
+      const waited = loop.wakeAndWait(idlePollMs).then(() => {
+        resolved = true;
+      });
+      await vi.advanceTimersByTimeAsync(idlePollMs - 1);
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(resolved).toBe(true);
+      await waited;
+      expect(h.gateway.status).toHaveBeenCalledTimes(cycles);
+
+      open();
+      await vi.advanceTimersByTimeAsync(0);
+      await loop.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('polls an await again as soon as the cycle its poll woke has applied the position, well inside the base interval', async () => {
+    vi.useFakeTimers();
+    try {
+      // The cycles before and at the await's demand read the horizon below the position; the cycle its poll wakes passes it.
+      const pages = { [`people|${CURSOR_START}`]: (read: number) => page([], read < 3 ? '200' : '300', CURSOR_START) };
+      const h = harness({ owners: fakeOwners({ pages }) });
+      const ctx = { ...h.ctx, clock: { now: () => new Date() } } as unknown as MigrationContext;
+      const projector = createProjector(ctx, { startupGuard: refuseGuard });
+      projector.start();
+      await vi.advanceTimersByTimeAsync(idlePollMs);
+      expect(h.legacy.checkpoint('people')).toMatchObject({ applied_horizon: '200' });
+
+      let result: AwaitProjectionResult | undefined;
+      const awaited = projector.awaitProjection({ positions: new Map([['people', '250']]) }).then((answer) => {
+        result = answer;
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result).toMatchObject({ positions: new Map([['people', '250']]) });
+      await awaited;
+      await projector.stop();
+
+      expect(result?.waitedMs).toBeLessThan(idlePollMs);
+      expect(h.legacy.checkpoint('people')).toMatchObject({ applied_horizon: '300' });
+      expect(h.owners.changes.filter((read) => read.owner === 'people')).toHaveLength(3);
     } finally {
       vi.useRealTimers();
     }

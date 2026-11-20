@@ -820,13 +820,16 @@ function flatViewArgsFor(state: StoredAdminState, rc: Rc, url: Rc, sessionSiteId
 async function siteManagerTree(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, siteId: string): Promise<{ rc: Record<string, unknown> }> {
   const url = paramsOf(request);
   const { rc, moduleTop } = await carchContext(pageParams(request, { siteid: siteId }), actor, () => storedSession(request));
+  const moduleId = rcText(rc, 'moduleid');
+  // Both reads are memoised per request: started here they load alongside the tree reads, and are awaited below in list()'s order.
+  const remoteReads = [siteFlagsOf(request, actor), ...(CONTENT_MODULES.includes(moduleId) ? [storedSession(request)] : [])];
+  for (const read of remoteReads) void read.catch(() => undefined);
   // SQL Server matched the site id case-insensitively; the content rows hold the registry's stored spelling.
   const site = await siteOf(request, ctx, actor);
   const { topId, rows, reset } = await listTop(ctx, actor, rc, site.siteId);
   if (reset) await saveTreeReset(request, moduleTop?.moduleId ?? (await storedSession(request)).moduleid ?? SITE_MANAGER_MODULE, topId);
   rcSet(rc, 'topid', topId);
   rcSet(rc, 'rsTop', rows);
-  const moduleId = rcText(rc, 'moduleid');
   const flags = await siteFlagsOf(request, actor);
   rcSet(rc, 'siteConfig', {
     customTagGroups: site.customTagGroups ?? '',

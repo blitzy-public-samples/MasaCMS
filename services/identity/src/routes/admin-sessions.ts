@@ -379,6 +379,30 @@ async function siteManagerAccess(deps: PermissionDeps, snapshot: Snapshot, site:
   return moduleGrantHeld(snapshot, site, SITE_MANAGER_MODULE, grants);
 }
 
+/** The registered sites whose Site Manager `snapshot` may use, named, in registry order; rethrows the failure a site-by-site loop meets first. */
+async function siteManagerSites(deps: AdminSessionRouteDeps, snapshot: Snapshot): Promise<Schemas['SessionSites']['sites']> {
+  const permitted: TenantRegistryEntry[] = [];
+  let accessFailure: { reason: unknown } | undefined;
+  // Access is checked a site at a time, as a check may read the database; the permitted sites' names are then read together.
+  for (const entry of await registryEntries(deps.db)) {
+    try {
+      if (await siteManagerAccess(deps.permissions, snapshot, entry)) permitted.push(entry);
+    } catch (reason) {
+      accessFailure = { reason };
+      break;
+    }
+  }
+  const named = await Promise.allSettled(
+    permitted.map(async (entry) => ({ siteID: entry.siteId, site: (await deps.loginMail.settings.site(entry.siteId)).site })),
+  );
+  const sites = named.map((result) => {
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
+  });
+  if (accessFailure !== undefined) throw accessFailure.reason;
+  return sites;
+}
+
 /** The login values loginManager `login()` defaults [legacy: core/mura/login/loginManager.cfc:333-339]. */
 interface LoginData {
   returnUrl: string;
@@ -473,12 +497,7 @@ export async function registerAdminSessionRoutes(app: FastifyInstance, deps: Adm
     const user = userOf(request.opt2Auth);
     const snapshot = signedInSnapshot(await locateSession(sessions, user.sid));
     if (snapshot === undefined) return { sites: [] };
-    const sites: Schemas['SessionSites']['sites'] = [];
-    for (const entry of await registryEntries(deps.db)) {
-      if (!(await siteManagerAccess(deps.permissions, snapshot, entry))) continue;
-      sites.push({ siteID: entry.siteId, site: (await deps.loginMail.settings.site(entry.siteId)).site });
-    }
-    return { sites };
+    return { sites: await siteManagerSites(deps, snapshot) };
   });
 
   app.get<{ Reply: AdminState }>('/v1/sessions/current/admin-state', { config: { opt2: PUBLIC } }, async (request) => {

@@ -66,7 +66,7 @@ Both print one JSON summary line; exit 0, 1 or 2 as above (`opt2-db` also exits 
 
 | Loop | Interval | Gated by `opt2-ops` suspension |
 |---|---|---|
-| Reverse projector | Continuous: at once after a backlog and when an await starts, `projection.idlePollMs` 250 ms after an active cycle and while an await waits, backing off by doubling to `projection.idleMaxPollMs` 5000 ms while idle; each stream reads at most `projection.streamPagesPerCycle` (1) pages per cycle, a released operation giving back the turn that parked its streams, and leaves the rest as backlog | No: legacy-bound reads wait on the barrier it advances |
+| Reverse projector | Continuous: at once after a backlog, when an await starts, and after each await poll that finds a position behind (unless the last cycle failed or did not run); otherwise `projection.idlePollMs` 250 ms after an active cycle or while an await holds its demand, backing off by doubling to `projection.idleMaxPollMs` 5000 ms while idle; each stream reads at most `projection.streamPagesPerCycle` (1) pages per cycle, a released operation giving back the turn that parked its streams, and leaves the rest as backlog | No: legacy-bound reads wait on the barrier it advances |
 | Window recovery and transition resume | Once at start-up | No |
 | Window import retries | `windows.importRetryMs` 5 s | Yes |
 | Legacy bridge poll (`scheduler.cfm?op=describe`) | `background.bridgePollMs` 60 s | Yes; a request inside the Masa application, so ColdFusion never reaches its three-day idle expiry |

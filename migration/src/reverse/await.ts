@@ -104,7 +104,7 @@ export interface AwaiterDeps {
   /** Unrepaired quarantined changes at exactly the given positions; read on every poll after the checkpoints, within `budget`. */
   quarantined: (positions: WritePositions, budget: ReadBudget) => Promise<readonly QuarantinedPosition[]>;
   clock: MigrationContext['clock'];
-  /** Replaces the timer, for example in tests. */
+  /** Replaces the timer between polls, for example with a wait for the projector's next cycle, or in tests. */
   sleep?: (ms: number) => Promise<void>;
   defaults: { timeoutMs: number; pollIntervalMs: number };
 }

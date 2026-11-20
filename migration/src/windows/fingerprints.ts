@@ -63,7 +63,7 @@ export const FINGERPRINT_CONCURRENCY = 4;
 /** Rows times columns, by SQL Server's counts, from which a keyed table is read in {@link FINGERPRINT_CONCURRENCY} key partitions at once. */
 export const PARTITION_CELLS = 100_000;
 
-/** Most bytes HASHBYTES hashes from a non-max input without truncating it. */
+/** Most bytes a non-max varbinary concatenation holds without truncating it. */
 const CHUNK_BYTES = 8000;
 /** Bytes of the length prefix each hashed value carries. */
 const LENGTH_BYTES = 4;
@@ -154,7 +154,7 @@ export function fingerprintSql(
   maxRows = MAX_FINGERPRINT_ROWS,
 ): string | undefined {
   if (catalog.columns.length === 0 || !catalog.columns.every(isHashable)) return undefined;
-  // Columns that fit are hashed in chunks of at most 8,000 bytes, so no concatenation truncates; the others join the row hash whole.
+  // Columns that fit are grouped in chunks of at most 8,000 bytes, so no non-max concatenation truncates; the others join whole.
   const chunks: { terms: string[]; bytes: number }[] = [];
   const large: string[] = [];
   for (const column of catalog.columns) {
@@ -172,8 +172,8 @@ export function fingerprintSql(
       last.bytes += bytes + LENGTH_BYTES;
     } else chunks.push({ terms: [term], bytes: bytes + LENGTH_BYTES });
   }
-  // The first part cast to varbinary(max) makes the whole concatenation max-typed, so nothing truncates it.
-  const parts = [...chunks.map((chunk) => `HASHBYTES('SHA2_256', ${chunk.terms.join(' + ')})`), ...large];
+  // One HASHBYTES per row; the first part cast to varbinary(max) makes the whole concatenation max-typed, so nothing truncates it.
+  const parts = [...chunks.map((chunk) => `(${chunk.terms.join(' + ')})`), ...large];
   const row = `HASHBYTES('SHA2_256', ${parts.map((part, index) => (index === 0 ? `CAST(${part} AS varbinary(max))` : part)).join(' + ')})`;
   const select = [...catalog.primaryKey.map((name, index) => `${quoteIdent(name)} AS [k${String(index)}]`), `CAST(${row} AS binary(16)) AS [h]`];
   return `SELECT TOP (${String(maxRows + 1)}) ${select.join(', ')} FROM ${quoteIdent(catalog.schema)}.${quoteIdent(catalog.table)}${whereSql}`;

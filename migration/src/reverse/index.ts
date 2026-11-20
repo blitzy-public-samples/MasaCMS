@@ -23,7 +23,8 @@ export interface Projector {
 
 /**
  * Creates the projector loop and its awaiter; the awaiter reads the loop's tenant set, or the live `tsettings` before the
- * first cycle, and `migration.projector_quarantine`, and each await holds a demand on the loop while it waits.
+ * first cycle, and `migration.projector_quarantine`, and each await holds a demand on the loop while it waits and wakes it
+ * after each poll that finds a position behind, polling again once the next cycle settles.
  */
 export function createProjector(ctx: MigrationContext, opts: { hooks?: ProjectorHooks; startupGuard: StartupGuardRunner }): Projector {
   const loop = createProjectorLoop(ctx, { hooks: opts.hooks ?? {}, startupGuard: opts.startupGuard });
@@ -35,6 +36,7 @@ export function createProjector(ctx: MigrationContext, opts: { hooks?: Projector
     tenants: async ({ signal }) => loop.lastTenants() ?? [...(await liveTenantSites(ctx.legacy, { signal })).keys()],
     quarantined: (positions, { signal }) => ctx.db.withMetadata((tx) => quarantinedPositions(tx, positions), { signal }),
     clock: ctx.clock,
+    sleep: (ms) => loop.wakeAndWait(ms),
     defaults: { timeoutMs: ctx.config.projection.defaultAwaitTimeoutMs, pollIntervalMs: ctx.config.projection.idlePollMs },
   });
   return {
